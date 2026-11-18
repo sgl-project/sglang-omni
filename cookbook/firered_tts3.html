@@ -1,0 +1,1285 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>FireRedTTS3 &#8212; SGLang</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=4418a689" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=3b484c19" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=3b484c19" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/voxt_anim.css?v=cf61687c" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=ccdb6887"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cookbook/firered_tts3';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=4014cbb0"></script>
+    <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
+    <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
+    <script src="../_static/js/voxt_anim.js?v=29b2ca9c"></script>
+    <link rel="icon" href="../_static/logo.ico"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Native Chat Stage" href="../basic_usage/native_chat_stage.html" />
+    <link rel="prev" title="FireRedTeam" href="companies/fireredteam.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+    <meta name="docbuild:last-update" content="Nov 18, 2026"/>
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Voxt</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../get_started/voxt.html">Quickstart</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../get_started/voxt-tutorials/en/index.html">Voxt tutorials</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/en/start.html">Install Voxt and download a speech model</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/en/byok.html">Set up Voxt with your own API key (BYOK)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/en/translate.html">Translate with Voxt</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/en/transcribe.html">Transcribe what you say with Voxt</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/en/rewrite.html">Rewrite text with Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../get_started/voxt-tutorials/index.html">Voxt 上手教程</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/start.html">安装 Voxt 和下载语音识别模型</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/byok.html">用自己的 API Key 配置 Voxt（BYOK）</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/translate.html">用 Voxt 翻译</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/transcribe.html">用 Voxt 把说的话转录成文字</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../get_started/voxt-tutorials/rewrite.html">用 Voxt 改写文字（转写）</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/qwen.html">Qwen</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="qwen3_tts.html">Qwen3-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="qwen3_asr.html">Qwen3-ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/openmoss.html">OpenMOSS</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l2"><a class="reference internal" href="moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/openai.html">OpenAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="whisper_asr.html">Whisper ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/nvidia.html">NVIDIA</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nemotron_transcribe.html">Nemotron Transcribe</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
+<li class="toctree-l2"><a class="reference internal" href="personaplex.html">PersonaPlex</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cosmos3_nano.html">Cosmos3 Nano serving</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nemotron_diarization.html">Nemotron 3 Diarization</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/fish_audio.html">Fish Audio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fishaudio_drama3.html">Fish Audio Drama 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/fun_audio_llm.html">FunAudioLLM</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fun_asr.html">Fun-ASR-Nano</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/openbmb.html">OpenBMB</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="minicpm_o.html">MiniCPM-o</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/boson_ai.html">Boson AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="higgs_tts.html">Higgs TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/minimax.html">MiniMax</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="minimax_music3.html">MiniMax Music 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/map.html">M·A·P</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="yue2.html">YuE2</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/inclusionai.html">InclusionAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming3_asr.html">Ming-3.0-asr-tiny</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming3_audio.html">Ming-3.0-audio-flash</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming3_tts.html">Ming-3.0-TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/tencent.html">Tencent</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="auk.html">AuK</a></li>
+<li class="toctree-l2"><a class="reference internal" href="hy_simulmt.html">Hy-SimulMT</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/zyphra.html">Zyphra</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="zonos2.html">Zonos2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="zonos3.html">Zonos3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/autoark_ai.html">AutoArk AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="arkasr.html">ARK-ASR-3B</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/mistral_ai.html">Mistral AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="voxtral_tts.html">Voxtral TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/dots_studio.html">Dots Studio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="dots_tts.html">dots.tts</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="companies/fireredteam.html">FireRedTeam</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">FireRedTTS3</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_chat_stage.html">Native Chat Stage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/audio_translations.html">Audio Translations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/asr.html">ASR Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../developer_reference/mlx/long_audio.html">ASR long-recording measurements</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/adding_parameters.html">Adding a Parameter</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_guide.html">Full-Duplex Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_bench.html">TTS benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_model_integration.html">TTS Model Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/asr_bench.html">ASR benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/omni_offline_bench.html">MiniCPM-o offline benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/ci_labels.html">CI Workflows and Labels</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/cookbook/firered_tts3.md?plain=1" target="_blank"
+   class="btn btn-sm btn-source-file-button dropdown-item"
+   title="Show source"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-code"></i>
+  </span>
+<span class="btn__text-container">Show source</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/cookbook/firered_tts3.md" target="_blank"
+   class="btn btn-sm btn-source-edit-button dropdown-item"
+   title="Suggest edit"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-pencil-alt"></i>
+  </span>
+<span class="btn__text-container">Suggest edit</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fcookbook/firered_tts3.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../_sources/cookbook/firered_tts3.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>FireRedTTS3</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#variants">Variants</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning-base-and-instruct">Voice Cloning (Base and Instruct)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#instruction-tasks-instruct">Instruction Tasks (Instruct)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speaker-variant-and-dual-stream">Speaker Variant and Dual-Stream</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-execution-modes">Flow Execution Modes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compiled-flow-caches-and-speaker-controls">Compiled Flow Caches and Speaker Controls</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+</ul>
+</li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="fireredtts3">
+<h1>FireRedTTS3<a class="headerlink" href="#fireredtts3" title="Link to this heading">#</a></h1>
+<p>FireRedTTS3 is a token-free continuous-latent text-to-speech family. Audio is modeled end to end as 64-dim continuous latents at 25 Hz — there is no RVQ codebook and no audio token sampler. Each autoregressive step of the Qwen3-1.7B backbone produces one latent patch (4 frames = 160 ms of audio): the backbone hidden state conditions a flow-matching DiT that solves a 10-step Euler ODE for the patch, a PatchEncoder folds the patch back into the next backbone input embedding, and a stop head decides when to end. A RedAE encoder/decoder pair converts between 24 kHz waveform and latents; the decoder runs as the streaming vocoder stage.</p>
+<p>Because the backbone emits no token logits in the audio phase, <code class="docutils literal notranslate"><span class="pre">temperature</span></code> / <code class="docutils literal notranslate"><span class="pre">top_p</span></code> / <code class="docutils literal notranslate"><span class="pre">top_k</span></code> do not shape the audio — use the solver knobs (<code class="docutils literal notranslate"><span class="pre">n_timesteps</span></code>, <code class="docutils literal notranslate"><span class="pre">inference_cfg</span></code>, <code class="docutils literal notranslate"><span class="pre">stop_threshold</span></code>) instead. The exception is the Instruct variant’s text phase (voice_design / semantic_edit), where the backbone genuinely samples text and those knobs apply.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Spec</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Backbone</p></td>
+<td><p>Qwen3 1.7B decoder (28 L, hidden=2048, GQA 16/8)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Acoustic head</p></td>
+<td><p>Flow-matching DiT (11 L, hidden=1024, 16 heads, AdaLN) + PatchEncoder (8 L)</p></td>
+</tr>
+<tr class="row-even"><td><p>Latent patch</p></td>
+<td><p>4 frames × 64 dims (one patch = 160 ms of audio, 3840 samples)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Vocoder</p></td>
+<td><p>RedAE decoder (18 L Qwen3, SWA 64) + iSTFT head</p></td>
+</tr>
+<tr class="row-even"><td><p>Sample rate</p></td>
+<td><p>24 kHz</p></td>
+</tr>
+<tr class="row-odd"><td><p>Solver</p></td>
+<td><p>Euler, <code class="docutils literal notranslate"><span class="pre">n_timesteps=10</span></code> with classifier-free guidance</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<section id="variants">
+<h2>Variants<a class="headerlink" href="#variants" title="Link to this heading">#</a></h2>
+<p>One architecture, three checkpoints. The variant is detected from the checkpoint’s <code class="docutils literal notranslate"><span class="pre">config.json</span></code> at launch; each variant has its own example config.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>Base</p></th>
+<th class="head"><p>Instruct</p></th>
+<th class="head"><p>Speaker</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Example config</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/firered_tts3_base.yaml</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/firered_tts3_instruct.yaml</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/firered_tts3_speaker.yaml</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Voice condition</p></td>
+<td><p>Reference clip: CAM++ speaker embedding + in-context prompt latents</p></td>
+<td><p>Reference clip as in-context prompt (tts task) or edit source</p></td>
+<td><p>Built-in speaker token; no reference audio</p></td>
+</tr>
+<tr class="row-even"><td><p>Tasks</p></td>
+<td><p>Voice cloning only</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Base</span></code> (cloning), <code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code>, <code class="docutils literal notranslate"><span class="pre">SemanticEdit</span></code>, <code class="docutils literal notranslate"><span class="pre">AcousticEdit</span></code></p></td>
+<td><p>Text-only speech</p></td>
+</tr>
+<tr class="row-odd"><td><p>Default CFG</p></td>
+<td><p>2.0</p></td>
+<td><p>2.0 (tts) / 1.2 (design, edits)</p></td>
+<td><p>1.2</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_patches</span></code></p></td>
+<td><p>400 (~64 s)</p></td>
+<td><p>400</p></td>
+<td><p>600 (~96 s)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Default <code class="docutils literal notranslate"><span class="pre">flow_mode</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">compile_bf16</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fp32</span></code> (see below)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">compile_bf16</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Dual-stream decode form</p></td>
+<td><p>no</p></td>
+<td><p>no</p></td>
+<td><p>opt-in via <code class="docutils literal notranslate"><span class="pre">stage_params.preprocessing.dual_stream</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Pipeline stages</p></td>
+<td><p>preprocessing → reference_encode → talker → vocoder</p></td>
+<td><p>same as Base</p></td>
+<td><p>preprocessing → talker → vocoder (no reference_encode)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then launch the server with the config matching your checkpoint:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>FireRedTeam/FireRedTTS3-Base-HF<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>FireRedTTS3-Base<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/firered_tts3_base.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--allowed-local-media-path<span class="w"> </span>docs/_static/audio<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>The Base and Instruct examples use the official Hugging Face checkpoints <a class="reference external" href="https://huggingface.co/FireRedTeam/FireRedTTS3-Base-HF">FireRedTeam/FireRedTTS3-Base-HF</a> and <a class="reference external" href="https://huggingface.co/FireRedTeam/FireRedTTS3-Instruct-HF">FireRedTeam/FireRedTTS3-Instruct-HF</a>. Each repository contains the model, tokenizer and RedAE assets; Base also includes CAM++. The original <code class="docutils literal notranslate"><span class="pre">FireRedTeam/FireRedTTS3</span></code> repository has a different directory layout and cannot be used as the model path directly. Use <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> to select a complete compatible checkpoint at another location.</p>
+<p>For Instruct or Speaker, use the matching <code class="docutils literal notranslate"><span class="pre">firered_tts3_instruct.yaml</span></code> or <code class="docutils literal notranslate"><span class="pre">firered_tts3_speaker.yaml</span></code> config and set <code class="docutils literal notranslate"><span class="pre">--model-name</span></code> to <code class="docutils literal notranslate"><span class="pre">FireRedTTS3-Instruct</span></code> or <code class="docutils literal notranslate"><span class="pre">FireRedTTS3-Speaker</span></code> to match the requests below. The Speaker example expects a complete compatible local checkpoint at <code class="docutils literal notranslate"><span class="pre">./models/FireRedTTS3-Speaker</span></code>; provide one there or pass its path with <code class="docutils literal notranslate"><span class="pre">--model-path</span></code>. The examples pin the variant so request validation and stage selection also work when a checkpoint is downloaded from a remote repository.</p>
+<p>Every GPU stage warms its cold-start paths at startup (encoders, DiT compile, CUDA graph capture, vocoder decode shapes), so the first served requests are already warm. The DiT compile for a concurrency bucket that warmup did not cover runs lazily on first use — a one-time ~45-85 s pause per process (~45 s with a warm torch-inductor FX cache, which persists across restarts).</p>
+<p>The examples below read local clips; allow their directories with <code class="docutils literal notranslate"><span class="pre">--allowed-local-media-path</span></code>, or fetch reference audio over HTTP with <code class="docutils literal notranslate"><span class="pre">--allowed-media-domain</span></code>.</p>
+</section>
+<section id="synthesizing-speech">
+<h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
+<section id="voice-cloning-base-and-instruct">
+<h3>Voice Cloning (Base and Instruct)<a class="headerlink" href="#voice-cloning-base-and-instruct" title="Link to this heading">#</a></h3>
+<p>Base takes exactly one reference clip plus its transcript; the transcript is prefixed to the input so the model can align prompt audio with prompt text. A wrong transcript hurts cloning quality.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FireRedTTS3-Base",</span>
+<span class="s1">    "input": "欢迎使用点点语音合成系统，这是一段零样本音色克隆测试。",</span>
+<span class="s1">    "language": "Chinese",</span>
+<span class="s1">    "references": [{</span>
+<span class="s1">      "audio_path": "docs/_static/audio/ref_voice.wav",</span>
+<span class="s1">      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."</span>
+<span class="s1">    }],</span>
+<span class="s1">    "seed": 42</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.wav
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> / <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> are accepted as a shorthand for <code class="docutils literal notranslate"><span class="pre">references[0].audio_path</span></code> / <code class="docutils literal notranslate"><span class="pre">references[0].text</span></code>. <code class="docutils literal notranslate"><span class="pre">language</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">Chinese</span></code>. The API accepts <code class="docutils literal notranslate"><span class="pre">Chinese</span></code>, <code class="docutils literal notranslate"><span class="pre">English</span></code>, <code class="docutils literal notranslate"><span class="pre">Japanese</span></code>, <code class="docutils literal notranslate"><span class="pre">Korean</span></code>, <code class="docutils literal notranslate"><span class="pre">German</span></code>, <code class="docutils literal notranslate"><span class="pre">French</span></code>, <code class="docutils literal notranslate"><span class="pre">Russian</span></code>, <code class="docutils literal notranslate"><span class="pre">Portuguese</span></code>, <code class="docutils literal notranslate"><span class="pre">Spanish</span></code>, and <code class="docutils literal notranslate"><span class="pre">Italian</span></code>. <code class="docutils literal notranslate"><span class="pre">Auto</span></code> is not supported.</p>
+<p>To allow other checkpoint language or dialect tags (such as <code class="docutils literal notranslate"><span class="pre">ZH_Sichuan</span></code>), extend the Python pipeline config class <code class="docutils literal notranslate"><span class="pre">sglang_omni.models.firered_tts3.config.FireRedTTS3PipelineConfig</span></code> and set its <code class="docutils literal notranslate"><span class="pre">additional_speech_languages:</span> <span class="pre">ClassVar[frozenset[str]]</span></code> to those tags. This attribute is inherited from <code class="docutils literal notranslate"><span class="pre">PipelineConfig</span></code>; it is a class attribute, not a YAML field or a stage factory setting. The stock FireRedTTS3 config does not add any languages.</p>
+</section>
+<section id="streaming">
+<h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
+<p>Streaming emits raw 24 kHz 16-bit mono PCM as latent patches decode, cutting time-to-first-audio to ~80 ms warm at concurrency 1. Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FireRedTTS3-Base",</span>
+<span class="s1">    "input": "欢迎使用点点语音合成系统，这是一段零样本音色克隆测试。",</span>
+<span class="s1">    "references": [{</span>
+<span class="s1">      "audio_path": "docs/_static/audio/ref_voice.wav",</span>
+<span class="s1">      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."</span>
+<span class="s1">    }],</span>
+<span class="s1">    "stream": true,</span>
+<span class="s1">    "response_format": "pcm",</span>
+<span class="s1">    "seed": 42</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.pcm
+
+ffmpeg<span class="w"> </span>-f<span class="w"> </span>s16le<span class="w"> </span>-ar<span class="w"> </span><span class="m">24000</span><span class="w"> </span>-ac<span class="w"> </span><span class="m">1</span><span class="w"> </span>-i<span class="w"> </span>output.pcm<span class="w"> </span>output.wav
+</pre></div>
+</div>
+<p>The WebSocket protocol at <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/stream</span></code> (session.config → input.text → input.commit / input.done) works the same way; <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> / <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> / <code class="docutils literal notranslate"><span class="pre">language</span></code> / <code class="docutils literal notranslate"><span class="pre">seed</span></code> ride in the <code class="docutils literal notranslate"><span class="pre">session.config</span></code> message. See <a class="reference internal" href="../basic_usage/tts.html#websocket-speech-streaming"><span class="std std-ref">TTS Model Usage</span></a> for the full event flow.</p>
+</section>
+<section id="instruction-tasks-instruct">
+<h3>Instruction Tasks (Instruct)<a class="headerlink" href="#instruction-tasks-instruct" title="Link to this heading">#</a></h3>
+<p>The Instruct checkpoint adds three tasks on top of cloning. <code class="docutils literal notranslate"><span class="pre">task_type</span></code> accepts <code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code>, <code class="docutils literal notranslate"><span class="pre">SemanticEdit</span></code>, and <code class="docutils literal notranslate"><span class="pre">AcousticEdit</span></code> (case- and separator-insensitive). Omit <code class="docutils literal notranslate"><span class="pre">task_type</span></code> or use <code class="docutils literal notranslate"><span class="pre">Base</span></code> for cloning; <code class="docutils literal notranslate"><span class="pre">TTS</span></code> and <code class="docutils literal notranslate"><span class="pre">tts</span></code> are rejected with HTTP 400.</p>
+<p><code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code> synthesizes a voice from a text description — no reference audio, <code class="docutils literal notranslate"><span class="pre">instructions</span></code> required:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FireRedTTS3-Instruct",</span>
+<span class="s1">    "input": "今天天气很好，我们一起去公园散步吧。",</span>
+<span class="s1">    "task_type": "VoiceDesign",</span>
+<span class="s1">    "instructions": "一个年轻女性的温柔嗓音，语速稍慢，带一点俏皮。",</span>
+<span class="s1">    "seed": 42</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>voice_design.wav
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">SemanticEdit</span></code> rewrites the content of an existing clip (the reference audio is the edit source, capped at 20 s); <code class="docutils literal notranslate"><span class="pre">input</span></code> may be empty:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-binary<span class="w"> </span>@-<span class="w"> </span>--output<span class="w"> </span>semantic_edit.wav<span class="w"> </span><span class="s">&lt;&lt;'JSON'</span>
+<span class="s">{</span>
+<span class="s">  "model": "FireRedTTS3-Instruct",</span>
+<span class="s">  "input": "",</span>
+<span class="s">  "task_type": "SemanticEdit",</span>
+<span class="s">  "instructions": "Replace 'birthday' with 'anniversary'.",</span>
+<span class="s">  "ref_audio": "docs/_static/audio/ref_voice.wav",</span>
+<span class="s">  "seed": 42</span>
+<span class="s">}</span>
+<span class="s">JSON</span>
+</pre></div>
+</div>
+<p>For substitutions, use <code class="docutils literal notranslate"><span class="pre">Replace</span> <span class="pre">'source'</span> <span class="pre">with</span> <span class="pre">'target'.</span></code> with single quotes around both words. The quoted example above succeeded in a local ASR check; omitting quotes did not perform the intended replacement on the same audio. The <code class="docutils literal notranslate"><span class="pre">x-gen-text</span></code> response header contains edit masks, not a literal transcript of the generated audio. The replacement word may appear only in the audio. The heredoc preserves the instruction’s single quotes in the shell command.</p>
+<p><code class="docutils literal notranslate"><span class="pre">AcousticEdit</span></code> keeps the content and adjusts one acoustic attribute. The instruction comes from <code class="docutils literal notranslate"><span class="pre">instructions</span></code> verbatim, or is composed from <code class="docutils literal notranslate"><span class="pre">acoustic_attribute</span></code> (<code class="docutils literal notranslate"><span class="pre">Speed</span></code> / <code class="docutils literal notranslate"><span class="pre">Pitch</span></code> / <code class="docutils literal notranslate"><span class="pre">Volume</span></code>) and a value — the top-level <code class="docutils literal notranslate"><span class="pre">speed</span></code> field doubles as the Speed value:</p>
+<p>Raw instructions must use the trained templates: <code class="docutils literal notranslate"><span class="pre">adjust</span> <span class="pre">the</span> <span class="pre">speed</span> <span class="pre">to</span> <span class="pre">0.8x</span></code>, <code class="docutils literal notranslate"><span class="pre">shift</span> <span class="pre">the</span> <span class="pre">pitch</span> <span class="pre">by</span> <span class="pre">2</span> <span class="pre">steps</span></code>, or <code class="docutils literal notranslate"><span class="pre">adjust</span> <span class="pre">the</span> <span class="pre">volume</span> <span class="pre">to</span> <span class="pre">0.8</span></code>, for example. Free-form acoustic descriptions are unsupported.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FireRedTTS3-Instruct",</span>
+<span class="s1">    "input": "",</span>
+<span class="s1">    "task_type": "AcousticEdit",</span>
+<span class="s1">    "ref_audio": "docs/_static/audio/ref_voice.wav",</span>
+<span class="s1">    "speed": 0.8,</span>
+<span class="s1">    "seed": 42</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>acoustic_edit.wav
+</pre></div>
+</div>
+<p>VoiceDesign and SemanticEdit run a text autoregressive phase first (the model free-writes the voice plan / edited transcript, up to 200 tokens), so their first audio arrives later than a pure cloning request of the same length. Text-phase sampling defaults to the reference values (VoiceDesign: temperature 0.7, top_p 0.8, top_k 20; everything else greedy) and explicit <code class="docutils literal notranslate"><span class="pre">temperature</span></code> / <code class="docutils literal notranslate"><span class="pre">top_p</span></code> / <code class="docutils literal notranslate"><span class="pre">top_k</span></code> request fields override them.</p>
+</section>
+<section id="speaker-variant-and-dual-stream">
+<h3>Speaker Variant and Dual-Stream<a class="headerlink" href="#speaker-variant-and-dual-stream" title="Link to this heading">#</a></h3>
+<p>The Speaker variant conditions on a built-in speaker token — requests are text-only, and passing a reference audio is rejected with HTTP 400:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FireRedTTS3-Speaker",</span>
+<span class="s1">    "input": "欢迎使用点点语音合成系统，这是一段零样本音色克隆测试。",</span>
+<span class="s1">    "seed": 42</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>speaker.wav
+</pre></div>
+</div>
+<p>The dual-stream decode form interleaves text and latent feeds (2 text tokens per patch group) and emits each patch’s audio immediately — the reference’s low-latency streaming inference form. Opt in per request with <code class="docutils literal notranslate"><span class="pre">stage_params.preprocessing.dual_stream</span></code> (serving rejects it on non-speaker checkpoints), optionally with a <code class="docutils literal notranslate"><span class="pre">stage_params.preprocessing.style</span></code> prefix:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FireRedTTS3-Speaker",</span>
+<span class="s1">    "input": "欢迎使用点点语音合成系统，这是一段零样本音色克隆测试。",</span>
+<span class="s1">    "stage_params": {"preprocessing": {"dual_stream": true, "style": "轻松自然地讲述"}},</span>
+<span class="s1">    "stream": true,</span>
+<span class="s1">    "response_format": "pcm",</span>
+<span class="s1">    "seed": 42</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>speaker_dual.pcm
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">dual_stream</span></code> selects the decode form and is orthogonal to <code class="docutils literal notranslate"><span class="pre">stream</span></code> (the output mode): a non-streaming dual-stream request returns one WAV. Incremental text upload mid-generation (extending the text while audio is already streaming) is not supported.</p>
+</section>
+<section id="request-parameters">
+<h3>Request Parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h3>
+<p>Top-level fields (the endpoint drops unknown top-level keys silently — model knobs belong in <code class="docutils literal notranslate"><span class="pre">stage_params</span></code>):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model</span></code></p></td>
+<td><p>string</p></td>
+<td><p>served model</p></td>
+<td><p>Served model identifier</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">input</span></code></p></td>
+<td><p>string</p></td>
+<td><p>(required)</p></td>
+<td><p>Text to synthesize; at most 400 characters. May be empty for SemanticEdit / AcousticEdit</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">references</span></code></p></td>
+<td><p>list</p></td>
+<td><p>variant</p></td>
+<td><p>One item with <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> + <code class="docutils literal notranslate"><span class="pre">text</span></code>. Required for Base and Instruct cloning (both fields) and the edit tasks (audio only); forbidden for the Speaker variant and VoiceDesign</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> / <code class="docutils literal notranslate"><span class="pre">ref_text</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Shorthand for <code class="docutils literal notranslate"><span class="pre">references[0]</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">response_format</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code></p></td>
+<td><p>Output format; <code class="docutils literal notranslate"><span class="pre">pcm</span></code> required when <code class="docutils literal notranslate"><span class="pre">stream</span></code> is true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
+<td><p>bool</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Stream raw 24 kHz PCM chunks</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
+<td><p>int</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Per-request flow-sampler seed; fixed seed + fixed request is bit-exact</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">language</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;Chinese&quot;</span></code></p></td>
+<td><p>Language tag for Base: <code class="docutils literal notranslate"><span class="pre">Chinese</span></code>, <code class="docutils literal notranslate"><span class="pre">English</span></code>, <code class="docutils literal notranslate"><span class="pre">Japanese</span></code>, <code class="docutils literal notranslate"><span class="pre">Korean</span></code>, <code class="docutils literal notranslate"><span class="pre">German</span></code>, <code class="docutils literal notranslate"><span class="pre">French</span></code>, <code class="docutils literal notranslate"><span class="pre">Russian</span></code>, <code class="docutils literal notranslate"><span class="pre">Portuguese</span></code>, <code class="docutils literal notranslate"><span class="pre">Spanish</span></code>, <code class="docutils literal notranslate"><span class="pre">Italian</span></code>. Other checkpoint tags require the pipeline config class’s <code class="docutils literal notranslate"><span class="pre">additional_speech_languages</span></code> (see above); <code class="docutils literal notranslate"><span class="pre">Auto</span></code> is unsupported</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">task_type</span></code></p></td>
+<td><p>string</p></td>
+<td><p>omitted (cloning)</p></td>
+<td><p>Instruct tasks: <code class="docutils literal notranslate"><span class="pre">Base</span></code> (cloning) / <code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code> / <code class="docutils literal notranslate"><span class="pre">SemanticEdit</span></code> / <code class="docutils literal notranslate"><span class="pre">AcousticEdit</span></code>; <code class="docutils literal notranslate"><span class="pre">TTS</span></code> and <code class="docutils literal notranslate"><span class="pre">tts</span></code> are rejected</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">instructions</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>VoiceDesign description, SemanticEdit instruction, or a raw AcousticEdit template</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">speed</span></code></p></td>
+<td><p>float</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
+<td><p>Consumed natively by AcousticEdit as the Speed value (“adjust the speed to Nx”); ignored by other tasks</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code> / <code class="docutils literal notranslate"><span class="pre">top_p</span></code> / <code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
+<td><p></p></td>
+<td><p>task defaults</p></td>
+<td><p>Instruct text-phase sampling overrides only; the audio phase never samples</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
+<td><p>int</p></td>
+<td><p>derived</p></td>
+<td><p>Engine decode-step budget; rarely needed — the pipeline derives it from <code class="docutils literal notranslate"><span class="pre">max_patches</span></code> (dual-stream: <code class="docutils literal notranslate"><span class="pre">3</span> <span class="pre">*</span> <span class="pre">max_patches</span> <span class="pre">+</span> <span class="pre">20</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Solver and stop knobs ride under <code class="docutils literal notranslate"><span class="pre">stage_params.talker</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">n_timesteps</span></code></p></td>
+<td><p>int</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">10</span></code></p></td>
+<td><p>Euler ODE steps per latent patch</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">inference_cfg</span></code></p></td>
+<td><p>float</p></td>
+<td><p>Base 2.0, Speaker 1.2, Instruct per task</p></td>
+<td><p>Classifier-free guidance strength</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stop_threshold</span></code></p></td>
+<td><p>float</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.5</span></code></p></td>
+<td><p>Stop-head probability that ends generation</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">min_patches</span></code></p></td>
+<td><p>int</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6</span></code></p></td>
+<td><p>Patches generated before the stop head may fire (~1 s floor)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_patches</span></code></p></td>
+<td><p>int</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">400</span></code> (Speaker <code class="docutils literal notranslate"><span class="pre">600</span></code>)</p></td>
+<td><p>Patch budget; the deployment config’s value caps requests</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
+<td><p>int</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Same as the top-level seed</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FireRedTTS3-Base",</span>
+<span class="s1">    "input": "欢迎使用点点语音合成系统。",</span>
+<span class="s1">    "ref_audio": "docs/_static/audio/ref_voice.wav",</span>
+<span class="s1">    "ref_text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year.",</span>
+<span class="s1">    "seed": 42,</span>
+<span class="s1">    "stage_params": {"talker": {"n_timesteps": 10, "inference_cfg": 2.0, "max_patches": 200}}</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.wav
+</pre></div>
+</div>
+<p>Speaker-only options under <code class="docutils literal notranslate"><span class="pre">stage_params.preprocessing</span></code> (validated at the serving layer):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dual_stream</span></code></p></td>
+<td><p>bool</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Dual-stream decode form (2:1 text/latent interleave); 400 on non-speaker checkpoints</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">style</span></code></p></td>
+<td><p>string</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Style prefix for the dual-stream prompt; applies to the dual-stream form only</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>AcousticEdit composition knobs under <code class="docutils literal notranslate"><span class="pre">stage_params.preprocessing</span></code>: <code class="docutils literal notranslate"><span class="pre">acoustic_attribute</span></code> (<code class="docutils literal notranslate"><span class="pre">Speed</span></code> / <code class="docutils literal notranslate"><span class="pre">Pitch</span></code> / <code class="docutils literal notranslate"><span class="pre">Volume</span></code>) and <code class="docutils literal notranslate"><span class="pre">acoustic_value</span></code> (float). An explicit <code class="docutils literal notranslate"><span class="pre">instructions</span></code> string overrides composition entirely. Without explicit instructions, unsupported attributes and nonnumeric or non-finite values return HTTP 400 before generation.</p>
+<p>The HTTP, batch, and WebSocket APIs use <code class="docutils literal notranslate"><span class="pre">stage_params</span></code> for model options. The offline SDK also retains <code class="docutils literal notranslate"><span class="pre">GenerateRequest.extra_params</span></code> for existing callers.</p>
+</section>
+<section id="flow-execution-modes">
+<h3>Flow Execution Modes<a class="headerlink" href="#flow-execution-modes" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">flow_mode</span></code> is a launch-time talker factory setting (<code class="docutils literal notranslate"><span class="pre">stages.talker.factory.flow_mode</span></code> in the config), selecting the DiT execution stack inside the flow loop:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Mode</p></th>
+<th class="head"><p>What changes</p></th>
+<th class="head"><p>Use</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fp32</span></code></p></td>
+<td><p>nothing — the reference stack</p></td>
+<td><p>Bit-exact deployments; the Instruct default</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">compile_fp32</span></code></p></td>
+<td><p>torch.compile over the fp32 DiT</p></td>
+<td><p>Faster fp32</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bf16</span></code></p></td>
+<td><p>DiT matmul body in bf16, eager</p></td>
+<td><p>(measured slower than compile_bf16; kept for A/B)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">compile_bf16</span></code></p></td>
+<td><p>bf16 body + torch.compile</p></td>
+<td><p>The throughput stack; Base / Speaker default</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Only the DiT matmul body lowers to bf16: the Euler state, noise, CFG blend, and time schedule stay fp32. Instruct pins <code class="docutils literal notranslate"><span class="pre">fp32</span></code> because its stop head sits near the decision threshold — every non-bit-exact mode measurably flips stop trajectories on some utterances (stopping 2-3 patches early). Base and Speaker default to <code class="docutils literal notranslate"><span class="pre">compile_bf16</span></code>, which keeps the c=1 stop trajectory identical and RTF ~35% lower than fp32.</p>
+<p>Compile cost is per process and per batch bucket: the first request(s) that hit a new concurrency shape pay a one-time ~45-85 s torch.compile (~45 s with a warm inductor FX cache, which persists across restarts). Startup warmup pre-compiles the single-request shapes.</p>
+</section>
+<section id="compiled-flow-caches-and-speaker-controls">
+<h3>Compiled Flow Caches and Speaker Controls<a class="headerlink" href="#compiled-flow-caches-and-speaker-controls" title="Link to this heading">#</a></h3>
+<p>The Flow time and convolution caches are enabled by default for <code class="docutils literal notranslate"><span class="pre">flow_mode:</span> <span class="pre">compile_fp32</span></code> and <code class="docutils literal notranslate"><span class="pre">compile_bf16</span></code> when Flow CUDA graphs are used (<code class="docutils literal notranslate"><span class="pre">stages.talker.factory.flow_cuda_graph:</span> <span class="pre">true</span></code>). Eager <code class="docutils literal notranslate"><span class="pre">fp32</span></code> / <code class="docutils literal notranslate"><span class="pre">bf16</span></code> modes leave both caches disabled by default. Explicitly enabling either cache with an eager mode is rejected.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Environment variable</p></th>
+<th class="head"><p>Compiled-mode default</p></th>
+<th class="head"><p>Eager-mode default</p></th>
+<th class="head"><p>Behavior</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">FIRERED_TTS3_PRECOMPUTE_TIME</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>Caches the original compiled time-branch matrix-multiply outputs for each Euler step and batch bucket</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">FIREREDTTS3_CONV_LAYOUT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">conv2d_channels_last</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">conv1d</span></code></p></td>
+<td><p>Caches channels-last convolution weights and replaces external convolution calls inside the original compiled graph</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Disable either cache independently, or both, before starting the worker:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">FIRERED_TTS3_PRECOMPUTE_TIME</span><span class="o">=</span><span class="m">0</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">FIREREDTTS3_CONV_LAYOUT</span><span class="o">=</span>conv1d
+</pre></div>
+</div>
+<p>The original DiT graph and its compilation options are retained. Each bucket compares complete Euler Flow outputs before capture and after graph replay on a fixed zero probe and two seeded nonzero probes. The observed compiled backend and the time-only cache must each remain finite and byte-exact against the original compiled Flow. Only the final candidate containing convolution replacements may use numerical tolerances:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Environment variable</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">FIRERED_TTS3_FLOW_ATOL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.001</span></code></p></td>
+<td><p>Absolute error allowance for convolution-optimized Flow output elements</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">FIRERED_TTS3_FLOW_RTOL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.01</span></code></p></td>
+<td><p>Relative error allowance against the original compiled Flow output</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Every output element must satisfy <code class="docutils literal notranslate"><span class="pre">abs(candidate</span> <span class="pre">-</span> <span class="pre">reference)</span> <span class="pre">&lt;=</span> <span class="pre">atol</span> <span class="pre">+</span> <span class="pre">rtol</span> <span class="pre">*</span> <span class="pre">abs(reference)</span></code>. Both tolerances must be finite and nonnegative; shape, dtype, device, finite values, cache signatures, and operation coverage remain mandatory. Logs include maximum absolute error, RMSE, worst per-request NRMSE, and the number of elements outside the tolerance. Batch-averaged error is not an acceptance criterion. Set both variables to <code class="docutils literal notranslate"><span class="pre">0</span></code> to restore byte-for-byte convolution checks, including signed zero.</p>
+<p>These defaults are conservative numerical screening budgets, not calibrated guarantees of perceptual quality. Capture probes run once per bucket, rather than comparing every served request against a second model. A schema mismatch or failed check retries the whole Flow with the original compiled path. Failure of that original path invokes the existing fallback behavior. Compare the same batch shape and dtype when qualifying a change; equality across different batching schedules or precisions is not required by this gate.</p>
+<p>Before accepting a non-exact optimization, use fixed-input Flow cases and free-running synthesis with the same seeds and execution shapes. Require identical generated patch counts, PCM sample counts, and normal termination reasons; do not force patch counts or truncate audio to match. Assess content and audio quality separately on held-out utterances, including omissions, repetitions, cut-off tails, noise, and voice changes. Waveform RMSE or correlation alone cannot establish quality. Streaming PCM comparisons also require the same vocoder batch and chunk shapes; use <code class="docutils literal notranslate"><span class="pre">stages.vocoder.factory.stream_batching:</span> <span class="pre">false</span></code> for isolated precision qualification, and retain normal batching for performance measurements. The time-cache collection/copy checks remain byte-exact regardless of convolution tolerance.</p>
+<p>All Flow buckets first try ordinary PyTorch/cuDNN channels-last convolution with prepacked weights, including the BF16 B4 bucket and padded B3 requests. This path does not require cuDNN frontend or a specific GPU architecture. It must pass the complete Flow precision checks and actual CUDA graph replay before replacing the validated time-only graph.</p>
+<p>The BF16 B4 bucket doubles to eight rows for CFG. If the ordinary path fails validation on SM120, its convolution with input <code class="docutils literal notranslate"><span class="pre">[8,1024,1,12]</span></code> and weight <code class="docutils literal notranslate"><span class="pre">[1024,1024,1,3]</span></code> can retry a controlled cuDNN execution plan. This plan retains the original channels-first engine and reduction settings while reusing channels-last weights, and requires cuDNN 9.20 and frontend 1.28.0. Install the optional frontend with <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">'sglang-omni[firered-tts3]'</span></code> (or <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">nvidia-cudnn-frontend==1.28.0</span></code> in an existing environment). The retry must pass the same complete Flow and replay checks against the original compiled reference. Missing dependencies, unsupported versions, deterministic execution requests, or retry failures retain the already validated time-only graph. Other architectures continue to use the ordinary convolution path when it passes validation.</p>
+<p>On SM120, <code class="docutils literal notranslate"><span class="pre">compile_bf16</span></code> also enables DiT GEMM specialization when the validated convolution path is active. B1/B2/B4 use a specialized first FFN projection; B8/B16 use packed QKV projections. Packed QKV weights are allocated only when preparing the first B8/B16 graph, so deployments limited to small buckets do not allocate them. Packed QKV initialization failure leaves the small-batch FFN path available. The kernels require the supported eleven-layer BF16 DiT and BF16 reduced-precision reduction. Set <code class="docutils literal notranslate"><span class="pre">FIRERED_TTS3_FFN_GEMM=0</span></code> to disable them independently. Unsupported shapes or failed checks retain the validated time/convolution path.</p>
+<p>Every added optimization, including the captured GEMM graph replay, is checked against the original compiled Flow output with the same total error budget. Passing individual incremental comparisons cannot accumulate a larger allowed error.</p>
+<p>Each runner owns its plan and workspace. Calls and graph replays on the same runner must be serialized, as required by its static inputs and shared graph pool; concurrent runners must use separate instances. Graph entries retain their dispatch modes, cached tensors, and execution-plan resources. External cached tensors are registered with each replay stream so their allocations remain valid until queued execution finishes.</p>
+<p>Load weights and finish dtype/device placement before constructing the Flow executor and its caches. The worker rejects weight-update requests after Flow execution is initialized; restart the worker to load different weights. Direct mutation of model parameters or modules is unsupported. Capture-time weight checks catch supported mismatches, but graph replay does not scan weights and these checks do not provide hot-update support. Each graph entry owns the time table built for its model, dtype/device, CFG batch shape, and time schedule; graph eviction releases the table when its last owner is gone.</p>
+<p>The independent talker factory settings <code class="docutils literal notranslate"><span class="pre">control_token_fastpath</span></code> and <code class="docutils literal notranslate"><span class="pre">skip_min_patch_stop</span></code> both default to <code class="docutils literal notranslate"><span class="pre">true</span></code> and apply only to synchronous Speaker audio steps (prefill and decode) with <code class="docutils literal notranslate"><span class="pre">dual_stream:</span> <span class="pre">false</span></code>. The control-token fast path avoids a host/device round trip. The minimum-patch optimization skips the stop head and its scalar synchronization while <code class="docutils literal notranslate"><span class="pre">patch_count</span> <span class="pre">&lt;</span> <span class="pre">min_patches</span></code>, when stopping is already disallowed; normal stop-head evaluation resumes at the minimum patch count. It does not change <code class="docutils literal notranslate"><span class="pre">min_patches</span></code> or <code class="docutils literal notranslate"><span class="pre">stop_threshold</span></code>. Other decode paths retain their normal behavior.</p>
+<p>To disable the Speaker controls, merge the following values into the deployment config. Each can be disabled independently of the other control and the Flow caches:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">talker</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">control_token_fastpath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">      </span><span class="nt">skip_min_patch_stop</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</pre></div>
+</div>
+</section>
+<section id="performance">
+<h3>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h3>
+<p>Base voice cloning, one fixed Chinese request (~4.8 s audio), 1x L20, streaming path, warm service at the final commit. The vLLM column is the reference port’s final tuned stack on 1x H20 (a longer ~7.8 s utterance); L20 and H20 measure within a few percent of each other on this stack’s other TTS models.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head text-right"><p>vLLM (H20)</p></th>
+<th class="head text-right"><p>SGLang-Omni (L20)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>RTF, concurrency 1</p></td>
+<td class="text-right"><p>0.309</p></td>
+<td class="text-right"><p>0.230</p></td>
+</tr>
+<tr class="row-odd"><td><p>RTF, concurrency 8</p></td>
+<td class="text-right"><p>0.213</p></td>
+<td class="text-right"><p>0.342</p></td>
+</tr>
+<tr class="row-even"><td><p>TTFP, concurrency 1 (warm)</p></td>
+<td class="text-right"><p>181-190 ms</p></td>
+<td class="text-right"><p>82 ms</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Concurrency-1 latency and TTFP beat the vLLM port clearly; vLLM still leads on c=8 RTF (its per-step engine overhead amortizes differently), so high-concurrency throughput remains the open frontier.</p>
+</section>
+<section id="known-limitations">
+<h3>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Single GPU only (<code class="docutils literal notranslate"><span class="pre">tp_size=1</span></code>); one variant per deployment.</p></li>
+<li><p>End-to-end parity with the fp32 reference is statistical, not bitwise: any bf16 backbone (including the reference vLLM port) diverges chaotically after a few patches. At a fixed seed every request is deterministic and bit-exact against itself, and the c=1 (exact-bucket) paths stay bit-exact across the CUDA-graph and compile stacks; c&gt;=2 batched flow output drifts within the known batched-GEMM envelope.</p></li>
+<li><p>Instruct VoiceDesign / SemanticEdit pay a text-AR phase (up to 200 tokens) before the first audio chunk.</p></li>
+<li><p>The Speaker variant takes no reference audio, and incremental text upload mid-generation is not supported.</p></li>
+<li><p>Concurrency above ~16 needs a VRAM budget review: each captured flow-graph batch row costs ~1.2 GB.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">speed</span></code> is consumed only by AcousticEdit; it does not post-process other tasks’ audio.</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="companies/fireredteam.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">FireRedTeam</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../basic_usage/native_chat_stage.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Native Chat Stage</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#variants">Variants</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning-base-and-instruct">Voice Cloning (Base and Instruct)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#instruction-tasks-instruct">Instruction Tasks (Instruct)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speaker-variant-and-dual-stream">Speaker Variant and Dual-Stream</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-execution-modes">Flow Execution Modes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#compiled-flow-caches-and-speaker-controls">Compiled Flow Caches and Speaker Controls</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By SGLang-Omni Team
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026, SGLang-Omni.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    <p class="last-updated">
+  Last updated on Nov 18, 2026.
+  <br/>
+</p>
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

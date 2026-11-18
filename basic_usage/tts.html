@@ -329,6 +329,10 @@
 <li class="toctree-l2"><a class="reference internal" href="../cookbook/dots_tts.html">dots.tts</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/fireredteam.html">FireRedTeam</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/firered_tts3.html">FireRedTTS3</a></li>
+</ul>
+</details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="current nav bd-sidenav">
@@ -705,27 +709,31 @@ model you are serving.</p>
 <td><p>Yes</p></td>
 <td><p>Reference audio and transcript; MeanFlow and SOAR have different settings</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/ming_tts.html"><span class="std std-doc">Ming-Omni-TTS</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/firered_tts3.html"><span class="std std-doc">FireRedTTS3</span></a></p></td>
+<td><p>Yes</p></td>
+<td><p>Base uses a reference clip and transcript; Instruct supports voice design and editing; Speaker provides text-only synthesis and optional dual-stream decoding</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/ming_tts.html"><span class="std std-doc">Ming-Omni-TTS</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Optional reference and transcript; <code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> is rejected</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/ming3_tts.html"><span class="std std-doc">Ming-3.0-TTS</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/ming3_tts.html"><span class="std std-doc">Ming-3.0-TTS</span></a></p></td>
 <td><p>CUDA; CPU decodes a complete waveform</p></td>
 <td><p>Optional reference; the Tiny and 0.5B checkpoints handle <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> differently</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/ming3_audio.html"><span class="std std-doc">Ming-3.0 audio</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/ming3_audio.html"><span class="std std-doc">Ming-3.0 audio</span></a></p></td>
 <td><p>See cookbook</p></td>
 <td><p>Speech uses one reference clip and its transcript</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/zonos2.html"><span class="std std-doc">Zonos2</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/zonos2.html"><span class="std std-doc">Zonos2</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Reference cloning and model-specific chunk configuration</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/zonos3.html"><span class="std std-doc">Zonos3</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/zonos3.html"><span class="std std-doc">Zonos3</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Optional reference clip; no transcript needed</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/auk.html"><span class="std std-doc">AuK</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/auk.html"><span class="std std-doc">AuK</span></a></p></td>
 <td><p>No</p></td>
 <td><p>Serial, non-streaming engine; <code class="docutils literal notranslate"><span class="pre">stage_params.auk_engine.gen_seconds</span></code> is required for speech</p></td>
 </tr>
