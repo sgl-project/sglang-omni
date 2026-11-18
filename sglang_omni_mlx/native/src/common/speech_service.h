@@ -17,9 +17,9 @@
 #include <string>
 #include <vector>
 
+#include "common/asr_service.h"
 #include "common/generation.h"
 #include "common/http.h"
-#include "qwen3_asr/asr_service.h"
 
 namespace speech_service {
 
@@ -50,6 +50,14 @@ struct SpeechJob {
   // Answers with the /generate JSON body, its audio a base64 file in
   // response_format, instead of the file itself.
   bool is_generate_response = false;
+  // Starts a stream's response when the request is admitted rather than at
+  // its first audio; for a synthesis that raises no request errors of its own.
+  bool starts_stream_at_admission = false;
+  // Runs on the request's thread once it holds a slot, before synthesis, so
+  // costly parsing is bounded by the queue; may throw std::invalid_argument
+  // for a request error, answered with 400. Its time counts against the
+  // request's deadline.
+  std::function<void()> prepare;
   std::function<SpeechResult(const SpeechContext &)> synthesize;
 };
 
@@ -64,6 +72,30 @@ std::optional<std::string> ParseModel(const Json &body);
 // server's CreateSpeechRequest reads them; throws std::invalid_argument.
 SpeechJob ParseCommonFields(const Json &body);
 
+// A collection field of CUDA's CreateSpeechRequest and the JSON type it takes.
+struct CollectionField {
+  const char *name;
+  Json::value_t type;
+  const char *type_description;
+};
+
+// Fields a model does not serve, each counted as given by the CUDA request
+// model's rule: value fields when not null, text fields when not null or "",
+// and collections when not empty. A collection of another type is rejected
+// first, even an empty one.
+struct UnsupportedFields {
+  std::vector<const char *> value_fields;
+  std::vector<const char *> text_fields;
+  std::vector<CollectionField> collection_fields;
+};
+
+// Throws std::invalid_argument naming, in sorted order, every unsupported
+// field body gives: "<model> does not support these /v1/audio/speech fields:
+// <fields>. Supported model-specific fields are <supported>."
+void RejectUnsupportedFields(const Json &body, const UnsupportedFields &fields,
+                             const std::string &model,
+                             const std::string &supported);
+
 class SpeechServedModel : public asr_service::ServedModel {
 public:
   SpeechServedModel(size_t max_request_body_bytes, int max_queued_requests,
@@ -73,9 +105,9 @@ public:
   Prepare(std::vector<float>, const asr_service::FormFields &) const override;
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override;
+  RequestStates(const omni_server::TranscriptionWorker &) const override;
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override;
+                   omni_server::TranscriptionWorker &worker) override;
 
 protected:
   // The job of a request body; throws std::invalid_argument for a request
@@ -97,7 +129,7 @@ private:
   mutable std::mutex admission_mutex_;
   // Requests the worker holds: running, queued, or finishing.
   int admitted_requests_ = 0;
-  qwen3_asr::TranscriptionWorker *worker_ = nullptr;
+  omni_server::TranscriptionWorker *worker_ = nullptr;
 };
 
 // Adds --max-queued-requests and --request-timeout-s to kind; load then

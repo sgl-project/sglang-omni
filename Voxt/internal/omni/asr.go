@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -18,7 +19,7 @@ type ASR struct {
 	spec      Spec
 	dir       string
 	draft     string // the speculative draft's folder, "" none (WithDraft)
-	draftBits int    // 4, 6 or 8; 0 means WithDraft's default of 8
+	draftBits int    // 4, 6 or 8; Qwen3-ASR defaults to 8
 	vad       *VAD   // the voice activity model beside it, nil for none
 }
 
@@ -50,14 +51,14 @@ func checkDir(dir string) error {
 }
 
 // WithDraft is a copy of a whose server verifies the speculative draft
-// installed in dir (the DFlash draft the catalogue pairs with the model:
-// --draft-model-path), decoding several tokens a step; "" none. The
-// same model with another draft is another server,
-// so the switch restarts the model (Runtime.acquire).
+// installed in dir (--draft-model-path), decoding several tokens a step.
+// An empty dir disables it. Changing the draft restarts the model (Runtime.acquire).
 func (a *ASR) WithDraft(dir string) *ASR {
 	c := *a
 	c.draft = dir
-	c.draftBits = 8
+	if c.spec.Kind == kindQwen3ASR {
+		c.draftBits = 8
+	}
 	return &c
 }
 
@@ -246,21 +247,48 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 	return nil, &asr.Error{Kind: asr.KindAudio, Provider: Provider, Detail: "unknown audio format " + req.Format}
 }
 
-// final is Voxt's Qwen3-ASR Final (transcribeQwenFinal) with language,
-// the model's ("" detects), and the context bias: the chunks share one
-// token budget, and the first chunk's detected language is forced on the
-// rest. The chunks' texts are joined as the live pieces are (joinParts).
-// It returns the text, the language and the accumulated draft counters.
+// final transcribes quiet-cut chunks in order, with a shared token budget
+// for Qwen3-ASR and one budget per Whisper window. The first detected
+// language, when available, is passed to subsequent requests. It also
+// returns the accumulated draft counters.
 func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, *asr.DraftStats, error) {
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
 	shared := t.TokensPerSecond > 0 // else each request has the whole budget
+	batchWhisper := a.spec.Kind == kindWhisper && a.draft == ""
+	chunks := t.splitChunks(pcm)
+	if a.spec.Kind == kindWhisper {
+		chunks = trimWhisperSilenceTail(chunks)
+	}
 	var parts []string
 	var draft *asr.DraftStats
-	for _, c := range t.splitChunks(pcm) {
+	for len(chunks) > 0 {
 		if shared && budget <= 0 {
 			break
 		}
+		if batchWhisper {
+			batchPCM, chunkWindows := packWhisperChunks(chunks)
+			if len(chunkWindows) > 1 {
+				req := finalRequest{pcm: batchPCM, language: language, maxTokens: budget}
+				texts, detected, err := a.transcribeWhisperBatch(ctx, l, req, chunkWindows)
+				if err != nil {
+					return "", "", nil, err
+				}
+				if texts != nil {
+					parts = append(parts, texts...)
+					if language == "" {
+						language = detected
+					}
+					chunks = chunks[len(chunkWindows):]
+					continue
+				}
+				// A mismatched older runtime cannot split this first batch;
+				// redo it per chunk and avoid batching the remaining chunks.
+				batchWhisper = false
+			}
+		}
+		c := chunks[0]
+		chunks = chunks[1:]
 		req := finalRequest{pcm: c.pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
 		r, err := transcribe(ctx, l, req, a.rt.cfg.StallTimeout)
 		if err != nil {
@@ -284,6 +312,30 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		parts = append(parts, r.text)
 	}
 	return a.spec.plainText(joinParts(parts)), language, draft, nil
+}
+
+// transcribeWhisperBatch reassembles each quiet-cut chunk before joinParts
+// joins the chunks. The runtime uses spaces between windows of one chunk.
+func (a *ASR) transcribeWhisperBatch(ctx context.Context, l *lease, req finalRequest, chunkWindows []int) ([]string, string, error) {
+	r, err := transcribe(ctx, l, req, a.rt.cfg.StallTimeout)
+	if err != nil || r.windowTexts == nil {
+		return nil, "", err
+	}
+	if len(r.windowTexts) != len(req.pcm)/whisperWindowBytes {
+		return nil, "", &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the Whisper batch returned the wrong number of windows"}
+	}
+	parts := make([]string, 0, len(chunkWindows))
+	for _, count := range chunkWindows {
+		var windows []string
+		for _, text := range r.windowTexts[:count] {
+			if text != "" {
+				windows = append(windows, text)
+			}
+		}
+		parts = append(parts, strings.Join(windows, " "))
+		r.windowTexts = r.windowTexts[count:]
+	}
+	return parts, r.language, nil
 }
 
 // Open starts a live session: partial text while audio comes in, then

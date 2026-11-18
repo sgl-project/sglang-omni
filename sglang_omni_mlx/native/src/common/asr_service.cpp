@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 
 #include <chrono>
 #include <cmath>
@@ -15,8 +15,8 @@
 #include "common/http.h"
 #include "common/service.h"
 #include "common/transcription.h"
+#include "common/worker.h"
 #include "nlohmann/json.hpp"
-#include "qwen3_asr/worker.h"
 
 namespace asr_service {
 
@@ -25,13 +25,14 @@ namespace {
 namespace mx = mlx::core;
 using omni_common::TranscriptionResult;
 using omni_server::BadRequest;
+using omni_server::CancelFlag;
 using omni_server::Json;
 using omni_server::ReadBody;
+using omni_server::TranscriptionWorker;
 using omni_server::WriteJson;
-using qwen3_asr::CancelFlag;
-using qwen3_asr::TranscriptionWorker;
 
 constexpr auto kHeartbeatInterval = std::chrono::milliseconds(250);
+constexpr auto kPreviewHeartbeatInterval = std::chrono::milliseconds(50);
 
 struct ServerState {
   TranscriptionWorker *worker = nullptr;
@@ -57,6 +58,9 @@ Json DoneEvent(const TranscriptionResult &result,
         {"language",
          result.language.has_value() ? Json(*result.language) : Json()},
         {"finish_reason", omni_common::FinishReasonName(result.finish_reason)}};
+    if (!result.window_texts.empty()) {
+      event["generation_metadata"]["window_texts"] = result.window_texts;
+    }
     if (result.verify_round_count > 0) {
       event["generation_metadata"]["verify_round_count"] =
           result.verify_round_count;
@@ -116,7 +120,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
                       "include_generation_metadata requires stream=true");
   } else {
   }
-  const CancelFlag cancel = qwen3_asr::NewCancelFlag();
+  const CancelFlag cancel = omni_server::NewCancelFlag();
   auto promise = std::make_shared<std::promise<TranscriptionResult>>();
   std::future<TranscriptionResult> future = promise->get_future();
   state->worker->Submit(std::move(transcription), cancel,
@@ -144,7 +148,11 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
                         "Connection: close\r\n\r\n");
   // Note (Jiaxin Deng): SSE comment heartbeats fail to write once the peer is
   // gone, which cancels the decode it was waiting for.
-  while (future.wait_for(kHeartbeatInterval) != std::future_status::ready) {
+  const auto heartbeat_interval =
+      omni_common::FormFlag(TextField(*form, "preview"))
+          ? kPreviewHeartbeatInterval
+          : kHeartbeatInterval;
+  while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
     if (mg_write(connection, ":\n\n", 3) <= 0) {
       cancel->store(true);
     } else {
@@ -164,7 +172,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
 }
 
 struct SocketState {
-  std::shared_ptr<qwen3_asr::RealtimeConnection> session;
+  std::shared_ptr<omni_server::RealtimeConnection> session;
   std::string fragments;
 };
 
@@ -172,11 +180,7 @@ void SocketReady(mg_connection *connection, void *data) {
   const auto *factory = static_cast<const RealtimeFactory *>(data);
   auto *socket = new SocketState();
   socket->session = (*factory)([connection](const std::string &text) {
-    mg_lock_connection(connection);
-    const int written = mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
-                                           text.data(), text.size());
-    mg_unlock_connection(connection);
-    return written > 0;
+    return omni_server::SendWebSocketText(connection, text);
   });
   mg_set_user_connection_data(connection, socket);
 }
@@ -238,10 +242,11 @@ void SocketClosed(const mg_connection *connection, void *) {
 class AsrService : public omni_server::Service {
 public:
   AsrService(const std::filesystem::path &directory, const ModelLoader &load,
-             int max_batch) {
+             int max_batch,
+             const std::optional<omni_server::BatchRunner> &batch_runner) {
     worker_ = std::make_unique<TranscriptionWorker>(
         [&]() { model_ = load(directory); },
-        [this]() { model_->ReleaseIdleMemory(); }, max_batch);
+        [this]() { model_->ReleaseIdleMemory(); }, max_batch, batch_runner);
   }
 
   void SetModelName(const std::string &model_name,
@@ -338,10 +343,11 @@ void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory) {
 omni_server::ServedKind CreateServedKind(const ServedKind &kind) {
   return {
       kind.model_kind,
-      [load = kind.load,
-       max_batch = kind.max_batch](const std::filesystem::path &directory) {
-        return std::make_unique<AsrService>(directory, load,
-                                            max_batch ? max_batch() : 1);
+      [load = kind.load, max_batch = kind.max_batch,
+       batch_runner =
+           kind.batch_runner](const std::filesystem::path &directory) {
+        return std::make_unique<AsrService>(
+            directory, load, max_batch ? max_batch() : 1, batch_runner);
       },
       kind.flags,
       kind.check_flags,

@@ -74,12 +74,15 @@ func spawn(cfg Config, spec Spec, dir, draft string, draftBits int, cacheLimit b
 	}
 	args = append(args, spec.launchArgs(cacheLimit)...)
 	if draft != "" {
-		// The default is 8-bit: the same transcripts as bf16 on the eval set,
-		// faster and smaller (#3874).
-		if draftBits == 0 {
-			draftBits = 8
+		args = append(args, "--draft-model-path", draft)
+		if draftBits != 0 || spec.Kind == kindQwen3ASR {
+			// Qwen3-ASR's default is 8-bit: the same transcripts as bf16 on the eval set,
+			// faster and smaller (#3874). MTD keeps the native default unless asked.
+			if draftBits == 0 {
+				draftBits = 8
+			}
+			args = append(args, "--draft-bits", itoa(draftBits))
 		}
-		args = append(args, "--draft-model-path", draft, "--draft-bits", itoa(draftBits))
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(serverEnv(os.Environ()), cfg.Env...)

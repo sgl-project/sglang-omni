@@ -110,6 +110,7 @@ func main() {
 	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
 	a.connectShell(logDir)                        // shell.go
 	a.connectHelper()                             // helperlink.go
+	mygo.BindAs("TranscriptPreview", transcriptPreviewBridge{a})
 	// A release without an update feed (2.0.x) checks GitHub's releases
 	// (updates_github.go); a development build has no updater: no Check
 	// for Updates…, and About says so.

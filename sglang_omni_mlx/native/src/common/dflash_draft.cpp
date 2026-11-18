@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/dflash_draft.h"
+#include "common/dflash_draft.h"
 
 #include <algorithm>
 #include <chrono>
@@ -11,12 +11,11 @@
 #include <utility>
 #include <vector>
 
+#include "common/draft_backoff.h"
 #include "common/generation.h"
-#include "qwen3_asr/draft_backoff.h"
+#include "common/kv_cache.h"
 
-namespace qwen3_asr {
-
-using omni_common::GenerationCancelled;
+namespace omni_common {
 
 namespace mx = mlx::core;
 
@@ -124,46 +123,6 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
   return {std::move(config), std::move(weights)};
 }
 
-nlohmann::json QuantizationConfig(int quantization_bits) {
-  nlohmann::json config;
-  if (quantization_bits > 0) {
-    config["quantization"] = {{"group_size", kQuantizationGroupSize},
-                              {"bits", quantization_bits}};
-  } else {
-  }
-  return config;
-}
-
-// Quantizes the two-dimensional weights (the linear layers and lm_head) as
-// an MLX checkpoint stores them: .weight packed, with .scales and .biases.
-omni_common::WeightMap QuantizeWeights(omni_common::WeightMap weights,
-                                       int quantization_bits) {
-  if (quantization_bits == 0) {
-    return weights;
-  } else {
-  }
-  omni_common::WeightMap quantized;
-  while (!weights.empty()) {
-    const auto stored = weights.extract(weights.begin());
-    const std::string &name = stored.key();
-    const mx::array &array = stored.mapped();
-    if (array.ndim() == 2) {
-      const std::vector<mx::array> parts =
-          mx::quantize(array, kQuantizationGroupSize, quantization_bits);
-      // note (wilsonzheng0327): evaluated one weight at a time, so each
-      // stored weight is released before the next one is read.
-      mx::eval(parts);
-      const std::string prefix = name.substr(0, name.size() - 7);
-      quantized.insert_or_assign(prefix + ".weight", parts[0]);
-      quantized.insert_or_assign(prefix + ".scales", parts[1]);
-      quantized.insert_or_assign(prefix + ".biases", parts[2]);
-    } else {
-      quantized.insert_or_assign(name, array);
-    }
-  }
-  return quantized;
-}
-
 } // namespace
 
 DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
@@ -172,8 +131,12 @@ DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
     : DFlashDraft(CheckedDraft(directory, target), quantization_bits) {}
 
 DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
-    : checkpoint_(QuantizeWeights(std::move(draft.weights), quantization_bits),
-                  QuantizationConfig(quantization_bits)),
+    : checkpoint_(omni_common::QuantizedCheckpoint(
+          std::move(draft.weights), nlohmann::json::object(),
+          kQuantizationGroupSize,
+          [quantization_bits](const std::string &) {
+            return quantization_bits;
+          })),
       decoder_(checkpoint_, "",
                Qwen3DecoderConfig::FromJson(
                    draft.config.at("transformer_layer_config"))),
@@ -243,6 +206,16 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
                                     DraftPolicy policy) const {
   std::vector<KVCache> caches = target.NewCaches();
   std::vector<KVCache> draft_caches = decoder_.NewCaches();
+  return Decode(target, embeddings, {}, max_new_tokens, prefill_step_tokens,
+                commit, cancel, policy, caches, draft_caches);
+}
+
+DraftStatistics DFlashDraft::Decode(
+    const Qwen3Decoder &target, const mx::array &embeddings,
+    const std::vector<int> &guessed_ids, int max_new_tokens,
+    int prefill_step_tokens, const std::function<bool(int)> &commit,
+    const std::atomic<bool> &cancel, DraftPolicy policy,
+    std::vector<KVCache> &caches, std::vector<KVCache> &draft_caches) const {
   std::vector<mx::array> aux_hidden_states;
   int processed = 0;
   while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
@@ -262,7 +235,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       const auto arrays = cache.Arrays();
       evaluated.insert(evaluated.end(), arrays.begin(), arrays.end());
     }
-    mx::eval(evaluated);
+    mx::async_eval(evaluated);
     aux_hidden_states.clear();
     processed += token_count;
   }
@@ -270,22 +243,55 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     throw GenerationCancelled();
   } else {
   }
+  const int guessed_count = static_cast<int>(guessed_ids.size());
+  const int prompt_count = embeddings.shape(1) - processed;
+  bool finished = false;
+  int committed_token_count = 0;
   int anchor_id;
   {
-    const mx::array prompt_hidden = target.Forward(
-        mx::slice(embeddings, {0, processed, 0}, embeddings.shape()), caches,
-        aux_layers_, &aux_hidden_states);
-    AppendContext(aux_hidden_states, embeddings.shape(1) - processed,
+    mx::array prompt =
+        mx::slice(embeddings, {0, processed, 0}, embeddings.shape());
+    if (guessed_count > 0) {
+      prompt = mx::concatenate(
+          {prompt, target.EmbedTokens(mx::array(
+                       guessed_ids.data(), {1, guessed_count}, mx::int32))},
+          1);
+    } else {
+    }
+    const mx::array prompt_hidden =
+        target.Forward(prompt, caches, aux_layers_, &aux_hidden_states);
+    // The prediction after the prompt, then after each guess.
+    const mx::array predicted = mx::argmax(
+        target.Logits(mx::slice(
+            prompt_hidden, {0, prompt_count - 1, 0},
+            {1, prompt_count + guessed_count, prompt_hidden.shape(2)})),
+        -1);
+    mx::eval(predicted);
+    const uint32_t *predicted_ids = predicted.data<uint32_t>();
+    int accepted_count = 0;
+    while (!finished && accepted_count < guessed_count &&
+           static_cast<int>(predicted_ids[accepted_count]) ==
+               guessed_ids[accepted_count]) {
+      finished = commit(guessed_ids[accepted_count]);
+      ++accepted_count;
+    }
+    for (KVCache &cache : caches) {
+      cache.Trim(guessed_count - accepted_count);
+    }
+    AppendContext(aux_hidden_states, prompt_count + accepted_count,
                   draft_caches);
-    anchor_id = static_cast<int>(
-        mx::argmax(target.LastLogits(prompt_hidden)).item<uint32_t>());
+    committed_token_count = accepted_count;
+    anchor_id = static_cast<int>(predicted_ids[accepted_count]);
   }
   if (cancel.load()) {
     throw GenerationCancelled();
   } else {
   }
-  bool finished = commit(anchor_id);
-  int committed_token_count = 1;
+  if (!finished) {
+    finished = commit(anchor_id);
+    ++committed_token_count;
+  } else {
+  }
   DraftBackoff backoff;
   DraftStatistics statistics;
   while (!finished) {
@@ -361,14 +367,13 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       throw GenerationCancelled();
     } else {
     }
-    const Qwen3Decoder plain_target(target, true);
     std::vector<std::vector<mx::array>> probe_hidden_states;
     const uint32_t warm_anchor_id = static_cast<uint32_t>(anchor_id);
-    const mx::array warm_hidden = plain_target.Forward(
+    const mx::array warm_hidden = target.Forward(
         target.EmbedTokens(mx::array(&warm_anchor_id, {1, 1}, mx::uint32)),
         caches, aux_layers_, &probe_hidden_states.emplace_back());
     anchor_id = static_cast<int>(
-        mx::argmax(plain_target.LastLogits(warm_hidden)).item<uint32_t>());
+        mx::argmax(target.LastLogits(warm_hidden)).item<uint32_t>());
     finished = commit(anchor_id);
     ++committed_token_count;
     if (finished) {
@@ -378,10 +383,10 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     } else {
     }
     const uint32_t probe_anchor_id = static_cast<uint32_t>(anchor_id);
-    const mx::array probe_hidden = plain_target.Forward(
+    const mx::array probe_hidden = target.Forward(
         target.EmbedTokens(mx::array(&probe_anchor_id, {1, 1}, mx::uint32)),
         caches, aux_layers_, &probe_hidden_states.emplace_back());
-    mx::array next_token = mx::argmax(plain_target.LastLogits(probe_hidden));
+    mx::array next_token = mx::argmax(target.LastLogits(probe_hidden));
     mx::eval({next_token});
     int measured_token_count = 0;
     const auto probe_commit = [&](int token_id) {
@@ -392,8 +397,8 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       return finished || measured_token_count == kPlainProbeTokenCount - 1;
     };
     const auto probe_started = std::chrono::steady_clock::now();
-    plain_target.DecodePlain(next_token, caches, 1.0f, probe_commit, cancel,
-                             aux_layers_, &probe_hidden_states);
+    target.DecodePlain(next_token, caches, 1.0f, probe_commit, cancel,
+                       aux_layers_, &probe_hidden_states);
     // note (ZaneZhang-67): measure completed work with the same queued
     // lookahead as ordinary decoding, not the host's lazy graph construction.
     mx::eval({next_token});
@@ -413,7 +418,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       probe_hidden_states.clear();
       aux_hidden_states.clear();
       draft_caches.clear();
-      plain_target.DecodePlain(next_token, caches, 1.0f, commit, cancel);
+      target.DecodePlain(next_token, caches, 1.0f, commit, cancel);
       break;
     } else {
       // note (ZaneZhang-67): plain queued the committed anchor's successor;
@@ -430,4 +435,4 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
   return statistics;
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

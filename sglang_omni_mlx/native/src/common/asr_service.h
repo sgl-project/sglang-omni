@@ -10,20 +10,21 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "common/form.h"
+#include "common/realtime_connection.h"
 #include "common/service.h"
-#include "qwen3_asr/realtime.h"
-#include "qwen3_asr/worker.h"
+#include "common/worker.h"
 
 struct mg_context;
 
 namespace asr_service {
 
 using FormFields = std::map<std::string, omni_common::FormField>;
-using qwen3_asr::Transcription;
+using omni_server::Transcription;
 
 // Note (XXXXRT666): a long request's KV caches grow in steps, and no later
 // step fits a buffer an earlier one freed; unlimited, MLX keeps them until
@@ -40,12 +41,12 @@ public:
   virtual Transcription Prepare(std::vector<float> samples,
                                 const FormFields &form) const = 0;
   // Adds handlers beyond the transcription API once the server listens.
-  virtual void AddHandlers(mg_context *, qwen3_asr::TranscriptionWorker &) {}
+  virtual void AddHandlers(mg_context *, omni_server::TranscriptionWorker &) {}
   // False for a model that serves no transcriptions.
   virtual bool Transcribes() const { return true; }
   // Request counts for /health.
   virtual std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &worker) const {
+  RequestStates(const omni_server::TranscriptionWorker &worker) const {
     return worker.RequestStates();
   }
   // The name /v1/models lists, and whether --model-name chose it rather
@@ -77,6 +78,8 @@ struct ServedKind {
   // Most queued requests the worker decodes together, read once the flags are
   // parsed; unset means one at a time.
   std::function<int()> max_batch;
+  // How the worker decodes a batch; a kind without one decodes one at a time.
+  std::optional<omni_server::BatchRunner> batch_runner;
 };
 
 // A form field as given, or as an integer or a finite number; the latter two
@@ -89,10 +92,22 @@ std::optional<int> IntegerField(const FormFields &form,
 std::optional<float> NumberField(const FormFields &form,
                                  const std::string &name);
 
+// A field another field makes required; throws std::invalid_argument naming
+// both when it is missing.
+template <typename Value>
+Value RequiredField(const std::optional<Value> &value, const std::string &name,
+                    const std::string &required_by) {
+  if (!value.has_value()) {
+    throw std::invalid_argument(name + " is required with " + required_by);
+  } else {
+  }
+  return *value;
+}
+
 // Builds the session of one realtime socket around the socket's sender.
 using RealtimeFactory =
-    std::function<std::shared_ptr<qwen3_asr::RealtimeConnection>(
-        qwen3_asr::RealtimeConnection::Sender)>;
+    std::function<std::shared_ptr<omni_server::RealtimeConnection>(
+        omni_server::RealtimeConnection::Sender)>;
 
 // Serves the realtime API on /v1/realtime; factory must outlive the server.
 void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/speech_service.h"
+#include "common/speech_service.h"
 
 #include <cctype>
 #include <condition_variable>
@@ -141,6 +141,49 @@ SpeechJob ParseCommonFields(const Json &body) {
   return job;
 }
 
+void RejectUnsupportedFields(const Json &body, const UnsupportedFields &fields,
+                             const std::string &model,
+                             const std::string &supported) {
+  std::vector<std::string> given;
+  for (const char *field : fields.value_fields) {
+    if (!FieldOr(body, field, Json()).is_null()) {
+      given.push_back(field);
+    } else {
+    }
+  }
+  for (const char *field : fields.text_fields) {
+    const Json value = FieldOr(body, field, Json());
+    if (!value.is_null() && value != "") {
+      given.push_back(field);
+    } else {
+    }
+  }
+  for (const CollectionField &field : fields.collection_fields) {
+    const Json value = FieldOr(body, field.name, Json());
+    if (!value.is_null() && value.type() != field.type) {
+      throw std::invalid_argument(std::string(field.name) + " must be " +
+                                  field.type_description);
+    } else if (!value.is_null() && !value.empty()) {
+      given.push_back(field.name);
+    } else {
+    }
+  }
+  if (given.empty()) {
+    return;
+  } else {
+  }
+  std::sort(given.begin(), given.end());
+  std::string names;
+  for (const std::string &field : given) {
+    names += (names.empty() ? "" : ", ") + field;
+  }
+  throw std::invalid_argument(model +
+                              " does not support these /v1/audio/speech "
+                              "fields: " +
+                              names + ". Supported model-specific fields are " +
+                              supported + ".");
+}
+
 SpeechServedModel::SpeechServedModel(size_t max_request_body_bytes,
                                      int max_queued_requests,
                                      double request_timeout_seconds)
@@ -159,8 +202,8 @@ SpeechServedModel::Prepare(std::vector<float>,
 // Note (Minyi Tang): /health counts the slots admission holds, which the
 // worker frees only after it marks a request done; once /health shows the
 // server idle, it admits a full queue.
-std::map<std::string, int>
-SpeechServedModel::RequestStates(const qwen3_asr::TranscriptionWorker &) const {
+std::map<std::string, int> SpeechServedModel::RequestStates(
+    const omni_server::TranscriptionWorker &) const {
   std::lock_guard<std::mutex> lock(admission_mutex_);
   std::map<std::string, int> states;
   if (admitted_requests_ > 0) {
@@ -175,7 +218,7 @@ SpeechServedModel::RequestStates(const qwen3_asr::TranscriptionWorker &) const {
 }
 
 void SpeechServedModel::AddHandlers(mg_context *context,
-                                    qwen3_asr::TranscriptionWorker &worker) {
+                                    omni_server::TranscriptionWorker &worker) {
   worker_ = &worker;
   mg_set_request_handler(context, "/v1/audio/speech$", HandleSpeech, this);
 }
@@ -215,6 +258,11 @@ int SpeechServedModel::Speak(
     job = parse(body);
   } catch (const std::invalid_argument &error) {
     return omni_server::BadRequest(connection, error.what());
+  } catch (const Json::exception &) {
+    // Note (Jiaxin Deng): a value the checks let through but whose JSON type
+    // cannot be read is still the client's error.
+    return omni_server::BadRequest(connection,
+                                   "speech request has an invalid field");
   }
   // Note (Minyi Tang): no client can know a generated name, and the CUDA
   // speech API ignores model, so only a chosen name is enforced.
@@ -237,9 +285,29 @@ int SpeechServedModel::Speak(
   }
 
   const auto deadline = std::chrono::steady_clock::now() + request_timeout_;
+  if (job.prepare) {
+    const auto release_slot = [this] {
+      std::lock_guard<std::mutex> lock(admission_mutex_);
+      --admitted_requests_;
+    };
+    try {
+      job.prepare();
+    } catch (const std::invalid_argument &error) {
+      release_slot();
+      return omni_server::BadRequest(connection, error.what());
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      release_slot();
+      std::cerr << "speech generation timed out\n";
+      return omni_server::WriteJson(
+          connection, 504, {{"detail", "Speech generation timed out."}});
+    } else {
+    }
+  } else {
+  }
   const std::string request_id = NewRequestId();
   auto channel = std::make_shared<AudioChannel>();
-  const qwen3_asr::CancelFlag cancel = qwen3_asr::NewCancelFlag();
+  const omni_server::CancelFlag cancel = omni_server::NewCancelFlag();
   worker_->Submit(
       [synthesize = job.synthesize, channel,
        deadline](const std::atomic<bool> &cancelled) {
@@ -284,6 +352,19 @@ int SpeechServedModel::Speak(
   bool stream_started = false;
   bool timed_out = false;
   bool client_left = false;
+  const auto start_stream = [&]() {
+    mg_printf(connection,
+              "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
+              "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
+              "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
+              "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
+              request_id.c_str(), request_id.c_str(), SampleRate());
+    stream_started = true;
+  };
+  if (job.stream && job.starts_stream_at_admission) {
+    start_stream();
+  } else {
+  }
   std::unique_lock<std::mutex> lock(channel->mutex);
   while (true) {
     const bool has_audio_or_end = channel->ready.wait_until(
@@ -314,13 +395,7 @@ int SpeechServedModel::Speak(
     lock.unlock();
     if (job.stream) {
       if (!stream_started) {
-        mg_printf(connection,
-                  "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
-                  "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
-                  "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
-                  "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
-                  request_id.c_str(), request_id.c_str(), SampleRate());
-        stream_started = true;
+        start_stream();
       } else {
       }
       const std::string pcm = omni_common::Pcm16Bytes(chunk);

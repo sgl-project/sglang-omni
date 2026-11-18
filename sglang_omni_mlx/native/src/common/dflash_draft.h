@@ -10,11 +10,12 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
-namespace qwen3_asr {
+namespace omni_common {
 
 enum class DraftPolicy { kAdaptive, kFixed };
 
@@ -51,6 +52,23 @@ public:
                          const std::function<bool(int)> &commit,
                          const std::atomic<bool> &cancel,
                          DraftPolicy policy = DraftPolicy::kFixed) const;
+  // The same decode over caches the caller keeps: the target's keys and
+  // values and the draft's context, over the same positions, which embeddings
+  // and the committed tokens but the last extend. guessed_ids, tokens likely
+  // to come next, are checked in the prompt's pass and kept while the target
+  // agrees. A backoff to plain decoding empties draft_caches.
+  DraftStatistics Decode(const Qwen3Decoder &target,
+                         const mlx::core::array &embeddings,
+                         const std::vector<int> &guessed_ids,
+                         int max_new_tokens, int prefill_step_tokens,
+                         const std::function<bool(int)> &commit,
+                         const std::atomic<bool> &cancel, DraftPolicy policy,
+                         std::vector<omni_common::KVCache> &caches,
+                         std::vector<omni_common::KVCache> &draft_caches) const;
+  // Empty caches for the draft's context.
+  std::vector<omni_common::KVCache> NewCaches() const {
+    return decoder_.NewCaches();
+  }
 
 private:
   DFlashDraft(LoadedDraft draft, int quantization_bits);
@@ -58,12 +76,14 @@ private:
   // Appends the first token_count positions of the target hidden states
   // entering each aux layer, each [1, length, hidden], as context.
   void AppendContext(const std::vector<mlx::core::array> &aux_hidden_states,
-                     int token_count, std::vector<KVCache> &caches) const;
+                     int token_count,
+                     std::vector<omni_common::KVCache> &caches) const;
   // Proposes the target token ids after the anchor, [block_size - 1], from
   // the block's embeddings [1, block_size, hidden]: the anchor, then mask
   // tokens, at the positions after the context.
-  mlx::core::array ProposeBlock(const mlx::core::array &block_embeddings,
-                                std::vector<KVCache> &caches) const;
+  mlx::core::array
+  ProposeBlock(const mlx::core::array &block_embeddings,
+               std::vector<omni_common::KVCache> &caches) const;
 
   omni_common::Checkpoint checkpoint_;
   Qwen3Decoder decoder_;
@@ -74,4 +94,4 @@ private:
   int mask_token_id_;
 };
 
-} // namespace qwen3_asr
+} // namespace omni_common

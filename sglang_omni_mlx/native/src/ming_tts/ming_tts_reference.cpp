@@ -326,7 +326,7 @@ MingReferenceEncoder::Encode(const ReferenceAudio &audio) const {
                                          {1, static_cast<int>(padded.size())})),
                  mx::float32);
   const auto speaker = speaker_.Embed(audio.samples_16k);
-  mx::eval(latents, speaker);
+  mx::async_eval(latents, speaker);
   return {latents, speaker};
 }
 

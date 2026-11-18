@@ -198,7 +198,7 @@ func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir, draft string) (*
 }
 
 func (rt *Runtime) acquireDraft(ctx context.Context, spec Spec, dir, draft string, draftBits int) (*lease, error) {
-	if draftBits == 0 {
+	if draftBits == 0 && spec.Kind == kindQwen3ASR {
 		draftBits = 8
 	}
 	key := spec.ID + "\x00" + dir + "\x00" + draft + "\x00" + itoa(draftBits) + "\x00" + strings.Join(spec.launchArgs(true), "\x00")

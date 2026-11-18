@@ -30,15 +30,15 @@
 #include <thread>
 #include <vector>
 
+#include "common/asr_service.h"
 #include "common/generation.h"
 #include "common/http.h"
+#include "common/realtime_connection.h"
 #include "common/service.h"
+#include "common/speech_service.h"
 #include "common/transcription.h"
 #include "ming3_audio/ming3_audio_service.h"
 #include "ming_tts/ming_tts_request.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/realtime.h"
-#include "qwen3_asr/speech_service.h"
 
 namespace {
 
@@ -52,7 +52,7 @@ constexpr size_t kMaxRequestBodyBytes = 64 * 1024;
 constexpr int kChatPromptTokenCount = 17;
 constexpr int kChatCompletionTokenCount = 3;
 
-class StubRealtimeConnection : public qwen3_asr::RealtimeConnection {
+class StubRealtimeConnection : public omni_server::RealtimeConnection {
 public:
   using RealtimeConnection::RealtimeConnection;
 
@@ -128,13 +128,13 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     asr_service::AddRealtimeHandler(context, realtime_factory_);
   }
 
 private:
   const asr_service::RealtimeFactory realtime_factory_ =
-      [](qwen3_asr::RealtimeConnection::Sender sender) {
+      [](omni_server::RealtimeConnection::Sender sender) {
         return std::make_shared<StubRealtimeConnection>(std::move(sender));
       };
 };
@@ -145,7 +145,7 @@ public:
   void ReleaseIdleMemory() override {}
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     SpeechServedModel::AddHandlers(context, worker);
     mg_set_request_handler(context, "/generate$", HandleGenerate, this);
   }

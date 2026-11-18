@@ -151,6 +151,10 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		os.Exit(3)
 	}
 	for end := time.Now().Add(o.Delay); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if r.Context().Err() != nil {
+			record(o, Record{Event: "final-cancelled", Samples: samples})
+			return
+		}
 		_, _ = io.WriteString(w, ":\n\n")
 		flush()
 	}
@@ -176,6 +180,9 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		metadata["verify_round_count"] = 3
 		metadata["proposed_draft_token_count"] = 12
 		metadata["accepted_draft_token_count"] = 8
+	}
+	if o.WindowTexts != nil {
+		metadata["window_texts"] = o.WindowTexts
 	}
 	body := map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata}
 	if o.Segments {
