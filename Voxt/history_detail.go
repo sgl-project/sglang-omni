@@ -85,9 +85,9 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 						a.toast(i18n.T("Copied"))
 					}
 				})
-				fillCard(c).Padding(px(t, sp2), px(t, sp3)).Children(func() {
+				sessionTextCard(c, e.Kind).Padding(px(t, sp2), px(t, sp3)).Children(func() {
 					if key == "hist-result" {
-						a.transcriptResult(c, e.ID, text, showingDraft)
+						a.transcriptResult(c, e.Kind, e.ID, text, showingDraft)
 					} else {
 						ui.Text(c, text).Selectable()
 					}

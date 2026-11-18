@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown/parser"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/transcriptpreview"
 )
 
@@ -97,9 +98,9 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 
 func cssColor(c ui.Color) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A) }
 
-func (a *app) transcriptResult(c *ui.Context, key, source string, streaming bool) {
+func (a *app) transcriptResult(c *ui.Context, kind store.Kind, key, source string, streaming bool) {
 	t := c.Theme()
-	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, text: t.Text, link: t.Accent, background: tok(t).Subtle, dark: t.Dark, streaming: streaming}
+	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, text: t.Text, link: t.Accent, background: sessionTextBackground(t, kind), dark: t.Dark, streaming: streaming}
 	if !a.mainTranscript.place(c, a.win, in, px(t, 110), px(t, 510)).Valid() {
 		ui.Text(c, source).Selectable()
 	}
