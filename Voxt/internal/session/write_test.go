@@ -150,6 +150,7 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{name: "an English echo is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a short English word inside a French word is translated", kind: store.KindTranslate, sel: &fakeSelector{text: "it"}, llm: &fakeLLM{text: "petit"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing delivering done", state: Done, result: "petit", pasted: true},
 		{name: "unlisted English prose is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Have a nice day"}, llm: &fakeLLM{text: "Have a nice day"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
 		{name: "a translation before its Chinese source is still an echo", kind: store.KindTranslate, sel: &fakeSelector{text: "猫"}, llm: &fakeLLM{text: "Cat 猫"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
 		{name: "a parenthesized original name can be preserved", kind: store.KindTranslate, sel: &fakeSelector{text: "豆包"}, llm: &fakeLLM{text: "Doubao (豆包)"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Doubao (豆包)", pasted: true},

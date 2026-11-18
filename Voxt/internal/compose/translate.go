@@ -66,14 +66,27 @@ func Untranslated(source, result, target string) bool {
 	if src == res {
 		return isLatin(target) || ScriptMismatch(source, target)
 	}
+	echo := containsSource(source, result, target)
 	glossed := parenthesizedSource(source, result)
-	if strings.Contains(res, src) && !glossed && (isLatin(target) || ScriptMismatch(source, target)) {
+	if echo && !glossed && (isLatin(target) || ScriptMismatch(source, target)) {
 		return true // a whole source beside its translation is an echo, not a preserved name
 	}
-	if resLetters > 0 && resShare >= 0.25 && (!strings.Contains(res, src) || glossed) {
+	if resLetters > 0 && resShare >= 0.25 && (!echo || glossed) {
 		return false // enough target text to allow preserved names, not a source echo
 	}
 	return resLetters > 0 && resShare < 0.5 && srcShare < 0.5
+}
+
+func containsSource(source, result, target string) bool {
+	if !isLatin(target) || ScriptMismatch(source, target) {
+		return strings.Contains(fold(result), fold(source))
+	}
+	sourceWords := strings.FieldsFunc(strings.ToLower(source), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	if len(sourceWords) == 0 {
+		return strings.Contains(fold(result), fold(source))
+	}
+	resultWords := strings.FieldsFunc(strings.ToLower(result), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	return strings.Contains(" "+strings.Join(resultWords, " ")+" ", " "+strings.Join(sourceWords, " ")+" ")
 }
 
 // parenthesizedSource reports an original name kept as a gloss beside its

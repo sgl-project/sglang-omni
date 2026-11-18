@@ -7,12 +7,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Translate does not silently deliver an untranslated answer** (#4153): after a strict retry, Voxt rejects an answer with clear script or vocabulary evidence of no translation and shows a localized failure with Try again. Parenthesized original names, language-neutral names, numbers, same-language text, and shared vocabulary still count as valid results.
+- **Translate accepts valid words that contain the source's letters** (#4153): an English short word such as "it" no longer makes a French translation such as "petit" look like an untranslated echo. Voxt still rejects the whole source when it appears as a separate word beside the translation.
 
 ### 中文
 
 #### 修复
 
 - **翻译不会再静默交付未翻译的回答**（#4153）：严格重试后，如果回答仍有明确的文字系统或常见词汇证据表明没有翻译，Voxt 会显示对应语言的失败提示，可以重试。括号中的原名、语言中立名称、数字、同语言文本和共享词仍算有效结果。
+- **翻译不会误拒包含原文字母序列的合法译文**（#4153）：例如英文 "it" 译成法文 "petit" 时，不再被误判为原文夹带；原文作为独立词出现在译文旁边时仍会被拒绝。
 
 ## [2.1.1] - 2026-11-17
 
