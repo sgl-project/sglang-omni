@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "common/tokenizer.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace music3 {
 
@@ -88,7 +88,7 @@ private:
   bool is_serial_offload_enabled_;
   nlohmann::json config_;
   omni_common::Checkpoint checkpoint_;
-  qwen3_asr::Qwen3Decoder decoder_;
+  omni_common::Qwen3Decoder decoder_;
   omni_common::Tokenizer tokenizer_;
 };
 
