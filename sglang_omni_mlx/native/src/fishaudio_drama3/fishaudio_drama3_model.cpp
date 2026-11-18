@@ -155,7 +155,7 @@ Drama3Model::Drama3Model(const std::filesystem::path &model_directory,
   candidate_ids_ = mx::concatenate(
       {mx::arange(semantic_begin_, semantic_end_ + 1, mx::int32),
        mx::array({end_of_speech_id_}, mx::int32)});
-  mx::eval(candidate_ids_);
+  mx::async_eval(candidate_ids_);
 }
 
 } // namespace fishaudio_drama3

@@ -1,0 +1,148 @@
+{
+  "name": "appenhance-url-duplicate",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "On",
+    "selected": "g-code",
+    "groups": [
+      {
+        "id": "g-chat",
+        "name": "Team chat",
+        "summary": "2 apps",
+        "enabled": true,
+        "selected": false,
+        "matches": true
+      },
+      {
+        "id": "g-code",
+        "name": "Code review",
+        "summary": "2 websites",
+        "enabled": true,
+        "selected": true,
+        "matches": false
+      },
+      {
+        "id": "g-work",
+        "name": "Work browser",
+        "summary": "1 app",
+        "enabled": false,
+        "selected": false,
+        "matches": false
+      }
+    ],
+    "detail": {
+      "id": "g-code",
+      "name": "Code review",
+      "enabled": true,
+      "prompt": "Code review comments: keep identifiers as said, wrap code in backticks.",
+      "features": [
+        {
+          "id": "transcribe",
+          "label": "Transcribe",
+          "checked": true
+        },
+        {
+          "id": "translate",
+          "label": "Translate",
+          "checked": false
+        },
+        {
+          "id": "rewrite",
+          "label": "Rewrite",
+          "checked": true
+        }
+      ],
+      "variables": [
+        {
+          "name": "USER_MAIN_LANGUAGE",
+          "token": "{{USER_MAIN_LANGUAGE}}",
+          "tooltip": "Your main language, from General settings. Every feature."
+        },
+        {
+          "name": "USER_OTHER_LANGUAGES",
+          "token": "{{USER_OTHER_LANGUAGES}}",
+          "tooltip": "Your other languages, from General settings. Every feature."
+        },
+        {
+          "name": "TARGET_LANGUAGE",
+          "token": "{{TARGET_LANGUAGE}}",
+          "tooltip": "The Target language menu on the Translate page. Translate only."
+        },
+        {
+          "name": "APP_NAME",
+          "token": "{{APP_NAME}}",
+          "tooltip": "The app in front, when an App enhancement group matches it. The features that group applies to."
+        }
+      ],
+      "apps": [],
+      "urls": [
+        {
+          "text": "github.com",
+          "canonical": "matches github.com/*"
+        },
+        {
+          "text": "gitlab.com/acme/*"
+        }
+      ],
+      "url_input": "GitHub.com/",
+      "url_error": "This rule is in the group already.",
+      "auto_key": {
+        "options": [
+          {
+            "label": "None",
+            "value": ""
+          },
+          {
+            "label": "Return ↩",
+            "value": "Return"
+          },
+          {
+            "label": "⌘Return",
+            "value": "Command+Return"
+          },
+          {
+            "label": "⇧Return",
+            "value": "Shift+Return"
+          },
+          {
+            "label": "⌃Return",
+            "value": "Control+Return"
+          },
+          {
+            "label": "⌥Return",
+            "value": "Option+Return"
+          },
+          {
+            "label": "Custom…",
+            "value": ""
+          }
+        ],
+        "value": "",
+        "current_label": "None",
+        "custom_label": "Custom…",
+        "custom": false,
+        "text": ""
+      }
+    },
+    "preview": {
+      "app": {
+        "bundle_id": "com.tinyspeck.slackmacgap",
+        "name": "Slack"
+      },
+      "app_name": "Slack",
+      "empty": false,
+      "has_bundle_id": true,
+      "front_text": "Frontmost: Slack",
+      "browser": false,
+      "address_status": "none",
+      "matched": true,
+      "match_source": "app",
+      "match_text": "Matches Team chat, by the app",
+      "can_refresh": true,
+      "add_app": true,
+      "add_app_label": "Add Slack to Code review",
+      "add_site": false
+    }
+  }
+}

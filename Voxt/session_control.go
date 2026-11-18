@@ -118,6 +118,7 @@ func (a *app) startTry(kind store.Kind) (string, *sessionNotice) {
 
 // stopSession stops the recording (the shortcut, the menu bar).
 func (a *app) stopSession() {
+	a.closeLangMenu()
 	if a.mgr != nil && a.sess.State == session.Recording {
 		a.mgr.Stop(a.sess.ID)
 	}
@@ -141,6 +142,7 @@ func (a *app) skipLLM() {
 // stopLLM ends the answer streaming into the card where it is; the card
 // keeps it (session.Manager's StopLLM).
 func (a *app) stopLLM() {
+	a.closeLangMenu()
 	if a.mgr != nil {
 		a.mgr.StopLLM(a.sess.ID)
 	}

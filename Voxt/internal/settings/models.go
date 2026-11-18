@@ -24,7 +24,7 @@ type Models struct {
 	Hidden []string `json:"hidden,omitempty"`
 	// LLMWait is how long Transcribe, Translate and Rewrite wait at least
 	// for a language model's answer: one of WaitChoices, or another
-	// WaitMinutes the user typed (#3941). "" (Automatic),
+	// WaitMinutes saved by an earlier version (#3941). "" (Automatic),
 	// or a value VoxtNew does not know, keeps the session's own limits
 	// (internal/session's LLMTimeout and WriteTimeout), so older documents
 	// need no migration (#3821). Either way a long text gets longer.
@@ -53,13 +53,15 @@ const (
 	Wait2Min  = "2m"
 	Wait5Min  = "5m"
 	Wait10Min = "10m"
+	Wait30Min = "30m"
+	Wait60Min = "60m"
 	// WaitNoLimit sets no overall deadline (#3978): a stalled answer
 	// still fails, and the user can still skip the language model.
 	WaitNoLimit = "none"
 )
 
 // WaitChoices are Models.LLMWait's choices in the order the UI lists them.
-var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min, WaitNoLimit}
+var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min, Wait30Min, Wait60Min, WaitNoLimit}
 
 // NoLimit is LLMWaitFor's WaitNoLimit: longer than any request runs
 // (about 292 years), so every deadline built on it never passes.

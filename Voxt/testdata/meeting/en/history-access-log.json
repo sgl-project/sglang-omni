@@ -1,0 +1,17 @@
+{
+  "name": "history-access-log",
+  "kind": "history-access",
+  "history_access": {
+    "on": true,
+    "selection": true,
+    "ask": false,
+    "list_open": true,
+    "show_last_read": true,
+    "last_read": "Jan 2 15:03 · 1 entry · daily-editor (fixture-shell)",
+    "command": "/fixture/Voxt history export --day \"$(date +%F)\"",
+    "read_lines": [
+      "Jan 2 15:03 · 1 entry · daily-editor (fixture-shell)",
+      "Jan 2 15:02 · Status check · Unknown program"
+    ]
+  }
+}
