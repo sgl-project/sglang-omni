@@ -16,10 +16,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import groupby
 
+import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import (
@@ -62,6 +64,7 @@ class PersonaPlexFrameBatch:
 
 class PersonaPlexModelRunner(ModelRunner):
     depformer_cuda_graph: DepformerCudaGraphRunner | None = None
+    live_row_staging: list[torch.Tensor] | None = None
 
     def sample_before_post_prefill(
         self,
@@ -230,24 +233,24 @@ class PersonaPlexModelRunner(ModelRunner):
             )
         # Note (edwardzh): Sampling buffers can be reused before host results commit.
         text_tokens = text_token_B[:batch_size].clone()
-        frames = []
+        feedbacks = [
+            request.data.talker_model_inputs["decode_feedback"] for request in requests
+        ]
+        frames_BK = output_frame(
+            torch.stack([feedback.agent_row for feedback in feedbacks]), codes_BK
+        )
         audio_rng_states = []
-        for request, codes, text_token in zip(
-            requests, codes_BK, text_tokens, strict=True
+        for request, feedback, codes, text_token in zip(
+            requests, feedbacks, codes_BK.unbind(0), text_tokens.unbind(0), strict=True
         ):
-            data = request.data
-            inputs = data.talker_model_inputs
-            feedback = self.decode_feedback(data)
-            frame = output_frame(feedback.agent_row, codes)
             feedback.agent_row = codes
             feedback.text_token = text_token
             feedback.launched_frames += 1
-            frames.append(frame)
-            generator = inputs.get("audio_generator")
+            generator = request.data.talker_model_inputs.get("audio_generator")
             audio_rng_states.append(
                 generator.get_state() if generator is not None else None
             )
-        packed_rows = torch.cat((text_tokens[:, None], torch.stack(frames)), dim=1)
+        packed_rows = torch.cat((text_tokens[:, None], frames_BK), dim=1)
         if non_blocking:
             # Note (edwardzh): Reused staging can be larger than a shrinking batch.
             host_rows = self.next_host_staging(packed_rows.shape, packed_rows.dtype)[
@@ -270,17 +273,23 @@ class PersonaPlexModelRunner(ModelRunner):
     ) -> None:
         host_rows = frames.host_rows
         self.stage_token_ids(result, host_rows[:, 0])
-        for index, request in enumerate(requests):
+        for request, agent_row, frame, audio_rng_state in zip(
+            requests,
+            frames.agent_rows.unbind(0),
+            host_rows[:, 1:].unbind(0),
+            frames.audio_rng_states,
+            strict=True,
+        ):
             data = request.data
             if data.req.finished() or data.req.is_retracted:
                 continue
             else:
                 pass
             inputs = data.talker_model_inputs
-            inputs["agent_rows"].append(frames.agent_rows[index])
-            inputs["frames"].append(host_rows[index, 1:])
-            inputs["pending_frames"].append(host_rows[index, 1:])
-            self.decode_feedback(data).audio_rng_state = frames.audio_rng_states[index]
+            inputs["agent_rows"].append(agent_row)
+            inputs["frames"].append(frame)
+            inputs["pending_frames"].append(frame)
+            inputs["decode_feedback"].audio_rng_state = audio_rng_state
 
     def post_decode_launch(
         self,
@@ -360,13 +369,38 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        rows = []
+        pieces: list[torch.Tensor | None] = []
+        live_pieces: list[int] = []
+        live_rows: list[tuple[torch.Tensor, torch.Tensor, np.ndarray]] = []
+        free_codes = None
         for request, req in zip(requests, schedule_batch.reqs, strict=True):
             data = request.data
             inputs = data.talker_model_inputs
             timeline = self.request_timeline(data)
             predicted = len(req.origin_input_ids) + len(req.output_ids)
-            feedback = self.decode_feedback(data)
+            feedback = inputs.get("decode_feedback")
+            agent_rows = inputs["agent_rows"]
+            is_live_row = (
+                feedback is not None
+                and feedback.text_token is not None
+                and req.prefix_len == predicted - 1
+                and predicted == timeline.num_prompt_positions + len(agent_rows)
+            )
+            if is_live_row:
+                feedback.agent_row = agent_rows[-1]
+                live_pieces.append(len(pieces))
+                live_rows.append(
+                    (
+                        feedback.text_token,
+                        agent_rows[-1],
+                        timeline.user_rows_buffer[predicted - 1],
+                    )
+                )
+                pieces.append(None)
+            else:
+                feedback = self.decode_feedback(data)
+                pieces.append(self.missing_rows(data, req))
+                feedback.agent_row = self.agent_row_at(data, predicted - 1)
             feedback.launched_frames = predicted - timeline.num_prompt_positions
             generator = inputs.get("audio_generator")
             if generator is not None and feedback.audio_rng_state is not None:
@@ -374,20 +408,71 @@ class PersonaPlexModelRunner(ModelRunner):
                 generator.set_state(feedback.audio_rng_state)
             else:
                 pass
-            rows.append(self.missing_rows(data, req))
-            feedback.agent_row = self.agent_row_at(data, predicted - 1)
             if predicted == timeline.num_prompt_positions:
                 inputs["prefill_forced"] = timeline.forced_agent_at_start.to(
                     self.model_device
                 )
             else:
-                inputs["prefill_forced"] = self.free_codes()
+                if free_codes is None:
+                    free_codes = self.free_codes()
+                else:
+                    pass
+                inputs["prefill_forced"] = free_codes
+        if len(live_rows) == len(pieces):
+            input_embeds = self.embed_live_rows(live_rows)
+        elif live_rows:
+            live_embeds = self.embed_live_rows(live_rows)
+            for row, index in enumerate(live_pieces):
+                pieces[index] = live_embeds[row : row + 1]
+            input_embeds = torch.cat(pieces, dim=0)
+        else:
+            input_embeds = torch.cat(pieces, dim=0)
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(
-                input_embeds=torch.cat(rows, dim=0), input_embeds_are_projected=True
+                input_embeds=input_embeds, input_embeds_are_projected=True
             ),
         )
+
+    def embed_live_rows(
+        self, live_rows: list[tuple[torch.Tensor, torch.Tensor, np.ndarray]]
+    ) -> torch.Tensor:
+        model = self.model
+        rows = torch.empty(
+            len(live_rows), NUM_STREAMS, dtype=torch.long, device=self.model_device
+        )
+        rows[:, 0] = torch.stack([text_token for text_token, _, _ in live_rows])
+        rows[:, AGENT_STREAM_OFFSET:USER_STREAM_OFFSET] = torch.stack(
+            [agent_row for _, agent_row, _ in live_rows]
+        )
+        user_rows = self.next_live_row_staging(len(live_rows))
+        np.stack([user_row for _, _, user_row in live_rows], out=user_rows.numpy())
+        rows[:, USER_STREAM_OFFSET:] = user_rows.to(
+            self.model_device, non_blocking=True
+        )
+        return model.embed_rows(rows).to(model.fusion_buffer.dtype)
+
+    def next_live_row_staging(self, batch_size: int) -> torch.Tensor:
+        # Note (Junnan Li): Two buffers, so filling the next step never overwrites a
+        # copy still in flight.
+        if (
+            self.live_row_staging is None
+            or self.live_row_staging[0].shape[0] < batch_size
+        ):
+            pin_memory = is_pin_memory_available(self.model_device)
+            self.live_row_staging = [
+                torch.empty(
+                    batch_size,
+                    NUM_STREAMS - USER_STREAM_OFFSET,
+                    dtype=torch.long,
+                    pin_memory=pin_memory,
+                )
+                for _ in range(2)
+            ]
+        else:
+            pass
+        self.live_row_staging.reverse()
+        return self.live_row_staging[0][:batch_size]
 
     def post_prefill(
         self,

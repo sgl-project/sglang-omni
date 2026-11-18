@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 from sglang_omni.models.personaplex.architecture import (
@@ -44,6 +45,11 @@ from sglang_omni.models.personaplex.architecture import (
 REFERENCE_CACHE_POSITIONS = MAX_DELAY + 3
 
 UNKNOWN = -1
+
+# Note (Junnan Li): The prompt is longer than the largest delay, so appended rows
+# never need initial padding.
+USER_STREAM_DELAYS = np.array(DELAYS[USER_STREAM_OFFSET:])
+USER_STREAM_COLUMNS = np.arange(len(DELAYS) - USER_STREAM_OFFSET)
 
 
 def delay_stream(
@@ -148,8 +154,9 @@ class Timeline:
             codebook of output frame P-1.
         forced_agent_at_start: [8] agent codebooks at position P that
             the prompt already fixed (delayed streams), UNKNOWN where sampled.
-        user_frames: [P+U, 8] user-stream frames: the prompt's, then the caller's.
-        user_rows: [P+U, 8] user codebooks for every position.
+        user_frames_buffer: [>= P+U, 8] user-stream frames: the prompt's, then
+            the caller's.
+        user_rows_buffer: [>= P+U, 8] user codebooks for every position.
         num_prompt_positions: P.
         num_frames: U, the caller's audio frames and the decode budget.
     """
@@ -159,8 +166,10 @@ class Timeline:
     prefill_embedding_positions: list[int]
     agent_row_before_start: torch.Tensor
     forced_agent_at_start: torch.Tensor
-    user_frames: torch.Tensor
-    user_rows: torch.Tensor
+    # Note (Junnan Li): Growable numpy buffers, so an append copies only new rows
+    # and never releases the GIL.
+    user_frames_buffer: np.ndarray
+    user_rows_buffer: np.ndarray
     num_prompt_positions: int
     num_frames: int
 
@@ -173,9 +182,43 @@ class Timeline:
 
         Rows already laid out are unchanged, so a copy of them stays valid.
         """
-        self.user_frames = torch.cat([self.user_frames, codes_FK.to(torch.long)])
-        self.user_rows = delay_user_frames(self.user_frames)
+        laid_out = self.num_positions
+        self.user_frames_buffer = extend_rows(
+            self.user_frames_buffer, laid_out, codes_FK.numpy()
+        )
         self.num_frames += int(codes_FK.shape[0])
+        positions = np.arange(laid_out, self.num_positions)
+        self.user_rows_buffer = extend_rows(
+            self.user_rows_buffer,
+            laid_out,
+            self.user_frames_buffer[
+                positions[:, None] - USER_STREAM_DELAYS, USER_STREAM_COLUMNS
+            ],
+        )
+
+    @property
+    def num_positions(self) -> int:
+        return self.num_prompt_positions + self.num_frames
+
+    @property
+    def user_frames(self) -> torch.Tensor:
+        return torch.from_numpy(self.user_frames_buffer[: self.num_positions])
+
+    @property
+    def user_rows(self) -> torch.Tensor:
+        return torch.from_numpy(self.user_rows_buffer[: self.num_positions])
+
+
+def extend_rows(buffer: np.ndarray, count: int, new_rows: np.ndarray) -> np.ndarray:
+    total = count + new_rows.shape[0]
+    if buffer.shape[0] < total:
+        grown = np.empty((max(total, 2 * count), *buffer.shape[1:]), dtype=buffer.dtype)
+        grown[:count] = buffer[:count]
+        buffer = grown
+    else:
+        pass
+    buffer[count:total] = new_rows
+    return buffer
 
 
 def delay_user_frames(user_frames_FK: torch.Tensor) -> torch.Tensor:
@@ -258,8 +301,8 @@ def build_timeline(
         prefill_embedding_positions=embedding_positions,
         agent_row_before_start=agent_rows[num_prompt - 1].clone(),
         forced_agent_at_start=forced,
-        user_frames=user_frames,
-        user_rows=user_rows,
+        user_frames_buffer=user_frames.numpy(),
+        user_rows_buffer=user_rows.numpy(),
         num_prompt_positions=num_prompt,
         num_frames=num_frames,
     )
