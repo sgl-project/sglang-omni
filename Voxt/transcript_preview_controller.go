@@ -45,11 +45,12 @@ func (p *transcriptPreview) request(win *mygo.Window, in transcriptPreviewInput)
 
 // adopt records the input a frame shows and reports whether the markup
 // must be parsed anew. A view that died with its input unchanged (the
-// overlay hid) renders again; a frame revives a closed preview. A stream
-// that ends drops the height its partial markup measured: the final
-// render measures it anew (Resize).
+// overlay hid) renders again; a frame revives a closed preview, even one
+// closed before its first parse finished. A stream that ends drops the
+// height its partial markup measured: the final render measures it anew
+// (Resize).
 func (p *transcriptPreview) adopt(in transcriptPreviewInput) bool {
-	if p.input == in && (p.view == nil || !p.view.IsDestroyed()) {
+	if !p.closed && p.input == in && (p.view == nil || !p.view.IsDestroyed()) {
 		return false
 	}
 	old := p.input
@@ -85,20 +86,7 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 				return
 			}
 			if markup == "" {
-				// The text turned plain: the native text view takes over,
-				// so the page and the height it measured go away. A nil
-				// view keeps adopt from parsing the same input again.
-				measured := p.height > 0
-				p.height, p.ready, p.loaded = 0, false, false
-				if p.view != nil {
-					if !p.view.IsDestroyed() {
-						p.view.Destroy()
-					}
-					p.view = nil
-				}
-				if measured && p.restyle != nil {
-					p.restyle()
-				}
+				p.dropPage()
 				return
 			}
 			if p.view == nil || p.view.IsDestroyed() {
@@ -118,6 +106,23 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 			p.ready = true
 		})
 	}()
+}
+
+// dropPage takes the shown page down when its text turned plain: the
+// native text view takes over, and a card that showed the page relayouts
+// without it. A nil view keeps adopt from parsing the same input again.
+func (p *transcriptPreview) dropPage() {
+	replaced := p.ready || p.height > 0 || p.view != nil && !p.view.IsDestroyed()
+	p.height, p.ready, p.loaded = 0, false, false
+	if p.view != nil {
+		if !p.view.IsDestroyed() {
+			p.view.Destroy()
+		}
+		p.view = nil
+	}
+	if replaced && p.restyle != nil {
+		p.restyle()
+	}
 }
 
 func cssColor(c uiColor) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A) }

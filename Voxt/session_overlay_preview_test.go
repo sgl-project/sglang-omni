@@ -25,12 +25,50 @@ func TestPreviewHeightResetsWhenStreamingEnds(t *testing.T) {
 }
 
 func TestPreviewReopensWhenAskedAgain(t *testing.T) {
-	preview := &transcriptPreview{closed: true, input: transcriptPreviewInput{key: "card", source: "one"}}
-	if !preview.adopt(transcriptPreviewInput{key: "card", source: "two"}) {
-		t.Fatal("a new input renders again")
+	// The card hid before the first parse finished: no view exists, and
+	// the same answer comes back when the card reopens.
+	in := transcriptPreviewInput{key: "card", source: "so $$x^2$$"}
+	preview := &transcriptPreview{closed: true, input: in}
+	if !preview.adopt(in) {
+		t.Fatal("the reopened card renders its answer again")
 	}
 	if preview.closed {
 		t.Fatal("a frame that asks for the preview reopens it")
+	}
+}
+
+func TestPlainEndingRelayoutsTheCard(t *testing.T) {
+	// A stream whose markup only heals while it streams ($$ closed by
+	// inlineMathTail) ends as plain text with the source unchanged:
+	// adopt already dropped the height, and the page still relayouts.
+	restyled := 0
+	preview := &transcriptPreview{
+		input:   transcriptPreviewInput{key: "card", source: "so $$x^2", streaming: true},
+		ready:   true,
+		height:  132,
+		restyle: func() { restyled++ },
+	}
+	final := preview.input
+	final.streaming = false
+	if !preview.adopt(final) {
+		t.Fatal("a stream that ends renders once more")
+	}
+	if preview.height != 0 {
+		t.Fatalf("adopt kept the stream's height %d", preview.height)
+	}
+	preview.dropPage()
+	if preview.ready || preview.height != 0 {
+		t.Fatalf("the plain text kept the preview: ready=%v height=%d", preview.ready, preview.height)
+	}
+	if restyled != 1 {
+		t.Fatalf("the card did not relayout when its page went away (restyled %d times)", restyled)
+	}
+	// Plain from the start: no page, no relayout.
+	restyled = 0
+	plain := &transcriptPreview{restyle: func() { restyled++ }}
+	plain.dropPage()
+	if restyled != 0 {
+		t.Fatalf("a preview that never showed relayouts (restyled %d times)", restyled)
 	}
 }
 
