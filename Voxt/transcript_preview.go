@@ -9,12 +9,13 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown/parser"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/transcriptpreview"
 )
 
 type transcriptPreviewInput struct {
 	key, source            string
-	size                   float32
+	size, rightPadding     float32
 	text, link, background ui.Color
 	dark                   bool
 	streaming              bool
@@ -39,7 +40,7 @@ func (p *transcriptPreview) place(c *ui.Context, win *mygo.Window, in transcript
 		old := p.input
 		p.input = in
 		p.version++
-		if old.key != in.key || old.size != in.size || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
+		if old.key != in.key || old.size != in.size || old.rightPadding != in.rightPadding || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
 			p.height, p.ready, p.loaded = 0, false, false
 		}
 		win.Update(func() { p.update(win) })
@@ -86,7 +87,7 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 			}
 			data := transcriptpreview.Update{HTML: markup, Version: version, Streaming: in.streaming}
 			if !p.loaded {
-				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
+				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
 				p.loaded = true
 			} else {
 				_ = transcriptUpdate.EmitPage(p.view.Page(), data)
@@ -100,10 +101,12 @@ func cssColor(c ui.Color) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, 
 
 // transcriptResult shows formatted text in the preview; plain text, or text
 // before the preview is ready, stays native with its dictionary highlights.
-func (a *app) transcriptResult(c *ui.Context, key, source string, highlights []dict.Span, streaming bool) {
+func (a *app) transcriptResult(c *ui.Context, kind store.Kind, key, source string, highlights []dict.Span, streaming bool) {
 	t := c.Theme()
-	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, text: t.Text, link: t.Accent, background: tok(t).Subtle, dark: t.Dark, streaming: streaming}
-	if !a.mainTranscript.place(c, a.win, in, px(t, 110), px(t, 510)).Valid() {
+	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, rightPadding: px(t, sp3-2), text: t.Text, link: t.Accent, background: sessionTextBackground(t, kind), dark: t.Dark, streaming: streaming}
+	if view := a.mainTranscript.place(c, a.win, in, px(t, 110), px(t, 510)); view.Valid() {
+		view.Margin(0, -in.rightPadding, 0, 0)
+	} else {
 		dictionaryText(c, source, highlights).Selectable()
 	}
 }

@@ -572,7 +572,7 @@ func TestTranscribeFullPage(t *testing.T) {
 			a, tt := trTester(t)
 			a.navigate("/" + feature)
 			tt.SetSize(w, 2600)
-			tt.SetDark(dark)
+			setSnapshotMode(a, tt, dark)
 			readyModels(a)
 			if feature == hotkey.Transcribe {
 				a.updateSettings(func(s *settings.Settings) {
