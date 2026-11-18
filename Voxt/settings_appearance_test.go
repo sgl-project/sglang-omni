@@ -335,6 +335,10 @@ func TestPaletteContrast(t *testing.T) {
 				seed := fmt.Sprintf("#%02x%02x%02x", min(r*16, 255), min(g*16, 255), min(b*16, 255))
 				for _, dark := range []bool{false, true} {
 					k := paletteTokens(seed, dark)
+					if !dark && (k.Bg != ui.Hex("#ffffff") || k.Sidebar != ui.Hex("#f7f7f7") ||
+						k.Subtle != ui.Hex("#f7f7f7") || k.TranscriptFace != ui.Hex("#f7f7f7")) {
+						t.Fatalf("%s: a custom color tinted the original light backgrounds", seed)
+					}
 					for _, ink := range []ui.Color{k.Text, k.Text2, k.AccentInk} {
 						if ratio := contrastRatio(ink, k.TranscriptFace); ratio < 4.5 {
 							t.Fatalf("%s dark=%t: transcript contrast %.2f for %v on %v", seed, dark, ratio, ink, k.TranscriptFace)
