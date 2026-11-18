@@ -86,25 +86,34 @@ type MemorySample struct {
 	Swapouts         OptionalInt64  `json:"swapouts"`
 }
 
+type MemoryPressureEvent struct {
+	AtMS             float64 `json:"at_ms"`
+	Pressure         string  `json:"pressure"`
+	AvailablePercent *int64  `json:"available_percent,omitempty"`
+	SwapUsedBytes    *int64  `json:"swap_used_bytes,omitempty"`
+}
+
 type HostSample struct {
 	Thermal     OptionalString `json:"thermal"`
 	PowerSource OptionalString `json:"power_source"`
 }
 
 type ResourceReport struct {
-	PeakRSSBytes          OptionalInt64   `json:"peak_rss_bytes"`
-	PeakPhysicalFootprint OptionalInt64   `json:"peak_physical_footprint_bytes"`
-	GPUMemoryBytes        OptionalInt64   `json:"gpu_memory_bytes"`
-	CPUUserMS             OptionalFloat64 `json:"cpu_user_ms"`
-	CPUSystemMS           OptionalFloat64 `json:"cpu_system_ms"`
-	GPUTimeMS             OptionalFloat64 `json:"gpu_time_ms"`
-	EnergyJoules          OptionalFloat64 `json:"energy_joules"`
-	MemoryStart           MemorySample    `json:"memory_start"`
-	MemoryEnd             MemorySample    `json:"memory_end"`
-	SwapinsDelta          OptionalInt64   `json:"swapins_delta"`
-	SwapoutsDelta         OptionalInt64   `json:"swapouts_delta"`
-	HostStart             HostSample      `json:"host_start"`
-	HostEnd               HostSample      `json:"host_end"`
+	PeakRSSBytes           OptionalInt64         `json:"peak_rss_bytes"`
+	PeakPhysicalFootprint  OptionalInt64         `json:"peak_physical_footprint_bytes"`
+	GPUMemoryBytes         OptionalInt64         `json:"gpu_memory_bytes"`
+	CPUUserMS              OptionalFloat64       `json:"cpu_user_ms"`
+	CPUSystemMS            OptionalFloat64       `json:"cpu_system_ms"`
+	GPUTimeMS              OptionalFloat64       `json:"gpu_time_ms"`
+	EnergyJoules           OptionalFloat64       `json:"energy_joules"`
+	MemoryStart            MemorySample          `json:"memory_start"`
+	MemoryEnd              MemorySample          `json:"memory_end"`
+	PeakMemoryPressure     OptionalString        `json:"peak_memory_pressure"`
+	MemoryPressureWarnings []MemoryPressureEvent `json:"memory_pressure_warnings,omitempty"`
+	SwapinsDelta           OptionalInt64         `json:"swapins_delta"`
+	SwapoutsDelta          OptionalInt64         `json:"swapouts_delta"`
+	HostStart              HostSample            `json:"host_start"`
+	HostEnd                HostSample            `json:"host_end"`
 }
 
 type TracingReport struct {

@@ -75,3 +75,30 @@ func TestResourceSamplerUnavailableIsNull(t *testing.T) {
 		t.Errorf("%+v", report.SwapinsDelta)
 	}
 }
+
+func TestResourceSamplerCapturesTransientMemoryPressureWarning(t *testing.T) {
+	sampler := NewResourceSampler(func() []int { return []int{10} })
+	sampler.memory = func(int) (macx.ProcMemory, error) { return macx.ProcMemory{Resident: 100, Footprint: 200}, nil }
+	sampler.cpu = func(int) (macx.ProcCPU, error) { return macx.ProcCPU{}, nil }
+	pressures := []macx.SystemMemory{
+		{Pressure: "normal", AvailablePercent: 70, AvailablePercentValid: true, SwapUsedBytes: 100, SwapValid: true},
+		{Pressure: "warning", AvailablePercent: 35, AvailablePercentValid: true, SwapUsedBytes: 500, SwapValid: true},
+		{Pressure: "normal", AvailablePercent: 65, AvailablePercentValid: true, SwapUsedBytes: 500, SwapValid: true},
+	}
+	i := 0
+	sampler.sysmem = func() (macx.SystemMemory, error) {
+		m := pressures[min(i, len(pressures)-1)]
+		i++
+		return m, nil
+	}
+	for range pressures {
+		sampler.Sample()
+	}
+	report := sampler.report(MemorySample{Pressure: Available("normal")}, MemorySample{Pressure: Available("normal")}, HostSample{}, HostSample{})
+	if report.PeakMemoryPressure.Value == nil || *report.PeakMemoryPressure.Value != "warning" {
+		t.Fatalf("peak_memory_pressure = %+v, want warning", report.PeakMemoryPressure)
+	}
+	if len(report.MemoryPressureWarnings) != 1 || report.MemoryPressureWarnings[0].Pressure != "warning" {
+		t.Fatalf("memory_pressure_warnings = %+v, want 1 warning event", report.MemoryPressureWarnings)
+	}
+}

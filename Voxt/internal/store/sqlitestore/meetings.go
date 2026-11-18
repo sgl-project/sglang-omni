@@ -185,7 +185,7 @@ func (r *meetingsRepo) Meeting(ctx context.Context, id string) (store.Meeting, [
 		return store.Meeting{}, nil, fmt.Errorf("meeting %s: %w", id, core.ErrNotFound)
 	}
 	m := scanMeeting(rows.Values[0])
-	segRows, err := r.db.Query(ctx, `SELECT `+segmentColumns+` FROM meeting_segments WHERE meeting_seq = ? ORDER BY idx`, m.Seq)
+	segRows, err := r.db.Query(ctx, `SELECT `+segmentColumns+` FROM meeting_segments WHERE meeting_seq = ? ORDER BY start_ms, idx`, m.Seq)
 	if err != nil {
 		return store.Meeting{}, nil, wrap("meeting "+id, err)
 	}

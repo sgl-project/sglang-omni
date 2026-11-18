@@ -3,6 +3,7 @@ package profile
 import (
 	"context"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -55,22 +56,47 @@ func ReadMemorySample() MemorySample {
 // largest observed sum over the harness and native servers, not a kernel
 // lifetime high-water mark.
 type ResourceSampler struct {
-	mu            sync.Mutex
-	processes     func() []int
-	memory        func(int) (macx.ProcMemory, error)
-	cpu           func(int) (macx.ProcCPU, error)
-	peakRSS       int64
-	peakFootprint int64
-	memorySamples int
-	memoryError   string
-	latestCPU     map[int]macx.ProcCPU
-	cpuError      string
+	mu               sync.Mutex
+	processes        func() []int
+	memory           func(int) (macx.ProcMemory, error)
+	cpu              func(int) (macx.ProcCPU, error)
+	sysmem           func() (macx.SystemMemory, error)
+	now              func() time.Time
+	started          time.Time
+	peakRSS          int64
+	peakFootprint    int64
+	memorySamples    int
+	memoryError      string
+	latestCPU        map[int]macx.ProcCPU
+	cpuError         string
+	pressureSamples  int
+	pressureError    string
+	peakPressure     string
+	lastPressure     string
+	pressureWarnings []MemoryPressureEvent
 }
 
 func NewResourceSampler(processes func() []int) *ResourceSampler {
+	now := time.Now
 	return &ResourceSampler{
 		processes: processes, memory: macx.Memory, cpu: macx.CPUTime,
+		sysmem: macx.ReadSystemMemory, now: now, started: now(),
 		latestCPU: map[int]macx.ProcCPU{},
+	}
+}
+
+func pressureRank(pressure string) int {
+	switch pressure {
+	case "normal":
+		return 1
+	case "warning":
+		return 2
+	case "critical":
+		return 3
+	case "":
+		return 0
+	default:
+		return 4
 	}
 }
 
@@ -117,6 +143,35 @@ func (s *ResourceSampler) Sample() {
 		s.peakRSS = max(s.peakRSS, rss)
 		s.peakFootprint = max(s.peakFootprint, footprint)
 	}
+	if s.sysmem != nil {
+		sysmem, err := s.sysmem()
+		if err != nil {
+			if s.pressureError == "" {
+				s.pressureError = err.Error()
+			}
+		} else {
+			s.pressureSamples++
+			if pressureRank(sysmem.Pressure) > pressureRank(s.peakPressure) {
+				s.peakPressure = sysmem.Pressure
+			}
+			if sysmem.Pressure != "" && sysmem.Pressure != "normal" && sysmem.Pressure != s.lastPressure {
+				event := MemoryPressureEvent{
+					AtMS:     milliseconds(s.now().Sub(s.started)),
+					Pressure: sysmem.Pressure,
+				}
+				if sysmem.AvailablePercentValid {
+					avail := int64(sysmem.AvailablePercent)
+					event.AvailablePercent = &avail
+				}
+				if sysmem.SwapValid {
+					swap := sysmem.SwapUsedBytes
+					event.SwapUsedBytes = &swap
+				}
+				s.pressureWarnings = append(s.pressureWarnings, event)
+			}
+			s.lastPressure = sysmem.Pressure
+		}
+	}
 }
 
 func (s *ResourceSampler) report(start, end MemorySample, hostStart, hostEnd HostSample) ResourceReport {
@@ -160,6 +215,16 @@ func (s *ResourceSampler) report(start, end MemorySample, hostStart, hostEnd Hos
 	}
 	report.SwapinsDelta = counterDelta(start.Swapins, end.Swapins)
 	report.SwapoutsDelta = counterDelta(start.Swapouts, end.Swapouts)
+	if s.pressureSamples == 0 {
+		reason := s.pressureError
+		if reason == "" {
+			reason = "no system memory pressure sample succeeded"
+		}
+		report.PeakMemoryPressure = Unavailable[string](reason)
+	} else {
+		report.PeakMemoryPressure = Available(s.peakPressure)
+		report.MemoryPressureWarnings = slices.Clone(s.pressureWarnings)
+	}
 	return report
 }
 

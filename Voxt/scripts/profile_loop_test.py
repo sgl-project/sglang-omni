@@ -108,11 +108,13 @@ def raw_report(wall, status="success"):
 
 class SummaryTests(unittest.TestCase):
     def test_median_of_three_and_warning_rejection(self):
-        summary = loop.summarize_reports(
-            [raw_report(300), raw_report(100), raw_report(200)]
-        )
+        reports = [raw_report(300), raw_report(100), raw_report(200)]
+        for report in reports:
+            report["stop_to_summary_ms"] = {"value": report["total_wall_ms"] * 0.8}
+        summary = loop.summarize_reports(reports)
         self.assertEqual(summary["status"], "success")
         self.assertEqual(summary["median"]["total_wall_ms"], 200)
+        self.assertEqual(summary["median"]["stop_to_summary_ms"], {"value": 160})
         self.assertEqual(summary["median"]["stages"]["decode[0]"]["wall_ms"], 20)
         self.assertEqual(summary["median"]["peak_rss_bytes"], {"value": 2000})
         self.assertEqual(
@@ -321,11 +323,14 @@ class IsolationTests(unittest.TestCase):
             source.mkdir()
             audio = source / "meeting.wav"
             audio.write_bytes(b"short fake PCM")
+            mic_audio = source / "mic.wav"
+            mic_audio.write_bytes(b"short fake mic PCM")
             model = source / "model"
             model.mkdir()
             (model / "weights").write_bytes(b"fake weights")
             original = {
                 "audio": str(audio),
+                "mic_audio": str(mic_audio),
                 "model": {"id": "asr.fast", "dir": str(model)},
                 "draft": {"enabled": False},
                 "vad": {"enabled": False},
@@ -333,10 +338,14 @@ class IsolationTests(unittest.TestCase):
             destination = root / "work"
             prepared = loop.prepare_config(original, destination)
             copied = Path(prepared["audio"])
+            copied_mic = Path(prepared["mic_audio"])
             linked = Path(prepared["model"]["dir"]) / "weights"
             self.assertEqual(copied.read_bytes(), audio.read_bytes())
             self.assertNotEqual(copied, audio)
             self.assertEqual(copied.stat().st_mode & 0o777, 0o444)
+            self.assertEqual(copied_mic.read_bytes(), mic_audio.read_bytes())
+            self.assertNotEqual(copied_mic, mic_audio)
+            self.assertEqual(copied_mic.stat().st_mode & 0o777, 0o444)
             self.assertEqual(linked.stat().st_ino, (model / "weights").stat().st_ino)
             self.assertEqual(linked.read_bytes(), b"fake weights")
 

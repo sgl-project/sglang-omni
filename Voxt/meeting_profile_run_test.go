@@ -223,8 +223,8 @@ func runMeetingProfile(
 			}
 		},
 		Privacy: func() settings.Privacy { return settings.Privacy{KeepHistory: true, KeepAudio: true} },
-		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
-			return meeting.TrackASR{Caps: speech.Caps(), File: recorder.WrapFile("system", speech), Lang: config.Language}, nil
+		ASR: func(_ context.Context, source meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: speech.Caps(), File: recorder.WrapFile(string(source), speech), Lang: config.Language}, nil
 		},
 		Diarizer: func(context.Context) (asr.Diarizer, error) {
 			return recorder.WrapDiarizer("system", speech), nil
@@ -273,12 +273,17 @@ func runMeetingProfile(
 	} else if segmentsFile, segmentsErr := os.Create(filepath.Join(config.OutputDir, "segments.jsonl")); segmentsErr == nil {
 		encoder := json.NewEncoder(segmentsFile)
 		for _, segment := range rawSegments {
-			_ = encoder.Encode(map[string]any{
+			if encodeErr := encoder.Encode(map[string]any{
 				"source": segment.Source, "speaker": segment.Speaker,
 				"start_ms": segment.StartMS, "end_ms": segment.EndMS, "text": segment.Text,
-			})
+			}); encodeErr != nil {
+				recorder.Warn("segments.jsonl: " + encodeErr.Error())
+				break
+			}
 		}
-		_ = segmentsFile.Close()
+		if closeErr := segmentsFile.Close(); closeErr != nil {
+			recorder.Warn("segments.jsonl: " + closeErr.Error())
+		}
 	} else {
 		recorder.Warn("segments.jsonl: " + segmentsErr.Error())
 	}

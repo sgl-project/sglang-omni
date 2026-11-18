@@ -206,6 +206,18 @@ func TestMeetingProfileFakeImportWithMicTrack(t *testing.T) {
 	if report.AudioDurationMS != 1000 {
 		t.Errorf("audio duration %d, want the track duration 1000", report.AudioDurationMS)
 	}
+	var micChunks, sysDiarize int
+	for _, stage := range report.Stages {
+		if stage.Name == "asr_chunk" && stage.Track == "mic" {
+			micChunks++
+		}
+		if stage.Name == "diarization" && stage.Track == "system" {
+			sysDiarize++
+		}
+	}
+	if micChunks != 1 || sysDiarize != 1 {
+		t.Errorf("track attribution mic asr_chunk=%d, system diarization=%d, want 1/1", micChunks, sysDiarize)
+	}
 }
 
 func TestMeetingProfileFakeSubtitlesWithoutVAD(t *testing.T) {

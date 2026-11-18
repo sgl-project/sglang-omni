@@ -272,6 +272,7 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
             ),
             "total_rtf": optional_median(reports, ["total_rtf"]),
             "first_final_text_ms": optional_median(reports, ["first_final_text"]),
+            "stop_to_summary_ms": optional_median(reports, ["stop_to_summary_ms"]),
             "peak_rss_bytes": optional_median(reports, ["resources", "peak_rss_bytes"]),
             "peak_physical_footprint_bytes": optional_median(
                 reports, ["resources", "peak_physical_footprint_bytes"]
@@ -394,6 +395,12 @@ def prepare_config(original: dict[str, object], directory: Path) -> dict[str, ob
         str(config["audio"]), directory / "input" / Path(str(config["audio"])).name
     )
     config["audio"] = str(directory / "input" / Path(str(original["audio"])).name)
+    if config.get("mic_audio"):
+        mic_destination = (
+            directory / "input" / ("mic-" + Path(str(config["mic_audio"])).name)
+        )
+        copy_read_only(str(config["mic_audio"]), mic_destination)
+        config["mic_audio"] = str(mic_destination)
     if config.get("reference"):
         reference_name = Path(str(config["reference"])).name
         copy_read_only(str(config["reference"]), directory / "input" / reference_name)
