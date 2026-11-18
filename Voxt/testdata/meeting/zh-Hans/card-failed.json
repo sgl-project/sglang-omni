@@ -8,10 +8,10 @@
     "problem_code": "llm",
     "mode": "answer",
     "pill": {
-      "kind": "translate",
-      "title": "翻译",
-      "working_label": "识别中…",
-      "elapsed_text": "0:00",
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
       "levels": [
         0,
         0,

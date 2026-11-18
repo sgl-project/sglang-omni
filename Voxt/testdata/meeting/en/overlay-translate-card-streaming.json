@@ -7,10 +7,10 @@
     "state": "composing",
     "mode": "answer",
     "pill": {
-      "kind": "translate",
-      "title": "Translate",
-      "working_label": "Recognising…",
-      "elapsed_text": "0:00",
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
       "levels": [
         0,
         0,

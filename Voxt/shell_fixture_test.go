@@ -244,7 +244,7 @@ func buildShellFixture(t *testing.T, scenario meetingFixtureScenario, locale str
 	}
 	switch scenario.kind {
 	case "shell":
-		fixture.Shell = a.shellModel()
+		fixture.Shell = a.shellModel(meetingFixtureNow.In(time.Local))
 		fixture.Announcement = a.announcementModel(meetingFixtureNow)
 		fixture.ShellUI = &shellFixtureUI{
 			PaletteOpen: a.paletteOpen, PaletteQuery: a.paletteQuery, PaletteSel: a.paletteSel,
@@ -252,9 +252,9 @@ func buildShellFixture(t *testing.T, scenario meetingFixtureScenario, locale str
 		}
 	case "shell-nav":
 		fixture.Nav = a.navModel()
-		fixture.Notices = a.noticesModel()
+		fixture.Notices = a.noticesModel(meetingFixtureNow.In(time.Local))
 	case "shell-notices":
-		fixture.Notices = a.noticesModel()
+		fixture.Notices = a.noticesModel(meetingFixtureNow.In(time.Local))
 	case "shell-logs":
 		fixture.Logs = a.logsModel()
 	case "shell-palette":

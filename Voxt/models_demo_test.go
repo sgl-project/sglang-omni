@@ -150,6 +150,9 @@ func TestModelsDemoDisabledControls(t *testing.T) {
 			tester := newMeetingDemoTester(t, host)
 			tester.SetSize(1000, 6000)
 			frames(tester)
+			if !slices.Contains(tester.AccessLabels(), test.label) {
+				t.Fatalf("disabled control %q is missing", test.label)
+			}
 			if err := tester.ClickControl(test.label); err == nil {
 				t.Fatalf("disabled %q accepted a click", test.label)
 			}

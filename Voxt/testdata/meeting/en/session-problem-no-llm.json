@@ -9,9 +9,9 @@
     "mode": "notice",
     "pill": {
       "kind": "",
-      "title": "Transcribe",
-      "working_label": "Recognising…",
-      "elapsed_text": "0:00",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
       "levels": [
         0,
         0,

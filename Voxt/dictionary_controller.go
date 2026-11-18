@@ -129,7 +129,7 @@ func dictionarySuggestionsFingerprint(suggestions []learn.Suggestion) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d", len(suggestions))
 	for _, suggestion := range suggestions {
-		fmt.Fprintf(&b, "|%s\x00%s\x00%s", suggestion.Key(), strings.Join(suggestion.Heard, "\x00"), suggestion.Source)
+		fmt.Fprintf(&b, "|%s\x00%s\x00%s\x00%s", suggestion.Key(), suggestion.Term, strings.Join(suggestion.Heard, "\x00"), suggestion.Source)
 	}
 	return b.String()
 }

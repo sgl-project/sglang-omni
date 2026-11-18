@@ -72,6 +72,37 @@ func TestSessionOverlayProjectionPrivacyAndPillNote(t *testing.T) {
 	}
 }
 
+func TestSessionOverlayProjectionClearsPillOutsidePillModes(t *testing.T) {
+	a := &app{}
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	record := func() {
+		a.sess = session.Snapshot{ID: "recording", State: session.Recording, Partial: "private words", Levels: []float64{0.5}}
+		a.refreshSessionOverlay(now)
+		if a.ov.projection.view.Pill.LiveText != "private words" || !a.ov.projection.pillReady {
+			t.Fatalf("recording pill was not built: %+v", a.ov.projection.view.Pill)
+		}
+	}
+	assertCleared := func(mode overlayMode) {
+		t.Helper()
+		if a.ov.projection.view.Mode != mode || a.ov.projection.view.Pill != (sessionPillViewState{}) || a.ov.projection.pillReady {
+			t.Fatalf("%s retained pill data: %+v, ready %v", mode, a.ov.projection.view.Pill, a.ov.projection.pillReady)
+		}
+	}
+	record()
+	a.answer.open = true
+	a.sess = session.Snapshot{ID: "answer", State: session.Done, Card: true}
+	a.refreshSessionOverlay(now)
+	assertCleared(ovAnswer)
+	record()
+	a.answer.open = false
+	a.notice = &sessionNotice{text: "failed"}
+	a.sess = session.Snapshot{ID: "failed", State: session.Failed}
+	a.refreshSessionOverlay(now)
+	assertCleared(ovNotice)
+	a.notice = nil
+	record()
+}
+
 func TestSessionOverlayProjectionNoticeToneAndAction(t *testing.T) {
 	translator := i18n.NewTranslator("en")
 	for _, test := range []struct {

@@ -409,8 +409,8 @@ func viewViolations(f rootFile, module string, logicFunctions map[string]string,
 			}
 			if path == "fmt.Print" || path == "fmt.Printf" || path == "fmt.Println" ||
 				path == mygoPath+".Dialog.Open" || path == mygoPath+".Dialog.Save" ||
-				path == mygoPath+".Shell.ShowItemInFolder" || path == mygoPath+".Shell.OpenExternal" ||
-				path == mygoPath+".Clipboard.Read" || path == mygoPath+".Clipboard.Write" || path == mygoPath+".App.OpenURL" {
+				strings.HasPrefix(path, mygoPath+".Shell.") || strings.HasPrefix(path, mygoPath+".Clipboard.") ||
+				path == mygoPath+".App.OpenURL" {
 				add(node, "performs I/O in a view: move it into an actions implementation")
 			}
 			if selector, ok := node.Fun.(*ast.SelectorExpr); ok {
@@ -523,6 +523,14 @@ func (b *appAlias) paint(c *ui.Context) {
 	mygo.Clipboard.Write("probe")
 	mygo.Clipboard.Read()
 	mygo.Shell.OpenExternal("https://example.com")
+	mygo.Shell.OpenPath("probe")
+	mygo.Clipboard.ReadText()
+	mygo.Clipboard.WriteText("probe")
+	mygo.Clipboard.Formats()
+	mygo.Clipboard.ReadFormat(nil)
+	mygo.Clipboard.ReadFiles()
+	mygo.Clipboard.WriteFiles("probe")
+	mygo.Clipboard.Flush()
 	c.WriteClipboard("probe")
 	c.ReadClipboard()
 	c.OpenURLThen("https://example.com", nil)
@@ -549,8 +557,8 @@ func (b *appAlias) paint(c *ui.Context) {
 			t.Errorf("no violation containing %q:\n%s", want, violations)
 		}
 	}
-	if len(got) != 15 {
-		t.Errorf("got %d violations, want 15 (actions, local dialog state and Invalidate are allowed):\n%s", len(got), violations)
+	if len(got) != 23 {
+		t.Errorf("got %d violations, want 23 (actions, local dialog state and Invalidate are allowed):\n%s", len(got), violations)
 	}
 	if !viewFile("probe_page.go", syntax) {
 		t.Error("a MyGo import must mark a root file as a view")

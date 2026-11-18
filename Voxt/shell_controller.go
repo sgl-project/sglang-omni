@@ -225,13 +225,13 @@ func startHidden(atLogin bool, g settings.General) bool {
 // Modal never look at them, and the registry and the sheet's rows stay
 // off the frame. The aggregate is reused, so a quiet frame allocates
 // nothing here.
-func (a *app) shellModel() *shellViewState {
+func (a *app) shellModel(now time.Time) *shellViewState {
 	model := &a.shellViewModel
 	*model = shellViewState{
 		Theme: a.prefs.Appearance.Theme, Scale: a.prefs.Appearance.Scale,
 		Still:  a.win == nil || a.prefs.Appearance.ReduceMotion,
 		Toasts: a.toasts,
-		Nav:    a.navModel(), Notices: a.noticesModel(),
+		Nav:    a.navModel(), Notices: a.noticesModel(now),
 		Palette: &a.paletteView, Sheet: &a.sheetView,
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,
@@ -268,8 +268,8 @@ func (a *app) view(c *uiContext) {
 	a.mainUI = c.Services()
 	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
-	model := a.shellModel()
 	now := time.Now()
+	model := a.shellModel(now)
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {
 		settingsDialog(c, a.settingsDialogModel(now), a, settingsDialogLocalUI{
 			Open: &a.settingsOpen, Router: a.setRouter, Form: &a.settingsForm,

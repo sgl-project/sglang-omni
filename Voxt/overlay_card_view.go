@@ -249,7 +249,7 @@ func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phas
 func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	scroll := &local.Overlay.cardScroll
 	key := card.ID + "/" + sessionID
-	if card.Writing {
+	if card.Writing && card.ID == "" {
 		key = "/" + sessionID
 	}
 	if card.Conversation {
