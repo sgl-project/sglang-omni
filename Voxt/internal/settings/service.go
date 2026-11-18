@@ -30,7 +30,7 @@ const (
 	ThemeLight       = "light"
 	ThemeDark        = "dark"
 	ThemeTransparent = "transparent"
-	DefaultPalette   = "#7775a8"
+	DefaultPalette   = "#0d9384"
 
 	// Window transparency applies in transparent mode and is measured in percent.
 	MinWindowTransparency     = 5

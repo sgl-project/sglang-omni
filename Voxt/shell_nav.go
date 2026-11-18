@@ -228,7 +228,7 @@ func (a *app) railButton(c *ui.Context, key string, ic icons.Icon, label, tip st
 	b.Children(func() {
 		col := k.Text2
 		if selected {
-			col = k.AccentInk
+			col = k.NavInk
 		}
 		ui.Icon(c, ic.Get(selected)).Size(px(t, 18), px(t, 18)).TextColor(col)
 		if badge != "" {
@@ -259,7 +259,7 @@ func (a *app) sidebar(c *ui.Context, background ui.Color) {
 	side.Accent, side.AccentText = k.Text2, k.Text
 	side.SurfaceHover, side.SurfacePressed = k.G[2], k.G[3]
 	chosen := side
-	chosen.Accent, chosen.AccentText = k.AccentInk, k.AccentInk
+	chosen.Accent, chosen.AccentText = k.NavInk, k.NavInk
 	// Settings' item is the chosen one while its dialog shows, over the
 	// page, and the page's again once it closes.
 	if a.settingsOpen {

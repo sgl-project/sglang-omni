@@ -85,7 +85,10 @@ func TestSystemAppearanceIsPreserved(t *testing.T) {
 	checkBackground := func(dark bool) {
 		t.Helper()
 		frames(tt)
-		want := paletteTokens(settings.DefaultPalette, dark).Bg
+		want := ui.Hex("#ffffff")
+		if dark {
+			want = ui.Hex("#151515")
+		}
 		got := tt.Image().RGBAAt(windowWidth-4, windowHeight-4)
 		if got.R != want.R || got.G != want.G || got.B != want.B {
 			t.Fatalf("background = %v, want %v (dark = %v)", got, want, dark)
@@ -113,6 +116,28 @@ func TestSystemAppearanceIsPreserved(t *testing.T) {
 	checkBackground(false)
 	tt.SetDark(true)
 	checkBackground(true)
+}
+
+// Adding a color picker must not recolor existing installations or a fresh setup.
+func TestDefaultAppearanceRetainsOriginalPalette(t *testing.T) {
+	upgraded, err := settings.Migrate([]byte(`{"version":4,"appearance":{"theme":"system","scale":1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, seed := range []string{"", settings.Defaults().Appearance.Palette, upgraded.Appearance.Palette} {
+		for _, dark := range []bool{false, true} {
+			background, surface, accent := "#ffffff", "#f7f7f7", "#0d9384"
+			if dark {
+				background, surface, accent = "#151515", "#1c1c1c", "#2bb3a3"
+			}
+			th := ui.Theme{Dark: dark}
+			styleTheme(&th, seed)
+			k := tok(&th)
+			if th.Background != ui.Hex(background) || th.Accent != ui.Hex(accent) || k.Sidebar != ui.Hex(surface) || k.TranscriptFace != ui.Hex(surface) {
+				t.Errorf("seed %q dark=%t: original background, accent or card color changed: %+v", seed, dark, k)
+			}
+		}
+	}
 }
 
 func TestLateAppearancePreviewSavePreservesOtherSettings(t *testing.T) {

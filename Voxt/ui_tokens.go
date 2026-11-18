@@ -61,6 +61,7 @@ type tokens struct {
 	Line           ui.Color // hairlines: dividers, card borders
 	TranscriptFace ui.Color // fill of live and finished transcript panels
 	NavSelected    ui.Color // fill of the selected item in either sidebar
+	NavInk         ui.Color // selected sidebar icon
 	// Selected: rows selected among many (the logs' lines), the accent's
 	// tint, stronger than Hover; SelectedHover one under the pointer.
 	Selected, SelectedHover ui.Color
@@ -120,14 +121,20 @@ func makeTokens(dark bool, colors paletteColors) *tokens {
 	k.Accent = accent
 	k.AccentSoft = accent.Alpha(0.12)
 	k.Selected, k.SelectedHover = accent.Alpha(0.2), accent.Alpha(0.28)
-	if dark {
-		k.AccentInk = accent.Mix(ui.Hex("#ffffff"), 0.18)
-	} else {
-		k.AccentInk = accent.Mix(ui.Hex("#000000"), 0.24)
+	k.AccentInk = accent
+	if !dark {
+		k.AccentInk = accent.Mix(ui.Hex("#000000"), 0.18)
 	}
-	k.NavSelected = strongerTint(k.Sidebar.Mix(accent, navTint))
+	k.NavSelected, k.NavInk = k.Pressed, k.Text
 	k.TranscriptFace = k.Subtle
 	if colors.background != ui.Transparent {
+		if dark {
+			k.AccentInk = accent.Mix(ui.Hex("#ffffff"), 0.18)
+		} else {
+			k.AccentInk = accent.Mix(ui.Hex("#000000"), 0.24)
+		}
+		k.NavSelected = strongerTint(k.Sidebar.Mix(accent, navTint))
+		k.NavInk = k.AccentInk
 		fill := strongerTint(k.Subtle.Mix(accent, transcriptTint))
 		k.TranscriptFace = readableTint(fill, k.Subtle, k.Text, k.Text2, k.AccentInk)
 	}

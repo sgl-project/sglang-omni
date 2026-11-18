@@ -9,8 +9,10 @@ import (
 
 type paletteColors struct{ accent, background ui.Color }
 
-var defaultLightTokens = derivePaletteTokens(settings.DefaultPalette, false)
-var defaultDarkTokens = derivePaletteTokens(settings.DefaultPalette, true)
+// The default keeps Voxt's neutral surfaces and original teal accents.
+// Only an explicitly selected custom color tints the window and cards.
+var defaultLightTokens = makeTokens(false, paletteColors{accent: ui.Hex(settings.DefaultPalette)})
+var defaultDarkTokens = makeTokens(true, paletteColors{accent: ui.Hex("#2bb3a3")})
 
 func paletteTokens(hex string, dark bool) *tokens {
 	if hex == "" || hex == settings.DefaultPalette {
