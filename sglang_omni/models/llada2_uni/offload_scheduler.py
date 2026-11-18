@@ -72,7 +72,6 @@ class SerialOffloadDllmScheduler(DllmScheduler):
             logger.info(
                 f"LLaDA2-Uni thinker restore_seconds={time.perf_counter() - started_seconds:.4f}"
             )
-            # note (Codex): cancellation can arrive while another stage holds the GPU.
             super().drain_and_purge()
             if not self.waiting_queue and not self.staging_queue:
                 self.release_thinker()
