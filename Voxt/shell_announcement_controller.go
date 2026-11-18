@@ -60,10 +60,12 @@ type announcementsState struct {
 // announcementCacheKey is every input of the dialog's view state: when
 // it matches the last build's, announcementModel reuses the state.
 type announcementCacheKey struct {
-	open   bool
-	id     string
-	year   int
-	locale string
+	open       bool
+	id         string
+	year       int
+	location   string
+	zoneOffset int
+	locale     string
 }
 
 // announceSeen is the announcements document. IDs is the old document's
@@ -157,7 +159,8 @@ func (a *app) checkAnnouncements() {
 // dialog is closed; rebuilt when it opens, the year or the language
 // changes.
 func (a *app) announcementModel(now time.Time) *announcementViewState {
-	key := announcementCacheKey{open: a.announceShownOpen, id: a.announceShown.ID, year: now.Year(), locale: i18n.Locale()}
+	_, zoneOffset := now.Zone()
+	key := announcementCacheKey{open: a.announceShownOpen, id: a.announceShown.ID, year: now.Year(), location: now.Location().String(), zoneOffset: zoneOffset, locale: i18n.Locale()}
 	if key != a.announceViewKey {
 		a.announceView = nil
 		if a.announceShownOpen {

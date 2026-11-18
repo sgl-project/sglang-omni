@@ -256,7 +256,7 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 	}
 	scroll := &local.Overlay.cardScroll
 	key := card.ID + "/" + sessionID
-	if card.Writing {
+	if card.Writing && card.ID == "" {
 		key = "/" + sessionID
 	}
 	if card.Conversation {

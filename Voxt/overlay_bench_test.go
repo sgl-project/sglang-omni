@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"math"
@@ -286,6 +287,7 @@ func BenchmarkW0WaveformUpdate(b *testing.B) {
 	snap(a, snapshot)
 	tt := hudTester(a.overlayBenchmarkView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 	frames(tt)
+	before := append([]byte(nil), tt.Image().Pix...)
 	// The helper's capture.level input defaults to 20 Hz.
 	levels := make([]float64, waveformLevelsPerSecond)
 	for index := range levels {
@@ -304,6 +306,13 @@ func BenchmarkW0WaveformUpdate(b *testing.B) {
 	b.StopTimer()
 	if a.sess.Partial != partial || !tt.HasText(partial) {
 		b.Fatalf("stable partial is missing from the frame: %q", tt.Texts())
+	}
+	wantLevel := levels[(b.N-1)%len(levels)]
+	if len(a.sess.Levels) != session.Bars || a.sess.Levels[len(a.sess.Levels)-1] != wantLevel || a.ov.projection.view.Pill.Levels[session.Bars-1] != wantLevel {
+		b.Fatalf("last waveform level did not reach the projection: input %v projected %v want %v", a.sess.Levels, a.ov.projection.view.Pill.Levels, wantLevel)
+	}
+	if bytes.Equal(before, tt.Image().Pix) {
+		b.Fatal("waveform updates did not change the rendered frame")
 	}
 }
 
@@ -400,14 +409,14 @@ func BenchmarkW0AnswerStreaming(b *testing.B) {
 		snapshot.Draft = fullDraft[:lengths[position]]
 		snap(a, snapshot)
 		tt.Frame()
+		if index == len(lengths)-1 && (a.sess.Draft != fullDraft || !tt.HasText(fullDraft)) {
+			b.Fatalf("completed draft is missing from the last timed frame: %q", tt.Texts())
+		}
+	}
+	if b.N != len(lengths) {
+		b.Fatalf("streaming benchmark needs exactly %d iterations, got %d", len(lengths), b.N)
 	}
 	b.StopTimer()
-	snapshot.State, snapshot.Result, snapshot.Draft = session.Done, fullDraft, fullDraft
-	snap(a, snapshot)
-	tt.Frame()
-	if a.sess.Result != fullDraft || !tt.HasText(fullDraft) {
-		b.Fatalf("completed draft is missing from the frame: %q", tt.Texts())
-	}
 	b.ReportMetric(float64(len(lengths)), "recorded_frames")
 }
 

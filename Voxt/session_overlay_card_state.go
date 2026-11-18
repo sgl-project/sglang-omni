@@ -166,7 +166,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		state.Blocks = sessionCardFailureBlocks(translator, card)
 	} else if !state.Conversation && !state.Writing {
 		state.Blocks = []sessionCardBlock{sessionCardBodyBlock(card)}
-	} else {
+	} else if input.Answer.kind != store.KindRewrite || !sessionCardRedoWriting(input) {
 		state.Blocks = sessionCardConversationBlocks(translator, card)
 		state.Recording = follow && snapshot.State == session.Recording
 		state.Heard = !snapshot.HeardAt.IsZero()
@@ -343,6 +343,9 @@ func updateSessionCardLiveState(translator *i18n.Translator, card *sessionCardVi
 	card.Recording = follow && input.Snapshot.State == session.Recording
 	card.CanStop = follow && input.Snapshot.State == session.Recording
 	card.CanStopAnswer = follow && input.Snapshot.CanStop()
+	if input.Answer.kind == store.KindRewrite && sessionCardRedoWriting(input) {
+		card.Title = sessionCardTitleFor(translator, input.Answer.kind, input.Snapshot.Title)
+	}
 	if !input.Answer.open && input.Writing {
 		card.Title = sessionCardTitleFor(translator, input.Snapshot.Kind, input.Snapshot.Title)
 		card.TargetName = input.Snapshot.Target.Name

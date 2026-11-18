@@ -13,6 +13,30 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func TestMeetingDemoShowsSettings(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/page-normal")
+	tester := newMeetingDemoTester(t, host)
+	if !tester.HasText("Meeting settings") {
+		t.Fatal("page fixture hides its available Meeting settings button")
+	}
+}
+
+func TestMeetingsPageModelTimeZone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	instant := time.Date(2026, time.January, 1, 23, 30, 0, 0, time.UTC)
+	a.mv.list = []store.Meeting{{ID: "zone", CreatedAt: instant, Status: store.MeetingDone}}
+	a.mv.read = true
+	first := a.meetingsPageModel(time.Date(2026, time.January, 2, 12, 0, 0, 0, time.UTC))
+	second := a.meetingsPageModel(time.Date(2026, time.January, 2, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*60*60)))
+	if len(first.Items) == 0 || len(second.Items) == 0 || first.Items[0].Heading != "Yesterday" || second.Items[0].Heading != "Today" {
+		t.Fatalf("timezone change kept stale day groups %q and %q", first.Items[0].Heading, second.Items[0].Heading)
+	}
+}
+
 // Meetings are in release builds (C1-10): the sidebar, ⌘K and the menu bar
 // menu offer them, as in development builds.
 func TestMeetingsInReleaseBuild(t *testing.T) {

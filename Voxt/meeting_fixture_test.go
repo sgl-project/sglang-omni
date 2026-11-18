@@ -44,7 +44,32 @@ func TestMeetingViewStateGolden(t *testing.T) {
 		i18n.SetLocale(locale)
 		for _, scenario := range scenarios {
 			t.Run(locale+"/"+scenario.name, func(t *testing.T) {
+				for index := 1; index < len(scenario.page.List); index++ {
+					previous, current := scenario.page.List[index-1], scenario.page.List[index]
+					if previous.CreatedAt.Before(current.CreatedAt) || previous.CreatedAt.Equal(current.CreatedAt) && previous.ID < current.ID {
+						t.Fatalf("meetings %q and %q are not in production order", previous.ID, current.ID)
+					}
+				}
 				fixture := buildMeetingFixture(t, scenario, locale)
+				if page := fixture.Page; page != nil {
+					if page.Detail != nil {
+						selected := 0
+						for _, item := range page.Items {
+							if item.Meeting != nil && item.Meeting.Selected {
+								selected++
+								if item.Meeting.ID != page.Detail.ID {
+									t.Fatalf("selected meeting %q differs from open detail %q", item.Meeting.ID, page.Detail.ID)
+								}
+							}
+						}
+						if selected != 1 {
+							t.Fatalf("open detail %q has %d selected rows, want 1", page.Detail.ID, selected)
+						}
+					}
+					if page.HasMore && page.MeetingCount < meetingsPageSize {
+						t.Fatalf("paginated fixture has %d meetings, want at least %d", page.MeetingCount, meetingsPageSize)
+					}
+				}
 				data, err := json.MarshalIndent(fixture, "", "  ")
 				if err != nil {
 					t.Fatal(err)

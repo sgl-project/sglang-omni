@@ -431,6 +431,9 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 			projection.pillKey, projection.pillReady = key, true
 		}
 		copySessionLevels(&next.Pill.Levels, a.sess.Levels)
+	} else {
+		next.Pill = sessionPillViewState{}
+		projection.pillReady = false
 	}
 	next.Card = nil
 	if input.Mode == ovAnswer {

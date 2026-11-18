@@ -28,6 +28,8 @@ type meetingListCacheKey struct {
 	year           int
 	month          time.Month
 	day            int
+	location       string
+	zoneOffset     int
 	read           bool
 	loading        bool
 }
@@ -152,10 +154,11 @@ func (a *app) meetingsPageModel(now time.Time) meetingsViewState {
 		selectedID = a.mv.detail.id
 	}
 	year, month, day := now.Date()
+	_, zoneOffset := now.Zone()
 	key := meetingListCacheKey{
 		seq: a.mv.seq, listLen: len(a.mv.list), selectedID: selectedID, locale: i18n.Locale(),
 		liveID: a.meetSnap.ID, liveState: string(a.meetSnap.State), year: year, month: month, day: day,
-		read: a.mv.read, loading: a.mv.loading,
+		location: now.Location().String(), zoneOffset: zoneOffset, read: a.mv.read, loading: a.mv.loading,
 	}
 	if len(a.mv.list) > 0 {
 		key.firstID, key.lastID = a.mv.list[0].ID, a.mv.list[len(a.mv.list)-1].ID
