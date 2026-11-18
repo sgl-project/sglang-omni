@@ -48,9 +48,26 @@ func TestMeetingDiarizerRequiresInstalledMTD(t *testing.T) {
 	}
 	provider := &meetingDiarizerFake{}
 	a.local = &meetingMTDLocal{provider: provider}
+	a.prefs.General.MainLanguage = "en"
 	d, err = a.meetingDiarizer(context.Background())
 	if err != nil || d != provider {
 		t.Fatalf("with MTD: diarizer %v, err %v", d, err)
+	}
+}
+
+func TestMeetingDiarizerLanguageGate(t *testing.T) {
+	for _, language := range []string{"", "en", "zh-Hans", "ko"} {
+		t.Run(language, func(t *testing.T) {
+			provider := &meetingDiarizerFake{}
+			a, _, _ := newTestApp(t)
+			a.local = &meetingMTDLocal{provider: provider}
+			a.prefs.General.MainLanguage = language
+			d, err := a.meetingDiarizer(context.Background())
+			want := language == "en" || language == "zh-Hans"
+			if err != nil || (d != nil) != want {
+				t.Fatalf("language %q: diarizer %v, err %v; want provider %v", language, d, err, want)
+			}
+		})
 	}
 }
 

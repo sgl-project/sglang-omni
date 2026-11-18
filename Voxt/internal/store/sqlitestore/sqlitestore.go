@@ -144,6 +144,22 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	start := v
+	if v == 9 {
+		rows, err := db.Query(ctx, "PRAGMA table_info(notes)")
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		hasAppName := false
+		for _, row := range rows.Values {
+			hasAppName = hasAppName || asString(row[1]) == "app_name"
+		}
+		// The meeting-import preview used version 9 before notes did.
+		if !hasAppName {
+			start = 8
+		}
+	}
 	latest := Version()
 	if v > latest {
 		db.Close()
@@ -161,7 +177,7 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 			return nil, err
 		}
 	}
-	for _, m := range migrations[v:] {
+	for _, m := range migrations[start:] {
 		stmts := make([]sqlite.Statement, 0, len(m.statements)+1)
 		for _, s := range m.statements {
 			stmts = append(stmts, sqlite.Statement{SQL: s})

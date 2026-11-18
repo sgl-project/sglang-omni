@@ -34,12 +34,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Importing a recording explains its language requirement**: MOSS-Transcribe-Diarize labels speakers in Chinese or English. An unknown or unsupported spoken language now opens language guidance and Meeting settings instead of reporting that the installed model is missing.
+- **Databases from the first meeting-import preview keep upgrading**: a version-9 database from that preview now receives the notes source-app column as well as the later migrations, with existing notes and imported meetings preserved.
 - **Continue processing finishes an interrupted import**: with the after-meeting pass turned off, Continue processing on an interrupted import ran nothing and the meeting stayed finishing forever, and a failed transcript clean-up or summary looked like a success. Continue processing now runs the pass as the import itself does, the meeting ends done, and a clean-up or summary failure is reported.
 
 ### 中文
 
 #### 修复
 
+- **导入录音会说明语言要求**：MOSS-Transcribe-Diarize 可以区分中文或英语录音中的说话人。说话语言未知或不支持时，Voxt 会提示选择中文或英语并打开会议设置，不再误报已安装的模型未下载。
+- **早期会议导入预览版的数据库可以继续升级**：使用旧导入迁移第 9 版的数据库现在会补上笔记来源 App 字段和后续迁移，已有笔记与导入的会议保持不变。
 - **“继续整理”能把中断的导入跑完**：关掉会后重新整理时，对中断的导入点“继续整理”什么都不跑，会议一直停在收尾状态，转录稿校对或总结失败也被当成成功。现在“继续整理”和导入本身一样会跑整理，会议正常完成，校对或总结失败会提示失败。
 
 ## [2.1.0] - 2026-11-15

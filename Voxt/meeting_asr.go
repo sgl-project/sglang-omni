@@ -8,9 +8,11 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
@@ -40,8 +42,22 @@ func (a *app) meetingMTDInstalled() bool {
 	return false
 }
 
+func (a *app) meetingDiarizerLanguage() bool {
+	language := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
+	// An empty hint means the language is unknown, so MTD cannot safely choose zh or en.
+	if language == "" {
+		return false
+	}
+	spec, ok := omni.Lookup(models.ASRMoss)
+	if !ok {
+		return false
+	}
+	_, fit := lang.Match(spec.Languages, language)
+	return fit
+}
+
 func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
-	if !a.meetingMTDInstalled() {
+	if !a.meetingMTDInstalled() || !a.meetingDiarizerLanguage() {
 		return nil, nil
 	}
 	p, opened, err := a.local.ASR(ctx, models.ASRMoss)

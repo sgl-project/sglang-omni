@@ -57,6 +57,10 @@ func (a *app) meetingImport() {
 		a.mv.importNoHistory = true
 		return
 	}
+	if !a.meetingDiarizerLanguage() {
+		a.mv.importNoLanguage = true
+		return
+	}
 	chooseRecordingFile(a, a.importRecording)
 }
 
@@ -79,7 +83,11 @@ func (a *app) importRecording(path string) {
 			case errors.Is(err, context.Canceled):
 				// interrupted: the meeting's Continue processing finishes it
 			case errors.Is(err, meeting.ErrNoDiarizer):
-				n.importNoMTD = true // MTD went away between the check and the pass
+				if a.meetingMTDInstalled() && !a.meetingDiarizerLanguage() {
+					n.importNoLanguage = true
+				} else {
+					n.importNoMTD = true // MTD went away between the check and the pass
+				}
 			case errors.Is(err, meeting.ErrNoHistory):
 				n.importNoHistory = true // turned off between the check and the pass
 			default:
@@ -143,6 +151,25 @@ func (a *app) meetingImportDialog(c *ui.Context) {
 		})
 		if !open {
 			n.importNoMTD = false
+			return
+		}
+	}
+	open = n.importNoLanguage
+	if open {
+		dialogFrame(c, "mt-import-language", &open, i18n.T("Choose the recording's language"), "", 420, func() {
+			ui.Text(c, i18n.T("MOSS-Transcribe-Diarize labels speakers only in Chinese or English. Choose Chinese or English as the spoken language in Meeting settings, then import again."))
+		}, func() {
+			ui.Spacer(c)
+			if ui.Button(c.Key("mt-import-language-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
+				open = false
+			}
+			if primaryButton(c.Key("mt-import-language-open"), i18n.T("Open Meeting settings")).Clicked() {
+				open = false
+				n.setOpen = true
+			}
+		})
+		if !open {
+			n.importNoLanguage = false
 			return
 		}
 	}

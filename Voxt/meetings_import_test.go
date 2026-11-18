@@ -57,6 +57,7 @@ func TestMeetingImportLabelsSpeakersAndSummarizes(t *testing.T) {
 		`{"transcript_summary": {"title": "Weekly sync", "content": "Two speakers met."}, "todo_list": []}`,
 	}}
 	a.local = &importLocal{fakeLocal: withChat(&fakeLocal{ASRP: &fakeTranscriptions{}}, chat), mtd: &importDiarizeFake{}}
+	a.prefs.General.MainLanguage = "en"
 	wav := filepath.Join(t.TempDir(), "zoom-standup.wav")
 	pcm := make([]byte, 2*asr.SampleRate*3)
 	if err := os.WriteFile(wav, asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
@@ -144,6 +145,59 @@ func TestMeetingImportExplainsMissingMTD(t *testing.T) {
 	list, _ := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
 	if len(list) != 0 {
 		t.Fatalf("%d meetings without a file", len(list))
+	}
+}
+
+func TestMeetingImportExplainsLanguage(t *testing.T) {
+	for _, language := range []string{"", "ko"} {
+		t.Run(language, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+			a.prefs.General.MainLanguage = language
+			saved := chooseRecordingFile
+			t.Cleanup(func() { chooseRecordingFile = saved })
+			chooseRecordingFile = func(a *app, then func(string)) {
+				t.Error("the file dialog opened with an unknown or unsupported language")
+			}
+			tt.SetSize(windowWidth, 900)
+			a.navigate("/meetings")
+			frames(tt)
+			if err := tt.ClickControl("Import recording…"); err != nil {
+				t.Fatalf("%v (%q)", err, firstTexts(tt))
+			}
+			frames(tt)
+			if _, ok := tt.Find("Choose the recording's language"); !ok {
+				t.Fatalf("no language dialog (%q)", firstTexts(tt))
+			}
+			if _, ok := tt.Find("MOSS-Transcribe-Diarize is not downloaded"); ok {
+				t.Fatalf("installed MTD reported as missing (%q)", firstTexts(tt))
+			}
+			if err := tt.ClickControl("Open Meeting settings"); err != nil {
+				t.Fatal(err)
+			}
+			frames(tt)
+			if !a.mv.setOpen {
+				t.Fatal("Meeting settings did not open")
+			}
+			list, _ := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
+			if len(list) != 0 {
+				t.Fatalf("%d meetings without a file", len(list))
+			}
+		})
+	}
+}
+
+func TestMeetingImportLanguageFailureDoesNotSayMTDMissing(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+	saved := decodeRecording
+	t.Cleanup(func() { decodeRecording = saved })
+	decodeRecording = func(context.Context, string) ([]byte, error) {
+		return make([]byte, 2*asr.SampleRate), nil
+	}
+	a.importRecording("unknown-language.wav")
+	if !a.mv.importNoLanguage || a.mv.importNoMTD {
+		t.Fatalf("language failure: noLanguage=%v, noMTD=%v", a.mv.importNoLanguage, a.mv.importNoMTD)
 	}
 }
 
