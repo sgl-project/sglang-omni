@@ -10,11 +10,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Copy and edit notes in place, and see their source app**: each note has Copy and Edit buttons. Save writes the edit back to the note, and Cancel leaves it unchanged. If Voxt knows the frontmost app at capture time, new notes show its name.
 - **Reopen recent cards from the menu bar**: the new Reopen card section lists up to five Rewrite or Translate conversations from the last 24 hours whose current answer was not inserted. Open one to continue with all its turns, including after restarting Voxt. With the menu bar icon off, the Dock menu has the same list. Deleting or clearing history removes its rows. Turning off Keep a history hides the list, and Settings → Privacy now says so.
 - **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
-- **Rewrite's answer card renders Markdown** (#4119): the language model answers in Markdown, and the card now shows a Rewrite answer as it reads — headings, bold, lists, code, and a formula's TeX — instead of the raw markers, the way the chat apps show replies, while it streams in and in a conversation's answers. What you said stays as written, and a translation or Transcribe's clean-up stays plain text, as it goes in verbatim. Copy and Insert still use the answer's original text.
+- **Rewrite's answer card renders Markdown** (#4119): the language model answers in Markdown, and the card now shows a Rewrite answer as it reads — headings, bold, lists, code, and a formula's TeX — instead of the raw markers, the way the chat apps show replies, while it streams in and in a conversation's answers. What you said stays as written. Copy and Insert still use the answer's original text.
 - **Wait for the language model offers presets up to 60 minutes**: the setting on the Language models page now offers Automatic, 1, 2, 5, 10, 30 and 60 minutes, and No limit, replacing the Custom… minutes field. A custom wait saved by an earlier version keeps its duration and shows as what it is.
 - **Voxt 2 installs updates inside the app** (#3961): release builds check Voxt 2's signed stable or beta feed, download the update, install it and relaunch, as Voxt 1.x did. Settings → Diagnostics & About keeps the automatic check, beta and automatic install controls. Builds without a feed still check GitHub and point to the download.
 - **Update announcements are shorter**: the current version's announcement appears once after an update, with a title and at most three short lines. **What's new** opens the full notes, also available any time in Settings → About → Updates.
 - **Dictionary highlights in Transcribe**: the Try preview and answer card highlight recognised text that matches an enabled dictionary term or alias.
+- **Pick an accent color and make the window transparent** (#4123, #4180): Settings → Appearance has a Color picker with a light and a dark preview, and Reset color goes back to the default teal. Buttons, the selected sidebar item, the recording window and the answer card follow the color. The Transparent theme makes the sidebar and the page background see-through, and its Window transparency slider sets how much. With the default color, Try's Start and Stop buttons and level bars keep their red-orange.
 
 ### Changed
 
@@ -23,6 +24,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 - **The thinking button names its setting** (#4066): the thinking button in the recording window and on the answer card now reads, for example, "Thinking level: High" or "Thinking level: On (default)" instead of "Ask again: Thinking (High)". Click it to pick another level for this input; as before, picking one stops the answer and asks again. This is the same in Transcribe, Translate and Rewrite.
 - **Manage models beside each feature's model picker and in Settings**: Transcribe, Translate and Rewrite show whether the selected speech model is installed or downloading, and let you download, cancel or delete it without leaving the page. With no speech model installed, they offer the recommended download. Selected remote services show their state and Edit dialog there too. Speech models and Language models are now Settings sections instead of separate sidebar pages. Old deep links and command-palette entries open the new sections.
+- **Each page's view state and actions are separated from its drawing code** (#4073): an internal change, with no change to features, looks or speed. Every page state now renders from test fixtures, without a microphone, a model or a permission.
 
 ### Fixed
 
@@ -42,11 +44,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **笔记可以一键复制、原地编辑，并显示来源 App**：每条笔记都有“复制”和“编辑”按钮。编辑后点“保存”会写回这条笔记，点“取消”则不改内容。Voxt 能确定按下快捷键时的前台 App 时，新笔记也会显示这个 App。
 - **从菜单栏重新打开最近的卡片**：新的「重新打开卡片」一栏最多列出 5 段最近 24 小时内的改写或翻译对话，当前回答已经插入的不列出。点开即可带着所有轮次继续，重启 Voxt 后也可以。菜单栏图标关闭时，程序坞菜单提供同样的列表。删除记录或清空历史后，对应行也会移除。关闭「保存历史」后不显示这一栏，「设置 → 隐私」里已注明。
 - **词典分组**：为不同场合保存几组词条。现有词条移入当前使用的“默认”分组，含义不变。在词典页新建、改名、删除和切换分组；转录、翻译和改写只用当前分组。Hammerspoon、macOS 快捷指令和 shell 脚本可以不打开词典页就切换：运行 `open -g 'voxtnew://dictionary/profile?name=Work'`。见 docs/dictionary-profiles.md。
-- **改写的答案卡片按 Markdown 排版显示**（#4119）：语言模型的回答是 Markdown，卡片现在按排版显示改写的回答——标题、加粗、列表、代码和公式的 TeX——不再是原始符号，和主流聊天 App 一样；边写边显示和对话里的回答也一样。你自己说的话原样显示，翻译和转录整理的文字仍是纯文本（会原样插入）。复制和插入用的仍是回答原文。
+- **改写的答案卡片按 Markdown 排版显示**（#4119）：语言模型的回答是 Markdown，卡片现在按排版显示改写的回答——标题、加粗、列表、代码和公式的 TeX——不再是原始符号，和主流聊天 App 一样；边写边显示和对话里的回答也一样。你自己说的话原样显示。复制和插入用的仍是回答原文。
 - **“等待语言模型”提供最长 60 分钟的预设**：语言模型页的这项设置现在可选“自动”、1、2、5、10、30、60 分钟和“不限制”，替代原来的“自定义…”分钟输入。旧版本保存的自定义等待保持原时长，并如实显示。
 - **Voxt 2 在 App 内安装更新**（#3961）：发布构建会检查 Voxt 2 的正式版或 beta 签名更新源，下载并安装更新后重新启动，和 Voxt 1.x 一样。「设置 → 诊断与关于」保留自动检查、Beta 更新和自动安装开关。没有更新源的构建仍检查 GitHub 并提供下载地址。
 - **更新公告更短**：当前版本的公告在更新后只出现一次，一个标题加最多三行短句。“新增功能”打开完整说明，也可以随时在 设置 → 关于 → 更新 里查看。
 - **转录里的词典高亮**：试用预览和答案卡片会高亮识别文字中命中启用词条或别名的部分。
+- **自选主题色，窗口可以透明**（#4123、#4180）：「设置 → 外观」新增“颜色”选择器，附浅色和深色预览，“恢复默认颜色”回到默认的青绿色。按钮、侧边栏选中项、录音窗口和答案卡片都跟随这个颜色。“透明”主题让侧边栏和页面背景半透明，“窗口透明度”滑块调节透明程度。使用默认颜色时，“试一试”的开始、停止按钮和音量条保持原来的橙红色。
 
 #### 变更
 
@@ -55,6 +58,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语言模型处理时，录音窗口显示发给它的文字**：用流式语音识别模型时，录音窗口下面一行改为显示发给语言模型的识别结果（最终识别结果，词典别名已替换），不再是最后一条实时文字，两者可能不同。不是流式的语音识别模型照旧不显示文字，没有语言模型时也照旧。
 - **思考按钮直接写思考强度**（#4066）：录音窗口和答案卡片上的思考按钮改成“思考强度：高”“思考强度：已开启（默认）”这样的写法，不再写“重新问：思考（高）”。点它就能为这次输入换一个强度，和以前一样，选了就停掉这次回答、重新问。转录、翻译、改写都一样。
 - **在功能选模型的地方和“设置”里管理模型**：转录、翻译、改写页直接显示所选语音识别模型的下载、取消、删除和状态，没装时可直接下载推荐模型；远程服务也显示状态，并可就地打开编辑对话框。语音识别模型和语言模型从独立侧边栏页面改为“设置”里的两节，旧深链和命令面板入口仍打开对应设置节。
+- **每个页面的视图状态和操作与绘制代码分开**（#4073）：内部改动，功能、外观和速度都不变。现在每种页面状态都能用测试数据渲染，不需要麦克风、模型或权限。
 
 #### 修复
 
