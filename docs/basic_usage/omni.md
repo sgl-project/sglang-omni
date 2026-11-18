@@ -294,9 +294,38 @@ Models that take camera input during a session, such as MiniCPM-o and the Qwen3-
 
 Turn-based sessions may use client commits, `server_vad`, or semantic VAD when the deployment provides it. For barge-in, stop queued playback and ignore later audio deltas for the canceled response. If the listener heard only part of the reply, send the model-specific truncate event so conversation history matches what was played.
 
+## Memory and Concurrency
+
+The examples below use Qwen3-Omni. For other pipelines, choose the checkpoint and stage names from the model cookbook.
+
+By default, leave `mem_fraction_static` unset and let SGLang-Omni auto-size the SGLang AR memory budget. If a specific machine needs manual tuning, you can pin the value globally or per AR stage:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --mem-fraction-static 0.88
+```
+
+Use per-stage flags when the thinker and talker need different budgets:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --thinker.engine.mem_fraction_static 0.88 \
+  --talker_ar.engine.mem_fraction_static 0.88
+```
+
+`--mem-fraction-static` applies to every SGLang engine stage. A dotted per-stage path overrides the global value for that stage. Values must be greater than `0` and less than `1`.
+
+Set `engine.max_running_requests` on a stage to control how many requests it admits concurrently. Stage names and default limits depend on the pipeline; see the model cookbook for defaults and YAML examples.
+
 ## Server Readiness
 
-Startup warmup depends on the pipeline and realtime deployment. A configured warmup must finish before `/health` reports ready; a pipeline without request warmup can become ready without exercising its chat path. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni.md#server-readiness) for its synthetic multimodal requests, timeout, and skip option. Readiness does not guarantee that every input shape has been warmed up.
+Startup warmup depends on the pipeline and realtime deployment. When a pipeline configures request warmup, the server sends its warmup request once per replica of its most replicated process, sequentially, before reporting ready. `/health` returns HTTP 503 with status `starting` until warmup has passed through every stage; a failed warmup stops startup. `SGLANG_OMNI_WARMUP_TIMEOUT` bounds each warmup request in seconds (default 600), and `--skip-server-warmup` reports ready without running these requests.
+
+A pipeline without request warmup can become ready without exercising its chat path. Warmup covers only the configured request shapes; video input, larger batches, or other shapes can still compile kernel variants on first use. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni.md#server-readiness) for its synthetic multimodal request.
 
 ## Request Parameters
 

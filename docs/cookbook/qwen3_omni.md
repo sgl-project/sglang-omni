@@ -104,24 +104,7 @@ sgl-omni serve \
 
 ### Memory and Concurrency
 
-By default, leave `mem_fraction_static` unset and let SGLang-Omni auto-size the SGLang AR memory budget. If a specific machine needs manual tuning, you can pin the value globally or per AR stage:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --mem-fraction-static 0.88
-```
-
-Use per-stage flags when the thinker and talker need different budgets:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --thinker.engine.mem_fraction_static 0.88 \
-  --talker_ar.engine.mem_fraction_static 0.88
-```
+For automatic memory sizing, global memory budgets, and per-stage overrides, see [Memory and Concurrency](../basic_usage/omni.md#memory-and-concurrency).
 
 The speech server launcher exposes the same per-stage controls:
 
@@ -136,8 +119,6 @@ python examples/run_omni.py qwen3-speech-server \
   --thinker-mem-fraction-static 0.88 \
   --talker-mem-fraction-static 0.88
 ```
-
-`--mem-fraction-static` applies to every SGLang engine stage. A dotted per-stage path overrides the global value for that stage. Values must be greater than `0` and less than `1`.
 
 The thinker admits up to 64 running requests by default. Use the thinker-specific flag to lower or raise that limit in either text-only or speech mode:
 
@@ -271,15 +252,15 @@ AutoRound quantization provides:
 
 ## Server Readiness
 
-Before it reports ready, the server sends itself a chat request with a small image, one second of audio and a short instruction (text and audio output in speech mode, text output in text-only mode, at most 8 new tokens from each stage that generates tokens), once per replica of its most replicated process, one after another, so that every replica serves one. `/health` returns 503 with status `starting` until these requests have passed through every stage, so the one-time kernel builds of that request path happen before the first user request. Inputs of other shapes, such as video or a large concurrent batch, can still build a kernel variant on first use. A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600) bounds each request, and `--skip-server-warmup` reports ready without them.
+Qwen3-Omni warms up with a chat request containing a small image, one second of audio, and a short instruction. Speech mode requests text and audio output; text-only mode requests text. Each stage that generates tokens is limited to 8 new tokens. See [Server Readiness](../basic_usage/omni.md#server-readiness) for health status, replica coverage, timeout, and the skip option.
 
 ## Input / Output Modalities
 
-Qwen3-Omni accepts text, image, audio, and video input in both text-only and speech deployments. The [shared request examples](../basic_usage/omni.md#general-usage) cover image questions, spoken questions with images or video, and text-and-speech replies. To return audio, launch the speech pipeline; requesting audio on a text-only chat server returns text without an error. Realtime audio negotiation has a separate contract described below.
+Qwen3-Omni accepts text, image, audio, and video input in both text-only and speech deployments. The [shared request examples](../basic_usage/omni.md#general-usage) cover image questions, spoken questions with images or video, and text-and-speech replies. For speech output requirements and text-only server behavior, see [Speech Output](../basic_usage/omni.md#speech-output). Realtime audio negotiation has a separate contract described below.
 
 ### Sampling Parameters
 
-Standard sampling parameters apply to the thinker. When `modalities` includes `"audio"`, talker-specific parameters control speech generation.
+The [shared request parameters](../basic_usage/omni.md#request-parameters) document standard sampling fields, output formats, per-stage overrides, and video controls. The table below lists Qwen3-Omni sampling defaults and its talker-specific fields. Standard sampling parameters apply to the thinker; talker parameters apply when `modalities` includes `"audio"`.
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
@@ -289,24 +270,13 @@ Standard sampling parameters apply to the thinker. When `modalities` includes `"
 | `min_p` | float | `0.0` | Thinker |
 | `repetition_penalty` | float | `1.0` | Thinker |
 | `max_tokens` | int | `2048` | Thinker |
-| `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
-| `stop` | str or list | `null` | Thinker |
-| `seed` | int | `null` | Thinker |
-| `stream` | bool | `false` | Both |
-| `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
 | `talker_temperature` | float | `0.9` | Talker (audio output only) |
 | `talker_top_p` | float | `1.0` | Talker (audio output only) |
 | `talker_top_k` | int | `50` | Talker (audio output only) |
 | `talker_repetition_penalty` | float | `1.05` | Talker (audio output only) |
 | `talker_max_new_tokens` | int | `4096` | Talker (audio output only) |
-| `stage_sampling` | dict | `null` | Per-stage sampling override |
-| `stage_params` | dict | `null` | Per-stage non-sampling params |
-| `video_fps` | float | `null` | Frame sampling rate for video input (uses server default if unset) |
-| `video_max_frames` | int | `null` | Maximum number of frames sampled from a video |
-| `video_min_pixels` | int | `null` | Minimum pixels per video frame |
-| `video_max_pixels` | int | `null` | Maximum pixels per video frame |
-| `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
-| `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
+
+With `use_audio_in_video: true`, requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported.
 
 For HTTP and SSE errors, see [Known Limitations](../basic_usage/omni.md#known-limitations).
 
@@ -359,6 +329,5 @@ Compare modes with matching workloads and prefix-cache conditions; measure TTFT,
 
 - **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps; different rates return an invalid-input error.
 
-- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Otherwise, any text in `content` is processed too.
 - **Colocated topology does not support `--thinker.tp_size 2`.** Startup raises a `ValueError`; use disaggregated topology for TP=2.
 - **Context limits apply to prompt and output.** The preprocessor rejects requests when prompt tokens meet or exceed `max_seq_len`, or when prompt tokens plus `max_new_tokens` meet or exceed it. Without both `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's checkpoint context (65,536 tokens for Instruct); setting both lower caps it. The talker uses its checkpoint limit unless `--talker_ar.factory.max_seq_len` sets it. A long spoken prompt may leave too little room for `talker_max_new_tokens`, so audio can end before the text.
