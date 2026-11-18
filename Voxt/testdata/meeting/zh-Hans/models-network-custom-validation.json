@@ -482,6 +482,7 @@
     "network": {
       "open": true,
       "proxy_mode": 2,
+      "proxy_url": "not-a-proxy",
       "proxy_error": "请输入以 http://、https:// 或 socks5:// 开头的代理地址，例如 http://127.0.0.1:7890。",
       "proxy_caption": "",
       "source": 0,

@@ -147,13 +147,17 @@ func (a *app) redoAnswer(req session.StartRequest) {
 	a.overlaySync()
 }
 
+func (a *app) continueAnswer() {
+	a.closeLangMenu()
+	a.followUpAnswer("")
+}
+
 // followUpAnswer records a follow-up to the card's Rewrite answer or
 // translation (Continue, or the Rewrite shortcut while the card shows
 // one): the next instruction rewrites that answer, in the card. A
 // translation is the conversation's first turn, its source as the
 // selection (#3897).
 func (a *app) followUpAnswer(hold string) bool {
-	a.closeLangMenu()
 	if !a.canFollowUp() {
 		return false
 	}

@@ -87,6 +87,7 @@
       ],
       "url_input": "GitHub.com/",
       "url_error": "这条规则已经在分组里了。",
+      "url_error_code": "duplicate",
       "auto_key": {
         "options": [
           {

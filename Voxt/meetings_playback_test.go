@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
@@ -33,6 +34,60 @@ func TestMeetingDetailPlaybackButtonNeedsAudio(t *testing.T) {
 	}
 	if !meeting.AudioFolderReady(meetingsDir, folder) {
 		t.Fatal("expected audio ready")
+	}
+}
+
+// TestMeetingPlaybackMissingAudioKeepsState: Play and Seek do not stop or move playback when the WAV folder is gone.
+func TestMeetingPlaybackMissingAudioKeepsState(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		audioReady bool
+		playing    bool
+		run        func(*app, string)
+	}{
+		{name: "play", run: func(a *app, id string) { a.toggleMeetingPlayback(id) }},
+		{name: "seek", playing: true, run: func(a *app, id string) { a.seekMeetingPlayback(id, 5000) }},
+		{name: "stale ready play", audioReady: true, run: func(a *app, id string) { a.toggleMeetingPlayback(id) }},
+		{name: "stale ready seek", audioReady: true, playing: true, run: func(a *app, id string) { a.seekMeetingPlayback(id, 5000) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			const id = "m-missing-audio"
+			a.mv.detail = &meetingDetail{
+				id: id, meeting: store.Meeting{Audio: "missing"}, audioReady: test.audioReady,
+				playback: meetingDetailPlayback{pos: 2 * time.Second, playing: test.playing, highlight: 1, seq: 7},
+			}
+			before := a.mv.detail.playback
+			stopped := false
+			a.mtPlayer.cancel = func() { stopped = true }
+			test.run(a, id)
+			if got := a.mv.detail.playback; got != before {
+				t.Fatalf("playback changed from %+v to %+v", before, got)
+			}
+			if stopped {
+				t.Fatal("missing audio stopped the current player")
+			}
+		})
+	}
+}
+
+// TestMeetingPlaybackPauseWithMissingAudio: Pause always stops playback, even when the WAV folder is gone.
+func TestMeetingPlaybackPauseWithMissingAudio(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	const id = "m-pause-missing-audio"
+	a.mv.detail = &meetingDetail{
+		id: id, meeting: store.Meeting{Audio: "missing"}, audioReady: true,
+		playback: meetingDetailPlayback{pos: 2 * time.Second, playing: true, highlight: 1, seq: 7},
+	}
+	stopped := false
+	a.mtPlayer.cancel = func() { stopped = true }
+	a.toggleMeetingPlayback(id)
+	want := meetingDetailPlayback{pos: 2 * time.Second, playing: false, highlight: -1, seq: 8}
+	if got := a.mv.detail.playback; got != want {
+		t.Fatalf("playback %+v, want %+v", got, want)
+	}
+	if !stopped {
+		t.Fatal("Pause did not stop the current player")
 	}
 }
 

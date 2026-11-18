@@ -101,5 +101,13 @@
     ],
     "llm_selected": "Automatic",
     "no_llm": true
+  },
+  "meeting_shortcuts": {
+    "prefix": "mt",
+    "hotkeys_installed": true,
+    "helper_records_keys": false,
+    "empty_text": "No shortcut yet. Add one to use this feature.",
+    "rewrite_hint": false,
+    "rows": []
   }
 }

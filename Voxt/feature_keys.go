@@ -168,7 +168,7 @@ func featureOptionLabels(options []featureOptionViewState) []string {
 
 func featureKeysField(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, helperRecords bool, actions featureActions, save func(string)) {
 	if local.typing {
-		featureCustomKeys(c, local, label, state, save)
+		featureCustomKeys(c, local, label, state, actions, save)
 		if ghostButton(c.Key("record-keys"), i18n.T("Press the keys instead")).Clicked() {
 			local.typing, local.edited = false, false
 		}
@@ -177,13 +177,18 @@ func featureKeysField(c *ui.Context, local *keyRow, label string, state *feature
 	featureKeyRecorder(c, local, label, state, helperRecords, actions, save)
 }
 
-func featureCustomKeys(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, save func(string)) {
+var featureCustomKeysInputEvents = func(input ui.Element) (changed, submitted, focused bool) {
+	return input.Changed(), input.Submitted(), input.Focused()
+}
+
+func featureCustomKeys(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, actions featureActions, save func(string)) {
 	t := c.Theme()
 	input := ui.TextInput(c.Key("custom"), &local.text).Placeholder("Control+Option+Space").Label(label).Font("monospace").MaxWidth(px(t, 360))
-	if input.Changed() {
-		local.edited = true
+	changed, submitted, focused := featureCustomKeysInputEvents(input)
+	if changed {
+		*state = actions.typeFeatureShortcutKeys(local)
 	}
-	if local.edited && state.Parsed && state.InputText == local.text && (input.Submitted() || !input.Focused()) {
+	if local.edited && state.Parsed && state.InputText == local.text && (submitted || !focused) {
 		local.edited = false
 		local.text = state.Canonical
 		save(state.Canonical)

@@ -153,7 +153,7 @@
     },
     "show_remove": true,
     "saving": false,
-    "unsaved": false,
+    "unsaved": true,
     "form": {
       "model": "fixture-model",
       "remove_key": true,
@@ -161,6 +161,15 @@
         "think": "开启",
         "format": "纯文本",
         "verbosity": "默认",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    },
+    "saved_form": {
+      "model": "fixture-model",
+      "generation": {
+        "think": "on",
         "usage": true,
         "advanced": true,
         "api": "Chat Completions"

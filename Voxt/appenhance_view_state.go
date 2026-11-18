@@ -68,17 +68,18 @@ type appEnhancementAutoKey struct {
 }
 
 type appEnhancementGroupDetail struct {
-	ID        string                        `json:"id"`
-	Name      string                        `json:"name"`
-	Enabled   bool                          `json:"enabled"`
-	Prompt    string                        `json:"prompt"`
-	Features  []appEnhancementFeatureOption `json:"features"`
-	Variables []appEnhancementVariable      `json:"variables"`
-	Apps      []appEnhancementAppRow        `json:"apps"`
-	URLs      []appEnhancementURLRow        `json:"urls"`
-	URLInput  string                        `json:"url_input"`
-	URLError  string                        `json:"url_error,omitempty"`
-	AutoKey   appEnhancementAutoKey         `json:"auto_key"`
+	ID           string                        `json:"id"`
+	Name         string                        `json:"name"`
+	Enabled      bool                          `json:"enabled"`
+	Prompt       string                        `json:"prompt"`
+	Features     []appEnhancementFeatureOption `json:"features"`
+	Variables    []appEnhancementVariable      `json:"variables"`
+	Apps         []appEnhancementAppRow        `json:"apps"`
+	URLs         []appEnhancementURLRow        `json:"urls"`
+	URLInput     string                        `json:"url_input"`
+	URLError     string                        `json:"url_error,omitempty"`
+	URLErrorCode string                        `json:"url_error_code,omitempty"`
+	AutoKey      appEnhancementAutoKey         `json:"auto_key"`
 }
 
 type appEnhancementPreview struct {
@@ -273,6 +274,9 @@ func buildAppEnhancementGroupDetail(translator *i18n.Translator, group appctx.Gr
 		},
 		URLInput: input.URLInput, URLError: input.URLError,
 		Apps: make([]appEnhancementAppRow, len(group.Apps)), URLs: make([]appEnhancementURLRow, len(group.URLs)),
+	}
+	if input.URLError != "" {
+		_, detail.URLErrorCode = appEnhancementURLErrorWithCode(translator, group, input.URLInput)
 	}
 	for _, name := range compose.VariableNames {
 		detail.Variables = append(detail.Variables, appEnhancementVariable{
@@ -495,19 +499,24 @@ func appEnhancementBrowserStatus(translator *i18n.Translator, browser appctx.Bro
 }
 
 func appEnhancementURLError(translator *i18n.Translator, group appctx.Group, pattern string) string {
+	errorText, _ := appEnhancementURLErrorWithCode(translator, group, pattern)
+	return errorText
+}
+
+func appEnhancementURLErrorWithCode(translator *i18n.Translator, group appctx.Group, pattern string) (string, string) {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
-		return ""
+		return "", ""
 	}
 	if err := appctx.CheckPattern(pattern); err != nil {
-		return uitext.PatternErrorTextFor(translator, err)
+		return uitext.PatternErrorTextFor(translator, err), appEnhancementPatternErrorCode(err)
 	}
 	if slices.ContainsFunc(group.URLs, func(existing string) bool {
 		return appctx.CanonicalPattern(existing) == appctx.CanonicalPattern(pattern)
 	}) {
-		return translator.T("This rule is in the group already.")
+		return translator.T("This rule is in the group already."), "duplicate"
 	}
-	return ""
+	return "", ""
 }
 
 func appEnhancementCustomAutoKeyError(translator *i18n.Translator, keys string) string {

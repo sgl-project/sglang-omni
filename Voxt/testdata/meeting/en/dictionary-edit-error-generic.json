@@ -65,7 +65,7 @@
       "aliases": "",
       "note": "",
       "enabled": true,
-      "error": "Could not save the term: fixture save failed",
+      "error": "Could not save the term: term Voxt: sqlite: database is closed",
       "error_code": "generic",
       "saving": false,
       "original": "Voxt",

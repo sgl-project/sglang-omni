@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -167,6 +168,21 @@ func checkScrollChanges(tb testing.TB, tt *ui.Tester, x, y, delta float32) {
 	}
 }
 
+type benchmarkHistoryActions struct{}
+
+func (benchmarkHistoryActions) loadHistory()                {}
+func (benchmarkHistoryActions) searchHistory(string)        {}
+func (benchmarkHistoryActions) showHistoryTab(int)          {}
+func (benchmarkHistoryActions) openHistoryDetail(string)    {}
+func (benchmarkHistoryActions) closeHistoryDetail()         {}
+func (benchmarkHistoryActions) openHistoryFeature(string)   {}
+func (benchmarkHistoryActions) openHistoryPrivacy()         {}
+func (benchmarkHistoryActions) openHistorySettingsDialog()  {}
+func (benchmarkHistoryActions) copyHistoryText(string)      {}
+func (benchmarkHistoryActions) showHistoryRecording(string) {}
+func (benchmarkHistoryActions) retryHistoryEntry(string)    {}
+func (benchmarkHistoryActions) deleteHistoryEntry(string)   {}
+
 func BenchmarkW0LongLists(b *testing.B) {
 	for _, count := range []int{2500, 5000} {
 		b.Run(fmt.Sprintf("History%d_cap500", count), func(b *testing.B) {
@@ -201,6 +217,85 @@ func BenchmarkW0LongLists(b *testing.B) {
 				oldest := fmt.Sprintf("History result %05d", count-500)
 				if !tt.HasText(oldest) {
 					b.Fatalf("history list did not scroll to %q: %q", oldest, tt.Texts())
+				}
+			})
+		})
+	}
+	for _, count := range []int{2500, 5000} {
+		b.Run(fmt.Sprintf("HistorySyntheticViewState%d", count), func(b *testing.B) {
+			i18n.SetLocale("en")
+			b.Cleanup(func() { i18n.SetLocale("en") })
+			now := time.Now()
+			entries := make([]store.Entry, count)
+			for index := range entries {
+				row := count - index - 1
+				entries[index] = store.Entry{
+					ID: fmt.Sprintf("synthetic-history-%05d", row), Kind: store.KindTranscribe,
+					CreatedAt: now.Add(-time.Duration(index) * time.Second), Status: store.StatusDone,
+					Result: fmt.Sprintf("History result %05d", row),
+				}
+			}
+			input := historyViewStateInput{Entries: entries, Kind: store.KindTranscribe, Read: true, KeepHistory: true, Now: now}
+			b.Run("FirstFrame", func(b *testing.B) {
+				var state historyViewState
+				var pixels []uint8
+				b.ReportAllocs()
+				b.ResetTimer()
+				for b.Loop() {
+					state = buildHistoryViewState(i18n.CurrentTranslator(), input)
+					local := historyLocalUI{}
+					pixels = ui.Render(func(c *ui.Context) {
+						historyPage(c, &state, benchmarkHistoryActions{}, &local, float32(windowWidth))
+					}, windowWidth, windowHeight, 1).Pix
+				}
+				b.StopTimer()
+				if got := len(state.Rows); got != count {
+					b.Fatalf("synthetic first frame projected %d history rows, want %d", got, count)
+				}
+				if len(pixels) == 0 {
+					b.Fatal("empty synthetic history first frame")
+				}
+				local := historyLocalUI{}
+				tt := ui.NewTester(func(c *ui.Context) {
+					historyPage(c, &state, benchmarkHistoryActions{}, &local, float32(windowWidth))
+				}, windowWidth, windowHeight)
+				newest := fmt.Sprintf("History result %05d", count-1)
+				if !tt.HasText(newest) {
+					b.Fatalf("synthetic history first frame does not contain %q: %q", newest, tt.Texts())
+				}
+				if !bytes.Equal(pixels, tt.Image().Pix) {
+					b.Fatal("timed synthetic history frame differs from the verified frame")
+				}
+			})
+			b.Run("Scroll", func(b *testing.B) {
+				state := buildHistoryViewState(i18n.CurrentTranslator(), input)
+				if got := len(state.Rows); got != count {
+					b.Fatalf("synthetic scroll projected %d history rows, want %d", got, count)
+				}
+				local := historyLocalUI{}
+				tt := ui.NewTester(func(c *ui.Context) {
+					historyPage(c, &state, benchmarkHistoryActions{}, &local, float32(windowWidth))
+				}, windowWidth, windowHeight)
+				checkScrollChanges(b, tt, float32(windowWidth)*0.75, float32(windowHeight)*0.6, 300)
+				b.ReportAllocs()
+				b.ResetTimer()
+				before := ""
+				for i := 0; b.Loop(); i++ {
+					before = strings.Join(tt.Texts(), "\x00")
+					dy := float32(300)
+					if i%2 != 0 {
+						dy = -dy
+					}
+					tt.Scroll(float32(windowWidth)*0.75, float32(windowHeight)*0.6, 0, dy)
+				}
+				b.StopTimer()
+				if before == strings.Join(tt.Texts(), "\x00") {
+					b.Fatal("last timed scroll did not change the visible history rows")
+				}
+				tt.Scroll(float32(windowWidth)*0.75, float32(windowHeight)*0.6, 0, 1e6)
+				oldest := "History result 00000"
+				if !tt.HasText(oldest) {
+					b.Fatalf("synthetic history list did not scroll to %q: %q", oldest, tt.Texts())
 				}
 			})
 		})

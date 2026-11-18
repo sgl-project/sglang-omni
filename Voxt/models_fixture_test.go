@@ -60,6 +60,9 @@ func TestModelsFixtureCoverage(t *testing.T) {
 				t.Errorf("%s: missing required models fixture %s", locale, name)
 			}
 		}
+		if got := fixtures["models-network-custom-validation"].Models.Network.ProxyURL; got != "not-a-proxy" {
+			t.Errorf("%s: custom proxy URL %q, want not-a-proxy", locale, got)
+		}
 		actions, familyKinds := map[string]bool{}, map[string]bool{}
 		for name, fixture := range fixtures {
 			state := fixture.Models

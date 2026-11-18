@@ -211,19 +211,57 @@ func snapshotHistoryRetry(a *app, save func(string)) {
 // details' Result shows its answer so far in place of the old one, until
 // the retry is over.
 func TestHistoryRetryDraft(t *testing.T) {
-	a, tt, _ := retryApp(t, "Again.")
+	transcriptions := &fakeTranscriptions{text: "um so let's move the design review to Thursday afternoon"}
+	answer := "Let's move the design review to Thursday afternoon, and I'll send the revised agenda before everyone meets."
+	old := newLocalServices
+	newLocalServices = func(*app) local.Services {
+		return withChat(&fakeLocal{ASRP: transcriptions}, &fakeChat{text: answer})
+	}
+	t.Cleanup(func() { newLocalServices = old })
+	a, _, tt := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Enhance = true })
 	seedHistory(t, a)
 	seedRetryEntry(t, a)
+	entry, err := a.lib.store.History().Get(context.Background(), histInserted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Audio = histRetry + ".wav"
+	if err := a.lib.store.History().Put(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
 	a.navigate("/history")
 	a.histUI.sel = histInserted
-	a.hist.retry = entryRetry{id: histInserted, stage: session.Composing, draft: "Let's move the design review to"}
 	frames(tt)
-	if !hasExact(tt, "Let's move the design review to") {
-		t.Errorf("while it writes: %q", firstTexts(tt))
+
+	var pending []func()
+	a.postQueue = func(fn func()) { pending = append(pending, fn) }
+	a.retryEntry(entry)
+	var drafts []string
+	for len(pending) > 0 {
+		post := pending[0]
+		pending = pending[1:]
+		post()
+		if a.hist.retry.id != histInserted || a.hist.retry.stage != session.Composing {
+			continue
+		}
+		draft := strings.TrimSpace(a.hist.retry.draft)
+		if draft == "" || len(drafts) > 0 && drafts[len(drafts)-1] == draft {
+			continue
+		}
+		drafts = append(drafts, draft)
+		model := a.historyPageModel(time.Now())
+		if model.Detail == nil || len(model.Detail.TextBlocks) == 0 || model.Detail.TextBlocks[0].Text != draft {
+			t.Fatalf("draft %d (%q) kept the cached detail %+v", len(drafts), draft, model.Detail)
+		}
+		if !hasExact(tt, draft) {
+			t.Fatalf("draft %d (%q) did not render at %s: %q", len(drafts), draft, a.hist.retry.stage, firstTexts(tt))
+		}
 	}
-	a.hist.retry = entryRetry{}
-	frames(tt)
-	if hasExact(tt, "Let's move the design review to") {
+	if len(drafts) < 3 {
+		t.Fatalf("retry published %d drafts at %s, want two streamed drafts and the final draft", len(drafts), session.Composing)
+	}
+	if hasExact(tt, drafts[0]) || !hasExact(tt, answer) {
 		t.Errorf("after the retry: %q", firstTexts(tt))
 	}
 }

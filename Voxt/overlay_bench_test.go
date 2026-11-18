@@ -458,15 +458,17 @@ func BenchmarkW0MeetingOverlayHour(b *testing.B) {
 		updates++
 	}
 	b.StopTimer()
-	newest := segments[(updates-1)%meetingUpdatesPerHour]
+	if b.N != meetingUpdatesPerHour {
+		b.Fatalf("meeting benchmark needs exactly %d iterations, got %d", meetingUpdatesPerHour, b.N)
+	}
+	newest := segments[meetingUpdatesPerHour-1]
 	if !tt.HasText(newest.Text) {
 		b.Fatalf("newest segment %q is missing from the frame: %q", newest.Text, tt.Texts())
 	}
-	retained := min((updates-1)%meetingUpdatesPerHour+1, meetingSnapshotSegmentCap)
-	if len(a.meetSnap.Segments) != retained {
-		b.Fatalf("snapshot keeps %d segments, want %d", len(a.meetSnap.Segments), retained)
+	if len(a.meetSnap.Segments) != meetingSnapshotSegmentCap {
+		b.Fatalf("snapshot keeps %d segments, want %d", len(a.meetSnap.Segments), meetingSnapshotSegmentCap)
 	}
-	if updates%meetingUpdatesPerHour == 0 && a.meetSnap.Elapsed != time.Hour {
+	if a.meetSnap.Elapsed != time.Hour {
 		b.Fatalf("simulated meeting elapsed time is %v, want %v", a.meetSnap.Elapsed, time.Hour)
 	}
 }

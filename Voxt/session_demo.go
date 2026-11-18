@@ -135,6 +135,10 @@ func (host *meetingDemoHost) stopLLM() {
 	host.record("stopLLM")
 }
 
+func (host *meetingDemoHost) continueAnswer() {
+	host.followUpAnswer("")
+}
+
 func (host *meetingDemoHost) followUpAnswer(hold string) bool {
 	host.closeSessionMenu()
 	if host.sessionState.Card == nil || !host.sessionState.Card.CanFollowUp {

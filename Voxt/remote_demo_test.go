@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 )
 
 type remoteDemoStep struct {
@@ -37,6 +39,8 @@ func TestRemoteDemoActionControls(t *testing.T) {
 		{name: "save dialog", fixture: "en/remote-dialog-normal", steps: remoteSteps(remoteDemoStep{label: "Save"}), want: []string{"saveProviderDialog"}},
 		{name: "remove dialog", fixture: "en/remote-dialog-normal", steps: remoteSteps(remoteDemoStep{label: "Remove Fixture service"}), want: []string{"removeProvider"}},
 		{name: "cancel dialog", fixture: "en/remote-dialog-normal", steps: remoteSteps(remoteDemoStep{label: "Cancel"}), check: remoteDialogClosed},
+		{name: "spaced key dismissal", fixture: "en/remote-dialog-key-spaced", steps: remoteSteps(remoteDemoStep{key: ui.KeyEscape}), check: remoteDialogOpen},
+		{name: "remove key dismissal", fixture: "en/remote-dialog-remove-key", steps: remoteSteps(remoteDemoStep{key: ui.KeyEscape}), check: remoteDialogOpen},
 		{name: "show key", fixture: "en/remote-dialog-key-spaced", steps: remoteSteps(remoteDemoStep{label: "Show or hide the key"}), check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 			if !host.remoteDialogUI.showKey {
 				t.Fatal("key stayed hidden")
@@ -151,6 +155,81 @@ func TestRemoteDemoActionControls(t *testing.T) {
 	}
 }
 
+func TestRemoteDemoDismissalUsesSavedSetup(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		speech    bool
+		showAppID bool
+		edit      func(*providerDialogLocalUI)
+	}{
+		{name: "App ID", showAppID: true, edit: func(local *providerDialogLocalUI) { local.appID = "fixture-app" }},
+		{name: "model", edit: func(local *providerDialogLocalUI) { local.model = "other-model" }},
+		{name: "custom model", edit: func(local *providerDialogLocalUI) {
+			local.model, local.customModel = "Other model…", "custom-model"
+		}},
+		{name: "recognition prompt", speech: true, edit: func(local *providerDialogLocalUI) { local.recognitionPrompt = "changed prompt" }},
+		{name: "generation", edit: func(local *providerDialogLocalUI) { local.gen.temperature = "0.7" }},
+	} {
+		for _, revert := range []bool{false, true} {
+			name := test.name + "/edit"
+			if revert {
+				name = test.name + "/revert"
+			}
+			t.Run(name, func(t *testing.T) {
+				kind := local.LLM
+				if test.speech {
+					kind = local.ASR
+				}
+				input := remoteFixtureDialogInput(kind)
+				if test.showAppID {
+					input.Service.appID = true
+				}
+				original := input.Dialog.providerDialogLocalUI
+				if revert {
+					test.edit(&input.Dialog.providerDialogLocalUI)
+					input.Unsaved = input.Dialog.unsaved()
+				}
+				state := buildRemoteDialogViewState(i18n.NewTranslator("en"), *input)
+				host := &meetingDemoHost{fixtures: []meetingDemoFixture{{state: meetingFixtureState{RemoteDialog: &state}}}}
+				host.remoteDialogUI = remoteDialogLocalState(state)
+				tester := ui.NewTester(func(c *ui.Context) {
+					if revert {
+						open := host.remoteDialogUI.open
+						host.remoteDialogUI = original
+						host.remoteDialogUI.open = open
+					} else {
+						test.edit(&host.remoteDialogUI)
+					}
+					remoteProviderDialogView(c, &state, host, &host.remoteDialogUI)
+				}, 1000, 1000)
+				tester.Key(0, ui.KeyEscape)
+				frames(tester)
+				wantOpen := !revert
+				if host.remoteDialogUI.open != wantOpen {
+					t.Fatalf("dialog open %t, want %t", host.remoteDialogUI.open, wantOpen)
+				}
+			})
+		}
+	}
+}
+
+func TestRemoteDemoDismissalNormalizesSavedGeneration(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/remote-dialog-unsaved")
+	state := host.current().state.RemoteDialog
+	if state.SavedForm == nil || state.SavedForm.Generation.Think != "on" || state.Form.Generation.Think != "Thinking on" {
+		t.Fatalf("fixture generation domains changed: saved %+v, live %+v", state.SavedForm, state.Form)
+	}
+	host.remoteDialogUI.endpoint = state.SavedForm.Endpoint
+	tester := newMeetingDemoTester(t, host)
+	tester.Key(0, ui.KeyEscape)
+	frames(tester)
+	remoteDialogClosed(t, host, tester)
+}
+
 func remoteSteps(steps ...remoteDemoStep) []remoteDemoStep { return steps }
 
 func remoteDebugSavedPrompt(host *meetingDemoHost) string {
@@ -160,6 +239,16 @@ func remoteDebugSavedPrompt(host *meetingDemoHost) string {
 		}
 	}
 	return ""
+}
+
+func remoteDialogOpen(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+	t.Helper()
+	if !host.remoteDialogUI.open {
+		t.Fatal("Escape dismissed a dialog with an unsaved key edit")
+	}
+	if !host.current().state.RemoteDialog.Unsaved {
+		t.Fatal("fixture dialog state disagrees with its key edit")
+	}
 }
 
 func remoteDialogClosed(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {

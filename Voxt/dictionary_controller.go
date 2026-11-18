@@ -94,6 +94,7 @@ type dictionaryEditCacheKey struct {
 	id, term, aliases, note string
 	enabled                 bool
 	err                     string
+	errCode                 string
 	saving                  bool
 	original, suggestion    string
 }
@@ -131,7 +132,7 @@ func dictionaryEditCacheKeyFor(local dictionaryLocalUI) dictionaryEditCacheKey {
 	edit := local.edit
 	return dictionaryEditCacheKey{
 		open: local.editOpen, id: edit.id, term: edit.term, aliases: edit.aliases, note: edit.note,
-		enabled: edit.enabled, err: edit.err, saving: edit.saving, original: edit.original, suggestion: edit.suggestion,
+		enabled: edit.enabled, err: edit.err, errCode: edit.errCode, saving: edit.saving, original: edit.original, suggestion: edit.suggestion,
 	}
 }
 
@@ -234,7 +235,7 @@ func dictionaryTermEditInput(local dictionaryLocalUI) dictionaryTermEditStateInp
 	edit := local.edit
 	return dictionaryTermEditStateInput{
 		Open: local.editOpen, ID: edit.id, Term: edit.term, Aliases: edit.aliases, Note: edit.note,
-		Enabled: edit.enabled, Error: edit.err, Saving: edit.saving, Original: edit.original, Suggestion: edit.suggestion,
+		Enabled: edit.enabled, Error: edit.err, ErrorCode: edit.errCode, Saving: edit.saving, Original: edit.original, Suggestion: edit.suggestion,
 	}
 }
 
@@ -281,11 +282,16 @@ func (a *app) openTerm(term store.Term) {
 	local.editWas = local.edit
 }
 
+func (a *app) setDictionaryTermError(err error) {
+	a.dictUI.edit.err = uitext.TermErrorText(err)
+	a.dictUI.edit.errCode = dictionaryTermErrorCode(err)
+}
+
 func (a *app) submitTerm() {
 	edit := &a.dictUI.edit
 	term := dict.Clean(store.Term{ID: edit.id, Term: edit.term, Aliases: dict.SplitAliases(edit.aliases), Note: edit.note, Enabled: edit.enabled, CreatedAt: edit.createdAt})
 	if err := dict.Check(term); err != nil {
-		edit.err = uitext.TermErrorText(err)
+		a.setDictionaryTermError(err)
 		return
 	}
 	edit.saving = true
@@ -313,7 +319,7 @@ func (a *app) saveTerm(term store.Term, fromDialog bool) {
 			if fromDialog {
 				a.dictUI.edit.saving = false
 				if err != nil {
-					a.dictUI.edit.err = uitext.TermErrorText(err)
+					a.setDictionaryTermError(err)
 					return
 				}
 				a.dictUI.editOpen = false

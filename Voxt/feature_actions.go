@@ -8,6 +8,7 @@ type featureActions interface {
 	chooseFeatureShortcut(feature string, index int, keys string)
 	setFeatureShortcutTrigger(feature string, index, trigger int)
 	removeFeatureShortcut(feature string, index int)
+	typeFeatureShortcutKeys(row *keyRow) featureCustomKeysViewState
 	saveFeatureShortcutKeys(feature string, index int, keys string)
 	chooseFeaturePasteLast(keys string)
 	saveFeaturePasteLast(keys string)

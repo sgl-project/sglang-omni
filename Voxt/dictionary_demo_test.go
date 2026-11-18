@@ -83,14 +83,24 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 		{name: "delete note", fixture: "en/notes-normal", steps: historySteps("Delete call Ana"), want: []string{`deleteDictionaryNote note-2 "call Ana"`}},
 		{name: "note keys off", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Off", click: true}}, want: []string{`setNoteKeys ""`}},
 		{name: "note keys preset", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Right ⇧", click: true}}, want: []string{`setNoteKeys "RightShift"`}},
-		{name: "note keys custom", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {key: ui.KeyEnd}, {key: ui.KeyEnter}}, want: []string{"setNoteHotkeyFocus true"}, check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "note keys custom pointer", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Custom…", click: true}}, want: []string{"setNoteHotkeyFocus true"}, check: func(t *testing.T, host *meetingDemoHost) {
+			if !host.notesUI.keys.custom {
+				t.Fatal("custom key editor did not open")
+			}
+		}},
+		{name: "note keys custom keyboard", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {key: ui.KeyEnd}, {key: ui.KeyEnter}}, want: []string{"setNoteHotkeyFocus true"}, check: func(t *testing.T, host *meetingDemoHost) {
 			if !host.notesUI.keys.custom {
 				t.Fatal("custom key editor did not open")
 			}
 		}},
 		{name: "note key press", fixture: "en/notes-shortcut-custom", steps: []historyDemoStep{{key: ui.KeyK}}, want: []string{`recordNoteKeys "K"`}},
 		{name: "note key draft", fixture: "en/notes-shortcut-parse-empty", steps: []historyDemoStep{{label: "Custom keys to record a note", text: "Control+Option+K"}}, want: []string{`updateNoteKeysDraft "Control+Option+K"`}},
-		{name: "note key save", fixture: "en/notes-shortcut-typing", steps: []historyDemoStep{{label: "Custom keys to record a note", text: "X"}, {key: ui.KeyEnter}}, want: []string{`setNoteKeys "Control+Option+K"`, `updateNoteKeysDraft "Control+Option+KX"`, `setNoteKeys "Control+Option+KX"`}},
+		{name: "note key rejects invalid save", fixture: "en/notes-shortcut-typing", steps: []historyDemoStep{{label: "Custom keys to record a note", text: "X"}, {key: ui.KeyEnter}}, want: []string{`setNoteKeys "Control+Option+K"`, `updateNoteKeysDraft "Control+Option+KX"`}, check: func(t *testing.T, host *meetingDemoHost) {
+			if !host.notesUI.keys.edited || host.notesUI.keys.text != "Control+Option+KX" {
+				t.Fatalf("invalid draft %+v", host.notesUI.keys)
+			}
+		}},
+		{name: "note key saves valid chord", fixture: "en/notes-shortcut-parse-empty", steps: []historyDemoStep{{label: "Custom keys to record a note", text: "Control+Option+K"}, {key: ui.KeyEnter}}, want: []string{`updateNoteKeysDraft "Control+Option+K"`, `setNoteKeys "Control+Option+K"`}},
 		{name: "type keys", fixture: "en/notes-shortcut-custom", steps: historySteps("Type the keys instead"), want: []string{"setNoteHotkeyFocus false"}, check: func(t *testing.T, host *meetingDemoHost) {
 			if !host.notesUI.keys.typing {
 				t.Fatal("typed key editor did not open")
@@ -148,5 +158,30 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 				test.check(t, host)
 			}
 		})
+	}
+}
+
+func TestDictionaryDemoNotesExampleRebuilds(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/dictionary-notes-empty")
+	tester := newMeetingDemoTester(t, host)
+	tester.SetSize(windowWidth, 900)
+	if err := tester.Click("Personal dictionary in Markdown"); err != nil {
+		t.Fatal(err)
+	}
+	tester.Type("Roth")
+	frames(tester)
+	if !has(tester, "\n\nRoth\n\nGlossary:") {
+		t.Fatalf("typed notes missing from the prompt example: %q", tester.Texts())
+	}
+	if err := tester.Click("Rewrite"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tester)
+	if !has(tester, "+ Your input (the selected text)") {
+		t.Fatalf("Rewrite selected-input card missing: %q", tester.Texts())
 	}
 }

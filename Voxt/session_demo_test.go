@@ -69,7 +69,7 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 		{name: "skip", fixture: "en/overlay-composing-skip", methods: []string{"skipLLM"}, steps: steps("Use transcript"), want: []string{"skipLLM"}},
 		{name: "stop session", fixture: "en/card-follow-up-recording", methods: []string{"stopSession"}, steps: steps("Done"), want: []string{"stopSession"}},
 		{name: "stop answer", fixture: "en/card-follow-up-writing", methods: []string{"stopLLM"}, steps: steps("Stop"), want: []string{"stopLLM"}},
-		{name: "follow up", fixture: "en/card-short", methods: []string{"followUpAnswer"}, steps: steps("Continue"), want: []string{`followUpAnswer ""`}},
+		{name: "follow up", fixture: "en/card-short", methods: []string{"continueAnswer"}, steps: steps("Continue"), want: []string{`followUpAnswer ""`}},
 		{name: "retry", fixture: "en/card-failed", methods: []string{"retryAnswer"}, steps: steps("Try again"), want: []string{`retryAnswer ""`}},
 		{name: "insert", fixture: "en/card-short", methods: []string{"insertAnswer"}, steps: steps("Insert"), want: []string{"insertAnswer"}},
 		{name: "copy", fixture: "en/card-short", methods: []string{"copyAnswer"}, steps: steps("Copy"), want: []string{"copyAnswer"}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {

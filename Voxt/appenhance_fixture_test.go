@@ -28,6 +28,9 @@ func checkAppEnhancementFixtureValues(t *testing.T, locale string, fixtures map[
 			t.Errorf("%s: missing required app enhancement fixture %s", locale, name)
 		}
 	}
+	if got := fixtures["appenhance-url-duplicate"].AppEnhancement.Detail.URLErrorCode; got != "duplicate" {
+		t.Errorf("%s: duplicate URL error code %q, want duplicate", locale, got)
+	}
 	sources := map[string]bool{}
 	patternProblems := map[string]bool{}
 	autoKeyProblems := map[string]bool{}
@@ -70,7 +73,9 @@ func checkAppEnhancementFixtureValues(t *testing.T, locale string, fixtures map[
 		}
 	}
 	assertMeetingFixtureSet(t, locale+" app enhancement match sources", meetingTypedConstants(t, "internal/appctx/match.go", "Source"), sources)
-	assertMeetingFixtureSet(t, locale+" app enhancement pattern problems", appEnhancementPatternProblemCodes(t), patternProblems)
+	requiredPatternProblems := appEnhancementPatternProblemCodes(t)
+	delete(requiredPatternProblems, "empty")
+	assertMeetingFixtureSet(t, locale+" app enhancement pattern problems", requiredPatternProblems, patternProblems)
 	assertMeetingFixtureSet(t, locale+" app enhancement auto-key problems", map[string]bool{"autoKey": true}, autoKeyProblems)
 	assertMeetingFixtureSet(t, locale+" app enhancement browser engines", map[string]bool{appctx.WebKit: true, appctx.Chromium: true, appctx.Gecko: true, "": true}, engines)
 	assertMeetingFixtureSet(t, locale+" app enhancement address states", map[string]bool{
@@ -90,13 +95,13 @@ func checkAppEnhancementFixtureValues(t *testing.T, locale string, fixtures map[
 }
 
 func TestAppEnhancementPatternErrors(t *testing.T) {
-	patterns := map[string]string{"empty": "", "space": "bad host", "scheme": "ftp://example.com", "host": "*"}
-	for code := range appEnhancementPatternProblemCodes(t) {
+	patterns := map[string]string{"space": "bad host", "scheme": "ftp://example.com", "host": "*"}
+	for code, pattern := range patterns {
 		input := appEnhancementFixtureInput()
-		appEnhancementFixturePattern(&input, patterns[code])
+		appEnhancementFixturePattern(&input, pattern)
 		state := buildAppEnhancementViewState(i18n.NewTranslator("en"), input)
 		if len(state.Detail.URLs) != 1 || state.Detail.URLs[0].WarningCode != code {
-			t.Errorf("pattern %q produced %+v, want warning code %q", patterns[code], state.Detail.URLs, code)
+			t.Errorf("pattern %q produced %+v, want warning code %q", pattern, state.Detail.URLs, code)
 		}
 	}
 }

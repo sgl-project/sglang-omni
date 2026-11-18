@@ -164,6 +164,15 @@
         "advanced": true,
         "api": "Chat Completions"
       }
+    },
+    "saved_form": {
+      "model": "fixture-model",
+      "generation": {
+        "think": "on",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
     }
   }
 }

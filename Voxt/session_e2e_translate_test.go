@@ -197,6 +197,59 @@ func TestTranslateFailureRetry(t *testing.T) {
 	}
 }
 
+// TestTranslateRewriteHotkeyPreservesLanguageMenu: starting a follow-up by hotkey keeps the menu's state for Escape and cancellation.
+func TestTranslateRewriteHotkeyPreservesLanguageMenu(t *testing.T) {
+	newCard := func(t *testing.T) (*sessionApp, proto.App) {
+		t.Helper()
+		chat := &fakeChat{text: "早上好，团队。"}
+		set, keys, _ := fileSetup(t, "unused", chat)
+		ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
+		a := newSessionApp(t, helpertest.Opt("selection", "Good morning, team.")+","+ev, func(s *settings.Settings) {
+			set(s)
+			s.Features.Translate.ShowCard = true
+		}, keys)
+		a.pump("the translation", func() bool { return a.sess.State.Ended() })
+		a.toggleLangMenu()
+		return a, a.answer.target
+	}
+	startFollowUp := func(t *testing.T, a *sessionApp, front proto.App) {
+		t.Helper()
+		first := a.sess.ID
+		a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
+		a.pump("the follow-up", func() bool { return a.sess.ID != first && a.sess.State == session.Recording })
+		if !a.answer.ui.langOpen || a.answer.ui.thinkMenu || a.answer.ui.pillMenu || a.ov.lang.shown {
+			t.Fatalf("follow-up menu state: %+v shown %v", a.answer.ui, a.ov.lang.shown)
+		}
+	}
+
+	t.Run("Escape closes the menu before cancellation", func(t *testing.T) {
+		a, front := newCard(t)
+		startFollowUp(t, a, front)
+		a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+		if a.answer.ui.langOpen || !a.sess.State.Live() || !a.answer.open {
+			t.Fatalf("Escape did more than close the menu: %+v %s", a.answer.ui, a.sess.State)
+		}
+		a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+		a.pump("the cancellation", func() bool { return a.sess.State == session.Cancelled })
+		if !a.answer.open || a.answer.text != "早上好，团队。" || a.followUp != "" || !a.cachedCard().CanLanguage {
+			t.Fatalf("cancellation did not restore the translation: %+v follow-up %q", a.answer, a.followUp)
+		}
+	})
+	t.Run("cancellation restores the menu", func(t *testing.T) {
+		a, front := newCard(t)
+		startFollowUp(t, a, front)
+		a.cancelSession()
+		a.pump("the cancellation", func() bool { return a.sess.State == session.Cancelled })
+		if !a.answer.ui.langOpen || !a.ov.lang.shown || !a.answer.open {
+			t.Fatalf("cancellation did not restore the menu: %+v shown %v", a.answer.ui, a.ov.lang.shown)
+		}
+		a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+		if a.answer.ui.langOpen || !a.answer.open {
+			t.Fatalf("Escape after cancellation: %+v open %v", a.answer.ui, a.answer.open)
+		}
+	})
+}
+
 // TestTranslateContinue: the tester's case 4 (#3897). English selected,
 // the main language Chinese: Translate writes Chinese, into the card,
 // which offers Continue; a spoken follow-up changes that translation, the

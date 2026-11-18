@@ -7,6 +7,27 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
+func TestUpdatesReleaseUpToDateScenarioIsCoherent(t *testing.T) {
+	checked := false
+	for _, scenario := range updatesFixtureScenarios() {
+		if scenario.name != "updates-release-up-to-date" {
+			continue
+		}
+		checked = true
+		input := scenario.release
+		if !input.Done || input.Newer || input.Found.Version != input.RunningVersion {
+			t.Fatalf("up-to-date input is inconsistent: %+v", input)
+		}
+		state := buildReleaseViewState(i18n.NewTranslator("en"), input)
+		if state.Newer || !strings.Contains(state.Subtitle, input.Found.Version) {
+			t.Fatalf("up-to-date view state is inconsistent: %+v", state)
+		}
+	}
+	if !checked {
+		t.Fatal("updates-release-up-to-date scenario is missing")
+	}
+}
+
 func TestUpdatesFixtureCoverage(t *testing.T) {
 	// Updates has no status enum. These names cover its display branches and
 	// each release-check error branch.

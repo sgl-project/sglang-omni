@@ -92,7 +92,7 @@ func remoteProviderDialogView(c *ui.Context, state *remoteDialogViewState, actio
 		if primaryButton(c.Key("remote-dlg-save"), i18n.T("Save")).Disabled(state.Saving).Shrink(0).Clicked() {
 			actions.saveProviderDialog()
 		}
-	}).Dismissed() && state.Unsaved {
+	}).Dismissed() && actions.remoteDialogUnsaved() {
 		local.open = true
 	}
 }

@@ -7,6 +7,21 @@ func (host *meetingDemoHost) remoteDebugState() llmDebugViewState {
 	return llmDebugStateForLocal(*host.current().state.RemoteDebug, &host.remoteDebugUI)
 }
 
+func (host *meetingDemoHost) remoteDialogUnsaved() bool {
+	state := host.current().state.RemoteDialog
+	if state == nil {
+		return false
+	}
+	savedState := *state
+	if state.SavedForm != nil {
+		savedState.Form = *state.SavedForm
+	}
+	kind := remoteKind(state.Kind)
+	saved := providerDialog{providerDialogLocalUI: remoteDialogLocalState(savedState), kind: kind, id: state.ID}
+	live := providerDialog{providerDialogLocalUI: host.remoteDialogUI, kind: kind, id: state.ID, was: saved.setup()}
+	return live.unsaved()
+}
+
 func (host *meetingDemoHost) openRemoteProvider(kind, id string) {
 	host.record("openRemoteProvider %s %s", kind, id)
 }

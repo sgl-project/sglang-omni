@@ -35,6 +35,7 @@ type termEdit struct {
 	note          string
 	enabled       bool
 	err           string
+	errCode       string
 	saving        bool
 	createdAt     time.Time
 	original      string
@@ -79,7 +80,9 @@ func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionar
 	})
 	pageBody(c).Children(func() {
 		ui.Row(c).Padding(px(t, sp1), px(t, sp6), 0).Shrink(0).Children(func() {
-			segmentedFit(c.Key("dict-tab"), &local.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
+			if segmentedFit(c.Key("dict-tab"), &local.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view")).Changed() && local.tab == dictNotesTab {
+				state.Notes = actions.autosaveDictionaryNotes(false, true)
+			}
 		})
 		if local.tab == dictNotesTab {
 			dictionaryNotesView(c, &state.Notes, actions, local)
@@ -254,7 +257,7 @@ func termDialog(c *ui.Context, actions dictionaryActions, local *dictionaryLocal
 		fieldInfo(c, i18n.T("Term"), i18n.T("As it should be written: Voxt, Kubernetes, 豆包."), func() {
 			input := ui.TextInput(c.Key("term-term"), &edit.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
 			if input.Changed() {
-				edit.err = ""
+				edit.err, edit.errCode = "", ""
 			}
 			if input.Submitted() {
 				actions.submitTerm()

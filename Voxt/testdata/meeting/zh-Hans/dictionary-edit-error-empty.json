@@ -60,15 +60,15 @@
     },
     "edit": {
       "open": true,
-      "id": "term-voxt",
-      "term": "Voxt",
+      "id": "",
+      "term": "",
       "aliases": "",
       "note": "",
       "enabled": true,
       "error": "请输入词条的正确写法。",
       "error_code": "empty",
       "saving": false,
-      "original": "Voxt",
+      "original": "",
       "suggestion": ""
     },
     "notes_text": "",

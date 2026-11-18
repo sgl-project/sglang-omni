@@ -111,6 +111,9 @@ func verbosityTitleFor(translator *i18n.Translator, v string) string {
 
 // valueOf is the value among values whose title is title ("" for none).
 func valueOf(title string, values []string, titleOf func(string) string) string {
+	if slices.Contains(values, title) {
+		return title
+	}
 	for _, v := range values {
 		if titleOf(v) == title {
 			return v

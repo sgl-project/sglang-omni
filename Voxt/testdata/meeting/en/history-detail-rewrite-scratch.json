@@ -21,7 +21,7 @@
         "id": "history-rewritten",
         "title": "A formal answer",
         "failed_title": false,
-        "meta": "5 minutes ago · Notes · 0:08",
+        "meta": "7 minutes ago · Notes · 0:08",
         "selected": true,
         "copy_text": "A formal answer",
         "raw_copy_text": "make this formal",
@@ -88,7 +88,7 @@
           "facts": [
             {
               "label": "Time",
-              "value": "Jan 2 14:59",
+              "value": "Jan 2 14:57",
               "empty": false
             },
             {

@@ -30,7 +30,7 @@ type sessionOverlayActions interface {
 	skipLLM()
 	stopSession()
 	stopLLM()
-	followUpAnswer(hold string) bool
+	continueAnswer()
 	retryAnswer(language string)
 	insertAnswer()
 	copyAnswer()

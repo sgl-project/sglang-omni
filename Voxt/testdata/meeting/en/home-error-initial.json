@@ -64,7 +64,7 @@
         "fix": ""
       }
     ],
-    "show_try": false,
+    "show_try": true,
     "try_recording": false,
     "today": {
       "count": "0",

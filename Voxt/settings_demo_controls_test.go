@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
 func settingsDemoKeyRecorderCases() []settingsDemoCase {
@@ -78,13 +79,25 @@ func settingsDemoKeyRecorderCases() []settingsDemoCase {
 	}
 }
 
+func checkSettingsDemoOverlayPreview(t *testing.T, host *meetingDemoHost) {
+	t.Helper()
+	overlay := host.current().state.Settings.Overlay
+	if overlay == nil || overlay.Preview == nil {
+		t.Fatal("demo overlay settings have no preview projection")
+	}
+	expected := buildSettingsOverlayViewState(i18n.CurrentTranslator(), host.settingsForm.ovStyle.overlay(), meetingFixtureNow)
+	if *overlay.Preview != *expected.Preview {
+		t.Fatalf("edited preview is %+v, want %+v", *overlay.Preview, *expected.Preview)
+	}
+}
+
 func settingsDemoControlCases() []settingsDemoCase {
 	return []settingsDemoCase{
-		{name: "overlay position", fixture: "en/settings-overlay-normal", steps: historySteps("Top centre"), want: []string{"overlayEdited"}},
-		{name: "overlay margin slider", fixture: "en/settings-overlay-normal", scroll: "Distance from the edge", slider: "96", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}},
-		{name: "overlay opacity slider", fixture: "en/settings-overlay-normal", scroll: "Opacity", slider: "80%", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}},
-		{name: "overlay radius slider", fixture: "en/settings-overlay-normal", scroll: "Corner radius", slider: "24", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}},
-		{name: "overlay recording time", fixture: "en/settings-overlay-normal", scroll: "Show recording time", steps: historySteps("Show recording time"), want: []string{"overlayEdited"}},
+		{name: "overlay position", fixture: "en/settings-overlay-normal", steps: historySteps("Top centre"), want: []string{"overlayEdited"}, check: checkSettingsDemoOverlayPreview},
+		{name: "overlay margin slider", fixture: "en/settings-overlay-normal", scroll: "Distance from the edge", slider: "96", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}, check: checkSettingsDemoOverlayPreview},
+		{name: "overlay opacity slider", fixture: "en/settings-overlay-normal", scroll: "Opacity", slider: "80%", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}, check: checkSettingsDemoOverlayPreview},
+		{name: "overlay radius slider", fixture: "en/settings-overlay-normal", scroll: "Corner radius", slider: "24", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}, check: checkSettingsDemoOverlayPreview},
+		{name: "overlay recording time", fixture: "en/settings-overlay-normal", scroll: "Show recording time", steps: historySteps("Show recording time"), want: []string{"overlayEdited"}, wantText: "0:07", check: checkSettingsDemoOverlayPreview},
 		{name: "overlay live text", fixture: "en/settings-overlay-normal", scroll: "Show live text", steps: historySteps("Show live text"), want: []string{"overlayEdited"}},
 		{name: "overlay live layout", fixture: "en/settings-overlay-normal", scroll: "Live text layout", steps: historySteps("Lines"), want: []string{"overlayEdited"}},
 		{name: "shortcut permissions", fixture: "en/settings-shortcuts-duplicate-problem-strict-fn-no-accessibility", steps: historySteps("Open Permissions"), want: []string{"openShortcutPermissions"}},

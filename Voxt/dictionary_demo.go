@@ -1,5 +1,14 @@
 package main
 
+import (
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
+)
+
 func (host *meetingDemoHost) loadDict() { host.record("loadDict") }
 
 func (host *meetingDemoHost) searchDictionary(query string) {
@@ -73,6 +82,22 @@ func (host *meetingDemoHost) startScan()          { host.record("startScan") }
 func (host *meetingDemoHost) stopDictionaryScan() { host.record("stopDictionaryScan") }
 func (host *meetingDemoHost) saveNotes()          { host.record("saveNotes") }
 
+func (host *meetingDemoHost) dictionaryNotesModel() dictionaryNotesViewState {
+	dictionary := host.current().state.Dictionary
+	preferences := settings.Defaults()
+	preferences.Dictionary.Enabled = dictionary.Enabled
+	preferences.Dictionary.Glossary = dictionary.Glossary
+	preferences.Dictionary.NotesOff = dictionary.Notes.NotesOff
+	preferences.Features.Transcribe.Enhance = !dictionary.Notes.EnhanceOff
+	terms := make([]store.Term, 0, len(dictionary.Terms))
+	for _, term := range dictionary.Terms {
+		terms = append(terms, store.Term{ID: term.ID, Term: term.Term, Aliases: dict.SplitAliases(term.AliasesText), Note: term.Note, Enabled: term.Enabled})
+	}
+	return buildDictionaryNotesViewState(i18n.CurrentTranslator(), dictionaryNotesStateInput{
+		Settings: preferences, Terms: terms, Feature: notesFeatures[host.dictionaryUI.notesFeature], NotesText: host.dictionaryUI.notes.text,
+	})
+}
+
 func (host *meetingDemoHost) autosaveDictionaryNotes(changed, focused bool) dictionaryNotesViewState {
 	notes := &host.dictionaryUI.notes
 	if changed {
@@ -83,7 +108,7 @@ func (host *meetingDemoHost) autosaveDictionaryNotes(changed, focused bool) dict
 		notes.dirty = false
 		host.saveNotes()
 	}
-	return host.current().state.Dictionary.Notes
+	return host.dictionaryNotesModel()
 }
 
 func (host *meetingDemoHost) setDictionaryNotesOff(off bool) {
@@ -102,10 +127,17 @@ func (host *meetingDemoHost) setNoteKeys(keys string) {
 }
 
 func (host *meetingDemoHost) recordNoteKeys(keys string) notesShortcutViewState {
-	host.notesUI.keys.text, host.notesUI.keys.edited = keys, false
+	chord, err := hotkey.Parse(keys)
+	host.notesUI.keys.unknown = err != nil
 	host.record("recordNoteKeys %q", keys)
 	state := host.current().state.Notes.Shortcut
-	state.Text, state.EditingText = keys, keys
+	state.Unknown = err != nil
+	if err == nil {
+		host.notesUI.keys.text, host.notesUI.keys.edited = chord.String(), false
+		state.Text, state.EditingText, state.Edited = chord.String(), uitext.HotkeyText(chord.String()), false
+		state.ParsedKeys = chord.String()
+		state.ParseError, state.ParseCode, state.EditedHint = "", "", ""
+	}
 	return state
 }
 
@@ -113,8 +145,13 @@ func (host *meetingDemoHost) updateNoteKeysDraft(text string) notesShortcutViewS
 	host.notesUI.keys.text, host.notesUI.keys.edited = text, true
 	host.record("updateNoteKeysDraft %q", text)
 	state := host.current().state.Notes.Shortcut
-	state.Text, state.EditingText, state.Edited = text, text, true
-	state.ParsedKeys, state.ParseError = text, ""
+	parsed := buildNotesShortcutViewState(i18n.CurrentTranslator(), notesViewStateInput{
+		Features: settings.Features{Note: settings.Hotkey{Keys: state.Keys}},
+		Editing:  notesShortcutStateInput{Custom: state.Custom, Typing: state.Typing, Edited: true, Text: text},
+	})
+	state.Text, state.EditingText, state.Edited = parsed.Text, parsed.EditingText, true
+	state.ParsedKeys, state.ParseError, state.ParseCode = parsed.ParsedKeys, parsed.ParseError, parsed.ParseCode
+	state.EditedHint = parsed.EditedHint
 	return state
 }
 

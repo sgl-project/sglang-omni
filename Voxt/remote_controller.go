@@ -52,6 +52,8 @@ func (a *app) remoteDialogStateInput() *remoteDialogStateInput {
 	}
 }
 
+func (a *app) remoteDialogUnsaved() bool { return a.provDlg.unsaved() }
+
 func (a *app) remoteDialogModel() *remoteDialogViewState {
 	a.prepareRemoteDialog()
 	input := a.remoteDialogStateInput()

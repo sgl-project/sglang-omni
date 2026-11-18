@@ -68,7 +68,22 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			case "updates-release":
 				releaseDialog(c, *fixture.state.UpdatesRelease, host, &host.updatesUI)
 			case "home":
-				homePage(c, fixture.state.Home, host, &host.historyUI, nil)
+				var tryView func(*ui.Context)
+				if fixture.state.Home.ShowTry {
+					name := fixture.locale + "/feature-normal"
+					if fixture.state.Home.TryRecording {
+						name = fixture.locale + "/feature-try-state-recording"
+					}
+					for _, candidate := range host.fixtures {
+						if candidate.name == name {
+							state := candidate.state.Feature.Try
+							state.Prefix = "home"
+							tryView = func(c *ui.Context) { tryCard(c, &state, host) }
+							break
+						}
+					}
+				}
+				homePage(c, fixture.state.Home, host, &host.historyUI, tryView)
 				historyDeleteDialog(c, &host.historyUI, host)
 			case "onboarding":
 				onboardingView(c, *fixture.state.Onboarding, host, &host.onboardingUI)
@@ -104,9 +119,14 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				dialogFrame(c, "mt-set", &host.pageUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
 					state := *fixture.state.MeetingSettings
 					meetingCaptureSettings(c, state, host, &host.settingsMeetingUI)
+					if fixture.state.MeetingShortcuts != nil {
+						shortcuts := host.meetingShortcutsViewState(fixture.state.MeetingShortcuts)
+						featureShortcuts(c, "meeting", &shortcuts, host, &host.feature.local)
+					}
 					meetingASRSettings(c, state, host)
 					meetingLLMSettings(c, state, host)
 					meetingConsent(c)
+
 				}, func() {
 					ui.Spacer(c)
 					if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {

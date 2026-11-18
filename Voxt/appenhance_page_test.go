@@ -141,6 +141,9 @@ func TestAppEnhancementEdit(t *testing.T) {
 	if !has(tt, "A website rule cannot contain spaces.") {
 		t.Errorf("no error: %q", firstTexts(tt))
 	}
+	if got := a.appEnhancementModel().Detail.URLErrorCode; got != "space" {
+		t.Fatalf("invalid website error code %q, want space", got)
+	}
 	a.aeUI.urlIn = "*.notion.so"
 	frames(tt)
 	click(t, tt, "Add website rule")
@@ -152,6 +155,9 @@ func TestAppEnhancementEdit(t *testing.T) {
 	click(t, tt, "Add website rule")
 	if !has(tt, "This rule is in the group already.") {
 		t.Error("duplicate rule added")
+	}
+	if got := a.appEnhancementModel().Detail.URLErrorCode; got != "duplicate" {
+		t.Fatalf("duplicate website error code %q, want duplicate", got)
 	}
 	click(t, tt, "Remove gitlab.com/acme/*")
 	if g, _ := storedRules(t, a).Group("g-code"); len(g.URLs) != 2 {
@@ -165,6 +171,19 @@ func TestAppEnhancementEdit(t *testing.T) {
 	click(t, tt, "Delete")
 	if _, ok := storedRules(t, a).Group("g-code"); ok {
 		t.Error("not deleted")
+	}
+}
+
+func TestAppEnhancementEmptyURLSubmission(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.setRules(sampleRules())
+	a.aeUI.sel = "g-code"
+	before := a.aeSaveSeq
+	a.aeUI.urlIn = " \t\n"
+	a.addAppEnhancementURL("g-code", a.aeUI.urlIn)
+	group, _ := a.aeRules.Group("g-code")
+	if a.aeSaveSeq != before || !slices.Equal(group.URLs, []string{"github.com", "gitlab.com/acme/*"}) || a.aeUI.urlIn != " \t\n" || a.aeUI.urlErr != "" {
+		t.Fatalf("empty submission changed state: sequence %d -> %d, URLs %q, input %q, error %q", before, a.aeSaveSeq, group.URLs, a.aeUI.urlIn, a.aeUI.urlErr)
 	}
 }
 

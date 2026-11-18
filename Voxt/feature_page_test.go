@@ -229,6 +229,39 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 }
 
+// TestFeatureCustomKeysChangedAndSubmitted covers a changed chord submitted before another build.
+func TestFeatureCustomKeysChangedAndSubmitted(t *testing.T) {
+	previous := featureCustomKeysInputEvents
+	featureCustomKeysInputEvents = func(ui.Element) (bool, bool, bool) { return true, true, true }
+	t.Cleanup(func() { featureCustomKeysInputEvents = previous })
+
+	for _, test := range []struct {
+		name, text, want string
+	}{
+		{name: "valid", text: "ctrl+opt+K", want: "Control+Option+K"},
+		{name: "invalid", text: "Control+Option+K+J"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			row := keyRow{text: test.text}
+			state := buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), keyRow{text: "RightOption"})
+			var saved []string
+			ui.NewTester(func(context *ui.Context) {
+				featureCustomKeys(context, &row, "Custom keys", &state, a, func(keys string) { saved = append(saved, keys) })
+			}, 500, 200)
+			if test.want == "" {
+				if len(saved) != 0 || state.ErrorText == "" {
+					t.Fatalf("invalid input saved %q with error %q", saved, state.ErrorText)
+				}
+				return
+			}
+			if len(saved) != 1 || saved[0] != test.want || row.text != test.want || row.edited {
+				t.Fatalf("saved %q, row %+v", saved, row)
+			}
+		})
+	}
+}
+
 // TestTranscribeMouseButton: Custom… says that mouse buttons work too, also
 // when it refuses Mouse1 (the left button); a typed side button is saved,
 // shows by its name in the try card, and goes to the helper as its button

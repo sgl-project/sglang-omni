@@ -192,6 +192,16 @@ func (a *app) removeFeatureShortcut(feature string, index int) {
 	})
 }
 
+func (a *app) typeFeatureShortcutKeys(row *keyRow) featureCustomKeysViewState {
+	row.edited = true
+	return buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), *row)
+}
+
+func (host *meetingDemoHost) typeFeatureShortcutKeys(row *keyRow) featureCustomKeysViewState {
+	row.edited = true
+	return buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), *row)
+}
+
 func (a *app) saveFeatureShortcutKeys(feature string, index int, keys string) {
 	a.setHotkeys(feature, false, func(hotkeys []settings.Hotkey) []settings.Hotkey {
 		if index < len(hotkeys) {

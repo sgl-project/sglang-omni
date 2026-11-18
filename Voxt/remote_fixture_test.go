@@ -123,6 +123,27 @@ func TestRemoteFixtureCoverage(t *testing.T) {
 	}
 }
 
+func TestRemoteDialogFixtureUnsavedCoherence(t *testing.T) {
+	checked := 0
+	for _, scenario := range remoteFixtureScenarios() {
+		if scenario.name != "remote-dialog-key-spaced" && scenario.name != "remote-dialog-remove-key" {
+			continue
+		}
+		checked++
+		input := scenario.remoteDialog
+		if !input.Unsaved || input.Unsaved != input.Dialog.unsaved() {
+			t.Errorf("%s: input Unsaved %t, dialog unsaved %t", scenario.name, input.Unsaved, input.Dialog.unsaved())
+		}
+		state := buildRemoteDialogViewState(i18n.NewTranslator("en"), *input)
+		if state.Unsaved != input.Dialog.unsaved() {
+			t.Errorf("%s: view-state Unsaved %t, dialog unsaved %t", scenario.name, state.Unsaved, input.Dialog.unsaved())
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d unsaved key fixtures, want 2", checked)
+	}
+}
+
 func TestRemoteNoKeyTestVariants(t *testing.T) {
 	translator := i18n.NewTranslator("en")
 	test := providerTest{res: providers.TestResult{Err: &llm.Error{Code: llm.CodeNoKey}, At: meetingFixtureNow}, detail: "redacted"}

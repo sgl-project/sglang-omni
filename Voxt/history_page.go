@@ -46,6 +46,7 @@ func historyPage(c *ui.Context, state *historyViewState, actions historyActions,
 		ui.Row(c).Padding(px(t, sp1), px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
 			if ui.Segmented(c.Key("hist-tab"), &local.tab, state.Tabs...).Label(i18n.T("Feature")).Shrink(0).Changed() {
 				actions.showHistoryTab(local.tab)
+				state.Detail = nil
 			}
 			if local.find.field(c, "hist-search", &local.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search history")).Changed() {
 				actions.searchHistory(local.query)

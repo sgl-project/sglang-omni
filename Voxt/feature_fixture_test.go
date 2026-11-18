@@ -8,6 +8,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func TestFeatureViewStateUsesExplicitLocale(t *testing.T) {
@@ -38,6 +39,62 @@ func TestFeatureViewStateUsesExplicitLocale(t *testing.T) {
 	}
 	if got := state.Prompt.Rules.Prompt; !strings.Contains(got, "你是语音输入应用 VoxtNew 的听写整理器") {
 		t.Errorf("prompt locale %q", got)
+	}
+}
+
+// TestFeatureProblemFixtureScenarios checks that every problem fixture can come from its session kind.
+func TestFeatureProblemFixtureScenarios(t *testing.T) {
+	tests := map[string]struct {
+		kind     store.Kind
+		state    session.State
+		degraded bool
+	}{
+		"feature-problem-noASR":        {kind: store.KindTranscribe, state: session.Failed},
+		"feature-problem-speechWait":   {kind: store.KindTranscribe, state: session.Failed},
+		"feature-problem-microphone":   {kind: store.KindTranscribe, state: session.Failed},
+		"feature-problem-device":       {kind: store.KindTranscribe, state: session.Failed},
+		"feature-problem-helper":       {kind: store.KindTranscribe, state: session.Failed},
+		"feature-problem-asr":          {kind: store.KindTranscribe, state: session.Failed},
+		"feature-problem-llm":          {kind: store.KindTranslate, state: session.Failed},
+		"feature-problem-noSpeech":     {kind: store.KindTranscribe, state: session.Done},
+		"feature-problem-tooShort":     {kind: store.KindTranscribe, state: session.Cancelled},
+		"feature-problem-noLLM":        {kind: store.KindTranslate, state: session.Failed},
+		"feature-problem-empty":        {kind: store.KindTranslate, state: session.Failed},
+		"feature-problem-truncated":    {kind: store.KindTranslate, state: session.Done, degraded: true},
+		"feature-problem-internal":     {kind: store.KindTranscribe, state: session.Failed},
+		"feature-problem-asr-degraded": {kind: store.KindTranscribe, state: session.Done, degraded: true},
+		"feature-problem-llm-degraded": {kind: store.KindTranscribe, state: session.Done, degraded: true},
+	}
+	scenarios := map[string]featureFixtureScenarioInput{}
+	for _, scenario := range featureFixtureScenarios() {
+		if strings.HasPrefix(scenario.name, "feature-problem-") {
+			scenarios[scenario.name] = scenario.feature
+		}
+	}
+	if len(scenarios) != len(tests) {
+		t.Fatalf("got %d problem scenarios, want %d", len(scenarios), len(tests))
+	}
+	for name, want := range tests {
+		input, ok := scenarios[name]
+		if !ok {
+			t.Errorf("missing %s", name)
+			continue
+		}
+		snapshot := input.Snapshot
+		if snapshot.Kind != want.kind || snapshot.State != want.state || snapshot.Problem == nil || snapshot.Problem.Degraded != want.degraded {
+			t.Errorf("%s: kind %s, state %s, problem %+v", name, snapshot.Kind, snapshot.State, snapshot.Problem)
+		}
+		try := buildFeatureFixtureViewState(i18n.NewTranslator("en"), input).Try
+		if try.State != string(want.state) || try.Ended == nil {
+			t.Errorf("%s: view %+v", name, try)
+			continue
+		}
+		if try.Ended.Cancelled != (want.state == session.Cancelled) {
+			t.Errorf("%s: cancelled %v", name, try.Ended.Cancelled)
+		}
+		if (try.Ended.Warning != nil) != (want.state == session.Done) {
+			t.Errorf("%s: warning %+v", name, try.Ended.Warning)
+		}
 	}
 }
 
@@ -102,7 +159,10 @@ func checkFeatureFixtureValues(t *testing.T, locale string, fixtures map[string]
 	delete(states, "")
 	assertMeetingFixtureSet(t, locale+" feature names", map[string]bool{hotkey.Transcribe: true, hotkey.Translate: true, hotkey.Rewrite: true}, features)
 	assertMeetingFixtureSet(t, locale+" feature session states", meetingTypedConstants(t, "internal/session/session.go", "State"), states)
-	assertMeetingFixtureSet(t, locale+" feature problem codes", meetingNamedConstants(t, "internal/session/session.go", "Problem"), problems)
+	expectedProblems := meetingNamedConstants(t, "internal/session/session.go", "Problem")
+	// Supported Feature Try sessions cannot produce an unknown-kind error.
+	delete(expectedProblems, session.ProblemUnsupported)
+	assertMeetingFixtureSet(t, locale+" feature problem codes", expectedProblems, problems)
 	assertMeetingFixtureSet(t, locale+" feature shortcut problem codes", meetingNamedConstants(t, "internal/hotkey/check.go", "Problem"), shortcutProblems)
 	for size := range settings.CardSizeSteps {
 		if !cardSizes[size] {

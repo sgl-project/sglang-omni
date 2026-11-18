@@ -6,6 +6,7 @@ package main
 // tray_test.go).
 
 import (
+	"encoding/json"
 	"math"
 	"slices"
 	"strings"
@@ -26,6 +27,34 @@ func TestSettingsSectionNavigation(t *testing.T) {
 	frames(tt)
 	if a.shownPath() != "/settings/audio" || !has(tt, "Microphones") {
 		t.Fatalf("section: path %q, texts %q", a.shownPath(), firstTexts(tt))
+	}
+}
+
+func TestOverlaySettingsPreviewProjection(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.settingsOpen = true
+	a.setRouter.Replace("/overlay")
+	state := a.settingsDialogModel(meetingFixtureNow)
+	data, err := json.Marshal(state.Overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overlayFields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &overlayFields); err != nil {
+		t.Fatal(err)
+	}
+	previewJSON := overlayFields["preview"]
+	if len(previewJSON) == 0 || string(previewJSON) == "null" {
+		t.Fatal("overlay settings model has no serializable preview projection")
+	}
+	var previewFields map[string]json.RawMessage
+	if err := json.Unmarshal(previewJSON, &previewFields); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"pill", "face_radius", "face_alpha"} {
+		if _, ok := previewFields[field]; !ok {
+			t.Errorf("preview projection has no %s", field)
+		}
 	}
 }
 

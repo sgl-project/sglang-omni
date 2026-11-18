@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 )
@@ -34,11 +35,6 @@ func TestModelsDemoActionControls(t *testing.T) {
 		{name: "network use theirs", fixture: "en/models-network-conflict", steps: historySteps("Use theirs"), want: []string{"followNetwork " + actnow.KeyProxy + " true"}},
 		{name: "network own", fixture: "en/models-network-follows", steps: historySteps("Use a different setting for this app"), want: []string{"followNetwork " + actnow.KeyProxy + " false"}},
 		{name: "network follow", fixture: "en/models-network-own", steps: historySteps("Use the same setting as the other apps that share this model library"), want: []string{"followNetwork " + actnow.KeyProxy + " true"}},
-		{name: "network proxy input", fixture: "en/models-network-custom-validation", steps: []historyDemoStep{{label: "Proxy address", text: "fixture-proxy"}}, check: func(t *testing.T, host *meetingDemoHost) {
-			if host.modelsUI.netForm.proxyURL != "fixture-proxy" {
-				t.Fatalf("proxy input %q", host.modelsUI.netForm.proxyURL)
-			}
-		}},
 		{name: "download", fixture: "en/models-download-fresh", steps: historySteps("Download Qwen3-ASR 0.6B (4bit)"), want: []string{"downloadModel " + models.ASRFast}},
 		{name: "download again", fixture: "en/models-download-deleted", steps: historySteps("Download Qwen3-ASR 0.6B (4bit)"), want: []string{"downloadModel " + models.ASRFast}},
 		{name: "resume", fixture: "en/models-download-stopped", steps: historySteps("Download Qwen3-ASR 0.6B (4bit)"), want: []string{"downloadModel " + models.ASRFast}},
@@ -130,6 +126,35 @@ func TestModelsDemoActionControls(t *testing.T) {
 				test.check(t, host)
 			}
 		})
+	}
+}
+
+func TestModelsDemoNetworkProxyInput(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/models-network-custom-validation")
+	host.fixtures[host.selected].state.Models.Network.ProxyURL = "not-a-proxy"
+	host.selectMeetingFixture(0)
+	tester := newMeetingDemoTester(t, host)
+	frames(tester)
+	if got := host.modelsUI.netForm.proxyURL; got != "not-a-proxy" {
+		t.Fatalf("seeded proxy input %q, want not-a-proxy", got)
+	}
+	label, ok := tester.Find("Proxy address")
+	if !ok {
+		t.Fatal("proxy address label is missing")
+	}
+	tester.ClickAt(label.X+label.W/2, label.Y+label.H/2)
+	tester.Key(ui.Cmd, ui.KeyA)
+	tester.Type("fixture-proxy")
+	frames(tester)
+	if got := host.modelsUI.netForm.proxyURL; got != "fixture-proxy" {
+		t.Fatalf("edited proxy input %q", got)
+	}
+	if got := host.modelsViewState().Network.ProxyURL; got != "fixture-proxy" {
+		t.Fatalf("proxy view state %q", got)
 	}
 }
 

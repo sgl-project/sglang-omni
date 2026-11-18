@@ -60,15 +60,15 @@
     },
     "edit": {
       "open": true,
-      "id": "term-voxt",
-      "term": "Voxt",
+      "id": "",
+      "term": "",
       "aliases": "",
       "note": "",
       "enabled": true,
       "error": "Type the term as it should be written.",
       "error_code": "empty",
       "saving": false,
-      "original": "Voxt",
+      "original": "",
       "suggestion": ""
     },
     "notes_text": "",

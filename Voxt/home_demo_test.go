@@ -3,6 +3,8 @@ package main
 import (
 	"slices"
 	"testing"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
 func TestHomeDemoActionControls(t *testing.T) {
@@ -74,14 +76,50 @@ func TestHomeDemoActionControls(t *testing.T) {
 	}
 }
 
-func TestHomeDemoHidesFeatureTry(t *testing.T) {
+func TestHomeErrorInitialScenarioShowsTry(t *testing.T) {
+	for _, scenario := range homeFixtureScenarios() {
+		if scenario.name != "home-error-initial" {
+			continue
+		}
+		fixture := buildMeetingFixture(t, scenario, "en")
+		if !fixture.Home.ShowTry {
+			t.Fatal("home-error-initial does not offer the initial Try area")
+		}
+		return
+	}
+	t.Fatal("home-error-initial scenario is missing")
+}
+
+func TestHomeDemoFixtureTry(t *testing.T) {
 	host, err := loadMeetingDemoHost("testdata/meeting")
 	if err != nil {
 		t.Fatal(err)
 	}
-	selectMeetingDemoFixture(t, host, "en/home-empty")
-	tester := newMeetingDemoTester(t, host)
-	if tester.HasText("Try it") {
-		t.Fatal("the feature-owned Try card leaked into the Home demo")
+	for index, fixture := range host.fixtures {
+		if fixture.state.Home == nil {
+			continue
+		}
+		t.Run(fixture.name, func(t *testing.T) {
+			host.selectMeetingFixture(index - host.selected)
+			tester := newMeetingDemoTester(t, host)
+			tryTitle, startLabel := i18n.T("Try it"), i18n.T("Start a test")
+			if !fixture.state.Home.ShowTry {
+				if tester.HasText(tryTitle) {
+					t.Fatal("Try shows with show_try=false")
+				}
+				return
+			}
+			if !tester.HasText(tryTitle) || !tester.HasText(startLabel) {
+				t.Fatalf("no fixture-backed Try area: %q", tester.Texts())
+			}
+			host.calls = nil
+			if err := tester.ClickControl(startLabel); err != nil {
+				t.Fatal(err)
+			}
+			frames(tester)
+			if !slices.Equal(host.calls, []string{"startTry"}) {
+				t.Fatalf("calls %q, want [startTry]", host.calls)
+			}
+		})
 	}
 }

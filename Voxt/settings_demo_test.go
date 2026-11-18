@@ -152,6 +152,50 @@ func settingsDemoGeneralCases() []settingsDemoCase {
 	}
 }
 
+func TestMeetingSettingsDemoShortcutControls(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		steps []historyDemoStep
+		want  []string
+	}{
+		{name: "add", steps: historySteps("Add a shortcut"), want: []string{"addFeatureShortcut meeting"}},
+		{name: "choose", steps: []historyDemoStep{{label: "Keys of shortcut 1"}, {label: "Right ⌘", click: true}}, want: []string{`chooseFeatureShortcut meeting 0 "RightCommand"`}},
+		{name: "trigger", steps: historySteps("Double tap"), want: []string{"setFeatureShortcutTrigger meeting 0 1"}},
+		{name: "remove", steps: historySteps("Remove shortcut 1"), want: []string{"removeFeatureShortcut meeting 0"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, err := loadMeetingDemoHost("testdata/meeting")
+			if err != nil {
+				t.Fatal(err)
+			}
+			selectMeetingDemoFixture(t, host, "en/meeting-settings-normal")
+			scenario := newMeetingSettingsFixtureScenario("meeting-settings-normal")
+			host.fixtures[host.selected].state = buildMeetingFixture(t, scenario, "en")
+			host.selectMeetingFixture(0)
+			tester := newMeetingDemoTester(t, host)
+			tester.SetSize(1000, 1400)
+			if !tester.HasText("Shortcuts") {
+				t.Fatalf("Meeting settings has no shortcut section: %q", tester.Texts())
+			}
+			for _, step := range test.steps {
+				var err error
+				if step.click {
+					err = tester.Click(step.label)
+				} else {
+					err = tester.ClickControl(step.label)
+				}
+				if err != nil {
+					t.Fatalf("%s: %v (controls %q)", step.label, err, tester.AccessLabels())
+				}
+				frames(tester)
+			}
+			if !slices.Equal(host.calls, test.want) {
+				t.Fatalf("calls %q, want %q", host.calls, test.want)
+			}
+		})
+	}
+}
+
 func settingsDemoExpectedText(dialog *settingsDialogViewState) string {
 	switch {
 	case dialog.Audio != nil:

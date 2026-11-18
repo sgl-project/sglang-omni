@@ -29,6 +29,7 @@ type meetingFixtureState struct {
 	Feature               *featureViewState           `json:"feature,omitempty"`
 	Settings              *settingsDialogViewState    `json:"settings,omitempty"`
 	MeetingSettings       *settingsMeetingViewState   `json:"meeting_settings,omitempty"`
+	MeetingShortcuts      *featureShortcutsViewState  `json:"meeting_shortcuts,omitempty"`
 	ShortcutPrompt        *shortcutPromptViewState    `json:"shortcut_prompt,omitempty"`
 	KeyRecorder           *keyRecorderViewState       `json:"key_recorder,omitempty"`
 	Shell                 *shellViewState             `json:"shell,omitempty"`

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"testing"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/historyapi"
@@ -217,7 +220,11 @@ func historyFixtureEntries() []store.Entry {
 	cancelled.AudioUntil = meetingFixtureNow.Add(24 * time.Hour)
 	degraded := translated
 	degraded.ID, degraded.Error = "history-degraded", "the answer may be incomplete"
-	return []store.Entry{inserted, translated, rewritten, failed, cancelled, degraded}
+	entries := []store.Entry{inserted, translated, rewritten, failed, cancelled, degraded}
+	for index := range entries {
+		entries[index].CreatedAt = inserted.CreatedAt.Add(-time.Duration(index) * time.Minute)
+	}
+	return entries
 }
 
 func historyFixtureEntriesOfKind(kind store.Kind) []store.Entry {
@@ -236,9 +243,53 @@ func historyFixtureManyEntries(count int) []store.Entry {
 		entry := historyFixtureBaseEntry()
 		entry.ID = fmt.Sprintf("history-%04d", index)
 		entry.Result = fmt.Sprintf("History result %04d", index)
+		entry.CreatedAt = entry.CreatedAt.Add(-time.Duration(index) * time.Second)
 		entries[index] = entry
 	}
 	return entries
+}
+
+func TestFixtureEntryOrderMatchesStore(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		entries []store.Entry
+		home    bool
+	}{
+		{name: "history all", entries: historyFixtureEntries()},
+		{name: "history capped", entries: historyFixtureManyEntries(historyLimit)},
+		{name: "home recent", entries: homeFixtureEntries(), home: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			history := a.lib.store.History()
+			for _, entry := range test.entries {
+				if err := history.Put(context.Background(), entry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var got []store.Entry
+			var err error
+			if test.home {
+				_, got, err = readHome(context.Background(), history, meetingFixtureNow)
+			} else {
+				got, err = history.List(context.Background(), store.HistoryQuery{Limit: historyLimit})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantIDs := make([]string, len(test.entries))
+			gotIDs := make([]string, len(got))
+			for index := range test.entries {
+				wantIDs[index] = test.entries[index].ID
+			}
+			for index := range got {
+				gotIDs[index] = got[index].ID
+			}
+			if !slices.Equal(gotIDs, wantIDs) {
+				t.Fatalf("store order %q, fixture order %q", gotIDs, wantIDs)
+			}
+		})
+	}
 }
 
 func historyFixtureProblemCodes() []string {

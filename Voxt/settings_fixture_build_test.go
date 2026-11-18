@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 func newSettingsFixtureApp(t *testing.T) *app {
@@ -151,7 +153,28 @@ func buildSettingsFixture(t *testing.T, input settingsFixtureInput) settingsDial
 	}
 	state := a.settingsDialogModel(meetingFixtureNow)
 	a.win = previousWindow
+	if input.section == "overlay" && (state.Overlay == nil || state.Overlay.Preview == nil) {
+		t.Fatal("overlay settings model has no preview projection")
+	}
 	return state
+}
+
+func TestSettingsOverlayPreviewFixtureRoundTrip(t *testing.T) {
+	state := buildSettingsFixture(t, settingsFixtureInput{section: "overlay", preferences: settings.Defaults()})
+	data, err := json.Marshal(state.Overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded settingsOverlayViewState
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Preview == nil {
+		t.Fatal("serialized overlay settings have no preview projection")
+	}
+	if *decoded.Preview != *state.Overlay.Preview {
+		t.Fatalf("preview round trip is %+v, want %+v", *decoded.Preview, *state.Overlay.Preview)
+	}
 }
 
 type settingsFixtureLocal struct {

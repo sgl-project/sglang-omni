@@ -234,6 +234,38 @@ func TestHistoryTabs(t *testing.T) {
 	}
 }
 
+// TestHistoryTabChangeDoesNotRenderPreviousDetail: changing tabs never builds the old entry's detail, even before the new list arrives.
+func TestHistoryTabChangeDoesNotRenderPreviousDetail(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	seedHistory(t, a)
+	seedWriteHistory(t, a)
+	a.navigate("/history")
+	a.histUI.sel = histInserted
+	frames(tt)
+	var pending []func()
+	changed, staleDetail := false, false
+	tt = ui.NewTester(func(c *ui.Context) {
+		model := a.historyPageModel(time.Now())
+		historyPage(c, &model, a, &a.histUI, 800)
+		if a.histUI.tab == 1 {
+			changed = true
+			staleDetail = staleDetail || model.Detail != nil
+		}
+	}, windowWidth, windowHeight)
+	a.postQueue = func(fn func()) { pending = append(pending, fn) }
+	row, ok := tt.Find("Feature")
+	if !ok {
+		t.Fatal("no History tabs")
+	}
+	tt.ClickAt(row.X+row.W*1.5/4, row.Y+row.H/2)
+	if !changed {
+		t.Fatal("the test did not render the Translate tab")
+	}
+	if staleDetail {
+		t.Fatal("the tab change rendered the previous detail in the same frame")
+	}
+}
+
 func TestHistoryAllTab(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/history")

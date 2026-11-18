@@ -29,10 +29,6 @@ func rewriteSample() (instruction, selection string) {
 	return rewriteSampleFor(i18n.CurrentTranslator())
 }
 
-func variableInfo(name string) string {
-	return variableInfoFor(i18n.CurrentTranslator(), name)
-}
-
 func featureVariables(feature string) []string {
 	if feature == hotkey.Translate {
 		return compose.VariableNames

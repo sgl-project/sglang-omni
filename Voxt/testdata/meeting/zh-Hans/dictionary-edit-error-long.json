@@ -60,15 +60,15 @@
     },
     "edit": {
       "open": true,
-      "id": "term-voxt",
-      "term": "Voxt",
+      "id": "",
+      "term": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
       "aliases": "",
       "note": "",
       "enabled": true,
       "error": "词条最多 80 个字符。",
       "error_code": "long",
       "saving": false,
-      "original": "Voxt",
+      "original": "",
       "suggestion": ""
     },
     "notes_text": "",

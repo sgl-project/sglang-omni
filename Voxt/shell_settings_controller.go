@@ -224,7 +224,7 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 		state.Audio = &section
 	case "overlay":
 		a.lastSettings = "overlay"
-		section := a.overlaySettingsModel()
+		section := a.overlaySettingsModel(now)
 		state.Overlay = &section
 	case "shortcuts":
 		a.lastSettings = "shortcuts"

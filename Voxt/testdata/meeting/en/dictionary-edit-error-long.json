@@ -60,15 +60,15 @@
     },
     "edit": {
       "open": true,
-      "id": "term-voxt",
-      "term": "Voxt",
+      "id": "",
+      "term": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
       "aliases": "",
       "note": "",
       "enabled": true,
       "error": "A term can have at most 80 characters.",
       "error_code": "long",
       "saving": false,
-      "original": "Voxt",
+      "original": "",
       "suggestion": ""
     },
     "notes_text": "",

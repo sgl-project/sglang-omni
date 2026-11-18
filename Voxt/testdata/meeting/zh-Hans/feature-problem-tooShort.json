@@ -380,7 +380,7 @@
     "try": {
       "prefix": "tr",
       "feature": "transcribe",
-      "state": "failed",
+      "state": "cancelled",
       "problem_code": "tooShort",
       "mode": "ended",
       "intro": "按 右 ⌥ 或点“开始”，说一两句话。结果显示在这里，不会输入到任何地方。",
@@ -390,8 +390,8 @@
       "working_text": "",
       "draft": "",
       "ended": {
-        "cancelled": false,
-        "failure_text": "没有听到说话。",
+        "cancelled": true,
+        "failure_text": "",
         "result": "",
         "raw_title": "",
         "raw": "",

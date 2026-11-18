@@ -388,8 +388,11 @@ func newMeetingSettingsFixtureScenario(name string) meetingFixtureScenario {
 		name: name, kind: "meeting-settings",
 		meetingSettings: settingsMeetingStateInput{
 			Meeting: settings.Meeting{
-				Feature: settings.Feature{ASR: "fixture-speech-two", LLM: "fixture-language-two"},
-				Lang:    "en", HideFromSharing: true,
+				Feature: settings.Feature{
+					Hotkeys: []settings.Hotkey{{Keys: "Control+Option+M", Trigger: settings.TriggerTap}},
+					ASR:     "fixture-speech-two", LLM: "fixture-language-two",
+				},
+				Lang: "en", HideFromSharing: true,
 			},
 			ReadyASR: readyASR, ShownASR: readyASR,
 			ReadyLLM: []local.Model{

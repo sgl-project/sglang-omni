@@ -70,6 +70,71 @@ func appType(expr ast.Expr, aliases map[string]bool) bool {
 	return ok && aliases[ident.Name]
 }
 
+func valueTypeName(expr ast.Expr) string {
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return ident.Name
+}
+
+func parameterTypeAt(syntax *ast.File, position token.Pos, name string) string {
+	for _, declaration := range syntax.Decls {
+		fn, ok := declaration.(*ast.FuncDecl)
+		if !ok || position < fn.Pos() || position > fn.End() {
+			continue
+		}
+		for _, field := range fn.Type.Params.List {
+			for _, parameter := range field.Names {
+				if parameter.Name == name {
+					return valueTypeName(field.Type)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func viewStateProjection(declaration *ast.FuncDecl) bool {
+	if declaration.Type.Results == nil {
+		return false
+	}
+	for _, result := range declaration.Type.Results.List {
+		name := valueTypeName(result.Type)
+		if strings.HasSuffix(name, "ViewState") || strings.HasSuffix(name, "PreviewState") {
+			return true
+		}
+	}
+	return false
+}
+
+func localStateTypes(files []rootFile, views map[string]bool) map[string]bool {
+	types := map[string]bool{}
+	for _, file := range files {
+		if !views[file.path] {
+			continue
+		}
+		for _, declaration := range file.syntax.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			for _, field := range fn.Type.Params.List {
+				for _, parameter := range field.Names {
+					if parameter.Name == "local" {
+						types[valueTypeName(field.Type)] = true
+					}
+				}
+			}
+		}
+	}
+	delete(types, "")
+	return types
+}
+
 func appAliases(files []rootFile) map[string]bool {
 	aliases := map[string]bool{"app": true}
 	for changed := true; changed; {
@@ -266,13 +331,15 @@ func functionHasLogic(candidate functionCandidate, module string, aliases map[st
 	}
 	f := candidate.file
 	f.syntax = &ast.File{Imports: f.syntax.Imports, Decls: []ast.Decl{candidate.declaration}}
-	return len(viewViolations(f, module, logicFunctions, aliases, false)) > 0
+	return len(viewViolationsWithComposition(f, module, logicFunctions, aliases, false, false)) > 0
 }
 
-// logicFunctionFiles finds package-level logic, including helpers and function
-// values in legacy view files. Pure UI helpers stay callable; calls through
-// actions are selectors. Repeating the check catches wrappers of logic calls.
+// logicFunctionFiles finds package-level logic and local-state projection
+// methods, including helpers and function values in legacy view files. Pure
+// UI helpers stay callable; calls through actions are selectors. Repeating
+// the check catches wrappers of logic calls.
 func logicFunctionFiles(files []rootFile, views map[string]bool, module string, aliases map[string]bool) map[string]string {
+	localTypes := localStateTypes(files, views)
 	cleanViews := map[string]bool{}
 	for _, f := range files {
 		if views[f.path] && len(viewViolations(f, module, nil, aliases, true)) == 0 {
@@ -289,6 +356,14 @@ func logicFunctionFiles(files []rootFile, views map[string]bool, module string, 
 			switch decl := decl.(type) {
 			case *ast.FuncDecl:
 				if decl.Recv != nil {
+					if !views[f.path] && viewStateProjection(decl) {
+						for _, receiver := range decl.Recv.List {
+							name := valueTypeName(receiver.Type)
+							if localTypes[name] {
+								logicFunctions[name+"."+decl.Name.Name] = f.path
+							}
+						}
+					}
 					continue
 				}
 				if views[f.path] {
@@ -338,9 +413,13 @@ func logicFunctionFiles(files []rootFile, views map[string]bool, module string, 
 }
 
 // viewViolations checks boundary properties 1 and 2. logicFunctions maps a
-// package-level function to its source file; calls through an actions
-// interface are selectors and therefore are not rejected as logic functions.
+// package-level function or receiver-qualified projection method to its source
+// file; calls through an actions interface are not rejected as logic functions.
 func viewViolations(f rootFile, module string, logicFunctions map[string]string, aliases map[string]bool, checkImports bool) []string {
+	return viewViolationsWithComposition(f, module, logicFunctions, aliases, checkImports, true)
+}
+
+func viewViolationsWithComposition(f rootFile, module string, logicFunctions map[string]string, aliases map[string]bool, checkImports, allowSameFileComposition bool) []string {
 	var violations []string
 	at := func(node ast.Node) string {
 		return fmt.Sprintf("%s:%d", f.path, f.fset.Position(node.Pos()).Line)
@@ -400,7 +479,7 @@ func viewViolations(f rootFile, module string, logicFunctions map[string]string,
 				if ident.Name == "helperCall" {
 					add(node, "starts helper work in a view: move it into an actions implementation and return through a.post")
 				}
-				if logicFile := logicFunctions[ident.Name]; logicFile != "" {
+				if logicFile := logicFunctions[ident.Name]; logicFile != "" && (!allowSameFileComposition || logicFile != f.path) {
 					add(node, "calls logic function %s (%s): pass its result in view state or call a user intent through actions", ident.Name, logicFile)
 				}
 			}
@@ -417,6 +496,11 @@ func viewViolations(f rootFile, module string, logicFunctions map[string]string,
 				platform := contextServices(selector.X, contexts)
 				if receiver, ok := selector.X.(*ast.Ident); ok {
 					platform = platform || contexts[receiver.Name] || services[receiver.Name]
+					receiverType := parameterTypeAt(f.syntax, node.Pos(), receiver.Name)
+					method := receiverType + "." + selector.Sel.Name
+					if logicFile := logicFunctions[method]; logicFile != "" {
+						add(node, "calls logic method %s (%s): pass its result in view state or call a user intent through actions", method, logicFile)
+					}
 				}
 				if platform {
 					switch selector.Sel.Name {
@@ -565,5 +649,71 @@ func (b *appAlias) paint(c *ui.Context) {
 	}
 	if viewFile("probe_page_test.go", syntax) {
 		t.Error("a test file is not a view")
+	}
+}
+
+func TestViewFileRulesRejectLogicMethodsOnLocalState(t *testing.T) {
+	const module = "example.test/Voxt"
+	parse := func(path, source string) rootFile {
+		t.Helper()
+		fset := token.NewFileSet()
+		syntax, err := parser.ParseFile(fset, path, source, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rootFile{goFile{path: path, data: []byte(source)}, fset, syntax}
+	}
+	view := parse("probe_page.go", `package main
+import (
+	"github.com/egoist/mygo/ui"
+	_ "example.test/Voxt/internal/hotkey"
+)
+type overlayForm struct{}
+type searchLocalUI struct{}
+func paint(c *ui.Context, local *overlayForm) {
+	local.previewState()
+	local.layout()
+}
+func paintSearch(c *ui.Context, local *searchLocalUI) {
+	local.previewState()
+}
+func compose(c *ui.Context, local *overlayForm) {
+	paint(c, local)
+}
+func direct() {
+	buildFeatureCustomKeysViewState()
+}
+`)
+	clean := parse("clean_page.go", `package main
+import "github.com/egoist/mygo/ui"
+func cleanView(c *ui.Context, local *overlayForm) {
+	compose(c, local)
+}
+`)
+	logic := parse("settings_overlay_view_state.go", `package main
+type overlayForm struct{}
+type searchLocalUI struct{}
+type settingsOverlayPreviewState struct{}
+func (f *overlayForm) previewState() settingsOverlayPreviewState { return settingsOverlayPreviewState{} }
+func (f *overlayForm) layout() {}
+func (s *searchLocalUI) previewState() {}
+func buildFeatureCustomKeysViewState() {}
+`)
+	files := []rootFile{view, clean, logic}
+	views := map[string]bool{"probe_page.go": true, "clean_page.go": true, "settings_overlay_view_state.go": false}
+	logicFunctions := logicFunctionFiles(files, views, module, appAliases(files))
+	got := viewViolations(view, module, logicFunctions, appAliases(files), true)
+	violations := strings.Join(got, "\n")
+	for _, want := range []string{"internal/hotkey", "calls logic method overlayForm.previewState", "calls logic function buildFeatureCustomKeysViewState"} {
+		if !strings.Contains(violations, want) {
+			t.Errorf("no violation containing %q:\n%s", want, violations)
+		}
+	}
+	if len(got) != 3 || strings.Contains(violations, "calls logic function paint") {
+		t.Fatalf("got %q, want the three genuine violations without same-view composition; local layout methods and same-named methods on other local UI types are allowed", got)
+	}
+	cleanViolations := viewViolations(clean, module, logicFunctions, appAliases(files), true)
+	if len(cleanViolations) != 1 || !strings.Contains(cleanViolations[0], "calls logic function compose (probe_page.go)") {
+		t.Fatalf("clean view violations are %q, want logic propagated through the same-file wrapper in probe_page.go", cleanViolations)
 	}
 }

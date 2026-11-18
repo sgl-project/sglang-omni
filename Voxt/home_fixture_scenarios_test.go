@@ -27,7 +27,7 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 	add("home-normal", func(_ *homeViewStateInput, _ *homeReadinessInput) {})
 	add("home-error", func(input *homeViewStateInput, _ *homeReadinessInput) { input.Error = "fixture read failed" })
 	add("home-error-initial", func(input *homeViewStateInput, _ *homeReadinessInput) {
-		input.Error, input.Recent, input.Today = "fixture read failed", nil, dayStats{byKind: map[store.Kind]int{}}
+		input.Error, input.Recent, input.Today, input.ShowTry = "fixture read failed", nil, dayStats{byKind: map[store.Kind]int{}}, true
 	})
 	add("home-reloading", func(input *homeViewStateInput, _ *homeReadinessInput) { input.Loading = true })
 	add("home-history-off", func(input *homeViewStateInput, _ *homeReadinessInput) { input.KeepHistory = false })
@@ -166,8 +166,10 @@ func homeFixtureEntries() []store.Entry {
 	translate.ID, translate.Kind, translate.Result = "home-translate", store.KindTranslate, "晚上好"
 	translate.RawText, translate.SourceText, translate.TargetLang = "good evening", "selected source", "zh-Hans"
 	translate.Audio = ""
+	translate.CreatedAt = first.CreatedAt.Add(-time.Minute)
 	rewrite := first
 	rewrite.ID, rewrite.Kind, rewrite.Result = "home-rewrite", store.KindRewrite, "A formal answer"
+	rewrite.CreatedAt = first.CreatedAt.Add(-2 * time.Minute)
 	rewrite.RawText, rewrite.SourceText, rewrite.PromptText = "make this formal", "an informal source", "Rewrite formally"
 	second := first
 	second.ID, second.CreatedAt, second.Result = "home-second", meetingFixtureNow.Add(-2*time.Hour), "Second result"

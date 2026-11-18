@@ -107,7 +107,7 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		}
 	case card.CanFollowUp:
 		if cardCapsule(context.Key("ov-card-continue"), i18n.T("Continue"), card.FollowTooltip) {
-			actions.followUpAnswer("")
+			actions.continueAnswer()
 		}
 	case card.CanRetry:
 		if cardCapsule(context.Key("ov-card-retry"), i18n.T("Try again"), "") {

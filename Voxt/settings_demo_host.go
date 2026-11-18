@@ -144,7 +144,6 @@ func (host *meetingDemoHost) chooseSystemSound(eventID, choice string) {
 func (host *meetingDemoHost) tryCueSound(eventID string) { host.record("tryCueSound %s", eventID) }
 func (host *meetingDemoHost) setSoundVolume(volume int)  { host.record("setSoundVolume %d", volume) }
 
-func (host *meetingDemoHost) overlayEdited()           { host.record("overlayEdited") }
 func (host *meetingDemoHost) openShortcutPermissions() { host.record("openShortcutPermissions") }
 func (host *meetingDemoHost) openShortcutFeature(path string) {
 	host.record("openShortcutFeature %s", path)

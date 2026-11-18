@@ -11,8 +11,8 @@ import (
 
 const ovSaveDelay = 400 * time.Millisecond
 
-func (a *app) overlaySettingsModel() settingsOverlayViewState {
-	return buildSettingsOverlayViewState(i18n.CurrentTranslator(), a.prefs.Overlay)
+func (a *app) overlaySettingsModel(now time.Time) settingsOverlayViewState {
+	return buildSettingsOverlayViewState(i18n.CurrentTranslator(), a.prefs.Overlay, now)
 }
 
 // loadOverlayForm sets the controls from the settings, unless a change
@@ -58,6 +58,13 @@ func (a *app) overlayEdited() {
 			a.updateSettings(func(s *settings.Settings) { s.Overlay = o })
 		})
 	})
+}
+
+func (host *meetingDemoHost) overlayEdited() {
+	fixtureNow := previewSession().StoppedAt
+	state := buildSettingsOverlayViewState(i18n.CurrentTranslator(), host.settingsForm.ovStyle.overlay(), fixtureNow)
+	*host.current().state.Settings.Overlay = state
+	host.record("overlayEdited")
 }
 
 // previewSession is the recording the preview shows: Transcribe, seven

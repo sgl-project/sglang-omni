@@ -80,6 +80,20 @@ func checkSettingsDialogFixture(t *testing.T, locale, name string, state *settin
 			t.Errorf("%s/%s: %s section present=%t, want %t", locale, name, id, present, want)
 		}
 	}
+	if overlay := state.Overlay; overlay != nil {
+		if overlay.Preview == nil {
+			t.Errorf("%s/%s: overlay fixture has no preview projection", locale, name)
+		} else {
+			form := overlayForm{
+				position: overlay.Position, opacity: overlay.Opacity, radius: overlay.Radius, margin: overlay.Margin,
+				showTime: overlay.ShowTime, liveText: overlay.LiveText, liveLayout: overlay.LiveLayout,
+			}
+			expected := buildSettingsOverlayViewState(translator, form.overlay(), settingsFixtureNow)
+			if expected.Preview == nil || *overlay.Preview != *expected.Preview {
+				t.Errorf("%s/%s: overlay preview is %+v, want %+v", locale, name, *overlay.Preview, expected.Preview)
+			}
+		}
+	}
 	if present := state.Updates != nil; present != (sectionID == "about") {
 		t.Errorf("%s/%s: updates state present=%t, want %t", locale, name, present, sectionID == "about")
 	}

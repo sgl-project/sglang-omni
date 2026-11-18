@@ -49,12 +49,12 @@ func featureFixtureScenarios() []meetingFixtureScenario {
 		add("feature-try-state-"+string(state), featureFixtureTryInput(hotkey.Transcribe, state, ""))
 	}
 	for _, code := range historyFixtureProblemCodes() {
-		add("feature-problem-"+code, featureFixtureTryInput(hotkey.Transcribe, session.Failed, code))
+		if code != session.ProblemUnsupported {
+			add("feature-problem-"+code, featureFixtureProblemInput(code, false))
+		}
 	}
-	for _, code := range []string{session.ProblemASR, session.ProblemLLM, session.ProblemTruncated} {
-		input := featureFixtureTryInput(hotkey.Transcribe, session.Done, code)
-		input.Snapshot.Problem.Degraded = true
-		add("feature-problem-"+code+"-degraded", input)
+	for _, code := range []string{session.ProblemASR, session.ProblemLLM} {
+		add("feature-problem-"+code+"-degraded", featureFixtureProblemInput(code, true))
 	}
 
 	shortcutProblems := featureFixtureBaseInput(hotkey.Transcribe)
@@ -170,6 +170,35 @@ func featureFixtureTryInput(feature string, state session.State, problemCode str
 		snapshot.Problem = &session.Problem{Code: problemCode, Err: errors.New("fixture problem")}
 	}
 	input.Snapshot, input.Mine = snapshot, true
+	return input
+}
+
+func featureFixtureProblemInput(code string, degraded bool) featureFixtureScenarioInput {
+	feature, state := hotkey.Transcribe, session.Failed
+	switch code {
+	case session.ProblemNoSpeech:
+		state = session.Done
+	case session.ProblemTooShort:
+		state = session.Cancelled
+	case session.ProblemNoLLM, session.ProblemEmpty:
+		feature = hotkey.Translate
+	case session.ProblemLLM:
+		if !degraded {
+			feature = hotkey.Translate
+		}
+	case session.ProblemTruncated:
+		feature, degraded = hotkey.Translate, true
+	}
+	if degraded {
+		state = session.Done
+	}
+	input := featureFixtureTryInput(feature, state, code)
+	input.Snapshot.Problem.Degraded = degraded
+	switch code {
+	case session.ProblemNoSpeech:
+		input.Snapshot.Raw, input.Snapshot.Result, input.Snapshot.LLM = "", "", session.Model{}
+		input.Snapshot.Timings.LLM, input.Snapshot.Timings.Total = 0, 4000*time.Millisecond
+	}
 	return input
 }
 

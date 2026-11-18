@@ -19,6 +19,7 @@ import (
 	famsettings "github.com/hehehai/actnowkit/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -94,6 +95,19 @@ func TestNetworkDialog(t *testing.T) {
 	click(t, tt, "Use the same setting as the other apps that share this model library")
 	if !a.prefs.Family.Follows(actnow.KeyProxy) || a.prefs.Network.Proxy != "socks5://127.0.0.1:1080" || a.netForm.proxyMode != proxyCustom {
 		t.Errorf("following again: %+v %+v", a.prefs.Network, a.netForm)
+	}
+}
+
+func TestModelsNetworkViewStatePreservesProxyURL(t *testing.T) {
+	input := modelsViewStateInput{NetworkOpen: true, NetworkForm: networkForm{proxyMode: proxyCustom, proxyURL: "not-a-proxy"}}
+	state := buildModelsNetworkViewState(i18n.NewTranslator("en"), input)
+	if state.ProxyURL != "not-a-proxy" {
+		t.Fatalf("proxy URL %q, want not-a-proxy", state.ProxyURL)
+	}
+	key := modelsViewCacheKey(input, "en")
+	input.NetworkForm.proxyURL = "fixture-proxy"
+	if modelsViewCacheKey(input, "en") == key {
+		t.Fatal("proxy URL edit did not invalidate the models view-state cache")
 	}
 }
 

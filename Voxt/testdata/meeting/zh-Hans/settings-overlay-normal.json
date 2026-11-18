@@ -67,7 +67,51 @@
       "live_layout_options": [
         "单行",
         "多行"
-      ]
+      ],
+      "preview": {
+        "position": "bottom",
+        "opacity": 0.8,
+        "radius": 24,
+        "margin": 96,
+        "show_time": false,
+        "pill": {
+          "revision": 0,
+          "session_id": "",
+          "state": "recording",
+          "mode": "recording",
+          "pill": {
+            "kind": "transcribe",
+            "title": "转录",
+            "working_label": "识别中…",
+            "elapsed_text": "0:07",
+            "levels": [
+              0.22,
+              0.38,
+              0.52,
+              0.66,
+              0.3,
+              0.2,
+              0.36,
+              0.6,
+              0.76,
+              0.42,
+              0.22,
+              0.4,
+              0.58,
+              0.32,
+              0.24,
+              0.48
+            ],
+            "heard": true,
+            "starting": false,
+            "waiting": "",
+            "can_skip": false,
+            "can_think": false
+          }
+        },
+        "face_radius": 24,
+        "face_alpha": 0.8
+      }
     }
   }
 }

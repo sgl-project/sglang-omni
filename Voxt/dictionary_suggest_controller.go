@@ -67,7 +67,7 @@ func (a *app) acceptSuggestion(key string, term store.Term, fromDialog bool) {
 			if fromDialog {
 				a.dictUI.edit.saving = false
 				if err != nil {
-					a.dictUI.edit.err = uitext.TermErrorText(err)
+					a.setDictionaryTermError(err)
 					return
 				}
 				a.dictUI.editOpen = false

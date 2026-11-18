@@ -247,7 +247,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.modelsUI.modelHiddenOpen = state.HiddenOpen
 		host.modelsUI.netOpen = state.Network.Open
 		host.modelsUI.netForm = networkForm{
-			proxyMode: state.Network.ProxyMode, proxyErr: state.Network.ProxyError,
+			proxyMode: state.Network.ProxyMode, proxyURL: state.Network.ProxyURL, proxyErr: state.Network.ProxyError,
 			source: state.Network.Source, sourceURL: state.Network.SourceURL,
 		}
 		host.modelsUI.netWas = host.modelsUI.netForm
@@ -291,6 +291,21 @@ func (host *meetingDemoHost) featureViewState(fixture *featureViewState) feature
 		state.Shortcuts.Cancel = &row
 	}
 	state.Prompt.Rules.Matches = findFolded(host.feature.local.prompt, host.feature.local.find)
+	return state
+}
+
+func (host *meetingDemoHost) meetingShortcutsViewState(fixture *featureShortcutsViewState) featureShortcutsViewState {
+	state := *fixture
+	state.Rows = slices.Clone(state.Rows)
+	if len(host.feature.local.rows) != len(state.Rows) {
+		host.feature.local.rows = make([]keyRow, len(state.Rows))
+		for index, row := range state.Rows {
+			host.feature.local.rows[index] = featureDemoKeyRow(row)
+		}
+	}
+	for index := range state.Rows {
+		state.Rows[index].Custom = buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), host.feature.local.rows[index])
+	}
 	return state
 }
 

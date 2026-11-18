@@ -9,6 +9,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // suggestTester starts the app over a library that already holds the
@@ -125,6 +126,17 @@ func TestSuggestionEditOpensDialogAndSaveAccepts(t *testing.T) {
 	if !hasExact(tt, "1") || slices.Contains(tt.AccessLabels(), "忽略 Claude Code") {
 		t.Errorf("the suggestion stayed: %q", firstTexts(tt))
 	}
+}
+
+func TestAcceptSuggestionErrorCode(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.dictUI.editOpen = true
+	a.dictUI.edit.saving = true
+	if err := a.lib.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a.acceptSuggestion("roth", store.Term{Term: "Roth", Enabled: true}, true)
+	requireDictionaryEditError(t, a, "generic", "Could not save the term: terms: sqlite: database is closed")
 }
 
 func TestSuggestionsShowFiveThenAll(t *testing.T) {

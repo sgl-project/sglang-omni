@@ -380,7 +380,7 @@
     "try": {
       "prefix": "tr",
       "feature": "transcribe",
-      "state": "failed",
+      "state": "cancelled",
       "problem_code": "tooShort",
       "mode": "ended",
       "intro": "Press Right ⌥ or Start, then say a sentence or two. The result shows here and is not typed anywhere.",
@@ -390,8 +390,8 @@
       "working_text": "",
       "draft": "",
       "ended": {
-        "cancelled": false,
-        "failure_text": "Nothing was heard.",
+        "cancelled": true,
+        "failure_text": "",
         "result": "",
         "raw_title": "",
         "raw": "",

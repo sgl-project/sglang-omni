@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
@@ -113,6 +114,52 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	if len(terms(t, a)) != 0 || !has(tt, "Names and terms you use") {
 		t.Errorf("not deleted: %q", firstTexts(tt))
 	}
+}
+
+func requireDictionaryEditError(t *testing.T, a *app, code, text string) {
+	t.Helper()
+	edit := a.dictionaryPageModel().Edit
+	if !edit.Open || edit.ErrorCode != code || edit.Error != text || edit.Saving {
+		t.Fatalf("edit error %+v, want code %q and text %q", edit, code, text)
+	}
+}
+
+func TestSubmitTermErrorCodes(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		term      string
+		duplicate bool
+		code      string
+		text      string
+	}{
+		{name: "empty", term: "", code: "empty", text: "Type the term as it should be written."},
+		{name: "long", term: strings.Repeat("R", dict.MaxTermChars+1), code: "long", text: fmt.Sprintf("A term can have at most %d characters.", dict.MaxTermChars)},
+		{name: "duplicate", term: "voxt", duplicate: true, code: "exists", text: "This term is in the dictionary already."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			if test.duplicate {
+				if err := a.lib.store.Dictionary().Put(context.Background(), store.Term{ID: "term-voxt", Term: "Voxt", Enabled: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a.dictUI.editOpen = true
+			a.dictUI.edit = termEdit{term: test.term, enabled: true}
+			a.submitTerm()
+			requireDictionaryEditError(t, a, test.code, test.text)
+		})
+	}
+}
+
+func TestSaveTermErrorCode(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.dictUI.editOpen = true
+	a.dictUI.edit = termEdit{term: "Roth", enabled: true, saving: true}
+	if err := a.lib.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a.saveTerm(store.Term{Term: "Roth", Enabled: true}, true)
+	requireDictionaryEditError(t, a, "generic", "Could not save the term: term Roth: sqlite: database is closed")
 }
 
 // TestDictionaryGuide: the guide says where a term applies, in both
@@ -398,6 +445,51 @@ func TestDictionaryNotesExampleInputCard(t *testing.T) {
 		if got := has(tt, card); got != step.want {
 			t.Fatalf("%s: input card shown %v, want %v: %q", notesFeatures[step.segment], got, step.want, firstTexts(tt))
 		}
+	}
+}
+
+type dictionaryNotesActionProbe struct {
+	*app
+	model      *dictionaryViewState
+	enabled    bool
+	dictionary string
+}
+
+func (probe *dictionaryNotesActionProbe) autosaveDictionaryNotes(changed, focused bool) dictionaryNotesViewState {
+	probe.enabled = probe.model.Notes.Enabled
+	probe.dictionary = probe.model.Notes.Example.Dictionary
+	return probe.app.autosaveDictionaryNotes(changed, focused)
+}
+
+func TestDictionaryNotesTabBuildsNotesStateInSameFrame(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(preferences *settings.Settings) {
+		preferences.Dictionary.Enabled = true
+		preferences.Dictionary.Notes = "Roth"
+		preferences.Dictionary.NotesOff = false
+	})
+	a.navigate("/dictionary")
+	probe := &dictionaryNotesActionProbe{app: a}
+	changed, enabled, dictionary := false, false, ""
+	tt := ui.NewTester(func(c *ui.Context) {
+		a.prepareDictionaryPage()
+		model := a.dictionaryPageModel()
+		probe.model = &model
+		dictionaryPage(c, &model, probe, &a.dictUI)
+		if a.dictUI.tab == dictNotesTab && !changed {
+			changed, enabled, dictionary = true, probe.enabled, probe.dictionary
+		}
+	}, windowWidth, windowHeight)
+	tabs, ok := tt.Find("Dictionary view")
+	if !ok {
+		t.Fatal("no Dictionary tabs")
+	}
+	tt.ClickAt(tabs.X+tabs.W*1.5/2, tabs.Y+tabs.H/2)
+	if !changed {
+		t.Fatal("the test did not render Personal dictionary")
+	}
+	if !enabled || dictionary == "" {
+		t.Fatal("Terms model supplied zero or stale Notes state in the same frame")
 	}
 }
 

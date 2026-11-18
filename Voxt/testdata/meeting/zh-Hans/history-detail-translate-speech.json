@@ -21,7 +21,7 @@
         "id": "history-translated",
         "title": "晚上好",
         "failed_title": false,
-        "meta": "5 分钟前 · Notes · → 简体中文 · 0:08",
+        "meta": "6 分钟前 · Notes · → 简体中文 · 0:08",
         "selected": true,
         "copy_text": "晚上好",
         "raw_copy_text": "good evening",
@@ -82,7 +82,7 @@
           "facts": [
             {
               "label": "时间",
-              "value": "1月2日 14:59",
+              "value": "1月2日 14:58",
               "empty": false
             },
             {

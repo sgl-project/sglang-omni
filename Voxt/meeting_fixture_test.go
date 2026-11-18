@@ -16,9 +16,11 @@ import (
 
 	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -246,6 +248,12 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "meeting-settings":
 		state := buildMeetingSettingsFixture(t, scenario.meetingSettings)
 		fixture.MeetingSettings = &state
+		preferences := settings.Defaults()
+		preferences.Features.Meeting = scenario.meetingSettings.Meeting
+		shortcuts := buildFeatureShortcutsViewState(translator, featureShortcutsStateInput{
+			Feature: hotkey.Meeting, Settings: preferences, HotkeysInstalled: true,
+		})
+		fixture.MeetingShortcuts = &shortcuts
 	case "shortcut-prompt":
 		state := buildShortcutPromptFixture(t, scenario.shortcutPrompt)
 		fixture.ShortcutPrompt = &state

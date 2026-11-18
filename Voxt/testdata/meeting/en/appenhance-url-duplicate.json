@@ -87,6 +87,7 @@
       ],
       "url_input": "GitHub.com/",
       "url_error": "This rule is in the group already.",
+      "url_error_code": "duplicate",
       "auto_key": {
         "options": [
           {

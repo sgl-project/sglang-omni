@@ -380,7 +380,7 @@
     "try": {
       "prefix": "tr",
       "feature": "transcribe",
-      "state": "failed",
+      "state": "done",
       "problem_code": "noSpeech",
       "mode": "ended",
       "intro": "按 右 ⌥ 或点“开始”，说一两句话。结果显示在这里，不会输入到任何地方。",
@@ -392,7 +392,7 @@
       "ended": {
         "cancelled": false,
         "failure_text": "",
-        "failure": {
+        "warning": {
           "text": "没有听到说话。",
           "more": "",
           "action": "",
@@ -402,7 +402,7 @@
         "result": "",
         "raw_title": "",
         "raw": "",
-        "timings_text": ""
+        "timings_text": "录音 3.2 秒 · 识别 0.8 秒 · 总计 4.0 秒 · Fixture speech model"
       }
     }
   }

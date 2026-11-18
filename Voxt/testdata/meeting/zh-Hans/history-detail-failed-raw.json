@@ -21,7 +21,7 @@
         "id": "history-failed",
         "title": "speech service failed",
         "failed_title": true,
-        "meta": "5 分钟前 · Notes · 0:08",
+        "meta": "8 分钟前 · Notes · 0:08",
         "selected": true,
         "copy_text": "recognised before the failure",
         "raw_copy_text": "",
@@ -76,7 +76,7 @@
           "facts": [
             {
               "label": "时间",
-              "value": "1月2日 14:59",
+              "value": "1月2日 14:56",
               "empty": false
             },
             {

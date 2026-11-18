@@ -83,10 +83,17 @@ func remoteFixtureScenarios() []meetingFixtureScenario {
 	addDialog("remote-dialog-error", func(input *remoteDialogStateInput) { input.Dialog.gen.advanced = false })
 	scenarios[len(scenarios)-1].err = &llm.Error{Code: llm.CodeConfig}
 	addDialog("remote-dialog-unsaved", func(input *remoteDialogStateInput) {
-		input.Dialog.endpoint, input.Unsaved = "changed", true
+		input.Dialog.endpoint = "changed"
+		input.Unsaved = input.Dialog.unsaved()
 	})
-	addDialog("remote-dialog-key-spaced", func(input *remoteDialogStateInput) { input.Dialog.key = "fix ture" })
-	addDialog("remote-dialog-remove-key", func(input *remoteDialogStateInput) { input.Dialog.removeKey = true })
+	addDialog("remote-dialog-key-spaced", func(input *remoteDialogStateInput) {
+		input.Dialog.key = "fix ture"
+		input.Unsaved = input.Dialog.unsaved()
+	})
+	addDialog("remote-dialog-remove-key", func(input *remoteDialogStateInput) {
+		input.Dialog.removeKey = true
+		input.Unsaved = input.Dialog.unsaved()
+	})
 	addDialog("remote-dialog-custom-model", func(input *remoteDialogStateInput) {
 		input.Dialog.model, input.Dialog.customModel = otherModel(), "custom-model"
 	})
@@ -254,8 +261,10 @@ func remoteFixtureDialogInput(kind local.Kind) *remoteDialogStateInput {
 		open: true, model: "fixture-model",
 		gen: genForm{think: llm.ThinkOn, format: "", verbosity: "", usage: true, advanced: true, api: apiFormatTitle("")},
 	}
+	dialog.was = dialog.setup()
+	saved := dialog.providerDialogLocalUI
 	return &remoteDialogStateInput{
-		Dialog: dialog, Service: serviceInput.Service, Model: "fixture-model", Capabilities: remoteFixtureCaps(),
+		Dialog: dialog, Saved: &saved, Service: serviceInput.Service, Model: "fixture-model", Capabilities: remoteFixtureCaps(),
 		Mask: "••••", ChatEmail: "person@example.invalid",
 	}
 }

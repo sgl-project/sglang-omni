@@ -98,6 +98,7 @@ type dictionaryTermEditStateInput struct {
 	Note       string
 	Enabled    bool
 	Error      string
+	ErrorCode  string
 	Err        error
 	Saving     bool
 	Original   string
@@ -191,26 +192,32 @@ func buildDictionaryTermViewStates(translator *i18n.Translator, terms []store.Te
 func buildDictionaryTermEditViewState(translator *i18n.Translator, input dictionaryTermEditStateInput) dictionaryTermEditViewState {
 	state := dictionaryTermEditViewState{
 		Open: input.Open, ID: input.ID, Term: input.Term, Aliases: input.Aliases, Note: input.Note,
-		Enabled: input.Enabled, Error: input.Error, Saving: input.Saving, Original: input.Original, Suggestion: input.Suggestion,
+		Enabled: input.Enabled, Error: input.Error, ErrorCode: input.ErrorCode, Saving: input.Saving, Original: input.Original, Suggestion: input.Suggestion,
 	}
 	if input.Err != nil {
 		state.Error = uitext.TermErrorTextFor(translator, input.Err)
-	}
-	switch {
-	case errors.Is(input.Err, dict.ErrEmpty):
-		state.ErrorCode = "empty"
-	case errors.Is(input.Err, dict.ErrLong):
-		state.ErrorCode = "long"
-	case errors.Is(input.Err, dict.ErrNewline):
-		state.ErrorCode = "newline"
-	case errors.Is(input.Err, dict.ErrFormat):
-		state.ErrorCode = "format"
-	case errors.Is(input.Err, core.ErrExists):
-		state.ErrorCode = "exists"
-	case input.Err != nil:
-		state.ErrorCode = "generic"
+		state.ErrorCode = dictionaryTermErrorCode(input.Err)
 	}
 	return state
+}
+
+func dictionaryTermErrorCode(err error) string {
+	switch {
+	case errors.Is(err, dict.ErrEmpty):
+		return "empty"
+	case errors.Is(err, dict.ErrLong):
+		return "long"
+	case errors.Is(err, dict.ErrNewline):
+		return "newline"
+	case errors.Is(err, dict.ErrFormat):
+		return "format"
+	case errors.Is(err, core.ErrExists):
+		return "exists"
+	case err != nil:
+		return "generic"
+	default:
+		return ""
+	}
 }
 
 func dictionaryScanModel(preferences settings.Settings, installed []local.Model) (local.Model, bool) {

@@ -125,6 +125,7 @@ type modelsNetworkFamilyViewState struct {
 type modelsNetworkViewState struct {
 	Open          bool                         `json:"open"`
 	ProxyMode     int                          `json:"proxy_mode"`
+	ProxyURL      string                       `json:"proxy_url,omitempty"`
 	ProxyError    string                       `json:"proxy_error,omitempty"`
 	ProxyCaption  string                       `json:"proxy_caption"`
 	Source        int                          `json:"source"`
@@ -452,7 +453,7 @@ func buildModelsNetworkViewState(translator *i18n.Translator, input modelsViewSt
 }
 
 func updateModelsNetworkFormViewState(translator *i18n.Translator, state *modelsNetworkViewState, form networkForm) {
-	state.ProxyMode, state.ProxyError = form.proxyMode, form.proxyErr
+	state.ProxyMode, state.ProxyURL, state.ProxyError = form.proxyMode, form.proxyURL, form.proxyErr
 	state.Source, state.SourceURL = form.source, form.sourceURL
 	state.SourceLabels = []string{translator.T("Automatic"), translator.T("Hugging Face only"), translator.T("hf-mirror.com only")}
 	state.ProxyCaption = ""
@@ -499,7 +500,7 @@ func buildModelsNetworkFamilyViewState(translator *i18n.Translator, input models
 func modelsViewCacheKey(input modelsViewStateInput, locale string) string {
 	var key strings.Builder
 	fmt.Fprintf(&key, "%s|%#v|%#v|%#v|%#v|%#v|", locale, input.Settings, input.InstalledASR, input.InstalledLLM, input.NetworkForm.proxyMode, input.NetworkForm.source)
-	fmt.Fprintf(&key, "%s|%s|%t|%t|%t|%t|%s|%d|%#v|%s|", input.NetworkForm.sourceURL, input.NetworkForm.proxyErr, input.NetworkOpen, input.FamilyOthers, input.FamilyReadOnly, input.AdvancedOpen, input.ModelAsk, input.ModelAskFree, input.ModelShared, input.ModelDeciding)
+	fmt.Fprintf(&key, "%s|%s|%s|%t|%t|%t|%t|%s|%d|%#v|%s|", input.NetworkForm.sourceURL, input.NetworkForm.proxyURL, input.NetworkForm.proxyErr, input.NetworkOpen, input.FamilyOthers, input.FamilyReadOnly, input.AdvancedOpen, input.ModelAsk, input.ModelAskFree, input.ModelShared, input.ModelDeciding)
 	for _, model := range input.Catalog {
 		status := input.Status[model.ID]
 		fmt.Fprintf(&key, "%s:%t:%t:%t:%d:%d:%s:%s:%v:%t:%s:%s:%s;", model.ID, status.Installed, status.OnDisk, status.Downloading, status.Done, status.Total, status.WaitingFor, status.Elsewhere, status.Err, status.Mine, strings.Join(status.Users, ","), status.DeletedBy, status.Revision)

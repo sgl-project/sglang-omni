@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
 
 func dictionaryFixtureScenarios() []meetingFixtureScenario {
@@ -49,15 +52,22 @@ func dictionaryFixtureScenarios() []meetingFixtureScenario {
 		term := input.Terms[0]
 		input.Edit = dictionaryTermEditStateInput{Open: true, ID: term.ID, Term: term.Term, Aliases: "vox t", Note: term.Note, Enabled: term.Enabled, Original: term.Term}
 	})
+	editErrors := dictionaryEditFixtureErrors()
 	for _, scenario := range []struct {
-		name string
-		err  error
+		name     string
+		id       string
+		term     string
+		original string
 	}{
-		{"empty", dict.ErrEmpty}, {"long", dict.ErrLong}, {"newline", dict.ErrNewline}, {"format", dict.ErrFormat},
-		{"exists", core.ErrExists}, {"generic", errors.New("fixture save failed")},
+		{name: "empty"},
+		{name: "long", term: strings.Repeat("R", dict.MaxTermChars+1)},
+		{name: "exists", term: "voxt"},
+		{name: "generic", id: "term-voxt", term: "Voxt", original: "Voxt"},
 	} {
 		add("dictionary-edit-error-"+scenario.name, func(input *dictionaryViewStateInput) {
-			input.Edit = dictionaryTermEditStateInput{Open: true, ID: "term-voxt", Term: "Voxt", Enabled: true, Original: "Voxt", Err: scenario.err}
+			input.Edit = dictionaryTermEditStateInput{
+				Open: true, ID: scenario.id, Term: scenario.term, Enabled: true, Original: scenario.original, Err: editErrors[scenario.name],
+			}
 		})
 	}
 	add("dictionary-scan-loading", func(input *dictionaryViewStateInput) { input.ScanOpen = true })
@@ -137,6 +147,40 @@ func dictionaryFixtureInput() dictionaryViewStateInput {
 	}
 }
 
+func dictionaryEditFixtureErrors() map[string]error {
+	longTerm := strings.Repeat("R", dict.MaxTermChars+1)
+	editErrors := map[string]error{
+		"empty": dict.Check(dict.Clean(store.Term{})),
+		"long":  dict.Check(dict.Clean(store.Term{Term: longTerm})),
+	}
+	directory, err := os.MkdirTemp("", "voxt-dictionary-fixture-")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(directory)
+	repository, err := sqlitestore.Open(context.Background(), directory)
+	if err != nil {
+		panic(err)
+	}
+	defer repository.Close()
+	existing := store.Term{ID: "term-voxt", Term: "Voxt", Enabled: true}
+	if err := repository.Dictionary().Put(context.Background(), existing); err != nil {
+		panic(err)
+	}
+	editErrors["exists"] = repository.Dictionary().Put(context.Background(), store.Term{ID: "term-duplicate", Term: "voxt", Enabled: true})
+	if !errors.Is(editErrors["exists"], core.ErrExists) {
+		panic(fmt.Errorf("dictionary duplicate fixture: %w", editErrors["exists"]))
+	}
+	if err := repository.Close(); err != nil {
+		panic(err)
+	}
+	editErrors["generic"] = repository.Dictionary().Put(context.Background(), existing)
+	if editErrors["generic"] == nil {
+		panic("dictionary save fixture unexpectedly succeeded")
+	}
+	return editErrors
+}
+
 func dictionaryLLMProblemCodes() []string {
 	return []string{
 		llm.CodeNoKey, llm.CodeAuth, llm.CodeRateLimited, llm.CodeServer, llm.CodeOverloaded,
@@ -193,9 +237,6 @@ func notesFixtureScenarios() []meetingFixtureScenario {
 			input.Editing.Custom, input.Editing.Typing, input.Editing.Edited, input.Editing.Text = true, true, true, scenario.text
 		})
 	}
-	add("notes-shortcut-parse-no-modifier", func(input *notesViewStateInput) {
-		input.Editing.Custom, input.Editing.Typing, input.Editing.Edited, input.Editing.Err = true, true, true, hotkey.ErrNoModifier
-	})
 	add("notes-shortcut-record-denied", func(input *notesViewStateInput) {
 		input.Editing.Custom, input.Editing.RecordDenied, input.Editing.Text = true, true, settings.DefaultNote
 	})

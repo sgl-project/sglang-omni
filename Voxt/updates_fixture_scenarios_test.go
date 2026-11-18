@@ -48,7 +48,10 @@ func updatesFixtureScenarios() []meetingFixtureScenario {
 	addRelease("available-no-notes", func(input *releaseViewStateInput) {
 		input.Done, input.Newer, input.Found.Notes = true, true, ""
 	})
-	addRelease("up-to-date", func(input *releaseViewStateInput) { input.Done = true })
+	addRelease("up-to-date", func(input *releaseViewStateInput) {
+		input.Done = true
+		input.Found.Version = input.RunningVersion
+	})
 	for _, scenario := range []struct {
 		name string
 		err  error

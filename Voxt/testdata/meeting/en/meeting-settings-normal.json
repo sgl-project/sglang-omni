@@ -117,5 +117,98 @@
     ],
     "llm_selected": "Fixture Language Two",
     "no_llm": false
+  },
+  "meeting_shortcuts": {
+    "prefix": "mt",
+    "hotkeys_installed": true,
+    "helper_records_keys": false,
+    "empty_text": "",
+    "rewrite_hint": false,
+    "rows": [
+      {
+        "keys": "Control+Option+M",
+        "value": "⌃⌥M",
+        "trigger": 0,
+        "custom_editing": false,
+        "typing": false,
+        "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
+        "options": [
+          {
+            "label": "Right ⌥",
+            "value": "RightOption",
+            "custom": false
+          },
+          {
+            "label": "Right ⌥ ⇧",
+            "value": "RightOption+Shift",
+            "custom": false
+          },
+          {
+            "label": "⌃ Right ⌥",
+            "value": "Control+RightOption",
+            "custom": false
+          },
+          {
+            "label": "Right ⌘",
+            "value": "RightCommand",
+            "custom": false
+          },
+          {
+            "label": "Right ⇧",
+            "value": "RightShift",
+            "custom": false
+          },
+          {
+            "label": "fn",
+            "value": "Fn",
+            "custom": false
+          },
+          {
+            "label": "fn ⇧",
+            "value": "Fn+Shift",
+            "custom": false
+          },
+          {
+            "label": "fn ⌃",
+            "value": "Fn+Control",
+            "custom": false
+          },
+          {
+            "label": "⌥Space",
+            "value": "Option+Space",
+            "custom": false
+          },
+          {
+            "label": "⌃⌥Space",
+            "value": "Control+Option+Space",
+            "custom": false
+          },
+          {
+            "label": "⌃⌥M",
+            "value": "Control+Option+M",
+            "custom": false
+          },
+          {
+            "label": "Custom…",
+            "value": "",
+            "custom": true
+          }
+        ],
+        "custom": {
+          "input_text": "",
+          "keys_text": "",
+          "canonical": "",
+          "parsed": false,
+          "error_text": "Type the keys, as in Control+Option+Space."
+        },
+        "needs_accessibility": false,
+        "problems": null,
+        "problem_codes": null,
+        "used_by": null
+      }
+    ]
   }
 }

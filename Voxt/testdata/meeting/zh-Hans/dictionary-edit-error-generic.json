@@ -65,7 +65,7 @@
       "aliases": "",
       "note": "",
       "enabled": true,
-      "error": "无法保存词条：fixture save failed",
+      "error": "无法保存词条：term Voxt: sqlite: database is closed",
       "error_code": "generic",
       "saving": false,
       "original": "Voxt",

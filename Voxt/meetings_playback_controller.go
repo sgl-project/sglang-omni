@@ -60,13 +60,16 @@ func (a *app) toggleMeetingPlayback(id string) {
 
 func (a *app) seekMeetingPlayback(id string, startMS int64) {
 	detail := a.mv.detail
-	if detail == nil || detail.id != id || detail.meeting.Audio == "" {
+	if detail == nil || detail.id != id || detail.meeting.Audio == "" || !detail.audioReady {
 		return
 	}
 	at := time.Duration(startMS) * time.Millisecond
 	meetingsRoot := filepath.Join(a.dataDir(), "meetings")
 	audioID := detail.meeting.Audio
 	directory := filepath.Join(meetingsRoot, audioID)
+	if !meeting.AudioFolderReady(meetingsRoot, audioID) {
+		return
+	}
 	a.stopMeetingPlayback()
 	segments := playbackSegments(detail.segments)
 	detail.playback.seq++
@@ -76,15 +79,6 @@ func (a *app) seekMeetingPlayback(id string, startMS int64) {
 	detail.playback.highlight = meeting.SegmentIndexAt(segments, at)
 	a.refreshMeetingPlaybackState()
 	a.async(func() {
-		if !meeting.AudioFolderReady(meetingsRoot, audioID) {
-			a.post(func() {
-				if current := a.mv.detail; current != nil && current.id == id && current.playback.seq == seq {
-					current.playback.playing = false
-					a.refreshMeetingPlaybackState()
-				}
-			})
-			return
-		}
 		players, err := openMeetingAudio(meeting.TrackPaths(directory), at)
 		duration := meeting.MaxTrackDuration(directory)
 		a.post(func() {

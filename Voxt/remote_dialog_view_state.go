@@ -39,6 +39,7 @@ type remoteDialogViewState struct {
 	Saving            bool                       `json:"saving"`
 	Unsaved           bool                       `json:"unsaved"`
 	Form              remoteDialogFormViewState  `json:"form"`
+	SavedForm         *remoteDialogFormViewState `json:"saved_form,omitempty"`
 }
 
 type remoteDialogFormViewState struct {
@@ -132,6 +133,7 @@ type remoteGenerationFormViewState struct {
 
 type remoteDialogStateInput struct {
 	Dialog       *providerDialog
+	Saved        *providerDialogLocalUI
 	Service      service
 	Model        string
 	Capabilities providers.GenCaps
@@ -156,6 +158,10 @@ func buildRemoteDialogViewState(translator *i18n.Translator, input remoteDialogS
 		Error:             d.err, ErrorMore: d.errMore, CanTest: !d.test.running && !d.saving && (!sv.signIn || input.ChatEmail != ""),
 		Test: buildRemoteTestViewState(translator, d.test), ShowRemove: d.exists, Saving: d.saving, Unsaved: input.Unsaved,
 		Form: remoteDialogFormStateOf(d),
+	}
+	if input.Unsaved && input.Saved != nil {
+		saved := remoteDialogFormStateOf(&providerDialog{providerDialogLocalUI: *input.Saved})
+		state.SavedForm = &saved
 	}
 	switch {
 	case sv.signIn:

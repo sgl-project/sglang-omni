@@ -482,6 +482,7 @@
     "network": {
       "open": true,
       "proxy_mode": 2,
+      "proxy_url": "not-a-proxy",
       "proxy_error": "Enter a proxy address that starts with http://, https:// or socks5://, such as http://127.0.0.1:7890.",
       "proxy_caption": "",
       "source": 0,

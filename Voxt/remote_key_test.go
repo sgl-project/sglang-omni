@@ -3,11 +3,47 @@ package main
 import (
 	"testing"
 
+	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
+
+func TestRemoteDialogDismissalUsesLiveInput(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		before   func(*providerDialog)
+		during   func(*providerDialog)
+		wantOpen bool
+	}{
+		{name: "endpoint edit", during: func(dialog *providerDialog) { dialog.endpoint = "changed" }, wantOpen: true},
+		{name: "endpoint revert", before: func(dialog *providerDialog) { dialog.endpoint = "changed" }, during: func(dialog *providerDialog) { dialog.endpoint = dialog.was.Endpoint }},
+		{name: "key edit", during: func(dialog *providerDialog) { dialog.key = "fixture" }, wantOpen: true},
+		{name: "key revert", before: func(dialog *providerDialog) { dialog.key = "fixture" }, during: func(dialog *providerDialog) { dialog.key = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := remoteFixtureDialogInput(local.LLM)
+			a := &app{provDlg: *input.Dialog}
+			input.Dialog = &a.provDlg
+			if test.before != nil {
+				test.before(&a.provDlg)
+			}
+			input.Unsaved = a.provDlg.unsaved()
+			state := buildRemoteDialogViewState(i18n.NewTranslator("en"), *input)
+			tt := ui.NewTester(func(c *ui.Context) {
+				test.during(&a.provDlg)
+				remoteProviderDialogView(c, &state, a, &a.provDlg.providerDialogLocalUI)
+			}, 1000, 1000)
+			tt.Key(0, ui.KeyEscape)
+			frames(tt)
+			if a.provDlg.open != test.wantOpen {
+				t.Fatalf("dialog open %t, want %t", a.provDlg.open, test.wantOpen)
+			}
+		})
+	}
+}
 
 // TestRemoteKeyWhitespace: a saved key with a space in it (copied where
 // the text wrapped) is flagged on its card and in its dialog; a pasted

@@ -12,6 +12,7 @@ type remoteWaitActions interface {
 }
 
 type remoteDialogActions interface {
+	remoteDialogUnsaved() bool
 	testDialog()
 	saveProviderDialog()
 	removeProvider()

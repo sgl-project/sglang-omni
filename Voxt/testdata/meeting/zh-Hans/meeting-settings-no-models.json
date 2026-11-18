@@ -101,5 +101,13 @@
     ],
     "llm_selected": "自动",
     "no_llm": true
+  },
+  "meeting_shortcuts": {
+    "prefix": "mt",
+    "hotkeys_installed": true,
+    "helper_records_keys": false,
+    "empty_text": "还没有快捷键，添加一个才能用这个功能。",
+    "rewrite_hint": false,
+    "rows": []
   }
 }

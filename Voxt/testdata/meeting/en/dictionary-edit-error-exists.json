@@ -60,15 +60,15 @@
     },
     "edit": {
       "open": true,
-      "id": "term-voxt",
-      "term": "Voxt",
+      "id": "",
+      "term": "voxt",
       "aliases": "",
       "note": "",
       "enabled": true,
       "error": "This term is in the dictionary already.",
       "error_code": "exists",
       "saving": false,
-      "original": "Voxt",
+      "original": "",
       "suggestion": ""
     },
     "notes_text": "",
