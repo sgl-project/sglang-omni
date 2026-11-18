@@ -365,7 +365,7 @@ func (s *live) finalPass(pcm []byte) {
 		s.end(asr.Event{Kind: asr.EventError, Err: err})
 		return
 	}
-	text = joinParts(append(texts, text))
+	text = s.plain(joinParts(append(texts, text)))
 	res := asr.Result{Text: text, Lang: language, Duration: asr.Duration(pcm, sampleRate), Model: s.a.spec.ID, Latency: took}
 	s.end(asr.Event{Kind: asr.EventFinal, Text: text, Result: res})
 }

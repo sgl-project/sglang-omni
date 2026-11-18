@@ -14,7 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Rewrite and Translate read a block selection in a Lark doc** (#4154): selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
 - **Starting a meeting works while nothing is playing** (#4130): with the system audio permission already allowed, starting a meeting on a quiet Mac failed about four seconds in, and the notice wrongly said to allow the permission in System Settings. The system audio tap was treated as dead because an idle output gave it no audio; it now waits and records the other side once sound plays. The wait is padded with silence, so sound that starts late lands at its actual time on the meeting's timeline, and a recording with a time limit still ends on its own.
 - **A microphone added in Settings → Audio no longer makes dictation hang on "Starting the microphone…"** (#4120): a chosen input that starts but never delivers sound (some microphones keep reconfiguring themselves before the first sound arrives) made Voxt rebuild the audio engine without end, so the recording never began. The rebuild is now limited like the one for a silent microphone: the second try records from the system default input, and if nothing delivers sound the recording stops with a clear error instead of hanging.
-- **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
+- **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup, including text joined from background pieces and every speaker and timestamp form the native parser accepts; the meetings' speaker transcription keeps it.
 - **Rewrite's answer card renders Markdown** (#4119): the language model answers in Markdown, and the card now shows a Rewrite answer as it reads — headings, bold, lists, code, and a formula's TeX — instead of the raw markers, the way the chat apps show replies, while it streams in and in a conversation's answers. What you said stays as written, and a translation or Transcribe's clean-up stays plain text, as it goes in verbatim. Copy and Insert still use the answer's original text.
 
 ### Added
@@ -35,7 +35,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **Qwen3-ASR 1.7B (6bit) 不再仅因共享草稿模型已安装就打开“转录加速”**：草稿模型可能随 1.7B (8bit) 一起下载，但这次下载不会替 6bit 打开开关；只有你亲自打开“转录加速”后，6bit 才使用草稿模型。
-- **用 MOSS-Transcribe-Diarize 听写不会再插入说话人或时间戳标记**：在部分录音（多为英语）上，即使要求纯文本，模型也会输出区分说话人的标记（[S01]、[2.62]），听写会照原样插入。现在纯文本路径会去掉这些标记；会议的说话人转录保持不变。
+- **用 MOSS-Transcribe-Diarize 听写不会再插入说话人或时间戳标记**：在部分录音（多为英语）上，即使要求纯文本，模型也会输出区分说话人的标记（[S01]、[2.62]），听写会照原样插入。现在纯文本路径会去掉这些标记，包括后台分段拼接的文字和原生解析器接受的所有说话人、时间戳格式；会议的说话人转录保持不变。
 
 #### 新增
 

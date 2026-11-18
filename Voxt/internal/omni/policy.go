@@ -195,7 +195,7 @@ func spaced(r rune) bool {
 // plain-text instruction (single-speaker English dictation), and
 // dictation inserts plain text only.
 var (
-	mossMarkup       = regexp.MustCompile(`\[S\d{1,2}\]|\[\d{1,4}\.\d{1,2}\]`)
+	mossMarkup       = regexp.MustCompile(`\[S\d+\]|\[\d+(?:[.,]\d+)?\]`)
 	mossMarkupSpaces = regexp.MustCompile(` {2,}`)
 )
 

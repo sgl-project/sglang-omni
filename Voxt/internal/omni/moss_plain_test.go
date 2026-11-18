@@ -62,6 +62,54 @@ func TestMossPlainTextLive(t *testing.T) {
 	}
 }
 
+func TestMossPlainTextLivePieces(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "[S01] p{n}[2.62]"}, withServers(t, "moss_transcribe_diarize_server"))
+	a := piecesASR(t, f, ASRMoss)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "en", LiveResult: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, speechAndPauses(2))
+	f.waitLogged(t, "piece 1 of the recording")
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	last := evs[len(evs)-1]
+	if last.Kind != asr.EventFinal || last.Text != "p1 p2" || last.Result.Text != "p1 p2" {
+		t.Fatalf("final %+v", last)
+	}
+	if finals := f.records("final"); len(finals) != 2 {
+		t.Fatalf("%d Final requests, want one piece and the tail", len(finals))
+	}
+}
+
+func TestMossPlainTextNativeGrammar(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{"[S123]speaker", "speaker"},
+		{"integer[12345]", "integer"},
+		{"dot[12345.678]", "dot"},
+		{"hello[17,22]", "hello"},
+		{"comma long[12345,678]", "comma long"},
+		{"[10000.00]gone", "gone"},
+		{"[S01]ordinary[2.62]", "ordinary"},
+		{"[S]", "[S]"},
+		{"[2.]", "[2.]"},
+		{"[.62]", "[.62]"},
+		{"[1.2.3]", "[1.2.3]"},
+		{"[note]", "[note]"},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			if got := again(ASRMoss).plainText(test.input); got != test.want {
+				t.Errorf("plainText(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
+
 // The diarization request keeps the markup: it is the segments' source.
 func TestMossDiarizeKeepsMarkup(t *testing.T) {
 	f := newFake(t, omnitest.Opts{Segments: true, Text: mossMarkedUp}, withServers(t, "moss_transcribe_diarize_server"))
@@ -70,7 +118,7 @@ func TestMossDiarizeKeepsMarkup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Text != mossMarkedUp || len(res.Segments) != 2 {
+	if res.Text != mossMarkedUp || len(res.Segments) != 2 || res.Segments[0].Speaker != "S01" || res.Segments[1].Speaker != "S02" {
 		t.Fatalf("result %+v", res)
 	}
 }

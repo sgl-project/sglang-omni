@@ -25,13 +25,17 @@ func speechAndPauses(n int) []byte {
 
 // piecesASR is the fake's ASR with Silero and pieces at a test's scale:
 // after 2 s, cut 1–3 s in, from 1.5 s pending, in pauses of 150 ms.
-func piecesASR(t *testing.T, f *fake) *ASR {
+func piecesASR(t *testing.T, f *fake, modelIDs ...string) *ASR {
 	t.Helper()
 	v, err := NewVAD(f.rt, f.model(VADSilero))
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := f.asr(t, ASRAccurate).WithVAD(v)
+	modelID := ASRAccurate
+	if len(modelIDs) > 0 {
+		modelID = modelIDs[0]
+	}
+	a := f.asr(t, modelID).WithVAD(v)
 	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 2*time.Second, time.Second, 1500*time.Millisecond, 3*time.Second
 	a.spec.ASR.PauseMin = 150 * time.Millisecond
 	return a
