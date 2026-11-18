@@ -41,13 +41,14 @@ func LanguageName(code, set string) string {
 // was not made, and is worth asking again (Input.Strict):
 //
 //   - it is the source again, ignoring case, spaces and punctuation;
-//   - or its letters are mostly not in the target's script while the
-//     source's are not either (Chinese asked, Latin text back; English
-//     asked, Chinese back). Scripts cannot tell English from French, so
-//     Latin into Latin is judged by the first rule only.
+//   - or the whole source appears unparenthesized beside its translation;
+//   - or it is mostly outside the target's script while the source is too.
+//     At least a quarter of the answer in that script can preserve names;
+//     an echo of the whole source plus a word does not count.
 //
-// A source already in the target's script (Chinese into Chinese) is
-// never judged untranslated: the model may rightly return it.
+// A source already in the target's script (Chinese into Chinese) is never
+// judged untranslated. Ambiguous Latin text is still retried, then accepted
+// unless LanguageMismatch gives positive evidence for a hard failure.
 func Untranslated(source, result, target string) bool {
 	src, res := fold(source), fold(result)
 	if src == "" || res == "" {
@@ -63,9 +64,122 @@ func Untranslated(source, result, target string) bool {
 		return false // the source is in the target's script already
 	}
 	if src == res {
-		return true
+		return isLatin(target) || ScriptMismatch(source, target)
+	}
+	glossed := parenthesizedSource(source, result)
+	if containsWholeSource(source, result) && !glossed && (isLatin(target) || ScriptMismatch(source, target)) {
+		return true // a whole source beside its translation is an echo, not a preserved name
+	}
+	if resLetters > 0 && resShare >= 0.25 && (!containsWholeSource(source, result) || glossed) {
+		return false // enough target text to allow preserved names, not a source echo
 	}
 	return resLetters > 0 && resShare < 0.5 && srcShare < 0.5
+}
+
+// parenthesizedSource reports an original name kept as a gloss beside its
+// translation, such as Doubao (豆包) or 谷歌（Google）.
+func parenthesizedSource(source, result string) bool {
+	return strings.Contains(result, "("+source+")") || strings.Contains(result, "（"+source+"）")
+}
+
+// containsWholeSource reports source as a whole letter-token sequence in
+// result. Short words inside another word, such as it in petit, are not echoes.
+func containsWholeSource(source, result string) bool {
+	sourceTokens, resultTokens := letterTokens(source), letterTokens(result)
+	if len(sourceTokens) == 0 || len(sourceTokens) > len(resultTokens) {
+		return false
+	}
+	for start := 0; start+len(sourceTokens) <= len(resultTokens); start++ {
+		matched := true
+		for offset, token := range sourceTokens {
+			if !strings.EqualFold(resultTokens[start+offset], token) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func letterTokens(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) })
+}
+
+// ScriptMismatch reports a letter outside target's script. Latin-only text
+// has no such evidence, so it never distinguishes English from French.
+func ScriptMismatch(text, target string) bool {
+	is := scriptOf(target)
+	if is == nil {
+		return false
+	}
+	for _, r := range text {
+		if unicode.IsLetter(r) && !is(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// LanguageMismatch reports positive evidence that text is not in target.
+// Script mismatches count. For Latin text, common vocabulary can establish a
+// language; shared words score on every matching side, and unknown words and
+// language-neutral names are not evidence.
+func LanguageMismatch(text, target string) bool {
+	if ScriptMismatch(text, target) {
+		return true
+	}
+	if !isLatin(target) {
+		return false
+	}
+	candidates := latinLanguages(text)
+	return len(candidates) > 0 && !candidates[lang.Canonical(target)]
+}
+
+// commonLatinWords identifies a language from function words and common
+// greetings. Shared words deliberately produce ties, not a forced mismatch.
+var commonLatinWords = map[string][]string{
+	"en": {"the", "a", "an", "and", "or", "but", "if", "then", "else", "when", "where", "why", "how", "what", "who", "which", "is", "are", "am", "was", "were", "be", "been", "do", "does", "did", "have", "has", "had", "will", "would", "can", "could", "should", "may", "might", "must", "to", "of", "in", "on", "at", "by", "from", "with", "without", "this", "that", "these", "those", "i", "me", "my", "we", "us", "our", "you", "your", "he", "she", "it", "its", "they", "them", "their", "good", "morning", "goodbye", "hello", "hi", "night", "evening", "day", "week", "month", "year", "time", "work", "life", "world", "friends", "people", "person", "man", "woman", "new", "old", "big", "small", "long", "short", "high", "low", "early", "late", "right", "left", "next", "last", "first", "second", "best", "better", "worse", "worst", "nice", "happy", "sad", "easy", "hard", "free", "full", "sure", "real", "great", "little", "own", "same", "different", "thank", "thanks", "please", "yes", "no", "son", "comment", "con", "non", "est", "english"},
+	"fr": {"le", "la", "les", "des", "de", "du", "et", "ou", "est", "sont", "à", "au", "aux", "ce", "cette", "ces", "bonjour", "salut", "bonsoir", "bonne", "journée", "comment", "ça", "va", "merci", "je", "tu", "il", "elle", "une", "un", "nous", "vous", "ils", "elles", "pas", "oui", "non", "on", "a", "son", "français", "jour", "nuit", "semaine", "mois", "année", "temps", "travail", "vie", "monde", "gens", "homme", "femme", "bon", "nouveau", "vieux", "grand", "petit", "long", "court", "haut", "bas", "tôt", "tard", "premier", "dernier", "meilleur", "pire", "beau", "facile", "difficile", "libre", "plein", "sûr", "vrai", "super", "même", "autre"},
+	"es": {"el", "la", "los", "las", "de", "del", "y", "o", "es", "son", "en", "con", "por", "para", "una", "un", "hola", "adiós", "gracias", "cómo", "como", "qué", "que", "sí", "no", "buenos", "buenas", "días", "noches", "señor", "señora", "yo", "tú", "usted", "nosotros", "ellos", "ellas", "a", "español", "día", "noche", "semana", "mes", "año", "tiempo", "trabajo", "vida", "mundo", "gente", "hombre", "mujer", "bueno", "nuevo", "viejo", "grande", "pequeño", "largo", "corto", "alto", "bajo", "temprano", "tarde", "primero", "último", "mejor", "peor", "bonito", "fácil", "difícil", "libre", "lleno", "seguro", "real", "genial", "mismo", "otro"},
+	"de": {"guten", "tag", "hallo", "danke", "ich", "du", "ist", "nicht", "und", "der", "die", "das", "ein", "eine", "zu", "den", "mit", "für", "auf", "kein", "keine", "ja", "nein", "bitte", "morgen", "abend", "nacht", "heute", "gestern", "woche", "monat", "jahr", "zeit", "arbeit", "leben", "welt", "menschen", "gut", "neu", "alt", "groß", "klein", "lang", "kurz", "hoch", "früh", "spät", "erste", "letzte", "beste", "besser", "schlechter", "schön", "einfach", "schwer", "frei", "voll", "sicher", "echt", "super", "gleich", "anders", "deutsch"},
+	"it": {"ciao", "buongiorno", "come", "stai", "il", "lo", "la", "gli", "le", "di", "a", "da", "in", "con", "su", "per", "non", "sono", "sei", "è", "grazie", "buon", "giorno", "sera", "notte", "oggi", "ieri", "domani", "settimana", "mese", "anno", "tempo", "vita", "mondo", "persone", "buono", "nuovo", "vecchio", "grande", "piccolo", "lungo", "corto", "alto", "basso", "presto", "tardi", "primo", "ultimo", "meglio", "peggio", "bello", "facile", "difficile", "libero", "pieno", "sicuro", "vero", "grande", "stesso", "diverso", "italiano"},
+	"pt": {"olá", "oi", "obrigado", "obrigada", "como", "você", "está", "bom", "dia", "de", "do", "da", "em", "um", "uma", "não", "é", "para", "com", "boa", "tarde", "noite", "hoje", "ontem", "amanhã", "semana", "mês", "ano", "tempo", "vida", "mundo", "pessoas", "novo", "velho", "grande", "pequeno", "longo", "curto", "alto", "baixo", "cedo", "primeiro", "último", "melhor", "pior", "bonito", "fácil", "difícil", "livre", "cheio", "certo", "real", "ótimo", "mesmo", "diferente", "português"},
+	"nl": {"hallo", "goedemorgen", "dank", "je", "jij", "de", "het", "een", "van", "voor", "met", "niet", "is", "zijn", "en", "goed", "morgen", "avond", "nacht", "vandaag", "gisteren", "week", "maand", "jaar", "tijd", "werk", "leven", "wereld", "mensen", "nieuw", "oud", "groot", "klein", "lang", "kort", "hoog", "laag", "vroeg", "laat", "eerste", "laatste", "beste", "beter", "slechter", "mooi", "makkelijk", "moeilijk", "vrij", "vol", "zeker", "echt", "geweldig", "zelfde", "anders", "nederlands"},
+	"tr": {"merhaba", "günaydın", "teşekkür", "nasılsın", "bir", "ve", "bu", "için", "de", "mi", "mı", "yok", "var", "ben", "sen", "gün", "gece", "bugün", "dün", "yarın", "hafta", "ay", "yıl", "zaman", "iş", "hayat", "dünya", "insanlar", "iyi", "yeni", "eski", "büyük", "küçük", "uzun", "kısa", "yüksek", "alçak", "erken", "geç", "sağ", "sol", "ilk", "son", "en", "daha", "kötü", "güzel", "kolay", "zor", "özgür", "dolu", "emin", "gerçek", "harika", "aynı", "farklı", "türkçe"},
+	"pl": {"cześć", "dzień", "dobry", "dziękuję", "jak", "się", "jest", "nie", "tak", "do", "na", "to", "za", "że", "wieczór", "noc", "dziś", "wczoraj", "jutro", "tydzień", "miesiąc", "rok", "czas", "praca", "życie", "świat", "ludzie", "nowy", "stary", "duży", "mały", "długi", "krótki", "wysoki", "niski", "wcześnie", "późno", "pierwszy", "ostatni", "najlepszy", "lepszy", "gorszy", "ładny", "łatwy", "trudny", "wolny", "pełny", "pewny", "prawdziwy", "świetny", "samy", "inny", "polski"},
+	"vi": {"xin", "chào", "cảm", "ơn", "bạn", "khỏe", "không", "có", "của", "cho", "và", "là", "tôi", "buổi", "sáng", "chiều", "tối", "ngày", "hôm", "qua", "mai", "tuần", "tháng", "năm", "thời", "gian", "công", "việc", "cuộc", "sống", "thế", "giới", "người", "tốt", "mới", "cũ", "lớn", "nhỏ", "dài", "ngắn", "cao", "thấp", "sớm", "muộn", "đầu", "cuối", "nhất", "xấu", "đẹp", "dễ", "khó", "tự", "đầy", "chắc", "thật", "tuyệt", "cùng", "khác", "tiếng", "việt"},
+	"id": {"halo", "selamat", "pagi", "terima", "kasih", "apa", "kabar", "saya", "kamu", "di", "dan", "yang", "untuk", "dengan", "tidak", "itu", "ini", "siang", "malam", "hari", "kemarin", "besok", "minggu", "bulan", "tahun", "waktu", "kerja", "hidup", "dunia", "orang", "baik", "baru", "lama", "besar", "kecil", "panjang", "pendek", "tinggi", "rendah", "awal", "akhir", "pertama", "terakhir", "terbaik", "lebih", "buruk", "bagus", "mudah", "sulit", "bebas", "penuh", "pasti", "benar", "hebat", "sama", "berbeda", "indonesia"},
+	"ms": {"halo", "selamat", "pagi", "terima", "kasih", "apa", "kabar", "saya", "kamu", "di", "dan", "yang", "untuk", "dengan", "tidak", "itu", "ini", "siang", "malam", "hari", "kemarin", "besok", "minggu", "bulan", "tahun", "waktu", "kerja", "hidup", "dunia", "orang", "baik", "baru", "lama", "besar", "kecil", "panjang", "pendek", "tinggi", "rendah", "awal", "akhir", "pertama", "terakhir", "terbaik", "lebih", "buruk", "bagus", "mudah", "sulit", "bebas", "penuh", "pasti", "benar", "hebat", "sama", "berbeda", "melayu"},
+}
+
+func latinLanguages(text string) map[string]bool {
+	scores := map[string]int{}
+	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }) {
+		for code, words := range commonLatinWords {
+			for _, common := range words {
+				if word == common {
+					scores[code]++
+					break
+				}
+			}
+		}
+	}
+	bestScore := 0
+	for _, score := range scores {
+		if score > bestScore {
+			bestScore = score
+		}
+	}
+	candidates := map[string]bool{}
+	for code, score := range scores {
+		if score == bestScore {
+			candidates[code] = true
+		}
+	}
+	return candidates
 }
 
 // Written says whether most of text's words are in the script of the
