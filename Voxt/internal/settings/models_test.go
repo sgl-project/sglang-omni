@@ -51,31 +51,83 @@ func TestKeepLoadedDocument(t *testing.T) {
 	}
 }
 
-// TestLLMWait (#3821): each choice of Models.LLMWait is the least wait for
-// a language model; empty and unknown values are Automatic (0). Older
-// documents have none (no migration); a choice survives a save and a read.
+// TestLLMWait (#3821, #3941, #3978): each choice of Models.LLMWait, and
+// every custom whole number of minutes up to WaitMaxMinutes, is the least
+// wait for a language model, No limit the longest; empty and unknown values
+// are Automatic (0). Older documents have none (no migration); choices and
+// custom values survive a save and a read.
 func TestLLMWait(t *testing.T) {
 	for _, c := range []struct {
 		v string
 		d time.Duration
 	}{
 		{WaitAuto, 0}, {Wait1Min, time.Minute}, {Wait2Min, 2 * time.Minute},
-		{Wait5Min, 5 * time.Minute}, {Wait10Min, 10 * time.Minute}, {"1h", 0},
+		{Wait5Min, 5 * time.Minute}, {Wait10Min, 10 * time.Minute},
+		{Wait30Min, 30 * time.Minute}, {Wait60Min, 60 * time.Minute}, {"1h", 0},
+		{WaitNoLimit, NoLimit}, {"None", 0}, {"0", 0}, // #3978
+		{"0m", 0}, {"-5m", 0}, {"61m", 0}, {"+5m", 0}, {"05m", 0}, {"1.5m", 0}, {"m", 0}, {"5", 0}, {"九m", 0},
 	} {
 		if d := (Models{LLMWait: c.v}).LLMWaitFor(); d != c.d {
 			t.Errorf("%q: %v, want %v", c.v, d, c.d)
+		}
+	}
+	for minutes := 1; minutes <= WaitMaxMinutes; minutes++ {
+		value := WaitMinutes(minutes)
+		if got := (Models{LLMWait: value}).LLMWaitFor(); got != time.Duration(minutes)*time.Minute {
+			t.Errorf("%q: %v, want %d minutes", value, got, minutes)
 		}
 	}
 	s, err := Migrate([]byte(`{"version":4,"models":{"keepLoaded":"5m"}}`))
 	if err != nil || s.Models.LLMWait != WaitAuto || s.Models.KeepLoaded != Keep5Min {
 		t.Fatalf("an older document: %+v %v", s.Models, err)
 	}
-	s.Models.LLMWait = Wait5Min
+	for _, v := range append([]string{"20m"}, WaitChoices...) {
+		s.Models.LLMWait = v
+		data, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back, err := Migrate(data); err != nil || back.Models.LLMWait != v {
+			t.Errorf("read back %+v %v", back.Models, err)
+		}
+	}
+}
+
+// TestFasterOn (#3873): the Faster transcription switch decides whether a
+// speech model uses its draft, which must be installed; a model never
+// switched (older documents) uses an installed draft, as 2.0.2 did. The
+// switch survives a save and a read, and a clone does not share it.
+func TestFasterOn(t *testing.T) {
+	m := Models{Faster: map[string]bool{"on": true, "off": false}}
+	for _, c := range []struct {
+		id        string
+		installed bool
+		want      bool
+	}{
+		{"never", true, true}, {"never", false, false},
+		{"on", true, true}, {"on", false, false},
+		{"off", true, false}, {"off", false, false},
+	} {
+		if got := m.FasterOn(c.id, c.installed); got != c.want {
+			t.Errorf("%s, installed %v: %v", c.id, c.installed, got)
+		}
+	}
+	if !(Models{}).FasterOn("x", true) {
+		t.Error("no switches at all: an installed draft is off")
+	}
+	s := Defaults()
+	s.Models.Faster = map[string]bool{"asr.fast": false}
 	data, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back, err := Migrate(data); err != nil || back.Models.LLMWait != Wait5Min {
+	back, err := Migrate(data)
+	if on, set := back.Models.Faster["asr.fast"]; err != nil || !set || on {
 		t.Errorf("read back %+v %v", back.Models, err)
+	}
+	c := clone(back)
+	c.Models.Faster["asr.fast"] = true
+	if back.Models.Faster["asr.fast"] {
+		t.Error("a clone shares the switches")
 	}
 }

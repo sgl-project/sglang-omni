@@ -131,7 +131,7 @@ func formRow(c *ui.Context, key, title, info string, control func()) {
 	// The control goes under the name when both do not fit on a line.
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Row(c).Grow(1).Basis(px(t, 160)).MinWidth(px(t, 120)).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).MinWidth(0)
+			settingsName(c, title).MinWidth(0)
 			if info != "" {
 				infoTip(c, info)
 			}

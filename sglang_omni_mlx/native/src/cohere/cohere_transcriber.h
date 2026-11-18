@@ -14,7 +14,7 @@
 
 #include "cohere/cohere_model.h"
 #include "common/swift_port.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/transcription.h"
 #include "silero_vad/speech_segments.h"
 
 namespace cohere_transcribe {
@@ -42,23 +42,23 @@ public:
   // Reads the checkpoint, tokenizer.model and tokenizer_config.json.
   explicit CohereTranscriber(const std::filesystem::path &model_directory);
 
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const CohereOptions &options,
              const std::atomic<bool> &cancel) const;
 
 private:
   struct ChunkResult {
-    std::string text;
-    int generated_token_count = 0;
+    std::vector<int> token_ids;
     bool reached_token_limit = false;
   };
 
   // Text of generated ids: special ids dropped, SentencePiece pieces joined.
   std::string DecodeText(const std::vector<int> &token_ids) const;
-  ChunkResult TranscribeChunk(const std::vector<float> &samples,
-                              const std::vector<int> &prompt_ids,
-                              int max_new_tokens, float temperature,
-                              const std::atomic<bool> &cancel) const;
+  // Each chunk's generated ids, the chunks decoded as rows of one batch.
+  std::vector<ChunkResult>
+  TranscribeChunks(const std::vector<std::vector<float>> &chunks,
+                   const std::vector<int> &prompt_ids, int max_new_tokens,
+                   float temperature, const std::atomic<bool> &cancel) const;
 
   CohereModel model_;
   swift_port::SentencePieceVocabulary vocabulary_;

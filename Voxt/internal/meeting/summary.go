@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,8 +142,10 @@ func SpeakerLabel(speaker string, names map[string]string) string {
 	case "":
 		return "Them"
 	default:
-		if len(speaker) == 2 && speaker[0] == 's' && speaker[1] >= '1' && speaker[1] <= '4' {
-			return fmt.Sprintf("Speaker %c", speaker[1])
+		if n, ok := strings.CutPrefix(speaker, "s"); ok {
+			if _, err := strconv.Atoi(n); err == nil {
+				return "Speaker " + n
+			}
 		}
 		return speaker
 	}
@@ -177,8 +180,18 @@ func RenderSummaryPrompt(template, mainLanguage, transcriptRecord string) string
 	} else {
 		out += "\n\nTranscript:\n" + transcriptRecord
 	}
-	return strings.TrimSpace(out)
+	// The labels are the transcript's, not words for the summary: a
+	// Chinese summary said 由 Me 负责 (11-15).
+	return strings.TrimSpace(out) + "\n\n" + summarySpeakers + "\n\n" + OwnWordsRule
 }
+
+// summarySpeakers says who the transcript's labels are, after any template.
+const summarySpeakers = `Speakers: in the transcript, "Me" is the user, who recorded the meeting, and "Them" is the other side. In the summary and the to-dos, write "you" in the user's main language for the user (你 in Chinese) and "the other side" (对方 in Chinese) for Them; never write the labels Me or Them.`
+
+// OwnWordsRule keeps the instructions' English out of an answer in another
+// language: a Chinese summary wrote "transcript 中未提及" (#4026). It
+// follows every template, the user's own too.
+const OwnWordsRule = `Write the answer entirely in its language, words taken from these instructions too: in a Chinese answer, write 会议记录 for "transcript", never the English word. Names and terms keep the spelling they have in the transcript.`
 
 // SummaryWindows splits a long transcript for hierarchical summary (default 12000 runes per window).
 func SummaryWindows(text string, maxRunes int) []string {

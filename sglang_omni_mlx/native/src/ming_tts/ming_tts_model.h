@@ -4,8 +4,8 @@
 #include <filesystem>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace ming_tts {
 
@@ -45,8 +45,8 @@ public:
 
   mlx::core::array EmbedTokens(const mlx::core::array &input_ids) const;
   mlx::core::array Forward(const mlx::core::array &embeddings,
-                           std::vector<qwen3_asr::KVCache> &caches) const;
-  std::vector<qwen3_asr::KVCache> NewCaches() const;
+                           std::vector<omni_common::KVCache> &caches) const;
+  std::vector<omni_common::KVCache> NewCaches() const;
   const BackboneConfig &config() const { return config_; }
 
 private:

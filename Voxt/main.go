@@ -27,13 +27,26 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/announce"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/updates"
 )
 
 func main() {
+	// Fixture demo builds return before any application data or service wiring.
+	if directory := os.Getenv("VOXTNEW_DEMO_DIR"); directory != "" {
+		if err := runMeetingDemo(directory); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	// `Voxt history …` (history_cli.go) only talks to the running app: no
 	// window, no data, no lock.
 	if len(os.Args) > 1 && os.Args[1] == "history" {
 		os.Exit(runHistoryCLI(os.Args[2:]))
+	}
+	// `Voxt transcribe FILE` (transcribe_cli.go) too: the running app
+	// recognises what it sends.
+	if len(os.Args) > 1 && os.Args[1] == "transcribe" {
+		os.Exit(runTranscribeCLI(os.Args[2:]))
 	}
 	// The languages VoxtNew is written in, of which MyGo shows one
 	// (showLanguage, settings_locale.go).
@@ -105,30 +118,38 @@ func main() {
 	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
 	a.connectShell(logDir)                        // shell.go
 	a.connectHelper()                             // helperlink.go
+	mygo.BindAs("TranscriptPreview", transcriptPreviewBridge{a})
 	// A release without an update feed (2.0.x) checks GitHub's releases
 	// (updates_github.go); a development build has no updater: no Check
 	// for Updates…, and About says so.
-	if mygo.Updater.HasFeed() {
+	v := mygo.App.Version()
+	switch updates.BuildBackend(mygo.Updater.HasFeed(), checksReleases(mygo.IsDev(), v)) {
+	case updates.FeedUpdates:
 		a.upd = pluginUpdates{}
-	} else if v := mygo.App.Version(); checksReleases(mygo.IsDev(), v) {
+	case updates.GitHubUpdates:
 		a.upd = newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
 	}
 	a.bundleStale = h.stale
 	a.connectUpdates()                    // updates.go
 	a.keepReleaseCard(mygo.App.Version()) // updates_github.go
 	a.startFamily()                       // family.go: the manifest, the other ActNow apps, the first start's migration
+	// Out of the Dock from launch: an app that starts in the Dock and
+	// turns accessory once launched may keep its Dock icon (#3918).
+	a.applyDock() // tray.go
 
 	mygo.App.WhenReady(func() {
-		a.openWindow()        // shell.go
-		a.applyBeta()         // updates.go: betas or not, before the first check
-		a.startHelper()       // helperlink.go
-		a.openTray()          // tray.go: the menu bar icon, close to the menu bar
-		a.applyDock()         // tray.go: in the Dock or not
-		a.connectWindowLife() // tray.go
-		a.watchBundle()       // updates.go: an update installed while it runs
-		a.watchReleases()     // updates_github.go: the daily check without a feed
-		a.expireRecordings()  // history_retry.go: recordings kept for a retry, past their time
-		a.openHistoryAccess() // history_access.go: the socket, when the setting is on
+		a.openWindow()           // shell.go
+		a.applyBeta()            // updates.go: betas or not, before the first check
+		a.startHelper()          // helperlink.go
+		a.openTray()             // tray.go: the menu bar icon, close to the menu bar
+		a.applyDock()            // tray.go: in the Dock or not
+		a.connectWindowLife()    // tray.go
+		a.watchBundle()          // updates.go: an update installed while it runs
+		a.watchReleases()        // updates_github.go: the daily check without a feed
+		a.expireRecordings()     // history_retry.go: recordings kept for a retry, past their time
+		a.expireMeetingAudio()   // meeting_audio.go: a failed meeting's recording, past its 7 days
+		a.openHistoryAccess()    // history_access.go: the socket, when the setting is on
+		a.openTranscribeSocket() // transcribe_socket.go: `Voxt transcribe`
 		a.announceURL = announce.URL
 		a.checkAnnouncements() // announcements.go
 		mygo.App.OnSecondInstance(func([]string, string) { a.post(a.showMainWindow) })

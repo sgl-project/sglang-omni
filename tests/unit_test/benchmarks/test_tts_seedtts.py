@@ -3,16 +3,21 @@
 configuration, concurrency sweeps and sustained overshoot."""
 
 import asyncio
+import base64
+import io
 import json
+import os
 import socket
 import sys
 import threading
+import wave
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import requests
 from aiohttp import web
@@ -20,7 +25,9 @@ from aiohttp import web
 from benchmarks.benchmarker.data import FinishReason
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset.seedtts import SampleInput
+from benchmarks.eval import benchmark_drama3_codec as codec_benchmark
 from benchmarks.eval import benchmark_tts_seedtts as tts
+from benchmarks.eval.benchmark_drama3_codec import frame_partitions, read_codes
 from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     _build_arg_parser,
@@ -188,6 +195,7 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
         ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
+        ("tencent/AuK-Flash", None),
     ],
 )
 def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
@@ -751,6 +759,145 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
     }
     assert len(set(seen_samples[0])) == 64
     assert (tmp_path / "overshoot" / "sustained_overshoot.json").is_file()
+
+
+@pytest.mark.parametrize("frame_count", [1, 10, 63, 64, 65, 129, 500])
+def test_codec_reproduction_covers_every_frame_once(frame_count: int) -> None:
+    counts = frame_partitions(frame_count)
+    assert sum(counts) == frame_count
+    assert all(1 <= count <= 64 for count in counts)
+    with pytest.raises(ValueError, match="at least one frame"):
+        frame_partitions(0)
+
+
+def test_codec_reproduction_retains_failed_manifest_and_refuses_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codes = tmp_path / "codes.npy"
+    np.save(codes, np.zeros((10, 3), dtype=np.int64))
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "codec",
+            "--codec-path",
+            "checkpoint",
+            "--codes",
+            str(codes),
+            "--output-dir",
+            str(output),
+        ],
+    )
+    monkeypatch.setattr(
+        codec_benchmark.subprocess,
+        "check_output",
+        lambda command, **kwargs: "test-head\n" if kwargs.get("text") else b"",
+    )
+
+    def fail_decode(codec_path: str, device: str, code_tensor, directory: Path) -> None:
+        raise RuntimeError("decode failed")
+
+    monkeypatch.setattr(codec_benchmark, "run_comparison", fail_decode)
+    with pytest.raises(RuntimeError, match="decode failed"):
+        codec_benchmark.main()
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["frames"] == 3
+    assert manifest["error"] == "RuntimeError: decode failed"
+    with pytest.raises(FileExistsError):
+        codec_benchmark.main()
+    assert json.loads((output / "manifest.json").read_text()) == manifest
+
+
+def test_codec_reproduction_validates_integer_code_inputs(tmp_path: Path) -> None:
+    path = tmp_path / "codes.npy"
+    expected = np.arange(30, dtype=np.int64).reshape(10, 3)
+    np.save(path, expected)
+    assert np.array_equal(read_codes(path).numpy()[0], expected)
+    for invalid in [expected.astype(np.float32), expected.reshape(-1), -expected]:
+        np.save(path, invalid)
+        with pytest.raises(ValueError):
+            read_codes(path)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="libproc is macOS only")
+@pytest.mark.asyncio
+async def test_native_server_run_inlines_references_and_samples_its_tree(
+    tmp_path: Path,
+) -> None:
+    """A native server reads ref_audio only as a data URI, and its stage
+    workers' memory must count toward the peak."""
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(b"RIFF-reference")
+    received: list[dict[str, object]] = []
+
+    async def speech(request: web.Request) -> web.Response:
+        received.append(await request.json())
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(24000)
+            writer.writeframes(bytes(4800))
+        return web.Response(body=audio.getvalue(), content_type="audio/wav")
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    # A child of this process stands in for a server's stage worker.
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        await web.SockSite(server, listener).start()
+        try:
+            config = config_from_cli(
+                "--model",
+                "tencent/AuK-Flash",
+                "--base-url",
+                f"http://127.0.0.1:{listener.getsockname()[1]}",
+                "--use-existing-server",
+                "--generate-only",
+                "--inline-ref-audio",
+                "--server-pid",
+                str(os.getpid()),
+                "--warmup",
+                "0",
+                "--disable-tqdm",
+                "--output-dir",
+                str(tmp_path / "results"),
+            )
+            await tts.run_tts_seedtts_benchmark(
+                config,
+                samples=[
+                    SampleInput(
+                        sample_id="sample-1",
+                        ref_text="reference",
+                        ref_audio=str(reference),
+                        target_text="hello world",
+                    )
+                ],
+            )
+        finally:
+            worker.kill()
+            await worker.wait()
+            await server.cleanup()
+    assert received[0]["ref_audio"] == "data:audio/wav;base64," + base64.b64encode(
+        b"RIFF-reference"
+    ).decode("ascii")
+    assert "max_new_tokens" not in received[0]
+    memory = json.loads((tmp_path / "results" / "memory.json").read_text())
+    sampled_processes = {
+        process["process_id"]
+        for sample in memory["samples"]
+        for process in sample["processes"]
+    }
+    assert {os.getpid(), worker.pid} <= sampled_processes
+    assert memory["peak_physical_footprint_bytes"] > 0
 
 
 def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:

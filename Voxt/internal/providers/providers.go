@@ -196,17 +196,31 @@ type TestResult struct {
 	Latency time.Duration
 	Err     error // nil: it works
 	At      time.Time
+	Models  []string // when the server lacks the model: the ones it has, if it lists them
 }
 
-// Test checks that a setup works: one tiny request (llm.Probe).
+// Test checks that a setup works: one tiny request (llm.Probe). When the
+// server says it lacks the model, it also asks which models it has.
 func Test(ctx context.Context, p settings.Provider, key string, client *http.Client) TestResult {
 	res := TestResult{At: time.Now()}
 	b, err := NewLLM(p, key, client)
 	if err == nil {
 		res.Latency, err = llm.Probe(ctx, b)
+		if llm.Code(err) == llm.CodeModelNotFound {
+			res.Models, _ = b.Models(ctx)
+		}
 	}
 	res.Err = err
 	return res
+}
+
+// Models lists the models a setup's server has (llm.OpenAI.Models).
+func Models(ctx context.Context, p settings.Provider, key string, client *http.Client) ([]string, error) {
+	b, err := NewLLM(p, key, client)
+	if err != nil {
+		return nil, err
+	}
+	return b.Models(ctx)
 }
 
 // TestLog is the log line of a connection test: the service, its model,

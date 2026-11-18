@@ -10,6 +10,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
@@ -39,6 +40,11 @@ func testManagerHold(t *testing.T, modelHold interface{ Hold() (release func()) 
 
 func testManager(t *testing.T, micPCM, sysPCM []byte, sysFail bool) (*meeting.Manager, context.Context, *fakeClock, string) {
 	t.Helper()
+	return testManagerMic(t, newFakeAudio(micPCM), sysPCM, sysFail)
+}
+
+func testManagerMic(t *testing.T, mic *fakeAudio, sysPCM []byte, sysFail bool) (*meeting.Manager, context.Context, *fakeClock, string) {
+	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
 	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
@@ -51,7 +57,6 @@ func testManager(t *testing.T, micPCM, sysPCM []byte, sysFail bool) (*meeting.Ma
 	if sysFail {
 		sys.startErr = errors.New("permission denied")
 	}
-	mic := newFakeAudio(micPCM)
 	cfg := meeting.Config{
 		Mic:     mic,
 		System:  sys,
@@ -196,7 +201,7 @@ func liveTestPCM(t *testing.T) []byte {
 	speech := make([]byte, speechMs*rate/1000*2)
 	for i := range speechMs * rate / 1000 {
 		if i%80 < 40 {
-			speech[i*2], speech[i*2+1] = 0x60, 0
+			speech[i*2], speech[i*2+1] = 0, 0x10 // about -18 dBFS: the VAD hears it
 		}
 	}
 	silence := make([]byte, silenceMs*rate/1000*2)
@@ -274,5 +279,43 @@ func TestManagerModelHold(t *testing.T) {
 	}
 	if hold.holds != 0 {
 		t.Fatalf("after finish holds=%d", hold.holds)
+	}
+}
+
+// Each track keeps its last session.Bars levels, as bar heights, for its
+// waveform in the meeting's window; the other track's stay its own.
+func TestSnapshotKeepsLevelHistory(t *testing.T) {
+	mic := newFakeAudio(nil)
+	mic.levelsSent = make(chan struct{})
+	for i := range session.Bars + 4 {
+		mic.levels = append(mic.levels, -60+float64(i)*3)
+	}
+	m, ctx, _, _ := testManagerMic(t, mic, nil, false)
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Finish(ctx, id)
+	// A full buffer can still contain the first levels. Wait for the
+	// complete sequence, then for the manager to take in the last level.
+	select {
+	case <-mic.levelsSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("microphone did not finish sending its level events")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		levels := m.Current().Levels[meeting.SourceMic]
+		if len(levels) > 0 && levels[len(levels)-1] == session.Level(-3) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got := m.Current().Levels
+	if h := got[meeting.SourceMic]; len(h) != session.Bars || h[0] != session.Level(-48) || h[len(h)-1] != session.Level(-3) {
+		t.Fatalf("mic levels %v: want the last %d, -48 to -3 dBFS", h, session.Bars)
+	}
+	if len(got[meeting.SourceSystem]) != 0 {
+		t.Fatalf("system levels %v in a microphone-only meeting", got[meeting.SourceSystem])
 	}
 }

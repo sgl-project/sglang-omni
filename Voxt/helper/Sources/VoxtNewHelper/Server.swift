@@ -9,6 +9,10 @@ final class Writer: @unchecked Sendable {
     private let lock = NSLock()
     private let encoder = makeEncoder()
 
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
     init() {
         let fd = dup(STDOUT_FILENO)
         dup2(STDERR_FILENO, STDOUT_FILENO)
@@ -273,6 +277,10 @@ final class Server: @unchecked Sendable {
             return await AppList.list(installed: try msg.decodeParams(AppListParams.self).installed ?? false)
         case Method.appIcons:
             return try AppIcons.icons(try msg.decodeParams(AppIconsParams.self))
+        case Method.screenWindow:
+            return try await ScreenWindow.capture(try msg.decodeParams(ScreenWindowParams.self))
+        case Method.clipboardImage:
+            return await ClipboardImage.read(try msg.decodeParams(ClipboardImageParams.self))
         case Method.appConfigure:
             front.configure(try msg.decodeParams(AppConfigureParams.self))
             return Empty()

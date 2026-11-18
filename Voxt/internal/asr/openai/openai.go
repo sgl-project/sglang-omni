@@ -106,10 +106,11 @@ func (c *Client) Caps() asr.Caps {
 // Model is the model the client asks for.
 func (c *Client) Model() string { return c.model }
 
-// Transcribe uploads req's audio. Network failures, 5xx and rate limits
-// are retried once.
+// Transcribe uploads req's audio, in pieces under MaxBytes when it is a
+// longer PCM recording. Network failures, 5xx and rate limits are
+// retried once.
 func (c *Client) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
-	res, err := c.transcribe(ctx, req)
+	res, err := asr.TranscribeInPieces(ctx, req, MaxBytes, c.transcribe)
 	return res, asr.HideKey(err, c.key)
 }
 

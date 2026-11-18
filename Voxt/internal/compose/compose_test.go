@@ -551,10 +551,92 @@ func TestClean(t *testing.T) {
 		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
 		{`"Quoted."`, `"quoted"`, `"Quoted."`},
 		{"", "x", ""},
+		// Only Transcribe's clean-up asks for <output> tags: a Rewrite
+		// or Translate answer whose text itself has them (HTML it was
+		// asked for) keeps them.
+		{"Use <output>result</output> for results.", "format this as HTML", "Use <output>result</output> for results."},
 	} {
 		if got := Clean(tc.out, tc.in); got != tc.want {
 			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
 		}
+	}
+}
+
+// TestCleanOutput: the Transcribe clean-up's contract — only the
+// <output> tags' content, never the model's commentary about its edits
+// (#4086); text that has the tags because the user said them keeps
+// them, less one outermost pair the model wrapped it in.
+func TestCleanOutput(t *testing.T) {
+	for _, tc := range []struct{ out, in, want string }{
+		{"  Hello.  ", "hello", "Hello."},
+		{"<output>\nHello.\n</output>", "hello", "Hello."},
+		{"<output>\nHello.\n</output>\n\nI removed the filler “um”.", "hello", "Hello."},
+		{"Here you go: <output>Hello.</output> Hope it helps.", "hello", "Hello."},
+		{"<output>\n算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？\n</output>\n\n清理时删掉了“就是说”。", "x", "算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？"},
+		{"<output>\nHello.", "hello", "Hello."}, // cut short: the rest is the text
+		{"<output></output>", "hello", ""},
+		{"<output>“你好。”</output>", "你好", "你好。"},
+		// The tags were in the input itself (dictated literally): the
+		// answer is used as it is…
+		{`use <output> and </output> here`, "use <output> and </output> here", `use <output> and </output> here`},
+		{"<output>a</output><output>b</output>", "<output>a</output><output>b</output>", "<output>a</output><output>b</output>"},
+		// …but a contract-abiding model wrapped it in one more pair:
+		// exactly that pair goes.
+		{"<output>use <output> and </output> here</output>", "use <output> and </output> here", "use <output> and </output> here"},
+	} {
+		if got := CleanOutput(tc.out, tc.in); got != tc.want {
+			t.Errorf("CleanOutput(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+	}
+}
+
+// TestPartialOutput: a streaming clean-up answer never shows the
+// contract's <output> tags, whole or as far as they came.
+func TestPartialOutput(t *testing.T) {
+	full := "<output>\n大家好，周五发布。\n</output>\n\n我删掉了语气词。"
+	for i := 1; i <= len(full); i++ {
+		got := PartialOutput(full[:i], "周五发布")
+		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
+			t.Fatalf("at %d: a tag in %q", i, got)
+		}
+	}
+	// Commentary before the opening tag goes too, as Clean drops it.
+	prefixed := "Here you go: <output>Hello.</output>"
+	for i := 1; i <= len(prefixed); i++ {
+		got := PartialOutput(prefixed[:i], "hello")
+		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
+			t.Fatalf("at %d: a tag in %q", i, got)
+		}
+	}
+	for text, want := range map[string]string{
+		"":                            "",
+		"<":                           "",
+		"<outpu":                      "",
+		"<output>":                    "",
+		"plain text":                  "plain text",
+		"<output>\nHello.":            "Hello.",
+		"<output>Hello.</output>\n":   "Hello.",
+		"Here you go: <output>Hello.": "Hello.",
+		// A stream ending in the opening tag's start holds back: the
+		// tag may complete, and the commentary before it then goes.
+		"Here you go: <outpu": "",
+		// Without an opening tag a closing one is the user's text and
+		// shows as it is, whole or as far as it came (CleanOutput
+		// keeps it too).
+		"use </output> here": "use </output> here",
+		"Hello.</out":        "Hello.</out",
+	} {
+		if got := PartialOutput(text, "hello"); got != want {
+			t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
+		}
+	}
+	// The tags the user said stay: CleanOutput keeps that text too,
+	// less one outermost pair a contract-abiding model wrapped it in.
+	if got := PartialOutput("use <output> and </output> here", "use <output> and </output> here"); got != "use <output> and </output> here" {
+		t.Errorf("PartialOutput with the user's own tags = %q", got)
+	}
+	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here"); got != "use <output> and </output> here" {
+		t.Errorf("PartialOutput with the model's wrapper around the user's tags = %q", got)
 	}
 }
 
@@ -617,5 +699,32 @@ func TestScanGolden(t *testing.T) {
 	}
 	if out := Scan([]string{"x"}, "en", nil); strings.Contains(out.System, "Other frequently used languages") {
 		t.Errorf("a line for no other languages: %s", out.System)
+	}
+}
+
+// TestTranslateBackLine: with a back language the task says to write in
+// it when all of the text is already in the target; without one, or when
+// it is the target, the line is left out (#4024).
+func TestTranslateBackLine(t *testing.T) {
+	for _, tc := range []struct {
+		main, back, want string
+	}{
+		{"es", "es", "if all of it is already in English, translate it into Spanish instead"},
+		{"zh", "zh", "如果全部已经是英语，就改为翻译成中文"},
+		{"es", "", ""},
+		{"en", "en", ""},
+	} {
+		out, err := Build(Input{Task: Translate, MainLanguage: tc.main, TargetLanguage: "en", BackLanguage: tc.back, Text: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sys := out.Messages()[0].Content
+		if tc.want == "" {
+			if strings.Contains(sys, "instead") || strings.Contains(sys, "改为翻译成") {
+				t.Errorf("%+v: unexpected switch line:\n%s", tc, sys)
+			}
+		} else if !strings.Contains(sys, tc.want) {
+			t.Errorf("%+v: no %q in:\n%s", tc, tc.want, sys)
+		}
 	}
 }

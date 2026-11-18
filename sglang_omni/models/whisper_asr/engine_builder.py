@@ -449,6 +449,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         )
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        if current_platform.is_npu():
+            overrides.setdefault("disable_decode_cuda_graph", True)
+        else:
+            pass
         algorithm = overrides.get("speculative_algorithm")
         if algorithm is None:
             pass

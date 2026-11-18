@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/ink"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -23,6 +25,21 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
+
+func TestCardRedoKeepsScrollKeyWhenWritingStarts(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
+	card := &sessionCardViewState{ID: "old-card", Blocks: []sessionCardBlock{{Kind: sessionCardBody, Text: "old answer"}}}
+	tester := ui.NewTester(func(context *ui.Context) { cardBody(context, "redo-session", card, 120, a, local, nil) }, 400, 300)
+	frames(tester)
+	card.Writing = true
+	card.Live[0] = sessionCardWritingBlock("new answer", store.KindRewrite)
+	card.LiveCount = 1
+	frames(tester)
+	if local.Overlay.cardScrollKey != "old-card/redo-session" {
+		t.Fatalf("redo changed scroll key to %q", local.Overlay.cardScrollKey)
+	}
+}
 
 // cardLong is a translation longer than the card's 220 of text.
 var cardLong = strings.Repeat("goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。", 12)
@@ -43,11 +60,12 @@ type cardStep struct {
 	body                                                   int
 	msg                                                    bool
 	insert, copy, followUp, stop, retry, lang, busy, convo bool
+	think                                                  bool // the thinking button
 }
 
 // cardSteps walk the answer card through its states, as one Translate
-// card and one Rewrite conversation would (while the model writes, the
-// pill shows the answer: overlay_flows_test.go).
+// card and one Rewrite conversation would (a first answer as the model
+// writes it: overlay_stream_test.go).
 func cardSteps() []cardStep {
 	arc := proto.App{PID: 77, BundleID: "company.thebrowser.Browser", Name: "Arc"}
 	sel := "A goroutine is a lightweight thread managed by the Go runtime."
@@ -59,20 +77,22 @@ func cardSteps() []cardStep {
 		{name: "short", apply: func(a *app) {
 			snap(a, tr(session.Done, "goroutine 是由 Go 运行时管理的轻量级线程。", "goroutine 是由 Go 运行时管理的轻量级线程。"))
 		},
-			insert: true, copy: true, lang: true},
+			insert: true, copy: true, followUp: true, lang: true},
+		// Another language, before its first words (then they stream in
+		// over the card's: TestTranslateSpeechCard).
 		{name: "redo", apply: func(a *app) {
 			a.answer.redo, a.answer.redoLang = "t2", "ja"
-			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Composing, Card: true, Target: arc, Selection: sel, TargetLanguage: "ja", Draft: "ゴルーチン"})
+			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Composing, Card: true, Target: arc, Selection: sel, TargetLanguage: "ja"})
 		}, copy: true, busy: true},
 		{name: "redone-long", apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Target: arc,
 				Selection: sel, TargetLanguage: "ja", Result: cardLong})
-		}, body: layout.CardBodyMax, insert: true, copy: true, lang: true},
-		{name: "copied", apply: func(a *app) { a.answer.copied = true }, body: layout.CardBodyMax, insert: true, copy: true, lang: true},
+		}, body: layout.CardBodyMax, insert: true, copy: true, followUp: true, lang: true},
+		{name: "copied", apply: func(a *app) { a.answer.copied = true }, body: layout.CardBodyMax, insert: true, copy: true, followUp: true, lang: true},
 		{name: "insert-failed", apply: func(a *app) {
 			a.answer.copied, a.answer.text = false, "goroutine 是由 Go 运行时管理的轻量级线程。"
 			a.answer.msg = uitext.DeliveryText(deliver.Result{Reason: deliver.ReasonNotFront}, arc)
-		}, msg: true, insert: true, copy: true, lang: true},
+		}, msg: true, insert: true, copy: true, followUp: true, lang: true},
 		{name: "failed", apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "t3", Kind: store.KindTranslate, State: session.Recording})
 			snap(a, session.Snapshot{ID: "t3", Kind: store.KindTranslate, State: session.Failed, Card: true, Target: arc, Selection: sel,
@@ -120,7 +140,32 @@ func cardSteps() []cardStep {
 			cut.Problem = &session.Problem{Code: session.ProblemTruncated, Degraded: true}
 			snap(a, session.Snapshot{ID: "t4", Kind: store.KindTranslate, State: session.Composing})
 			snap(a, cut)
-		}, msg: true, insert: true, copy: true, lang: true},
+		}, msg: true, insert: true, copy: true, followUp: true, lang: true},
+		// A service with thinking levels (#3879): its button, by the
+		// language capsule; after Continue in Rewrite's.
+		{name: "thinking", apply: func(a *app) {
+			a.closeAnswer()
+			a.prefs.Providers.LLM = []settings.Provider{{ID: "deepseek"}}
+			th := tr(session.Done, "goroutine 是由 Go 运行时管理的轻量级线程。", "")
+			th.ID, th.LLM = "t5", session.Model{ID: "deepseek"}
+			snap(a, session.Snapshot{ID: "t5", Kind: store.KindTranslate, State: session.Composing})
+			snap(a, th)
+			a.answer.think = &llm.Thinking{Mode: llm.ThinkEffort, Effort: "high"}
+		}, insert: true, copy: true, followUp: true, lang: true, think: true},
+		{name: "thinking-rewrite", apply: func(a *app) {
+			a.closeAnswer()
+			snap(a, session.Snapshot{ID: "r5", Kind: store.KindRewrite, State: session.Recording})
+			snap(a, session.Snapshot{ID: "r5", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "write that I am late",
+				Title: "Running late", Result: "Sorry, I am running about ten minutes late: please start without me.", LLM: session.Model{ID: "deepseek"}})
+			a.answer.think = &llm.Thinking{Mode: llm.ThinkOff}
+		}, body: -1, insert: true, copy: true, followUp: true, think: true},
+		{name: "transcribe-dictionary", apply: func(a *app) {
+			a.closeAnswer()
+			const result = "Voxt uses SGLang."
+			snap(a, session.Snapshot{ID: "d1", Kind: store.KindTranscribe, State: session.Recording})
+			snap(a, session.Snapshot{ID: "d1", Kind: store.KindTranscribe, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+				Result: result, Highlights: testDictionaryHighlights(result)})
+		}, insert: true, copy: true},
 	}
 }
 
@@ -138,11 +183,11 @@ func TestAnswerCardStates(t *testing.T) {
 			for _, st := range cardSteps() {
 				st.apply(a)
 				a.overlaySync()
-				v := a.cardNow()
+				v := a.cachedCard()
 				if a.ov.mode != ovAnswer || !a.ov.shown || a.ov.passThrough || a.ov.w != layout.AnswerW {
 					t.Fatalf("%s: %s shown %v pass %v %d wide", st.name, a.ov.mode, a.ov.shown, a.ov.passThrough, a.ov.w)
 				}
-				body, _ := a.cardBodyHeight(v)
+				body, _ := a.cardBodyHeight(&v)
 				_, line := guessText(ovSized{"x", layout.CardTextSize, layout.CardTextWeight, layout.CardBodyW})
 				switch st.body {
 				case 0:
@@ -162,12 +207,12 @@ func TestAnswerCardStates(t *testing.T) {
 				if st.msg {
 					want += layout.CardMsgGap + layout.CardMsgH
 				}
-				if a.ov.h != want || (v.msg != "") != st.msg {
-					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.msg)
+				if a.ov.h != want || (v.Message != "") != st.msg {
+					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.Message)
 				}
 				anchored(t, st.name, a.prefs.Overlay, a.ov.frame)
-				got := []bool{v.canInsert, v.canCopy, v.canFollowUp, v.canStop, v.canRetry, v.canLang, v.busy, v.conversation}
-				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo}
+				got := []bool{v.CanInsert, v.CanCopy, v.CanFollowUp, v.CanStop, v.CanRetry, v.CanLanguage, v.Busy, v.Conversation, v.ShowThinking}
+				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo, st.think}
 				for i := range got {
 					if got[i] != exp[i] {
 						t.Errorf("%s: insert, copy, follow up, stop, retry, language, busy, conversation = %v, want %v", st.name, got, exp)
@@ -176,6 +221,93 @@ func TestAnswerCardStates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAnswerCardMarkdown (#4119): a Rewrite answer's Markdown shows in
+// the card as read, not as its source: no **, ##, backticks or $$, the
+// words and the math's TeX there, while it streams and in a
+// conversation's answer bubbles (the user's own bubble stays raw). A
+// Translate card keeps its text plain, as it goes in verbatim.
+func TestAnswerCardMarkdown(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	rw := func(st session.State, result, draft string) session.Snapshot {
+		return session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: st, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "sum up the plan", Title: "The plan", Result: result, Draft: draft}
+	}
+	snap(a, rw(session.Recording, "", ""))
+	snap(a, rw(session.Done, "## Release\n\n**First** we ship, then we rest.\n\n- one\n- two\n\n$$\nx^2+y\n$$\n\nRun `go test`.", ""))
+	a.overlaySync()
+	tt := cardTester(t, a)
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "**") || strings.Contains(s, "##") || strings.Contains(s, "`") || strings.Contains(s, "$$") {
+			t.Errorf("the card shows Markdown's source: %q", s)
+		}
+	}
+	for _, want := range []string{"Release", "First", "one", "two", "x^2+y", "go test"} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in the card (%q)", want, tt.Texts())
+		}
+	}
+
+	// The answer streaming in heals its half-written Markdown.
+	a.closeAnswer()
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Composing, Card: true,
+		Draft: "**Bold** and **half"})
+	a.overlaySync()
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "**") {
+			t.Errorf("the streaming card shows Markdown's source: %q", s)
+		}
+	}
+	if !tt.HasText("Bold") || !tt.HasText("half") {
+		t.Errorf("the streaming answer lost words (%q)", tt.Texts())
+	}
+
+	// A conversation: the answers render, what the user said stays raw.
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		Raw: "**Bold** and **half", Title: "Late", Result: "**Bold** and half"})
+	a.followUp, a.answer.conversation = "r2", true
+	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording})
+	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		Raw: "make it **shorter**", Title: "Shorter", Result: "## Short\n\nBold half"})
+	a.overlaySync()
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "##") {
+			t.Errorf("a conversation's answer shows Markdown's source: %q", s)
+		}
+	}
+	if !tt.HasText("Short") {
+		t.Errorf("the follow-up's answer did not render (%q)", tt.Texts())
+	}
+	if !tt.HasText("**shorter**") {
+		t.Errorf("the user's own words lost their text (%q)", tt.Texts())
+	}
+
+	// A Translate card's text stays plain: it goes in verbatim.
+	a.closeAnswer()
+	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Recording})
+	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		TargetLanguage: "zh-Hans", Result: "**not bold**"})
+	a.overlaySync()
+	frames(tt)
+	if !tt.HasText("**not bold**") {
+		t.Errorf("the translation's text changed (%q)", tt.Texts())
+	}
+
+	// A long Markdown answer scrolls, as a long plain one does.
+	a.closeAnswer()
+	snap(a, rw(session.Recording, "", ""))
+	long := rw(session.Done, strings.Repeat("## 段落\n\n**加粗** 一段改写的回答，带列表和标题。\n\n- 一项\n", 20), "")
+	long.ID = "r4"
+	snap(a, long)
+	a.overlaySync()
+	frames(tt)
+	if body, _ := a.cardBodyHeight(a.cachedCardRef()); body != layout.CardBodyMax {
+		t.Errorf("a long Markdown answer is %d high, not %d", body, layout.CardBodyMax)
 	}
 }
 
@@ -191,8 +323,8 @@ func TestAnswerCardInk(t *testing.T) {
 		st.apply(a)
 		a.overlaySync()
 		img := renderOverlay(t, a)
-		v := a.cardNow()
-		k, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, v))
+		v := a.cachedCard()
+		k, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, &v))
 		for _, b := range bad {
 			t.Errorf("%s: %s", st.name, b)
 		}
@@ -200,8 +332,8 @@ func TestAnswerCardInk(t *testing.T) {
 		if st.body == 0 && !st.msg && a.ov.h > layout.CardChrome+24 {
 			t.Errorf("%s: one line of text, the card %d high", st.name, a.ov.h)
 		}
-		if scrolls := a.ov.cardScroll.MaxY > 0; scrolls != (st.body == layout.CardBodyMax) && !v.conversation {
-			t.Errorf("%s: scrolls %v (%v)", st.name, scrolls, a.ov.cardScroll.MaxY)
+		if scrolls := a.ov.ui.cardScroll.MaxY > 0; scrolls != (st.body == layout.CardBodyMax) && !v.Conversation {
+			t.Errorf("%s: scrolls %v (%v)", st.name, scrolls, a.ov.ui.cardScroll.MaxY)
 		}
 		if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
 			var b bytes.Buffer
@@ -221,7 +353,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	steps[0].apply(a) // the short answer
 	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"Translation", "goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Insert", "Copy", "Close"} {
+	for _, s := range []string{"goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Continue", "Insert", "Copy", "Close"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
@@ -235,8 +367,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// so); the card does not move.
 	card := a.ov.frame
 	click(t, tt, "Translate into")
-	if !a.answer.langOpen || !a.ov.lang.shown || a.ov.frame != card {
-		t.Fatalf("menu: open %v shown %v, card %+v (was %+v)", a.answer.langOpen, a.ov.lang.shown, a.ov.frame, card)
+	if !a.answer.ui.langOpen || !a.ov.lang.shown || a.ov.frame != card {
+		t.Fatalf("menu: open %v shown %v, card %+v (was %+v)", a.answer.ui.langOpen, a.ov.lang.shown, a.ov.frame, card)
 	}
 	mt := hudTester(a.langMenuView, a.ov.lang.frame.Width, a.ov.lang.frame.Height)
 	frames(mt)
@@ -249,7 +381,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames(mt)
-	if a.answer.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is set up." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
+	if a.answer.ui.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is set up." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
 		t.Errorf("another language: %+v, menu %v", a.answer, a.ov.lang.shown)
 	}
 	// Escape closes the menu, not the card.
@@ -257,8 +389,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	a.overlaySync()
 	click(t, tt, "Translate into")
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
-	if a.answer.langOpen || a.ov.lang.shown || !a.answer.open {
-		t.Errorf("Escape on the menu: open %v, card %v", a.answer.langOpen, a.answer.open)
+	if a.answer.ui.langOpen || a.ov.lang.shown || !a.answer.open {
+		t.Errorf("Escape on the menu: open %v, card %v", a.answer.ui.langOpen, a.answer.open)
 	}
 	// Copy: the mark, then Copy again.
 	click(t, tt, "Copy")
@@ -295,7 +427,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if !a.answer.open || a.ov.mode != ovAnswer || a.followUp != "" || a.answer.text == "" {
 		t.Errorf("escape on a follow-up: %s %+v", a.ov.mode, a.answer)
 	}
-	if v := a.cardNow(); !v.conversation || !v.canFollowUp || len(v.bubbles) != 2 {
+	if v := a.cachedCard(); !v.Conversation || !v.CanFollowUp || len(cardBubblesForTest(v)) != 2 {
 		t.Errorf("after the cancel %+v", v)
 	}
 	// An answer's bubble shows Copy under the pointer.
@@ -313,17 +445,118 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// Its Copy: 8 from the bubble's top right corner, 22 high.
 	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW-8-10, title.Y-layout.BubblePadY+8+11)
 	frames(tt)
-	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.bubbleCopied == "" {
+	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.ui.bubbleCopied == "" {
 		t.Errorf("bubble copied %q", tt.Clipboard())
 	}
 	ft.advance(bubbleMark)
-	if a.ov.bubbleCopied != "" {
+	if a.ov.ui.bubbleCopied != "" {
 		t.Error("the bubble's mark stays")
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.open {
 		t.Error("the second Escape left the card")
 	}
+}
+
+// TestRewriteInputBubbleFitsText: the input bubble grows with one word and
+// then one line instead of leaving the rest of its maximum width empty. A
+// long paragraph takes that width, and the card still scrolls it.
+func TestRewriteInputBubbleFitsText(t *testing.T) {
+	inputs := []struct {
+		name, text string
+	}{
+		{name: "word", text: "Short"},
+		{name: "line", text: "Make this paragraph sound more professional"},
+		{name: "long", text: strings.Repeat("Make this paragraph sound more professional and keep every detail. ", 12)},
+	}
+	widths := map[string]int{}
+	for _, tc := range inputs {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Title: "You", Text: tc.text}}}
+			local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
+			tt := hudTester(func(c *ui.Context) {
+				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, "", card, card.Blocks[0], 0, a, local, nil) })
+			}, layout.AnswerW, 500)
+			frames(tt)
+			title, ok := tt.Find("You")
+			if !ok {
+				t.Fatalf("no input heading in %q", firstTexts(tt))
+			}
+			img, y, left, right := tt.Image(), int(title.Y)/2, -1, -1
+			background := img.RGBAAt(0, y)
+			for x := range img.Bounds().Dx() {
+				if img.RGBAAt(x, y) == background {
+					continue
+				}
+				if left < 0 {
+					left = x
+				}
+				right = x
+			}
+			if left < 0 {
+				t.Fatal("no bubble pixels above its heading")
+			}
+			widths[tc.name] = right - left + 1
+			if tc.name != "long" {
+				return
+			}
+			shortScreen(t, a)
+			a.answer = answerCard{open: true, id: "rewrite-input", kind: store.KindRewrite, conversation: true,
+				turns: []compose.Turn{{Instruction: tc.text, Answer: compose.Answer{Content: "Done."}}}}
+			a.overlaySync()
+			renderOverlay(t, a)
+			body, _ := a.cardBodyHeight(a.cachedCardRef())
+			if body != layout.CardBodyMax || a.ov.ui.cardScroll.MaxY <= 0 {
+				t.Errorf("long input body %d high, scroll limit %v", body, a.ov.ui.cardScroll.MaxY)
+			}
+		})
+	}
+	if widths["word"] >= widths["line"] || widths["line"] >= widths["long"] {
+		t.Errorf("bubble widths for a word, a line and a paragraph are %v; want them to grow", widths)
+	}
+	if widths["long"] < layout.BubbleW-4 || widths["long"] > layout.BubbleW {
+		t.Errorf("long input bubble %d wide, want the usual %d", widths["long"], layout.BubbleW)
+	}
+	t.Logf("word, line and paragraph bubble widths: %v", widths)
+}
+
+// TestOverlayShotsRewriteInput renders the input's fit in English and
+// Chinese: one word, one line, and a paragraph long enough to scroll.
+func TestOverlayShotsRewriteInput(t *testing.T) {
+	runSnapshots(t, "VOXTNEW_OVERLAY_SHOTS", func(t *testing.T, out string) {
+		for _, tc := range []struct {
+			name, lang, text string
+		}{
+			{name: "rewrite-input-word-en", text: "Short"},
+			{name: "rewrite-input-word-zh", lang: "zh-Hans", text: "短"},
+			{name: "rewrite-input-line-en", text: "Make this paragraph sound more professional"},
+			{name: "rewrite-input-long-zh", lang: "zh-Hans", text: strings.Repeat("请把这段文字改得更简洁、更正式，同时保留所有事实、数字和负责的人，不要遗漏任何重要信息。", 12)},
+		} {
+			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
+			answer := "Done."
+			if tc.lang != "" {
+				a.updateSettings(func(s *settings.Settings) { s.General.Language = tc.lang })
+				answer = "已完成。"
+			}
+			a.answer = answerCard{open: true, id: "rewrite-input", kind: store.KindRewrite, conversation: true,
+				turns: []compose.Turn{{Instruction: tc.text, Answer: compose.Answer{Content: answer}}}}
+			a.overlaySync()
+			img := renderOverlay(t, a)
+			f, err := os.Create(filepath.Join(out, tc.name+".png"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := png.Encode(f, img); err != nil {
+				f.Close()
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 }
 
 // TestLanguageMenuPlace: the language menu opens over the card when the
@@ -361,13 +594,13 @@ func TestLanguageMenuPlace(t *testing.T) {
 			}
 			// Another app in front: it goes; the card stays.
 			a.helperNotified(appActivated(proto.App{PID: 9, BundleID: "com.apple.Notes", Name: "Notes"}))
-			if a.ov.lang.shown || a.answer.langOpen || !a.answer.open {
+			if a.ov.lang.shown || a.answer.ui.langOpen || !a.answer.open {
 				t.Errorf("another app: menu %v", a.ov.lang.shown)
 			}
 			// The card going takes it.
 			a.toggleLangMenu()
 			a.closeAnswer()
-			if a.ov.lang.shown || a.answer.langOpen {
+			if a.ov.lang.shown || a.answer.ui.langOpen {
 				t.Error("the menu stays without the card")
 			}
 		})
@@ -389,7 +622,7 @@ func TestCardHeaderFits(t *testing.T) {
 			snap(a, session.Snapshot{ID: "h1", Kind: store.KindTranslate, State: session.Recording})
 			snap(a, session.Snapshot{ID: "h1", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
 				Selection: "x", TargetLanguage: "zh-Hant", Result: "你好。"}) // "Traditional Chinese": the widest name
-		}, []string{"Translate into", "Insert", "Copy", "Close"}},
+		}, []string{"Translate into", "Continue", "Insert", "Copy", "Close"}},
 		{"rewrite", func(a *app) {
 			snap(a, session.Snapshot{ID: "h2", Kind: store.KindRewrite, State: session.Recording})
 			snap(a, session.Snapshot{ID: "h2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
@@ -433,8 +666,10 @@ func TestCardHeaderFits(t *testing.T) {
 				}
 				if c.name == "translate" {
 					title, ok := tt.Find(i18n.T("Translation"))
-					if !ok || title.X+title.W > first.X-layout.CardHeadGap+0.5 {
-						t.Errorf("the title %+v runs into the capsule at %v", title, first.X)
+					// The capsule names the card: no title to cut to "…" beside
+					// Continue (#3897). (The Chinese icon's label is the title.)
+					if ok && title.W > layout.CardIcon+0.5 {
+						t.Errorf("a title %+v beside the capsule", title)
 					}
 				}
 				if c.name == "rewrite" {
@@ -474,7 +709,7 @@ func TestCardSizes(t *testing.T) {
 		size layout.CardSize
 	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
 		a.answer = answerCard{open: true, kind: c.kind, text: long}
-		want := layout.CardChrome + a.cardBodyMax(a.cardNow())
+		want := layout.CardChrome + a.cardBodyMax(a.cachedCardRef())
 		if w, h, _ := a.cardSize(); w != c.size.W || h != want {
 			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, want)
 		}
@@ -483,7 +718,7 @@ func TestCardSizes(t *testing.T) {
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: long}
 	a.overlaySync()
 	img := renderOverlay(t, a)
-	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cardNow())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
+	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cachedCardRef())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
 		t.Errorf("the large card, %d wide: %v", a.ov.w, bad)
 	}
 	if dir := os.Getenv("VOXTNEW_INK"); dir != "" {

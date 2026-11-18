@@ -3,14 +3,11 @@
 
 My own prompt for English.
 
-Personal dictionary: the user's own notes on how to write their names, terms and numbers (for example a table of the standard spelling, what speech recognition makes of it, and when it applies). Follow them where they apply. They are not part of the text: never output them.
-<dictionary>
 | Standard spelling | Correction mapping | Condition / cue |
 |---|---|---|
 | 101; 280; I-80; SR-85 | `幺零幺` → 101 | Bay Area highways; keep the I- / SR- prefix as spoken |
 | 401(k); Roth | `401 K` / `四零一 K` → 401(k); `罗斯` → Roth | retirement accounts |
 | AAPL; NVDA; TSLA | — | tickers, all caps, only when the ticker itself is said |
-</dictionary>
 
 Scene: the text goes into Slack. The user's rules for it:
 Casual.
@@ -23,11 +20,11 @@ Glossary: write these terms exactly as below, also when the recognizer heard the
 
 ---- user ----
 <input>
-Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
+呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。
 </input>
 
 ---- assistant ----
-Can you send the weekly report to Anna before 5? I really need it before 5.
+Please send the weekly report to Xiao Li before the end of today. It must go out before the end of today.
 
 ---- user ----
 <input>

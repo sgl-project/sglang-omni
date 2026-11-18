@@ -12,7 +12,9 @@ from sglang_omni.config.schema import (
     FactoryArgs,
     PipelineConfig,
     StageConfig,
+    stage_process_name,
 )
+from sglang_omni.config.topology import compile_logical_processes
 
 PACKAGE = "sglang_omni.models.fishaudio_drama3"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -24,8 +26,10 @@ DEFAULT_MAX_PROMPT_ROWS = 8192
 DEFAULT_STREAM_STRIDE = 4
 DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP = (10, 12, 32)
 DEFAULT_STREAM_FOLLOWUP_STRIDE = 64
+DEFAULT_STREAM_WINDOW_BATCH_SIZE = 4
 DEFAULT_FIRST_FRAME_CUDA_GRAPHS = True
 DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS = 16
+DEFAULT_GDN_PREFILL_CUDA_GRAPHS = True
 DEFAULT_TRITON_SAMPLING = True
 # Under reference sampling, what replaces a main-token first draw that repeats one of
 # the last 16 main tokens: the most probable candidate, or a draw at 1.0 / 0.95 / 30.
@@ -38,8 +42,8 @@ DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
-TTS_ENGINE_GPU_MEMORY_FRACTION = 0.70
-VOCODER_GPU_MEMORY_FRACTION = 0.10
+TTS_ENGINE_GPU_MEMORY_FRACTION = 0.65
+VOCODER_GPU_MEMORY_FRACTION = 0.15
 VOCODER_WINDOW_FIELDS = (
     "stream_stride",
     "stream_followup_stride_ramp",
@@ -51,6 +55,8 @@ class Drama3PreprocessingFactoryArgs(FactoryArgs):
     max_concurrency: int = Field(default=8, ge=1)
     reference_encode_dtype: Literal["float32", "bfloat16"] = "bfloat16"
     max_reference_audio_seconds: float = Field(default=60.0, gt=0)
+    # note (Wenyao Gao): 0 encodes every reference eagerly.
+    reference_encode_graph_max_seconds: float = Field(default=20.0, ge=0)
 
 
 class Drama3PreprocessingStageConfig(StageConfig):
@@ -71,6 +77,7 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     first_frame_cuda_graph_max_requests: int = Field(
         default=DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS, ge=1
     )
+    gdn_prefill_cuda_graphs: bool = DEFAULT_GDN_PREFILL_CUDA_GRAPHS
     triton_sampling: bool = DEFAULT_TRITON_SAMPLING
     # None: the factory's default (off, and the argmax fallback).
     reference_sampling: bool | None = None
@@ -97,10 +104,32 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     stream_followup_stride: int = Field(default=DEFAULT_STREAM_FOLLOWUP_STRIDE, ge=1)
     stream_overlap_tokens: int = Field(default=32, ge=0)
     stream_crossfade_samples: int = Field(default=0, ge=0)
-    max_batch_size: int = Field(default=8, ge=1)
+    # note (Wenyao Gao): one non-streaming request per decode, since its CUDA graph
+    # replays at batch 1 and a batch would decode eagerly, padded to its longest
+    # request, after a batching wait.
+    max_batch_size: int = Field(default=1, ge=1)
     max_batch_wait_ms: int = Field(default=2, ge=0)
+    stateful_decode: bool = False
+    stateful_gemm_upsample: bool | None = None
+    stateful_folded_codebooks: bool | None = None
+    stateful_fuse_snake_history: bool | None = None
+    stateful_compile_attention: bool | None = None
     window_cuda_graphs: bool = True
+    # note (Wenyao Gao): with window_cuda_graphs, non-streaming requests of up to this
+    # many frames also replay a CUDA graph, padded to a multiple of 8 frames; 0
+    # decodes them eagerly.
+    non_streaming_cuda_graph_max_frames: int = Field(default=512, ge=0)
+    stream_window_batch_size: int = Field(
+        default=DEFAULT_STREAM_WINDOW_BATCH_SIZE, ge=1
+    )
     decode_dtype: Literal["float32", "float16"] = "float16"
+    # Incremental streams decode only new frames, needing float16 on CUDA; elsewhere,
+    # and with "overlap", windows re-decode stream_overlap_tokens frames each.
+    stream_decode: Literal["incremental", "overlap"] = "incremental"
+    max_stream_batch_size: int = Field(default=16, ge=1)
+    stream_slot_count: int = Field(default=256, ge=1)
+    # Bounds inbox ingestion before a ready decode step.
+    decode_step_message_budget: int = Field(default=8, ge=1)
 
 
 class Drama3VocoderStageConfig(StageConfig):
@@ -162,7 +191,7 @@ class Drama3PipelineConfig(PipelineConfig):
         ),
         Drama3VocoderStageConfig(
             name="vocoder",
-            process="vocoder",
+            process="pipeline",
             factory_path=f"{PACKAGE}.stages.create_vocoder_executor",
             gpu=0,
             gpu_memory_fraction=VOCODER_GPU_MEMORY_FRACTION,
@@ -171,7 +200,23 @@ class Drama3PipelineConfig(PipelineConfig):
         ),
     ]
 
+    def uses_stateful_codec(self) -> bool:
+        factory = self.stage_named("vocoder").factory
+        assert isinstance(factory, Drama3VocoderFactoryArgs)
+        return factory.stateful_decode
+
     def model_post_init(self, __context: object = None) -> None:
+        engine = self.stage_named("tts_engine")
+        vocoder = self.stage_named("vocoder")
+        # note (Wenyao Gao): a tensor-parallel stage holds its process alone, and
+        # stateful decoding needs the vocoder's own, so for either the vocoder leaves
+        # the engine's process.
+        if (
+            engine.tp_size > 1 or vocoder.tp_size > 1 or self.uses_stateful_codec()
+        ) and vocoder.process == stage_process_name(engine):
+            vocoder.process = vocoder.name
+        else:
+            pass
         super().model_post_init(__context)
         preprocessing_extra = (
             self.stage_named("preprocessing").factory.model_extra or {}
@@ -196,6 +241,38 @@ class Drama3PipelineConfig(PipelineConfig):
                 )
             else:
                 pass
+        vocoder_factory = self.stage_named("vocoder").factory
+        assert isinstance(vocoder_factory, Drama3VocoderFactoryArgs)
+        if "stateful_max_streams" in (vocoder_factory.model_extra or {}):
+            raise ValueError(
+                "Drama 3's vocoder takes stateful_max_streams from the tts_engine "
+                "stage; set stages.tts_engine.factory.max_running_requests instead"
+            )
+        elif (
+            vocoder_factory.stateful_decode and vocoder_factory.stream_crossfade_samples
+        ):
+            raise ValueError("stateful_decode requires stream_crossfade_samples=0")
+        elif vocoder_factory.stateful_decode:
+            logical_process_plan, _ = compile_logical_processes(self)
+            vocoder_stage = self.stage_named("vocoder")
+            if (
+                vocoder_stage.tp_size != 1
+                or any(
+                    process.num_replicas != 1
+                    for process in logical_process_plan.processes
+                )
+                or any(stage.route_fn is not None for stage in self.stages)
+                or logical_process_plan.process_of("vocoder").stage_names
+                != ("vocoder",)
+            ):
+                raise ValueError(
+                    "stateful_decode requires a dedicated TP1 vocoder process, "
+                    "single replicas, and fixed routing"
+                )
+            else:
+                pass
+        else:
+            pass
         if self.stage_named("vocoder").factory.max_new_tokens is not None:
             raise ValueError(
                 "Drama 3's vocoder takes max_new_tokens from the tts_engine stage; "
@@ -223,7 +300,37 @@ class Drama3PipelineConfig(PipelineConfig):
                 "stream_followup_stride": vocoder_factory.stream_followup_stride,
             }
         elif stage_name == "vocoder":
-            return {"max_new_tokens": engine_factory.max_new_tokens}
+            stateful_decode = self.uses_stateful_codec()
+            engine_stage = self.stage_named("tts_engine")
+            assert isinstance(engine_stage, Drama3EngineStageConfig)
+            engine_overrides = (
+                engine_stage.engine.overrides()
+                if engine_stage.engine is not None
+                else {}
+            )
+            capacity = engine_overrides.get(
+                "max_running_requests", engine_factory.max_running_requests
+            )
+            if (
+                not isinstance(capacity, int)
+                or isinstance(capacity, bool)
+                or capacity < 1
+            ):
+                raise ValueError(
+                    "tts_engine max_running_requests must be a positive integer"
+                )
+            else:
+                pass
+            optimized_default = stateful_decode
+            return {
+                "max_new_tokens": engine_factory.max_new_tokens,
+                "stateful_max_streams": capacity,
+                "stateful_decode": stateful_decode,
+                "stateful_gemm_upsample": optimized_default,
+                "stateful_folded_codebooks": optimized_default,
+                "stateful_fuse_snake_history": optimized_default,
+                "stateful_compile_attention": optimized_default,
+            }
         else:
             return {}
 

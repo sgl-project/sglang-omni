@@ -110,7 +110,7 @@ func formatted(a *app, i ...int) string {
 
 func TestLogsHover(t *testing.T) {
 	_, tt := logsApp(t, 5)
-	k := lightTokens
+	k := paletteTokens("", false)
 	plain := rowFill(t, tt, 2)
 	if !near(plain, k.Bg) {
 		t.Errorf("plain row %v, want %v", plain, k.Bg)
@@ -155,7 +155,7 @@ func TestLogsClickCopiesLine(t *testing.T) {
 
 func TestLogsShiftAndCmd(t *testing.T) {
 	a, tt := logsApp(t, 8)
-	k := lightTokens
+	k := paletteTokens("", false)
 	plain := rowFill(t, tt, 8)
 	clickLine(t, tt, 0, 6)
 	clickLine(t, tt, ui.Shift, 2) // upwards

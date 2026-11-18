@@ -7,6 +7,10 @@
 //       [--ref-audio ref.wav [--ref-text TEXT]] [--seed N]
 //       [--temperature T] [--top-p P] [--top-k K] [--repetition-penalty R]
 //       [--max-new-tokens N] [--output out.wav] [--codes-output codes.json]
+//
+// --full-precision loads the weights as stored, without load-time
+// quantization.
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -17,6 +21,8 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
+#include "common/layers.h"
 #include "common/reference_audio.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "nlohmann/json.hpp"
@@ -41,6 +47,11 @@ int main(int argc, char **argv) {
   std::string codes_output_path;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
+    if (argument == "--full-precision") {
+      omni_common::SetLoadTimeQuantization(false);
+      continue;
+    } else {
+    }
     if (i + 1 >= argc) {
       std::cerr << argv[0] << ": missing value for " << argument << "\n";
       return 2;
@@ -109,7 +120,7 @@ int main(int argc, char **argv) {
   std::vector<mlx::core::array> frames;
   nlohmann::json frame_codes = nlohmann::json::array();
   const std::atomic<bool> cancel(false);
-  const qwen3_asr::FinishReason finish_reason = model.Generate(
+  const omni_common::FinishReason finish_reason = model.Generate(
       prompt, max_frames, sampling, cancel, [&](const mlx::core::array &codes) {
         const int32_t *values = codes.data<int32_t>();
         frame_codes.push_back(
@@ -151,7 +162,7 @@ int main(int argc, char **argv) {
   const nlohmann::json line = {
       {"prompt_token_count", prompt.ids.size()},
       {"frame_count", frame_codes.size()},
-      {"finish_reason", qwen3_asr::FinishReasonName(finish_reason)},
+      {"finish_reason", omni_common::FinishReasonName(finish_reason)},
       {"prompt_seconds", prompt_seconds},
       {"generate_seconds", generate_seconds},
       {"seconds", seconds},

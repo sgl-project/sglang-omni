@@ -52,6 +52,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_revision="d62bd4051e68282e02f93de774036a35f22f1373",
         engine_settings={"speculative_num_draft_tokens": 8},
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
@@ -130,6 +131,15 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="NEXTN",
         draft_model_path="inclusionAI/Ming-3.0-audio-flash",
         draft_model_revision="db94e0de19f6d05adc0413c255a28eb480cd1fae",
+        license="mit",
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-audio-flash",
+        stage="thinker",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Ming-3.0-audio-flash-dflash",
+        draft_model_revision="0286123b6ce56a691b37fba0220d1e979f08ffff",
+        engine_settings={"speculative_num_draft_tokens": 16},
         license="mit",
     ),
 )

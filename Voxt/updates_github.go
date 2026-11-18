@@ -5,7 +5,8 @@ package main
 // can tell the user that a newer version is out. releaseUpdates is the
 // updateService of such a build (main.go): it reads GitHub's releases of
 // the repository and keeps the newest voxt-vX.Y.Z (and voxt-vX.Y.Z-beta.N
-// while Beta updates is on) that is not a draft. The request carries
+// or Voxt Beta's voxt-vX.Y.Z-beta.YYYYMMDD.N while Beta updates is on)
+// that is not a draft. The request carries
 // User-Agent Voxt/<version> and the ETag of the last answer, nothing
 // else, through the proxy the downloads use.
 //
@@ -26,7 +27,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"regexp"
 	"slices"
@@ -36,8 +36,6 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/markdown"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -79,15 +77,16 @@ var openExternal = func(u string) { go mygo.Shell.OpenExternal(u) }
 var errRateLimited = errors.New("GitHub's rate limit reached")
 
 var (
-	releaseTag     = regexp.MustCompile(`^voxt-v(\d+\.\d+\.\d+(?:-beta\.\d+)?)$`)
-	releaseVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$`)
+	releaseTag     = regexp.MustCompile(`^voxt-v(\d+\.\d+\.\d+(?:-beta\.\d+(?:\.\d+)?)?)$`)
+	releaseVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+)(?:\.(\d+))?)?$`)
 )
 
-// version is X.Y.Z or X.Y.Z-beta.N as numbers: major, minor, patch, 1 for
-// a release (0 a beta, which comes before its release), the beta's N.
-type version [5]int
+// version is X.Y.Z, X.Y.Z-beta.N or Voxt Beta's X.Y.Z-beta.YYYYMMDD.N as
+// numbers: major, minor, patch, 1 for a release (0 a beta, which comes
+// before its release), the beta's numbers.
+type version [6]int
 
-// parseVersion reads X.Y.Z or X.Y.Z-beta.N.
+// parseVersion reads X.Y.Z, X.Y.Z-beta.N or X.Y.Z-beta.YYYYMMDD.N.
 func parseVersion(s string) (version, bool) {
 	m := releaseVersion.FindStringSubmatch(s)
 	if m == nil {
@@ -99,9 +98,9 @@ func parseVersion(s string) (version, bool) {
 	}
 	if m[4] == "" {
 		v[3] = 1
-	} else {
-		v[4], _ = strconv.Atoi(m[4])
 	}
+	v[4], _ = strconv.Atoi(m[4])
+	v[5], _ = strconv.Atoi(m[5])
 	return v, true
 }
 
@@ -301,13 +300,11 @@ func (r *releaseUpdates) newer(v version) bool {
 
 // releaseState is the dialog of Check for Updates… (main thread).
 type releaseState struct {
-	relOpen  bool
 	relDone  bool // the check finished: relErr or relFound
 	relSeq   int  // the dialog's check: an older one's answer is late
 	relErr   error
 	relFound release
 	relNewer bool
-	relMD    markdown.Options
 }
 
 // releases is the check of GitHub's releases, nil in builds with another
@@ -315,6 +312,17 @@ type releaseState struct {
 func (a *app) releases() *releaseUpdates {
 	r, _ := a.upd.(*releaseUpdates)
 	return r
+}
+
+func (a *app) releaseDialogModel() releaseViewState {
+	r := a.releases()
+	if !a.updUI.relOpen || r == nil {
+		return releaseViewState{}
+	}
+	return buildReleaseViewState(i18n.CurrentTranslator(), releaseViewStateInput{
+		Available: true, RunningVersion: r.version, Done: a.relDone,
+		Newer: a.relNewer, Found: a.relFound, Err: a.relErr,
+	})
 }
 
 // runReleaseCheck checks in the background, then calls done on the main
@@ -338,7 +346,7 @@ func (a *app) runReleaseCheck(done func(release, bool, error)) {
 func (a *app) checkReleasesNow() {
 	a.relSeq++
 	seq := a.relSeq
-	a.relOpen, a.relDone = true, false
+	a.updUI.relOpen, a.relDone = true, false
 	a.runReleaseCheck(func(rel release, newer bool, err error) {
 		if seq != a.relSeq {
 			return
@@ -349,6 +357,8 @@ func (a *app) checkReleasesNow() {
 		}
 	})
 }
+
+func (a *app) downloadRelease(address string) { openExternal(address) }
 
 // autoCheckReleases is the background check, when it is on and the last
 // one is a day old: a newer version becomes a card.
@@ -417,75 +427,5 @@ func (a *app) releaseCardGone(n core.Notification) {
 
 // releaseErrText says why a check failed.
 func releaseErrText(err error) string {
-	var ne net.Error
-	switch {
-	case errors.Is(err, errRateLimited):
-		return i18n.T("GitHub limits how often Voxt can check. Try again in an hour.")
-	case errors.As(err, &ne) && ne.Timeout(), errors.Is(err, context.DeadlineExceeded):
-		return i18n.T("GitHub did not answer in time. Check your connection, or the proxy in Speech models → Network.")
-	}
-	return i18n.T("Voxt could not read the list of releases on GitHub: %v", err)
-}
-
-// releaseDialog is Check for Updates…'s dialog: checking, then the new
-// version, up to date, or the failure. Escape, × and Cancel close it.
-func (a *app) releaseDialog(c *ui.Context) {
-	r := a.releases()
-	if !a.relOpen || r == nil {
-		return
-	}
-	t := c.Theme()
-	title, sub := i18n.T("Checking for updates…"), ""
-	switch {
-	case !a.relDone:
-	case a.relErr != nil:
-		title = i18n.T("Couldn't check for updates")
-	case a.relNewer:
-		title, sub = i18n.T("Voxt %s is available", a.relFound.Version), i18n.T("You have Voxt %s.", r.version)
-	default:
-		title, sub = i18n.T("You're up to date"), i18n.T("Voxt %s is the newest version.", r.version)
-	}
-	dialogFrame(c, "release", &a.relOpen, title, sub, 520, func() {
-		switch {
-		case !a.relDone:
-			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ui.Spinner(c).Size(px(t, 16), px(t, 16))
-				caption(c, i18n.T("Looking for the newest release on GitHub."))
-			})
-		case a.relErr != nil:
-			ui.Text(c, releaseErrText(a.relErr)).Selectable()
-		case a.relNewer:
-			if a.relFound.Notes != "" {
-				markdown.View(c, a.relFound.Notes, &a.relMD)
-			}
-			caption(c, i18n.T("Download gets it from GitHub. With Homebrew, run brew upgrade --cask voxt instead."))
-		}
-	}, func() {
-		ui.Spacer(c)
-		switch {
-		case !a.relDone:
-			if ui.Button(c.Key("release-cancel"), i18n.T("Cancel")).Clicked() {
-				a.relOpen = false
-			}
-		case a.relErr != nil:
-			if ui.Button(c.Key("release-cancel"), i18n.T("Cancel")).Clicked() {
-				a.relOpen = false
-			}
-			if primaryButton(c.Key("release-retry"), i18n.T("Try again")).Clicked() {
-				a.checkReleasesNow()
-			}
-		case a.relNewer:
-			if ui.Button(c.Key("release-later"), i18n.T("Later")).Clicked() {
-				a.relOpen = false
-			}
-			if primaryButton(c.Key("release-download"), i18n.T("Download")).Clicked() {
-				a.relOpen = false
-				openExternal(a.relFound.Download)
-			}
-		default:
-			if primaryButton(c.Key("release-ok"), i18n.T("Done")).Clicked() {
-				a.relOpen = false
-			}
-		}
-	})
+	return releaseErrTextFor(i18n.CurrentTranslator(), err)
 }

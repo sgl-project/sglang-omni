@@ -99,7 +99,8 @@ var (
 // TestParseVersion: versions compare as numbers, a beta before its
 // release; other forms are not Voxt's versions.
 func TestParseVersion(t *testing.T) {
-	order := []string{"1.16.3", "2.0.3", "2.0.4-beta.1", "2.0.4-beta.2", "2.0.4-beta.10", "2.0.4", "2.0.9", "2.0.10", "2.1.0", "10.0.0"}
+	order := []string{"1.16.3", "2.0.3", "2.0.4-beta.1", "2.0.4-beta.2", "2.0.4-beta.10",
+		"2.0.4-beta.20261111.9", "2.0.4-beta.20261111.10", "2.0.4-beta.20261112.1", "2.0.4", "2.0.9", "2.0.10", "2.1.0", "10.0.0"}
 	for i := 1; i < len(order); i++ {
 		a, _ := parseVersion(order[i-1])
 		b, ok := parseVersion(order[i])
@@ -107,12 +108,13 @@ func TestParseVersion(t *testing.T) {
 			t.Errorf("%s < %s: ok %v, %v %v", order[i-1], order[i], ok, a, b)
 		}
 	}
-	for _, s := range []string{"", "2.0", "v2.0.3", "2.0.3-dev", "2.0.3-rc.1", "2.0.3 "} {
+	for _, s := range []string{"", "2.0", "v2.0.3", "2.0.3-dev", "2.0.3-rc.1", "2.0.3 ",
+		"2.0.3-beta.", "2.0.3-beta.1.2.3", "2.0.3-nightly.20261111"} {
 		if _, ok := parseVersion(s); ok {
 			t.Errorf("%q parsed", s)
 		}
 	}
-	if !checksReleases(false, "2.0.3") || !checksReleases(false, "2.0.4-beta.1") || checksReleases(true, "2.0.3") || checksReleases(false, "0.0.0-dev") {
+	if !checksReleases(false, "2.0.3") || !checksReleases(false, "2.0.4-beta.1") || !checksReleases(false, "2.0.4-beta.20261111.120") || checksReleases(true, "2.0.3") || checksReleases(false, "0.0.0-dev") {
 		t.Error("checksReleases")
 	}
 }
@@ -189,6 +191,48 @@ func TestReleaseCheck(t *testing.T) {
 	}
 }
 
+// TestReleaseCheckMergeBetas: the betas Voxt Beta publishes for each
+// merge (prereleases voxt-vX.Y.Z-beta.YYYYMMDD.N, #3850) reach a release
+// with Beta updates on and a beta by default, newest first; with the
+// switch off a release sees none, and the next release passes them.
+func TestReleaseCheckMergeBetas(t *testing.T) {
+	srv := &ghServer{list: ghList([]string{"voxt-v2.0.4-beta.20261112.3", "pre"}, []string{"voxt-v2.0.4-beta.20261111.121", "pre"},
+		[]string{"voxt-v2.0.4-beta.20261111.120", "pre"}, []string{"voxt-v2.0.3"})}
+	url := srv.start(t)
+	check := func(running string, beta bool) (release, bool) {
+		t.Helper()
+		r := newReleaseUpdates(settings.NewMemory(), url, running, nil)
+		r.SetPrereleases(beta)
+		rel, newer, err := r.check(context.Background(), &http.Client{})
+		if err != nil {
+			t.Fatalf("%s: %v", running, err)
+		}
+		return rel, newer
+	}
+	if rel, newer := check("2.0.3", false); newer || rel.Version != "2.0.3" {
+		t.Errorf("release, betas off: %+v %v", rel, newer)
+	}
+	if rel, newer := check("2.0.3", true); !newer || rel.Version != "2.0.4-beta.20261112.3" || rel.Download != "https://dl/dmg-2.0.4-beta.20261112.3" {
+		t.Errorf("release, betas on: %+v %v", rel, newer)
+	}
+	running := "2.0.4-beta.20261111.120"
+	if !checksReleases(false, running) || !(settings.Updates{}).BetaOn(running) {
+		t.Fatal("a beta does not check for betas")
+	}
+	if rel, newer := check(running, true); !newer || rel.Version != "2.0.4-beta.20261112.3" {
+		t.Errorf("older beta: %+v %v", rel, newer)
+	}
+	if _, newer := check("2.0.4-beta.20261112.3", true); newer {
+		t.Error("newest beta offered itself")
+	}
+	srv.set(func(s *ghServer) {
+		s.list = ghList([]string{"voxt-v2.0.4"}, []string{"voxt-v2.0.4-beta.20261112.3", "pre"})
+	})
+	if rel, newer := check("2.0.4-beta.20261112.3", true); !newer || rel.Version != "2.0.4" {
+		t.Errorf("release after betas: %+v %v", rel, newer)
+	}
+}
+
 // newReleaseApp is a test app of version 2.0.3 without an update feed,
 // over srv.
 func newReleaseApp(t *testing.T, srv *ghServer) (*app, *ui.Tester) {
@@ -225,13 +269,13 @@ func TestReleaseDialog(t *testing.T) {
 		t.Fatalf("checking: %q", firstTexts(tt))
 	}
 	click(t, tt, "Cancel")
-	if a.relOpen || has(tt, "Checking for updates…") {
+	if a.updUI.relOpen || has(tt, "Checking for updates…") {
 		t.Error("Cancel did not close it")
 	}
 	q()
 	a.postQueue = nil
 	frames(tt)
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("the late answer opened it")
 	}
 
@@ -240,12 +284,12 @@ func TestReleaseDialog(t *testing.T) {
 		t.Fatalf("available: %q", firstTexts(tt))
 	}
 	click(t, tt, "Download")
-	if a.relOpen || !slices.Equal(*got, []string{"https://dl/dmg-2.0.4"}) {
-		t.Errorf("Download: open %v, opened %v", a.relOpen, *got)
+	if a.updUI.relOpen || !slices.Equal(*got, []string{"https://dl/dmg-2.0.4"}) {
+		t.Errorf("Download: open %v, opened %v", a.updUI.relOpen, *got)
 	}
 	a.checkForUpdates()
 	click(t, tt, "Later")
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("Later did not close it")
 	}
 	if slices.ContainsFunc(a.notices, func(n core.Notification) bool { return n.ID == problemRelease }) {
@@ -259,7 +303,7 @@ func TestReleaseDialog(t *testing.T) {
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("Escape did not close it")
 	}
 
@@ -274,7 +318,7 @@ func TestReleaseDialog(t *testing.T) {
 		t.Errorf("try again: %q", firstTexts(tt))
 	}
 	click(t, tt, "Done")
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("Done did not close it")
 	}
 }
@@ -297,8 +341,8 @@ func TestReleaseAutoCheck(t *testing.T) {
 
 	a.autoCheckReleases()
 	a.autoCheckReleases() // a day has not passed: no second request
-	if c := cards(a); len(c) != 1 || c[0].Title != "Voxt 2.0.4 is available" || a.relOpen || len(srv.requests) != 1 {
-		t.Fatalf("cards %+v, dialog %v, requests %d", c, a.relOpen, len(srv.requests))
+	if c := cards(a); len(c) != 1 || c[0].Title != "Voxt 2.0.4 is available" || a.updUI.relOpen || len(srv.requests) != 1 {
+		t.Fatalf("cards %+v, dialog %v, requests %d", c, a.updUI.relOpen, len(srv.requests))
 	}
 	a.navigate("/home")
 	if !has(tt, "Voxt 2.0.4 is available") || !has(tt, "Download") {
@@ -351,8 +395,8 @@ func TestReleaseAutoCheck(t *testing.T) {
 	a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck = time.Time{} })
 	n := len(a.notices)
 	a.autoCheckReleases()
-	if len(a.notices) != n || a.relOpen || len(a.toasts) != 0 {
-		t.Errorf("a failure showed: %+v %v %q", a.notices, a.relOpen, a.toasts)
+	if len(a.notices) != n || a.updUI.relOpen || len(a.toasts) != 0 {
+		t.Errorf("a failure showed: %+v %v %q", a.notices, a.updUI.relOpen, a.toasts)
 	}
 	a.upd.SetAutomaticChecks(false)
 	before := len(srv.requests)
