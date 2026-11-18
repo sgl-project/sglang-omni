@@ -26,14 +26,10 @@ const (
 
 // sidedModifier bits in Voxt 1.x SidedModifierFlags (HotkeySupport.swift).
 const (
-	sideLeftShift    = 1 << 0
-	sideRightShift   = 1 << 1
-	sideLeftControl  = 1 << 2
-	sideRightControl = 1 << 3
-	sideLeftOption   = 1 << 4
-	sideRightOption  = 1 << 5
-	sideLeftCommand  = 1 << 6
-	sideRightCommand = 1 << 7
+	sideLeftShift   = 1 << 0
+	sideLeftControl = 1 << 2
+	sideLeftOption  = 1 << 4
+	sideLeftCommand = 1 << 6
 )
 
 var legacyVirtualKeyNames = map[uint16]string{
