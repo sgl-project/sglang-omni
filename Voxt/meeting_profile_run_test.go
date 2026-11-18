@@ -250,6 +250,7 @@ func runMeetingProfile(
 		meetingConfig.FinalizeChunkParams = &chunks
 	}
 	manager := meeting.NewManager(meetingConfig)
+	stopToSummaryStart := time.Now()
 	runErr = recorder.Measure("final_pass", audioDuration, func() error {
 		return meeting.FinalizePass(ctx, meetingConfig, meetingRow, nil)
 	})
@@ -300,6 +301,7 @@ func runMeetingProfile(
 			runErr = errors.Join(runErr, err)
 		}
 	}
+	recorder.SetStopToSummary(time.Since(stopToSummaryStart))
 	storedMeeting, finalSegments, err := database.Meetings().Meeting(ctx, meetingRow.ID)
 	if err != nil {
 		runErr = errors.Join(runErr, err)

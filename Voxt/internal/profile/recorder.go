@@ -313,6 +313,12 @@ func (r *Recorder) WrapChat(kind string, chat interface {
 	return timedChat{recorder: r, kind: kind, chat: chat}
 }
 
+// SetStopToSummary records the acceptance wall from the final pass's
+// start to the summary's return.
+func (r *Recorder) SetStopToSummary(elapsed time.Duration) {
+	r.report.StopToSummaryMS = Available(float64(elapsed) / float64(time.Millisecond))
+}
+
 func (r *Recorder) Warn(warning string) {
 	r.mu.Lock()
 	r.report.Warnings = append(r.report.Warnings, r.Clean(warning))

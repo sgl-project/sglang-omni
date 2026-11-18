@@ -117,15 +117,18 @@ type TracingReport struct {
 
 // Report is the result.json written for every validly configured run.
 type Report struct {
-	SchemaVersion   int                  `json:"schema_version"`
-	Name            string               `json:"name,omitempty"`
-	Status          string               `json:"status"`
-	StartedAt       time.Time            `json:"started_at"`
-	EndedAt         time.Time            `json:"ended_at"`
-	TotalWallMS     float64              `json:"total_wall_ms"`
-	AudioDurationMS int64                `json:"audio_duration_ms"`
-	TotalRTF        OptionalFloat64      `json:"total_rtf"`
-	FirstFinalText  OptionalFloat64      `json:"first_final_text"`
+	SchemaVersion   int             `json:"schema_version"`
+	Name            string          `json:"name,omitempty"`
+	Status          string          `json:"status"`
+	StartedAt       time.Time       `json:"started_at"`
+	EndedAt         time.Time       `json:"ended_at"`
+	TotalWallMS     float64         `json:"total_wall_ms"`
+	AudioDurationMS int64           `json:"audio_duration_ms"`
+	TotalRTF        OptionalFloat64 `json:"total_rtf"`
+	FirstFinalText  OptionalFloat64 `json:"first_final_text"`
+	// StopToSummaryMS is the wall from the final pass's start to the
+	// summary's return, including the gaps the stage measures miss.
+	StopToSummaryMS OptionalFloat64      `json:"stop_to_summary_ms,omitempty"`
 	Config          Config               `json:"config"`
 	Stages          []Stage              `json:"stages"`
 	ASRTranscript   TextArtifact         `json:"asr_transcript"`
