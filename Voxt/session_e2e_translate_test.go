@@ -92,6 +92,16 @@ func TestTranslateUnchangedAnswer(t *testing.T) {
 	if entries := a.history(); len(entries) != 1 || entries[0].Status != store.StatusFailed || entries[0].SourceText != source {
 		t.Errorf("history %+v", entries)
 	}
+	blocks := cardBlocks(a.cardNow())
+	if len(blocks) == 0 || blocks[0].text.text != "The language model did not translate the text. Try again." {
+		t.Errorf("failure text %+v", blocks)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	a.applyLocale()
+	blocks = cardBlocks(a.cardNow())
+	if len(blocks) == 0 || blocks[0].text.text != "语言模型没有翻译这段文字，请重试。" {
+		t.Errorf("zh-Hans failure text %+v", blocks)
+	}
 }
 
 // TestTranslateCopySelection: Accessibility shows no selection, ⌘C is

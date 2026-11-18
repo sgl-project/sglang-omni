@@ -163,11 +163,20 @@ func (r *run) write(raw, selection string) {
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
 		return
 	}
-	// Same-script and numeric answers can be valid; fail only on evidence of the wrong script.
-	if kind == store.KindTranslate && strings.IndexFunc(source, unicode.IsLetter) >= 0 && !compose.Written(source, in.TargetLanguage) && compose.Untranslated(source, res.Content, in.TargetLanguage) {
-		r.logf("warning", "the translation still looks untranslated after the strict retry")
-		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: errors.New("the language model did not translate the text")}, true)
-		return
+	if kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) {
+		sameScript := true
+		for _, r := range source {
+			if unicode.IsLetter(r) && !compose.Written(string(r), in.TargetLanguage) {
+				sameScript = false
+				break
+			}
+		}
+		// Numbers and text written entirely in the target script can stay unchanged; mixed script cannot.
+		if !sameScript {
+			r.logf("warning", "the translation still looks untranslated after the strict retry")
+			r.endWriteFailed(&Problem{Code: ProblemLLM, Err: ErrNotTranslated}, true)
+			return
+		}
 	}
 	r.logf("info", "wrote %s in %v", r.logText(res.Content), llmTime.Round(time.Millisecond))
 	if res.Content == "" {

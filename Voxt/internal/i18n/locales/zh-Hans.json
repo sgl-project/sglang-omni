@@ -1005,6 +1005,7 @@
   "The helper is not running, so microphones cannot be listed.": "辅助进程没有运行，无法列出麦克风。",
   "The helper stopped. Try again in a moment.": "辅助进程已停止，请稍后再试。",
   "The language model returned an empty answer.": "语言模型没有返回任何内容。",
+  "The language model did not translate the text. Try again.": "语言模型没有翻译这段文字，请重试。",
   "The language model answered something Voxt does not understand.": "语言模型返回了 Voxt 无法解析的内容。",
   "The language model did not answer in time.": "语言模型没有及时响应。",
   "The language model failed: %s": "语言模型出错：%s",

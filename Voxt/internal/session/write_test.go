@@ -150,6 +150,10 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{
+			name: "an unchanged mixed-language source is not pasted", kind: store.KindTranslate, sel: &fakeSelector{text: "Voxt supports 中文"}, llm: &fakeLLM{text: "Voxt supports 中文"},
+			req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM,
+		},
+		{
 			name: "a failed strict retry does not paste the source", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{texts: []string{"我们周五发布"}, err: errors.New("503"), failOn: 2},
 			req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
