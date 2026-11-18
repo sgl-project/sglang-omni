@@ -4,7 +4,7 @@ Duo consumes video and speech, produces Intent hidden states with Qwen3-VL, and 
 
 ## Dependencies and checkpoints
 
-Install the matching SGLang source checkout containing the Duo Diffusion components after installing Omni. An unmodified SGLang wheel does not include these components. This split retains the validated Omni baseline while moving DiT, physical KV, sampling, and Codec execution into SGLang multimodal_gen; Qwen/H50, realtime sessions, and reset policy remain in Omni. Use a dedicated environment and verify both import paths before serving.
+Use the [Duo Diffusion branch](https://github.com/Anmuliar/sglang/tree/duo-0.5.23), based on the SGLang 0.5.23 release required by this Omni branch. Install both in the same environment. An unmodified SGLang wheel does not include these components. This split retains the validated Omni baseline while moving DiT, physical KV, sampling, and Codec execution into SGLang multimodal_gen; Qwen/H50, realtime sessions, and reset policy remain in Omni. Use a dedicated environment and verify both import paths before serving.
 
 The model-specific tokenizer protocol, checkpoint reader, and causal sampler are provided by the Duo model sources. Obtain the matching Duo inference source bundle from [Duo](https://github.com/inclusionAI/Duo), then set `DUO_MODEL_SOURCE` to the directory containing `torchtitan`, `data`, and `tools/ckpt_to_oss/duo_protocol.py`. For the Duo inference release layout this is `third_party/duo`. Use the model-provider revision matching the checkpoint; this is a model dependency, not a dependency on vLLM.
 
@@ -12,10 +12,11 @@ The model-specific tokenizer protocol, checkpoint reader, and causal sampler are
 export DUO_MODEL_SOURCE=/path/to/Duo/third_party/duo
 export PYTHONPATH="$PWD:$DUO_MODEL_SOURCE${PYTHONPATH:+:$PYTHONPATH}"
 export TORCHTITAN_LIVE=1
-pip install -e .
-pip install peft tyro
-export SGLANG_SOURCE=/path/to/sglang-duo-diffusion
-pip install -e "$SGLANG_SOURCE/python[diffusion]"
+git clone --branch duo-0.5.23 https://github.com/Anmuliar/sglang.git ../sglang-duo
+export SGLANG_SOURCE="$(cd ../sglang-duo && pwd)"
+git -C "$SGLANG_SOURCE" checkout 55a0c2b8d3d4ed4795b2df64873c0a69ac9a52d2
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=0.5.23+duo pip install -e "$SGLANG_SOURCE/python[diffusion]"
+pip install -e . peft tyro
 export PYTHONPATH="$SGLANG_SOURCE/python:$PWD:$DUO_MODEL_SOURCE"
 python -c "from sglang.multimodal_gen.runtime.models.dits.duo import native_dcp; print(native_dcp.__file__)"
 ```

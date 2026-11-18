@@ -40,7 +40,7 @@ Override ports with `--port` (backend) and `--playground-port` (UI).
 
 ## Duo realtime video and speech
 
-Use the Duo-enabled Omni environment with the matching SGLang Diffusion components and eight CUDA GPUs. From the repository root, set these local paths in each terminal:
+Use the Duo-enabled Omni environment with [SGLang 0.5.23 and the Duo Diffusion components](https://github.com/Anmuliar/sglang/tree/duo-0.5.23) and eight CUDA GPUs. From the repository root, set these local paths in each terminal:
 
 ```bash
 export DUO_MODEL_DIR="$PWD/models"
