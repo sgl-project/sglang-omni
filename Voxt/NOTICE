@@ -21,6 +21,11 @@ texts: LICENSES/Apache-2.0.txt, LICENSES/Unicode-3.0.txt,
 third_party/mygo/LICENSE, LICENSES/go/ (the Go modules' own files,
 copied unchanged) and LICENSES/omni/ (the speech runtime's libraries).
 
+KaTeX
+  internal/transcriptpreview/katex.min.js contains KaTeX 0.19.1
+  (https://katex.org), Copyright the KaTeX authors, MIT
+  (LICENSES/web/KaTeX.txt). The preview uses its MathML output.
+
 AudioSmith
   Portions of this product come from AudioSmith
   (https://github.com/hehehai/AudioSmith) at commit f171c86, Copyright 2026
