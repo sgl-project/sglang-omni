@@ -7,9 +7,9 @@
 
 #include "mlx/mlx.h"
 
-namespace sortformer {
+namespace omni_common {
 
-struct ProcessorConfig {
+struct NemoProcessorConfig {
   int feature_size = 80;
   int sampling_rate = 16000;
   int hop_length = 160;
@@ -21,8 +21,8 @@ struct ProcessorConfig {
 // Slaney-scale, Slaney-normalized filters [fft_size / 2 + 1, mel_bin_count]
 // from 0 Hz to sample_rate / 2, built in float32 in the order of Swift
 // melFilters, so the values are bit-identical to Voxt's.
-std::vector<float> MelFilterBank(int sample_rate, int fft_size,
-                                 int mel_bin_count);
+std::vector<float> NemoMelFilterBank(int sample_rate, int fft_size,
+                                     int mel_bin_count);
 
 // Symmetric Hann window (denominator size - 1), as Swift hanningWindow.
 std::vector<float> SymmetricHannWindow(int size);
@@ -31,9 +31,9 @@ std::vector<float> SymmetricHannWindow(int size);
 // a window shorter than the FFT.
 std::vector<float> CenteredWindow(int window_length, int fft_size);
 
-class FeatureExtractor {
+class NemoFeatureExtractor {
 public:
-  explicit FeatureExtractor(const ProcessorConfig &config);
+  explicit NemoFeatureExtractor(const NemoProcessorConfig &config);
 
   // Log-mel features (1, feature_size, frames) in float32, unnormalized and
   // unpadded (the use_aosc path of Swift extractMelFeatures).
@@ -43,11 +43,11 @@ public:
   const std::vector<float> &window() const { return window_; }
 
 private:
-  ProcessorConfig config_;
+  NemoProcessorConfig config_;
   std::vector<float> mel_filters_;
   std::vector<float> window_;
   mlx::core::array mel_filters_array_;
   mlx::core::array window_array_;
 };
 
-} // namespace sortformer
+} // namespace omni_common

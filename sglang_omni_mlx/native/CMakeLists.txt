@@ -7,11 +7,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
-# on, so both produce bit-identical outputs.
-set(SGLANG_OMNI_MLX_VERSION 0.32.3)
+# Note (XXXXRT666): the version of the MLX commit scripts/build_runtime.sh pins;
+# MLX's version does not tell commits of its main branch apart.
+set(SGLANG_OMNI_MLX_VERSION 0.32.5)
 if(NOT MLX_DIR OR NOT EXISTS "${MLX_DIR}/MLXConfig.cmake")
-  message(FATAL_ERROR "Set MLX_DIR to <mlx ${SGLANG_OMNI_MLX_VERSION} wheel>/share/cmake/MLX")
+  message(FATAL_ERROR "Set MLX_DIR to <MLX ${SGLANG_OMNI_MLX_VERSION} install>/share/cmake/MLX: scripts/build_runtime.sh builds it")
 endif()
 find_package(MLX ${SGLANG_OMNI_MLX_VERSION} EXACT CONFIG REQUIRED PATHS "${MLX_DIR}" NO_DEFAULT_PATH)
 
@@ -63,13 +63,20 @@ add_library(common STATIC
   src/common/audio.cpp
   src/common/audio_chunks.cpp
   src/common/campplus.cpp
+  src/common/dflash_draft.cpp
+  src/common/fastconformer.cpp
   src/common/form.cpp
+  src/common/kv_cache.cpp
   src/common/layers.cpp
+  src/common/nemo_features.cpp
   src/common/npz.cpp
+  src/common/qwen3_decoder.cpp
+  src/common/realtime_connection.cpp
   src/common/reference_audio.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp
-  src/common/transcription.cpp)
+  src/common/transcription.cpp
+  src/common/worker.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
   "-framework CoreFoundation" PRIVATE yaml-cpp::yaml-cpp)
@@ -86,14 +93,15 @@ set_source_files_properties(src/common/campplus.cpp
 # operations.
 set_source_files_properties(src/common/audio_chunks.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (XXXXRT666): the relative position table keeps the rounding it had in
+# parakeet_asr and nemotron_asr.
+set_source_files_properties(src/common/fastconformer.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
-  src/qwen3_asr/qwen3_decoder.cpp
-  src/qwen3_asr/dflash_draft.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
-  src/qwen3_asr/worker.cpp
   src/qwen3_asr/realtime.cpp)
 target_link_libraries(qwen3_asr PUBLIC common)
 target_compile_options(qwen3_asr PRIVATE -Wall -Wextra)
@@ -109,7 +117,6 @@ target_compile_options(silero_vad PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 add_library(sortformer STATIC
   src/sortformer/sortformer.cpp
   src/sortformer/sortformer_checkpoint.cpp
-  src/sortformer/sortformer_features.cpp
   src/sortformer/sortformer_state.cpp)
 target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC common)
@@ -119,18 +126,18 @@ add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
 target_link_libraries(omni_service PUBLIC common civetweb-c-library)
 target_compile_options(omni_service PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
+add_library(asr_service STATIC src/common/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
 # The /v1/audio/speech API the TTS servers share.
-add_library(speech_service STATIC src/qwen3_asr/speech_service.cpp)
+add_library(speech_service STATIC src/common/speech_service.cpp)
 target_link_libraries(speech_service PUBLIC asr_service)
 target_compile_options(speech_service PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp
   src/sortformer/sortformer_service.cpp)
-target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)
+target_link_libraries(qwen3_asr_server PRIVATE qwen3_asr asr_service silero_vad sortformer)
 
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
 target_link_libraries(silero_vad_probe PRIVATE silero_vad)
@@ -180,7 +187,7 @@ install(TARGETS whisper_server whisper_transcribe RUNTIME DESTINATION bin)
 # Note (khazic): Cohere Transcribe: cohere_transcribe_server, with qwen3_asr_server's API
 # without realtime, and its parity tool; Silero VAD cuts long audio at speech.
 add_library(cohere_asr STATIC src/cohere/cohere_model.cpp src/cohere/cohere_transcriber.cpp)
-target_link_libraries(cohere_asr PUBLIC qwen3_asr swift_port silero_vad)
+target_link_libraries(cohere_asr PUBLIC common swift_port silero_vad)
 # Note (khazic): CPU float math rounds each operation, as Swift does: no fused multiply-add.
 target_compile_options(cohere_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(cohere_transcribe_server src/cohere/cohere_transcribe_server.cpp)
@@ -194,7 +201,7 @@ install(TARGETS cohere_transcribe_server cohere_transcribe RUNTIME DESTINATION b
 # Note (Dayuxiaoshui): MOSS-Transcribe-Diarize on Qwen3-ASR's decoder, WAV and
 # form handling, with its own server and parity tool.
 add_library(moss_asr STATIC src/moss/moss_model.cpp src/moss/moss_transcriber.cpp src/moss/moss_realtime.cpp)
-target_link_libraries(moss_asr PUBLIC qwen3_asr)
+target_link_libraries(moss_asr PUBLIC common)
 target_compile_options(moss_asr PRIVATE -Wall -Wextra)
 # Note (Dayuxiaoshui): a long recording's cut is the minimum of energy sums,
 # which fused multiply-adds would round differently from Voxt's Swift.
@@ -211,7 +218,7 @@ install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATI
 # and Qwen3-ASR's checkpoint loading, with its own server and parity tool.
 add_library(nemotron_asr STATIC src/nemotron/nemotron_model.cpp src/nemotron/nemotron_transcriber.cpp
   src/nemotron/nemotron_realtime.cpp)
-target_link_libraries(nemotron_asr PUBLIC qwen3_asr sortformer swift_port)
+target_link_libraries(nemotron_asr PUBLIC common swift_port)
 # Note (Dayuxiaoshui): the positional table is float math that must round as
 # Swift's does, so no fused multiply-add.
 target_compile_options(nemotron_asr PRIVATE -Wall -Wextra -ffp-contract=off)
@@ -227,7 +234,7 @@ install(TARGETS nemotron_asr_server nemotron_transcribe RUNTIME DESTINATION bin)
 # Note (Dayuxiaoshui): Parakeet TDT: parakeet_server, with qwen3_asr_server's API without
 # realtime, and its parity tool; the front end is Sortformer's NeMo log-mel.
 add_library(parakeet_asr STATIC src/parakeet/parakeet_model.cpp src/parakeet/parakeet_transcriber.cpp)
-target_link_libraries(parakeet_asr PUBLIC common sortformer swift_port)
+target_link_libraries(parakeet_asr PUBLIC common swift_port)
 target_compile_options(parakeet_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(parakeet_server src/parakeet/parakeet_server.cpp)
 target_link_libraries(parakeet_server PRIVATE parakeet_asr asr_service)
@@ -298,7 +305,7 @@ install(FILES ../../LICENSE DESTINATION share/licenses/auk RENAME Apache-2.0.txt
 add_library(ming_tts STATIC src/ming_tts/ming_tts_model.cpp src/ming_tts/ming_tts_acoustic.cpp
   src/ming_tts/ming_tts_audio.cpp src/ming_tts/ming_tts_generator.cpp
   src/ming_tts/ming_tts_reference.cpp)
-target_link_libraries(ming_tts PUBLIC qwen3_asr)
+target_link_libraries(ming_tts PUBLIC common)
 target_compile_options(ming_tts PRIVATE -Wall -Wextra)
 # Its request parsing, which stub_server shares.
 add_library(ming_tts_request STATIC src/ming_tts/ming_tts_request.cpp)
@@ -316,7 +323,7 @@ install(TARGETS ming_tts_server RUNTIME DESTINATION bin)
 # /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.
 add_library(voxtral_tts STATIC src/voxtral_tts/voxtral_tts_tokenizer.cpp
   src/voxtral_tts/voxtral_tts_codec.cpp src/voxtral_tts/voxtral_tts_model.cpp)
-target_link_libraries(voxtral_tts PUBLIC qwen3_asr)
+target_link_libraries(voxtral_tts PUBLIC common)
 target_compile_options(voxtral_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(voxtral_tts_server src/voxtral_tts/voxtral_tts_server.cpp)
 target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts speech_service)
@@ -330,7 +337,7 @@ install(TARGETS voxtral_tts_server voxtral_tts_synthesize RUNTIME DESTINATION bi
 
 add_library(music3 STATIC src/music3/music3_model.cpp src/music3/music3_ar.cpp
   src/music3/music3_acoustic.cpp src/music3/music3_audio.cpp src/music3/music3_request.cpp)
-target_link_libraries(music3 PUBLIC qwen3_asr)
+target_link_libraries(music3 PUBLIC common)
 target_compile_options(music3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(music3_server src/music3/music3_server.cpp src/music3/music3_service.cpp)
 target_link_libraries(music3_server PRIVATE music3 omni_service)
@@ -345,10 +352,10 @@ install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 # server's /v1/audio/speech API, and its parity tool; the talker and code
 # predictor reuse Qwen3's decoder.
 add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwen3_tts_model.cpp)
-target_link_libraries(qwen3_tts PUBLIC qwen3_asr)
+target_link_libraries(qwen3_tts PUBLIC common)
 target_compile_options(qwen3_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_server.cpp)
-target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts asr_service)
+target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts speech_service)
 target_compile_options(qwen3_tts_server PRIVATE -Wall -Wextra)
 add_executable(qwen3_tts_synthesize tools/qwen3_tts_synthesize.cpp)
 target_link_libraries(qwen3_tts_synthesize PRIVATE qwen3_tts)
@@ -364,10 +371,10 @@ add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
   src/cosyvoice3/cosyvoice3_audio.cpp
   src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
   src/cosyvoice3/cosyvoice3_model.cpp)
-target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)
+target_link_libraries(cosyvoice3 PUBLIC common)
 target_compile_options(cosyvoice3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(cosyvoice3_server src/cosyvoice3/cosyvoice3_server.cpp)
-target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 asr_service)
+target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 speech_service)
 target_compile_options(cosyvoice3_server PRIVATE -Wall -Wextra)
 add_executable(cosyvoice3_synthesize tools/cosyvoice3_synthesize.cpp)
 target_link_libraries(cosyvoice3_synthesize PRIVATE cosyvoice3)
@@ -392,7 +399,7 @@ add_library(fishaudio_drama3 STATIC
   src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
   src/fishaudio_drama3/fishaudio_drama3_tower.cpp
   src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
-target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr fish_dac)
+target_link_libraries(fishaudio_drama3 PUBLIC common fish_dac)
 target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fishaudio_drama3_experts_test EXCLUDE_FROM_ALL
   ci/fishaudio_drama3_experts_test.cpp)
@@ -411,7 +418,7 @@ install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DEST
 add_library(ming3_audio STATIC src/ming3_audio/ming3_audio_model.cpp
   src/ming3_audio/ming3_audio_attention.cpp
   src/ming3_audio/ming3_audio_mtp.cpp)
-target_link_libraries(ming3_audio PUBLIC qwen3_asr)
+target_link_libraries(ming3_audio PUBLIC common)
 target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
 add_library(ming3_audio_service STATIC src/ming3_audio/ming3_audio_service.cpp)
 target_link_libraries(ming3_audio_service PUBLIC omni_service)
@@ -437,7 +444,7 @@ target_link_libraries(fishaudio_drama3_codec_test PRIVATE fish_dac)
 # /v1/audio/speech API and reference-audio voice cloning, and its parity tool.
 add_library(fish_s2_pro STATIC src/fish_s2_pro/fish_s2_pro_stream.cpp
   src/fish_s2_pro/fish_s2_pro_model.cpp)
-target_link_libraries(fish_s2_pro PUBLIC qwen3_asr fish_dac)
+target_link_libraries(fish_s2_pro PUBLIC common fish_dac)
 target_compile_options(fish_s2_pro PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fish_s2_pro_server src/fish_s2_pro/fish_s2_pro_server.cpp)
 target_link_libraries(fish_s2_pro_server PRIVATE fish_s2_pro speech_service)

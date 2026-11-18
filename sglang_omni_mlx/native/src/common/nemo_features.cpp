@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "sortformer/sortformer_features.h"
+#include "common/nemo_features.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -8,7 +8,7 @@
 // breaks bit identity of the filter bank and window.
 #pragma STDC FP_CONTRACT OFF
 
-namespace sortformer {
+namespace omni_common {
 
 namespace mx = mlx::core;
 
@@ -43,8 +43,8 @@ constexpr float kLogGuard = 5.9604644775390625e-08f;
 
 } // namespace
 
-std::vector<float> MelFilterBank(int sample_rate, int fft_size,
-                                 int mel_bin_count) {
+std::vector<float> NemoMelFilterBank(int sample_rate, int fft_size,
+                                     int mel_bin_count) {
   const SlaneyScale scale;
   const float max_hz = static_cast<float>(sample_rate) / 2.0f;
   const int frequency_bin_count = fft_size / 2 + 1;
@@ -119,10 +119,10 @@ std::vector<float> CenteredWindow(int window_length, int fft_size) {
   return window;
 }
 
-FeatureExtractor::FeatureExtractor(const ProcessorConfig &config)
+NemoFeatureExtractor::NemoFeatureExtractor(const NemoProcessorConfig &config)
     : config_(config),
-      mel_filters_(MelFilterBank(config.sampling_rate, config.fft_size,
-                                 config.feature_size)),
+      mel_filters_(NemoMelFilterBank(config.sampling_rate, config.fft_size,
+                                     config.feature_size)),
       window_(CenteredWindow(config.window_length, config.fft_size)),
       mel_filters_array_(mel_filters_.data(),
                          {config.fft_size / 2 + 1, config.feature_size},
@@ -136,7 +136,7 @@ FeatureExtractor::FeatureExtractor(const ProcessorConfig &config)
 }
 
 mx::array
-FeatureExtractor::operator()(const std::vector<float> &samples) const {
+NemoFeatureExtractor::operator()(const std::vector<float> &samples) const {
   const int sample_count = static_cast<int>(samples.size());
   if (sample_count < 2) {
     throw std::invalid_argument("Sortformer needs at least two samples");
@@ -168,4 +168,4 @@ FeatureExtractor::operator()(const std::vector<float> &samples) const {
   return mx::stack({mx::transpose(log_mel, {1, 0})});
 }
 
-} // namespace sortformer
+} // namespace omni_common
