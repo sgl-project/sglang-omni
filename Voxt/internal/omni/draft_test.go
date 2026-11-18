@@ -54,6 +54,35 @@ func TestDraft(t *testing.T) {
 	}
 }
 
+func TestDraftDeletedOldProvider(t *testing.T) {
+	req := asr.FileRequest{Audio: tone(2*time.Second, 0.3), Format: "pcm", SampleRate: 16000}
+	for _, model := range []string{ASRFast, ASRMoss, ASRWhisperLarge} {
+		t.Run(model, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{}, withServers(t, "moss_transcribe_diarize_server", "whisper_server"))
+			a := f.asr(t, model)
+			draft := filepath.Join(f.dir, "draft")
+			if err := os.MkdirAll(draft, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			a = a.WithDraft(draft)
+			if _, err := a.Transcribe(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(draft); err != nil {
+				t.Fatal(err)
+			}
+			f.rt.Unload(model)
+			if _, err := a.Transcribe(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			launches := f.records("launch")
+			if len(launches) != 2 || slices.Contains(launches[1].Args, "--draft-model-path") {
+				t.Errorf("launches after the draft was deleted: %+v", launches)
+			}
+		})
+	}
+}
+
 // TestDraftRefused: a server from before --draft-model-path refuses the
 // flag; the model starts again without it and the log says so.
 func TestDraftRefused(t *testing.T) {

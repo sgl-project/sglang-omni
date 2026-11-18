@@ -12,6 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Deleting a speech model's draft no longer leaves an old provider using its missing path**: Qwen3-ASR, MOSS-Transcribe-Diarize and Whisper Large v3 continue without the draft.
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
 
 ### 中文
@@ -24,6 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **删除语音识别模型的草稿模型后，旧提供方不再使用已删除的路径**：Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 会不使用草稿模型继续转录。
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
 
 ## [2.1.0] - 2026-11-15
