@@ -64,7 +64,8 @@ func buildSessionFixtureUI(a *app, state sessionOverlayViewState, locale string)
 	overlay := a.prefs.Overlay
 	seed := sessionOverlayFixtureUI{
 		Overlay: sessionOverlayLayoutStyle{
-			Position: overlay.Position, Opacity: overlay.Opacity, Radius: overlay.Radius, Margin: overlay.Margin,
+			Position: overlay.Position, Palette: paletteSnapshot(a.prefs.Appearance.Palette),
+			Opacity: overlay.Opacity, Radius: overlay.Radius, Margin: overlay.Margin,
 			ShowTime: overlay.ShowTime, LiveLines: overlay.LiveLines,
 		},
 	}

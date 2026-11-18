@@ -38,10 +38,12 @@ type sessionMenuViewState struct {
 	Label         string              `json:"label"`
 	Options       []sessionMenuOption `json:"options"`
 	SelectedIndex int                 `json:"selected_index"`
+	Palette       string              `json:"palette,omitempty"`
 }
 
 type sessionMenuProjectionInput struct {
 	Kind            string
+	Palette         string
 	CurrentLanguage string
 	CurrentThinking *llm.Thinking
 	ThinkingLevels  []*llm.Thinking
@@ -49,7 +51,7 @@ type sessionMenuProjectionInput struct {
 }
 
 func buildSessionMenuViewState(translator *i18n.Translator, input sessionMenuProjectionInput) sessionMenuViewState {
-	state := sessionMenuViewState{Kind: input.Kind, SelectedIndex: -1}
+	state := sessionMenuViewState{Kind: input.Kind, SelectedIndex: -1, Palette: input.Palette}
 	if input.Kind == sessionMenuLanguage {
 		state.Label = translator.T("Translate into")
 		state.Options = make([]sessionMenuOption, 0, len(compose.TargetLanguages))
@@ -279,13 +281,14 @@ func (a *app) chooseThinking(value sessionThinkingValue) {
 
 type sessionMenuProjectionKey struct {
 	kind, locale, language, serviceID, model string
+	palette                                  string
 	thinking                                 sessionThinkingValue
 	generationThinking, generationEffort     string
 	generationBudget                         int
 }
 
 func (a *app) sessionMenuProjectionInput() (sessionMenuProjectionInput, settings.Provider) {
-	input := sessionMenuProjectionInput{}
+	input := sessionMenuProjectionInput{Palette: paletteSnapshot(a.prefs.Appearance.Palette)}
 	provider := settings.Provider{}
 	if !a.answer.ui.langOpen {
 		return input, provider
@@ -312,7 +315,7 @@ func (a *app) sessionMenuProjectionInput() (sessionMenuProjectionInput, settings
 
 func sessionMenuKeyFor(input sessionMenuProjectionInput, provider settings.Provider, locale string) sessionMenuProjectionKey {
 	return sessionMenuProjectionKey{kind: input.Kind, locale: locale, language: input.CurrentLanguage,
-		serviceID: provider.ID, model: provider.Model, thinking: sessionThinkingValueOf(input.CurrentThinking),
+		serviceID: provider.ID, model: provider.Model, palette: input.Palette, thinking: sessionThinkingValueOf(input.CurrentThinking),
 		generationThinking: input.Generation.Thinking, generationEffort: input.Generation.ThinkingEffort,
 		generationBudget: input.Generation.ThinkingBudget}
 }

@@ -25,7 +25,8 @@ import (
 
 // shellState is the shell's view state and the services it owns.
 type shellState struct {
-	router *uiRouter
+	router         *uiRouter
+	openingStarted time.Time
 	// nav is the sidebar's choice; navShown the router path it was last
 	// synced from (see syncNav).
 	nav, navShown string
@@ -183,6 +184,26 @@ func (a *app) navigate(path string) {
 // currentPage is the name of the page shown: the first part of its path.
 func (a *app) currentPage() string { return section(a.router.Path())[1:] }
 
+func (a *app) startOpening() {
+	if a.prefs.Setup.Done || a.prefs.Setup.OpeningShown {
+		return
+	}
+	a.openingStarted = time.Now()
+	a.updateSettings(func(state *settings.Settings) { state.Setup.OpeningShown = true })
+}
+
+func (a *app) openingModel(now time.Time, systemReducedMotion bool) (openingViewState, bool) {
+	if a.openingStarted.IsZero() {
+		return openingViewState{}, false
+	}
+	elapsed := now.Sub(a.openingStarted)
+	if elapsed >= openingDuration || a.prefs.Appearance.ReduceMotion || systemReducedMotion {
+		a.openingStarted = time.Time{}
+		return openingViewState{}, false
+	}
+	return buildOpeningViewState(elapsed), true
+}
+
 // openWindow opens the main window; it runs in App.WhenReady. Opened
 // at login, with the menu bar icon and "Keep running when the window
 // closes" on, VoxtNew starts in the menu bar: the window waits hidden.
@@ -192,6 +213,7 @@ func (a *app) openWindow() {
 	a.hasMenu = true
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
+	a.startOpening()
 	a.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:          "Voxt",
 		Width:          windowWidth,
@@ -201,6 +223,7 @@ func (a *app) openWindow() {
 		StateKey:       "main",
 		TitleBarStyle:  mygo.TitleBarHiddenInset,
 		TitleBarHeight: titleBarHeight,
+		Transparent:    true,
 		Content:        shellContent(a.view),
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
@@ -228,7 +251,7 @@ func startHidden(atLogin bool, g settings.General) bool {
 func (a *app) shellModel(now time.Time) *shellViewState {
 	model := &a.shellViewModel
 	*model = shellViewState{
-		Theme: a.prefs.Appearance.Theme, Scale: a.prefs.Appearance.Scale,
+		Theme: a.prefs.Appearance.Theme, AppearancePalette: paletteSnapshot(a.prefs.Appearance.Palette), Scale: a.prefs.Appearance.Scale,
 		Still:  a.win == nil || a.prefs.Appearance.ReduceMotion,
 		Toasts: a.toasts,
 		Nav:    a.navModel(), Notices: a.noticesModel(now),
@@ -266,6 +289,10 @@ func (a *app) shellLocal() *shellLocalUI {
 // each area's dialogs.
 func (a *app) view(c *uiContext) {
 	a.mainUI = c.Services()
+	if opening, shown := a.openingModel(time.Now(), c.Preferences().ReduceMotion); shown {
+		openingView(c, opening)
+		return
+	}
 	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
 	now := time.Now()

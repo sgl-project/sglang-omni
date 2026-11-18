@@ -66,7 +66,10 @@ func (a *app) syncMeetingOverlay() {
 			},
 			func() meetingOverlayFaceStyle {
 				mode, faceHeight := meetingOverlayFace(a.meetOvModel)
-				return meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay)}
+				return meetingOverlayFaceStyle{
+					radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay),
+					palette: paletteSnapshot(a.prefs.Appearance.Palette),
+				}
 			},
 		)
 		opts := floatingWindowOptions("Voxt meeting", width, height, content)

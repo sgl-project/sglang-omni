@@ -40,6 +40,7 @@ pytestmark = pytest.mark.skipif(
 )
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 WHISPER_LARGE_V3_REPO = "mlx-community/whisper-large-v3-mlx"
+WHISPER_DRAFT_REPO = "wilsonzheng0327/Whisper-large-v3-distil-draft"
 WHISPER_SMALL_REPO = "mlx-community/whisper-small-mlx"
 COHERE_REPO = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
 VAD_REPO = "mlx-community/silero-vad-v6"
@@ -147,6 +148,32 @@ def test_whisper_fp16_variant_server_transcribes(repo: str) -> None:
         )
         assert status == 200
         assert json.loads(body)["text"].strip()
+    finally:
+        server.stop()
+
+
+def test_whisper_uses_the_published_distil_draft() -> None:
+    draft = Path(DATA_ROOT) / "models" / WHISPER_DRAFT_REPO.replace("/", "_")
+    server = ModelServer(
+        "whisper_server",
+        "whisper",
+        WHISPER_LARGE_V3_REPO,
+        ("--draft-model-path", str(draft)),
+    )
+    try:
+        status, body = server.post_form(
+            {
+                "stream": "true",
+                "language": "en",
+                "include_generation_metadata": "true",
+            },
+            clip("0006_en_short"),
+        )
+        assert status == 200
+        result, end = sse_events(body)
+        assert end == "[DONE]"
+        assert result["text"].strip()
+        assert result["generation_metadata"]["accepted_draft_token_count"] > 0
     finally:
         server.stop()
 

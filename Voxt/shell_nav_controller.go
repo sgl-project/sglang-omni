@@ -33,12 +33,14 @@ type navState struct {
 // build's, navModel reuses the state instead of rebuilding it every
 // frame.
 type navCacheKey struct {
-	settings     uint64
-	suggestions  int
-	current, nav string
-	settingsOpen bool
-	notices      int
-	locale       string
+	settings           uint64
+	suggestions        int
+	current, nav       string
+	settingsOpen       bool
+	notices            int
+	locale             string
+	transparent        bool
+	windowTransparency int
 }
 
 // railMode reports whether the sidebar shows icons only: the user's
@@ -86,10 +88,21 @@ func (a *app) saveClosedSections() {
 // badges, the page, the dialog, the notifications or the language
 // changed.
 func (a *app) navModel() *navViewState {
+	appearance := a.prefs.Appearance
+	transparent := appearance.Theme == settings.ThemeTransparent
+	windowTransparency := 0
+	if transparent {
+		windowTransparency = appearance.WindowTransparency
+		if a.settingsForm.windowTransparency > 0 {
+			windowTransparency = int(a.settingsForm.windowTransparency)
+		}
+		appearance.WindowTransparency = windowTransparency
+	}
 	key := navCacheKey{
 		settings: a.settingsRevision, suggestions: len(a.suggestions),
 		current: section(a.router.Path()), nav: a.nav, settingsOpen: a.settingsOpen,
 		notices: len(a.notices), locale: i18n.Locale(),
+		transparent: transparent, windowTransparency: windowTransparency,
 	}
 	if key != a.navViewKey {
 		badges := map[string]string{}
@@ -101,7 +114,7 @@ func (a *app) navModel() *navViewState {
 			}
 		}
 		a.navView = buildNavViewState(i18n.CurrentTranslator(), navViewStateInput{
-			Appearance:   a.prefs.Appearance,
+			Appearance:   appearance,
 			Features:     a.prefs.Features,
 			Closed:       a.prefs.Appearance.ClosedSections,
 			Current:      section(a.router.Path()),

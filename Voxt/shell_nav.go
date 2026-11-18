@@ -65,6 +65,11 @@ func navIcon(path string) icons.Icon {
 func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI, page func()) {
 	t := c.Theme()
 	k := tok(t)
+	sidebarColor, backgroundColor := k.Sidebar, k.Bg
+	if state.Transparent {
+		opacity := 1 - float32(state.WindowTransparency)/100
+		sidebarColor, backgroundColor = sidebarColor.Alpha(opacity), backgroundColor.Alpha(opacity)
+	}
 	headerInset = 0
 	w, _ := c.Size()
 	*local.narrow = w < px(t, autoRailWidth)
@@ -80,11 +85,11 @@ func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState,
 		// page titles move over to keep clear of them.
 		headerInset = max(0, c.TitleBar().Left-px(t, railWidth)-px(t, sp6)+px(t, sp3))
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Width(px(t, railWidth)).Shrink(0).Background(k.Sidebar).Children(func() {
-				navRail(c, state, notices, actions, noticeActs, local)
+			ui.Column(c).Width(px(t, railWidth)).Shrink(0).Background(sidebarColor).Children(func() {
+				navRail(c, state, notices, actions, noticeActs, local, sidebarColor)
 			})
 			ui.Box(c).Width(1).Background(k.Line)
-			ui.Column(c).Grow(1).MinWidth(0).Background(k.Bg).Children(page)
+			ui.Column(c).Grow(1).MinWidth(0).Background(backgroundColor).Children(page)
 		})
 		return
 	}
@@ -98,9 +103,9 @@ func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState,
 		local.sideW, local.sideWScale = px(t, float32(w)), scale
 	}
 	split := ui.Split(c.Key("sidebar-split"), &local.sideW, func() {
-		ui.Column(c).Fill().Background(k.Sidebar).Children(func() { sidebar(c, state, notices, actions, noticeActs, local) })
+		ui.Column(c).Fill().Background(sidebarColor).Children(func() { sidebar(c, state, notices, actions, noticeActs, local, sidebarColor) })
 	}, func() {
-		ui.Column(c).Grow(1).MinWidth(0).Background(k.Bg).Children(page)
+		ui.Column(c).Grow(1).MinWidth(0).Background(backgroundColor).Children(page)
 	}).Grow(1).MinHeight(0)
 	// Keep the width in its bounds, and save it once the drag rests.
 	lo, hi := px(t, float32(state.MinSidebarWidth)), px(t, float32(state.MaxSidebarWidth))
@@ -119,7 +124,7 @@ func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState,
 
 // navRail is the sidebar as a column of icons; their titles show as
 // tooltips, a badge as a dot.
-func navRail(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI) {
+func navRail(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI, background ui.Color) {
 	t := c.Theme()
 	k := tok(t)
 	if bar := c.TitleBar(); bar.Left > 0 {
@@ -157,7 +162,7 @@ func navRail(c *ui.Context, state *navViewState, notices []noticeViewState, acti
 				}
 			})
 		})
-		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 16)).Gradient(k.Sidebar.Alpha(0), k.Sidebar, 180).PassThrough()
+		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 16)).Gradient(background.Alpha(0), background, 180).PassThrough()
 	})
 }
 
@@ -200,14 +205,14 @@ func railButton(c *ui.Context, key string, ic icons.Icon, label, tip string, sel
 	b := ui.ButtonBase(c.Key(key)).Size(px(t, 36), px(t, 30)).Radius(px(t, radiusControl)).Center().Tooltip(tip).Label(label)
 	switch {
 	case selected:
-		b.Background(k.Pressed)
+		b.Background(k.NavSelected)
 	case b.Hovered():
 		b.Background(k.Hover)
 	}
 	b.Children(func() {
 		col := k.Text2
 		if selected {
-			col = k.Text
+			col = k.NavInk
 		}
 		ui.Icon(c, ic.Get(selected)).Size(px(t, 18), px(t, 18)).TextColor(col)
 		if badge != "" {
@@ -224,7 +229,7 @@ func railButton(c *ui.Context, key string, ic icons.Icon, label, tip string, sel
 	return b
 }
 
-func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI) {
+func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI, background ui.Color) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c).Height(titleBarHeight).Shrink(0).DragWindow().AlignItems(ui.Center).Justify(ui.End).Padding(0, px(t, sp2), 0, 0).Children(func() {
@@ -233,14 +238,12 @@ func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, acti
 		}
 	})
 	sidebarSearch(c, actions)
-	// The sidebar's own theme: icons in the secondary grey, the chosen
-	// page's in the text colour (MyGo draws a sidebar item's icon in the
-	// accent, and the chosen one's in the accent's text colour).
+	// MyGo draws sidebar icons with Accent and AccentText.
 	side := *t
 	side.Accent, side.AccentText = k.Text2, k.Text
 	side.SurfaceHover, side.SurfacePressed = k.G[2], k.G[3]
 	chosen := side
-	chosen.Accent = k.Text
+	chosen.Accent, chosen.AccentText = k.NavInk, k.NavInk
 	// Settings' item is the chosen one while its dialog shows, over the
 	// page, and the page's again once it closes.
 	if state.SettingsSelected {
@@ -263,7 +266,7 @@ func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, acti
 						item := ui.SidebarItem(c, p.Path, navIcon(p.Path).Get(sel), p.Title).Padding(px(t, 4), px(t, sp2))
 						c.SetTheme(t)
 						if sel {
-							item.Background(k.Pressed).FontWeight(600)
+							item.Background(k.NavSelected).TextColor(k.Text).FontWeight(600)
 						} else {
 							item.TextColor(k.G[8])
 						}
@@ -281,7 +284,7 @@ func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, acti
 		}).Grow(1).MinHeight(0).Background(ui.Transparent).Padding(0, px(t, 10), px(t, sp2)).Label(i18n.T("Sections")).OnChange(func() {
 			actions.navigate(*local.nav)
 		})
-		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 20)).Gradient(k.Sidebar.Alpha(0), k.Sidebar, 180).PassThrough()
+		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 20)).Gradient(background.Alpha(0), background, 180).PassThrough()
 	})
 	// The notifications, at the foot (shell_notices.go).
 	if len(notices) > 0 {

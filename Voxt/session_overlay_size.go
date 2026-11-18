@@ -21,7 +21,8 @@ func (a *app) sessionOverlaySize(state *sessionOverlayViewState) (width, height 
 		Measure:  a.measure,
 		WorkArea: a.ov.area,
 		Overlay: sessionOverlayLayoutStyle{
-			Position: overlay.Position, Opacity: overlay.Opacity, Radius: overlay.Radius, Margin: overlay.Margin,
+			Position: overlay.Position, Palette: paletteSnapshot(a.prefs.Appearance.Palette),
+			Opacity: overlay.Opacity, Radius: overlay.Radius, Margin: overlay.Margin,
 			ShowTime: overlay.ShowTime, LiveLines: overlay.LiveLines,
 		},
 		Memory: sessionOverlayLayoutMemory{

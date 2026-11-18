@@ -1,5 +1,10 @@
 package main
 
+type onboardingPreviewActions interface {
+	mainTranscriptRenderer() transcriptRenderFunc
+	customTryPalette() bool
+}
+
 type onboardingActions interface {
 	openOnboarding()
 	closeOnboarding()

@@ -14,6 +14,7 @@ var overlayPositions = []string{"bottom", "top"}
 
 type settingsOverlayPreviewState struct {
 	Position string  `json:"position"`
+	Palette  string  `json:"palette,omitempty"`
 	Opacity  float64 `json:"opacity"`
 	Radius   float64 `json:"radius"`
 	Margin   float64 `json:"margin"`
@@ -27,6 +28,7 @@ type settingsOverlayPreviewState struct {
 type settingsOverlayViewState struct {
 	Position          int      `json:"position"`
 	PositionOptions   []string `json:"position_options"`
+	Palette           string   `json:"palette,omitempty"`
 	Opacity           float64  `json:"opacity"`
 	Radius            float64  `json:"radius"`
 	Margin            float64  `json:"margin"`
@@ -36,7 +38,11 @@ type settingsOverlayViewState struct {
 	LiveLayoutOptions []string `json:"live_layout_options"`
 }
 
-func buildSettingsOverlayViewState(translator *i18n.Translator, overlay settings.Overlay) settingsOverlayViewState {
+func buildSettingsOverlayViewState(translator *i18n.Translator, overlay settings.Overlay, palettes ...string) settingsOverlayViewState {
+	palette := ""
+	if len(palettes) > 0 {
+		palette = palettes[0]
+	}
 	position := 0
 	if overlay.Position == "top" {
 		position = 1
@@ -46,7 +52,7 @@ func buildSettingsOverlayViewState(translator *i18n.Translator, overlay settings
 		liveLayout = 1
 	}
 	return settingsOverlayViewState{
-		Position: position, PositionOptions: []string{translator.T("Bottom centre"), translator.T("Top centre")},
+		Position: position, PositionOptions: []string{translator.T("Bottom centre"), translator.T("Top centre")}, Palette: palette,
 		Opacity: overlay.Opacity, Radius: overlay.Radius, Margin: overlay.Margin, ShowTime: overlay.ShowTime,
 		LiveText: !overlay.HideLiveText, LiveLayout: liveLayout,
 		LiveLayoutOptions: []string{translator.T("One line"), translator.T("Lines")},
@@ -69,10 +75,14 @@ func (f *overlayForm) overlay() settings.Overlay {
 // previewState is the preview's pill and face, projected through the
 // session overlay's production builders so the preview draws what the
 // overlay draws; the renderer stays a view and reads only this state.
-func (f *overlayForm) previewState() settingsOverlayPreviewState {
+func (f *overlayForm) previewState(palettes ...string) settingsOverlayPreviewState {
+	palette := ""
+	if len(palettes) > 0 {
+		palette = palettes[0]
+	}
 	overlay := f.overlay()
 	return settingsOverlayPreviewState{
-		Position: overlay.Position, Opacity: overlay.Opacity, Radius: overlay.Radius,
+		Position: overlay.Position, Palette: palette, Opacity: overlay.Opacity, Radius: overlay.Radius,
 		Margin: overlay.Margin, ShowTime: overlay.ShowTime,
 		pill: buildSessionOverlayViewState(i18n.CurrentTranslator(), sessionOverlayProjectionInput{
 			Snapshot: previewSession(), Mode: ovRecording, ShowTime: overlay.ShowTime,

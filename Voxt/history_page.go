@@ -17,13 +17,16 @@ const (
 )
 
 type historyLocalUI struct {
-	tab    int
-	query  string
-	find   finder
-	sel    string
-	listUI ui.ListState
-	delAsk bool
-	delID  string
+	tab                 int
+	query               string
+	find                finder
+	sel                 string
+	listUI              ui.ListState
+	delAsk              bool
+	delID               string
+	transcript          transcriptRenderFunc
+	transcriptKind      string
+	transcriptStreaming bool
 }
 
 func historyPage(c *ui.Context, state *historyViewState, actions historyActions, local *historyLocalUI, pageWidth float32) {

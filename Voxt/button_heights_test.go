@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -16,7 +17,7 @@ func TestButtonHeights(t *testing.T) {
 	names := []string{"ui.Button", "primary", "primaryIcon", "secondaryIcon", "ghost", "ghostIcon", "dropButton", "record"}
 	view := func(c *ui.Context) {
 		th := *c.Theme()
-		styleTheme(&th)
+		styleTheme(&th, "")
 		c.SetTheme(&th)
 		els = els[:0]
 		ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
@@ -59,7 +60,7 @@ func TestNumberInput(t *testing.T) {
 	var stepsH float32
 	view := func(c *ui.Context) {
 		th := *c.Theme()
-		styleTheme(&th)
+		styleTheme(&th, "")
 		c.SetTheme(&th)
 		ui.Column(c).Padding(20).AlignItems(ui.Start).Children(func() {
 			if numberInput(c.Key("keep"), &v, 0, 1010, 10, numOpts{Label: "Keep at most", Width: 180}) {
@@ -92,5 +93,45 @@ func TestNumberInput(t *testing.T) {
 	stepsH = minus.H
 	if field.H == 0 || stepsH < field.H-2 {
 		t.Errorf("stepper %.0f high beside a %.0f field", stepsH, field.H)
+	}
+}
+
+func TestDefaultRecordingButtonColor(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		a, _, _ := newTestApp(t)
+		draw := func(original bool) *ui.Tester {
+			tester := ui.NewTester(func(c *ui.Context) {
+				applyTheme(c, a.prefs.Appearance.Theme, a.prefs.Appearance.Scale)
+				c.DisableAnimations()
+				ui.Column(c).Children(func() {
+					if original {
+						recordButton(c, "Start")
+					} else {
+						tryRecordButton(c, "Start", true)
+					}
+				})
+			}, 200, 100)
+			tester.SetDark(dark)
+			frames(tester)
+			return tester
+		}
+		tester, original := draw(false), draw(true)
+		bounds, ok := tester.Find("Start")
+		if !ok {
+			t.Fatal("recording button is missing")
+		}
+		for state := range 3 {
+			for _, button := range []*ui.Tester{tester, original} {
+				if state == 1 {
+					button.Move(bounds.X+bounds.W/2, bounds.Y+bounds.H/2)
+				} else if state == 2 {
+					button.Press(bounds.X+bounds.W/2, bounds.Y+bounds.H/2)
+				}
+				frames(button)
+			}
+			if !bytes.Equal(tester.Image().Pix, original.Image().Pix) {
+				t.Errorf("dark=%t state=%d: default recording button differs from its original colors", dark, state)
+			}
+		}
 	}
 }

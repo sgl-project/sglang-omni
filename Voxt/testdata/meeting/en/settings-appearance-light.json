@@ -63,16 +63,18 @@
       }
     ],
     "appearance": {
-      "theme": 1,
+      "theme": 2,
       "theme_options": [
         "System",
+        "Dark",
         "Light",
-        "Dark"
+        "Transparent"
       ],
       "theme_values": [
         "system",
+        "dark",
         "light",
-        "dark"
+        "transparent"
       ],
       "scale": 1,
       "scale_options": [

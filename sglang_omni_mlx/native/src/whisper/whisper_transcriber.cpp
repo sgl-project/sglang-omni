@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <numeric>
 #include <stdexcept>
 
 #include "common/generation.h"
@@ -18,6 +19,7 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr float kSuppressedLogit = -1e9f;
+constexpr size_t kMaxBatchWindows = 4;
 
 // Note (khazic): the English names Swift's WhisperTokenizer maps to codes, as
 // it lists them.
@@ -272,11 +274,10 @@ mx::array WhisperTranscriber::NextToken(mx::array logits, bool first_step,
 }
 
 WhisperTranscriber::WindowResult
-WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
+WhisperTranscriber::TranscribeWindow(const mx::array &encoder_states,
                                      const std::vector<int> &prompt_ids,
                                      int max_new_tokens, float temperature,
                                      const std::atomic<bool> &cancel) const {
-  const mx::array encoder_states = model_.Encode(window_samples);
   std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
   const mx::array prompt(prompt_ids.data(),
                          {1, static_cast<int>(prompt_ids.size())}, mx::int32);
@@ -320,6 +321,77 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
   result.text = DecodeText(generated_ids);
   result.generated_token_count = static_cast<int>(generated_ids.size());
   return result;
+}
+
+std::vector<WhisperTranscriber::WindowResult>
+WhisperTranscriber::TranscribeBatch(const mx::array &encoder_states,
+                                    const std::vector<int> &prompt_ids,
+                                    int max_new_tokens,
+                                    const std::atomic<bool> &cancel) const {
+  const int batch_size = encoder_states.shape(0);
+  const int prompt_length = static_cast<int>(prompt_ids.size());
+  const mx::array prompt = mx::broadcast_to(
+      mx::array(prompt_ids.data(), {1, prompt_length}, mx::int32),
+      {batch_size, prompt_length});
+  std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
+  mx::array active_encoder_states = encoder_states;
+  mx::array tokens = NextToken(
+      model_.Decode(prompt, 0, encoder_states, caches, 1), true, 0.0f);
+  std::vector<std::vector<int>> generated_ids(batch_size);
+  std::vector<int> active_windows(batch_size);
+  std::iota(active_windows.begin(), active_windows.end(), 0);
+  std::vector<int> remaining_rows;
+  remaining_rows.reserve(batch_size);
+  for (int step = 0; step < max_new_tokens; ++step) {
+    if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
+    } else {
+    }
+    mx::eval(tokens);
+    const uint32_t *token_ids = tokens.data<uint32_t>();
+    const int active_count = static_cast<int>(active_windows.size());
+    remaining_rows.clear();
+    for (int row = 0; row < active_count; ++row) {
+      const int token_id = static_cast<int>(token_ids[row]);
+      if (token_id != end_of_text_id_) {
+        generated_ids[active_windows[row]].push_back(token_id);
+        active_windows[remaining_rows.size()] = active_windows[row];
+        remaining_rows.push_back(row);
+      } else {
+      }
+    }
+    const int remaining_count = static_cast<int>(remaining_rows.size());
+    if (remaining_count == 0 || step + 1 == max_new_tokens) {
+      break;
+    } else if (remaining_count < active_count) {
+      active_windows.resize(remaining_count);
+      const mx::array rows(remaining_rows.data(), {remaining_count}, mx::int32);
+      tokens = mx::take(tokens, rows, 0);
+      active_encoder_states = mx::take(active_encoder_states, rows, 0);
+      for (DecoderLayerCache &cache : caches) {
+        for (auto *values : {&cache.self_keys, &cache.self_values,
+                             &cache.cross_keys, &cache.cross_values}) {
+          *values = mx::take(values->value(), rows, 0);
+        }
+      }
+    } else {
+    }
+    tokens = NextToken(model_.Decode(mx::reshape(tokens, {remaining_count, 1}),
+                                     prompt_length + step,
+                                     active_encoder_states, caches, 1),
+                       false, 0.0f);
+  }
+  std::vector<WindowResult> results;
+  results.reserve(batch_size);
+  for (int window = 0; window < batch_size; ++window) {
+    results.push_back(
+        {.text = DecodeText(generated_ids[window]),
+         .generated_token_count =
+             static_cast<int>(generated_ids[window].size()),
+         .reached_token_limit =
+             static_cast<int>(generated_ids[window].size()) == max_new_tokens});
+  }
+  return results;
 }
 
 WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
@@ -457,34 +529,54 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
   // decoded on its own.
   const size_t window_count = std::max<size_t>(
       1, (samples.size() + kWindowSampleCount - 1) / kWindowSampleCount);
-  for (size_t window_index = 0; window_index < window_count; ++window_index) {
-    // Note (khazic): a request cancelled between windows skips the next encoder
-    // pass.
+  // Draft verification has per-window cache positions. Sampling keeps its
+  // existing order of draws.
+  const size_t max_batch_size =
+      draft_.has_value() || options.temperature > 0.0f ? 1 : kMaxBatchWindows;
+  for (size_t first_window = 0; first_window < window_count;) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
     } else {
     }
-    const size_t start = window_index * kWindowSampleCount;
-    const size_t end = std::min(start + kWindowSampleCount, samples.size());
-    std::vector<float> window_samples(kWindowSampleCount, 0.0f);
+    const size_t batch_size =
+        std::min(max_batch_size, window_count - first_window);
+    const size_t start = first_window * kWindowSampleCount;
+    const size_t batch_sample_count = batch_size * kWindowSampleCount;
+    const size_t end = std::min(start + batch_sample_count, samples.size());
+    std::vector<float> window_samples(batch_sample_count, 0.0f);
     std::copy(samples.begin() + start, samples.begin() + end,
               window_samples.begin());
-    const WindowResult window =
-        TranscribeWindow(window_samples, prompt_ids, max_new_tokens,
-                         options.temperature, cancel);
-    const std::string text = swift_port::TrimWhitespace(window.text, true);
-    if (!text.empty()) {
-      result.text += (result.text.empty() ? "" : " ") + text;
+    const mx::array encoder_states = model_.Encode(window_samples, cancel);
+    if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
     } else {
     }
-    result.generated_token_count += window.generated_token_count;
-    result.verify_round_count += window.verify_round_count;
-    result.proposed_draft_token_count += window.proposed_draft_token_count;
-    result.accepted_draft_token_count += window.accepted_draft_token_count;
-    if (window.reached_token_limit) {
-      result.finish_reason = omni_common::FinishReason::kLength;
-    } else {
+    const std::vector<WindowResult> windows =
+        batch_size == 1 ? std::vector<WindowResult>{TranscribeWindow(
+                              encoder_states, prompt_ids, max_new_tokens,
+                              options.temperature, cancel)}
+                        : TranscribeBatch(encoder_states, prompt_ids,
+                                          max_new_tokens, cancel);
+    for (const WindowResult &window : windows) {
+      const std::string text = swift_port::TrimWhitespace(window.text, true);
+      if (!text.empty()) {
+        result.text += (result.text.empty() ? "" : " ") + text;
+      } else {
+      }
+      if (window_count > 1) {
+        result.window_texts.push_back(text);
+      } else {
+      }
+      result.generated_token_count += window.generated_token_count;
+      result.verify_round_count += window.verify_round_count;
+      result.proposed_draft_token_count += window.proposed_draft_token_count;
+      result.accepted_draft_token_count += window.accepted_draft_token_count;
+      if (window.reached_token_limit) {
+        result.finish_reason = omni_common::FinishReason::kLength;
+      } else {
+      }
     }
+    first_window += batch_size;
   }
   return result;
 }

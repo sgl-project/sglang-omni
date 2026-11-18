@@ -140,6 +140,7 @@ func (a *app) quit() {
 	if a.stopLearning != nil {
 		a.stopLearning() // learn_link.go: no read goes to a helper that stopped
 	}
+	a.closeTranscriptPreviews()
 	a.closeSessions() // session_link.go
 	a.closeOverlay()  // overlay.go
 	a.stopMeetingAudioWatch(a.mv.detail)

@@ -36,12 +36,12 @@ func onboardingNoticeButton(c *ui.Context, key string, state *onboardingNoticeVi
 
 // obTryCard is a Try area: Start, the try while it records and works, its
 // result, why it did not start.
-func obTryCard(c *ui.Context, prefix string, state onboardingTryCardViewState, actions onboardingActions) {
+func obTryCard(c *ui.Context, prefix string, state onboardingTryCardViewState, actions onboardingActions, render transcriptRenderFunc, defaultPalette bool) {
 	t := c.Theme()
 	card(c.Key(prefix + "-try")).Children(func() {
 		switch {
 		case state.Mine && state.Recording:
-			obTryRecording(c, prefix, state, actions)
+			obTryRecording(c, prefix, state, actions, defaultPalette)
 			return
 		case state.Mine && state.Live:
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
@@ -52,14 +52,14 @@ func obTryCard(c *ui.Context, prefix string, state onboardingTryCardViewState, a
 				}
 			})
 			if state.Draft != "" && state.Composing {
-				fillCard(c.Key(prefix + "-try-draft")).Padding(px(t, sp3)).Children(func() {
-					ui.Text(c, state.Draft).Selectable()
+				sessionTextCard(c.Key(prefix+"-try-draft"), state.SessionKind).Padding(px(t, sp3)).Children(func() {
+					transcriptResult(c, render, state.SessionKind, prefix, state.Draft, true)
 				})
 			}
 			return
 		}
 		if state.Mine && state.Ended {
-			obTryEnded(c, prefix, state, actions)
+			obTryEnded(c, prefix, state, actions, render)
 		}
 		if state.Block != nil {
 			notice(c, prefix+"-try-block", noticeError, state.Block.Text, state.Block.More,
@@ -70,7 +70,7 @@ func obTryCard(c *ui.Context, prefix string, state onboardingTryCardViewState, a
 			if state.Mine && state.Ended {
 				label = i18n.T("Try again")
 			}
-			if recordButton(c.Key(prefix+"-try-start"), label).Label(i18n.T("Start a test")).Disabled(state.Live).Clicked() {
+			if tryRecordButton(c.Key(prefix+"-try-start"), label, defaultPalette).Label(i18n.T("Start a test")).Disabled(state.Live).Clicked() {
 				_ = actions.obTry("")
 			}
 			if state.Live {
@@ -82,7 +82,7 @@ func obTryCard(c *ui.Context, prefix string, state onboardingTryCardViewState, a
 
 // obTryRecording is the Try area while it records: the levels, the time,
 // the live text, Stop and Cancel.
-func obTryRecording(c *ui.Context, prefix string, state onboardingTryCardViewState, actions onboardingActions) {
+func obTryRecording(c *ui.Context, prefix string, state onboardingTryCardViewState, actions onboardingActions, defaultPalette bool) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
@@ -96,7 +96,7 @@ func obTryRecording(c *ui.Context, prefix string, state onboardingTryCardViewSta
 		ui.Text(c, state.Partial).MaxLines(4).Ellipsis("…")
 	}
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		if recordButton(c.Key(prefix+"-try-stop"), i18n.T("Stop")).Label(i18n.T("Stop recording")).Clicked() {
+		if tryRecordButton(c.Key(prefix+"-try-stop"), i18n.T("Stop"), defaultPalette).Label(i18n.T("Stop recording")).Clicked() {
 			actions.stopSession()
 		}
 		if ghostButton(c.Key(prefix+"-try-cancel"), i18n.T("Cancel")).Clicked() {
@@ -123,7 +123,7 @@ func onboardingLevelBars(c *ui.Context, levels []float64, heard bool) {
 	const bars = 16
 	ui.Row(c.Key("tr-wave")).Grow(1).MinWidth(0).Height(px(t, 24)).Gap(px(t, 3)).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
 		pad := bars - len(levels)
-		col := k.Record
+		col := k.Waveform
 		if !heard {
 			col = k.G[5]
 		}
@@ -139,7 +139,7 @@ func onboardingLevelBars(c *ui.Context, levels []float64, heard bool) {
 
 // obTryEnded is a finished try: its result (or why there is none), what
 // was recognised, the stage times and Copy.
-func obTryEnded(c *ui.Context, prefix string, state onboardingTryCardViewState, actions onboardingActions) {
+func obTryEnded(c *ui.Context, prefix string, state onboardingTryCardViewState, actions onboardingActions, render transcriptRenderFunc) {
 	t := c.Theme()
 	k := tok(t)
 	if state.Cancelled {
@@ -168,8 +168,8 @@ func obTryEnded(c *ui.Context, prefix string, state onboardingTryCardViewState, 
 			actions.copyOnboardingResult(state.Result)
 		}
 	})
-	fillCard(c.Key(prefix + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		ui.Text(c, state.Result).Selectable()
+	sessionTextCard(c.Key(prefix+"-try-result"), state.SessionKind).Padding(px(t, sp3)).Children(func() {
+		transcriptResult(c, render, state.SessionKind, prefix, state.Result, false)
 	})
 	if state.ShowRaw {
 		ui.Column(c).Gap(px(t, 4)).Children(func() {

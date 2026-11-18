@@ -54,6 +54,7 @@ func noticeText(text string) ovSized { return ovSized{text, layout.NoticeSize, 0
 
 type sessionOverlayLayoutStyle struct {
 	Position  string  `json:"position"`
+	Palette   string  `json:"palette,omitempty"`
 	Opacity   float64 `json:"opacity"`
 	Radius    float64 `json:"radius"`
 	Margin    float64 `json:"margin"`
@@ -81,7 +82,7 @@ const streamGrowStep = 4 * 19
 // sessionOverlayLayoutFor computes the native face model without owning an app or a window.
 func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
 	model := sessionOverlayLayout{
-		Radius: float32(input.Overlay.Radius), Alpha: float32(min(max(input.Overlay.Opacity, 0.5), 1)),
+		Radius: float32(input.Overlay.Radius), Alpha: float32(min(max(input.Overlay.Opacity, 0.5), 1)), Palette: input.Overlay.Palette,
 		ShowTime: input.Overlay.ShowTime, LiveLines: input.Overlay.LiveLines, Top: input.Overlay.Position == "top",
 		Reveal: input.Reveal, Measured: input.Measured, Exact: true,
 		LiveID: input.Memory.LiveID, LiveWidth: input.Memory.LiveWidth, StreamHeight: input.Memory.StreamHeight,

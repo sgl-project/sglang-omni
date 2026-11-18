@@ -279,7 +279,17 @@ func cardBlockView(context *ui.Context, card *sessionCardViewState, block sessio
 	gap := sessionCardBlockGap(block, index)
 	switch {
 	case block.Kind == sessionCardBubble:
-		cardBubbleView(context, card, block, gap, actions, local, onMeasured)
+		cardBubbleView(context, card, block, index, gap, actions, local, onMeasured)
+	case block.Kind == sessionCardBody:
+		if preview := cardTranscriptPreview(context, card, block, index, text, ovCardText, local); preview.Valid() {
+			preview.Margin(gap, 0, 0, 0)
+			return
+		}
+		if block.Markdown {
+			cardMarkdown(context, local.Overlay, text, ovCardText, block.Live, onMeasured).Margin(gap, 0, 0, 0)
+			return
+		}
+		cardPlainText(context, text, block, ovCardText).Margin(gap, 0, 0, 0)
 	case block.Markdown:
 		cardMarkdown(context, local.Overlay, text, ovCardText, block.Live, onMeasured).Margin(gap, 0, 0, 0)
 	case block.Kind == sessionCardProblem:
@@ -292,21 +302,51 @@ func cardBlockView(context *ui.Context, card *sessionCardViewState, block sessio
 		if block.Kind == sessionCardProblemMore || block.Kind == sessionCardSource {
 			color = ovText2
 		}
-		textView := dictionaryText(context, text.text, block.Highlights).FontSize(text.size).TextColor(color).Margin(gap, 0, 0, 0)
-		if text.weight != 0 {
-			textView.FontWeight(text.weight)
-		}
-		if block.Selectable {
-			textView.Selectable()
-		}
+		cardPlainText(context, text, block, color).Margin(gap, 0, 0, 0)
 	}
+}
+
+func cardPlainText(context *ui.Context, text ovSized, block sessionCardBlock, color ui.Color) ui.Element {
+	textView := dictionaryText(context, text.text, block.Highlights).FontSize(text.size).TextColor(color)
+	if text.weight != 0 {
+		textView.FontWeight(text.weight)
+	}
+	if block.Selectable {
+		textView.Selectable()
+	}
+	return textView
+}
+
+func cardTranscriptPreview(context *ui.Context, card *sessionCardViewState, block sessionCardBlock, index int, text ovSized, color ui.Color, local sessionOverlayLocal) ui.Element {
+	if local.Overlay.transcript == nil {
+		return ui.Element{}
+	}
+	bubble := block.Kind == sessionCardBubble
+	if bubble && !block.Markdown || !bubble && block.Kind != sessionCardBody {
+		return ui.Element{}
+	}
+	key := card.ID
+	if key == "" {
+		key = "writing/" + card.Kind
+	}
+	background := ui.RGB(22, 22, 26)
+	if bubble {
+		key += "/" + block.Key
+		background = ui.RGB(36, 36, 40)
+	}
+	_, fallback := guessText(text)
+	input := transcriptPreviewInput{
+		key: key, source: block.Text, size: text.size, text: color, link: context.Theme().Accent,
+		background: background, dark: true, streaming: block.Live, bubble: bubble, index: index, measurement: text,
+	}
+	return local.Overlay.transcript(context, input, fallback, math.MaxFloat32)
 }
 
 // cardBubbleView is a conversation's turn (Voxt's
 // RewriteConversationBubble): the user's input fits its text on the right,
 // up to 340 wide in the small card; an answer takes that width and shows
 // Copy under the pointer.
-func cardBubbleView(context *ui.Context, card *sessionCardViewState, block sessionCardBlock, gap float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBubbleView(context *ui.Context, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	text, title, quote := sessionCardBlockText(card, block)
 	justify := ui.Start
 	background, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
@@ -337,9 +377,12 @@ func cardBubbleView(context *ui.Context, card *sessionCardViewState, block sessi
 			if block.Title != "" {
 				ui.Text(context, block.Title).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleAlpha)).SingleLine().Ellipsis("…").MaxWidth(text.wrap)
 			}
-			if block.Markdown {
+			preview := cardTranscriptPreview(context, card, block, index, text, ui.RGBA(255, 255, 255, textAlpha), local)
+			switch {
+			case preview.Valid():
+			case block.Markdown:
 				cardMarkdown(context, local.Overlay, text, ui.RGBA(255, 255, 255, textAlpha), block.Live, onMeasured)
-			} else {
+			default:
 				textView := ui.Text(context, block.Text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textAlpha))
 				if block.User {
 					textView.TextAlign(ui.End)

@@ -37,7 +37,7 @@ func snapshotsMeetings(t *testing.T, out string) {
 			if run.lang != "en" {
 				a.updateSettings(func(s *settings.Settings) { s.General.Language = run.lang })
 			}
-			tt.SetDark(run.dark)
+			setSnapshotMode(a, tt, run.dark)
 			tt.SetScale(2)
 			a.version = "0.1.0"
 			a.clearNotices()

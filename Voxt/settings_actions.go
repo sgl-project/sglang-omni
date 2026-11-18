@@ -16,6 +16,9 @@ type settingsGeneralActions interface {
 
 type settingsAppearanceActions interface {
 	setTheme(theme string)
+	setPaletteColor(color string)
+	resetPaletteColor()
+	saveWindowTransparency()
 	setInterfaceScale(scale float64)
 	setSidebarChoice(choice string)
 	setReduceMotion(on bool)

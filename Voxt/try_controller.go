@@ -5,6 +5,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -60,6 +61,11 @@ func (a *app) tryCardStateAt(options tryOpts, now time.Time) (tryCardViewState, 
 	input := newTryCardStateInput(options.prefix, options.feature, options.mine, options.intro, *options.block, a.sess, now)
 	state := buildTryCardViewState(i18n.CurrentTranslator(), input)
 	return state, &tryController{app: a, options: options}
+}
+
+func (a *app) customTryPalette() bool {
+	palette := a.prefs.Appearance.Palette
+	return palette != "" && palette != settings.DefaultPalette
 }
 
 func (controller *tryController) startTry() {

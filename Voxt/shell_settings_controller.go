@@ -22,6 +22,7 @@ type settingsState struct {
 	storageState // settings_storage_controller.go
 	aboutState   // settings_about_controller.go
 	settingsForm // shell_settings.go: the controls that edit a setting
+	settingsAppearanceState
 
 	settingsRevision uint64
 	generalCache     struct {
@@ -64,6 +65,32 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 func (a *app) settingsChanged(old, new settings.Settings) {
 	a.settingsRevision++
 	a.featureRevision++
+	if a.paletteSavePending && new.Appearance.Palette == a.prefs.Appearance.Palette {
+		a.paletteSavePending = false
+	}
+	if a.transparencySavePending && new.Appearance.WindowTransparency == a.prefs.Appearance.WindowTransparency {
+		a.transparencySavePending = false
+	}
+	if old.Appearance.Palette != new.Appearance.Palette || old.Appearance.WindowTransparency != new.Appearance.WindowTransparency {
+		before := old
+		before.Appearance.Palette = new.Appearance.Palette
+		before.Appearance.WindowTransparency = new.Appearance.WindowTransparency
+		if reflect.DeepEqual(before, new) {
+			// A preview save can arrive after other settings were edited.
+			// Apply only the fields it owns to the live settings.
+			palette := a.prefs.Appearance.Palette
+			a.syncSavedAppearancePreview(&a.prefs.Appearance)
+			a.loadAppearancePreview()
+			if a.prefs.Appearance.Palette != palette {
+				a.invalidatePaletteOverlays()
+			}
+			return
+		}
+	}
+	if appearance := a.prefs.Appearance; appearance.Palette != new.Appearance.Palette || appearance.WindowTransparency != new.Appearance.WindowTransparency {
+		// An earlier background save can publish after a newer appearance edit.
+		a.syncSavedAppearancePreview(&new.Appearance)
+	}
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
 	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
@@ -110,6 +137,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Overlay != new.Overlay {
 		a.overlayRestyle() // overlay.go
 	}
+	if old.Appearance.Palette != new.Appearance.Palette {
+		a.invalidatePaletteOverlays()
+	}
 	if old.Features.Transcribe.ASR != new.Features.Transcribe.ASR {
 		a.warmSpeech() // models_omni.go: the new model loads before its first session
 	}
@@ -139,6 +169,7 @@ func (a *app) loadSettingsForm() {
 	f.dock, f.copyResult = general.Dock, general.CopyResult
 	appearance := a.appearanceSettingsModel()
 	f.theme, f.scale, f.reduceMotion, f.sidebar = appearance.Theme, appearance.Scale, appearance.ReduceMotion, appearance.Sidebar
+	a.loadAppearancePreview()
 	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
@@ -181,6 +212,8 @@ func (a *app) openSettings(sub string) {
 // that read something when they show start it here.
 func (a *app) settingsShown(sub string) {
 	switch sub {
+	case "/appearance":
+		a.settingsForm.colorEditorOpen = false
 	case "/models":
 		a.modelsShown() // models_memory.go
 	case "/permissions":

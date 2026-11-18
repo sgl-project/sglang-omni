@@ -6,14 +6,33 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
+type tryLocalUI struct {
+	transcript    transcriptRenderFunc
+	customPalette bool
+}
+
 // tryCard draws one Try area from its display state and user-intent actions.
-func tryCard(c *ui.Context, state *tryCardViewState, actions tryCardActions) {
+func tryCard(c *ui.Context, state *tryCardViewState, actions tryCardActions, local ...*tryLocalUI) {
 	t := c.Theme()
 	prefix := state.Prefix
-	card(c.Key(prefix + "-try")).Children(func() {
+	var render transcriptRenderFunc
+	defaultPalette := true
+	if len(local) > 0 && local[0] != nil {
+		render = local[0].transcript
+		defaultPalette = !local[0].customPalette
+	}
+	previewKey := prefix + "/" + state.Feature
+	panel := card(c.Key(prefix + "-try"))
+	if state.Mode == "recording" && state.Feature == "transcribe" {
+		k := tok(t)
+		if k.TranscriptFace != k.Subtle {
+			panel.Background(k.TranscriptFace)
+		}
+	}
+	panel.Children(func() {
 		switch state.Mode {
 		case "recording":
-			tryRecording(c, state.Prefix, state.Recording, actions)
+			tryRecording(c, state.Prefix, state.Recording, actions, defaultPalette)
 			return
 		case "working":
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
@@ -24,20 +43,20 @@ func tryCard(c *ui.Context, state *tryCardViewState, actions tryCardActions) {
 				}
 			})
 			if state.Draft != "" {
-				fillCard(c.Key(prefix + "-try-draft")).Padding(px(t, sp3)).Children(func() {
-					ui.Text(c, state.Draft).Selectable()
+				sessionTextCard(c.Key(prefix+"-try-draft"), state.Feature).Padding(px(t, sp3)).Children(func() {
+					transcriptResult(c, render, state.Feature, previewKey, state.Draft, true)
 				})
 			}
 			return
 		}
 		if state.Ended != nil {
-			tryEnded(c, prefix, state.Ended, actions)
+			tryEnded(c, prefix, previewKey, state.Feature, state.Ended, actions, render)
 		} else if state.Intro != "" {
 			caption(c, state.Intro)
 		}
 		tryNotice(c, prefix+"-try-block", noticeError, state.Block, actions)
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-			if recordButton(c.Key(prefix+"-try-start"), state.StartLabel).Label(i18n.T("Start a test")).Disabled(state.Busy).Clicked() {
+			if tryRecordButton(c.Key(prefix+"-try-start"), state.StartLabel, defaultPalette).Label(i18n.T("Start a test")).Disabled(state.Busy).Clicked() {
 				actions.startTry()
 			}
 			if state.Busy {
@@ -45,6 +64,13 @@ func tryCard(c *ui.Context, state *tryCardViewState, actions tryCardActions) {
 			}
 		})
 	})
+}
+
+func tryRecordButton(c *ui.Context, label string, defaultPalette bool) ui.Element {
+	if defaultPalette {
+		return recordButton(c, label)
+	}
+	return ui.PrimaryButton(c, label).Border(1, ui.Color{})
 }
 
 func tryNotice(c *ui.Context, key string, tone noticeKind, state *tryNoticeViewState, actions tryCardActions) {
@@ -67,7 +93,7 @@ func tryNotice(c *ui.Context, key string, tone noticeKind, state *tryNoticeViewS
 	}(), dismiss)
 }
 
-func tryRecording(c *ui.Context, prefix string, state *tryRecordingViewState, actions tryCardActions) {
+func tryRecording(c *ui.Context, prefix string, state *tryRecordingViewState, actions tryCardActions, defaultPalette bool) {
 	t := c.Theme()
 	k := tok(t)
 	icon := transcribeIcon
@@ -88,7 +114,7 @@ func tryRecording(c *ui.Context, prefix string, state *tryRecordingViewState, ac
 		ui.Text(c, state.LiveText).MaxLines(4).Ellipsis("…")
 	}
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		if recordButton(c.Key(prefix+"-try-stop"), i18n.T("Stop")).Label(i18n.T("Stop recording")).Clicked() {
+		if tryRecordButton(c.Key(prefix+"-try-stop"), i18n.T("Stop"), defaultPalette).Label(i18n.T("Stop recording")).Clicked() {
 			actions.stopTry()
 		}
 		if ghostButton(c.Key(prefix+"-try-cancel"), i18n.T("Cancel")).Clicked() {
@@ -104,7 +130,7 @@ func levelBars(c *ui.Context, levels []float64, heard bool) {
 	k := tok(t)
 	ui.Row(c.Key("tr-wave")).Grow(1).MinWidth(0).Height(px(t, 24)).Gap(px(t, 3)).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
 		pad := tryLevelBarCount - len(levels)
-		col := k.Record
+		col := k.Waveform
 		if !heard {
 			col = k.G[5]
 		}
@@ -118,7 +144,7 @@ func levelBars(c *ui.Context, levels []float64, heard bool) {
 	})
 }
 
-func tryEnded(c *ui.Context, prefix string, state *tryEndedViewState, actions tryCardActions) {
+func tryEnded(c *ui.Context, prefix, previewKey, feature string, state *tryEndedViewState, actions tryCardActions, render transcriptRenderFunc) {
 	t := c.Theme()
 	k := tok(t)
 	if state.Cancelled {
@@ -140,8 +166,10 @@ func tryEnded(c *ui.Context, prefix string, state *tryEndedViewState, actions tr
 			actions.copyTryResult(state.Result)
 		}
 	})
-	fillCard(c.Key(prefix + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		dictionaryText(c, state.Result, state.Highlights).Selectable()
+	sessionTextCard(c.Key(prefix+"-try-result"), feature).Padding(px(t, sp3)).Children(func() {
+		transcriptResult(c, render, feature, previewKey, state.Result, false, func() {
+			dictionaryText(c, state.Result, state.Highlights).Selectable()
+		})
 	})
 	if state.Raw != "" {
 		ui.Column(c).Gap(px(t, 4)).Children(func() {

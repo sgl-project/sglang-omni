@@ -45,8 +45,12 @@ func historyDetail(c *ui.Context, state *historyDetailViewState, actions history
 						actions.copyHistoryText(block.Text)
 					}
 				})
-				fillCard(c).Padding(px(t, sp2), px(t, sp3)).Children(func() {
-					ui.Text(c, block.Text).Selectable()
+				sessionTextCard(c, local.transcriptKind).Padding(px(t, sp2), px(t, sp3)).Children(func() {
+					if block.Key == "hist-result" {
+						transcriptResult(c, local.transcript, local.transcriptKind, state.ID, block.Text, local.transcriptStreaming)
+					} else {
+						ui.Text(c, block.Text).Selectable()
+					}
 				})
 			})
 		}

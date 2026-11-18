@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -18,6 +19,57 @@ func TestShellBuildersUseExplicitTranslator(t *testing.T) {
 	logs := buildLogsViewState(translator, nil, "", "", false)
 	if logs.Source != translator.T("All sources") {
 		t.Errorf("log source %q, want %q", logs.Source, translator.T("All sources"))
+	}
+}
+
+// TestTransparentSidebarFade covers the solid band left at the bottom of
+// either navigation layout when the window background is transparent.
+func TestTransparentSidebarFade(t *testing.T) {
+	for _, rail := range []bool{false, true} {
+		for _, dark := range []bool{false, true} {
+			t.Run(fmt.Sprintf("rail=%t/dark=%t", rail, dark), func(t *testing.T) {
+				a, _, tt := newTestApp(t)
+				tt.SetSize(windowWidth, windowMinHeight)
+				tt.SetDark(dark)
+				a.updateSettings(func(current *settings.Settings) {
+					current.Appearance.Theme = settings.ThemeTransparent
+					current.Appearance.WindowTransparency = settings.MaxWindowTransparency
+					current.Appearance.Rail, current.Appearance.RailChosen = rail, true
+				})
+				frames(tt)
+				image := tt.Image()
+				x, y := 4, image.Bounds().Dy()-1
+				if !rail {
+					bounds, ok := tt.Find("Sections")
+					if !ok {
+						t.Fatal("sidebar is missing")
+					}
+					x, y = int(bounds.X)+1, int(bounds.Y+bounds.H)-1
+				}
+				background := paletteTokens(a.prefs.Appearance.Palette, dark).Sidebar.
+					Alpha(1 - float32(settings.MaxWindowTransparency)/100)
+				// The fade and its backing must both let the backdrop through.
+				remaining := 255 - int(background.A)
+				limit := uint8(255 - remaining*remaining/255)
+				if got := image.RGBAAt(x, y).A; got > limit+1 {
+					t.Fatalf("sidebar fade alpha %d exceeds transparent layers' alpha %d", got, limit)
+				}
+			})
+		}
+	}
+}
+
+func TestNavModelPreviewsWindowTransparency(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(current *settings.Settings) { current.Appearance.Theme = settings.ThemeTransparent })
+	first := a.navModel()
+	if !first.Transparent || first.WindowTransparency != a.prefs.Appearance.WindowTransparency {
+		t.Fatalf("initial transparent navigation = %+v", first)
+	}
+	a.settingsForm.windowTransparency++
+	second := a.navModel()
+	if second.WindowTransparency != int(a.settingsForm.windowTransparency) {
+		t.Fatalf("live transparency preview = %d, want %d", second.WindowTransparency, int(a.settingsForm.windowTransparency))
 	}
 }
 

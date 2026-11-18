@@ -61,11 +61,13 @@ func sessionLanguageMenuContent(state func() sessionMenuViewState, actions sessi
 }
 
 func sessionLanguageMenuView(context *ui.Context, state sessionMenuViewState, actions sessionOverlayActions, local *sessionOverlayLocalUI) {
-	context.SetTheme(overlayTheme())
+	context.SetTheme(overlayTheme(state.Palette))
 	defer context.Root().Background(ui.Transparent)
+	k := tok(context.Theme())
+	background := k.OverlayFace.Mix(ui.RGB(255, 255, 255), 0.035).Alpha(0.98)
 	ui.Column(context).Fill().Padding(layout.Pad).Children(func() {
-		ui.Column(context.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(ui.RGBA(30, 30, 34, 0.98)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).
+		ui.Column(context.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(background).
+			Border(1, k.OverlayLine).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).
 			Label(state.Label).Children(func() {
 			ui.Scroll(context.Key("ov-lang-scroll")).Fill().TrackScroll(&local.langScroll).Children(func() {
 				ui.Column(context).Padding(ovLangPad - layout.Border).Children(func() {

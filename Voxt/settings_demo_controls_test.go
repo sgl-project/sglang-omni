@@ -80,6 +80,8 @@ func settingsDemoKeyRecorderCases() []settingsDemoCase {
 
 func settingsDemoControlCases() []settingsDemoCase {
 	return []settingsDemoCase{
+		{name: "appearance transparent theme", fixture: "en/settings-appearance-normal", steps: historySteps("Transparent"), want: []string{"setTheme transparent"}},
+		{name: "appearance custom color reset", fixture: "en/settings-appearance-custom-transparent", prepare: func(host *meetingDemoHost) { host.settingsForm.colorEditorOpen = true }, steps: historySteps("Reset color"), want: []string{"resetPaletteColor"}},
 		{name: "overlay position", fixture: "en/settings-overlay-normal", steps: historySteps("Top centre"), want: []string{"overlayEdited"}},
 		{name: "overlay margin slider", fixture: "en/settings-overlay-normal", scroll: "Distance from the edge", slider: "96", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}},
 		{name: "overlay opacity slider", fixture: "en/settings-overlay-normal", scroll: "Opacity", slider: "80%", steps: []historyDemoStep{{key: ui.KeyRight}}, want: []string{"overlayEdited", "overlayEdited"}},

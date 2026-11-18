@@ -19,17 +19,19 @@ type featureUI struct {
 	fallback string
 	lang     string
 
-	prompt      string
-	promptSeen  string
-	promptDirty bool
-	promptSeq   int
-	rules       bool
-	preview     bool
-	find        string
-	finder      finder
-	findFocus   bool
-	block       *sessionNotice
-	endWord     keyRow
+	prompt        string
+	promptSeen    string
+	promptDirty   bool
+	promptSeq     int
+	rules         bool
+	preview       bool
+	find          string
+	finder        finder
+	findFocus     bool
+	block         *sessionNotice
+	endWord       keyRow
+	transcript    transcriptRenderFunc
+	customPalette bool
 }
 
 func featurePage(c *ui.Context, state *featureViewState, actions featureActions, local *featureUI, tryActions tryCardActions) {
@@ -55,7 +57,7 @@ func featurePage(c *ui.Context, state *featureViewState, actions featureActions,
 		cardSetting(c, state.Prefix, state.Feature, &state.Prompt.Card, actions)
 		featureRules(c, state.Prefix, state.Feature, &state.Prompt.Rules, actions, local)
 		sectionTitle(c, i18n.T("Try it"))
-		tryCard(c, &state.Try, tryActions)
+		tryCard(c, &state.Try, tryActions, &tryLocalUI{transcript: local.transcript, customPalette: local.customPalette})
 	}
 	ui.Scroll(c.Key(state.Prefix + "-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })

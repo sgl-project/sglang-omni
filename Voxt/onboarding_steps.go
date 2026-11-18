@@ -162,7 +162,7 @@ func onboardingPermissionRows(c *ui.Context, state onboardingPermissionsViewStat
 
 // obTryStep is a try step: the shortcut, a sample, the Try area, and
 // the result once it passed.
-func obTryStep(c *ui.Context, state onboardingTryViewState, actions onboardingActions) {
+func obTryStep(c *ui.Context, state onboardingTryViewState, actions onboardingActions, local *onboardingLocalUI) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
@@ -195,7 +195,7 @@ func obTryStep(c *ui.Context, state onboardingTryViewState, actions onboardingAc
 		warnLine(c, state.Hint)
 	}
 	obTryPrereqs(c, state, actions)
-	obTryCard(c, state.Prefix, state.Card, actions)
+	obTryCard(c, state.Prefix, state.Card, actions, local.transcript, !local.customPalette)
 }
 
 // obSample is a sample text in a grey card, with a title and an action.

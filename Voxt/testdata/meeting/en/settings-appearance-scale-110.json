@@ -66,13 +66,15 @@
       "theme": 0,
       "theme_options": [
         "System",
+        "Dark",
         "Light",
-        "Dark"
+        "Transparent"
       ],
       "theme_values": [
         "system",
+        "dark",
         "light",
-        "dark"
+        "transparent"
       ],
       "scale": 2,
       "scale_options": [

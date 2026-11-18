@@ -36,19 +36,21 @@ type navShortcutViewState struct {
 
 // navViewState is the sidebar's display data.
 type navViewState struct {
-	Groups           []navGroupViewState    `json:"groups"`
-	Current          string                 `json:"current"` // the router's section ("/home")
-	ShortcutPages    []navShortcutViewState `json:"shortcut_pages,omitempty"`
-	Settings         navPageViewState       `json:"settings"` // the Settings item (the dialog, not a page)
-	SettingsSelected bool                   `json:"settings_selected"`
-	NoticesCount     int                    `json:"notices_count"`
-	NoticesLabel     string                 `json:"notices_label,omitempty"` // "3 notifications" (the rail's tooltip)
-	ClosedSections   []string               `json:"closed_sections,omitempty"`
-	RailChosen       bool                   `json:"rail_chosen"`   // the user chose the layout
-	Rail             bool                   `json:"rail"`          // their choice: icons only
-	SidebarWidth     float64                `json:"sidebar_width"` // DIPs at 100 %, 0 for the default
-	MinSidebarWidth  float64                `json:"min_sidebar_width"`
-	MaxSidebarWidth  float64                `json:"max_sidebar_width"`
+	Groups             []navGroupViewState    `json:"groups"`
+	Current            string                 `json:"current"` // the router's section ("/home")
+	ShortcutPages      []navShortcutViewState `json:"shortcut_pages,omitempty"`
+	Settings           navPageViewState       `json:"settings"` // the Settings item (the dialog, not a page)
+	SettingsSelected   bool                   `json:"settings_selected"`
+	NoticesCount       int                    `json:"notices_count"`
+	NoticesLabel       string                 `json:"notices_label,omitempty"` // "3 notifications" (the rail's tooltip)
+	ClosedSections     []string               `json:"closed_sections,omitempty"`
+	RailChosen         bool                   `json:"rail_chosen"`   // the user chose the layout
+	Rail               bool                   `json:"rail"`          // their choice: icons only
+	SidebarWidth       float64                `json:"sidebar_width"` // DIPs at 100 %, 0 for the default
+	MinSidebarWidth    float64                `json:"min_sidebar_width"`
+	MaxSidebarWidth    float64                `json:"max_sidebar_width"`
+	Transparent        bool                   `json:"transparent,omitempty"`
+	WindowTransparency int                    `json:"window_transparency,omitempty"`
 }
 
 // navViewStateInput is what a navViewState is built from.
@@ -75,6 +77,10 @@ func buildNavViewState(translator *i18n.Translator, input navViewStateInput) nav
 		SidebarWidth:     input.Appearance.SidebarWidth,
 		MinSidebarWidth:  settings.MinSidebarWidth,
 		MaxSidebarWidth:  settings.MaxSidebarWidth,
+	}
+	if input.Appearance.Theme == settings.ThemeTransparent {
+		state.Transparent = true
+		state.WindowTransparency = input.Appearance.WindowTransparency
 	}
 	if input.Notices > 0 {
 		state.NoticesLabel = translator.N(input.Notices, "%d notification", "%d notifications", input.Notices)

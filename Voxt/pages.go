@@ -86,6 +86,7 @@ func (a *app) page(c *uiContext, p navPage) {
 		return
 	case "/history":
 		a.prepareHistoryPage()
+		a.histUI.transcript = a.mainTranscriptRenderer()
 		model := a.historyPageModel(time.Now())
 		historyPage(c, &model, a, &a.histUI, a.pageWidth(c))
 		historyDeleteDialog(c, &a.histUI, a)
@@ -128,8 +129,13 @@ func (a *app) featureShortcuts(c *uiContext, feature string) {
 }
 
 func (a *app) featurePage(c *uiContext, feature string) {
+	local := a.fui(feature)
+	local.customPalette = a.customTryPalette()
 	state, tryActions := a.featurePageModel(feature)
-	featurePage(c, &state, a, a.fui(feature), tryActions)
+	if local.transcript == nil {
+		local.transcript = a.mainTranscriptRenderer()
+	}
+	featurePage(c, &state, a, local, tryActions)
 }
 
 func (a *app) transcribePage(c *uiContext) { a.featurePage(c, hotkey.Transcribe) }
@@ -138,7 +144,7 @@ func (a *app) rewritePage(c *uiContext)    { a.featurePage(c, hotkey.Rewrite) }
 
 func (a *app) tryCard(c *uiContext, options tryOpts) {
 	state, actions := a.tryCardState(options)
-	tryCard(c, &state, actions)
+	tryCard(c, &state, actions, &tryLocalUI{transcript: a.mainTranscriptRenderer(), customPalette: a.customTryPalette()})
 }
 
 func (a *app) recordFeatureKeys(row *keyRow, event uiInputEvent, save func(string)) {

@@ -68,7 +68,7 @@ func (a *app) syncLangMenu() {
 			func() sessionMenuViewState {
 				a.refreshSessionOverlay(time.Now())
 				if a.ov.projection.view.Menu == nil {
-					return sessionMenuViewState{SelectedIndex: -1}
+					return sessionMenuViewState{SelectedIndex: -1, Palette: paletteSnapshot(a.prefs.Appearance.Palette)}
 				}
 				return *a.ov.projection.view.Menu
 			},

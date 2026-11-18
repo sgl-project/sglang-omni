@@ -13,13 +13,19 @@ import (
 )
 
 type onboardingLocalUI struct {
-	open bool
+	open          bool
+	transcript    transcriptRenderFunc
+	customPalette bool
 }
 
 // onboardingView is the guide over the window: the steps as breadcrumbs over
 // a thin ink progress line, a big title, one column, Back at the bottom
 // left and Continue at the bottom right.
 func onboardingView(c *ui.Context, state onboardingViewState, actions onboardingActions, local *onboardingLocalUI) {
+	if preview, ok := actions.(onboardingPreviewActions); ok {
+		local.transcript = preview.mainTranscriptRenderer()
+		local.customPalette = preview.customTryPalette()
+	}
 	if !local.open {
 		return
 	}
@@ -47,7 +53,7 @@ func onboardingView(c *ui.Context, state onboardingViewState, actions onboarding
 					case obModels:
 						obModelsStep(c, *state.Models, actions)
 					case obTranscribe, obTranslate, obRewrite:
-						obTryStep(c, *state.Try, actions)
+						obTryStep(c, *state.Try, actions, local)
 					default:
 						obMoreStep(c, *state.More, actions)
 					}

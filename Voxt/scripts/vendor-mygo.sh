@@ -41,7 +41,7 @@ for p in "$PATCHES"/*.patch; do
   # Hunks of the parts left out (a patch's docs) stay upstream with them.
   (cd "$out" && git apply --whitespace=nowarn --exclude='website/*' --exclude='docs/*' --exclude='examples/*' --exclude='.github/*' "$p") || { echo "patch $(basename "$p") does not apply to mygo $version" >&2; exit 1; }
 done
-# Patch 0015 carries the atlas regression test; run it before tests leave the tree.
+# Patch 0017 carries the atlas regression test; run it before tests leave the tree.
 (cd "$out" && CGO_ENABLED=0 go test ./internal/scene/)
 # Tests and their data stay upstream (some hold sample credentials that
 # look real to secret scanners); so do git's settings for the module.

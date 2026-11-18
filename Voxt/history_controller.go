@@ -140,10 +140,13 @@ func (a *app) prepareHistoryPage() {
 func (a *app) historyPageModel(now time.Time) historyViewState {
 	var detail *historyDetailStateInput
 	asrModel, llmModel := "", ""
+	a.histUI.transcriptKind, a.histUI.transcriptStreaming = "", false
 	if selected := a.hist.selected(a.histUI.sel); selected != nil {
 		asrModel = a.entryModel(local.ASR, selected.ASRProvider, selected.ASRModel)
 		llmModel = a.entryModel(local.LLM, selected.LLMProvider, selected.LLMModel)
 		detail = &historyDetailStateInput{Entry: *selected, Retry: a.hist.retry, ASRModel: asrModel, LLMModel: llmModel}
+		a.histUI.transcriptKind = string(selected.Kind)
+		a.histUI.transcriptStreaming = a.hist.retry.id == selected.ID && strings.TrimSpace(a.hist.retry.draft) != ""
 	}
 	_, zoneOffset := now.Zone()
 	key := historyViewCacheKey{

@@ -66,13 +66,15 @@
       "theme": 0,
       "theme_options": [
         "系统",
+        "深色",
         "浅色",
-        "深色"
+        "透明"
       ],
       "theme_values": [
         "system",
+        "dark",
         "light",
-        "dark"
+        "transparent"
       ],
       "scale": 0,
       "scale_options": [

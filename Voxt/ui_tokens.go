@@ -49,31 +49,19 @@ var (
 	}
 )
 
-// accentSet is an accent in the light and the dark theme.
-type accentSet struct{ light, dark string }
-
-// accents are the brand accent candidates; AudioSmith's design review
-// (2026-10-14) chose teal, and VoxtNew keeps it for now (plan D3).
-// accentName is the one in use: changing it re-colours the app.
-var accents = map[string]accentSet{
-	"blue":   {"#2f6bf0", "#4f86f7"},
-	"indigo": {"#5752e0", "#7d79f2"},
-	"teal":   {"#0d9384", "#2bb3a3"},
-}
-
-// accentName is the brand accent (a key of accents).
-var accentName = "teal"
-
 // tokens are the colours of one appearance.
 type tokens struct {
 	G greys
 	// Surfaces.
-	Bg      ui.Color // pages, dialogs
-	Sidebar ui.Color // the sidebar
-	Subtle  ui.Color // a card's fill (cards have a fill or a hairline, not both)
-	Hover   ui.Color // ghost buttons and rows under the pointer
-	Pressed ui.Color // … pressed; the chosen row
-	Line    ui.Color // hairlines: dividers, card borders
+	Bg             ui.Color // pages, dialogs
+	Sidebar        ui.Color // the sidebar
+	Subtle         ui.Color // a card's fill (cards have a fill or a hairline, not both)
+	Hover          ui.Color // ghost buttons and rows under the pointer
+	Pressed        ui.Color // … pressed; the chosen row
+	Line           ui.Color // hairlines: dividers, card borders
+	TranscriptFace ui.Color // fill of live and finished transcript panels
+	NavSelected    ui.Color // fill of the selected item in either sidebar
+	NavInk         ui.Color // selected sidebar icon
 	// Selected: rows selected among many (the logs' lines), the accent's
 	// tint, stronger than Hover; SelectedHover one under the pointer.
 	Selected, SelectedHover ui.Color
@@ -84,29 +72,49 @@ type tokens struct {
 	// Accent: state only (selection, progress, focus, links, playing);
 	// AccentInk is the accent as text on the background (markup, counts),
 	// darker in the light theme for contrast.
-	Accent, AccentSoft, AccentInk ui.Color
+	Accent, AccentSoft, AccentInk, OnAccent ui.Color
+	OverlayFace, OverlayLine                ui.Color
 	// Record: recording and destructive actions (red-orange).
 	Record, RecordSoft ui.Color
+	Waveform           ui.Color // Try-area levels; custom palettes follow Accent
 	// Semantic colours, for small dots and text only.
 	Success, Warning, Danger ui.Color
 }
 
-func makeTokens(dark bool) *tokens {
+func makeTokens(dark bool, colors paletteColors) *tokens {
 	g := lightGreys
-	ac := accents[accentName]
-	accent := ui.Hex(ac.light)
-	k := &tokens{G: g}
+	tint := float32(0.025)
+	transcriptTint := float32(0.13)
+	navTint := float32(0.13)
+	accent := colors.accent
+	k := &tokens{OnAccent: ui.Hex("#ffffff"), OverlayFace: ui.RGB(22, 22, 26), OverlayLine: ui.RGBA(255, 255, 255, 0.12)}
 	if dark {
 		g = darkGreys
-		accent = ui.Hex(ac.dark)
-		k = &tokens{G: g,
-			InkHover: ui.Hex("#dcdcdc"), InkPressed: ui.Hex("#c4c4c4"),
-			Record: ui.Hex("#ff6b47"), Success: ui.Hex("#3ccb7f"), Warning: ui.Hex("#f2a53a"),
-		}
+		tint = 0.05
+		transcriptTint = 0.17
+		navTint = 0.22
+		k.OnAccent = ui.Hex("#06201c")
+		k.InkHover, k.InkPressed = ui.Hex("#dcdcdc"), ui.Hex("#c4c4c4")
+		k.Record, k.Success, k.Warning = ui.Hex("#ff6b47"), ui.Hex("#3ccb7f"), ui.Hex("#f2a53a")
 	} else {
 		k.InkHover, k.InkPressed = ui.Hex("#2e2e2e"), ui.Hex("#454545")
 		k.Record, k.Success, k.Warning = ui.Hex("#eb5230"), ui.Hex("#1f9d55"), ui.Hex("#c27803")
 	}
+	if colors.background != ui.Transparent {
+		g[0] = colors.background
+		for i := 1; i <= 5; i++ {
+			g[i] = g[i].Mix(accent, tint)
+		}
+		if dark {
+			g[6], g[7] = ui.Hex("#b5b5b5"), ui.Hex("#b8b8b8")
+			k.OnAccent = ui.Hex("#121212")
+			k.OverlayFace = k.OverlayFace.Mix(accent, 0.16)
+			k.OverlayLine = accent.Alpha(0.28)
+		} else {
+			g[6], g[7] = ui.Hex("#565656"), ui.Hex("#545454")
+		}
+	}
+	k.G = g
 	k.Bg, k.Sidebar, k.Subtle = g[0], g[1], g[1]
 	k.Hover, k.Pressed, k.Line = g[2], g[3], g[3]
 	k.Text, k.Text2, k.Text3 = g[9], g[7], g[6]
@@ -118,25 +126,46 @@ func makeTokens(dark bool) *tokens {
 	if !dark {
 		k.AccentInk = accent.Mix(ui.Hex("#000000"), 0.18)
 	}
+	k.NavSelected, k.NavInk = k.Pressed, k.Text
+	k.Waveform = k.Record
+	k.TranscriptFace = k.Subtle
+	if colors.background != ui.Transparent {
+		if dark {
+			k.AccentInk = accent.Mix(ui.Hex("#ffffff"), 0.18)
+		} else {
+			k.AccentInk = accent.Mix(ui.Hex("#000000"), 0.24)
+		}
+		k.NavSelected = strongerTint(k.Sidebar.Mix(accent, navTint))
+		k.NavInk = k.AccentInk
+		k.Waveform = k.Accent
+		fill := strongerTint(k.Subtle.Mix(accent, transcriptTint))
+		k.TranscriptFace = readableTint(fill, k.Subtle, k.Text, k.Text2, k.AccentInk)
+	}
 	k.RecordSoft = k.Record.Alpha(0.12)
 	k.Danger = k.Record
 	return k
 }
 
-// The tokens of each appearance, for accentName.
-var lightTokens, darkTokens = makeTokens(false), makeTokens(true)
-
-// tok returns the tokens of t's appearance.
+// Focus keeps the palette hue when temporary themes override Accent to
+// draw ink buttons or sidebar items. The chosen background travels with it.
 func tok(t *ui.Theme) *tokens {
-	if t.Dark {
-		return darkTokens
+	defaults := paletteTokens("", t.Dark)
+	accent := ui.RGB(t.Focus.R, t.Focus.G, t.Focus.B)
+	if t.Focus.A == 128 && t.Selection == accent.Alpha(0.22) {
+		if t.Background != defaults.Bg || accent != defaults.Accent {
+			return makeTokens(t.Dark, paletteColors{accent: accent, background: t.Background})
+		}
 	}
-	return lightTokens
+	return defaults
 }
 
 // styleTheme puts the tokens into th, MyGo's theme.
-func styleTheme(th *ui.Theme) {
-	k := tok(th)
+func styleTheme(th *ui.Theme, palettes ...string) {
+	palette := ""
+	if len(palettes) > 0 {
+		palette = palettes[0]
+	}
+	k := paletteTokens(palette, th.Dark)
 	th.Background = k.Bg
 	th.Surface = k.G[2]
 	th.SurfaceHover = k.G[3]
@@ -153,10 +182,7 @@ func styleTheme(th *ui.Theme) {
 		th.AccentHover = k.Accent.Mix(ui.Hex("#ffffff"), 0.15)
 		th.AccentPressed = k.Accent.Mix(ui.Hex("#000000"), 0.15)
 	}
-	th.AccentText = ui.Hex("#ffffff")
-	if th.Dark && accentName == "teal" {
-		th.AccentText = ui.Hex("#06201c") // dark text on the light teal
-	}
+	th.AccentText = k.OnAccent
 	th.Danger, th.Warning, th.Success = k.Danger, k.Warning, k.Success
 	th.Selection = k.Accent.Alpha(0.22)
 	th.Focus = k.Accent.Alpha(0.5)

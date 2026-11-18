@@ -75,7 +75,8 @@ type sessionState struct {
 	lastLoaded bool
 	// followUp is the answer card's session a running Rewrite follows up
 	// on ("" for none): its answer joins the card's conversation.
-	followUp string
+	followUp       string
+	mainTranscript transcriptPreview
 }
 
 // answerCard is the answer card's state (overlay_card.go draws it).

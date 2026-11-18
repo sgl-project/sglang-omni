@@ -29,9 +29,10 @@ const ovLiveAlpha = 0.85
 
 // faceStyle gives e, the face, its radius and translucent fill, hairline and
 // shadow. Give it children.
-func faceStyle(e ui.Element, radius, alpha float32) ui.Element {
-	return e.Fill().Radius(radius).Background(ui.RGBA(22, 22, 26, alpha)).
-		Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
+func faceStyle(c *ui.Context, e ui.Element, radius, alpha float32) ui.Element {
+	k := tok(c.Theme())
+	return e.Fill().Radius(radius).Background(k.OverlayFace.Alpha(alpha)).
+		Border(1, k.OverlayLine).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
 }
 
 // pillLook is how the pill draws: with the time, its live text in lines
@@ -263,12 +264,13 @@ func overlayNotice(c *ui.Context, notice *sessionNoticeViewState, radius, alpha 
 		})
 	}
 	if notice.ActionLabel == "" {
-		faceStyle(ui.Column(c.Key("ov-face")), radius, alpha).DragWindow().Label(notice.Text).Children(content)
+		faceStyle(c, ui.Column(c.Key("ov-face")), radius, alpha).DragWindow().Label(notice.Text).Children(content)
 		return
 	}
-	button := faceStyle(ui.ButtonBase(c.Key("ov-notice")), radius, alpha).Label(notice.Text + " · " + notice.ActionLabel)
+	button := faceStyle(c, ui.ButtonBase(c.Key("ov-notice")), radius, alpha).Label(notice.Text + " · " + notice.ActionLabel)
 	if button.Hovered() {
-		button.Background(ui.RGBA(34, 34, 40, min(alpha+0.06, 1)))
+		face := tok(t).OverlayFace.Mix(ui.RGB(255, 255, 255), 0.055)
+		button.Background(face.Alpha(min(alpha+0.06, 1)))
 	}
 	if button.Children(content).Clicked() {
 		actions.noticeAction(notice.Action)
@@ -322,7 +324,7 @@ func (state settingsOverlayPreviewState) overlayPreview(c *ui.Context) {
 			place.Bottom(off)
 		}
 		place.Children(func() {
-			c.SetTheme(overlayTheme())
+			c.SetTheme(overlayTheme(state.Palette))
 			row, _ := recordingPillRow(&pill.Pill, true, state.ShowTime, 0, func(k ovSized) (float32, bool) {
 				width, _ := c.MeasureText(k.wrap, k.span())
 				return width, true
@@ -333,7 +335,7 @@ func (state settingsOverlayPreviewState) overlayPreview(c *ui.Context) {
 				// too to paint over the blur.
 				ui.Box(c).Absolute().Fill().Radius(state.faceRadius).Material(glass.Blur{Radius: 8})
 				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
-				faceStyle(face, state.faceRadius, state.faceAlpha).Children(func() {
+				faceStyle(c, face, state.faceRadius, state.faceAlpha).Children(func() {
 					overlayPill(c, &pill, pillLook{time: state.ShowTime, w: w}, nil)
 				})
 			})

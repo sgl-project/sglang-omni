@@ -36,9 +36,11 @@ type overlayState struct {
 		lang        langMenuState
 		ui          sessionOverlayLocalUI
 	}
-	laterHook   func(time.Duration, func())
-	measureHook func(ovSized) (float32, float32)
-	measure     func(ovSized) (ovMeasured, bool)
+	laterHook         func(time.Duration, func())
+	measureHook       func(ovSized) (float32, float32)
+	measure           func(ovSized) (ovMeasured, bool)
+	overlayTranscript transcriptPreview
+	bubbleTranscripts []*transcriptPreview
 }
 
 // langMenuState owns the native language or thinking menu window.
@@ -87,6 +89,11 @@ func (a *app) overlayModeNow() overlayMode {
 func (a *app) overlaySync() {
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
+	bubbleCount := 0
+	if card := a.ov.projection.view.Card; card != nil && card.Conversation {
+		bubbleCount = sessionCardBlockCount(card)
+	}
+	a.trimBubblePreviews(bubbleCount)
 	mode := a.overlayModeNow()
 	was := a.ov.shown
 	if mode == ovHidden {
@@ -118,6 +125,7 @@ func (a *app) overlaySync() {
 		return
 	}
 	if a.ov.win == nil {
+		a.ov.ui.transcript = a.overlayTranscriptRenderer()
 		content := sessionOverlayContent(
 			func() *sessionOverlayViewState {
 				a.refreshSessionOverlay(time.Now())
@@ -164,6 +172,7 @@ func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
 	model.Width, model.Height = a.ov.w, a.ov.h
 	model.Radius = faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h)
 	model.Alpha = layout.FaceAlpha(a.prefs.Overlay)
+	model.Palette = paletteSnapshot(a.prefs.Appearance.Palette)
 	model.ShowTime, model.LiveLines = a.prefs.Overlay.ShowTime, a.prefs.Overlay.LiveLines
 	model.Top = a.prefs.Overlay.Position == "top"
 	model.Reveal, model.Measured = a.ov.reveal, a.ov.textW
@@ -274,6 +283,14 @@ func (a *app) overlayRestyle() {
 	}
 	a.syncOverlayMaterial()
 	a.ov.win.Invalidate()
+}
+
+func (a *app) invalidatePaletteOverlays() {
+	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin} {
+		if window != nil {
+			window.Invalidate()
+		}
+	}
 }
 
 func (a *app) closeOverlay() {
