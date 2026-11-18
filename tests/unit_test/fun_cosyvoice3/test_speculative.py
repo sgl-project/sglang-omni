@@ -26,17 +26,11 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     materialize_draft_checkpoint,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
-    ACCEPTANCE_NOISE_SEED_SALT,
-    DRAFT_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
-    LARGEST_FLOAT32_BELOW_ONE,
-    RESIDUAL_NOISE_SEED_SALT,
     TOP_K_BOUND,
     exact_accept,
     rejection_sample,
     sample_draft_block,
-    seeded_exponential_noise,
-    seeded_uniform_noise,
     target_probabilities,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
@@ -51,6 +45,14 @@ from sglang_omni.models.fun_cosyvoice3.model_runner import (
     FunCosyVoice3ModelRunner,
 )
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOCAB_SIZE
+from sglang_omni.sampling.speculative_noise import (
+    ACCEPTANCE_NOISE_SEED_SALT,
+    DRAFT_NOISE_SEED_SALT,
+    LARGEST_FLOAT32_BELOW_ONE,
+    RESIDUAL_NOISE_SEED_SALT,
+    seeded_exponential_noise,
+    seeded_uniform_noise,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )

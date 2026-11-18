@@ -36,18 +36,12 @@ func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
 	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
-		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip = Composing, true })
+		card := f.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
+		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUp(text, nil)
-		for r.rethink.Load() && !r.cancelled.Load() && !r.skipped.Load() {
-			r.m.mu.Lock()
-			r.rethink.Store(false)
-			think := r.think
-			r.llmCtx, r.llmStop = context.WithCancel(r.ctx)
-			r.m.mu.Unlock()
-			r.logf("info", "asking the language model again at the thinking level chosen: %+v", think)
-			r.m.update(r, func(s *Snapshot) { s.Draft = "" })
-			cleaned, profile, err = r.cleanUp(text, think)
+		for r.askAgain() {
+			cleaned, profile, err = r.cleanUp(text, r.thinking())
 		}
 		llmTime := r.now().Sub(llmStart)
 		if r.cancelled.Load() {
@@ -94,7 +88,7 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 	var failed error
 	for i, p := range parts {
 		draft := newDrafter(r, parts[:i+1], answers)
-		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, OnDelta: draft.add}
+		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
 		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
 		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
@@ -109,7 +103,7 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 			}
 			answers = append(answers, p.Text)
 		default:
-			answers = append(answers, compose.Clean(resp.Text, p.Text))
+			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
 		}
 		draft.done(answers)
 	}
@@ -147,9 +141,12 @@ func (d *drafter) add(delta string) {
 	}
 }
 
-// publish puts the draft so far in the snapshot.
+// publish puts the draft so far in the snapshot, without the contract's
+// <output> tags (PartialOutput, with the part's own text as CleanOutput
+// gets it).
 func (d *drafter) publish() {
-	draft := compose.JoinParts(d.parts, append(d.answers, d.buf.String()))
+	part := d.parts[len(d.parts)-1]
+	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 
@@ -157,4 +154,29 @@ func (d *drafter) publish() {
 func (d *drafter) done(answers []string) {
 	draft := compose.JoinParts(d.parts, answers)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
+}
+
+// askAgain says whether Rethink chose another level for the answer under
+// way (and nothing ended it since), and readies its request: a new
+// llmCtx, an empty draft.
+func (r *run) askAgain() bool {
+	if !r.rethink.Load() || r.cancelled.Load() || r.skipped.Load() || r.stopped.Load() {
+		return false
+	}
+	r.m.mu.Lock()
+	r.rethink.Store(false)
+	think := r.think
+	r.llmCtx, r.llmStop = context.WithCancel(r.ctx)
+	r.m.mu.Unlock()
+	r.logf("info", "asking the language model again at the thinking level chosen: %+v", think)
+	r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = "", "" })
+	return true
+}
+
+// thinking is the level the requests ask with: Rethink's, else the
+// session's (StartRequest.Thinking; nil: the service's setting).
+func (r *run) thinking() *llm.Thinking {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.think
 }

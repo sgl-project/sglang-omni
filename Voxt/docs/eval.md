@@ -52,7 +52,7 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HO
 … VOXTNEW_EVAL_QUICK=1 …
 # some clips only
 … VOXTNEW_EVAL_ONLY=dict-1,dict-5 …
-# a speech model's draft (asr.accurate.draft, asr.fast.draft) in $HUB is used, as the app does; the log says so.
+# an installed draft (including asr.whisper-large.draft) in $HUB is used, as the app does; the log says so.
 # A library without the drafts (symlinks to the other models' folders) in ACTNOW_FAMILY_DIR compares.
 ```
 
@@ -318,7 +318,7 @@ The decode times are per request over both ways of each run.
 
 ### The draft at 8 bits (11-11, #3874)
 
-Voxt starts a speech model that has its DFlash draft with `--draft-bits 8` (`internal/omni/process.go`). The draft only proposes tokens and the speech model checks each one, so the draft's precision can change speed but should not change text. Measured on the Voxt 2.0.3 runtime (Apple M5 Max, 36 GB, macOS 27.0.1), against the bf16 draft, with the speech models and drafts at the catalogue's commits:
+Voxt starts Qwen3-ASR's DFlash draft with `--draft-bits 8` and uses the native bf16 default for the MOSS draft (`internal/omni/process.go`). The target checks the draft's proposed tokens. The Qwen3-ASR comparison below used the Voxt 2.0.3 runtime (Apple M5 Max, 36 GB, macOS 27.0.1), with the targets and drafts at the catalogue's commits.
 
 - **Text, Voxt's eval set**: the 29 clips and one 192 s clip of all of them in a row, each without and with the eval dictionary as the prompt, 3 rounds, one server per precision: identical in 180 of 180 requests on 0.6B (4bit) and 180 of 180 on 1.7B (8bit).
 - **Text, 448 clips** (XXXXRT/qwen3-asr-test-corpus, 113 min, 11-09): identical in 448 of 448 on both models, with NAX on and off, on both runtimes measured then.

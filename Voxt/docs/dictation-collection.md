@@ -8,8 +8,8 @@ Everything stays on your Mac until you hand in a zip yourself.
 
 Voxt keeps the texts of every dictation but **no recordings by default**, and recordings start only from the moment you turn them on.
 
-1. Use Voxt 2.0 (2.0.0 or later). Voxt 1.x keeps only the final text of each dictation, so its history cannot be used. When you upgrade, the setup guide's **Import from Voxt 1.x** (从旧版 Voxt 导入) brings over your dictionary, models and language model setups; paste the API keys again on the Language models page.
-2. History → **History settings** (历史设置) → turn on **Keep recordings** (保存录音). Settings → Privacy has the same switch.
+1. Use Voxt 2.0 (2.0.0 or later). Voxt 1.x keeps only the final text of each dictation, so its history cannot be used. When you upgrade, the setup guide's **Import from Voxt 1.x** (从旧版 Voxt 导入) brings over your dictionary, models and language model setups; paste the API keys again in Settings → Language models.
+2. Settings → Privacy → turn on **Keep recordings** (保存录音).
 3. Dictate with Transcribe as usual, with **Clean up with a language model** (用语言模型整理) on. Translate and Rewrite are left out of the benchmark.
 
 If tapping right Option does nothing, a key remapper such as Karabiner-Elements may be changing that key; record another shortcut on the Transcribe page.

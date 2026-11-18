@@ -1,0 +1,121 @@
+{
+  "name": "overlay-composing-think",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot21",
+    "state": "composing",
+    "mode": "working",
+    "pill": {
+      "kind": "transcribe",
+      "title": "Transcribe",
+      "working_label": "Cleaning up…",
+      "live_text": "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划",
+      "elapsed_text": "0:00",
+      "thinking_label": "Thinking level: Off",
+      "skip_label": "Use transcript",
+      "skip_tooltip": "Insert the recognised text without waiting for the language model",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": true,
+      "can_think": true
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    },
+    "pill_thinking_menu": {
+      "kind": "pill-thinking",
+      "label": "Thinking level",
+      "options": [
+        {
+          "thinking": {},
+          "label": "Default",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "none"
+          },
+          "label": "None",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "minimal"
+          },
+          "label": "Minimal",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "low"
+          },
+          "label": "Low",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "medium"
+          },
+          "label": "Medium",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "high"
+          },
+          "label": "High",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "xhigh"
+          },
+          "label": "Extra high",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "max"
+          },
+          "label": "Max",
+          "selected": false
+        }
+      ],
+      "selected_index": -1
+    }
+  }
+}

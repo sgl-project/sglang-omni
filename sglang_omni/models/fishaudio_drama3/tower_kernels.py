@@ -14,7 +14,6 @@ from sglang_omni.models.fishaudio_drama3.tower_activation import (
 from sglang_omni.models.fishaudio_drama3.tower_attention import norm_qkv_rope_store
 from sglang_omni.models.fishaudio_drama3.tower_projection import mix_eh_proj
 from sglang_omni.models.fishaudio_drama3.tower_tiles import (
-    FUSED_BLOCK_M,
     GATE_UP_BLOCK_N,
     GEMV_BLOCK_K,
     MAX_FUSED_ROWS,
@@ -104,7 +103,7 @@ class FusedTowerLayers:
         self.activated: torch.Tensor = activations(shape.intermediate_size)
         mix_tiles = shape.dim // MIX_BLOCK_N
         o_proj_tiles = shape.dim // O_PROJ_BLOCK_N
-        partial_count = FUSED_BLOCK_M * max(
+        partial_count = MAX_FUSED_ROWS * max(
             2 * shape.mix_half_split * shape.dim,
             shape.qkv_split * shape.qkv_part_count * shape.head_dim,
             shape.o_proj_split * shape.dim,
@@ -113,12 +112,12 @@ class FusedTowerLayers:
         self.scratch: SplitScratch = SplitScratch(
             partials=torch.zeros(partial_count, dtype=torch.float32, device=device),
             sum_of_squares=torch.zeros(
-                FUSED_BLOCK_M * mix_tiles * 2 * shape.mix_half_split,
+                MAX_FUSED_ROWS * mix_tiles * 2 * shape.mix_half_split,
                 dtype=torch.float32,
                 device=device,
             ),
             norm_sums=torch.zeros(
-                FUSED_BLOCK_M * max(mix_tiles, o_proj_tiles),
+                MAX_FUSED_ROWS * max(mix_tiles, o_proj_tiles),
                 dtype=torch.float32,
                 device=device,
             ),

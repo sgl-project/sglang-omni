@@ -9,8 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "common/transcription.h"
 #include "parakeet/parakeet_model.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace parakeet {
 
@@ -47,21 +47,23 @@ public:
   explicit ParakeetTranscriber(const std::filesystem::path &model_directory);
 
   // The text, trimmed as Swift trims it, and one segment per sentence.
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const ParakeetOptions &options,
              const std::atomic<bool> &cancel) const;
 
 private:
-  // The tokens greedy TDT decoding emits on one chunk, in sentence order.
-  std::vector<AlignedToken> DecodeChunk(const std::vector<float> &samples,
-                                        const std::atomic<bool> &cancel) const;
+  // The tokens greedy TDT decoding emits on each chunk, in sentence order;
+  // every chunk holds at least two samples.
+  std::vector<std::vector<AlignedToken>>
+  DecodeChunks(const std::vector<std::vector<float>> &chunks,
+               const std::atomic<bool> &cancel) const;
 
-  // DecodeChunk, then bounded retries of an audible tail it left blank;
-  // samples hold at most max_chunk_samples.
-  std::vector<AlignedToken>
-  DecodeWithBlankTailRecovery(const std::vector<float> &samples,
-                              size_t max_chunk_samples,
-                              const std::atomic<bool> &cancel) const;
+  // Bounded retries of the audible tails that each chunk's tokens left
+  // blank, merged into its tokens; chunks hold at most max_chunk_samples.
+  void RecoverBlankTails(const std::vector<std::vector<float>> &chunks,
+                         std::vector<std::vector<AlignedToken>> &tokens,
+                         size_t max_chunk_samples,
+                         const std::atomic<bool> &cancel) const;
 
   ParakeetModel model_;
   std::vector<std::string> token_texts_;

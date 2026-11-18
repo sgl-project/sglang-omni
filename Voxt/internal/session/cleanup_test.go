@@ -37,6 +37,42 @@ func TestAliases(t *testing.T) {
 			if end.Result != c.result || end.Raw != "hello aura link" || len(e) != 1 || e[0].RawText != "hello aura link" || e[0].Result != c.result {
 				t.Errorf("result %q, raw %q, entries %+v", end.Result, end.Raw, e)
 			}
+			wantMatches := 0
+			if c.result == "hello VoxtNew" {
+				wantMatches = 1
+			}
+			if len(end.Highlights) != wantMatches {
+				t.Fatalf("%d highlight spans, want %d", len(end.Highlights), wantMatches)
+			}
+			if wantMatches == 1 {
+				span := end.Highlights[0]
+				if got := end.Result[span.Start:span.End]; got != "VoxtNew" {
+					t.Errorf("highlighted %q, want VoxtNew", got)
+				}
+			}
+		})
+	}
+}
+
+// TestComposingSpoken: while the language model works, the snapshot holds
+// the text it got (the pill shows it): the recognised Final with the
+// dictionary's aliases replaced, not the stream's last partial, which the
+// pill kept showing.
+func TestComposingSpoken(t *testing.T) {
+	for _, kind := range []Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
+		t.Run(string(kind), func(t *testing.T) {
+			h := newHarness(t, &fakeStreamer{final: "hello aura link"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+				c.Select = &fakeSelector{}
+				s.Features.Transcribe.Enhance = true
+			})
+			id, _ := h.m.Start(StartRequest{Kind: kind, Target: slack})
+			h.speak(id, 5)
+			s := h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing })
+			if s.Spoken != "hello VoxtNew" || s.Raw != "hello aura link" || s.Partial != "partial" {
+				t.Errorf("spoken %q, raw %q, partial %q", s.Spoken, s.Raw, s.Partial)
+			}
+			h.m.Cancel(id)
+			h.rec.wait(t)
 		})
 	}
 }
@@ -90,6 +126,37 @@ func TestLongDictation(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestOnlyTheCleanedText (#4086): the model wraps the cleaned text in
+// the <output> tags the contract asks for and adds its own commentary
+// about the edits outside them; only the tags' content is streamed into
+// the card, shown and inserted. The request asks for the tags and the
+// example turn answers with them.
+func TestOnlyTheCleanedText(t *testing.T) {
+	text := "算计算量，就是说，用 bf16 单元算和 int8 有区别吗"
+	cleaned := "算计算量（FLOPs）—— 用 bf16 单元算和 int8 有区别吗？"
+	commentary := "清理时我删掉了“就是说”这个语气词。"
+	model := &fakeLLM{text: "<output>\n" + cleaned + "\n</output>\n\n" + commentary, chunk: 3, pause: 5 * time.Millisecond}
+	h := newHarness(t, &fakeFile{text: text}, model, nil)
+	h.speak(h.start(), 5)
+	end := h.rec.wait(t)
+	if end.Result != cleaned {
+		t.Errorf("result %q", end.Result)
+	}
+	for _, s := range h.rec.all() {
+		if strings.Contains(s.Draft, "<output") || strings.Contains(s.Draft, commentary) {
+			t.Errorf("a draft with the tags or the commentary: %q", s.Draft)
+		}
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	m := reqs[0].Messages
+	if !strings.Contains(m[0].Content, "<output>") || len(m) != 4 || !strings.Contains(m[2].Content, "<output>") {
+		t.Errorf("the contract or the example lacks the tags: %d messages", len(m))
 	}
 }
 

@@ -7,6 +7,7 @@ package main
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -77,6 +78,26 @@ func (f *finder) count(c *ui.Context, query string, n int) {
 	}
 }
 
+// findFolded returns where query is in text, ignoring case, as rune offsets.
+func findFolded(text, query string) [][2]int {
+	if strings.TrimSpace(query) == "" {
+		return nil
+	}
+	haystack, needle := []rune(text), []rune(query)
+	var matches [][2]int
+	for index := 0; index+len(needle) <= len(haystack); index++ {
+		matched := 0
+		for matched < len(needle) && unicode.ToLower(haystack[index+matched]) == unicode.ToLower(needle[matched]) {
+			matched++
+		}
+		if matched == len(needle) {
+			matches = append(matches, [2]int{index, index + matched})
+			index += matched - 1
+		}
+	}
+	return matches
+}
+
 // findHits counts the matches of query in the texts each of n rows
 // shows: hits[i] is the number before row i, hits[n] the total.
 func findHits(query string, n int, texts func(i int) []string) []int {
@@ -135,6 +156,9 @@ func markSpans(red ui.Color, base ui.Span, text, query string, cur int) []ui.Spa
 // markedText is text as a RichText with the matches of query marked
 // (markSpans), labelled with the text for assistive technology.
 func markedText(c *ui.Context, text, query string, cur int) ui.Element {
+	if query == "" {
+		return ui.RichText(c, ui.Span{Text: text}).Label(text)
+	}
 	return ui.RichText(c, markSpans(tok(c.Theme()).Danger, ui.Span{}, text, query, cur)...).Label(text)
 }
 

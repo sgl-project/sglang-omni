@@ -100,11 +100,12 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 		req.SpeechWait = n.text
 	}
 	if len(req.Previous) == 0 {
-		a.answer = answerCard{}
+		a.setAside(req.Try)
 	}
 	a.notice = nil
 	id, err := a.mgr.Start(req)
 	if err != nil {
+		a.resurface()  // no session took the card's place
 		return "", nil // a session runs already
 	}
 	return id, nil
@@ -117,6 +118,7 @@ func (a *app) startTry(kind store.Kind) (string, *sessionNotice) {
 
 // stopSession stops the recording (the shortcut, the menu bar).
 func (a *app) stopSession() {
+	a.closeLangMenu()
 	if a.mgr != nil && a.sess.State == session.Recording {
 		a.mgr.Stop(a.sess.ID)
 	}
@@ -140,6 +142,7 @@ func (a *app) skipLLM() {
 // stopLLM ends the answer streaming into the card where it is; the card
 // keeps it (session.Manager's StopLLM).
 func (a *app) stopLLM() {
+	a.closeLangMenu()
 	if a.mgr != nil {
 		a.mgr.StopLLM(a.sess.ID)
 	}

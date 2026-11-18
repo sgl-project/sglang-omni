@@ -590,6 +590,40 @@ func TestTranslateDirection(t *testing.T) {
 	}
 }
 
+// TestTranslateBack: the prompt tells the model to write in the main
+// language when all of the text is already in the target, for languages
+// that share a script, which TranslateInto cannot tell apart (#4024). A
+// language picked on the card stays.
+func TestTranslateBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, override string
+		want                 bool
+	}{
+		{"Spanish main, English text", "es", "", true},
+		{"picked on the card", "es", "en", false},
+		{"main is the target", "en", "zh-Hans", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "x"}
+			h := newHarness(t, &fakeFile{text: "x"}, model, func(c *Config, s *settings.Settings) {
+				c.Select = &fakeSelector{text: "Good morning, team."}
+				s.General.MainLanguage = tc.main
+			})
+			if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack, TargetLanguage: tc.override}); err != nil {
+				t.Fatal(err)
+			}
+			h.rec.wait(t)
+			reqs := model.requests()
+			if len(reqs) == 0 {
+				t.Fatal("no request")
+			}
+			if got := strings.Contains(reqs[0].Messages[0].Content, "translate it into Spanish instead"); got != tc.want {
+				t.Errorf("switch line %v, want %v:\n%s", got, tc.want, reqs[0].Messages[0].Content)
+			}
+		})
+	}
+}
+
 func TestAllowCopy(t *testing.T) {
 	for id, want := range map[string]bool{
 		"com.apple.TextEdit": true, "com.tinyspeck.slackmacgap": true, "": true,
@@ -712,7 +746,18 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if !slices.Equal(h.speech, tc.speech) {
+			// Each resolve runs in its own goroutine, so the calls land in either order.
+			got := slices.Clone(h.speech)
+			slices.SortFunc(got, func(a, b bool) int {
+				switch {
+				case a == b:
+					return 0
+				case a:
+					return 1
+				}
+				return -1
+			})
+			if !slices.Equal(got, tc.speech) {
 				t.Errorf("Resolve asked for speech %v; want %v", h.speech, tc.speech)
 			}
 			if !tc.speak && h.audio.recorded() != 0 {

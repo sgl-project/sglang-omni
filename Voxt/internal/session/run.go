@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -40,7 +42,8 @@ type run struct {
 	skipped atomic.Bool
 	stopped atomic.Bool
 	rethink atomic.Bool
-	// think is the level Rethink chose (guarded by m.mu).
+	// think is the level the requests ask with: StartRequest.Thinking,
+	// then Rethink's (guarded by m.mu).
 	think *llm.Thinking
 	stop  chan struct{}
 	// recorded is closed once listen's recording loop has the capture's
@@ -50,6 +53,11 @@ type run struct {
 	stopOnce sync.Once
 	pcm      *pcmBuffer
 	ended    bool // guarded by m.mu
+	// onDraft is a history retry's (RetryRequest.OnDraft): it has no
+	// session, so update applies its changes to own (guarded by m.mu) and
+	// passes the draft on.
+	onDraft func(string)
+	own     Snapshot
 
 	svc   Services
 	terms []store.Term
@@ -299,8 +307,13 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	}
 	snap := r.m.Current()
 	total := r.now().Sub(snap.StartedAt)
+	var highlights []dict.Span
+	if r.req.Kind == store.KindTranscribe && r.settings.Dictionary.Enabled {
+		highlights = dict.HighlightSpans(result, r.terms)
+	}
 	r.m.end(r, st, func(s *Snapshot) {
 		s.Result, s.Problem = result, problem
+		s.Highlights = highlights
 		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
 		if l, ok := dres.Landing(); ok {
@@ -393,7 +406,7 @@ func (r *run) saveNote(text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt})
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt, AppName: r.req.Target.Name})
 }
 
 // keep writes the history entry of an ended session (and its recording),
@@ -404,9 +417,9 @@ func (r *run) keep(s Snapshot, status store.Status) {
 		return
 	}
 	e := store.Entry{
-		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status,
+		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status, Conversation: cmp.Or(r.req.Conversation, r.id), Replaces: r.req.Replaces,
 		AppBundle: s.Target.BundleID, AppName: s.Target.Name,
-		RawText: s.Raw, Result: s.Result, SourceText: s.Selection, TargetLang: s.TargetLanguage,
+		RawText: s.Raw, Result: s.Result, Title: s.Title, SourceText: s.Selection, TargetLang: s.TargetLanguage,
 		ASRProvider: s.ASR.ID, ASRModel: s.ASR.Model, LLMProvider: s.LLM.ID, LLMModel: s.LLM.Model,
 		AudioMS: s.Timings.Audio.Milliseconds(), SentMS: s.Timings.Sent.Milliseconds(), ASRMS: s.Timings.ASR.Milliseconds(), LLMMS: s.Timings.LLM.Milliseconds(),
 		TotalMS: s.Timings.Total.Milliseconds(), DSP: s.DSP, GainDB: s.GainDB,
