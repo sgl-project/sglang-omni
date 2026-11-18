@@ -105,7 +105,30 @@ func containsWholeSource(source, result string) bool {
 }
 
 func letterTokens(text string) []string {
-	return strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) })
+	var tokens []string
+	start, latin := -1, false
+	for i, r := range text {
+		if !unicode.IsLetter(r) {
+			if start >= 0 {
+				tokens = append(tokens, text[start:i])
+				start = -1
+			}
+			continue
+		}
+		currentLatin := unicode.Is(unicode.Latin, r)
+		if start < 0 {
+			start, latin = i, currentLatin
+			continue
+		}
+		if currentLatin != latin {
+			tokens = append(tokens, text[start:i])
+			start, latin = i, currentLatin
+		}
+	}
+	if start >= 0 {
+		tokens = append(tokens, text[start:])
+	}
+	return tokens
 }
 
 // ScriptMismatch reports a letter outside target's script. Latin-only text
@@ -128,6 +151,9 @@ func ScriptMismatch(text, target string) bool {
 // language; shared words score on every matching side, and unknown words and
 // language-neutral names are not evidence.
 func LanguageMismatch(text, target string) bool {
+	if neutralName(text) {
+		return false
+	}
 	if ScriptMismatch(text, target) {
 		return true
 	}
@@ -136,6 +162,26 @@ func LanguageMismatch(text, target string) bool {
 	}
 	candidates := latinLanguages(text)
 	return len(candidates) > 0 && !candidates[lang.Canonical(target)]
+}
+
+// neutralName reports a single capitalized token with no vocabulary evidence.
+// Product and personal names stay valid in every script, not just Latin ones.
+func neutralName(text string) bool {
+	tokens := letterTokens(text)
+	if len(tokens) != 1 {
+		return false
+	}
+	for _, words := range commonLatinWords {
+		for _, common := range words {
+			if strings.EqualFold(tokens[0], common) {
+				return false
+			}
+		}
+	}
+	for _, r := range tokens[0] {
+		return unicode.IsUpper(r)
+	}
+	return false
 }
 
 // commonLatinWords identifies a language from function words and common
