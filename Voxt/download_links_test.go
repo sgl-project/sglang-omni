@@ -4,8 +4,25 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
+
+func TestStableBehaviorTestsRunBeforeVersionRewrite(t *testing.T) {
+	b, err := os.ReadFile("../.github/workflows/voxt-release.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(b)
+	resolveStep := strings.Index(workflow, "      - name: Resolve the version\n")
+	behaviorStep := strings.Index(workflow, "      - name: Stable behavior regression tests\n")
+	if resolveStep < 0 || behaviorStep < 0 {
+		t.Fatal("stable release workflow must keep its version and behavior test steps")
+	}
+	if behaviorStep > resolveStep {
+		t.Error("stable behavior tests must run before Resolve the version rewrites mygo.json")
+	}
+}
 
 // TestDownloadLinks: every Voxt 2 download link in the docs downloads the
 // disk image of the version in mygo.json in one click, not a release page or

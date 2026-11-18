@@ -80,6 +80,19 @@ jobs:
           # The build runs third-party code, and only the draft release needs the write token.
           persist-credentials: false
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Stable behavior regression tests
+        if: env.IS_RELEASE == 'true'
+        run: |
+          CGO_ENABLED=0 go test -count=1 ./...
+          swift test --package-path helper
+
       - name: Resolve the version
         id: resolve
         run: |
@@ -130,19 +143,6 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Voxt $version, release: $IS_RELEASE"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: Voxt/go.mod
-          cache-dependency-path: Voxt/go.sum
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Stable behavior regression tests
-        if: env.IS_RELEASE == 'true'
-        run: |
-          CGO_ENABLED=0 go test -count=1 ./...
-          swift test --package-path helper
 
       - name: Import the signing identity
         if: env.IS_SIGNED == 'true'
