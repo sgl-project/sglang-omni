@@ -43,14 +43,6 @@ func testManager(t *testing.T, micPCM, sysPCM []byte, sysFail bool) (*meeting.Ma
 	return testManagerMic(t, newFakeAudio(micPCM), sysPCM, sysFail)
 }
 
-// testManagerLevels is testManager with a microphone that sends levels (dBFS).
-func testManagerLevels(t *testing.T, levels []float64) (*meeting.Manager, context.Context, *fakeClock, string) {
-	t.Helper()
-	mic := newFakeAudio(nil)
-	mic.levels = levels
-	return testManagerMic(t, mic, nil, false)
-}
-
 func testManagerMic(t *testing.T, mic *fakeAudio, sysPCM []byte, sysFail bool) (*meeting.Manager, context.Context, *fakeClock, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -293,23 +285,23 @@ func TestManagerModelHold(t *testing.T) {
 // Each track keeps its last session.Bars levels, as bar heights, for its
 // waveform in the meeting's window; the other track's stay its own.
 func TestSnapshotKeepsLevelHistory(t *testing.T) {
-	var levels []float64
+	mic := newFakeAudio(nil)
+	mic.levelsSent = make(chan struct{})
 	for i := range session.Bars + 4 {
-		levels = append(levels, -60+float64(i)*3)
+		mic.levels = append(mic.levels, -60+float64(i)*3)
 	}
-	m, ctx, _, _ := testManagerLevels(t, levels)
+	m, ctx, _, _ := testManagerMic(t, mic, nil, false)
 	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer m.Finish(ctx, id)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		levels := m.Current().Levels[meeting.SourceMic]
-		if len(levels) > 0 && levels[len(levels)-1] == session.Level(-3) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	// A full buffer can still contain the first levels. Wait for the
+	// complete sequence before checking which levels were retained.
+	select {
+	case <-mic.levelsSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("microphone did not finish sending its level events")
 	}
 	got := m.Current().Levels
 	if h := got[meeting.SourceMic]; len(h) != session.Bars || h[0] != session.Level(-48) || h[len(h)-1] != session.Level(-3) {

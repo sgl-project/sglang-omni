@@ -21,7 +21,7 @@ import (
 
 // overlayView is the overlay window's content.
 func (a *app) overlayView(c *ui.Context) {
-	c.SetTheme(overlayTheme())
+	c.SetTheme(a.overlayTheme())
 	// The root draws the theme's background unless told not to: in this
 	// transparent window only the face may show. Last, once the view is
 	// built: the kit's ink buttons swap the theme while they build
@@ -50,13 +50,13 @@ func (a *app) overlayView(c *ui.Context) {
 		case ovAnswer:
 			// Voxt's card does not move (isMovableByWindowBackground off):
 			// its text is selectable.
-			faceStyle(ui.Column(c.Key("ov-face")), o, ovAnswer, a.ov.h).Children(func() { a.overlayCard(c) })
+			faceStyle(c, ui.Column(c.Key("ov-face")), o, ovAnswer, a.ov.h).Children(func() { a.overlayCard(c) })
 		case ovNotice:
 			a.overlayNotice(c)
 		default:
 			// In lines it moves where it is dragged, as the card; the small
 			// pill lets the pointer through (syncPassThrough).
-			faceStyle(ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).DragWindow().Children(func() {
+			faceStyle(c, ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).DragWindow().Children(func() {
 				think := ""
 				if a.pillThinks(a.ov.mode) {
 					think = a.pillThinkText().text
@@ -95,9 +95,10 @@ func faceRadius(o settings.Overlay, mode overlayMode, h int) float32 {
 
 // faceStyle gives e, the face, its look in mode, h DIPs high: the radius,
 // the translucent fill, the hairline and the shadow. Give it children.
-func faceStyle(e ui.Element, o settings.Overlay, mode overlayMode, h int) ui.Element {
-	return e.Fill().Radius(faceRadius(o, mode, h)).Background(ui.RGBA(22, 22, 26, layout.FaceAlpha(o))).
-		Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
+func faceStyle(c *ui.Context, e ui.Element, o settings.Overlay, mode overlayMode, h int) ui.Element {
+	k := tok(c.Theme())
+	return e.Fill().Radius(faceRadius(o, mode, h)).Background(k.OverlayFace.Alpha(layout.FaceAlpha(o))).
+		Border(1, k.OverlayLine).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
 }
 
 // pillLook is how the pill draws: with the time, its live text in lines
@@ -418,12 +419,13 @@ func (a *app) overlayNotice(c *ui.Context) {
 	}
 	o := a.prefs.Overlay
 	if label == "" {
-		faceStyle(ui.Column(c.Key("ov-face")), o, ovNotice, a.ov.h).DragWindow().Label(n.text).Children(content)
+		faceStyle(c, ui.Column(c.Key("ov-face")), o, ovNotice, a.ov.h).DragWindow().Label(n.text).Children(content)
 		return
 	}
-	b := faceStyle(ui.ButtonBase(c.Key("ov-notice")), o, ovNotice, a.ov.h).Label(n.text + " · " + label)
+	b := faceStyle(c, ui.ButtonBase(c.Key("ov-notice")), o, ovNotice, a.ov.h).Label(n.text + " · " + label)
 	if b.Hovered() {
-		b.Background(ui.RGBA(34, 34, 40, min(layout.FaceAlpha(o)+0.06, 1)))
+		face := tok(t).OverlayFace.Mix(ui.RGB(255, 255, 255), 0.055)
+		b.Background(face.Alpha(min(layout.FaceAlpha(o)+0.06, 1)))
 	}
 	if b.Children(content).Clicked() {
 		a.noticeAction(n.action)

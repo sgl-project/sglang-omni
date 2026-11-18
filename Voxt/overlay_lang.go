@@ -189,16 +189,18 @@ func langIndex(code string) int {
 // dark look (the app's dropdown: rows of 30, a check by the chosen one,
 // the row under the pointer lit), with the shadow's margin around it.
 func (a *app) langMenuView(c *ui.Context) {
-	c.SetTheme(overlayTheme())
+	c.SetTheme(a.overlayTheme())
 	defer c.Root().Background(ui.Transparent)
 	cur := a.cardNow().lang
 	label := i18n.T("Translate into")
 	if a.answer.thinkMenu {
 		label = i18n.T("Ask again with thinking level")
 	}
+	k := tok(c.Theme())
+	bg := k.OverlayFace.Mix(ui.RGB(255, 255, 255), 0.035).Alpha(0.98)
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
-		ui.Column(c.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(ui.RGBA(30, 30, 34, 0.98)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).
+		ui.Column(c.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(bg).
+			Border(1, k.OverlayLine).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).
 			Label(label).Children(func() {
 			ui.Scroll(c.Key("ov-lang-scroll")).Fill().TrackScroll(&a.ov.lang.scroll).Children(func() {
 				ui.Column(c).Padding(ovLangPad - layout.Border).Children(func() {

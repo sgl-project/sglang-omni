@@ -411,11 +411,19 @@ func (a *app) closeOverlay() {
 	a.ov.shown, a.ov.visible = false, false
 }
 
-// overlayTheme is the overlay's theme: the dark tokens, always.
-func overlayTheme() *ui.Theme {
+// overlayTheme uses the chosen palette's dark variant for the HUD.
+func (a *app) overlayTheme() *ui.Theme {
 	th := *ui.DarkTheme()
-	styleTheme(&th)
+	styleTheme(&th, a.prefs.Appearance.Palette)
 	return &th
+}
+
+func (a *app) invalidatePaletteOverlays() {
+	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin} {
+		if window != nil {
+			window.Invalidate()
+		}
+	}
 }
 
 // overlayMotion says whether the waveform and the loader move.

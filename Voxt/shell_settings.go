@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -37,7 +38,6 @@ type settingsForm struct {
 
 	language        string // label
 	mainLanguage    string // label
-	theme           int
 	scale           int
 	reduceMotion    bool
 	menuBar         bool
@@ -59,6 +59,15 @@ type settingsForm struct {
 	maxMinutes      float64     // Audio.MaxSeconds, in minutes
 	sidebar         int         // automatic, names and icons, icons only (settings_appearance.go)
 	ovStyle         overlayForm // settings_overlay.go
+
+	colorPalette            ui.Color
+	colorEditorOpen         bool
+	paletteRevision         atomic.Uint64
+	paletteSavePending      bool
+	windowTransparency      float64 // percent
+	transparencyDragging    bool
+	transparencySavePending bool
+	transparencyRevision    atomic.Uint64
 
 	historyAccess, historySelection bool // history_access.go
 
@@ -82,7 +91,7 @@ func settingsSections() []settingsSection {
 		{"audio", i18n.T("Audio"), "Audio microphone input device sounds silence"},
 		{"overlay", i18n.T("Overlay style"), "Overlay style position opacity corners recording pill"},
 		{"shortcuts", i18n.T("Shortcuts"), "Shortcuts hotkeys keys fn"},
-		{"appearance", i18n.T("Appearance"), "Appearance theme size sidebar"},
+		{"appearance", i18n.T("Appearance"), "Appearance theme color palette transparency size sidebar"},
 		{"privacy", i18n.T("Privacy"), "Privacy history audio logs"},
 		{"storage", i18n.T("Storage"), "Storage disk data folder reset"},
 		// "About" in English: "Diagnostics and about" does not fit the
@@ -129,6 +138,26 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 
 // settingsChanged applies saved settings to the app.
 func (a *app) settingsChanged(old, new settings.Settings) {
+	if old.Appearance.Palette != new.Appearance.Palette || old.Appearance.WindowTransparency != new.Appearance.WindowTransparency {
+		before := old
+		before.Appearance.Palette = new.Appearance.Palette
+		before.Appearance.WindowTransparency = new.Appearance.WindowTransparency
+		if reflect.DeepEqual(before, new) {
+			// A preview save can arrive after other settings were edited.
+			// Apply only the fields it owns to the live settings.
+			palette := a.prefs.Appearance.Palette
+			a.syncSavedAppearancePreview(&a.prefs.Appearance)
+			a.loadAppearancePreview()
+			if a.prefs.Appearance.Palette != palette {
+				a.invalidatePaletteOverlays()
+			}
+			return
+		}
+	}
+	if ap := a.prefs.Appearance; ap.Palette != new.Appearance.Palette || ap.WindowTransparency != new.Appearance.WindowTransparency {
+		// An earlier background save can publish after a newer appearance edit.
+		a.syncSavedAppearancePreview(&new.Appearance)
+	}
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
 	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
@@ -172,6 +201,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Overlay != new.Overlay {
 		a.overlayRestyle() // overlay.go
 	}
+	if old.Appearance.Palette != new.Appearance.Palette {
+		a.invalidatePaletteOverlays()
+	}
 	if old.Features.Transcribe.ASR != new.Features.Transcribe.ASR {
 		a.warmSpeech() // models_omni.go: the new model loads before its first session
 	}
@@ -199,8 +231,8 @@ func (a *app) applyTheme(c *ui.Context) {
 	ap := a.prefs.Appearance
 	sys := c.Theme()
 	th := *sys
-	if (ap.Theme == "light" && sys.Dark) || (ap.Theme == "dark" && !sys.Dark) {
-		if ap.Theme == "dark" {
+	if (ap.Theme == settings.ThemeLight && sys.Dark) || (ap.Theme == settings.ThemeDark && !sys.Dark) {
+		if ap.Theme == settings.ThemeDark {
 			th = *ui.DarkTheme()
 		} else {
 			th = *ui.LightTheme()
@@ -213,7 +245,7 @@ func (a *app) applyTheme(c *ui.Context) {
 		th.FontSize *= s
 		th.Spacing = th.Space(1) * s
 	}
-	styleTheme(&th)
+	styleTheme(&th, ap.Palette)
 	c.SetTheme(&th)
 }
 
@@ -233,7 +265,7 @@ func (a *app) loadSettingsForm() {
 	if i := slices.Index(mainLanguages, s.General.MainLanguage); i >= 0 {
 		f.mainLanguage = mainLanguageOptions()[i+1]
 	}
-	f.theme = max(0, slices.Index(settings.Themes, s.Appearance.Theme))
+	a.loadAppearancePreview()
 	f.scale = max(0, slices.Index(settings.Scales, s.Appearance.Scale))
 	f.reduceMotion = s.Appearance.ReduceMotion
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
@@ -281,6 +313,8 @@ func (a *app) openSettings(sub string) {
 // that read something when they show start it here.
 func (a *app) settingsShown(sub string) {
 	switch sub {
+	case "/appearance":
+		a.colorEditorOpen = false
 	case "/permissions":
 		a.recheckPermissions() // permissions.go
 	case "/audio":
@@ -330,14 +364,14 @@ func (a *app) settingsDialog(c *ui.Context) {
 								Justify(ui.Start).Label(s.title).Checked(sel)
 							switch {
 							case sel:
-								b.Background(k.Pressed)
+								b.Background(k.NavSelected)
 							case b.Hovered():
 								b.Background(k.Hover)
 							}
 							b.Children(func() {
 								col := k.Text2
 								if sel {
-									col = k.Text
+									col = k.AccentInk
 								}
 								ui.Icon(c, settingsSectionIcon(s.id).Get(sel)).Size(px(t, 16), px(t, 16)).TextColor(col)
 								txt := ui.Text(c, s.title).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
