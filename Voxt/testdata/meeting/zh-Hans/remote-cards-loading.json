@@ -1,0 +1,54 @@
+{
+  "name": "remote-cards-loading",
+  "kind": "remote-cards",
+  "remote_cards": {
+    "kind": "asr",
+    "groups": [
+      {
+        "key": "remote-asr-mine",
+        "title": "已设置",
+        "cards": [
+          {
+            "kind": "asr",
+            "id": "fixture",
+            "account": "asr.fixture",
+            "name": "Fixture service",
+            "model": "fixture-model",
+            "where": "远程",
+            "realtime": true,
+            "configured": true,
+            "status": "success",
+            "status_text": "就绪",
+            "key_text": "…",
+            "key_status": "neutral",
+            "test": {
+              "state": "running",
+              "long_text": "正在测试…"
+            },
+            "test_disabled": true
+          }
+        ]
+      },
+      {
+        "key": "remote-asr-online",
+        "title": "在线服务",
+        "caption": "只有选用这个服务的功能才会把录音发给它。",
+        "cards": [
+          {
+            "kind": "asr",
+            "id": "online-speech",
+            "account": "asr.online-speech",
+            "name": "Online speech",
+            "model": "fixture-model",
+            "where": "远程",
+            "configured": false,
+            "status": "neutral",
+            "status_text": "未设置",
+            "key_text": "…",
+            "key_status": "neutral"
+          }
+        ]
+      }
+    ]
+  }
+}

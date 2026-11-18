@@ -1,0 +1,13 @@
+{
+  "name": "remote-debug-empty",
+  "kind": "remote-debug",
+  "remote_debug": {
+    "ready": false,
+    "prompt_label": "System prompt",
+    "input_label": "Recognised text",
+    "edited": false,
+    "can_run": false,
+    "running": false,
+    "form": {}
+  }
+}

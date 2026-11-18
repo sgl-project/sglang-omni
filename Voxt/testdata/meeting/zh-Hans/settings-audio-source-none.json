@@ -1,0 +1,190 @@
+{
+  "name": "settings-audio-source-none",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/audio",
+    "shown_path": "/settings/audio",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "audio": {
+      "helper_ready": true,
+      "devices_read": true,
+      "devices_loading": false,
+      "devices_error": "",
+      "devices": [
+        {
+          "id": "fixture-mic-primary",
+          "name": "Fixture Primary Microphone",
+          "notes": "正在使用 · 系统默认",
+          "in_use": true,
+          "present": true
+        },
+        {
+          "id": "fixture-mic-secondary",
+          "name": "Fixture Secondary Microphone",
+          "notes": "",
+          "in_use": false,
+          "present": true
+        }
+      ],
+      "other_devices": [
+        {
+          "id": "fixture-mic-other",
+          "name": "Fixture Other Microphone",
+          "notes": "",
+          "in_use": false,
+          "present": true
+        }
+      ],
+      "skip_silence": true,
+      "clean_sound": true,
+      "live_result": true,
+      "upload_mb": 12,
+      "max_minutes": 30,
+      "mute_output": true,
+      "sounds": {
+        "source_options": [
+          "自带",
+          "系统",
+          "无"
+        ],
+        "source_values": [
+          "built-in",
+          "system",
+          "none"
+        ],
+        "source_index": 2,
+        "source_id": "none",
+        "pairs": [
+          {
+            "start": "pebble",
+            "stop": "nib",
+            "name": "轻柔",
+            "sounds": "卵石 → 笔尖",
+            "play_label": "试听“轻柔”",
+            "chosen": true,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "tally",
+            "stop": "wrap",
+            "name": "嘀声",
+            "sounds": "开录 → 收工",
+            "play_label": "试听“嘀声”",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          }
+        ],
+        "system_cues": [
+          {
+            "event_id": "record.start",
+            "label": "开始录音时",
+            "select_label": "开始提示音",
+            "options": [
+              "无",
+              "Fixture Pop",
+              "Fixture Tink"
+            ],
+            "values": [
+              "none",
+              "system:Fixture Pop",
+              "system:Fixture Tink"
+            ],
+            "selected": "无",
+            "try_label": "试听开始提示音",
+            "try_accent": false
+          },
+          {
+            "event_id": "record.stop",
+            "label": "停止录音时",
+            "select_label": "停止提示音",
+            "options": [
+              "无",
+              "Fixture Pop",
+              "Fixture Tink"
+            ],
+            "values": [
+              "none",
+              "system:Fixture Pop",
+              "system:Fixture Tink"
+            ],
+            "selected": "无",
+            "try_label": "试听停止提示音",
+            "try_accent": false
+          }
+        ],
+        "volume_options": [
+          "100%",
+          "75%",
+          "50%",
+          "25%"
+        ],
+        "volume_values": [
+          100,
+          75,
+          50,
+          25
+        ],
+        "volume_selection": "75%"
+      }
+    }
+  }
+}

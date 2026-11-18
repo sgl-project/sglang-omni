@@ -1,148 +1,66 @@
 package main
 
-// A history entry's details (history_page.go): the result, the original,
-// what made it (services, group, sound, times), and deleting it.
+// A history entry's details and the shared delete confirmation.
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// entryModel is the model an entry used, as the details show it: its
-// name (the catalogue's words, also once it is deleted), else its id; ""
-// for none.
-func (a *app) entryModel(kind local.Kind, id, model string) string {
-	if id == "" {
-		return ""
-	}
-	name := uitext.ModelName(id)
-	for _, m := range a.installed(kind) {
-		if m.ID == id {
-			name = m.Name
-		}
-	}
-	if model != "" && model != id {
-		name += " · " + model
-	}
-	return name
-}
-
-// historyDetail is the details panel of an entry.
-func (a *app) historyDetail(c *ui.Context, e store.Entry) {
+func historyDetail(c *ui.Context, state *historyDetailViewState, actions historyActions, local *historyLocalUI) {
 	t := c.Theme()
-	k := tok(t)
-	h := &a.hist
-	ui.Column(c.Key("hist-detail-"+e.ID)).Padding(px(t, sp3), px(t, sp5), px(t, sp5)).Gap(px(t, sp3)).Children(func() {
-		// The panel's header: its title, then Show in Finder (with a
-		// recording), Delete and Close.
+	colors := tok(t)
+	ui.Column(c.Key("hist-detail-"+state.ID)).Padding(px(t, sp3), px(t, sp5), px(t, sp5)).Gap(px(t, sp3)).Children(func() {
 		ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
 			sectionHeading(c, i18n.T("Entry details")).Grow(1)
-			if e.Audio != "" && iconButton(c.Key("hist-reveal"), icons.FolderOpen, i18n.T("Show recording in Finder")).Clicked() {
-				revealInFinder(a.lib.store.History().AudioPath(e.Audio))
+			if state.CanReveal && iconButton(c.Key("hist-reveal"), icons.FolderOpen, i18n.T("Show recording in Finder")).Clicked() {
+				actions.showHistoryRecording(state.ID)
 			}
 			if iconButton(c.Key("hist-delete"), icons.TrashBinMinimalistic, i18n.T("Delete entry…")).Clicked() {
-				a.askDeleteEntry(e.ID)
+				local.delAsk, local.delID = true, state.ID
 			}
 			if iconButton(c.Key("panel-close"), icons.Close, i18n.T("Close")).Clicked() {
-				h.sel = ""
+				actions.closeHistoryDetail()
 			}
 		})
-		if e.Error != "" {
-			kind, text := noticeError, i18n.T("Failed: %s", uitext.FirstLine(e.Error))
-			if e.Status != store.StatusFailed {
-				kind, text = noticeWarn, i18n.T("Done, but with a problem: %s", uitext.FirstLine(e.Error))
+		if state.ErrorText != "" {
+			kind := noticeError
+			if state.ErrorWarning {
+				kind = noticeWarn
 			}
-			notice(c, "hist-detail-err", kind, text, e.Error, nil, nil)
+			notice(c, "hist-detail-err", kind, state.ErrorText, state.ErrorDetail, nil, nil)
 		}
-		a.entryRetryButton(c, e) // history_retry.go
-		if s := recordingKeptText(e); s != "" {
-			caption(c, s)
+		entryRetryButton(c, state, actions)
+		if state.RecordingKeptText != "" {
+			caption(c, state.RecordingKeptText)
 		}
-		// The texts there are, each with Copy.
-		retry := a.hist.retry
-		showingDraft := retry.id == e.ID && strings.TrimSpace(retry.draft) != ""
-		textBlock := func(key, title, copyLabel, text string) {
-			text = strings.TrimSpace(text)
-			if text == "" {
-				return
-			}
-			ui.Column(c.Key(key)).Gap(px(t, sp1)).Children(func() {
+		for _, block := range state.TextBlocks {
+			ui.Column(c.Key(block.Key)).Gap(px(t, sp1)).Children(func() {
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).MinHeight(px(t, 28)).Children(func() {
-					sectionTitleText(c, title).Grow(1).MinWidth(0)
-					if iconButton(c.Key(key+"-copy"), icons.Copy, copyLabel).Clicked() {
-						mygoClipboard(c, text)
-						a.toast(i18n.T("Copied"))
+					sectionTitleText(c, block.Title).Grow(1).MinWidth(0)
+					if iconButton(c.Key(block.Key+"-copy"), icons.Copy, block.CopyLabel).Clicked() {
+						actions.copyHistoryText(block.Text)
 					}
 				})
-				sessionTextCard(c, e.Kind).Padding(px(t, sp2), px(t, sp3)).Children(func() {
-					if key == "hist-result" {
-						a.transcriptResult(c, e.Kind, e.ID, text, showingDraft)
-					} else {
-						ui.Text(c, text).Selectable()
+				sessionTextCard(c, state.Transcript).Padding(px(t, sp2), px(t, sp3)).Children(func() {
+					if !block.Formatted || !actions.transcriptResult(c, state.ID, block.Text, state.Transcript, block.Streaming) {
+						ui.Text(c, block.Text).Selectable()
 					}
 				})
 			})
 		}
-		result := e.Result
-		if showingDraft {
-			result = retry.draft // a retry's answer as the model writes it
-		}
-		textBlock("hist-result", i18n.T("Result"), i18n.T("Copy result"), result)
-		if e.PromptText != "" {
-			textBlock("hist-prompt", i18n.T("Instruction"), i18n.T("Copy instruction"), e.PromptText)
-		}
-		if e.SourceText != "" {
-			textBlock("hist-source", i18n.T("Selected text"), i18n.T("Copy selected text"), e.SourceText)
-		}
-		textBlock("hist-raw", i18n.T("Recognised text"), i18n.T("Copy recognised text"), e.RawText)
-
-		// The facts: labels as wide as the longest, values in the rest.
-		app := e.AppName
-		if e.URLHost != "" {
-			app += " · " + e.URLHost
-		}
-		details := [][2]string{{i18n.T("Time"), i18n.DateTime(e.CreatedAt)}, {i18n.T("App"), app}}
-		if e.Kind == store.KindTranslate {
-			details = append(details, [2]string{i18n.T("Target language"), uitext.TargetLang(e)})
-		}
-		details = append(details,
-			[2]string{i18n.T("Delivery"), uitext.DeliveryLabel(e)},
-			[2]string{i18n.T("Speech recognition"), a.entryModel(local.ASR, e.ASRProvider, e.ASRModel)},
-			[2]string{i18n.T("Sound optimisation"), uitext.SoundText(e)},
-			[2]string{i18n.T("Language model"), a.entryModel(local.LLM, e.LLMProvider, e.LLMModel)},
-			[2]string{i18n.T("App rule"), uitext.RuleText(e)})
-		sections := []struct {
-			title string
-			rows  [][2]string
-		}{
-			{i18n.T("Details"), details},
-			{i18n.T("Timing"), [][2]string{
-				{i18n.T("Recording"), uitext.RecordingTime(e)},
-				{i18n.T("Recognition"), uitext.StageTime(e.ASRMS)},
-				{i18n.T("Language model"), uitext.StageTime(e.LLMMS)},
-				{i18n.T("Total"), uitext.StageTime(e.TotalMS)},
-			}},
-		}
 		sectionGap := [2]float32{sp1, sp4} // above the first heading, above the others
 		ui.Grid(c.Key("hist-facts")).ColumnTracks(ui.FitContent(), ui.Fr(1)).GapX(px(t, sp3)).GapY(px(t, sp1)).Children(func() {
-			for i, sec := range sections {
-				sectionTitleText(c, sec.title).ColumnSpan(2).Margin(px(t, sectionGap[min(i, 1)]), 0, px(t, 2), 0)
-				for _, r := range sec.rows {
-					ui.Text(c, r[0]).FontSize(px(t, fsCaption)).TextColor(k.Text2)
-					v := ui.Text(c.Key(fmt.Sprintf("hist-fact-%d-%s", i, r[0])), uitext.OrDash(r[1])).FontSize(px(t, fsCaption)).Selectable().MinWidth(0)
-					if r[1] == "" {
-						v.TextColor(k.Text3)
+			for sectionIndex, section := range state.Sections {
+				sectionTitleText(c, section.Title).ColumnSpan(2).Margin(px(t, sectionGap[min(sectionIndex, 1)]), 0, px(t, 2), 0)
+				for _, fact := range section.Facts {
+					ui.Text(c, fact.Label).FontSize(px(t, fsCaption)).TextColor(colors.Text2)
+					value := ui.Text(c.Key(fmt.Sprintf("hist-fact-%d-%s", sectionIndex, fact.Label)), fact.Value).FontSize(px(t, fsCaption)).Selectable().MinWidth(0)
+					if fact.Empty {
+						value.TextColor(colors.Text3)
 					}
 				}
 			}
@@ -150,49 +68,20 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 	})
 }
 
-// historyDeleteDialog confirms Delete (askDeleteEntry), on History and
-// Home.
-func (a *app) historyDeleteDialog(c *ui.Context) {
-	h := &a.hist
-	if !h.delAsk {
+func historyDeleteDialog(c *ui.Context, local *historyLocalUI, actions historyActions) {
+	if !local.delAsk {
 		return
 	}
-	dialogFrame(c, "hist-del", &h.delAsk, i18n.T("Delete this entry?"), "", 420, func() {
+	dialogFrame(c, "hist-del", &local.delAsk, i18n.T("Delete this entry?"), "", 420, func() {
 		ui.Text(c, i18n.T("Its text and recording will be deleted. This cannot be undone."))
 	}, func() {
 		ui.Spacer(c)
 		if ui.Button(c.Key("hist-del-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
-			h.delAsk = false
+			local.delAsk = false
 		}
 		if recordButton(c.Key("hist-del-ok"), i18n.T("Delete")).Clicked() {
-			h.delAsk = false
-			a.deleteHistoryEntry(h.delID)
+			local.delAsk = false
+			actions.deleteHistoryEntry(local.delID)
 		}
-	})
-}
-
-// deleteHistoryEntry deletes an entry and its recording, in the
-// background, then tells the history's observers (History, Home, the
-// menu bar).
-func (a *app) deleteHistoryEntry(id string) {
-	if id == "" {
-		return
-	}
-	hs := a.lib.store.History()
-	a.async(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		err := hs.Delete(ctx, id)
-		a.post(func() {
-			if err != nil && !errors.Is(err, core.ErrNotFound) {
-				a.toast(i18n.T("Could not delete the entry: %v", err))
-				return
-			}
-			if a.hist.sel == id {
-				a.hist.sel = ""
-			}
-			a.toast(i18n.T("Entry deleted"))
-			a.historyChanged()
-		})
 	})
 }

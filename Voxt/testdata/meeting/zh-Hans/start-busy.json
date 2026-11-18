@@ -1,0 +1,8 @@
+{
+  "name": "start-busy",
+  "kind": "start",
+  "start": {
+    "code": "meeting.busy",
+    "text": "已经有一场会议在录了。"
+  }
+}

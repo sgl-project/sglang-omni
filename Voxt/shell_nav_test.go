@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -41,6 +42,20 @@ func TestTransparentSidebarFade(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestShellBuildersUseExplicitTranslator(t *testing.T) {
+	previous := i18n.SetLocale("en")
+	defer i18n.SetLocale(previous)
+	translator := i18n.NewTranslator("zh-Hans")
+	nav := buildNavViewState(translator, navViewStateInput{Current: "/home"})
+	if nav.Settings.Title != translator.T("Settings") {
+		t.Errorf("settings title %q, want %q", nav.Settings.Title, translator.T("Settings"))
+	}
+	logs := buildLogsViewState(translator, nil, "", "", false)
+	if logs.Source != translator.T("All sources") {
+		t.Errorf("log source %q, want %q", logs.Source, translator.T("All sources"))
 	}
 }
 
