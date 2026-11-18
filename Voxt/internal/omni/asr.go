@@ -283,7 +283,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		}
 		parts = append(parts, r.text)
 	}
-	return joinParts(parts), language, draft, nil
+	return a.spec.plainText(joinParts(parts)), language, draft, nil
 }
 
 // Open starts a live session: partial text while audio comes in, then
