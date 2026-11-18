@@ -1,0 +1,53 @@
+docs/models/duo.md
+  s_9be4bd449be508::t_b6b7556fabb417 3,71,87
+playground/README.md
+  s_9be4bd449be508::t_5cf693e8f5d06f 10
+playground/duo/README.md
+  s_9be4bd449be508::t_d03a7d54381d6b 1-12
+playground/duo/app.js
+  s_9be4bd449be508::t_d59f4381545fd7 1-179
+playground/duo/capture.js
+  s_9be4bd449be508::t_b1d60eeaff7f67 1-5
+playground/duo/catchup.js
+  s_9be4bd449be508::t_43cd7376b387ca 1-35
+playground/duo/index.html
+  s_9be4bd449be508::t_1d3dda14c48dfd 1-12
+playground/duo/input_catchup.js
+  s_9be4bd449be508::t_271e9eae490a4a 1-28
+playground/duo/personas.json
+  s_9be4bd449be508::t_020f101e182978 1-8
+playground/duo/style.css
+  s_9be4bd449be508::t_1299d6bd781937 1-23
+playground/duo/test_server.py
+  s_9be4bd449be508::t_ae9451173f5466 1-223
+playground/duo/video_decoding.js
+  s_9be4bd449be508::t_34ff4d3ebfa17c 1-27
+scripts/serve_duo_realtime.py
+  s_9be4bd449be508::t_4c33d9a2be1068 239-242,294,330,333-334
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_9b91699d698ba0 73,105,109-115,135,165,170-179,263-265,267-268,302,592,700-708,710,1078,1096
+sglang_omni/serve/realtime/negotiation.py
+  s_9be4bd449be508::t_4fc07e0647cdc4 38-43,163-169
+sglang_omni/serve/realtime/schema.py
+  s_9be4bd449be508::t_f14aea41510c63 85
+sglang_omni/serve/realtime/types.py
+  s_9be4bd449be508::t_beb04f1c13af32 125
+tests/unit_test/serve/test_realtime_duplex_negotiation.py
+  s_9be4bd449be508::t_1a20548542e293 44-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "55702ad159cc4665a5577d471e2420afdacab206",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
