@@ -816,6 +816,8 @@ class PipelineConfig(BaseModel):
         default=DEFAULT_IDLE_TIMEOUT_S, gt=0, allow_inf_nan=False
     )
     "Seconds without input or output before a shared realtime session closes."
+    realtime_max_history_chars: int | None = Field(default=None, gt=0)
+    "Maximum characters in a realtime response transcript or session.update instructions; None keeps the deployment limit."
     services: list[ServiceConfig] = Field(default_factory=list)
     "The services started in this order before the pipeline, each waited for until its /v1/models answers."
 

@@ -9,6 +9,7 @@ import torch
 from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.personaplex.architecture import TEXT_MARKER_IDS
+from sglang_omni.models.personaplex.hf_config import DEFAULT_SESSION_CONTEXT_LENGTH
 from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.request_builders import (
@@ -209,6 +210,28 @@ def test_a_unit_past_the_context_fails_as_context_exhausted():
         CallDriver(open_adapter(context_length=0)).build(caller_codes(1))
     # Note (wilsonzheng0327): Stage IPC carries only the message to the client.
     assert ContextExhaustedError.matches(RuntimeError(str(error.value)))
+
+
+def test_session_default_context_accepts_its_last_position() -> None:
+    probe = CallDriver(open_adapter(DEFAULT_SESSION_CONTEXT_LENGTH)).build(
+        caller_codes(1)
+    )
+    prompt_positions = probe.data.talker_model_inputs["timeline"].num_prompt_positions
+    max_caller_frames = DEFAULT_SESSION_CONTEXT_LENGTH - prompt_positions - 2
+
+    driver = CallDriver(open_adapter(DEFAULT_SESSION_CONTEXT_LENGTH))
+    driver.unit(caller_codes(1), [77, 78])
+    accepted = driver.build(caller_codes(max_caller_frames - 1))
+    accepted_timeline = accepted.data.talker_model_inputs["timeline"]
+    assert (
+        accepted_timeline.num_prompt_positions + max_caller_frames + 1
+        == DEFAULT_SESSION_CONTEXT_LENGTH - 1
+    )
+
+    assert accepted.data.max_new_tokens == max_caller_frames - 1
+    with pytest.raises(ContextExhaustedError, match="needs 65536 positions"):
+        driver.build(caller_codes(1))
+    assert accepted_timeline.num_frames == max_caller_frames
 
 
 def test_an_empty_end_of_input_is_relayed_without_a_step():

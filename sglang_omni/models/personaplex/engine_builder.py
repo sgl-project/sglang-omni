@@ -24,6 +24,7 @@ from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
 from sglang_omni.models.personaplex.config import DEFAULT_LM_MAX_RUNNING_REQUESTS
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
+    DEFAULT_SESSION_CONTEXT_LENGTH,
     PERSONAPLEX_ARCH,
     build_backbone_config,
 )
@@ -220,6 +221,8 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
 
 class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
     """The LM of full-duplex sessions: one SGLang streaming session each."""
+
+    context_length = DEFAULT_SESSION_CONTEXT_LENGTH
 
     def __init__(
         self,

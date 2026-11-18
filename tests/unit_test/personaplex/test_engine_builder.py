@@ -26,10 +26,7 @@ from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexSessionEngineBuilder,
     shim_checkpoint_dir,
 )
-from sglang_omni.models.personaplex.hf_config import (
-    DEFAULT_CONTEXT_LENGTH,
-    build_backbone_config,
-)
+from sglang_omni.models.personaplex.hf_config import build_backbone_config
 from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
 from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.platforms import current_platform
@@ -49,28 +46,24 @@ def write_checkpoint(root):
     return root
 
 
-@pytest.mark.parametrize("context_length", [None, 2048])
+@pytest.mark.parametrize("session", [False, True], ids=["offline", "session"])
+@pytest.mark.parametrize("context_length", [None, 2048, 131072])
 def test_builder_writes_backbone_config_and_links_only_lm_weights(
-    tmp_path: Path, context_length: int | None
+    tmp_path: Path, context_length: int | None, session: bool
 ) -> None:
     source = write_checkpoint(tmp_path / "checkpoint")
-    builder = (
-        PersonaPlexEngineBuilder(
-            enable_async_decode=False,
-            depformer_cuda_graph_batch_sizes=[],
-            depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
-        )
-        if context_length is None
-        else PersonaPlexEngineBuilder(
-            enable_async_decode=False,
-            depformer_cuda_graph_batch_sizes=[],
-            depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
-            context_length=context_length,
-        )
-    )
-    expected_context = (
-        DEFAULT_CONTEXT_LENGTH if context_length is None else context_length
-    )
+    arguments = {
+        "enable_async_decode": False,
+        "depformer_cuda_graph_batch_sizes": [],
+        "depformer_cuda_graph_sampling": DEFAULT_DEPFORMER_SAMPLING,
+        "context_length": context_length,
+    }
+    if session:
+        builder = PersonaPlexSessionEngineBuilder(tokenizer=Mock(), **arguments)
+    else:
+        builder = PersonaPlexEngineBuilder(**arguments)
+    default_context = 65536 if session else 8192
+    expected_context = default_context if context_length is None else context_length
     assert builder.context_length == expected_context
     shim = Path(builder.resolve_checkpoint(str(source)))
     try:

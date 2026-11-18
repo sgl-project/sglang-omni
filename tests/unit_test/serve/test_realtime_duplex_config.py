@@ -269,7 +269,11 @@ def test_timeout_configuration_reaches_served_capabilities(
         ),
         (
             PersonaPlexSessionPipelineConfig,
-            {"realtime_session_update_timeout_s": 11, "realtime_idle_timeout_s": 47},
+            {
+                "realtime_session_update_timeout_s": 11,
+                "realtime_idle_timeout_s": 47,
+                "realtime_max_history_chars": 1048576,
+            },
             (11, 47),
         ),
     ],
@@ -308,6 +312,35 @@ def test_direct_deployment_exposes_pipeline_timeouts(
         limits["session_update_timeout_s"],
         limits["idle_timeout_s"],
     ) == expected_timeouts
+    assert limits["max_history_chars"] == pipeline_timeouts.get(
+        "realtime_max_history_chars", RuntimeLimits().max_history_chars
+    )
+
+
+@pytest.mark.parametrize("max_history_chars", [None, 1048576, 0, -1])
+def test_transcript_budget_cli_preserves_deployment_default_until_overridden(
+    cli_app: typer.Typer, config_file: Path, max_history_chars: int | None
+) -> None:
+    options = (
+        []
+        if max_history_chars is None
+        else ["--realtime_max_history_chars", str(max_history_chars)]
+    )
+    result, requested_launch = invoke_serve(cli_app, config_file, options)
+    if max_history_chars is not None and max_history_chars <= 0:
+        assert result.exit_code != 0
+        requested_launch.assert_not_called()
+    else:
+        assert result.exit_code == 0, result.output
+        pipeline_config = requested_launch.call_args.args[0]
+        deployment_limits = RuntimeLimits(max_history_chars=12345)
+        resolved_limits = runtime_limits_for_pipeline(
+            pipeline_config, deployment_limits
+        )
+        assert resolved_limits.max_history_chars == (
+            12345 if max_history_chars is None else max_history_chars
+        )
+        assert deployment_limits.max_history_chars == 12345
 
 
 @pytest.mark.parametrize("has_custom_timeouts", [False, True])

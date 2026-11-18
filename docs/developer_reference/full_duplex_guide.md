@@ -109,6 +109,8 @@ python -m sglang_omni.cli serve \
 | Setting | Default | Meaning |
 |---|---|---|
 | `max_sessions` | 1 | Conversations at the same time. Further connections get HTTP 503. The LM keeps `max_sessions + 1` request slots, and a lower `--lm.engine.max_running_requests` is rejected at startup |
+| `--lm.engine.context_length` | 65,536 | Finite logical-position limit, about 87 minutes of 80 ms units minus the voice and role prompt |
+| `--realtime_max_history_chars` | unset (65,536 characters) | Override the deployment's per-response transcript budget; independent of LM positions |
 | `voice` | `NATF2` | Packaged voice name, or the path of a voice recording, used when a session names no voice |
 | `instructions` | the offline role prompt | Role prompt used when a session sends no `instructions` |
 | `sampling` | the offline defaults | Default sampling when a session does not set its own: `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `audio_temperature`, `audio_top_k`, `seed` |
@@ -116,7 +118,9 @@ python -m sglang_omni.cli serve \
 | `--mimi_encode.factory.max_concurrency` | 1 | Conversations whose audio Mimi encodes at the same time |
 | `--preprocessing.factory.voice_prompt_cache_bytes` | 512 MiB | Memory for the voice prompts loaded so far |
 
-Every 80 ms of input has to pass Mimi encode, the LM and Mimi decode within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and the LM decodes synchronously. The first conversation after the server starts waits several seconds while the LM runs its first steps. A conversation holds at most the LM context, 8192 positions or about 10.8 minutes (`--lm.engine.context_length` changes it); the unit that would pass it ends the session with `context_exhausted`.
+Every 80 ms of input has to pass Mimi encode, the LM and Mimi decode within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and the LM decodes synchronously. The first conversation after the server starts waits several seconds while the LM runs its first steps. The unit that would pass the configured LM context ends the session with `context_exhausted`; the session default is 65,536 positions, while the offline PersonaPlex pipeline keeps its 8,192-position default.
+
+The logical context limit does not allocate that many KV positions. On CUDA with `page_size=1`, window KV reuses expired positions; other configurations still need enough physical KV for the call. The realtime transcript budget is separate: the whole call is one response, and exceeding `max_history_chars` ends it with `context_limit`. Size that budget for the expected transcript when running long calls, for example `--realtime_max_history_chars 1048576`. The same character budget also limits `instructions` supplied in `session.update`. It does not extend the model context or its attention window.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`, `"native_unit_ms":80` and the packaged voices under `voices`:
 
