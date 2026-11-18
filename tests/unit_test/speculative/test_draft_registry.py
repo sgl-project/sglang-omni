@@ -239,14 +239,18 @@ def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> No
 
 @pytest.mark.parametrize("is_cuda", [True, False])
 def test_each_model_launches_exactly_its_default_on_drafts_and_only_on_cuda(
-    monkeypatch: pytest.MonkeyPatch, is_cuda: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_cuda: bool
 ) -> None:
+    """Check CUDA draft defaults without fetching checkpoint metadata."""
     monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
     registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
     # note (Haoling Pu): a near-miss path stands for a sibling checkpoint without an entry, such as Qwen3-ASR 0.6B next to 1.7B.
     model_paths = registry_paths + [
         f"{path}-without-a-draft" for path in registry_paths
     ]
+    monkeypatch.chdir(tmp_path)
+    for model_path in model_paths:
+        (tmp_path / model_path).mkdir(parents=True)
     default_drafts = set()
     for config_module_path in sorted(
         (REPO_ROOT / "sglang_omni" / "models").glob("*/config.py")
