@@ -1,0 +1,21 @@
+{
+  "name": "key-recorder-typed-invalid",
+  "kind": "key-recorder",
+  "key_recorder": {
+    "helper_records_keys": false,
+    "displayed_keys": "ctrl+opt+K+J",
+    "typed": {
+      "valid": false,
+      "canonical_keys": "",
+      "formatted_keys": "",
+      "error_text": "除修饰键外只能有一个键。"
+    },
+    "raw_keys": "ctrl+opt+K+J",
+    "custom": true,
+    "typing": true,
+    "edited": true,
+    "unknown": false,
+    "record_denied": false,
+    "focused": true
+  }
+}

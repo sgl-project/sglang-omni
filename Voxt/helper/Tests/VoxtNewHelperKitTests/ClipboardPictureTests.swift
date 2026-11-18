@@ -60,6 +60,14 @@ final class ClipboardPictureTests: XCTestCase {
         XCTAssertEqual(fallback?.width, 30)
     }
 
+    func testCopiedWebPOnly() async {
+        // A 1x1 lossless WebP: ImageIO decodes WebP but cannot write it.
+        let webp = UTType.webP.identifier
+        let bytes = Data(base64Encoded: "UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==")!
+        let img = await decode(types: [webp], data: [webp: bytes], file: nil, maxSide: 1600)
+        XCTAssertEqual(img.map { [$0.width, $0.height] }, [1, 1], "a clipboard whose only picture is WebP still sends it")
+    }
+
     private func expectNoImage(types: [String], data: [String: Data], file: URL?, maxSide: Int, _ message: String,
                                line: UInt = #line) async {
         let image = await decode(types: types, data: data, file: file, maxSide: maxSide)

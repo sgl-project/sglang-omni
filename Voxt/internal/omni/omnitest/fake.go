@@ -83,6 +83,10 @@ type Opts struct {
 	// NoDraft is a server from before --draft-model-path: it refuses the
 	// flag as an unknown argument.
 	NoDraft bool
+	// Segments adds two speaker segments to every Final answer.
+	Segments bool
+	// TokenLimit ends the Final at the generation budget.
+	TokenLimit bool
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -97,6 +101,8 @@ func Env(o Opts) []string {
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
 	v.Set("older", strconv.FormatBool(o.Older))
 	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
+	v.Set("segments", strconv.FormatBool(o.Segments))
+	v.Set("tokenlimit", strconv.FormatBool(o.TokenLimit))
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
@@ -114,6 +120,8 @@ func opts() Opts {
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
+	o.Segments, _ = strconv.ParseBool(v.Get("segments"))
+	o.TokenLimit, _ = strconv.ParseBool(v.Get("tokenlimit"))
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))

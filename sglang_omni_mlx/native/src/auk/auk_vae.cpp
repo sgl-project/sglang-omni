@@ -16,12 +16,18 @@ namespace {
 
 constexpr int kActivationUpsampleRatio = 2;
 constexpr int kActivationFilterSize = 12;
-constexpr float kSnakeEpsilon = 1e-9f;
 constexpr int kEncoderResidualStacks = 6;
+// Note (XXXXRT666): the VAE runs in float16, Snake inside in float32; the
+// released float32 weights decode to audio that transcribes the same.
+constexpr mx::Dtype kDtype = mx::float16;
 
-// Released weights in float32, with weight normalization folded and Torch
-// convolution layouts moved to MLX's; the training-only flow is dropped.
-omni_common::WeightMap ConvertVAEWeights(const omni_common::WeightMap &stored) {
+// Released weights with weight normalization folded and Torch convolution
+// layouts moved to MLX's, in kDtype; the training-only flow is dropped. Each
+// activation filter is also split into its even and odd taps, flipped for
+// upsampling, for the two-phase convolutions.
+omni_common::WeightMap
+ConvertVAEWeights(const omni_common::WeightMap &stored,
+                  const std::vector<int> &upsample_rates) {
   omni_common::WeightMap weights;
   for (const auto &[stored_name, stored_weight] : stored) {
     if (stored_name.starts_with("flow.") ||
@@ -39,27 +45,52 @@ omni_common::WeightMap ConvertVAEWeights(const omni_common::WeightMap &stored) {
                (magnitude / mx::sqrt(mx::sum(weight * weight, {1, 2}, true)));
     } else {
     }
-    if (name.ends_with(".weight") && weight.ndim() == 3) {
-      weight = mx::transpose(weight, name.starts_with("ups.")
-                                         ? std::vector<int>{1, 2, 0}
-                                         : std::vector<int>{0, 2, 1});
+    if (name.ends_with(".weight") && weight.ndim() == 3 &&
+        name.starts_with("ups.")) {
+      // ups.<stage>.0.weight, a transposed convolution, as its stride-1
+      // phases.
+      const int stage = std::stoi(name.substr(4));
+      weight = omni_common::TransposedConvolutionPhases(
+          mx::transpose(weight, {1, 2, 0}), upsample_rates.at(stage));
+    } else if (name.ends_with(".weight") && weight.ndim() == 3) {
+      weight = mx::transpose(weight, {0, 2, 1});
     } else if (name.ends_with(".filter")) {
       weight = mx::transpose(weight, {0, 2, 1});
+      const int taps = weight.shape(1);
+      const bool flips = name.ends_with(".upsample.filter");
+      for (const int phase : {0, 1}) {
+        mx::array phase_taps = mx::slice(weight, {0, phase, 0}, {1, taps, 1},
+                                         {1, kActivationUpsampleRatio, 1});
+        if (flips) {
+          phase_taps = mx::take(
+              phase_taps,
+              mx::arange(phase_taps.shape(1) - 1, -1, -1, mx::int32), 1);
+        } else {
+        }
+        weights.emplace(name + (phase == 0 ? ".even" : ".odd"),
+                        mx::astype(phase_taps, kDtype));
+      }
     } else {
     }
-    weights.emplace(std::move(name), std::move(weight));
+    weights.emplace(std::move(name), mx::astype(weight, kDtype));
   }
   return weights;
 }
 
 mx::array LeakyRelu(const mx::array &hidden_states, float negative_slope) {
-  return mx::maximum(hidden_states, hidden_states * negative_slope);
+  return mx::maximum(
+      hidden_states,
+      mx::multiply(hidden_states,
+                   omni_common::Scalar(negative_slope, hidden_states)));
 }
 
 } // namespace
 
 VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
-    : checkpoint_(ConvertVAEWeights(weights), nlohmann::json::object()) {
+    : checkpoint_(
+          ConvertVAEWeights(
+              weights, config.at("upsample_rates").get<std::vector<int>>()),
+          nlohmann::json::object()) {
   latent_dimension_ = config.at("latent_dim").get<int>();
   causal_ = config.at("causal").get<bool>();
   activation_causal_ = config.at("act_causal").get<bool>();
@@ -68,8 +99,9 @@ VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
   upsample_rates_ = config.at("upsample_rates").get<std::vector<int>>();
   const auto encoder_channels =
       config.at("downsample_channels").get<std::vector<int>>();
-  const auto upsample_kernels =
+  upsample_kernels_ =
       config.at("upsample_kernel_sizes").get<std::vector<int>>();
+  const auto &upsample_kernels = upsample_kernels_;
   const auto residual_kernels =
       config.at("resblock_kernel_sizes").get<std::vector<int>>();
   residual_dilations_ =
@@ -159,8 +191,14 @@ VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
   decoder_channels = config.at("upsample_initial_channel").get<int>();
   require_convolution("conv_pre", latent_dimension_, decoder_channels, 7);
   for (size_t i = 0; i < upsample_rates_.size(); ++i) {
-    require_convolution("ups." + std::to_string(i) + ".0", decoder_channels,
-                        decoder_channels / 2, upsample_kernels[i]);
+    // A transposed convolution, kept as its stride-1 phases.
+    const std::string upsample = "ups." + std::to_string(i) + ".0";
+    const int rate = upsample_rates_[i];
+    checkpoint_.RequireShape(upsample + ".weight",
+                             {rate * (decoder_channels / 2),
+                              (upsample_kernels[i] + rate - 1) / rate,
+                              decoder_channels});
+    checkpoint_.RequireShape(upsample + ".bias", {decoder_channels / 2});
     decoder_channels /= 2;
     for (size_t j = 0; j < residual_kernels.size(); ++j) {
       const std::string prefix =
@@ -200,41 +238,60 @@ mx::array VAE::Convolution(const mx::array &hidden_states,
 
 mx::array VAE::Activation(const mx::array &hidden_states,
                           const std::string &prefix) const {
+  const int batch = hidden_states.shape(0);
   const int channels = hidden_states.shape(2);
-  const auto &upsample_filter = checkpoint_.Weight(prefix + ".upsample.filter");
-  const int kernel_size = upsample_filter.shape(1);
-  const int padding = kernel_size / kActivationUpsampleRatio - 1;
+  const std::string upsample = prefix + ".upsample.filter";
+  const int kernel_size = checkpoint_.Weight(upsample).shape(1);
+  const int phase_taps = kernel_size / kActivationUpsampleRatio;
+  const int padding = phase_taps - 1;
   const int left_trim = padding * kActivationUpsampleRatio +
                         (kernel_size - kActivationUpsampleRatio) / 2;
   const int right_trim = padding * kActivationUpsampleRatio +
                          (kernel_size - kActivationUpsampleRatio + 1) / 2;
-  mx::array activated =
-      mx::conv_transpose1d(
-          mx::pad(hidden_states, {{0, 0}, {padding, padding}, {0, 0}},
-                  mx::array(0.0f), "edge"),
-          mx::broadcast_to(upsample_filter, {channels, kernel_size, 1}),
-          kActivationUpsampleRatio, 0, 1, 0, channels) *
-      static_cast<float>(kActivationUpsampleRatio);
+  // Note (XXXXRT666): the 2x upsampling and downsampling each run as two
+  // phases of stride-1 depthwise convolutions, which MLX's depthwise kernel
+  // takes, instead of a transposed and a strided convolution; the sums are the
+  // same.
+  const auto depthwise = [&](const mx::array &input, const std::string &taps) {
+    return mx::conv1d(
+        input,
+        mx::broadcast_to(checkpoint_.Weight(taps), {channels, phase_taps, 1}),
+        1, 0, 1, channels);
+  };
+  const mx::array edge_padded =
+      mx::pad(hidden_states, {{0, 0}, {padding, padding}, {0, 0}},
+              mx::array(0.0f), "edge");
+  const mx::array zero_padded =
+      mx::pad(edge_padded, {{0, 0}, {phase_taps - 1, phase_taps - 1}, {0, 0}});
+  const mx::array even = depthwise(zero_padded, upsample + ".even");
+  const mx::array odd = depthwise(zero_padded, upsample + ".odd");
+  mx::array activated = mx::multiply(
+      mx::reshape(mx::stack({even, odd}, 2),
+                  {batch, 2 * even.shape(1), channels}),
+      omni_common::Scalar(static_cast<float>(kActivationUpsampleRatio), even));
   activated = mx::slice(activated, {0, left_trim, 0},
-                        {1, activated.shape(1) - right_trim, channels});
-  const auto &stored_alpha = checkpoint_.Weight(prefix + ".act.alpha");
-  const auto &stored_beta = checkpoint_.Weight(prefix + ".act.beta");
-  const mx::array alpha =
-      snake_logscale_ ? mx::exp(stored_alpha) : stored_alpha;
-  const mx::array beta = snake_logscale_ ? mx::exp(stored_beta) : stored_beta;
-  activated = activated +
-              mx::square(mx::sin(activated * alpha)) / (beta + kSnakeEpsilon);
-  const auto &downsample_filter =
-      checkpoint_.Weight(prefix + ".downsample.lowpass.filter");
-  const int downsample_kernel_size = downsample_filter.shape(1);
-  const int pad_left = activation_causal_ ? downsample_kernel_size - 1
-                                          : (downsample_kernel_size - 1) / 2;
-  const int pad_right = activation_causal_ ? 0 : downsample_kernel_size / 2;
-  return mx::conv1d(mx::pad(activated, {{0, 0}, {pad_left, pad_right}, {0, 0}},
-                            mx::array(0.0f), "edge"),
-                    mx::broadcast_to(downsample_filter,
-                                     {channels, downsample_kernel_size, 1}),
-                    kActivationUpsampleRatio, 0, 1, channels);
+                        {batch, activated.shape(1) - right_trim, channels});
+  activated = omni_common::Snake(
+      activated, checkpoint_.Weight(prefix + ".act.alpha"),
+      checkpoint_.Weight(prefix + ".act.beta"), snake_logscale_);
+  const std::string downsample = prefix + ".downsample.lowpass.filter";
+  const int pad_left =
+      activation_causal_ ? kernel_size - 1 : (kernel_size - 1) / 2;
+  const int pad_right = activation_causal_ ? 0 : kernel_size / 2;
+  const mx::array padded =
+      mx::pad(activated, {{0, 0}, {pad_left, pad_right}, {0, 0}},
+              mx::array(0.0f), "edge");
+  const int padded_length = padded.shape(1);
+  const int output_length = padded_length / 2 - phase_taps + 1;
+  const auto samples = [&](int phase) {
+    return mx::slice(padded, {0, phase, 0}, {batch, padded_length, channels},
+                     {1, kActivationUpsampleRatio, 1});
+  };
+  const auto phase_output = [&](int phase, const std::string &taps) {
+    return mx::slice(depthwise(samples(phase), downsample + taps), {0, 0, 0},
+                     {batch, output_length, channels});
+  };
+  return mx::add(phase_output(0, ".even"), phase_output(1, ".odd"));
 }
 
 mx::array VAE::ResidualBlock(const mx::array &hidden_states,
@@ -263,7 +320,7 @@ PosteriorStats VAE::Posterior(const mx::array &waveform) const {
   } else {
   }
   mx::array hidden_states =
-      mx::reshape(mx::astype(waveform, mx::float32), {1, waveform.shape(0), 1});
+      mx::reshape(mx::astype(waveform, kDtype), {1, waveform.shape(0), 1});
   const std::string encoder = "audio_encoder.generator.";
   hidden_states =
       LeakyRelu(Convolution(hidden_states, encoder + "0.layer"), 0.2f);
@@ -288,7 +345,7 @@ PosteriorStats VAE::Posterior(const mx::array &waveform) const {
                   encoder + std::to_string(2 + 3 * downsample_rates_.size()) +
                       ".layer"),
       0);
-  const auto parts = mx::split(statistics, 2, -1);
+  const auto parts = mx::split(mx::astype(statistics, mx::float32), 2, -1);
   return {parts[0], parts[1]};
 }
 
@@ -302,8 +359,10 @@ mx::array VAE::Encode(const PosteriorStats &posterior,
   const mx::array latents =
       posterior.mean + mx::astype(posterior_noise, mx::float32) *
                            mx::exp(posterior.log_standard_deviation);
-  return (latents - checkpoint_.Weight("global_mean")) /
-         mx::sqrt(checkpoint_.Weight("global_log_std"));
+  return (latents -
+          mx::astype(checkpoint_.Weight("global_mean"), mx::float32)) /
+         mx::sqrt(
+             mx::astype(checkpoint_.Weight("global_log_std"), mx::float32));
 }
 
 mx::array VAE::Decode(const mx::array &latents) const {
@@ -313,20 +372,23 @@ mx::array VAE::Decode(const mx::array &latents) const {
         "VAE latents must have shape [frames, latent_dim]");
   } else {
   }
-  mx::array hidden_states =
-      mx::expand_dims(mx::astype(latents, mx::float32) *
-                              mx::sqrt(checkpoint_.Weight("global_log_std")) +
-                          checkpoint_.Weight("global_mean"),
-                      0);
+  mx::array hidden_states = mx::expand_dims(
+      mx::astype(
+          mx::astype(latents, mx::float32) *
+                  mx::sqrt(mx::astype(checkpoint_.Weight("global_log_std"),
+                                      mx::float32)) +
+              mx::astype(checkpoint_.Weight("global_mean"), mx::float32),
+          kDtype),
+      0);
   hidden_states = Convolution(hidden_states, "conv_pre");
   for (size_t i = 0; i < upsample_rates_.size(); ++i) {
     const std::string prefix = "ups." + std::to_string(i) + ".0";
-    const auto &weight = checkpoint_.Weight(prefix + ".weight");
     const int rate = upsample_rates_[i];
-    hidden_states =
-        mx::conv_transpose1d(hidden_states, weight, rate,
-                             causal_ ? 0 : (weight.shape(1) - rate) / 2) +
-        checkpoint_.Weight(prefix + ".bias");
+    const int kernel = upsample_kernels_[i];
+    hidden_states = omni_common::ConvolveTransposed(
+                        hidden_states, checkpoint_.Weight(prefix + ".weight"),
+                        rate, kernel, causal_ ? 0 : (kernel - rate) / 2) +
+                    checkpoint_.Weight(prefix + ".bias");
     if (causal_) {
       hidden_states =
           mx::slice(hidden_states, {0, 0, 0},
@@ -343,12 +405,15 @@ mx::array VAE::Decode(const mx::array &latents) const {
                                    "resblocks." + std::to_string(first + j),
                                    residual_dilations_[j]);
     }
-    hidden_states = combined / static_cast<float>(residual_dilations_.size());
+    hidden_states = combined * omni_common::Scalar(
+                                   1.0f / residual_dilations_.size(), combined);
   }
   return mx::reshape(
-      mx::clip(Convolution(Activation(hidden_states, "activation_post"),
-                           "conv_post", 1, 1, causal_),
-               mx::array(-1.0f), mx::array(1.0f)),
+      mx::clip(
+          mx::astype(Convolution(Activation(hidden_states, "activation_post"),
+                                 "conv_post", 1, 1, causal_),
+                     mx::float32),
+          mx::array(-1.0f), mx::array(1.0f)),
       {-1});
 }
 
