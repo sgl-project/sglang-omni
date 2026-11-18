@@ -232,7 +232,7 @@ func TestSetupMissingItsKey(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}} // the speech models came over: only the language model is missing
 	a.checkModels()
-	a.navigate("/history") // Home shows it among its steps instead
+	a.navigate("/home")
 	if !has(tt, "DeepSeek needs its API key. Paste it again to use it.") || !has(tt, "Complete setup") {
 		t.Fatalf("sidebar: %q", tt.Texts())
 	}

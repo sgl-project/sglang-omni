@@ -247,9 +247,6 @@ func (a *app) shellModel(now time.Time) *shellViewState {
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,
 	}
-	if section(a.router.Path()) == "/home" {
-		model.Notices = a.noticesHome // Home's steps already show the models card
-	}
 	if a.openingStarted.IsZero() {
 		a.toasts = nil
 	} else {

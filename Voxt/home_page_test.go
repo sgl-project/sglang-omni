@@ -73,16 +73,6 @@ func TestHomeReadiness(t *testing.T) {
 		t.Errorf("no shortcut waiting for its tap: %q", tt.Texts())
 	}
 	a.perms.access = false
-	// Home's steps say what the sidebar's models card would; other pages keep it.
-	if has(tt, "No models") {
-		t.Errorf("the models card repeats Home's steps: %q", tt.Texts())
-	}
-	a.navigate("/history")
-	if !has(tt, "No models") {
-		t.Errorf("no models card away from Home: %q", tt.Texts())
-	}
-	a.navigate("/home")
-	frames(tt)
 	// The whole line is the way to fix it: speech models are local,
 	// language models are set up on their page.
 	if _, ok := tt.Find("Speech recognition: Download (2.5 GB)"); !ok {

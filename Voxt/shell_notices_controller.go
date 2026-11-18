@@ -37,11 +37,9 @@ type noticesState struct {
 	problemCode, problemDismissed map[string]string
 
 	// noticesGen counts the changes to notices; noticesView is the last
-	// built state, noticesViewKey its inputs (noticesModel); noticesHome
-	// is it without the models card, which Home's steps already show.
+	// built state, noticesViewKey its inputs (noticesModel).
 	noticesGen     int
 	noticesView    []noticeViewState
-	noticesHome    []noticeViewState
 	noticesViewKey noticesCacheKey
 }
 
@@ -234,7 +232,6 @@ func (a *app) noticesModel(now time.Time) []noticeViewState {
 	key := noticesCacheKey{gen: a.noticesGen, year: now.Year(), location: now.Location().String(), zoneOffset: zoneOffset, locale: i18n.Locale()}
 	if key != a.noticesViewKey {
 		a.noticesView = buildNoticesViewState(i18n.CurrentTranslator(), a.notices, now)
-		a.noticesHome = slices.DeleteFunc(slices.Clone(a.noticesView), func(n noticeViewState) bool { return n.ID == problemModels })
 		a.noticesViewKey = key
 	}
 	return a.noticesView
