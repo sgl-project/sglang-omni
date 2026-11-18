@@ -128,6 +128,23 @@ class SummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             loop.summarize_reports([raw_report(100), warning, raw_report(200)])
 
+    def test_summarize_reports_rejects_short_dictation_reports_without_resources(self):
+        reports = []
+        for wall in (100, 200, 300):
+            report = {
+                "status": "success",
+                "warnings": [],
+                "errors": [],
+                "total_wall_ms": wall,
+                "stop_to_final_ms": {"value": wall / 4},
+                "stages": [
+                    {"name": "decode", "index": 0, "wall_ms": wall / 10, "rtf": 0.1}
+                ],
+            }
+            reports.append(report)
+        with self.assertRaises(ValueError):
+            loop.summarize_reports(reports)
+
     def test_unavailable_metric_stays_null(self):
         reports = [raw_report(100), raw_report(200), raw_report(300)]
         reports[1]["resources"]["peak_rss_bytes"] = {

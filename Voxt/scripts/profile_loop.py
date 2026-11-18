@@ -220,10 +220,7 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
         report.get("status") != "success"
         or report.get("warnings")
         or report.get("errors")
-        or (
-            ("resources" in report or "stop_to_final_ms" not in report)
-            and not report_memory_pressure_valid(report)
-        )
+        or not report_memory_pressure_valid(report)
         for report in reports
     ):
         raise ValueError(
