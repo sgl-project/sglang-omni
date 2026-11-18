@@ -19,7 +19,11 @@ import torch
 import torchaudio
 import xxhash
 from numpy.typing import NDArray
-from sglang.utils import LazyImport
+
+try:
+    from sglang._lazy_import import LazyImport
+except ModuleNotFoundError:  # SGLang 0.5.23
+    from sglang.utils import LazyImport
 
 current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
 
