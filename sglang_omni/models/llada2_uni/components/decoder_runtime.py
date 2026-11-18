@@ -23,16 +23,12 @@ class DecoderRuntimeHandle:
     def is_leader(self) -> bool:
         return self.sp_rank == 0
 
-    def preparation(self, phase: str):
-        return nullcontext()
-
-    def request_seed(self, metadata: tuple, seed: int | None) -> int | None:
-        return seed
-
     def broadcast_features(self, features: torch.Tensor) -> torch.Tensor:
         if self.sp_size > 1:
             group = self.parallel_state.get_sp_group().device_group
             dist.broadcast(features, src=dist.get_global_rank(group, 0), group=group)
+        else:
+            pass
         return features
 
     def __init__(
@@ -102,7 +98,7 @@ class DecoderRuntimeHandle:
         )
         if topology != (self.sp_size, 1, self.sp_size, self.sp_rank):
             raise RuntimeError(
-                f"SGLang decoder requires a single-rank runtime, got {topology}"
+                f"SGLang decoder has unexpected parallel topology, got {topology}"
             )
         else:
             pass

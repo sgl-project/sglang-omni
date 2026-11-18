@@ -238,23 +238,22 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             f_patch_size,
         )
         if self.native_cache is None or self.native_cache[0] != key:
-            with self.runtime.preparation("native input preparation"):
-                self.runtime.validate()
-                if any(image.shape != x[0].shape for image in x) or any(
-                    cap.shape != cap_feats[0].shape for cap in cap_feats
-                ):
-                    raise ValueError(
-                        "Native decoder requires a uniform latent/semantic batch"
-                    )
-                else:
-                    pass
-                if x[0].shape[1] != 1:
-                    raise ValueError("Native decoder supports one image frame")
-                else:
-                    pass
-                freqs_cis = self.model._build_single_sample_freqs_cis(  # noqa: leading-underscore  # SGLang API
-                    x[0], cap_feats[0], patch_size, f_patch_size
+            self.runtime.validate()
+            if any(image.shape != x[0].shape for image in x) or any(
+                cap.shape != cap_feats[0].shape for cap in cap_feats
+            ):
+                raise ValueError(
+                    "Native decoder requires a uniform latent/semantic batch"
                 )
+            else:
+                pass
+            if x[0].shape[1] != 1:
+                raise ValueError("Native decoder supports one image frame")
+            else:
+                pass
+            freqs_cis = self.model._build_single_sample_freqs_cis(  # noqa: leading-underscore  # SGLang API
+                x[0], cap_feats[0], patch_size, f_patch_size
+            )
             self.native_cache = (key, freqs_cis)
         else:
             pass
