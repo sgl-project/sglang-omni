@@ -212,13 +212,14 @@ func TestLateAppearancePreviewSavePreservesOtherSettings(t *testing.T) {
 	transparencySaved := a.settings.Get()
 	a.updateSettings(func(s *settings.Settings) {
 		s.Appearance.Scale = 1.25
+		s.Appearance.HistoryDetailWidth = settings.MaxHistoryDetailWidth
 		s.Privacy.KeepHistory = false
 	})
 	// Deliver the preview notifications after the other settings have applied.
 	a.settingsChanged(paletteSaved, transparencySaved)
 	a.settingsChanged(before, paletteSaved)
 	if appearance := a.prefs.Appearance; appearance.Scale != 1.25 || appearance.Palette != "#b25280" ||
-		appearance.WindowTransparency != settings.MaxWindowTransparency {
+		appearance.WindowTransparency != settings.MaxWindowTransparency || appearance.HistoryDetailWidth != settings.MaxHistoryDetailWidth {
 		t.Fatalf("late preview notifications changed appearance to %+v", appearance)
 	}
 	if a.scale != 3 || a.prefs.Privacy.KeepHistory || a.keepHistory {
