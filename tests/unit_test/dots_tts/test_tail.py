@@ -47,7 +47,6 @@ def test_attention_context_preserves_policy_outside_npu(
         SimpleNamespace(
             is_npu=lambda: platform_type == "npu", device_type=platform_type
         ),
-        raising=False,
     )
     npu_context = platform_type == "npu" and device_type == "npu"
     with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
@@ -107,6 +106,18 @@ def test_tail_rotary_preserves_float32_without_changing_other_instances(
     original_forward = type(unrelated_rotary).forward
     device = torch.device(device_type)
     acoustic_tail = build_tail(TailModel().to(device), slots=1, device=device)
+    if device_type == "cpu":
+        assert acoustic_tail.dit_rotary.forward.__func__ is original_forward
+        if acoustic_tail.encoder_rotary is not None:
+            assert acoustic_tail.encoder_rotary.forward.__func__ is original_forward
+        return
+    else:
+        pass
+    assert acoustic_tail.dit_rotary.forward.__func__ is tail.rotary_forward
+    if acoustic_tail.encoder_rotary is not None:
+        assert acoustic_tail.encoder_rotary.forward.__func__ is tail.rotary_forward
+    else:
+        pass
     positions = torch.tensor(
         [0, 255, 256, 257, 4095, 4096, 4097], dtype=torch.float32, device=device
     )

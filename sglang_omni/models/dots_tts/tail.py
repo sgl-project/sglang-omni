@@ -451,7 +451,6 @@ class DotsTtsAcousticTail:
         dit_attention = dit.blocks[0].attn
         self.dit_layers = len(dit.blocks)
         self.dit_rotary = dit_attention.rotary
-        self.dit_rotary.forward = MethodType(rotary_forward, self.dit_rotary)
         self.dit_heads = int(dit_attention.num_heads)
         self.dit_head_dim = int(dit_attention.head_dim)
         encoder_attention = patch_encoder.encoder.layers[0].attn
@@ -459,10 +458,14 @@ class DotsTtsAcousticTail:
         self.encoder_rotary = (
             encoder_attention.rotary if encoder_attention.rotary_bias else None
         )
-        if self.encoder_rotary is not None:
-            self.encoder_rotary.forward = MethodType(
-                rotary_forward, self.encoder_rotary
-            )
+        if self.device.type == "npu":
+            self.dit_rotary.forward = MethodType(rotary_forward, self.dit_rotary)
+            if self.encoder_rotary is not None:
+                self.encoder_rotary.forward = MethodType(
+                    rotary_forward, self.encoder_rotary
+                )
+            else:
+                pass
         else:
             pass
         self.encoder_block = int(patch_encoder.out_ds_rate)
