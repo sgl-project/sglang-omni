@@ -6,44 +6,39 @@ The thinker generates the answer from the multimodal input. In speech mode, the 
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then run the commands from the repository root. The following example uses Linux with one NVIDIA H200 GPU. For other hardware and precisions, see [platform deployment](qwen3_omni/platforms.md).
+Install `sglang-omni` by following [Installation](../get_started/installation.md), then run the commands from the repository root. The following example uses Linux with an NVIDIA GPU. For other hardware and precisions, see [platform deployment](qwen3_omni/platforms.md).
 
 ## Server Configuration
 
-This example uses the BF16 Instruct checkpoint with the single-H200 colocated speech configuration:
+This example uses the BF16 Instruct checkpoint with the colocated speech configuration:
 
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --config examples/configs/qwen3_omni_colocated_h200.yaml \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
   --colocate \
-  --model-name qwen3-omni \
   --port 8008
 ```
 
-The first startup includes compilation and warmup. Then, in another terminal, run the following command and wait until `/health` returns HTTP 200:
-
-```bash
-curl -i http://localhost:8008/health
-```
+The first startup includes compilation and warmup. Wait until `/health` returns HTTP 200 before sending requests.
 
 For other GPU layouts, use the [launch command selector](qwen3_omni/platforms.md#server-configuration). Colocated deployments need the hardware-specific config to set per-stage memory budgets.
 
 ## Generating Responses
 
-With the speech server running, request an answer in text and audio:
+With the speech server running, send an image question and request an answer in text and audio:
 
 ```bash
-curl --fail-with-body http://localhost:8008/v1/chat/completions \
+curl -X POST http://localhost:8008/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-omni",
-    "messages": [{"role": "user", "content": "Say one friendly sentence."}],
+    "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
+    "images": ["tests/data/cars.jpg"],
     "modalities": ["text", "audio"],
     "audio": {"format": "wav"},
-    "max_tokens": 64
-  }' \
-  --output response.json
+    "max_tokens": 16
+  }'
 ```
 
 The response is JSON. The answer is in `choices[0].message.content`, and the WAV audio is base64-encoded in `choices[0].message.audio.data`. Use the [Omni speech client](../basic_usage/omni.md#speech-output) to decode it to a playable file. For Python and the OpenAI SDK, see the [shared client examples](../basic_usage/omni.md#text-output).
@@ -75,7 +70,6 @@ Text-only mode accepts text, image, audio, and video input and returns text. Sta
 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --text-only \
-  --model-name qwen3-omni \
   --port 8008
 ```
 
@@ -113,7 +107,7 @@ Qwen3-Omni supports turn-based voice sessions on `/v1/realtime`. The standard sp
 With the speech server running, send a streaming request:
 
 ```bash
-curl --fail-with-body -N http://localhost:8008/v1/chat/completions \
+curl -N -X POST http://localhost:8008/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-omni",
@@ -131,23 +125,7 @@ This prints Server-Sent Events. Text arrives in `choices[0].delta.content` and a
 
 ## Common options
 
-With the speech server running, set the text and speech generation limits separately:
-
-```bash
-curl --fail-with-body http://localhost:8008/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3-omni",
-    "messages": [{"role": "user", "content": "Explain why the sky is blue in one sentence."}],
-    "modalities": ["text", "audio"],
-    "audio": {"format": "wav"},
-    "temperature": 0.0,
-    "max_tokens": 128,
-    "talker_temperature": 0.9,
-    "talker_max_new_tokens": 1024
-  }' \
-  --output response.json
-```
+The thinker and talker have separate generation controls. Set `temperature` and `max_tokens` for the text answer, and `talker_temperature` and `talker_max_new_tokens` for speech generation.
 
 `max_tokens` limits the thinker's answer; `talker_max_new_tokens` limits the talker's codec generation. Allow enough tokens for the whole reply. See [Qwen3-Omni sampling parameters](qwen3_omni/reference.md#sampling-parameters) for defaults, and the [shared Omni API](../basic_usage/omni.md#request-parameters) for common fields.
 

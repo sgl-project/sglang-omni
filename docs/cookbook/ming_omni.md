@@ -234,6 +234,22 @@ Reference output:
 
 Use the [shared SSE request and Python client](../basic_usage/omni.md#streaming) with model `ming-omni` and port `8000`. Ming requires its streaming speech pipeline for incremental audio chunks; see [Streaming Speech Client](#streaming-speech-client) for the deployment constraint. Each chunk is a complete WAV container. Decode the PCM frames before combining chunks into one playback file.
 
+To inspect the raw SSE stream with curl, use `-N` to disable buffering:
+
+```bash
+curl -N -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ming-omni",
+    "messages": [{"role": "user", "content": "Say one friendly sentence."}],
+    "modalities": ["text", "audio"],
+    "audio": {"format": "wav"},
+    "stream": true,
+    "max_tokens": 64,
+    "temperature": 0.0
+  }'
+```
+
 Output: with the streaming speech pipeline the audio arrives as multiple `delta.audio.data` chunks. Against the **non-streaming** speech server (the `Text + Audio Output` command), `stream: true` still returns valid SSE but the audio comes back as a single aggregate chunk after generation — for example one text delta carrying `Hello! How can I assist you today?`, one ~276 KB aggregate WAV chunk, and a final `finish_reason: stop` event before `[DONE]`:
 
 ```text
