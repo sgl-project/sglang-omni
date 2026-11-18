@@ -43,6 +43,31 @@ func TestPrivacyHistoryExplainsReopen(t *testing.T) {
 	}
 }
 
+// The list names the content and destination of each local or API request,
+// including optional images and Translate's fallback (#4159).
+func TestPrivacyNamesBothDataPaths(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	openPrivacy(t, a, tt)
+	for _, want := range []string{
+		"Your recordings are recognised on this Mac",
+		"its recordings go to that service",
+		"text Voxt recognised",
+		"text you selected or typed",
+		"meeting transcripts",
+		"your speech context",
+		"your rules and enabled dictionary content",
+		"a screenshot of the window or an image you copied",
+		"A request to a language-model server on this Mac",
+		"stays on this Mac",
+		"A request to an external API goes to the provider handling it",
+		"If Translate uses your fallback model, that provider gets the same request too",
+	} {
+		if !has(tt, want) {
+			t.Errorf("the list does not say %q: %q", want, firstTexts(tt))
+		}
+	}
+}
+
 // TestPrivacySendClipboardImage: sending the copied image with Rewrite is
 // off by default; the switch saves it, asks for no permission, and its
 // note says what goes and what does not.
