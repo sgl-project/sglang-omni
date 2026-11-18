@@ -18,6 +18,7 @@ from sglang_omni.models.streaming_cascade.base import (
     StreamComponent,
     audio_chunk,
     bearer_headers,
+    blank_screen_blocks,
     control_chunk,
     iterate,
     replying,
@@ -278,12 +279,17 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
     ) -> None:
+        reply_text = ""
         text_end = 0
         audio_ms = 0.0
         async for span in sentences(
             self.follow_language(deltas), self.config.max_sentence_words
         ):
-            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
+            reply_text += span
+            # note (Haoling Pu): a span can start inside a block an earlier span opened, so the reply so far is blanked before the span is cut from it.
+            text = UNSPOKEN_SYMBOLS.sub(
+                "", MARKDOWN_LINK.sub(r"\1", blank_screen_blocks(reply_text)[text_end:])
+            )
             text = TABLE_PIPE.sub(
                 ", ",
                 TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),

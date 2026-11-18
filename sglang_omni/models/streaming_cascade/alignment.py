@@ -25,6 +25,7 @@ from sglang_omni.models.streaming_cascade.base import (
     SPEECH_SAMPLE_RATE_HZ,
     ComponentConfig,
     StreamComponent,
+    blank_screen_blocks,
     control_chunk,
     iterate,
     probe_models,
@@ -333,7 +334,7 @@ class Alignment(StreamComponent):
         emit: ChunkEmitter,
         sentences: asyncio.Queue[SentenceAudio | HeardAudio | None],
     ) -> None:
-        span = reply.text[reply.start : text_end]
+        span = blank_screen_blocks(reply.text)[reply.start : text_end]
         text = span.strip()
         progress(emit, reply.turn, text_end, audio_ms)
         if self.keeps_audio() and text and reply.samples:
@@ -561,7 +562,7 @@ def heard_audio(reply: SpokenReply, cut_ms: float) -> HeardAudio | None:
             sentence.language,
         )
     elif reply.samples and cut_ms > reply.start_ms:
-        span = reply.text[reply.start :]
+        span = blank_screen_blocks(reply.text)[reply.start :]
         text = span.strip()
         start = reply.start + len(span) - len(span.lstrip())
         start_ms, samples = reply.start_ms, np.concatenate(reply.samples)

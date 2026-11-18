@@ -177,6 +177,48 @@ test("a completed reply keeps the heard part and the rest", () => {
   assert.deepEqual(session.captionParts("resp_0"), { heard: "One, two,", pending: " three." });
 });
 
+// The caption parts with each run of spaces left by a screen block read as one space.
+function captionWords(session, responseId) {
+  const { heard, pending } = session.captionParts(responseId);
+  return { heard: heard.replace(/\s+/g, " ").trim(), pending: pending.replace(/\s+/g, " ").trim() };
+}
+
+test("a screen block stays out of the caption, heard or still to play, and the server's offsets still fit", () => {
+  const text = "On screen. <screen>\nbrew install python\n</screen>\nThen run it.";
+  const blockEnd = text.indexOf("Then");
+  const { session } = openSession(text, [
+    { textEnd: 10, audioMs: 500 },
+    { textEnd: blockEnd, audioMs: 500 },
+    { textEnd: text.length, audioMs: 1500 },
+  ]);
+  session.played("resp_0", 500, false);
+  assert.deepEqual(captionWords(session, "resp_0"), { heard: "On screen.", pending: "Then run it." });
+  session.played("resp_0", 1500, false);
+  assert.deepEqual(captionWords(session, "resp_0"), { heard: "On screen. Then run it.", pending: "" });
+});
+
+test("the caption waits for a tag still arriving instead of showing it", () => {
+  const { session } = openSession("Look here <scr", []);
+  assert.deepEqual(captionWords(session, "resp_0"), { heard: "Look here", pending: "" });
+});
+
+test("the screen shows the latest blocks the caption has reached, so a block shows once the speech before it has played", () => {
+  // A reply without progress from the server shows its blocks as they stream, without a tag still arriving.
+  const { session } = openSession("Here. <SCREEN>a\nb</screen> And <screen>\nc</scr", []);
+  assert.equal(session.screen, "a\nb\n\nc");
+  const text = "It's on screen. <screen>d</screen>";
+  session.handle({ type: "response.created", response: { id: "resp_1" } });
+  session.handle({ type: "response.output_audio_transcript.delta", response_id: "resp_1", delta: text });
+  session.handle({ type: "response.output_audio.delta", response_id: "resp_1", item_id: "item_1", delta: "" });
+  for (const [textEnd, audioMs] of [[15, 800], [text.length, 800]]) {
+    session.handle({ type: "sglang.response.progress", response_id: "resp_1", item_id: "item_1", output_index: 0, content_index: 0, text_end: textEnd, audio_ms: audioMs });
+  }
+  session.played("resp_1", 700, false);
+  assert.equal(session.screen, "a\nb\n\nc");
+  session.played("resp_1", 800, false);
+  assert.equal(session.screen, "d");
+});
+
 function openGranted(interaction) {
   const sent = [];
   const session = new DuplexSession({ transport: (event) => sent.push(event), now: () => 0 });
