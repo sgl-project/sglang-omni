@@ -1,0 +1,27 @@
+docs/index.rst
+  s_9be4bd449be508::t_701183984df3fc 249-255
+docs/models/duo.md
+  s_9be4bd449be508::t_f7099bd7f206a4 1-89
+scripts/prepare_duo_models.py
+  s_9be4bd449be508::t_56a58b8c2959a4 1-208
+scripts/serve_duo_realtime.py
+  s_9be4bd449be508::t_148ded7016c449 1-394
+tests/unit_test/serve/test_duo_startup.py
+  s_9be4bd449be508::t_2c7602b3257175 1-13,16-25,26-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "7ce6a0f7f47e3a6cd88e1b9bc2822063d1a8bd7a",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
