@@ -25,7 +25,7 @@ All configurations listed below are supported.
 
 ## Input and Output Modalities
 
-Qwen3-Omni accepts text, image, audio, and video input in both text-only and speech deployments. Use the [shared request examples](../../basic_usage/omni.md#general-usage) for media inputs and text-and-speech replies, and [Video Controls](../../basic_usage/omni.md#video-controls) for frame sampling and pixel budgets. To return audio, launch the speech pipeline. Realtime audio negotiation has a separate contract described in [Realtime Sessions](platforms.md#realtime-sessions).
+Qwen3-Omni accepts text, image, audio, and video input in both text-only and speech deployments. Use the [shared request examples](../../basic_usage/omni.md#general-usage) for media inputs and text-and-speech replies, and [Request Parameters](../../basic_usage/omni.md#request-parameters) for frame sampling and pixel budgets. To return audio, launch the speech pipeline. Realtime audio negotiation has a separate contract described in [Realtime Sessions](platforms.md#realtime-sessions).
 
 With `use_audio_in_video: true`, requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported.
 

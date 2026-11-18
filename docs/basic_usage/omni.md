@@ -2,7 +2,7 @@
 
 SGLang-Omni serves omni models through the OpenAI-compatible `/v1/chat/completions` endpoint. A request can carry text, image, audio, and video, and the reply is text-only or text and speech.
 
-This page covers shared server controls and the request format for omni models, including streaming and realtime sessions. Hardware-specific launch commands, tuning, and model-specific fields are on each model's page. Examples use `qwen3-omni` as the model name.
+This page covers the request format shared by all omni models, including streaming and realtime sessions. Launch commands, tuning, and model-specific fields are on each model's page. Examples use `qwen3-omni` as the model name.
 
 ## Prerequisites
 
@@ -16,44 +16,6 @@ Install SGLang-Omni using the [installation guide](../get_started/installation.m
 | [Ming-Omni](../cookbook/ming_omni.md) | Text, image, audio, video | Text, or text and speech | 44.1 kHz speech; thinker and talker stages |
 | [Ming-3.0-audio](../cookbook/ming3_audio.md) | Audio, with optional text | Text, or text and speech | Transcription, audio question answering, and speech synthesis |
 | [MiniCPM-o](../cookbook/minicpm_o.md) | Text, image, audio, video | Text, or text and speech | Chat here; live full-duplex calls use `/v1/realtime` |
-
-## Start an Omni Server
-
-Use `sgl-omni serve --model-path` to select a model's default pipeline. For example, this starts the Qwen3-Omni speech pipeline:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --model-name qwen3-omni \
-  --port 8008
-```
-
-Add `--text-only` to serve text responses without launching the speech stages. Multimodal input remains available according to the model's capabilities. Set `--model-name` to the identifier clients send in `model`.
-
-Check the model's cookbook before launching: GPU requirements, colocated configurations, stage placement, and supported precisions depend on the model. For process placement and replication, see [Process Topology](process_topology.md).
-
-### Memory Budgets
-
-For SGLang autoregressive engine stages, leave `mem_fraction_static` unset to use the automatically sized memory budget. To pin it, pass `--mem-fraction-static`; the value must be greater than `0` and less than `1`, and applies to every SGLang engine stage:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --mem-fraction-static 0.88
-```
-
-A dotted per-stage flag overrides the global value for that stage. Stage names depend on the pipeline; this Qwen3-Omni example sets separate thinker and talker budgets:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --thinker.engine.mem_fraction_static 0.88 \
-  --talker_ar.engine.mem_fraction_static 0.88
-```
-
-These values illustrate the override syntax. Use the model's hardware-specific configuration for tested budgets and leave headroom for other stages sharing the GPU.
 
 ## General Usage
 
@@ -91,7 +53,7 @@ response.raise_for_status()
 print(response.json()["choices"][0]["message"]["content"])
 ```
 
-The same request works through the OpenAI Python SDK when the client points at the SGLang-Omni server. Pass SGLang-Omni extensions such as the top-level media lists through the SDK's `extra_body` argument:
+The same request works through the OpenAI Python SDK when the client points at the SGLang-Omni server. Extra fields such as `modalities` and the media lists pass through unchanged:
 
 ```python
 from openai import OpenAI
@@ -129,41 +91,6 @@ Where top-level media land in the prompt depends on the model. Qwen3-Omni places
 
 When every part of the question comes from audio, video, or image input, set `"content": ""` on the user message. Leaving a text question in `content` alongside the media makes the model read both.
 
-### Audio Input
-
-Use `audios` for a recording the server can read, or an `input_audio` content part to send a local recording from the client. This example sends the recording itself, so its path only needs to exist on the client:
-
-```python
-import base64
-from pathlib import Path
-
-import requests
-
-audio_base64 = base64.b64encode(Path("question.wav").read_bytes()).decode()
-response = requests.post(
-    "http://localhost:8008/v1/chat/completions",
-    json={
-        "model": "qwen3-omni",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {"format": "wav", "data": audio_base64},
-                    }
-                ],
-            }
-        ],
-        "modalities": ["text"],
-        "max_tokens": 128,
-    },
-    timeout=600,
-)
-response.raise_for_status()
-print(response.json()["choices"][0]["message"]["content"])
-```
-
 ### Image and Text Input
 
 The examples below show the curl form. In Python, send the same JSON body as in Text Output and read the answer from `choices[0].message.content`.
@@ -196,24 +123,6 @@ curl -X POST http://localhost:8008/v1/chat/completions \
     "audios": ["tests/data/query_to_cars.wav"],
     "modalities": ["text"],
     "max_tokens": 16
-  }'
-```
-
-### Video and Text Input
-
-Send a video with a text question. Use `video_max_frames` to cap the number of sampled frames:
-
-```bash
-curl -X POST http://localhost:8008/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3-omni",
-    "messages": [{"role": "user", "content": "Describe the action in this video."}],
-    "videos": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-VL/space_woaudio.mp4"],
-    "video_max_frames": 16,
-    "modalities": ["text"],
-    "max_tokens": 96,
-    "temperature": 0.0
   }'
 ```
 
@@ -387,9 +296,7 @@ Turn-based sessions may use client commits, `server_vad`, or semantic VAD when t
 
 ## Server Readiness
 
-Startup warmup depends on the pipeline and realtime deployment. A configured request warmup must finish before `/health` reports ready; a pipeline without request warmup can become ready without exercising its chat path. While startup is in progress, `/health` returns HTTP 503 with status `starting`. A failed request warmup stops the server.
-
-`SGLANG_OMNI_WARMUP_TIMEOUT` sets the timeout in seconds for each warmup request (default `600`). Pass `--skip-server-warmup` to report ready without running these requests. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni/tuning.md#server-readiness) for its synthetic inputs and replica coverage. Readiness does not guarantee that every input shape has been warmed up.
+Startup warmup depends on the pipeline and realtime deployment. A configured warmup must finish before `/health` reports ready; a pipeline without request warmup can become ready without exercising its chat path. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni/tuning.md#server-readiness) for its synthetic multimodal requests, timeout, and skip option. Readiness does not guarantee that every input shape has been warmed up.
 
 ## Request Parameters
 
@@ -425,16 +332,6 @@ Fields accepted by `/v1/chat/completions`. Model support and defaults vary; the 
 | `return_spec_tokens_details` | bool | `false` | With speculative decoding, return acceptance statistics in `sglext.spec_tokens_details` |
 
 Limiting `video_max_frames` or the pixel budget keeps video latency predictable.
-
-### Sampling and Stage Overrides
-
-Top-level sampling fields control text generation. Omitted fields use the pipeline's defaults; speech generation can have separate defaults and model-specific overrides. `max_completion_tokens` takes precedence over `max_tokens` when both are supplied.
-
-`stage_sampling` and `stage_params` are extension mappings for pipelines that implement per-stage sampling and non-sampling settings. Use the stage names and supported settings documented by the model's cookbook. The token budget inside `stage_sampling` is named `max_new_tokens`, rather than the HTTP field `max_tokens`.
-
-### Video Controls
-
-`video_fps` and `video_max_frames` control how many frames are sampled. `video_min_pixels`, `video_max_pixels`, and `video_total_pixels` control the spatial budget. Unset fields use the model's preprocessing defaults. Set `use_audio_in_video` to `true` to process embedded audio when the model supports it; an `audios` entry instead supplies a separate recording, such as a spoken question. See the model's cookbook for frame-rate constraints and how videos without an audio track are handled.
 
 ## Known Limitations
 

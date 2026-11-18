@@ -4,11 +4,30 @@
 
 ## Server Readiness
 
-Before it reports ready, the server sends itself a chat request with a small image, one second of audio and a short instruction (text and audio output in speech mode, text output in text-only mode, at most 8 new tokens from each stage that generates tokens), once per replica of its most replicated process, one after another, so that every replica serves one. These requests pass through every stage to build the kernels for that request path. Inputs of other shapes, such as video or a large concurrent batch, can still build a kernel variant on first use. Health status, timeout, and the skip option are documented in [Server Readiness](../../basic_usage/omni.md#server-readiness).
+Before it reports ready, the server sends itself a chat request with a small image, one second of audio and a short instruction (text and audio output in speech mode, text output in text-only mode, at most 8 new tokens from each stage that generates tokens), once per replica of its most replicated process, one after another, so that every replica serves one. `/health` returns 503 with status `starting` until these requests have passed through every stage, so the one-time kernel builds of that request path happen before the first user request. Inputs of other shapes, such as video or a large concurrent batch, can still build a kernel variant on first use. A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600) bounds each request, and `--skip-server-warmup` reports ready without them.
 
 ## Memory and Concurrency
 
-For automatic memory sizing, global `--mem-fraction-static`, and per-stage override syntax, see [Memory Budgets](../../basic_usage/omni.md#memory-budgets). Qwen3-Omni's AR stages are `thinker` and `talker_ar`; use the [colocated hardware configs](platforms.md#launch-a-speech-server) when they share one GPU.
+By default, leave `mem_fraction_static` unset and let SGLang-Omni auto-size the SGLang AR memory budget. If a specific machine needs manual tuning, you can pin the value globally or per AR stage:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --mem-fraction-static 0.88
+```
+
+Use per-stage flags when the thinker and talker need different budgets:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --thinker.engine.mem_fraction_static 0.88 \
+  --talker_ar.engine.mem_fraction_static 0.88
+```
+
+`--mem-fraction-static` applies to every SGLang engine stage. A dotted per-stage path overrides the global value for that stage. Values must be greater than `0` and less than `1`. Use the [colocated hardware configs](platforms.md#launch-a-speech-server) when Qwen3-Omni's stages share one GPU.
 
 The speech server launcher exposes the same per-stage controls:
 

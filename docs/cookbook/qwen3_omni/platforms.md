@@ -69,7 +69,13 @@ python examples/run_omni.py qwen3-speech-server \
   --port 8008
 ```
 
-For the standard speech pipeline with default GPU placement, use the [shared server launch](../../basic_usage/omni.md#start-an-omni-server).
+For the standard speech pipeline with default GPU placement, omit `--text-only`:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008
+```
 
 ## Single-GPU FP8 on H100/H20
 
