@@ -178,8 +178,8 @@ func TestTranscript(t *testing.T) {
 		{[]string{"One.", "Two."}, "One. Two."},
 		{[]string{"こんにちは。", "OK"}, "こんにちは。OK"},
 	} {
-		if got := joinText(c.parts); got != c.want {
-			t.Errorf("joinText(%q) = %q, want %q", c.parts, got, c.want)
+		if got := asr.JoinText(c.parts); got != c.want {
+			t.Errorf("JoinText(%q) = %q, want %q", c.parts, got, c.want)
 		}
 	}
 }

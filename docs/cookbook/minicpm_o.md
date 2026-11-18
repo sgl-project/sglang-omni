@@ -77,7 +77,26 @@ Those pixel options do not bound the initial native-resolution allocation.
 
 ## Native Full-Duplex Ability
 
-MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
+MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo, the protocol and benchmarking are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
+
+## Realtime-Venus
+
+[Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) is a pair of MiniCPM-o 4.5 fine-tunes from inclusionAI: Realtime-Venus-Omni for audio-visual full-duplex calls and Realtime-Venus-Audio for audio-only chat and calls. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
+
+The two checkpoints are subdirectories of one repository, and each config.json points at the repository's config.yaml, so download them with the repository's script, which keeps config.yaml beside the model directories:
+
+```bash
+hf download inclusionAI/Realtime-Venus download_models.py --local-dir .
+python download_models.py --model omni --local-dir Realtime-Venus
+```
+
+Pass the model directory, not the repository id, and serve a full-duplex call with the session variant:
+
+```bash
+python -m sglang_omni.cli serve --model-path Realtime-Venus/Realtime-Venus-Omni --variant session --enable-realtime --port 8000
+```
+
+`--model audio` downloads Realtime-Venus-Audio instead; it serves chat, speech and full-duplex calls with the MiniCPM-o 4.5 commands.
 
 ## Text to speech
 
@@ -93,6 +112,18 @@ audio = client.audio.speech.create(
 ```
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+
+### HiFT CUDA graphs
+
+Set the Code2Wav factory's `hift_cuda_graph_capture_shapes` to `[batch_size, mel_frames]` buckets, for example `[[1, 64], [2, 64], [1, 128]]`, to capture HiFT's decode body at startup on CUDA. The default empty list disables capture. Inputs use the smallest bucket by batch-times-frames that fits both dimensions; inputs outside all buckets use the original decode body. Non-CUDA devices skip capture.
+
+The graph pads inputs and masks intermediate convolutions at the real frame length, preventing the padded tail from feeding back into valid audio. STFT still sees the unpadded excitation, and spectra are cropped before inverse STFT to preserve the original window envelope. Code2Wav still groups rows by their real length; buckets reuse graphs across these groups rather than combining mixed-length rows. Wider buckets save captures but increase padded computation, so choose nearby lengths for frequent inputs.
+
+Padding can select different convolution algorithms, including different TF32 rounding, so bucketed output is not guaranteed to meet the benchmark's strict pointwise tolerance against an unpadded decode. The benchmark accepts `--capture-shapes` independently of input `--shapes`; use `--deterministic --disable-tf32 --emulate-precision-casts` to reduce convolution and compiler rounding differences when investigating boundaries, and evaluate speech quality under the precision settings used for serving. These diagnostic flags do not guarantee a passing comparison for every batch size and do not change the serving precision settings.
+
+This captures the convolution, upsampling and activation body, including its compiled form when `enable_hift_torch_compile` is enabled. F0 prediction, random excitation, STFT and inverse STFT remain outside the graphs. Graph inputs and outputs consume additional device memory, so select shapes from your workload. Invalid shapes or capture failures fail startup. This setting applies to the chat speech Code2Wav stage, not the separate full-duplex vocoder.
+
 
 ## Speculative Decoding
 
@@ -110,5 +141,5 @@ An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggi
 - **Speech output.** The Talker reads one Thinker hidden row per text token, and the draft's layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (`speculative_eagle_topk 1`), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is `<image>` in MiniCPM-o, so they accept almost no tokens here.
 - **Supported settings.** DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.
 - **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
-- **Scheduling.** Async decode is turned off, and so is the stage's own mixed-chunk default. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
+- **Scheduling.** Speculative decoding runs with async decode overlap enabled, while the stage's own mixed-chunk default is turned off. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
 - **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.

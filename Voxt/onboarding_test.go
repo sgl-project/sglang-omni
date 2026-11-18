@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"math"
+	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -25,6 +31,54 @@ func obTester(t *testing.T) (*app, *ui.Tester) {
 		t.Fatal("a fresh install did not open the guide")
 	}
 	return a, tt
+}
+
+func TestOpeningLeadsToGuideOnce(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.startOpening()
+	a.maybeOnboard()
+	frames(tt)
+	if a.openingStarted.IsZero() || has(tt, "Get started") {
+		t.Fatal("the first launch did not show the opening before the guide")
+	}
+	if !a.lib.settings.Get().Setup.OpeningShown || a.prefs.Setup.Done {
+		t.Fatal("the opening did not persist independently of guide completion")
+	}
+	a.openingStarted = time.Now().Add(-openingDuration)
+	frames(tt)
+	if !a.openingStarted.IsZero() || !has(tt, "Get started") {
+		t.Fatal("the opening did not finish at the setup guide")
+	}
+	a.prefs = a.lib.settings.Get()
+	a.startOpening()
+	if !a.openingStarted.IsZero() {
+		t.Fatal("an unfinished guide replayed the opening")
+	}
+	a.closeOnboarding()
+	a.openOnboarding()
+	frames(tt)
+	if !a.openingStarted.IsZero() || !has(tt, "Get started") {
+		t.Fatal("reopening the guide replayed the opening")
+	}
+}
+
+func TestOpeningSkipsExistingSetupsAndReducedMotion(t *testing.T) {
+	for _, mode := range []string{"existing", "app-reduced-motion", "system-reduced-motion"} {
+		t.Run(mode, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			a.updateSettings(func(s *settings.Settings) {
+				s.Setup.Done = mode == "existing"
+				s.Appearance.ReduceMotion = mode == "app-reduced-motion"
+			})
+			tt.SetPreferences(ui.Preferences{ReduceMotion: mode == "system-reduced-motion"})
+			a.startOpening()
+			a.maybeOnboard()
+			frames(tt)
+			if !a.openingStarted.IsZero() || (mode != "existing" && !has(tt, "Get started")) {
+				t.Fatal("an existing setup or reduced motion did not skip the opening")
+			}
+		})
+	}
 }
 
 // obSnap is a try's snapshot of kind in state st.
@@ -46,9 +100,9 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	a.obGo(obTranslate)
 	frames(tt)
 	for _, s := range []string{
-		"No language model is set up: set one up to translate.",
+		"No language model is set up. Set one up to translate.",
 		"Set up a language model",
-		"Set one up on the Language models page",
+		"Set one up in Settings → Language models",
 		"Skip this step",
 	} {
 		if !has(tt, s) {
@@ -60,7 +114,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	}
 	readyModels(a)
 	frames(tt)
-	if has(tt, "set one up on the Language models page") {
+	if has(tt, "set one up in Settings → Language models") {
 		t.Errorf("guide still shown with LLM: %q", tt.Texts())
 	}
 	if n := a.obTry(""); n != nil {
@@ -70,7 +124,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	readyASROnly(a2)
 	a2.obGo(obRewrite)
 	frames(tt2)
-	if !has(tt2, "No language model is set up: set one up to rewrite.") {
+	if !has(tt2, "No language model is set up. Set one up to rewrite.") {
 		t.Errorf("rewrite without LLM: %q", tt2.Texts())
 	}
 }
@@ -147,7 +201,7 @@ func TestOnboardingSteps(t *testing.T) {
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
-	click(t, tt, "Open the setup guide")
+	click(t, tt, "Open setup guide")
 	if !a.ob.open || a.settingsOpen || a.ob.step != obWelcome {
 		t.Errorf("reopen: %v %v %d", a.ob.open, a.settingsOpen, a.ob.step)
 	}
@@ -277,7 +331,7 @@ func onboardingShots(a *app, tt *ui.Tester, save func(string)) {
 	// Last, as they change the models' statuses (the page behind scrolls).
 	a.ob.step = obModels
 	obFamilyShots(a, save)  // family_ui_test.go
-	obDefaultShots(a, save) // nothing on this Mac: the easy default at 8 and 24 GB
+	obDefaultShots(a, save) // nothing on this Mac: the easy default
 	a.ob.open = false
 }
 
@@ -324,7 +378,7 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 				titles := obStepTitles()
 				first, ok1 := tt.Find(titles[0])
 				last, ok2 := tt.Find(titles[len(titles)-1])
-				x, ok3 := tt.Find(i18n.T("Close the guide"))
+				x, ok3 := tt.Find(i18n.T("Close guide"))
 				if !ok1 || !ok2 || !ok3 {
 					t.Fatalf("%s %v: steps or × not found in %q", lang, size, tt.Texts())
 				}
@@ -343,7 +397,7 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 		obPermissions: "Voxt needs the microphone to hear you",
 		obTranscribe:  "Transcribe writes down what you say",
 		obTranslate:   "Translate turns the selected text",
-		obRewrite:     "Rewrite is not dictation",
+		obRewrite:     "Rewrite writes what you ask for",
 	} {
 		a.obGo(step)
 		if !has(tt, want) {
@@ -370,10 +424,11 @@ func TestOnboardingComesBack(t *testing.T) {
 		t.Fatalf("back: open %v, step %d", a.ob.open, a.ob.step)
 	}
 	a.closeOnboarding() // its ×
+	a.navigate("/logs") // no Open setup guide under the Settings dialog too
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
-	click(t, tt, "Open the setup guide")
+	click(t, tt, "Open setup guide")
 	if !a.ob.open || a.ob.step != obModels {
 		t.Fatalf("from Settings: open %v, step %d", a.ob.open, a.ob.step)
 	}
@@ -385,9 +440,118 @@ func TestOnboardingComesBack(t *testing.T) {
 	}
 }
 
+// TestOnboardingTryStepLeaves: #3917, Set up a language model on the
+// Translate and Rewrite try steps navigated behind the guide, so it
+// seemed to do nothing. It leaves like the Models step's button.
+func TestOnboardingTryStepLeaves(t *testing.T) {
+	for _, c := range []struct {
+		step  int
+		title string
+	}{{obTranslate, "Translate"}, {obRewrite, "Rewrite"}} {
+		a, tt := obTester(t)
+		readyASROnly(a)
+		a.obGo(c.step)
+		frames(tt)
+		tt.Scroll(windowWidth*0.6, windowHeight*0.5, 0, 600) // the notice is under the fold
+		click(t, tt, "Set up a language model")
+		if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the "+c.title+" step.") {
+			t.Fatalf("%s: open %v, %s, %q", c.title, a.ob.open, a.shownPath(), tt.Texts())
+		}
+		click(t, tt, "Back to the setup guide")
+		if !a.ob.open || a.ob.step != c.step {
+			t.Fatalf("%s back: open %v, step %d", c.title, a.ob.open, a.ob.step)
+		}
+	}
+}
+
 // TestKeyboardLit: the setup guide's keyboard lights the keys of the
 // shortcut: a modifier on its side, on both sides when either does, fn,
 // the space bar (#3644: "Right ⌥" did not say which physical key).
+func TestOnboardingViewStateAdapterUsesExplicitLocale(t *testing.T) {
+	previousLocale := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	a, _ := obTester(t)
+	a.ob.legacyAvailable, a.ob.legacyDone = true, true
+	a.ob.legacy.todo = []legacyTodo{{text: "Finish custom setup", kind: local.LLM, id: llm.Custom}}
+	a.famConflicts = []shortcuts.Conflict{{Mine: shortcuts.Shortcut{ID: "transcribe"}, Other: shortcuts.Holder{Name: "AudioSmith"}, Theirs: shortcuts.Shortcut{ID: "transcribe"}}}
+	translator := i18n.NewTranslator("en")
+	for _, step := range []int{obWelcome, obTranscribe, obMore} {
+		a.ob.step = step
+		for _, globalLocale := range []string{"zh-Hans", "en"} {
+			i18n.SetLocale(globalLocale)
+			state := a.onboardingViewStateForTranslator(translator)
+			switch step {
+			case obWelcome:
+				if got := state.Welcome.Legacy.Todos[0].ServiceName; got != "Custom (OpenAI-compatible)" {
+					t.Errorf("global locale %s changed service name to %q", globalLocale, got)
+				}
+			case obTranscribe:
+				if got := state.Try.Conflicts[0]; got != "Also used by AudioSmith (Transcribe)" {
+					t.Errorf("global locale %s changed conflict to %q", globalLocale, got)
+				}
+			case obMore:
+				if got := state.More.Shortcuts[0].Problems[0]; got != "Also used by AudioSmith (Transcribe)" {
+					t.Errorf("global locale %s changed conflict to %q", globalLocale, got)
+				}
+			}
+		}
+	}
+}
+
+func TestOnboardingWelcomeViewStateCache(t *testing.T) {
+	a, _ := obTester(t)
+	first := a.onboardingViewState()
+	if second := a.onboardingViewState(); !reflect.DeepEqual(second, first) {
+		t.Fatal("unchanged welcome state differs")
+	}
+	a.ob.tries[obTranscribe] = "mine"
+	snapshot := obSnap(a, "mine", store.KindTranscribe, session.Done)
+	snapshot.Rev = a.sess.Rev + 1
+	a.sessionChanged(snapshot)
+	if third := a.onboardingViewState(); !third.Passed[obTranscribe] {
+		t.Fatal("cached welcome kept stale breadcrumbs")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if fourth := a.onboardingViewState(); fourth.StepTitles[obWelcome] != "欢迎" {
+		t.Fatalf("cached welcome kept the old locale: %q", fourth.StepTitles[obWelcome])
+	}
+}
+
+// The guide's Try result tints the dictionary's words, as the feature pages' Try does.
+func TestOnboardingTryDictionaryHighlights(t *testing.T) {
+	const result = "Voxt uses SGLang."
+	a, tt := obTester(t)
+	readyModels(a)
+	a.ob.step = obTranscribe
+	a.ob.tries[obTranscribe] = "mine"
+	s := obSnap(a, "mine", store.KindTranscribe, session.Done)
+	s.Result = result
+	a.sessionChanged(s)
+	frames(tt)
+	if r, ok := tt.Find(result); ok {
+		tt.Scroll(windowWidth/2, windowHeight/2, 0, r.Y-windowHeight/2) // the result sits below the guide's fold
+		frames(tt)
+	}
+	before := bytes.Clone(tt.Image().Pix)
+	s.Rev++
+	s.Highlights = testDictionaryHighlights(result)
+	a.sessionChanged(s)
+	frames(tt)
+	if bytes.Equal(before, tt.Image().Pix) {
+		t.Error("the matched terms have no visible highlight")
+	}
+	if !hasExact(tt, result) {
+		t.Errorf("the whole result is not readable: %q", tt.Texts())
+	}
+}
+
+func TestOnboardingTimingsText(t *testing.T) {
+	snapshot := session.Snapshot{ASR: session.Model{Name: "Speech One"}, LLM: session.Model{Name: "Language Two"}}
+	if got := onboardingTimingsText(i18n.NewTranslator("en"), snapshot); got != "Speech One, Language Two" {
+		t.Fatalf("model names %q", got)
+	}
+}
+
 func TestKeyboardLit(t *testing.T) {
 	for _, c := range []struct {
 		keys string

@@ -80,4 +80,10 @@ public enum PasteChecker {
         h.combine(value)
         return h.finalize()
     }
+
+    /// Whether ⌘V would reach target: it is the app in front, or it owns
+    /// the focused element (a non-activating panel never comes to the front).
+    public static func targetReached(_ target: Int, front: Int, focusOwner: Int?) -> Bool {
+        target == front || target == focusOwner
+    }
 }

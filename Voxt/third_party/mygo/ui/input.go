@@ -838,11 +838,13 @@ func routeKey(regs []shortcutReg, chain []uint64, k keyEvent) (target uint64, fo
 			}
 		}
 	}
-	// The overlay on top: the one made last, as it paints last.
+	// The overlay on top: the one made last, as it paints last; a
+	// tooltip only when no other overlay takes the key.
 	var top int32 = -1
+	tip := true
 	for _, r := range regs {
-		if r.overlay && r.mods == k.mods && r.key == k.key && r.serial >= top {
-			target, found, top = r.id, true, r.serial
+		if r.overlay && r.mods == k.mods && r.key == k.key && (tip && !r.tip || r.tip == tip && r.serial >= top) {
+			target, found, top, tip = r.id, true, r.serial, r.tip
 		}
 	}
 	if found {

@@ -1,0 +1,73 @@
+diff --git a/internal/text/layout.go b/internal/text/layout.go
+index 846365c..1f648cb 100644
+--- a/internal/text/layout.go
++++ b/internal/text/layout.go
+@@ -658,9 +658,10 @@ func (s *System) Layout(p Params) *Layout {
+ 	p.Style.Lang = strings.Clone(p.Style.Lang)
+ 	c := s.layout(p)
+ 	c.bytes = layoutBytes(c)
+-	// A large paragraph still lays out correctly; keeping it would evict
+-	// all the ordinary labels and lines of other windows.
+-	if c.bytes <= maxLayoutBytes {
++	// A paragraph over the ordinary budget (a long document) is kept while
++	// frames use it, as overLayoutBudget lets recent layouts be; else every
++	// frame shapes it again. Only one over the hard limit is not kept.
++	if c.bytes <= maxLiveLayoutBytes {
+ 		for s.oldest != nil && (s.overLayoutBudget(c.bytes) || len(s.layouts) >= maxLayouts) {
+ 			s.removeLayout(s.oldest)
+ 		}
+diff --git a/internal/text/memory_test.go b/internal/text/memory_test.go
+index 1114109..2d943d1 100644
+--- a/internal/text/memory_test.go
++++ b/internal/text/memory_test.go
+@@ -72,13 +72,48 @@ func TestLayoutCacheKeepsFrequentlyUsedText(t *testing.T) {
+ 	}
+ }
+ 
++// A paragraph over the ordinary budget (a long History record) is kept
++// while frames draw it, so they do not shape it again, and trimmed once
++// they stop.
++func TestLayoutCacheKeepsLargeParagraph(t *testing.T) {
++	s := newSystem()
++	s.eng = &stubEngine{}
++	p := Params{Text: "a small label"}
++	l := s.Layout(p)
++	big := Params{Text: strings.Repeat("x", maxLayoutBytes/32)}
++	if n := layoutBytes(s.layout(big)); n <= maxLayoutBytes {
++		t.Fatalf("the paragraph takes %d bytes, within the budget", n)
++	}
++	large := s.Layout(big)
++	s.EndFrame()
++	made := s.LayoutsMade()
++	for range 20 {
++		if s.Layout(big) != large || s.Layout(p) != l {
++			t.Fatal("a frame shaped the displayed text again")
++		}
++		s.EndFrame()
++	}
++	if n := s.LayoutsMade() - made; n != 0 {
++		t.Fatalf("made %d layouts for unchanged text", n)
++	}
++	for range liveLayoutFrames {
++		s.Layout(p)
++		s.EndFrame()
++	}
++	if s.layoutBytes > maxLayoutBytes || s.Layout(p) != l {
++		t.Fatalf("kept %d bytes after the paragraph went out of use", s.layoutBytes)
++	}
++}
++
++// A paragraph over the hard limit still lays out, uncached, and leaves the
++// ordinary labels alone.
+ func TestLayoutCacheSkipsOversizedParagraph(t *testing.T) {
+ 	s := newSystem()
+ 	s.eng = &stubEngine{}
+ 	p := Params{Text: "a small label"}
+ 	l := s.Layout(p)
+-	large := s.Layout(Params{Text: strings.Repeat("x", maxLayoutBytes/32)})
+-	if len(large.Runes) != maxLayoutBytes/32 || len(large.Lines) == 0 {
++	large := s.Layout(Params{Text: strings.Repeat("x", maxLiveLayoutBytes/32)})
++	if len(large.Runes) != maxLiveLayoutBytes/32 || len(large.Lines) == 0 {
+ 		t.Fatal("oversized text did not lay out")
+ 	}
+ 	if len(s.layouts) != 1 || s.Layout(p) != l {

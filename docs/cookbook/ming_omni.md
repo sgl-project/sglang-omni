@@ -2,7 +2,7 @@
 
 [Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) is a multimodal omni model that accepts text, image, audio, and video inputs and can return text or text + audio through SGLang-Omni's OpenAI-compatible `/v1/chat/completions` endpoint. In SGLang-Omni, Ming is served as a multi-stage pipeline: media preprocessing and encoders prepare multimodal embeddings, the thinker generates text, and the talker turns response text into 44.1 kHz speech.
 
-Start with `sgl-omni serve` for Ming. The generic OmniServe entry point now knows how to build the Ming text and speech pipelines from the model path, so the commands below are the customer-facing launch path. For general chat request fields that also apply to Qwen3-Omni, see [Qwen3-Omni](./qwen3_omni.md).
+Start with `sgl-omni serve` for Ming. The generic OmniServe entry point now knows how to build the Ming text and speech pipelines from the model path, so the commands below are the customer-facing launch path. For general chat request fields that also apply to Qwen3-Omni, see [Omni Model Usage](../basic_usage/omni.md).
 
 ## Prerequisites
 

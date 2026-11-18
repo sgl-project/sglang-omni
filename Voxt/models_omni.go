@@ -24,6 +24,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // omniSource is the logs' source of the runtime's lines.
@@ -39,6 +40,9 @@ type omniState struct {
 	omniVAD *omni.VAD
 	omniDir string // the VAD's folder
 	omniEnd bool   // closed: quitting
+	// speechWarmed: Transcribe's speech model was warmed at the start
+	// (warmSpeech; main thread only).
+	speechWarmed bool
 	// omniCache holds the folders of links omniFolder makes ("": the
 	// system's temporary folder, in tests).
 	omniCache string
@@ -119,6 +123,25 @@ func (a *app) openOmniASR(_ context.Context, id, dir string) (asr.Provider, erro
 	return p, nil
 }
 
+// warmSpeech starts loading Transcribe's speech model when it is a local
+// one (a remote service and System dictation load nothing), so that the
+// first session after the app opened, or after another model was chosen,
+// finds its server ready. The server stops when idle, as after a session.
+func (a *app) warmSpeech() {
+	m, ok := a.featureModel(local.ASR, string(store.KindTranscribe))
+	if cm, _ := models.Lookup(m.ID); !ok || cm.Runtime != models.Omni {
+		return
+	}
+	lm := a.local
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, _, err := lm.ASR(ctx, m.ID); err != nil { // openOmniASR warms it
+			a.omniLog("warning", "warming "+m.ID+": "+err.Error())
+		}
+	})
+}
+
 // omniFolder is the folder model id's server loads: dir, its snapshot, or,
 // when the model needs an Aux (Whisper's tokenizer), a folder of links to
 // the files of both snapshots, made again only when its links changed (a
@@ -194,14 +217,19 @@ func (a *app) omniSilero(rt *omni.Runtime) *omni.VAD {
 }
 
 // omniDraft is the folder of speech model id's installed draft (its
-// catalogue Draft), "" when it has none or it is not installed: the
-// server then decodes without one.
+// catalogue Draft), "" when it has none, it is not installed or its
+// Faster transcription is off: the server then decodes without one.
+// Off the UI goroutine: the switch is read from the settings service.
 func (a *app) omniDraft(id string) string {
 	m, ok := models.Lookup(id)
 	if !ok || m.Draft == "" || a.models == nil {
 		return ""
 	}
-	return a.models.Dir(m.Draft)
+	dir := a.models.Dir(m.Draft)
+	if a.settings != nil && !a.settings.Get().Models.FasterOn(id, dir != "") {
+		return ""
+	}
+	return dir
 }
 
 // omniMeetingHold keeps the meeting's local omni ASR and Silero VAD loaded.

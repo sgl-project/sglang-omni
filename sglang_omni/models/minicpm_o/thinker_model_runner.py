@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from itertools import accumulate
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,7 @@ else:
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
 
+    supports_speculative_async_decode = True
     speculative_verify_takes_logits_hooks = True
     speculative_ignores_request_seed = True
 
@@ -80,7 +82,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
         self.hands_hidden_to_talker = output_processor.capture_hidden
-        self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
+        self.speculative_hidden_queue: dict[str, deque[torch.Tensor]] = {}
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -200,40 +202,55 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                     self.pending_hidden.setdefault(request.rid, []).extend(
                         hidden.unbind(0)
                     )
+                elif request.inflight_middle_chunks > 0:
+                    pass
                 else:
-                    self.speculative_hidden_queue[request.rid] = rows[index : index + 1]
+                    self.speculative_hidden_queue.setdefault(
+                        request.rid, deque()
+                    ).append(rows[index : index + 1])
                 start = end
         else:
             speaking = [
                 index
-                for index, req in enumerate(batch.reqs)
-                if should_generate_audio_output(req.omni_data.stage_payload.request)
+                for index, request in enumerate(batch.reqs)
+                if should_generate_audio_output(request.omni_data.stage_payload.request)
             ]
             if not speaking:
                 return
             else:
                 pass
-            block = model.speculative_hidden_rows[
+            rows = model.speculative_hidden_rows[
                 : len(batch.reqs) * num_draft_tokens
             ].clone()
             for index in speaking:
+                request = batch.reqs[index]
                 start = index * num_draft_tokens
-                self.speculative_hidden_queue[batch.reqs[index].rid] = block[
-                    start : start + num_draft_tokens
-                ]
+                end = start + num_draft_tokens
+                self.speculative_hidden_queue.setdefault(request.rid, deque()).append(
+                    rows[start:end]
+                )
 
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
     ) -> None:
         """Append the queued rows of the committed tokens, which end at the stop."""
-        hidden = self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
-        if hidden is None:
+        queue = self.speculative_hidden_queue.get(scheduler_request.request_id)
+        rows = queue.popleft() if queue else None
+        if queue is not None and not queue:
+            self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
+        else:
+            pass
+        if rows is None or not token_ids:
             return
         else:
             pass
-        seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
+        sequence = self.pending_hidden.setdefault(scheduler_request.request_id, [])
         # Row views would keep this step's whole block alive until the request ends.
-        seq.extend(hidden[: len(token_ids)].clone().unbind(0))
+        sequence.extend(rows[: len(token_ids)].clone().unbind(0))
+
+    def on_request_retracted(self, request_id: str) -> None:
+        """Drop queued speculative hidden rows when a request is retracted."""
+        self.speculative_hidden_queue.pop(request_id, None)
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""

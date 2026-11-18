@@ -1,162 +1,63 @@
 package main
 
-// The feature pages: Transcribe (/transcribe), Translate
-// (/translate) and Rewrite (/rewrite) share one structure: the feature's
-// shortcuts (and, on Transcribe, the shared "paste the last result"), the
-// models it uses, its own settings (Transcribe's clean-up layers;
-// Translate's target language and clean-up; Rewrite's instruction
-// clean-up), the answer card (one switch for the three, a size each), the
-// user's rules with a preview of the whole prompt, and a Try area that
-// runs a session whose result stays on the page.
-//
-// Every change goes through a.updateSettings, which also sends the
-// shortcuts to the helper again. A page keeps only what its controls
-// edit (the selects' labels, a custom shortcut being typed, the rules
-// before they are saved), set again from the settings when they change
-// elsewhere; each feature has its own (featureUI).
-
 import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// transcribeState is the feature pages' view state, one featureUI per
-// feature (hotkey.Transcribe, Translate, Rewrite).
-type transcribeState struct {
-	features map[string]*featureUI
-}
-
-// featureUI is a feature page's view state.
+// featureUI is a feature page's widget-local state.
 type featureUI struct {
-	// rows are the shortcuts' controls, paste paste-last's and cancel
-	// cancel-transcription's (Transcribe); seen is what they were last
-	// set from.
 	rows   []keyRow
 	paste  keyRow
 	cancel keyRow
 	seen   string
-	// asr and llm are the models' selects; svcSeen what they were
-	// last set from.
+
 	asr, llm string
 	svcSeen  string
-	// fallback is Translate's fallback model select.
 	fallback string
-	// lang is Translate's target select.
-	lang string
-	// prompt is the rules as typed; promptSeen the saved value it was
-	// last set from; promptDirty an edit not saved yet, promptSeq which
-	// edit (its timer saves only the last one).
+	lang     string
+
 	prompt      string
 	promptSeen  string
 	promptDirty bool
 	promptSeq   int
-	// rules and preview: the Your rules section and its full prompt, open.
-	rules   bool
-	preview bool
-	// find is the text to find in the rules (⌘F); found the match that
-	// Return selected last, from 1 (0: none yet); findFocus and
-	// findSelect ask, for the next build, for the find field's focus and
-	// for the rules field to select match found.
-	find       string
-	found      int
-	findFocus  bool
-	findSelect bool
-	// block says why the Try area's Start did not start.
-	block *sessionNotice
-	// endWord is the end word's select and typed word (Transcribe).
-	endWord keyRow
+	rules       bool
+	preview     bool
+	find        string
+	finder      finder
+	findFocus   bool
+	block       *sessionNotice
+	endWord     keyRow
 }
 
-// fui is feature's page state.
-func (a *app) fui(feature string) *featureUI {
-	if a.features == nil {
-		a.features = map[string]*featureUI{}
-	}
-	u := a.features[feature]
-	if u == nil {
-		u = &featureUI{}
-		a.features[feature] = u
-	}
-	return u
-}
-
-// featureKind is a feature's session kind.
-func featureKind(feature string) store.Kind {
-	switch feature {
-	case hotkey.Translate:
-		return store.KindTranslate
-	case hotkey.Rewrite:
-		return store.KindRewrite
-	}
-	return store.KindTranscribe
-}
-
-// ---- The page ----
-
-// transcribePage builds the Transcribe page.
-func (a *app) transcribePage(c *ui.Context) { a.featurePage(c, hotkey.Transcribe) }
-
-// translatePage builds the Translate page.
-func (a *app) translatePage(c *ui.Context) { a.featurePage(c, hotkey.Translate) }
-
-// rewritePage builds the Rewrite page.
-func (a *app) rewritePage(c *ui.Context) { a.featurePage(c, hotkey.Rewrite) }
-
-// featurePage builds a feature's page: one column, or two in a wide
-// window (twoColumnW): how the feature starts and its models on the left,
-// what it does with the text, its card, its rules and its Try area on the
-// right.
-func (a *app) featurePage(c *ui.Context, feature string) {
+func featurePage(c *ui.Context, state *featureViewState, actions featureActions, local *featureUI, tryActions tryCardActions) {
 	t := c.Theme()
-	p := uitext.FeaturePrefix(feature)
-	two := a.pageWidth(c) >= px(t, twoColumnW)
-	if two {
-		centeredPageHeader(c, pageMaxW2, uitext.FeatureTitle(feature), nil)
-	} else {
-		columnPageHeader(c, uitext.FeatureTitle(feature), nil)
-	}
-	if a.sess.Try && a.sess.State == session.Recording {
-		c.After(250 * time.Millisecond) // the Try area's clock
+	columnPageHeader(c, state.Title, nil)
+	if state.RefreshRecording {
+		c.After(250 * time.Millisecond)
 	}
 	left := func() {
-		switch feature {
-		case hotkey.Translate:
-			caption(c, i18n.T("Select text and press the shortcut to translate it in place; with nothing selected, speak, and the translation is typed where your cursor is."))
-		case hotkey.Rewrite:
-			caption(c, i18n.T("Select text and say how to change it (\"shorter\", \"more formal\"); with nothing selected, say what to write. The answer goes where your cursor is."))
-		default:
-			caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
-		}
-		a.featureShortcuts(c, feature)
-		a.featureModels(c, feature)
+		caption(c, state.Caption)
+		featureShortcuts(c, state.Feature, &state.Shortcuts, actions, local)
+		featureModels(c, state.Feature, &state.Models, actions, local)
 	}
 	right := func() {
-		switch feature {
-		case hotkey.Translate:
-			a.translateSettings(c)
-		case hotkey.Rewrite:
-			a.rewriteSettings(c)
+		switch state.Feature {
+		case "translate":
+			translateSettings(c, &state.Prompt, actions, local)
+		case "rewrite":
+			rewriteSettings(c, &state.Prompt, actions)
 		default:
-			a.trEnhance(c)
+			trEnhance(c, &state.Models.Cleanup, actions)
 		}
-		a.cardSetting(c, p, feature)
-		a.featureRules(c, feature)
-		a.featureTry(c, feature)
+		cardSetting(c, state.Prefix, state.Feature, &state.Prompt.Card, actions)
+		featureRules(c, state.Prefix, state.Feature, &state.Prompt.Rules, actions, local)
+		sectionTitle(c, i18n.T("Try it"))
+		tryCard(c, &state.Try, tryActions)
 	}
-	ui.Scroll(c.Key(p + "-scroll")).Grow(1).MinHeight(0).Children(func() {
-		if !two {
-			pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
-			return
-		}
-		ui.Row(c).FillWidth().MaxWidth(px(t, pageMaxW2)).AlignSelf(ui.Center).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp6)).AlignItems(ui.Start).Children(func() {
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(left)
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(px(t, sp3)).Children(right)
-		})
+	ui.Scroll(c.Key(state.Prefix + "-scroll")).Grow(1).MinHeight(0).Children(func() {
+		pageColumn(c).Gap(px(t, sp3)).Children(func() { left(); right() })
 	})
 }

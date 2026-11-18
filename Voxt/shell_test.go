@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"slices"
 	"strings"
@@ -21,6 +22,24 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+func TestNoticeModelsChangeWithTimeZone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
+	a.notices = []core.Notification{{ID: "zone", Time: instant.Add(-time.Hour)}}
+	first := a.noticesModel(instant)
+	second := a.noticesModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if len(first) != 1 || len(second) != 1 || first[0].TimeHint == second[0].TimeHint {
+		t.Fatalf("notice cache kept stale timezone %q and %q", first[0].TimeHint, second[0].TimeHint)
+	}
+	a.announceShown = core.Notification{ID: "zone", Time: instant.Add(-time.Hour)}
+	a.announceShownOpen = true
+	firstAnnouncement := a.announcementModel(instant)
+	secondAnnouncement := a.announcementModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if firstAnnouncement == nil || secondAnnouncement == nil || firstAnnouncement.Sub == secondAnnouncement.Sub {
+		t.Fatalf("announcement cache kept stale timezone %q and %q", firstAnnouncement.Sub, secondAnnouncement.Sub)
+	}
+}
+
 func TestSidebarAndShortcuts(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	if got := a.router.Path(); got != "/home" {
@@ -31,8 +50,8 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	frames(tt)
 	a.clearNotices()
 	for _, p := range pages {
-		// The last rows can sit under the Settings footer: scroll the list
-		// to them, as a person would.
+		// The last rows can sit under the fade at the list's foot: scroll
+		// the list to them, as a person would.
 		if r, ok := tt.Find(pageTitle(p.path)); ok && r.H < 10 {
 			home, _ := tt.Find(pageTitle("/home"))
 			tt.Scroll(home.X+home.W/2, float32(windowHeight)/2, 0, 200)
@@ -54,13 +73,17 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	if len(shortcutPages) != 6 {
 		t.Errorf("%d shortcut pages", len(shortcutPages))
 	}
-	// Settings, at the foot of the sidebar, opens the dialog over the page.
+	// Settings, the System section's last item, opens the dialog over the
+	// page, and is the chosen item while it shows.
 	click(t, tt, "Settings")
-	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" {
-		t.Fatalf("settings: %v %s over %s", a.settingsOpen, a.shownPath(), a.router.Path())
+	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
+		t.Fatalf("settings: %v %s over %s, chosen %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav)
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
+	if a.nav != "/app-enhancement" {
+		t.Errorf("the sidebar chose %s once the settings closed", a.nav)
+	}
 	if a.settingsOpen {
 		t.Error("Escape left the settings open")
 	}
@@ -73,7 +96,7 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	if a.router.Path() != "/history" {
 		t.Errorf("rail: %s", a.router.Path())
 	}
-	click(t, tt, "Show the sidebar")
+	click(t, tt, "Show sidebar")
 	if a.prefs.Appearance.Rail {
 		t.Error("rail still on")
 	}
@@ -94,6 +117,32 @@ func TestPaletteFitsTheWindow(t *testing.T) {
 	}
 	if red, _, _, _ := tt.Image().At(3, int(r.Y+r.H/2)).RGBA(); red>>8 > 240 {
 		t.Errorf("the palette reaches the window's left edge (red %d at x=3 beside its search field)", red>>8)
+	}
+}
+
+func TestPalettePopulatesItsFirstFrame(t *testing.T) {
+	for _, name := range []string{"keyboard", "sidebar"} {
+		t.Run(name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			var counts []int
+			var opens []bool
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.view(c)
+				counts = append(counts, len(a.paletteView.Items))
+				opens = append(opens, a.paletteOpen)
+			}, windowWidth, windowHeight)
+			before := len(counts)
+			if name == "keyboard" {
+				tt.Key(ui.Cmd, ui.KeyK)
+			} else if err := tt.Click("Command palette"); err != nil {
+				t.Fatal(err)
+			}
+			for i, open := range opens[before:] {
+				if open && counts[before+i] == 0 {
+					t.Fatalf("the palette's first open frame has no commands: counts %v, opens %v", counts, opens)
+				}
+			}
+		})
 	}
 }
 
@@ -214,9 +263,11 @@ func TestProblemCards(t *testing.T) {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
 	click(t, tt, "Open Speech models")
-	if a.router.Path() != modelsPath {
-		t.Errorf("its action: %s", a.router.Path())
+	if a.shownPath() != modelsPath {
+		t.Errorf("its action: %s", a.shownPath())
 	}
+	tt.Key(0, ui.KeyEscape)
+	frames(tt)
 	// The helper: a card while it does not run, the newest on top.
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailMissing, Err: "voxtnew-helper was not found"})
 	if !has(tt, "Helper missing") || !has(tt, "2 notifications") || a.notices[0].ID != problemHelper {
@@ -232,7 +283,7 @@ func TestProblemCards(t *testing.T) {
 	if !has(tt, "Helper missing") {
 		t.Fatalf("missing helper again: %q", firstTexts(tt))
 	}
-	click(t, tt, "Restart the helper")
+	click(t, tt, "Restart helper")
 	if a.helperStatus().State != helper.Ready || has(tt, "Helper missing") {
 		t.Errorf("after restart: %+v %q", a.helperStatus(), firstTexts(tt))
 	}
@@ -363,6 +414,57 @@ func TestPermissionsMoved(t *testing.T) {
 	}
 }
 
+// TestModelsMovedToSettings: both model resources have one home in Settings;
+// their old pages, deep links and palette commands open the same sections.
+func TestModelsMovedToSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	for _, path := range []string{"/models", "/language-models"} {
+		if slices.ContainsFunc(pages, func(p navPage) bool { return p.path == path }) {
+			t.Errorf("%s is still a page of the sidebar", path)
+		}
+	}
+	for _, tc := range []struct {
+		open func()
+		want string
+	}{
+		{func() { a.navigate("/models") }, "/settings/models"},
+		{func() { a.openURL("voxtnew://models") }, "/settings/models"},
+		{func() { a.navigate("/language-models") }, "/settings/language-models"},
+		{func() { a.openURL("voxtnew://language-models") }, "/settings/language-models"},
+	} {
+		a.settingsOpen = false
+		a.navigate("/home")
+		tc.open()
+		frames(tt)
+		if got := a.shownPath(); got != tc.want {
+			t.Errorf("shown %s, want %s", got, tc.want)
+		}
+		if a.router.Path() != "/home" {
+			t.Errorf("page under the dialog %s", a.router.Path())
+		}
+	}
+	for _, link := range []string{"voxtnew://models/network", "voxtnew://settings/models/network"} {
+		a.netOpen = false
+		a.openURL(link)
+		if a.shownPath() != "/settings/models" || !a.netOpen {
+			t.Errorf("%s → %s, Network open %v", link, a.shownPath(), a.netOpen)
+		}
+	}
+	for id, want := range map[string]string{"go/models": "/settings/models", "go/language-models": "/settings/language-models"} {
+		i := slices.IndexFunc(a.commands(), func(cmd command) bool { return cmd.id == id })
+		if i < 0 {
+			t.Errorf("palette command %s is gone", id)
+			continue
+		}
+		cmd := a.commands()[i]
+		a.runCommand(cmd)
+		frames(tt)
+		if a.shownPath() != want {
+			t.Errorf("%s → %s, want %s", id, a.shownPath(), want)
+		}
+	}
+}
+
 // TestPrivacyGoesOnline: Settings → Privacy says what Voxt goes online
 // for: downloading models, Voxt's announcements, and checking for updates
 // only in a build with an update feed (2.0.0 has none).
@@ -370,25 +472,51 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to check for updates, to download models and to read Voxt's announcements, which sends nothing about you.") {
+	if !has(tt, "Otherwise, Voxt goes online only to check for updates, download models and read its announcements. Reading them sends nothing about you.") {
 		t.Errorf("with an update feed: %q", firstTexts(tt))
 	}
 	a.upd = nil
 	a.navigate("/home")
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Otherwise Voxt goes online only to download models and to read Voxt's announcements, which sends nothing about you.") || has(tt, "check for updates") {
+	if !has(tt, "Otherwise, Voxt goes online only to download models and read its announcements. Reading them sends nothing about you.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
 	}
 }
 
-// TestPermissionsMeetingSystemAudio: Optional row for meeting system audio.
+// TestPermissionsMeetingSystemAudio: Optional row for meeting system
+// audio. macOS lists Voxt under System Audio Recording only once it was
+// asked, so the row's Ask has the helper ask (#3948); without the helper
+// it asks nothing else.
 func TestPermissionsMeetingSystemAudio(t *testing.T) {
-	a, _, tt := newTestApp(t)
+	a, fs, tt := newTestApp(t)
+	// Everything else allowed, so the row's Ask is the only one.
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermGranted, Accessibility: true, SpeechRecognition: proto.PermGranted}, nil
+	}
 	a.navigate("/settings/permissions")
 	frames(tt)
-	if !has(tt, "System audio recording (for meetings)") {
+	if !hasExact(tt, "System audio recording") { // one line in English, so its ⓘ sits beside it
 		t.Errorf("permissions: %q", firstTexts(tt))
+	}
+	// Its status and Ask sit under the name, as on the other rows, not at
+	// the far right of the name's line.
+	name, _ := tt.Find("System audio recording")
+	status, _ := tt.Find("Unknown")
+	ask, _ := tt.Find("Ask")
+	if status.Y < name.Y+name.H || status.X > name.X+30 || ask.Y > status.Y+2 || ask.Y < status.Y-2 {
+		t.Errorf("name at %v, status at %v, Ask at %v: want status and Ask under the name", name, status, ask)
+	}
+	click(t, tt, "Ask")
+	if !slices.Equal(fs.asked, []string{proto.PermissionSystemAudio}) {
+		t.Errorf("asked %v", fs.asked)
+	}
+	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})
+	f := a.permSys.(*permission.Fake)
+	f.Mic = permission.NotDetermined
+	a.askPermission(proto.PermissionSystemAudio, nil)
+	if len(fs.asked) != 1 || f.Prompted != 0 || f.Mic != permission.NotDetermined {
+		t.Errorf("without the helper: asked %v, prompted %d, microphone %v", fs.asked, f.Prompted, f.Mic)
 	}
 }
 
@@ -427,11 +555,13 @@ func TestPrivacyClearsHistory(t *testing.T) {
 	// how far down Clear… is depends on the fonts (CI's wrap more lines).
 	tt.SetSize(windowWidth, 1000)
 	a.navigate("/settings/privacy")
+	frames(tt)
+	tt.Scroll(500, 500, 0, 400) // the settings dialog's height is capped: Clear… is further down
 	click(t, tt, "Clear…")
 	if !a.clearHistoryAsk {
 		t.Fatal("no confirmation")
 	}
-	click(t, tt, "Delete the history")
+	click(t, tt, "Delete history")
 	if list, _ := h.List(context.Background(), store.HistoryQuery{}); len(list) != 0 {
 		t.Errorf("%d entries left", len(list))
 	}
@@ -541,4 +671,18 @@ func TestHelperProcess(t *testing.T) {
 			return e.Message == "hotkey transcribe/0 trigger in com.tinyspeck.slackmacgap"
 		})
 	})
+}
+
+// A page that moved into Settings keeps its section's icon in the
+// command palette.
+func TestCommandIconsMovedPages(t *testing.T) {
+	if ic := commandIcon("go/models"); ic == nil || *ic != modelsIcon {
+		t.Error("go/models lost the Speech models icon")
+	}
+	if ic := commandIcon("go/language-models"); ic == nil || *ic != remoteIcon {
+		t.Error("go/language-models lost the Language models icon")
+	}
+	if ic := commandIcon("go/history"); ic == nil || *ic != historyIcon {
+		t.Error("go/history lost the page icon")
+	}
 }

@@ -22,7 +22,7 @@ class PinnedDraft:
     algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE", "NEXTN"]
     draft_model_path: str
     draft_model_revision: str
-    engine_settings: dict[str, int] = field(default_factory=dict)
+    engine_settings: dict[str, int | str] = field(default_factory=dict)
     # note (Haoling Pu): None means the model card states no license, so the draft stays off by default.
     license: str | None
     is_default_on: bool = False
@@ -52,6 +52,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_revision="d62bd4051e68282e02f93de774036a35f22f1373",
         engine_settings={"speculative_num_draft_tokens": 8},
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
@@ -59,6 +60,8 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DFLASH",
         draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash",
         draft_model_revision="2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+        # note (wilsonzheng0327): the 5-layer draft adds 18% to each token's KV; fp8 halves that, which long meetings on 80 GB cards need to fit.
+        engine_settings={"speculative_draft_kv_cache_dtype": "fp8_e4m3"},
         license="apache-2.0",
     ),
     PinnedDraft(
@@ -130,6 +133,15 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="NEXTN",
         draft_model_path="inclusionAI/Ming-3.0-audio-flash",
         draft_model_revision="db94e0de19f6d05adc0413c255a28eb480cd1fae",
+        license="mit",
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-audio-flash",
+        stage="thinker",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Ming-3.0-audio-flash-dflash",
+        draft_model_revision="0286123b6ce56a691b37fba0220d1e979f08ffff",
+        engine_settings={"speculative_num_draft_tokens": 16},
         license="mit",
     ),
 )

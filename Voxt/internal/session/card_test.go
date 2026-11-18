@@ -10,9 +10,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// TestShowCard: the card switch, one for the three features, sends the
-// result to the card or inserts it (over the selection when there is
-// one). A follow-up stays in the card, where its conversation is.
+// TestShowCard: each feature's own card switch sends its result to the
+// card or inserts it (over the selection when there is one); the other
+// features' switches, set the other way, change nothing. A follow-up
+// stays in the card, where its conversation is.
 func TestShowCard(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -35,7 +36,15 @@ func TestShowCard(t *testing.T) {
 			t.Run(fmt.Sprintf("%s, card %v", tc.name, on), func(t *testing.T) {
 				h := newHarness(t, &fakeFile{text: " hello aura link "}, &fakeLLM{text: tc.answer}, func(c *Config, s *settings.Settings) {
 					c.Select = &fakeSelector{text: tc.sel}
-					s.Features.ShowCard = on
+					s.Features.Transcribe.ShowCard, s.Features.Translate.ShowCard, s.Features.Rewrite.ShowCard = !on, !on, !on
+					switch tc.kind {
+					case store.KindTranscribe:
+						s.Features.Transcribe.ShowCard = on
+					case store.KindTranslate:
+						s.Features.Translate.ShowCard = on
+					default:
+						s.Features.Rewrite.ShowCard = on
+					}
 					s.Features.Transcribe.Enhance = true
 				})
 				id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack, Previous: tc.previous})

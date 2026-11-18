@@ -1688,10 +1688,8 @@ def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
         execution_mode=execution_mode,
         operator_selected_prefill_backend=True,
         enable_partial_start=True,
-        enable_talker_start_topology=True,
     )
     assert scheduler.enable_partial_start is True
-    assert scheduler.enable_talker_start_topology is True
     if execution_mode == "request":
         assert getattr(scheduler, "session_adapter", None) is None
         assert scheduler.request_builder is ordinary_request_builder
@@ -2144,6 +2142,7 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     pad_values = req_data.req.omni_model_inputs["pad_values"]
@@ -2200,6 +2199,7 @@ def test_qwen_sglang_request_records_mm_token_positions(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     positions = (

@@ -10,7 +10,6 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
@@ -45,10 +44,21 @@ type logListView struct {
 // logAtTop is how far from the top (DIPs) the list still shows it.
 const logAtTop = 1
 
+// logSeqs are the keys of lines, in their order.
+func logSeqs(lines []logLineViewState) []uint64 {
+	out := make([]uint64, len(lines))
+	for i, e := range lines {
+		out[i] = e.Seq
+	}
+	return out
+}
+
+func entrySeq(e logLineViewState) uint64 { return e.Seq }
+
 // logsFollow keys the list's rows by their lines and, when the list
 // showed its top in the last frame, keeps it there as new lines come.
 // Before the list is built.
-func (a *app) logsFollow(o *logListView, lines []core.LogEntry) {
+func logsFollow(o *logListView, lines []logLineViewState) {
 	o.list.Key = func(i int) any { return lines[i].Seq }
 	if len(lines) == 0 || o.scroll.Y > logAtTop {
 		return
@@ -62,7 +72,7 @@ func (a *app) logsFollow(o *logListView, lines []core.LogEntry) {
 }
 
 // newLines is how many lines came since the list last showed its top.
-func newLines(o *logListView, lines []core.LogEntry) int {
+func newLines(o *logListView, lines []logLineViewState) int {
 	n := 0
 	for _, e := range lines {
 		if e.Seq <= o.seen {
@@ -76,7 +86,7 @@ func newLines(o *logListView, lines []core.LogEntry) int {
 // newLinesPill shows, over the top of a list scrolled down, how many lines
 // came since it showed its top; a click scrolls back up. Inside the
 // list's area, after the list.
-func (a *app) newLinesPill(c *ui.Context, o *logListView, lines []core.LogEntry) {
+func newLinesPill(c *ui.Context, o *logListView, lines []logLineViewState) {
 	n := newLines(o, lines)
 	if n == 0 || o.scroll.Y <= logAtTop {
 		return

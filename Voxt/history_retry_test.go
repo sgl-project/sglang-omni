@@ -120,9 +120,9 @@ func TestHistoryRetryDetail(t *testing.T) {
 		return n
 	}
 	row := retries()
-	a.hist.sel = histRetry
+	a.histUI.sel = histRetry
 	frames(tt)
-	if !hasPrefix(tt, "Recording kept because recognition failed; deleted after") {
+	if !hasPrefix(tt, "Recording kept until ") || !has(tt, " because recognition failed.") {
 		t.Errorf("no retention line: %q", tt.Texts())
 	}
 	if n := retries(); row == 0 || n != 2*row {
@@ -138,7 +138,7 @@ func TestHistoryRetryDetail(t *testing.T) {
 	}
 
 	// A done entry: Transcribe again; its file is gone here, which it says.
-	a.hist.sel = histInserted
+	a.histUI.sel = histInserted
 	frames(tt)
 	if got := openMenu(t, tt, "Let's move the design review to Thursday afternoon."); !slices.Contains(got, "Transcribe again") {
 		t.Errorf("menu %q", got)
@@ -152,7 +152,7 @@ func TestHistoryRetryDetail(t *testing.T) {
 		t.Errorf("the entry changed: %+v", e)
 	}
 
-	a.hist.sel = histFailed
+	a.histUI.sel = histFailed
 	frames(tt)
 	if hasExact(tt, "Retry") || hasExact(tt, "Transcribe again") {
 		t.Errorf("a failed entry without a recording offers a retry: %q", firstTexts(tt))
@@ -177,8 +177,8 @@ func TestRetryNotice(t *testing.T) {
 	}
 	a.noticeAction(actionRetry)
 	frames(tt)
-	if a.router.Path() != "/history" || a.hist.sel != histRetry || tr.count() != 1 {
-		t.Fatalf("path %s, selected %q, %d transcriptions", a.router.Path(), a.hist.sel, tr.count())
+	if a.router.Path() != "/history" || a.histUI.sel != histRetry || tr.count() != 1 {
+		t.Fatalf("path %s, selected %q, %d transcriptions", a.router.Path(), a.histUI.sel, tr.count())
 	}
 	if got, _ := a.lib.store.History().Get(context.Background(), histRetry); got.Result != "From the notice." {
 		t.Errorf("entry %+v", got)
@@ -199,10 +199,31 @@ func snapshotHistoryRetry(a *app, save func(string)) {
 	_ = hs.Put(context.Background(), e)
 	a.loadHistory()
 	save("history-retry")
-	a.hist.sel = histRetry
+	a.histUI.sel = histRetry
 	save("history-retry-detail")
-	a.hist.sel = ""
+	a.histUI.sel = ""
 	_ = hs.Delete(context.Background(), histRetry)
 	a.historyChanged()
 	a.loadHistory()
+}
+
+// TestHistoryRetryDraft: while a retry's language model writes, the
+// details' Result shows its answer so far in place of the old one, until
+// the retry is over.
+func TestHistoryRetryDraft(t *testing.T) {
+	a, tt, _ := retryApp(t, "Again.")
+	seedHistory(t, a)
+	seedRetryEntry(t, a)
+	a.navigate("/history")
+	a.histUI.sel = histInserted
+	a.hist.retry = entryRetry{id: histInserted, stage: session.Composing, draft: "Let's move the design review to"}
+	frames(tt)
+	if !hasExact(tt, "Let's move the design review to") {
+		t.Errorf("while it writes: %q", firstTexts(tt))
+	}
+	a.hist.retry = entryRetry{}
+	frames(tt)
+	if hasExact(tt, "Let's move the design review to") {
+		t.Errorf("after the retry: %q", firstTexts(tt))
+	}
 }

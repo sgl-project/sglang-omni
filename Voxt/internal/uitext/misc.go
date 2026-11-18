@@ -18,40 +18,52 @@ import (
 
 // PatternErrorText says why a website rule is not valid.
 func PatternErrorText(err error) string {
+	return PatternErrorTextFor(i18n.CurrentTranslator(), err)
+}
+
+func PatternErrorTextFor(translator *i18n.Translator, err error) string {
 	switch err {
 	case appctx.ErrPatternEmpty:
-		return i18n.T("Type a website, as in github.com.")
+		return translator.T("Type a website, as in github.com.")
 	case appctx.ErrPatternSpace:
-		return i18n.T("A website rule has no spaces.")
+		return translator.T("A website rule cannot contain spaces.")
 	case appctx.ErrPatternScheme:
-		return i18n.T("Only web addresses (http and https).")
+		return translator.T("Only web addresses (http and https).")
 	}
-	return i18n.T("Start with a site, as in github.com or *.notion.so; * stands for anything.")
+	return translator.T("Start with a site, as in github.com or *.notion.so. * matches anything.")
 }
 
 // AutoKeyLabel is the select's label of keys.
 func AutoKeyLabel(keys string) string {
+	return AutoKeyLabelFor(i18n.CurrentTranslator(), keys)
+}
+
+func AutoKeyLabelFor(translator *i18n.Translator, keys string) string {
 	switch c := appctx.CanonicalAutoKey(keys); c {
 	case "":
-		return i18n.T("None")
+		return translator.T("None")
 	case "Return":
-		return i18n.T("Return ↩")
+		return translator.T("Return ↩")
 	default:
-		return HotkeyText(c)
+		return HotkeyTextFor(translator, c)
 	}
 }
 
 // TermErrorText says why a term cannot be saved.
 func TermErrorText(err error) string {
+	return TermErrorTextFor(i18n.CurrentTranslator(), err)
+}
+
+func TermErrorTextFor(translator *i18n.Translator, err error) string {
 	switch {
 	case errors.Is(err, dict.ErrEmpty):
-		return i18n.T("Type the term as it must be written.")
+		return translator.T("Type the term as it should be written.")
 	case errors.Is(err, dict.ErrLong):
-		return i18n.T("A term has at most %d characters.", dict.MaxTermChars)
+		return translator.T("A term can have at most %d characters.", dict.MaxTermChars)
 	case errors.Is(err, core.ErrExists):
-		return i18n.T("This term is in the dictionary already.")
+		return translator.T("This term is in the dictionary already.")
 	}
-	return i18n.T("Could not save the term: %v", err)
+	return translator.T("Could not save the term: %v", err)
 }
 
 func PermissionText(p permission.State) (string, bool) {
@@ -70,28 +82,34 @@ func PermissionText(p permission.State) (string, bool) {
 
 // HelperFailText says why the helper does not run.
 func HelperFailText(st helper.Status) string {
-	switch st.Reason {
-	case helper.FailMissing:
-		return i18n.T("Helper missing")
-	case helper.FailProtocol:
-		return i18n.T("Helper out of date")
-	case helper.FailUpdated:
-		return i18n.T("Voxt was updated: restart it to finish.")
-	}
-	if st.State == helper.Stopped {
-		return i18n.T("Helper stopped")
-	}
-	return i18n.T("Helper stopped unexpectedly")
+	return HelperFailTextFor(i18n.CurrentTranslator(), st)
 }
 
-func LogSourceLabel(s string) string {
+func HelperFailTextFor(translator *i18n.Translator, st helper.Status) string {
+	switch st.Reason {
+	case helper.FailMissing:
+		return translator.T("Helper missing")
+	case helper.FailProtocol:
+		return translator.T("Helper out of date")
+	case helper.FailUpdated:
+		return translator.T("Voxt was updated. Restart it to finish.")
+	}
+	if st.State == helper.Stopped {
+		return translator.T("Helper stopped")
+	}
+	return translator.T("Helper stopped unexpectedly")
+}
+
+func LogSourceLabel(s string) string { return LogSourceLabelFor(i18n.CurrentTranslator(), s) }
+
+func LogSourceLabelFor(translator *i18n.Translator, s string) string {
 	switch s {
 	case "":
-		return i18n.T("All sources")
+		return translator.T("All sources")
 	case "app":
-		return i18n.T("App")
+		return translator.T("App")
 	case helper.LogSource:
-		return i18n.T("Helper")
+		return translator.T("Helper")
 	}
 	return s
 }

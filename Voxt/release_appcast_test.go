@@ -95,6 +95,49 @@ func TestReleaseAppcastEntryChannels(t *testing.T) {
 	}
 }
 
+func TestVoxt2FeedChannels(t *testing.T) {
+	base, err := runReleaseAppcast(t, "", "feed-base")
+	if err != nil || base != "https://voxt.actnow.dev/updates/voxt2\n" {
+		t.Fatalf("feed-base: %q, %v", base, err)
+	}
+	for channel, suffix := range map[string]string{"stable": "", "beta": "/beta"} {
+		got, err := runReleaseAppcast(t, "", "feed-url", channel)
+		want := base[:len(base)-1] + suffix + "/update-darwin-arm64.json\n"
+		if err != nil || got != want {
+			t.Errorf("feed-url %s: %q, %v; want %q", channel, got, err, want)
+		}
+	}
+	if out, err := runReleaseAppcast(t, "", "feed-url", "nightly"); err == nil {
+		t.Errorf("feed-url nightly printed %q: only beta and stable have feeds", out)
+	}
+}
+
+func TestVoxt2GitHubManifest(t *testing.T) {
+	manifest := `{"version":"2.1.1","url":"https://voxt.actnow.dev/updates/voxt2/voxt-2.1.1-darwin-arm64.tar.gz","size":123,"signature":"signed","deltas":[{"from":"2.1.0","url":"https://voxt.actnow.dev/updates/voxt2/voxt-2.1.0-to-2.1.1-darwin-arm64.delta","size":12,"signature":"delta"}],"previous":[{"version":"2.1.0","url":"https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/voxt-2.1.0-darwin-arm64.tar.gz","size":100,"signature":"old"}]}`
+	out, err := runReleaseAppcast(t, manifest, "github-manifest", "2.1.1", "sgl-project/sglang-omni")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		URL    string
+		Deltas []struct{ URL string }
+		Prev   []struct{ URL string } `json:"previous"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	base := "https://github.com/sgl-project/sglang-omni/releases/download/"
+	if got.URL != base+"voxt-v2.1.1/voxt-2.1.1-darwin-arm64.tar.gz" || len(got.Deltas) != 1 || got.Deltas[0].URL != base+"voxt-v2.1.1/voxt-2.1.0-to-2.1.1-darwin-arm64.delta" {
+		t.Errorf("current release's assets: %s", out)
+	}
+	if len(got.Prev) != 1 || got.Prev[0].URL != base+"voxt-v2.1.0/voxt-2.1.0-darwin-arm64.tar.gz" {
+		t.Errorf("an earlier release's archive moved: %s", out)
+	}
+	if out, err := runReleaseAppcast(t, `{"version":"2.1.0"}`, "github-manifest", "2.1.1", "sgl-project/sglang-omni"); err == nil {
+		t.Errorf("a manifest of another version printed %q", out)
+	}
+}
+
 func TestReleaseAppcastAssetNames(t *testing.T) {
 	// The disk image is named as on the published voxt-v2.0.0 release; the ZIP as Voxt 1.x's.
 	const zip, dmg = "Voxt-2.0.1-macOS.zip", "Voxt-2.0.1-arm64.dmg"
@@ -121,22 +164,45 @@ func TestReleaseAppcastAssetNames(t *testing.T) {
 			t.Errorf("the cask has no %s:\n%s", line, cask)
 		}
 	}
-	// Voxt 2 does not update itself: with auto_updates, brew upgrade would skip it.
+	// No auto_updates while brew-installed 2.0.x/2.1.0 cannot update
+	// themselves: brew upgrade must still deliver the first self-updating
+	// release. It returns once those are widely installed.
 	if strings.Contains(cask, "auto_updates") {
-		t.Errorf("the cask says auto_updates:\n%s", cask)
+		t.Errorf("the cask strands brew-installed 2.0.x/2.1.0:\n%s", cask)
 	}
 	if out, err := runReleaseAppcast(t, "", "cask", "2.0.1", "not-a-digest", "sgl-project/sglang-omni"); err == nil {
 		t.Errorf("a cask with a bad SHA-256 printed %q", out)
 	}
 }
 
-func TestReleaseAppcastNotes(t *testing.T) {
-	notes := "### Added\n\n- **Remote** <models> & \"more\"\n  - Indented item  \nA paragraph.\n\n### 中文\n\n#### 新增\n\n- 远程\n"
-	want := "<h3>Added</h3>\n<ul>\n<li>**Remote** &lt;models&gt; &amp; &quot;more&quot;</li>\n<li>Indented item</li>\n</ul>\n" +
-		"<p>A paragraph.</p>\n<h3>中文</h3>\n<h4>新增</h4>\n<ul>\n<li>远程</li>\n</ul>\n"
-	out, err := runReleaseAppcast(t, notes, "notes")
-	if err != nil || out != want {
-		t.Errorf("notes: %v\n got %q\nwant %q", err, out, want)
+func TestReleaseAppcastNotesByLocale(t *testing.T) {
+	const english = "### Added\n\n- **Remote** <models> & \"more\"\n  - Indented item  \nA paragraph.\n"
+	const chinese = "\n### 中文\n\n#### 要求\n\n* **Apple 芯片**\n\n#### 变更\n\n- 远程\n"
+	const build = "\n### Build\n\nSigned.\n"
+	const generated = "\n## What's Changed\n\n### New Contributors\n\n- Unrelated PR\n"
+	const wantEnglish = "<h3>Added</h3>\n<ul>\n<li><strong>Remote</strong> &lt;models&gt; &amp; &quot;more&quot;</li>\n<li>Indented item</li>\n</ul>\n" +
+		"<p>A paragraph.</p>\n<h3>Build</h3>\n<p>Signed.</p>"
+	const wantChinese = "<h3>要求</h3>\n<ul>\n<li><strong>Apple 芯片</strong></li>\n</ul>\n<h3>变更</h3>\n<ul>\n<li>远程</li>\n</ul>"
+	for _, test := range []struct {
+		name, notes, chineseHTML string
+	}{
+		{"bilingual", english + chinese + build + generated, wantChinese},
+		{"English only", english + build + generated, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, err := runReleaseAppcast(t, test.notes, "notes-by-locale")
+			if err != nil {
+				t.Fatalf("notes-by-locale: %v", err)
+			}
+			var localized map[string]string
+			if err := json.Unmarshal([]byte(out), &localized); err != nil {
+				t.Fatalf("notes-by-locale printed %q: %v", out, err)
+			}
+			chineseHTML, hasChinese := localized["zh-Hans"]
+			if localized["en"] != wantEnglish || chineseHTML != test.chineseHTML || hasChinese != (test.chineseHTML != "") {
+				t.Errorf("unexpected localized notes: %v", localized)
+			}
+		})
 	}
 }
 
@@ -165,16 +231,15 @@ func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 		t.Errorf("items: %v\n got %q\nwant %q", err, out, want)
 	}
 	// voxt-appcast.yaml makes the entry the channel's latest only when the
-	// update service kept its hardware requirement: in the entry of an ok
-	// reply (data, as Voxt 1.x's run got it), or in the appcasts' item of the
-	// build. A reply that echoes the request is no proof.
+	// appcasts' item has its hardware requirement. An API reply is no proof
+	// that Voxt 1.x's XML carries it.
 	const voxt1Reply = `{"ok":true,"data":{"channel":"beta","version":"2.0.2","packageURL":"https://voxt.actnow.dev/p","zipURL":"https://voxt.actnow.dev/z","dmgURL":"https://voxt.actnow.dev/d","sha256":"ab","size":1,"updated":true}}`
 	withoutElement := strings.ReplaceAll(releaseAppcastXML, "<sparkle:hardwareRequirements> arm64 </sparkle:hardwareRequirements>", "")
 	for _, c := range []struct {
 		name, build, reply, appcast string
 		kept                        bool
 	}{
-		{"in the reply", "200000299", strings.Replace(voxt1Reply, `"updated":true`, `"updated":true,"hardwareRequirements": "arm64"`, 1), withoutElement, true},
+		{"only in the reply", "200000299", strings.Replace(voxt1Reply, `"updated":true`, `"updated":true,"hardwareRequirements": "arm64"`, 1), withoutElement, false},
 		{"in the appcast", "200000299", voxt1Reply, releaseAppcastXML, true},
 		{"not in either", "200000299", voxt1Reply, withoutElement, false},
 		{"an echoed request, not ok", "200000299", `{"ok":false,"error":"unknown field","received":{"hardwareRequirements":"arm64"}}`, withoutElement, false},

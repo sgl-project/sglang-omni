@@ -25,6 +25,8 @@ dictation asr
 dictation helper/proto
 dictation local
 dsp vad
+fileasr asr
+fileasr meeting
 helper core
 helper helper/proto
 helper/helpertest helper/proto
@@ -37,6 +39,7 @@ local asr
 local llm
 local vad
 meeting asr
+meeting compose
 meeting core
 meeting helper/proto
 meeting llm

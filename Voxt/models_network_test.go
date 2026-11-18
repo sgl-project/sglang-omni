@@ -44,10 +44,10 @@ func TestNetworkDialog(t *testing.T) {
 	addPeer(t, a, dictaID, nil)
 	a.familyFound(a.fam.Discover())
 	a.openURL("voxtnew://models/network")
-	if a.currentPage() != "models" || !a.netOpen || !has(tt, "How model downloads reach Hugging Face") {
-		t.Fatalf("deep link: page %q open %v %q", a.currentPage(), a.netOpen, tt.Texts())
+	if a.shownPath() != modelsPath || !a.netOpen || !has(tt, "How model downloads reach Hugging Face") {
+		t.Fatalf("deep link: page %q open %v %q", a.shownPath(), a.netOpen, tt.Texts())
 	}
-	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in the Mac's network settings, or the one the environment names.") {
+	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in this Mac's network settings, or one set by an environment variable.") {
 		t.Fatalf("defaults: %q", tt.Texts())
 	}
 
@@ -55,7 +55,7 @@ func TestNetworkDialog(t *testing.T) {
 	click(t, tt, "Custom")
 	a.netForm.proxyURL = "ftp://127.0.0.1:21"
 	click(t, tt, "Save")
-	if !a.netOpen || !has(tt, "Enter a proxy's address that starts with http://, https:// or socks5://, like http://127.0.0.1:7890.") {
+	if !a.netOpen || !has(tt, "Enter a proxy address that starts with http://, https:// or socks5://, such as http://127.0.0.1:7890.") {
 		t.Fatalf("an ftp proxy was taken: %q", tt.Texts())
 	}
 	a.netForm.proxyURL = " socks5://127.0.0.1:1080 "
@@ -94,6 +94,27 @@ func TestNetworkDialog(t *testing.T) {
 	click(t, tt, "Use the same setting as the other apps that share this model library")
 	if !a.prefs.Family.Follows(actnow.KeyProxy) || a.prefs.Network.Proxy != "socks5://127.0.0.1:1080" || a.netForm.proxyMode != proxyCustom {
 		t.Errorf("following again: %+v %+v", a.prefs.Network, a.netForm)
+	}
+}
+
+func TestNetworkRejectsProxyPassword(t *testing.T) {
+	keys := &memKeys{m: map[string]string{}}
+	useKeys(t, keys)
+	a, _, tt := newTestApp(t)
+	a.openURL("voxtnew://models/network")
+	click(t, tt, "Custom")
+	a.netForm.proxyURL = "http://fixture"
+	a.netForm.proxyPassword = "bad\"password"
+	before := a.prefs.Network
+	click(t, tt, "Save")
+	if !a.netOpen || a.netForm.proxyErr == "" {
+		t.Fatalf("forbidden password closed the dialog: %+v", a.netForm)
+	}
+	if a.prefs.Network != before || a.settings.Get().Network != before {
+		t.Fatalf("forbidden password changed settings: %+v", a.prefs.Network)
+	}
+	if len(keys.m) != 0 {
+		t.Fatalf("forbidden password reached the Keychain: %v", keys.m)
 	}
 }
 

@@ -1,0 +1,167 @@
+{
+  "name": "settings-error",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/audio",
+    "shown_path": "/settings/audio",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "audio": {
+      "helper_ready": true,
+      "devices_read": false,
+      "devices_loading": false,
+      "devices_error": "fixture device read failed",
+      "devices": null,
+      "other_devices": null,
+      "skip_silence": true,
+      "clean_sound": true,
+      "live_result": true,
+      "upload_mb": 12,
+      "max_minutes": 30,
+      "mute_output": true,
+      "sounds": {
+        "source_options": [
+          "Built-in",
+          "macOS",
+          "None"
+        ],
+        "source_values": [
+          "built-in",
+          "system",
+          "none"
+        ],
+        "source_index": 0,
+        "source_id": "built-in",
+        "pairs": [
+          {
+            "start": "pebble",
+            "stop": "nib",
+            "name": "Soft",
+            "sounds": "Pebble → Nib",
+            "play_label": "Play Soft",
+            "chosen": true,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "tally",
+            "stop": "wrap",
+            "name": "Beep",
+            "sounds": "Tally → Wrap",
+            "play_label": "Play Beep",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          }
+        ],
+        "system_cues": [
+          {
+            "event_id": "record.start",
+            "label": "When recording starts",
+            "select_label": "Start sound",
+            "options": [
+              "None",
+              "Fixture Pop",
+              "Fixture Tink"
+            ],
+            "values": [
+              "none",
+              "system:Fixture Pop",
+              "system:Fixture Tink"
+            ],
+            "selected": "None",
+            "try_label": "Try the start sound",
+            "try_accent": false
+          },
+          {
+            "event_id": "record.stop",
+            "label": "When recording stops",
+            "select_label": "Stop sound",
+            "options": [
+              "None",
+              "Fixture Pop",
+              "Fixture Tink"
+            ],
+            "values": [
+              "none",
+              "system:Fixture Pop",
+              "system:Fixture Tink"
+            ],
+            "selected": "None",
+            "try_label": "Try the stop sound",
+            "try_accent": false
+          }
+        ],
+        "volume_options": [
+          "100%",
+          "75%",
+          "50%",
+          "25%"
+        ],
+        "volume_values": [
+          100,
+          75,
+          50,
+          25
+        ],
+        "volume_selection": "75%"
+      }
+    }
+  }
+}

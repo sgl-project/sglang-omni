@@ -74,11 +74,13 @@ type General struct {
 	CopyResult bool `json:"copyResult,omitempty"`
 }
 
-// Appearance: theme, scale and the sidebar.
+// Appearance: the main window's visual settings.
 type Appearance struct {
-	Theme        string  `json:"theme"`        // "system" | "light" | "dark"
-	Scale        float64 `json:"scale"`        // UI scale, 0.9–1.25 (1 = 100 %)
-	ReduceMotion bool    `json:"reduceMotion"` // in addition to the system setting
+	Theme              string  `json:"theme"`              // "system" | "light" | "dark" | "transparent"
+	Palette            string  `json:"palette"`            // user-selected color as #rrggbb
+	WindowTransparency int     `json:"windowTransparency"` // percent, used in transparent mode
+	Scale              float64 `json:"scale"`              // UI scale, 0.9–1.25 (1 = 100 %)
+	ReduceMotion       bool    `json:"reduceMotion"`       // in addition to the system setting
 	// Rail shows the sidebar as icons only. Without it the sidebar is
 	// automatic (icons only in a narrow window) unless RailChosen: the
 	// user chose names and icons. SidebarWidth is its width in DIPs at
@@ -104,6 +106,14 @@ type Privacy struct {
 	// what they and Export text get.
 	HistoryAccess    bool `json:"historyAccess,omitempty"`
 	HistorySelection bool `json:"historySelection,omitempty"`
+	// SendWindow sends a picture of the window the user speaks into to
+	// the language model, with the text (session/window.go); off by
+	// default.
+	SendWindow bool `json:"sendWindow,omitempty"`
+	// SendClipboardImage sends the picture on the clipboard with
+	// Rewrite's text to the language model (session/window.go); off by
+	// default.
+	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.
@@ -144,6 +154,14 @@ type Audio struct {
 	// whole recording once more (the Final), so the text comes sooner and
 	// is a little less accurate (#3644 FB7). Off: the Final runs.
 	LiveResult bool `json:"liveResult,omitempty"`
+	// UploadMB caps each upload to a speech service that takes the whole
+	// recording and splits long ones (OpenAI, Doubao): pieces of at most
+	// this many MB (1 MB = 2^20 bytes). 0, or more than the service's own
+	// limit: the service's (25 MB, 100 MB). MaxSeconds stops a recording
+	// at this length, as Stop does (0: no limit). Settings → Audio shows
+	// it in minutes; the overlay warns as either limit nears (#3840).
+	UploadMB   int `json:"uploadMB,omitempty"`
+	MaxSeconds int `json:"maxSeconds,omitempty"`
 }
 
 // MuteOn reports whether recordings mute the system's output: the user's
@@ -221,8 +239,10 @@ type Overlay struct {
 	HideLiveText bool `json:"hideLiveText,omitempty"`
 	// LiveLines shows the live text in lines that wrap, in a wide face
 	// from the first word, growing up to ten lines, then the newest ones
-	// (#3644 FB5); off, one line that scrolls sideways.
-	LiveLines bool `json:"liveLines,omitempty"`
+	// (#3644 FB5); off, one line that scrolls sideways. On by default
+	// since 11-09 (the user: the pill should grow in lines, not sideways);
+	// no omitempty, so One line is kept.
+	LiveLines bool `json:"liveLines"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
@@ -261,6 +281,14 @@ type Dictionary struct {
 	// what) that the speech model gets before the hints, with the
 	// dictionary on or off; a service that takes no prompt ignores it.
 	SpeechContext string `json:"speechContext,omitempty"`
+	// Notes is the personal dictionary: Markdown the user writes once (a
+	// table of standard spelling, what recognition makes of it, and when
+	// it applies, or any notes) that goes into the language model's
+	// system prompt for Transcribe, Translate and Rewrite, never to
+	// speech recognition (compose.Input.Dictionary). NotesOff keeps it
+	// out of the prompt; notes are sent by default once written.
+	Notes    string `json:"notes,omitempty"`
+	NotesOff bool   `json:"notesOff,omitempty"`
 	// Learn watches the field a Transcribe result was pasted into for
 	// 30 s and proposes a term when the user corrects a word of it
 	// (internal/learn). Off by default.
@@ -269,22 +297,31 @@ type Dictionary struct {
 
 // Setup: the first-run guide.
 type Setup struct {
-	Done bool `json:"done,omitempty"`
+	Done         bool `json:"done,omitempty"`
+	OpeningShown bool `json:"openingShown,omitempty"`
 	// Tried: a session (a try or a real one, any feature) has given a
 	// result once, or the history had one: Home stops offering its Try
 	// area. It stays when the history is cleared.
 	Tried bool `json:"tried,omitempty"`
 }
 
-// Updates: what the updater offers (Settings → About → Updates). Its
-// other preferences (automatic checks and installs) are the updater
-// plugin's, in its own updater.json.
+// Updates: what the updater offers (Settings → About → Updates). With an
+// update feed, its other preferences (automatic checks and installs) are
+// the updater plugin's, in its own updater.json; without one, the check
+// of GitHub's releases (updates_github.go) keeps its own here.
 type Updates struct {
 	// Beta offers beta versions (the feed's beta channel) too. Nil until the
 	// user chooses: then on while the running version is a beta (BetaOn),
 	// so that a beta's users get the next one. No migration: older
 	// documents have none.
 	Beta *bool `json:"beta,omitempty"`
+	// NoAutoCheck turns off the daily check of GitHub's releases (on by
+	// default); LastCheck is when one last succeeded.
+	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
+	LastCheck   time.Time `json:"lastCheck,omitzero"`
+	// Dismissed is the version whose "is available" card the user
+	// dismissed: no card for it again, one for a newer version.
+	Dismissed string `json:"dismissed,omitempty"`
 }
 
 // BetaOn reports whether updates include betas for the app of version
@@ -320,14 +357,14 @@ func Defaults() Settings {
 	return Settings{
 		Version:    Version,
 		General:    General{MenuBar: true, CloseToTray: true},
-		Appearance: Appearance{Theme: "system", Scale: 1},
+		Appearance: Appearance{Theme: ThemeSystem, Palette: DefaultPalette, WindowTransparency: DefaultWindowTransparency, Scale: 1},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
-		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96},
+		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
 			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
-			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
+			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
 			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},

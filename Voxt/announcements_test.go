@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -58,30 +59,32 @@ func (s *announceServer) count() int {
 }
 
 const (
-	oldAnnouncement = `{"id":"n1","title":"Welcome to Voxt","content":"Thanks for trying Voxt.","coverImage":null,"version":"2.0.0","publishedAt":"2026-11-01T08:00:00Z"}`
-	newAnnouncement = `{"id":"n2","title":"Voxt 2.0.3 is out","content":"Meetings are coming.\nThe second line tells more, and the dialog shows it all.","coverImage":null,"version":"2.0.3","publishedAt":"2026-11-08T09:30:00.250Z"}`
+	oldAnnouncement      = `{"id":"n1","title":"Welcome to Voxt","content":"Thanks for trying Voxt.","coverImage":null,"version":"2.0.0","publishedAt":"2026-11-01T08:00:00Z"}`
+	longAnnouncementLine = "The second line tells more, with enough detail to be truncated in the sidebar card rather than overwhelm it."
+	newAnnouncement      = `{"id":"n2","title":"Voxt 2.0.3 is out","content":"## What's new in 2.0.3\n\n- Meetings are coming.\n- ` + longAnnouncementLine + `\n- The third line is short too.\n- The fourth line is only in the full notes.","coverImage":null,"version":"2.0.3","publishedAt":"2026-11-08T09:30:00.250Z"}`
 )
 
-// TestAnnouncements: as Voxt 1.x read its announcements. The newest is a
-// card in the sidebar, whose Read shows it whole, with its date and the
-// version it is about; dismissed, it does not
-// come back, neither at the next check nor after a restart, and the older
-// one is never shown. The requests carry nothing of the user's: the
-// manifest's address, then the list's with the revision only, and no
-// header but Go's own.
+// TestAnnouncements: the running version's announcement becomes one short
+// card, whose What's new shows the full notes. Dismissed, it does not come
+// back after a restart, and Settings → About → Updates keeps the full notes.
+// Another version gets no card until Voxt updates to it. The requests carry
+// nothing of the user's: the revision only, and no header but Go's own.
 func TestAnnouncements(t *testing.T) {
 	srv := &announceServer{revision: "r1", list: oldAnnouncement + "," + newAnnouncement}
 	url := srv.start(t)
 	dir := t.TempDir()
 	a, _, tt := newTestAppIn(t, dir)
+	a.version = "2.0.3"
 	a.announceURL = url
 	a.checkAnnouncements()
-	if !has(tt, "Voxt 2.0.3 is out") || !has(tt, "Meetings are coming.\nThe second line tells more, and the dialog shows it all.") || has(tt, "Welcome to Voxt") {
-		t.Fatalf("no card for the newest, or one for the older: %q", tt.Texts())
+	if !has(tt, "Voxt 2.0.3 is out") || !has(tt, "Meetings are coming.") || !has(tt, "The third line is short too.") ||
+		has(tt, longAnnouncementLine) || has(tt, "The fourth line is only in the full notes.") || has(tt, "Welcome to Voxt") {
+		t.Fatalf("short card for the running version: %q", tt.Texts())
 	}
-	click(t, tt, "Read")
-	if !a.announceShownOpen || !has(tt, "Done") || !hasSuffix(tt, " · Version 2.0.3") {
-		t.Fatalf("Read: %q", tt.Texts())
+	click(t, tt, "What's new")
+	if !a.announceShownOpen || !has(tt, "Done") || !hasSuffix(tt, " · Version 2.0.3") ||
+		!has(tt, longAnnouncementLine) || !has(tt, "The fourth line is only in the full notes.") {
+		t.Fatalf("What's new: %q", tt.Texts())
 	}
 	click(t, tt, "Done")
 	for i, r := range srv.requests {
@@ -114,25 +117,45 @@ func TestAnnouncements(t *testing.T) {
 		t.Errorf("after dismissing: %d requests, %q", srv.count()-before, tt.Texts())
 	}
 
-	// A new revision of the same list, after a restart: nothing comes
-	// back. A new announcement in it shows.
+	// A restart into the same version does not show the card again. Offline,
+	// the Settings entry still opens the whole announcement after dismissal.
 	a.quit()
 	a.lib.close()
-	srv.set(func(s *announceServer) { s.revision = "r2" })
+	srv.set(func(s *announceServer) { s.revision, s.status = "r2", http.StatusServiceUnavailable })
 	b, _, bt := newTestAppIn(t, dir)
+	b.version = "2.0.3"
 	b.announceURL = url
 	b.checkAnnouncements()
 	if has(bt, "Voxt 2.0.3 is out") || has(bt, "Welcome to Voxt") {
 		t.Errorf("seen ones again: %q", bt.Texts())
 	}
+	b.navigate("/settings/about")
+	see(t, bt, "What's new in 2.0.3")
+	click(t, bt, "Read")
+	if !b.announceShownOpen || !has(bt, "The fourth line is only in the full notes.") {
+		t.Errorf("Settings full notes: %q", bt.Texts())
+	}
+	click(t, bt, "Done")
+	b.navigate("/home")
+
+	// A different version does not show early. Updating to it shows its card
+	// even when the server's revision and list have not changed.
+	next := strings.Replace(newAnnouncement, `"id":"n2","title":"Voxt 2.0.3 is out"`, `"id":"n3","title":"Voxt 2.0.4 is out"`, 1)
+	next = strings.ReplaceAll(next, "2.0.3", "2.0.4")
 	srv.set(func(s *announceServer) {
-		s.revision = "r3"
-		s.list = strings.Replace(newAnnouncement, `"id":"n2","title":"Voxt 2.0.3 is out"`, `"id":"n3","title":"Voxt 2.0.4 is out"`, 1) + "," + oldAnnouncement
+		s.revision, s.status = "r3", 0
+		s.list = next + "," + newAnnouncement + "," + oldAnnouncement
 	})
 	b.announceAt = time.Time{}
 	b.checkAnnouncements()
+	if has(bt, "Voxt 2.0.4 is out") {
+		t.Errorf("the next version showed before the update: %q", bt.Texts())
+	}
+	b.version = "2.0.4"
+	b.announceAt = time.Time{}
+	b.checkAnnouncements()
 	if !has(bt, "Voxt 2.0.4 is out") {
-		t.Errorf("no card for the new one: %q", bt.Texts())
+		t.Errorf("no card after the update: %q", bt.Texts())
 	}
 }
 
@@ -145,6 +168,7 @@ func TestAnnouncementsFail(t *testing.T) {
 	srv := &announceServer{revision: "r1", list: newAnnouncement}
 	url := srv.start(t)
 	a, _, tt := newTestApp(t)
+	a.version = "2.0.3"
 	a.announceURL = url
 	notices := len(a.notices)
 	for _, fail := range []func(s *announceServer){
@@ -165,5 +189,62 @@ func TestAnnouncementsFail(t *testing.T) {
 	a.checkAnnouncements()
 	if !has(tt, "Voxt 2.0.3 is out") {
 		t.Errorf("not shown once the server answers: %q", tt.Texts())
+	}
+}
+
+// TestAnnouncementsFor: the card is the newest announcement for Voxt 2 in
+// the UI's language. Voxt 1.x's server still lists its 1.13 announcement
+// of meetings and notes, in Chinese, which Voxt 2 showed to every user,
+// in the English UI too.
+func TestAnnouncementsFor(t *testing.T) {
+	v1 := `{"id":"v1","title":"会议 & 笔记","content":"- 会议功能经过重构回来了，支持 会议、字幕、录音 三种模式","coverImage":null,"version":"1.13.0-beta.3","publishedAt":"2026-11-09T13:09:00Z"}`
+	srv := &announceServer{revision: "r1", list: v1 + "," + oldAnnouncement}
+	url := srv.start(t)
+	a, _, tt := newTestApp(t)
+	a.version = "2.0.0"
+	a.announceURL = url
+	a.checkAnnouncements()
+	if has(tt, "会议 & 笔记") || !has(tt, "Welcome to Voxt") {
+		t.Errorf("want the 2.0.0 card, not the 1.x one: %q", tt.Texts())
+	}
+}
+
+// TestAnnouncementsLegacyState: the old revision-and-IDs document still
+// suppresses the card it already showed. The next fetch keeps its full notes
+// for Settings, and the old IDs do not suppress a later version's card.
+func TestAnnouncementsLegacyState(t *testing.T) {
+	dir := t.TempDir()
+	lib, err := openLibrary(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"revision":"r1","ids":["n1","n2"]}`)
+	if err := lib.store.Documents().Put(context.Background(), announceDoc, legacy); err != nil {
+		t.Fatal(err)
+	}
+	lib.close()
+
+	srv := &announceServer{revision: "r1", list: oldAnnouncement + "," + newAnnouncement}
+	a, _, tt := newTestAppIn(t, dir)
+	a.version = "2.0.3"
+	a.announceURL = srv.start(t)
+	a.checkAnnouncements()
+	if has(tt, "Voxt 2.0.3 is out") {
+		t.Fatalf("the legacy card showed again: %q", tt.Texts())
+	}
+	a.navigate("/settings/about")
+	see(t, tt, "What's new in 2.0.3")
+	a.navigate("/home")
+
+	next := strings.ReplaceAll(newAnnouncement, "2.0.3", "2.0.4")
+	srv.set(func(s *announceServer) {
+		s.revision = "r2"
+		s.list = next + "," + newAnnouncement
+	})
+	a.version = "2.0.4"
+	a.announceAt = time.Time{}
+	a.checkAnnouncements()
+	if !has(tt, "Voxt 2.0.4 is out") {
+		t.Errorf("the old IDs suppressed the update: %q", tt.Texts())
 	}
 }

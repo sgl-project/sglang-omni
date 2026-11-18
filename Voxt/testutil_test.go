@@ -7,8 +7,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,10 +35,19 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // The test binary is also the fake helper (helpertest) and the fake
 // Omni server (omnitest).
+// failListModels stands for runListModels in tests: no dialog asks a
+// real server on this Mac which models it has.
+func failListModels(context.Context, settings.Provider, string, *http.Client) ([]string, error) {
+	return nil, errors.New("no model servers in tests")
+}
+
 func TestMain(m *testing.M) {
 	if helpertest.Enabled() {
 		helpertest.Main()
@@ -43,6 +55,7 @@ func TestMain(m *testing.M) {
 	if omnitest.Enabled() {
 		omnitest.Main()
 	}
+	runListModels = failListModels
 	os.Exit(runIsolated(m))
 }
 
@@ -239,7 +252,6 @@ func newTestAppIn(t *testing.T, dir string) (*app, *fakeSupervisor, *ui.Tester) 
 	t.Cleanup(lib.close)
 	fs := newFakeSupervisor(lib.bus)
 	a := newApp(lib, &helperHost{sup: fs})
-	a.ob.memoryGB = 0 // not this machine's: the tests that care set it
 	a.permSys = &permission.Fake{Mic: permission.Granted, Grant: true}
 	useTestSounds(t, a)                  // sounds_fixture_test.go
 	a.playSound = func(sounds.Target) {} // tests that listen replace it
@@ -249,7 +261,9 @@ func newTestAppIn(t *testing.T, dir string) (*app, *fakeSupervisor, *ui.Tester) 
 	a.connectUpdates()
 	a.startHelper()
 	t.Cleanup(a.quit)
-	return a, fs, ui.NewTester(a.view, windowWidth, windowHeight)
+	tester := ui.NewTester(a.view, windowWidth, windowHeight)
+	a.copyText = func(text string) error { tester.SetClipboard(text); return nil }
+	return a, fs, tester
 }
 
 // requireCJKFont fails a test that measures Chinese text's pixels when
@@ -383,6 +397,104 @@ func (f *fakeTimers) advance(d time.Duration) {
 // overlay view (measureHook is guessText).
 func guessWidth(k ovSized) float32 { w, _ := guessText(k); return w }
 
+func (a *app) ovTextHeight(key ovSized) (float32, bool) {
+	measured, ok := a.ovText(key)
+	return measured.h, ok
+}
+
+func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
+	pill := sessionPillViewState{Title: uitext.KindTitle(snapshot.Kind), Starting: snapshot.Waiting != session.WaitNone}
+	scene := float32(0)
+	if name := uitext.SceneShort(snapshot); name != "" {
+		scene = float32(textWidth(name, float64(layout.SceneSize)))
+	}
+	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
+		return float32(textWidth(key.text, float64(key.size))), true
+	})
+	return row + 2*layout.PillPadX
+}
+
+func (a *app) cardBodyHeight(card *sessionCardViewState) (int, bool) {
+	body, streamHeight, exact := sessionOverlayCardBodyHeight(a.ov.projection.view.SessionID, card, a.ovTextHeight, a.sessionOverlayPreviewHeights(&a.ov.projection.view), a.cardBodyMax(card), a.ov.stream.h)
+	a.ov.stream.h = streamHeight
+	return body, exact
+}
+
+func (a *app) cardBodyMax(card *sessionCardViewState) int {
+	return sessionOverlayCardBodyMax(card, a.ov.area.Height, a.prefs.Overlay.Margin)
+}
+
+func (a *app) cachedCard() sessionCardViewState {
+	a.refreshSessionOverlay(time.Now())
+	if a.ov.projection.view.Card == nil {
+		return sessionCardViewState{}
+	}
+	return *a.ov.projection.view.Card
+}
+
+func (a *app) cachedCardRef() *sessionCardViewState {
+	a.refreshSessionOverlay(time.Now())
+	return a.ov.projection.view.Card
+}
+
+func cardTextForTest(card sessionCardViewState) string {
+	if len(card.Blocks) > 0 && card.Blocks[0].Kind == sessionCardBody {
+		return card.Blocks[0].Text
+	}
+	for index := sessionCardBlockCount(&card) - 1; index >= 0; index-- {
+		block := sessionCardBlockAt(&card, index)
+		if block.Kind == sessionCardBody || block.Kind == sessionCardBubble && !block.User {
+			return block.Text
+		}
+	}
+	return ""
+}
+
+type cardBubbleForTest struct {
+	user        bool
+	title, text string
+	live        bool
+	quote       string
+	cut, open   bool
+	turn        int
+}
+
+func cardBubblesForTest(card sessionCardViewState) []cardBubbleForTest {
+	blocks := make([]cardBubbleForTest, 0, sessionCardBlockCount(&card))
+	for index := 0; index < sessionCardBlockCount(&card); index++ {
+		block := sessionCardBlockAt(&card, index)
+		blocks = append(blocks, cardBubbleForTest{user: block.User, title: block.Title, text: block.Text,
+			live: block.Live, quote: block.Quote, cut: block.Cut, open: block.Open, turn: block.Turn})
+	}
+	return blocks
+}
+
+func (a *app) overlayView(context *ui.Context) {
+	previousCopy := a.copyText
+	a.copyText = func(text string) error { context.Services().WriteClipboard(text); return nil }
+	defer func() { a.copyText = previousCopy }()
+	a.overlayBenchmarkView(context)
+}
+
+// overlayBenchmarkView skips the interactive HUD clipboard adapter so the
+// timed path matches the production content closure.
+func (a *app) overlayBenchmarkView(context *ui.Context) {
+	a.refreshSessionOverlay(time.Now())
+	sessionOverlayView(context, &a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
+		sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()},
+		a.postSessionOverlayMeasurements, func() { a.ov.reveal = false; a.post(a.revealOverlay) })
+}
+
+func (a *app) langMenuView(context *ui.Context) {
+	a.refreshSessionOverlay(time.Now())
+	if a.ov.projection.view.Menu == nil {
+		sessionLanguageMenuView(context, sessionMenuViewState{SelectedIndex: -1}, a.prefs.Appearance.Palette, a, &a.ov.ui)
+		return
+	}
+	sessionLanguageMenuView(context, *a.ov.projection.view.Menu, a.prefs.Appearance.Palette, a, &a.ov.ui)
+}
+
 // hudTester tests a view of a floating window (floating.go), whose text
 // is drawn as hudContent draws it.
 func hudTester(view func(*ui.Context), w, h int) *ui.Tester {
@@ -407,4 +519,19 @@ func shortScreen(t *testing.T, a *app) {
 	t.Cleanup(func() { ovTestArea = saved })
 	ovTestArea.Height = layout.CardBodyMax + int(math.Round(a.prefs.Overlay.Margin)) + layout.Pad + layout.CardChrome
 	a.ov.area = ovTestArea
+}
+
+// testCardNow is the answer card's view state in the field names of the
+// tests written before the card moved to view state (#4063's tests).
+type testCardNow struct {
+	kind                                              store.Kind
+	text, lang                                        string
+	writing, canStopAnswer, canUseTranscript, canCopy bool
+	canInsert                                         bool
+}
+
+func (a *app) cardNow() testCardNow {
+	v := a.cachedCard()
+	return testCardNow{kind: store.Kind(v.Kind), text: cardTextForTest(v), lang: v.Language, writing: v.Writing,
+		canStopAnswer: v.CanStopAnswer, canUseTranscript: v.CanUseTranscript, canCopy: v.CanCopy, canInsert: v.CanInsert}
 }

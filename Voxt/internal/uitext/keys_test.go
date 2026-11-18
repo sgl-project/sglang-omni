@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 func TestHotkeyText(t *testing.T) {
@@ -34,12 +36,21 @@ func TestHotkeyText(t *testing.T) {
 	}
 }
 
+func TestHotkeyTextExplicitLocale(t *testing.T) {
+	previous := i18n.Locale()
+	i18n.SetLocale("en")
+	t.Cleanup(func() { i18n.SetLocale(previous) })
+	if got, want := HotkeyTextFor(i18n.NewTranslator("zh-Hans"), "Control+Delete"), "⌃删除"; got != want {
+		t.Fatalf("HotkeyTextFor = %q, want %q", got, want)
+	}
+}
+
 func TestParseErrorText(t *testing.T) {
 	for keys, want := range map[string]string{
 		"":         "Type the keys, as in Control+Option+Space.",
 		"A+B":      "Only one key besides the modifiers.",
 		"LeftFn":   "fn has no left or right side.",
-		"Hyper+K":  "A key is unknown. Write the modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.",
+		"Hyper+K":  "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.",
 		"Option+K": "",
 	} {
 		_, err := hotkey.Parse(keys)
@@ -60,5 +71,32 @@ func TestHotkeyGlyphs(t *testing.T) {
 		if got := HotkeyGlyphs(keys); got != want {
 			t.Errorf("%q → %q, want %q", keys, got, want)
 		}
+	}
+}
+
+func TestShortcutTextExplicitLocale(t *testing.T) {
+	previousLocale := i18n.Locale()
+	i18n.SetLocale("en")
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	translator := i18n.NewTranslator("zh-Hans")
+	if got := HotkeyTextFor(translator, "RightOption+Space"); got != "右 ⌥ 空格" {
+		t.Errorf("HotkeyTextFor = %q", got)
+	}
+	if got := keyGlyphFor(translator, "Space"); got != "空格" {
+		t.Errorf("keyGlyphFor = %q", got)
+	}
+	if got := TriggerTextFor(translator, settings.TriggerDouble); got != "双击" {
+		t.Errorf("TriggerTextFor = %q", got)
+	}
+	if got := FeatureTitleFor(translator, hotkey.Translate); got != "翻译" {
+		t.Errorf("FeatureTitleFor = %q", got)
+	}
+	features := settings.Defaults().Features
+	features.Transcribe.Hotkeys = []settings.Hotkey{
+		{Keys: "RightOption", Trigger: settings.TriggerTap},
+		{Keys: "RightOption", Trigger: settings.TriggerTap},
+	}
+	if got := HotkeyProblemsFor(translator, features, hotkey.Transcribe)[1]; len(got) != 1 || got[0] != "和快捷键 1 的按键相同。" {
+		t.Errorf("HotkeyProblemsFor = %q", got)
 	}
 }

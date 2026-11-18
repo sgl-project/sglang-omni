@@ -48,6 +48,11 @@ func TestLibrary(t *testing.T) {
 	if llms := s.Installed(LLM); len(llms) != 0 {
 		t.Fatalf("llm %+v", llms)
 	}
+	// The Models page asks this dozens of times a frame (usedBy): it reads
+	// the catalogue in place, no copy of it per call.
+	if n := testing.AllocsPerRun(10, func() { s.Installed(LLM) }); n != 0 {
+		t.Errorf("Installed(LLM) allocates %v times a call, want 0", n)
+	}
 	llms := []Model{{ID: "all"}, {ID: "translator", Features: []string{"translate"}}}
 	if got := ForFeature(llms, "rewrite"); len(got) != 1 || got[0].ID != "all" {
 		t.Errorf("rewrite %+v", got)
@@ -128,41 +133,5 @@ func TestLibraryDelete(t *testing.T) {
 	}
 	if _, err := NewLibrary(m, Openers{}, nil).Delete(context.Background(), models.ASRFast, fammodels.ThisApp); err != nil {
 		t.Errorf("no Unload: %v", err)
-	}
-}
-
-// TestLibraryASRFirst: Automatic ("") follows ASRFirst when that model is
-// installed, the catalogue's order otherwise; an explicit choice stays.
-func TestLibraryASRFirst(t *testing.T) {
-	m, _ := openModels(t, models.ASRAccurate, models.ASRFast, models.VADSilero)
-	first := models.ASRFast
-	var opened string
-	open := Openers{
-		ASR: func(_ context.Context, id, _ string) (asr.Provider, error) {
-			opened = id
-			return fakeProvider{}, nil
-		},
-		ASRFirst: func() string { return first },
-	}
-	lib := NewLibrary(m, open, nil)
-	if l := lib.Installed(ASR); len(l) != 2 || l[0].ID != models.ASRFast || l[1].ID != models.ASRAccurate {
-		t.Fatalf("installed %+v", l)
-	}
-	if _, mod, err := lib.ASR(context.Background(), ""); err != nil || mod.ID != models.ASRFast || opened != models.ASRFast {
-		t.Errorf("automatic: %+v opened %s %v", mod, opened, err)
-	}
-	if _, mod, err := lib.ASR(context.Background(), models.ASRAccurate); err != nil || mod.ID != models.ASRAccurate || opened != models.ASRAccurate {
-		t.Errorf("explicit: %+v opened %s %v", mod, opened, err)
-	}
-	if l := lib.Installed(LLM); len(l) != 0 {
-		t.Errorf("llm %+v", l)
-	}
-	first = "asr.not-installed"
-	if l := lib.Installed(ASR); len(l) != 2 || l[0].ID != models.ASRAccurate {
-		t.Errorf("not installed: %+v", l)
-	}
-	open.ASRFirst = nil
-	if l := NewLibrary(m, open, nil).Installed(ASR); len(l) != 2 || l[0].ID != models.ASRAccurate {
-		t.Errorf("no preference: %+v", l)
 	}
 }

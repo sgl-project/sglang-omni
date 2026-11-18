@@ -65,7 +65,7 @@ func (m *Manager) degradeOrInterrupt(ctx context.Context, src Source) {
 
 	if mode == ModeMeeting && otherUp {
 		m.mu.Lock()
-		problem := &Problem{Key: "meeting.track.degraded." + string(src)}
+		problem := &Problem{Key: ProblemKeyTrackDegraded + string(src)}
 		if src == SourceSystem {
 			m.mode = ModeRecording
 		} else {
