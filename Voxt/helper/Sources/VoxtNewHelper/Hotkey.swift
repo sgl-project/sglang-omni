@@ -213,25 +213,26 @@ final class HotkeyTap: @unchecked Sendable {
         }
         let injected = InjectedEvent.isOurs(event.getIntegerValueField(.eventSourceUserData))
         guard let input = HotkeyTapEvents.input(type, event, t: start) else { return false }
-        let (fired, swallow, deadline): ([HotkeyEvent], Bool, Double?) = lock.withLock {
+        let (fired, swallow, deadline, generation): ([HotkeyEvent], Bool, Double?, Int) = lock.withLock {
             events += 1
-            if injected { return ([], false, nil) }
+            if injected { return ([], false, nil, recognizer.config.generation) }
             let r = recognizer.handle(input)
-            return (r.events, r.swallow, recognizer.nextDeadline)
+            return (r.events, r.swallow, recognizer.nextDeadline, recognizer.config.generation)
         }
-        send(fired)
+        send(fired, generation: generation)
         armTimer(deadline)
         let micros = (monotonicMs() - start) * 1000
         lock.withLock { maxCallbackMicros = max(maxCallbackMicros, micros) }
         return swallow
     }
 
-    /// Sends what fired, with the app in front (as cached at this moment)
-    /// and the configuration the events were decided under.
-    private func send(_ fired: [HotkeyEvent]) {
+    /// Sends what fired, with the app in front (as cached at this moment);
+    /// generation is the configuration the events were decided under, read
+    /// with the decision, so a configure landing meanwhile cannot mistag
+    /// them.
+    private func send(_ fired: [HotkeyEvent], generation: Int) {
         guard !fired.isEmpty else { return }
         let app = front.cached
-        let generation = lock.withLock { recognizer.config.generation }
         sendQueue.async { [out] in
             for e in fired { out.notify(Method.hotkeyEvent, HotkeyEventParams(e, front: app, generation: generation)) }
         }
@@ -247,11 +248,11 @@ final class HotkeyTap: @unchecked Sendable {
         let delay = max(0, deadline - monotonicMs()) / 1000
         let t = CFRunLoopTimerCreateWithHandler(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + delay, 0, 0, 0) { [weak self] _ in
             guard let self else { return }
-            let (fired, next) = self.lock.withLock { () -> ([HotkeyEvent], Double?) in
+            let (fired, next, generation) = self.lock.withLock { () -> ([HotkeyEvent], Double?, Int) in
                 let f = self.recognizer.tick(now: monotonicMs())
-                return (f, self.recognizer.nextDeadline)
+                return (f, self.recognizer.nextDeadline, self.recognizer.config.generation)
             }
-            self.send(fired)
+            self.send(fired, generation: generation)
             self.armTimer(next)
         }
         lock.withLock { timer = t }
