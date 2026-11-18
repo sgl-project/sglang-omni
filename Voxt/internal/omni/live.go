@@ -49,6 +49,7 @@ type live struct {
 	queued    int           // bytes of audio in out
 	previewed int           // bytes of audio written to the socket (the batch preview: in its last text)
 	preview   bool          // the socket still takes audio
+	cut       *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
 	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
@@ -115,6 +116,9 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
 		completed: make(chan string, 1), readDone: make(chan struct{})}
 	if conn != nil {
+		if a.spec.ASR.SpeechOnly && a.vad != nil {
+			s.cut = newPauseCut()
+		}
 		go s.write()
 		go s.read()
 	} else {
@@ -206,6 +210,11 @@ func (s *live) Send(pcm []byte) error {
 	}
 	if !s.preview {
 		return nil
+	}
+	if s.cut != nil {
+		if pcm = s.cut.push(pcm); len(pcm) == 0 {
+			return nil
+		}
 	}
 	if s.queued+len(pcm) > maxQueued {
 		s.stopPreview("the preview fell behind the microphone")

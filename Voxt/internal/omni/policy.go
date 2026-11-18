@@ -266,8 +266,11 @@ func (a *ASR) plainText(text string) string {
 	if a.spec.Kind != kindMoss || a.spec.ASR.Instruction != mossPlain {
 		return text
 	}
-	return joinParts(mossTag.Split(text, -1))
+	return stripTags(text)
 }
+
+// stripTags is text without MOSS's tags.
+func stripTags(text string) string { return joinParts(mossTag.Split(text, -1)) }
 
 func itoa(v int) string { return strconv.Itoa(v) }
 
