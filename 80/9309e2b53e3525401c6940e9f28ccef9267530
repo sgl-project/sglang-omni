@@ -1,0 +1,41 @@
+docs/models/duo.md
+  s_9be4bd449be508::t_8cbc1fe9e2053e 46,48-50,52
+playground/README.md
+  s_9be4bd449be508::t_8c54b33b1a870b 60,63,66,69
+playground/duo/README.md
+  s_9be4bd449be508::t_8501a52ae61ff0 31-32,34
+playground/duo/sgl-omni-duo
+  s_9be4bd449be508::t_58fc598ef03b42 7-8
+scripts/serve_duo_realtime.py
+  s_9be4bd449be508::t_3be6a722defd51 329
+sglang_omni/config/manager.py
+  s_9be4bd449be508::t_3b2b5c3e705cb2 29-37
+sglang_omni/models/duo/config.py
+  s_9be4bd449be508::t_fb7cc525059f15 1-51
+sglang_omni/models/duo/live.py
+  s_9be4bd449be508::t_f7fd686b466973 11,83-86,164
+sglang_omni/models/duo/pipeline.py
+  s_9be4bd449be508::t_5d4b4e7393f023 1-104
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_96f35392bf3da6 107,110-119,309-310
+sglang_omni/serve/launcher.py
+  s_9be4bd449be508::t_48d7ff40c06d0a 756,833-834,896-900
+sglang_omni/serve/realtime/manager.py
+  s_9be4bd449be508::t_822734f7912a53 7,38-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "809309e2b53e3525401c6940e9f28ccef9267530",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
