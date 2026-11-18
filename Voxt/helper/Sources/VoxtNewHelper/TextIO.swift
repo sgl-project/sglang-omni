@@ -97,11 +97,16 @@ final class TextIO: @unchecked Sendable {
         func done(_ text: String?, _ via: String) -> SelectionResult {
             SelectionResult(text: text, via: via, ms: round1(monotonicMs() - t0), steps: steps)
         }
+        // A web editor's block selection reads as one blank space from
+        // every AX attribute (Lark docs in Chrome): not text, but a sign
+        // that something is selected, so the read goes on to ⌘C.
+        var blankAX = false
         if let e = focusedElement(pid: pid_t(pid)) {
             let role = string(e, kAXRoleAttribute)
             steps.append("focus=\(role ?? "?")")
             if let s = string(e, kAXSelectedTextAttribute), !s.isEmpty {
-                return done(s, SelectionVia.ax)
+                if SelectionRead.hasText(s) { return done(s, SelectionVia.ax) }
+                blankAX = true
             }
             let r = range(e)
             steps.append("range=\(r.map { "\($0.location),\($0.length)" } ?? "nil")")
@@ -111,7 +116,8 @@ final class TextIO: @unchecked Sendable {
                 if let axr = AXValueCreate(.cfRange, &rr),
                    AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
                    let s = v as? String, !s.isEmpty {
-                    return done(s, SelectionVia.axRange)
+                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axRange) }
+                    blankAX = true
                 }
             }
             // WebKit's and Chromium's text markers.
@@ -120,14 +126,16 @@ final class TextIO: @unchecked Sendable {
                 var v: CFTypeRef?
                 if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
                    let s = v as? String, !s.isEmpty {
-                    return done(s, SelectionVia.axMarker)
+                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axMarker) }
+                    blankAX = true
+                } else {
+                    steps.append("marker=empty")
                 }
-                steps.append("marker=empty")
             }
             var settable = DarwinBoolean(false)
             AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
             if SelectionRead.endsAtCaret(range: r.map { TextRange(location: $0.location, length: $0.length) },
-                                         editable: settable.boolValue || inEditableRegion(e)) {
+                                         editable: settable.boolValue || inEditableRegion(e), blankSelection: blankAX) {
                 steps.append("caret-only")
                 return done(nil, SelectionVia.none)
             }

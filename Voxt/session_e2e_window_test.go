@@ -54,6 +54,8 @@ func TestWindowScreenshotEndToEnd(t *testing.T) {
 // image together. A copied placeholder returns the newly selected image,
 // never the earlier clipboard image; literal placeholder text sends none.
 func TestClipboardImageEndToEnd(t *testing.T) {
+	const selection = "The chart compares three releases.\n\nThe second row shows the latest results."
+	const instruction = "Describe the picture in the context of the selected text."
 	for _, tc := range []struct {
 		name, opts, sel   string
 		viaCopy, on, both bool
@@ -61,19 +63,19 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 		want              []byte
 	}{
 		{name: "a copied image, no selection", opts: ",clipboard-image", on: true, want: helpertest.ClipImage},
-		{name: "existing settings send text and copied image", opts: ",clipboard-image", sel: "this", on: true, legacy: true, want: helpertest.ClipImage},
-		{name: "a fresh selection stays out", opts: ",clipboard-image", sel: "this", on: true},
+		{name: "existing settings send text and copied image", opts: ",clipboard-image", sel: selection, on: true, legacy: true, want: helpertest.ClipImage},
+		{name: "a fresh selection stays out", opts: ",clipboard-image", sel: selection, on: true},
 		{name: "a copied image placeholder returns the new image", opts: ",clipboard-image,copy-selection-image", sel: "[Image]", viaCopy: true, on: true, want: helpertest.Shot(812)},
 		{name: "literal placeholder text through copy stays text", opts: ",clipboard-image", sel: "[Image]", viaCopy: true, on: true},
-		{name: "deliberate text and image sends both", opts: ",clipboard-image", sel: "this", on: true, both: true, want: helpertest.ClipImage},
+		{name: "deliberate text and image sends both", opts: ",clipboard-image", sel: selection, on: true, both: true, want: helpertest.ClipImage},
 		{name: "privacy off drops an image placeholder", opts: ",clipboard-image,copy-selection-image", sel: "[Image]", viaCopy: true},
 		{name: "privacy off drops mixed content even with text and image on", opts: ",clipboard-image,copy-selection-image", sel: "caption [Image]", viaCopy: true, both: true},
-		{name: "nothing copied", sel: "this", on: true},
+		{name: "nothing copied", sel: selection, on: true},
 		{name: "off", opts: ",clipboard-image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chat := &fakeChat{text: "A red square."}
-			set, keys, _ := fileSetup(t, "describe the picture", chat)
+			set, keys, _ := fileSetup(t, instruction, chat)
 			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
 			opts := ev + tc.opts
 			if tc.viaCopy {
@@ -109,6 +111,11 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 			reqs := chat.requests()
 			if len(reqs) != 1 {
 				t.Fatalf("%d chats", len(reqs))
+			}
+			msgs := chatMessages(reqs[0])
+			want := [2]string{"user", "<instruction>\n" + instruction + "\n</instruction>\n\n<selected_text>\n" + tc.sel + "\n</selected_text>"}
+			if tc.sel != "" && (len(msgs) == 0 || msgs[len(msgs)-1] != want) {
+				t.Fatalf("last user message lost selected text or instruction: %q", msgs)
 			}
 			img, _ := reqs[0]["image"].([]byte)
 			if !bytes.Equal(img, tc.want) {

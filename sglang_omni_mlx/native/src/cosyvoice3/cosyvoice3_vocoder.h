@@ -36,21 +36,25 @@ public:
                           const std::function<void()> &on_step) const;
 
 private:
-  // The DiT's velocity [batch, 80, frames] at noisy mel x.
+  // Each DiT block's attn_norm modulation and then norm_out's, of the time
+  // embeddings of times [steps]: [steps, outputs].
+  std::vector<mlx::core::array>
+  TimeModulations(const mlx::core::array &times) const;
+  // The DiT's velocity [batch, 80, frames] at noisy mel x, every row at the
+  // step's time, whose modulations are row step of modulations.
   mlx::core::array Velocity(const mlx::core::array &x,
                             const mlx::core::array &mu,
-                            const mlx::core::array &timesteps,
-                            const mlx::core::array &speaker_features,
+                            const std::vector<mlx::core::array> &modulations,
+                            int step, const mlx::core::array &speaker_features,
                             const mlx::core::array &mel_conditioning) const;
+  // One block at a step's modulation [1, 6 * width].
   mlx::core::array Block(const mlx::core::array &x,
-                         const mlx::core::array &timestep_embedding,
+                         const mlx::core::array &step_modulation,
                          int block) const;
 
   const omni_common::Checkpoint &checkpoint_;
   mlx::core::array dtype_probe_;
   mlx::core::array noise_;
-  mlx::core::array rope_cos_;
-  mlx::core::array rope_sin_;
 };
 
 // Mel frames to samples, given the checkpoint's hifigan.* weights.

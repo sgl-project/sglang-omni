@@ -15,9 +15,9 @@
 
 #include "common/generation.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "common/tokenizer.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 #include "qwen3_tts/qwen3_tts_codec.h"
 
 namespace qwen3_tts {
@@ -109,8 +109,8 @@ private:
   omni_common::Checkpoint checkpoint_;
   omni_common::Tokenizer tokenizer_;
   SpeechDecoder speech_decoder_;
-  qwen3_asr::Qwen3Decoder talker_;
-  qwen3_asr::Qwen3Decoder code_predictor_;
+  omni_common::Qwen3Decoder talker_;
+  omni_common::Qwen3Decoder code_predictor_;
   float talker_norm_eps_;
   float code_predictor_norm_eps_;
   int codebook_count_;

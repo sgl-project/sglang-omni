@@ -49,6 +49,7 @@ private:
   bool snake_logscale_ = false;
   std::vector<int> downsample_rates_;
   std::vector<int> upsample_rates_;
+  std::vector<int> upsample_kernels_;
   std::vector<std::vector<int>> residual_dilations_;
 };
 
