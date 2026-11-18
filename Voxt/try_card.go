@@ -95,7 +95,7 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 			})
 			if d := strings.TrimSpace(s.Draft); d != "" && s.State == session.Composing {
 				fillCard(c.Key(p + "-try-draft")).Padding(px(t, sp3)).Children(func() {
-					ui.Text(c, d).Selectable()
+					a.transcriptResult(c, s.ID, d, true)
 				})
 			}
 			return
@@ -223,7 +223,7 @@ func (a *app) tryEnded(c *ui.Context, p string, s session.Snapshot, clear func()
 		}
 	})
 	fillCard(c.Key(p + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		ui.Text(c, s.Result).Selectable()
+		a.transcriptResult(c, s.ID, s.Result, false)
 	})
 	if raw := strings.TrimSpace(s.Raw); raw != "" && raw != strings.TrimSpace(s.Result) {
 		title := i18n.T("As recognised")
