@@ -280,11 +280,11 @@ func (s *live) read() {
 		}
 		switch ev.Type {
 		case "transcription.completed":
-			s.completed <- ev.Text
+			s.completed <- s.a.plainText(ev.Text)
 			return
 		case "transcription.segment":
 			s.mu.Lock()
-			text, ok := s.asm.apply(ev.Index, ev.Segment, ev.Text, ev.Final)
+			text, ok := s.asm.apply(ev.Index, ev.Segment, s.a.plainText(ev.Text), ev.Final)
 			if ok && !s.finished {
 				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 			}

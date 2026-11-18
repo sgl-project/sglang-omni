@@ -65,7 +65,7 @@ func (s *live) recognisePieces(language string, b bias) {
 			maxTokens: t.tokenBudget(asr.Duration(piece, sampleRate)), layout: t.AudioLayout}
 		r, err := transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
 		if err == nil {
-			r.text = s.a.trimEcho(s.ctx, s.l, req, r.text, r.length, b.terms)
+			r.text = s.a.trimEcho(s.ctx, s.l, req, s.a.plainText(r.text), r.length, b.terms)
 		}
 		took := time.Since(begin)
 		if err != nil {

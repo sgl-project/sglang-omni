@@ -252,7 +252,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		if err != nil {
 			return "", "", err
 		}
-		r.text = a.trimEcho(ctx, l, req, r.text, r.length, b.terms)
+		r.text = a.trimEcho(ctx, l, req, a.plainText(r.text), r.length, b.terms)
 		if shared {
 			budget -= r.tokens
 		}

@@ -37,6 +37,8 @@ const (
 	kindCohere     = "cohere_transcribe"
 	kindNemotron   = "nemotron_asr"
 	kindMoss       = "moss_transcribe_diarize"
+	// mossPlain is MOSS's Instruction; it still writes timestamps (plainText).
+	mossPlain = "Transcribe the audio as plain text without timestamps or speaker labels."
 )
 
 // Spec is one curated model: what to run, and the parameters tuned for it.
@@ -258,7 +260,7 @@ var specs = []Spec{
 		ID: ASRMoss, Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
 		Kind: kindMoss, Binary: "moss_transcribe_diarize_server", Languages: []string{"zh", "en"}, ASR: func() *ASRTuning {
 			t := streamTuning(60)
-			t.Instruction = "Transcribe the audio as plain text without timestamps or speaker labels."
+			t.Instruction = mossPlain
 			return t
 		}(),
 	},
