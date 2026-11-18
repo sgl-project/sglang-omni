@@ -67,7 +67,6 @@
           "key": "turn-0-user",
           "kind": "bubble",
           "turn": 0,
-          "title": "You",
           "text": "write that I am late",
           "user": true,
           "selectable": true
@@ -87,7 +86,6 @@
           "key": "turn-1-user",
           "kind": "bubble",
           "turn": 1,
-          "title": "You",
           "text": "shorter",
           "live": true,
           "user": true,

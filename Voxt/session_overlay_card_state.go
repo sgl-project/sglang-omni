@@ -167,12 +167,12 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	} else if !state.Conversation && !state.Writing {
 		state.Blocks = []sessionCardBlock{sessionCardBodyBlock(card)}
 	} else if input.Answer.kind != store.KindRewrite || !sessionCardRedoWriting(input) {
-		state.Blocks = sessionCardConversationBlocks(translator, card)
+		state.Blocks = sessionCardConversationBlocks(card)
 		state.Recording = follow && snapshot.State == session.Recording
 		state.Heard = !snapshot.HeardAt.IsZero()
 		copySessionLevels(&state.Levels, snapshot.Levels)
 	}
-	state.Live, state.LiveCount = buildSessionCardLiveTail(translator, input, follow)
+	state.Live, state.LiveCount = buildSessionCardLiveTail(input, follow)
 	if state.Conversation && card.problem != nil && state.Message == "" {
 		state.Message, _, _ = sessionProblemTextFor(translator, card.problem)
 	}
@@ -221,23 +221,23 @@ func sessionCardFailureBlocks(translator *i18n.Translator, card answerCard) []se
 	return blocks
 }
 
-func sessionCardConversationBlocks(translator *i18n.Translator, card answerCard) []sessionCardBlock {
+func sessionCardConversationBlocks(card answerCard) []sessionCardBlock {
 	blocks := make([]sessionCardBlock, 0, 2*len(card.turns)+1)
 	for turn, answer := range card.turns {
-		if user, ok := sessionCardUserBlock(translator, card.ui.quotesOpen, turn, answer.Instruction, answer.Selection, false); ok {
+		if user, ok := sessionCardUserBlock(card.ui.quotesOpen, turn, answer.Instruction, answer.Selection, false); ok {
 			blocks = append(blocks, user)
 		}
 		blocks = append(blocks, sessionCardAnswerBlock(sessionCardTurnKey(turn, "answer"), answer.Answer.Title, answer.Answer.Content, false))
 	}
 	if card.problem != nil {
-		if user, ok := sessionCardUserBlock(translator, card.ui.quotesOpen, len(card.turns), card.input.Raw, card.input.Selection, false); ok {
+		if user, ok := sessionCardUserBlock(card.ui.quotesOpen, len(card.turns), card.input.Raw, card.input.Selection, false); ok {
 			blocks = append(blocks, user)
 		}
 	}
 	return blocks
 }
 
-func buildSessionCardLiveTail(translator *i18n.Translator, input sessionCardProjectionInput, follow bool) ([2]sessionCardBlock, int) {
+func buildSessionCardLiveTail(input sessionCardProjectionInput, follow bool) ([2]sessionCardBlock, int) {
 	var live [2]sessionCardBlock
 	if !input.Answer.open {
 		if input.Writing {
@@ -260,7 +260,7 @@ func buildSessionCardLiveTail(translator *i18n.Translator, input sessionCardProj
 	}
 	count := 0
 	said := cmpOr(strings.TrimSpace(snapshot.Raw), strings.TrimSpace(snapshot.Partial))
-	if user, ok := sessionCardUserBlock(translator, input.Answer.ui.quotesOpen, len(input.Answer.turns), said, snapshot.Selection, true); ok {
+	if user, ok := sessionCardUserBlock(input.Answer.ui.quotesOpen, len(input.Answer.turns), said, snapshot.Selection, true); ok {
 		live[0], count = user, 1
 	}
 	if snapshot.State != session.Recording {
@@ -270,9 +270,10 @@ func buildSessionCardLiveTail(translator *i18n.Translator, input sessionCardProj
 	return live, count
 }
 
-func sessionCardUserBlock(translator *i18n.Translator, quotesOpen map[int]bool, turn int, said, selection string, live bool) (sessionCardBlock, bool) {
+// sessionCardUserBlock is a turn's user side; it has no heading, its side and fill say whose it is.
+func sessionCardUserBlock(quotesOpen map[int]bool, turn int, said, selection string, live bool) (sessionCardBlock, bool) {
 	block := sessionCardBlock{Key: sessionCardTurnKey(turn, "user"), Kind: sessionCardBubble, Turn: turn,
-		Title: translator.T("You"), Text: strings.TrimSpace(said), Live: live, User: true, Selectable: !live}
+		Text: strings.TrimSpace(said), Live: live, User: true, Selectable: !live}
 	if turn > 0 {
 		block.FullQuote = strings.TrimSpace(selection)
 		block.Open = quotesOpen[turn]
@@ -352,7 +353,7 @@ func updateSessionCardLiveState(translator *i18n.Translator, card *sessionCardVi
 		card.CanStopAnswer = input.Snapshot.CanStop()
 		card.CanUseTranscript = input.Snapshot.CanSkip
 	}
-	card.Live, card.LiveCount = buildSessionCardLiveTail(translator, input, follow)
+	card.Live, card.LiveCount = buildSessionCardLiveTail(input, follow)
 }
 
 type sessionCardProjectionKey struct {
