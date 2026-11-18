@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Rewrite can deliberately send selected text and a copied image together**: the new Settings → Privacy → Text and a copied image together switch sends both when you mean it. Fresh installs default it off so an earlier copied image cannot take over a text Rewrite; existing documents keep the pre-PR text-plus-image behavior, and turning it off makes any selection text-only.
+- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### Fixed
 
@@ -17,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **改写可以明确同时发送选中文字和复制的图片**：设置 → 隐私 →“同时发送选中文字和复制的图片”打开后，两者一起发送。新安装默认关闭，避免早前复制的图片取代选中文字成为改写输入；已有设置保持原来的文字加图片行为，关闭后任何选区都只发文字。
+- **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
 #### 修复
 

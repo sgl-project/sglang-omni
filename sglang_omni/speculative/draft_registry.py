@@ -22,7 +22,7 @@ class PinnedDraft:
     algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE", "NEXTN"]
     draft_model_path: str
     draft_model_revision: str
-    engine_settings: dict[str, int] = field(default_factory=dict)
+    engine_settings: dict[str, int | str] = field(default_factory=dict)
     # note (Haoling Pu): None means the model card states no license, so the draft stays off by default.
     license: str | None
     is_default_on: bool = False
@@ -60,6 +60,8 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DFLASH",
         draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash",
         draft_model_revision="2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+        # note (wilsonzheng0327): the 5-layer draft adds 18% to each token's KV; fp8 halves that, which long meetings on 80 GB cards need to fit.
+        engine_settings={"speculative_draft_kv_cache_dtype": "fp8_e4m3"},
         license="apache-2.0",
     ),
     PinnedDraft(
