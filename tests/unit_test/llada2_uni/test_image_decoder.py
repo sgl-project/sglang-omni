@@ -480,8 +480,12 @@ def test_decode_pipeline(decode_probe):
 
 @pytest.mark.parametrize("failing_phase", [None, "sigvq", "semantic_decoder", "vae"])
 def test_decoder_offload_phase_order_and_failure_cleanup(decode_probe, failing_phase):
-    decoder, _ = decode_probe
-    reference = decoder.decode([1, 2], 1, 2, seed=9)
+    decoder, observed = decode_probe
+    if failing_phase is None:
+        reference = decoder.decode([1, 2], 1, 2, seed=9)
+        reference_latents = observed.latents.clone()
+    else:
+        pass
     coordinator = SerialOffloadCoordinator(torch.device("cpu"))
     decoder.offload_coordinator = coordinator
     transitions = []
@@ -523,6 +527,7 @@ def test_decoder_offload_phase_order_and_failure_cleanup(decode_probe, failing_p
     if failing_phase is None:
         actual = decoder.decode([1, 2], 1, 2, seed=9)
         assert actual.tobytes() == reference.tobytes()
+        torch.testing.assert_close(observed.latents, reference_latents, rtol=0, atol=0)
         phases = ["sigvq", "semantic_decoder", "vae"]
     else:
         with pytest.raises(ValueError, match="phase failed"):

@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Weight-free checks for single-image stage residency and admission."""
+"""Weight-free checks for single-image stage residency and configuration."""
 
 from __future__ import annotations
 
-import threading
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 import torch
@@ -18,7 +17,6 @@ from sglang_omni.config.schema import ProcessConfig
 from sglang_omni.models.llada2_uni.config import (
     DECODE_STAGE,
     IMAGE_DECODE_STAGE,
-    IMAGE_STAGE,
     THINKER_STAGE,
     LLaDA2UniInterleavedPipelineConfig,
     LLaDA2UniOmniPipelineConfig,
@@ -28,31 +26,20 @@ from sglang_omni.models.llada2_uni.serial_offload import SerialOffloadCoordinato
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 
 
-def test_offload_colocates_stages_without_mutating_resident_config() -> None:
-    resident = LLaDA2UniOmniPipelineConfig(model_path="unused")
-    offload = resident.with_serial_offload(frozenset({"thinker", "decoder", "vae"}))
-    stages = [
-        offload.stage_named(name)
-        for name in (IMAGE_STAGE, THINKER_STAGE, IMAGE_DECODE_STAGE)
-    ]
-    assert len({stage.process for stage in stages}) == 1
-    assert all(stage.factory.enable_serial_offload for stage in stages)
-    assert not resident.stage_named(THINKER_STAGE).factory.enable_serial_offload
-    assert LLaDA2UniOmniPipelineConfig(**offload.model_dump()) == offload
-
-
 @pytest.mark.parametrize(
-    ("keep_decoder_process", "replica_devices"),
-    [(False, None), (False, [0]), (True, None)],
+    ("keep_decoder_process", "replica_devices", "target_replica_devices"),
+    [(False, None, None), (False, [0], None), (False, [1], [1]), (True, None, None)],
 )
 def test_offload_handles_explicit_source_process_policy(
-    keep_decoder_process: bool, replica_devices: list[int] | None
+    keep_decoder_process: bool,
+    replica_devices: list[int] | None,
+    target_replica_devices: list[int] | None,
 ) -> None:
     """Colocation must remove orphan policies while preserving processes with members."""
     resident = LLaDA2UniOmniPipelineConfig(
         model_path="unused",
         processes={
-            "pipeline": ProcessConfig(num_replicas=1),
+            "pipeline": ProcessConfig(replica_devices=target_replica_devices),
             IMAGE_DECODE_STAGE: ProcessConfig(
                 num_replicas=1, replica_devices=replica_devices
             ),
@@ -84,7 +71,7 @@ def test_offload_handles_explicit_source_process_policy(
 @pytest.mark.parametrize(
     ("source_policy", "error"),
     [
-        (ProcessConfig(num_replicas=2), "one process replica"),
+        (ProcessConfig(num_replicas=2, replica_devices=[0, 1]), "one process replica"),
         (ProcessConfig(replica_devices=[1]), "replica_devices.*incompatible"),
     ],
 )
@@ -106,7 +93,7 @@ def test_offload_rejects_incompatible_source_process_policy(
         ("libtrace.so", "", "{allocator}:libtrace.so"),
         ("libtrace.so", "libprofile.so", "{allocator}:libtrace.so:libprofile.so"),
         ("libtrace.so", "{allocator}", "libtrace.so:{allocator}"),
-        ("{allocator}:libtrace.so", "", "{allocator}:libtrace.so"),
+        ("", "", "{allocator}"),
         (
             "{allocator} libtrace.so",
             "libprofile.so",
@@ -185,52 +172,40 @@ def test_interleaved_rejects_offload() -> None:
         LLaDA2UniInterleavedPipelineConfig(**configuration)
 
 
-def test_concurrent_stages_wait_until_compute_and_release_finish() -> None:
-    coordinator = SerialOffloadCoordinator(torch.device("cpu"))
-    first_entered = threading.Event()
-    second_waiting = threading.Event()
-    finish_first = threading.Event()
-    second_entered = threading.Event()
-    module = torch.nn.Linear(2, 2)
-
-    def first_stage() -> None:
-        with coordinator.use_module(module, "first"):
-            first_entered.set()
-            assert finish_first.wait(5)
-
-    def second_stage() -> None:
-        second_waiting.set()
-        with coordinator.use_module(module, "second"):
-            second_entered.set()
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(first_stage)
-        assert first_entered.wait(5)
-        second = executor.submit(second_stage)
-        assert second_waiting.wait(5)
-        try:
-            assert coordinator.lock.locked()
-            assert not second_entered.is_set()
-        finally:
-            finish_first.set()
-        first.result(timeout=5)
-        second.result(timeout=5)
-    assert second_entered.is_set()
-
-
-def test_compute_failure_releases_module_and_allows_next_request(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("compute_fails", [False, True])
+def test_residency_lock_covers_transfers_and_compute(
+    monkeypatch: pytest.MonkeyPatch, compute_fails: bool
 ) -> None:
-    coordinator = SerialOffloadCoordinator(torch.device("cpu"))
+    """Transfers and compute must stay exclusive, including cleanup after an error."""
+    device = torch.device("cpu")
+    coordinator = SerialOffloadCoordinator(device)
     module = torch.nn.Linear(2, 2)
-    transfer = Mock(wraps=module.to)
-    monkeypatch.setattr(module, "to", transfer)
-    with pytest.raises(ValueError, match="compute failed"):
+    expected = module(torch.ones(1, 2))
+    original_transfer = module.to
+
+    def transfer(target_device: str | torch.device) -> torch.nn.Module:
+        assert coordinator.lock.locked()
+        return original_transfer(target_device)
+
+    tracked_transfer = Mock(side_effect=transfer)
+    monkeypatch.setattr(module, "to", tracked_transfer)
+    with (
+        pytest.raises(ValueError, match="compute failed")
+        if compute_fails
+        else nullcontext()
+    ):
         with coordinator.use_module(module, "decoder"):
-            raise ValueError("compute failed")
-    assert transfer.call_args.args == ("cpu",)
+            assert coordinator.lock.locked()
+            torch.testing.assert_close(module(torch.ones(1, 2)), expected)
+            if compute_fails:
+                raise ValueError("compute failed")
+            else:
+                pass
+    assert tracked_transfer.call_args_list == [call(device), call("cpu")]
+    assert not coordinator.lock.locked()
     with coordinator.use_module(module, "next"):
-        assert module(torch.ones(1, 2)).shape == (1, 2)
+        torch.testing.assert_close(module(torch.ones(1, 2)), expected)
+    assert not coordinator.lock.locked()
 
 
 @pytest.mark.parametrize("fail_on_restore", [True, False])
@@ -274,7 +249,11 @@ def test_cuda_module_release_and_restore_preserve_output() -> None:
 
 
 @pytest.fixture
-def offload_scheduler() -> SerialOffloadDllmScheduler:
+def offload_scheduler(monkeypatch: pytest.MonkeyPatch) -> SerialOffloadDllmScheduler:
+    monkeypatch.setattr(
+        "sglang_omni.models.llada2_uni.offload_scheduler.get_offload_coordinator",
+        Mock(return_value=SerialOffloadCoordinator(torch.device("cpu"))),
+    )
     scheduler = SerialOffloadDllmScheduler.__new__(SerialOffloadDllmScheduler)
     scheduler.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(memory_saver_adapter=Mock(enabled=True))
@@ -286,7 +265,7 @@ def offload_scheduler() -> SerialOffloadDllmScheduler:
     return scheduler
 
 
-def test_thinker_holds_residency_until_cfg_companions_retire(
+def test_thinker_retains_weights_while_requests_are_staged(
     monkeypatch: pytest.MonkeyPatch, offload_scheduler: SerialOffloadDllmScheduler
 ) -> None:
     scheduler = offload_scheduler
@@ -300,14 +279,18 @@ def test_thinker_holds_residency_until_cfg_companions_retire(
     adapter = scheduler.tp_worker.model_runner.memory_saver_adapter
     adapter.pause.assert_not_called()
     assert scheduler.coordinator.lock.locked()
+    assert scheduler.schedule_next_batch() is batch
     scheduler.staging_queue = []
     scheduler.post_step(batch)
     adapter.resume.assert_called_once_with("weights")
     adapter.pause.assert_called_once_with("weights")
     assert not scheduler.coordinator.lock.locked()
+    scheduler.waiting_queue.clear()
+    assert scheduler.schedule_next_batch() is None
+    adapter.resume.assert_called_once_with("weights")
 
 
-def test_cancellation_retires_before_weights_are_released(
+def test_thinker_releases_weights_after_base_scheduler_purges_requests(
     monkeypatch: pytest.MonkeyPatch, offload_scheduler: SerialOffloadDllmScheduler
 ) -> None:
     scheduler = offload_scheduler

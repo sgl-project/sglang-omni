@@ -109,6 +109,7 @@ def test_unsupported_pipeline_is_rejected() -> None:
 
 def test_llada_single_image_offload_cli() -> None:
     config = LLaDA2UniOmniPipelineConfig(model_path="unused")
+    original_configuration = config.model_dump()
     result = apply_stage_offload_cli_overrides(
         config, stage_offload_components=" Thinker, Decoder, VAE "
     )
@@ -118,6 +119,12 @@ def test_llada_single_image_offload_cli() -> None:
     ]
     assert len({stage.process for stage in stages}) == 1
     assert all(stage.factory.enable_serial_offload for stage in stages)
+    assert config.model_dump() == original_configuration
+    assert LLaDA2UniOmniPipelineConfig(**result.model_dump()) == result
+    with pytest.raises(typer.BadParameter, match="requires all of"):
+        apply_stage_offload_cli_overrides(
+            config, stage_offload_components="thinker,decoder"
+        )
 
 
 def test_llada_interleaved_offload_cli_is_rejected() -> None:
