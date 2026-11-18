@@ -67,7 +67,7 @@ func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions 
 			}
 			head(i18n.T("Feature")).Grow(1)
 			head(i18n.T("Shortcut")).Width(keysWidth).Shrink(0)
-			ui.Box(c).Width(px(t, shortcutMarksW+14+sp2)).Shrink(0) // the marks and the chevron
+			ui.Box(c).Width(px(t, shortcutMarksW+sp2+28)).Shrink(0) // the marks and the arrow button
 		})
 		for _, row := range state.Rows {
 			shortcutRow(c, row, actions, local.row(row.Key), state.AccessibilityInstalled, keysWidth)
