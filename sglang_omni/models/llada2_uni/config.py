@@ -158,14 +158,26 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     ]
 
 
+class NativeDecoderFactoryArgs(LLaDA2ImageDecoderFactoryArgs):
+    ring_degree: int = Field(default=1, ge=1)
+
+
+class NativeDecoderStageConfig(LLaDA2ImageDecoderStageConfig):
+    factory: NativeDecoderFactoryArgs = Field(default_factory=NativeDecoderFactoryArgs)
+
+
 class LLaDA2UniNativeSP2PipelineConfig(LLaDA2UniOmniPipelineConfig):
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        **LLaDA2UniOmniPipelineConfig.stage_config_types,
+        IMAGE_DECODE_STAGE: NativeDecoderStageConfig,
+    }
     stages: list[StageConfig] = [
         *LLaDA2UniOmniPipelineConfig.shared_stages,
-        LLaDA2ImageDecoderStageConfig(
+        NativeDecoderStageConfig(
             name=IMAGE_DECODE_STAGE,
             process=IMAGE_DECODE_STAGE,
             factory_path=f"{_PKG}.native_sp_host.create_native_decoder",
-            factory=LLaDA2ImageDecoderFactoryArgs(
+            factory=NativeDecoderFactoryArgs(
                 backend="sglang",
                 attention_backend="fa",
                 decode_mode="decoder-turbo",

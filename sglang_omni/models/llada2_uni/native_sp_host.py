@@ -19,15 +19,17 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 
 class NativeSPDecoder:
-    def __init__(self, model_path: str, gpu_id: int, devices: list[int]) -> None:
+    def __init__(
+        self, model_path: str, gpu_id: int, devices: list[int], ring_degree: int
+    ) -> None:
         kwargs = native_server_kwargs(
             model_path,
             gpu_id,
             {
                 "pipeline_class_name": "LLaDASemanticDecoder",
-                "sp_degree": 2,
-                "ulysses_degree": 2,
-                "ring_degree": 1,
+                "sp_degree": len(devices),
+                "ulysses_degree": len(devices) // ring_degree,
+                "ring_degree": ring_degree,
                 "attention_backend": "fa",
                 "enable_torch_compile": False,
                 "dit_cpu_offload": False,
@@ -87,6 +89,7 @@ def create_native_decoder(
     decode_mode: DecoderMode,
     num_steps: int,
     resolution_multiplier: int = 2,
+    ring_degree: int = 1,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     if (
         backend,
@@ -94,12 +97,13 @@ def create_native_decoder(
         decode_mode,
         num_steps,
         resolution_multiplier,
-        len(runtime_gpu_ids),
-    ) != ("sglang", "fa", "decoder-turbo", 8, 2, 2):
-        raise ValueError("Native SP2 requires FA, turbo8 and resolution multiplier 2")
+    ) != ("sglang", "fa", "decoder-turbo", 8, 2):
+        raise ValueError("Native SP requires FA, turbo8 and resolution multiplier 2")
+    elif ring_degree < 1 or len(runtime_gpu_ids) % ring_degree:
+        raise ValueError("Ring degree must divide the number of decoder GPUs")
     else:
         pass
-    decoder = NativeSPDecoder(model_path, gpu_id, runtime_gpu_ids)
+    decoder = NativeSPDecoder(model_path, gpu_id, runtime_gpu_ids, ring_degree)
 
     def decode_png(
         tokens: list[int], height: int, width: int, params: dict[str, int | DecoderMode]

@@ -123,6 +123,17 @@ def test_native_sp2_decoder_config() -> None:
     assert set(placement.gpus) == {0, 1, 2}
     assert stage.allow_child_processes and stage.runtime_gpu_ids == [1, 2]
     assert stage.factory.backend == "sglang" and stage.factory.attention_backend == "fa"
+    assert stage.factory.ring_degree == 1
+
+    ring_config = ConfigManager(config).merge_config(
+        {
+            "image_decode.runtime_gpu_ids": [1, 2, 3, 4],
+            "image_decode.factory.ring_degree": 4,
+        }
+    )
+    ring_stage = ring_config.stage_named(IMAGE_DECODE_STAGE)
+    assert ring_stage.factory.ring_degree == 4
+    assert set(build_stage_placement_plan(ring_config).gpus) == {0, 1, 2, 3, 4}
 
 
 def native_worker(
