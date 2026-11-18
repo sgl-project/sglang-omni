@@ -58,8 +58,8 @@ else:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PREFILL_COALESCE_WAIT_MILLISECONDS = 32.0
-# note (Ruilin Gao): H100 Chinese c4 still exceeded the first-text gate with a 1 ms hold.
-DFLASH_PREFILL_COALESCE_WAIT_MILLISECONDS = 0.0
+# note (Ruilin Gao): H100 Chinese c4 misses the first-text gate with either no hold or a 1 ms hold.
+DFLASH_PREFILL_COALESCE_WAIT_MILLISECONDS = 0.5
 DEFAULT_REQUEST_BUILD_WORKERS = 2
 DFLASH_REQUEST_BUILD_WORKERS = 4
 
