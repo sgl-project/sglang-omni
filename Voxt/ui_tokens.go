@@ -76,6 +76,7 @@ type tokens struct {
 	OverlayFace, OverlayLine                ui.Color
 	// Record: recording and destructive actions (red-orange).
 	Record, RecordSoft ui.Color
+	Waveform           ui.Color // Try-area levels; custom palettes follow Accent
 	// Semantic colours, for small dots and text only.
 	Success, Warning, Danger ui.Color
 }
@@ -126,6 +127,7 @@ func makeTokens(dark bool, colors paletteColors) *tokens {
 		k.AccentInk = accent.Mix(ui.Hex("#000000"), 0.18)
 	}
 	k.NavSelected, k.NavInk = k.Pressed, k.Text
+	k.Waveform = k.Record
 	k.TranscriptFace = k.Subtle
 	if colors.background != ui.Transparent {
 		if dark {
@@ -135,6 +137,7 @@ func makeTokens(dark bool, colors paletteColors) *tokens {
 		}
 		k.NavSelected = strongerTint(k.Sidebar.Mix(accent, navTint))
 		k.NavInk = k.AccentInk
+		k.Waveform = k.Accent
 		fill := strongerTint(k.Subtle.Mix(accent, transcriptTint))
 		k.TranscriptFace = readableTint(fill, k.Subtle, k.Text, k.Text2, k.AccentInk)
 	}

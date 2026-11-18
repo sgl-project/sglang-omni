@@ -480,6 +480,9 @@ type StartRequest struct {
 	// Conversation is the first session of the card's conversation this
 	// one continues (store.Entry.Conversation); "": it begins one.
 	Conversation string
+	// Replaces is the card answer this session replaces with a redo;
+	// "": it adds a turn instead.
+	Replaces string
 	// SpeechWait, when set, ends the session with these words instead of
 	// recording: the speech model it should use is still downloading.
 	// Translating a selection needs none and goes on.

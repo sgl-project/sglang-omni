@@ -15,7 +15,7 @@
 
 #include "common/generation.h"
 #include "common/transcription.h"
-#include "qwen3_asr/worker.h"
+#include "common/worker.h"
 
 namespace mx = mlx::core;
 namespace drama = fishaudio_drama3;
@@ -90,7 +90,7 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
   auto next_future = next.get_future();
   std::unique_ptr<drama::ExpertCache> cache;
   std::unique_ptr<omni_common::Checkpoint> checkpoint;
-  qwen3_asr::TranscriptionWorker worker(
+  omni_server::TranscriptionWorker worker(
       [&] {
         cache = std::make_unique<drama::ExpertCache>(directory, config,
                                                      expert_bytes);
@@ -101,7 +101,7 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
                              {{"input", mx::ones({1, 256, 128})}});
       },
       [] {});
-  const auto cancel = qwen3_asr::NewCancelFlag();
+  const auto cancel = omni_server::NewCancelFlag();
   worker.Submit(
       [&](const std::atomic<bool> &cancelled) {
         auto reader = std::make_shared<BlockingReader>(
@@ -134,7 +134,7 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
         result.text = "next request finished";
         return result;
       },
-      qwen3_asr::NewCancelFlag(),
+      omni_server::NewCancelFlag(),
       [&](std::optional<omni_common::TranscriptionResult> result,
           std::exception_ptr error) {
         if (error) {

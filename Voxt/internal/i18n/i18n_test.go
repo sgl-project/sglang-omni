@@ -1,7 +1,9 @@
 package i18n
 
 import (
+	"maps"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -41,6 +43,52 @@ func TestChinese(t *testing.T) {
 	}
 	if got := N(1, "%d line", "%d lines", 1); got != "1 行" {
 		t.Error("zh-Hans has no singular, so it uses the translation of other:", got)
+	}
+}
+
+func TestTranslatorUsesExplicitLocale(t *testing.T) {
+	defer SetLocale("en")
+	SetLocale("en")
+	translator := NewTranslator("zh-Hans")
+	if got := translator.T("Settings"); got != "设置" {
+		t.Errorf("explicit translation %q", got)
+	}
+	if got := translator.Locale(); got != "zh-Hans" {
+		t.Errorf("translator locale %q", got)
+	}
+	if got := translator.N(1, "%d line", "%d lines", 1); got != "1 行" {
+		t.Errorf("explicit plural translation %q", got)
+	}
+	if got := translator.X("list", ", "); got != "、" {
+		t.Errorf("explicit context translation %q", got)
+	}
+	if got := translator.X("list", "missing"); got != "missing" {
+		t.Errorf("explicit context fallback %q", got)
+	}
+	if got := translator.X("sound source", "Built-in"); got != "自带" {
+		t.Errorf("explicit contextual translation %q", got)
+	}
+	if got := translator.X("missing context", "Built-in"); got != "Built-in" {
+		t.Errorf("explicit contextual fallback %q", got)
+	}
+	if got := NewTranslator("en").N(1, "%d line", "%d lines", 1); got != "1 line" {
+		t.Errorf("explicit English singular %q", got)
+	}
+	if got := NewTranslator("en").N(2, "%d line", "%d lines", 2); got != "2 lines" {
+		t.Errorf("explicit English plural %q", got)
+	}
+	if got := translator.X("alternative", "Use %s", "Fast"); got != "先用 Fast" {
+		t.Errorf("explicit context translation %q", got)
+	}
+	if got := NewTranslator("en").X("alternative", "Use %s", "Fast"); got != "Use Fast" {
+		t.Errorf("explicit context fallback %q", got)
+	}
+	if got := Locale(); got != "en" {
+		t.Errorf("translator changed global locale to %q", got)
+	}
+	SetLocale("zh-Hans")
+	if got := CurrentTranslator().T("Settings"); got != "设置" {
+		t.Errorf("current translator %q", got)
 	}
 }
 
@@ -91,5 +139,50 @@ func TestDates(t *testing.T) {
 	}
 	if got := Date(old); got != "2024年11月22日" {
 		t.Errorf("zh date: %q", got)
+	}
+	zone := time.FixedZone("UTC+8", 8*60*60)
+	now = time.Date(2026, 1, 2, 15, 4, 0, 0, zone)
+	value := now.Add(-48 * time.Hour)
+	if got := NewTranslator("en").DateTimeAt(value, now); got != "Dec 31, 2025 15:04" {
+		t.Errorf("explicit zone: %q", got)
+	}
+	if got := NewTranslator("zh-Hans").DateTimeAt(value, now); got != "2025年12月31日 15:04" {
+		t.Errorf("explicit zone and locale: %q", got)
+	}
+}
+
+// TestReadMessages: a locale's catalog is locales/<tag>.json when it
+// exists plus every locales/<tag>/*.json merged in name order; a key in
+// two files or broken JSON is an error, and an unknown tag is empty.
+func TestReadMessages(t *testing.T) {
+	fsys := fstest.MapFS{
+		"locales/en.json":         &fstest.MapFile{Data: []byte(`{}`)},
+		"locales/zh/a.json":       &fstest.MapFile{Data: []byte(`{"One": "一", "Two": "二"}`)},
+		"locales/zh/b.json":       &fstest.MapFile{Data: []byte(`{"Three": "三"}`)},
+		"locales/dup.json":        &fstest.MapFile{Data: []byte(`{"One": "一"}`)},
+		"locales/dup/extra.json":  &fstest.MapFile{Data: []byte(`{"One": "一"}`)},
+		"locales/bad/broken.json": &fstest.MapFile{Data: []byte(`{"One":`)},
+		"locales/bad/notes.txt":   &fstest.MapFile{Data: []byte(`not a catalog`)},
+		"locales/bad/sub/c.json":  &fstest.MapFile{Data: []byte(`{"Hidden": "x"}`)},
+	}
+	m, err := readMessages(fsys, "zh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"One": "一", "Two": "二", "Three": "三"}
+	if !maps.Equal(m, want) {
+		t.Errorf("split merge: %v", m)
+	}
+	if m, err := readMessages(fsys, "en"); err != nil || len(m) != 0 {
+		t.Errorf("en: %v, %v", m, err)
+	}
+	if m, err := readMessages(fsys, "de"); err != nil || len(m) != 0 {
+		t.Errorf("unknown tag: %v, %v", m, err)
+	}
+	if _, err := readMessages(fsys, "dup"); err == nil {
+		t.Error("a key in two files is an error")
+	}
+	if _, err := readMessages(fsys, "bad"); err == nil {
+		t.Error("broken JSON is an error")
 	}
 }

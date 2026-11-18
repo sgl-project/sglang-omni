@@ -29,14 +29,10 @@ public:
 private:
   SpeechDecoder(const nlohmann::json &config, omni_common::WeightMap weights);
   // Codebook embeddings from their usage counts, and convolution kernels in
-  // MLX's layout.
-  static omni_common::WeightMap PrepareWeights(omni_common::WeightMap weights);
-  mlx::core::array TransformerLayer(const mlx::core::array &x, int layer,
-                                    const mlx::core::array &cosines,
-                                    const mlx::core::array &sines,
-                                    const mlx::core::array &mask) const;
-  mlx::core::array RmsNorm(const mlx::core::array &x,
-                           const std::string &prefix) const;
+  // MLX's layout, transposed ones as their stride-1 phases.
+  static omni_common::WeightMap PrepareWeights(const nlohmann::json &config,
+                                               omni_common::WeightMap weights);
+  mlx::core::array TransformerLayer(const mlx::core::array &x, int layer) const;
   mlx::core::array Snake(const mlx::core::array &x,
                          const std::string &prefix) const;
   // A causal convolution: left padding of the dilated kernel's reach.
@@ -61,7 +57,7 @@ private:
   std::vector<int> upsample_rates_;
   int samples_per_frame_;
   int sample_rate_;
-  mlx::core::array inverse_frequencies_;
+  float rope_theta_;
 };
 
 // Frames decoded in chunks, each with up to 25 frames of left context.

@@ -15,13 +15,13 @@
 #include <vector>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
 #include "fish_dac/fish_dac.h"
 #include "fishaudio_drama3/fishaudio_drama3_experts.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace fishaudio_drama3 {
 
@@ -58,12 +58,12 @@ struct ReferenceInput {
 struct LayerCache {
   std::optional<mlx::core::array> convolution_state;
   std::optional<mlx::core::array> recurrent_state;
-  qwen3_asr::KVCache attention;
+  omni_common::KVCache attention;
 };
 
 struct ModelCaches {
   std::vector<LayerCache> backbone;
-  std::vector<qwen3_asr::KVCache> tower;
+  std::vector<omni_common::KVCache> tower;
 };
 
 // Encoded references and, once built, the caches of the prompt's system block.
@@ -114,14 +114,14 @@ private:
                                    LayerCache &cache) const;
   mlx::core::array AttentionLayer(const mlx::core::array &x,
                                   const std::string &prefix,
-                                  qwen3_asr::KVCache &cache) const;
+                                  omni_common::KVCache &cache) const;
   mlx::core::array MixtureOfExperts(const mlx::core::array &x,
                                     const std::string &prefix,
                                     const std::atomic<bool> &cancel) const;
   mlx::core::array
   TowerLayer(const mlx::core::array &hidden, const mlx::core::array &codes,
              const mlx::core::array &is_semantic, int layer,
-             qwen3_asr::KVCache &cache,
+             omni_common::KVCache &cache,
              const std::optional<mlx::core::array> &unseen_embedding) const;
   // The tower's shared layers over hidden, given the input frame's codebooks
   // the backbone input left out.
@@ -129,7 +129,7 @@ private:
                           const mlx::core::array &semantic_codes,
                           const mlx::core::array &is_semantic,
                           const mlx::core::array &frames,
-                          std::vector<qwen3_asr::KVCache> &caches) const;
+                          std::vector<omni_common::KVCache> &caches) const;
   mlx::core::array EmbeddingSum(const mlx::core::array &frames, int first,
                                 int end) const;
   mlx::core::array IsSemantic(const mlx::core::array &tokens) const;

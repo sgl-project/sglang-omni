@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Sortformer golden check against the original Voxt's outputs, for check_golden.py.
 
-Voxt runs MLX 0.31.1 and the runtime 0.32.3, so the tolerances allow kernel
+Voxt runs MLX 0.31.1 and the runtime its pinned MLX commit, so the tolerances allow kernel
 differences only; the all-clip limits catch a computation that is slightly wrong.
 """
 

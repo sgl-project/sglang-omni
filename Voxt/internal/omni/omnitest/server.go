@@ -171,11 +171,22 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	if o.Echo && fields["prompt"] != "" {
 		text += strings.Join(strings.Split(fields["prompt"], "\n"), "，") + "。"
 	}
-	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": "stop"}
+	finish := "stop"
+	if o.TokenLimit {
+		finish = "length"
+	}
+	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
 	if o.WindowTexts != nil {
 		metadata["window_texts"] = o.WindowTexts
 	}
-	done, _ := json.Marshal(map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata})
+	body := map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata}
+	if o.Segments {
+		body["segments"] = []map[string]any{
+			{"start": 0.5, "end": 1.5, "speaker": "S01", "text": "first"},
+			{"start": 1.5, "end": 2.5, "speaker": "S02", "text": "second"},
+		}
+	}
+	done, _ := json.Marshal(body)
 	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", done)
 	flush()
 }

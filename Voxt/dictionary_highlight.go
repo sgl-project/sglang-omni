@@ -1,11 +1,8 @@
 package main
 
-import (
-	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
-)
+import "github.com/egoist/mygo/ui"
 
-func dictionaryText(c *ui.Context, text string, highlights []dict.Span) ui.Element {
+func dictionaryText(c *ui.Context, text string, highlights []textHighlight) ui.Element {
 	if len(highlights) == 0 {
 		return ui.Text(c, text)
 	}

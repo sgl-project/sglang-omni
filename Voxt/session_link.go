@@ -55,6 +55,9 @@ type sessionState struct {
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
+	// reopen is the history's continuable conversations, newest first.
+	reopen     []reopenConversation
+	restoreSeq int
 	// notice is the overlay's one-line message, when it shows one;
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
@@ -92,29 +95,24 @@ type answerCard struct {
 	why string
 	// problem: the session failed (the card shows why, and Try again);
 	// input is what it worked on, for Try again and another language.
-	problem  *session.Problem
-	input    session.TextInput
-	lang     string // Translate's target
-	langOpen bool   // the language menu shows (overlay_lang.go)
+	problem *session.Problem
+	input   session.TextInput
+	lang    string // Translate's target
 	// turns are a Rewrite conversation so far, the shown answer last
 	// (a follow-up adds to them); conversation: a follow-up began, and
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
-	// quotesOpen are the turns whose selection shows whole (#3816).
-	quotesOpen map[int]bool
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
 	redo, redoLang string
 	// llmID is the language model service that answered (its settings'
 	// Provider.ID); think the thinking level the answer was asked with,
-	// nil the service's; redoThink the redo's; thinkMenu: the card's menu
-	// (langOpen) lists the thinking levels, not the languages; pillMenu:
-	// the working pill's (#3940), not the card's.
-	llmID               string
-	think, redoThink    *llm.Thinking
-	thinkMenu, pillMenu bool
+	// nil the service's; redoThink the redo's.
+	llmID            string
+	think, redoThink *llm.Thinking
+	ui               answerCardUI
 	// copied: Copy's mark shows (2 s, Voxt's); copySeq numbers the
 	// copies, so that a copy's timer clears only its own mark.
 	copied  bool
