@@ -8,6 +8,7 @@ type remoteCardsActions interface {
 
 type remoteWaitActions interface {
 	chooseLLMWait(value string)
+	setLLMSwitch(on bool)
 }
 
 type remoteDialogActions interface {

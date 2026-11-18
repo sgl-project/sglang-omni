@@ -55,6 +55,8 @@
   "The saved key is removed when you save.": "保存时会移除已保存的密钥。",
   "Voxt sends the language model the recognised or selected text, never your audio.": "Voxt 只把识别出的文字或选中的文字发给语言模型，不发送音频。",
   "Wait for the language model": "等待语言模型",
+  "Switch models when one fails": "模型出错时换一个",
+  "When a feature's language model does not answer, Voxt asks the next language model you set up, once. A used-up plan does not switch.": "功能所用的语言模型没有回应时，Voxt 会改问你设置的下一个语言模型，只换一次。套餐额度用完时不换。",
   "Your recordings are sent to %s to be recognised.": "你的录音会发给 %s 识别。",
   "%s is not a number.": "%s 只能填数字。",
   "Budget tokens": "预算 Token 数",

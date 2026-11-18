@@ -71,6 +71,42 @@ func TestResolverFallback(t *testing.T) {
 	}
 }
 
+// TestResolverSwitch: with Models.LLMSwitch every feature falls back to
+// the next model that opens, after Translate's own fallback model.
+func TestResolverSwitch(t *testing.T) {
+	models := []local.Model{{Kind: local.LLM, ID: "k31"}, {Kind: local.LLM, ID: "k3"}, {Kind: local.LLM, ID: "ollama"}}
+	for _, tc := range []struct {
+		name               string
+		kind               store.Kind
+		on                 bool
+		fallback, broken   string
+		wantMain, wantBack string
+	}{
+		{"off", store.KindRewrite, false, "", "", "k31", ""},
+		{"rewrite", store.KindRewrite, true, "", "", "k31", "k3"},
+		{"transcribe", store.KindTranscribe, true, "", "", "k31", "k3"},
+		{"the next one does not open", store.KindRewrite, true, "", "k3", "k31", "ollama"},
+		{"the model does not open", store.KindRewrite, true, "", "k31", "k3", ""},
+		{"translate's fallback first", store.KindTranslate, true, "ollama", "", "k31", "ollama"},
+		{"translate's fallback does not open", store.KindTranslate, true, "ollama", "ollama", "k31", "k3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := settings.Defaults()
+			s.Models.LLMSwitch = tc.on
+			s.Features.Transcribe.Enhance = true
+			s.Features.Transcribe.LLM, s.Features.Translate.LLM, s.Features.Rewrite.LLM = "k31", "k31", "k31"
+			s.Features.Translate.Fallback = tc.fallback
+			svc, err := resolver(llmShelf{models: models, broken: tc.broken})(context.Background(), tc.kind, s, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if svc.LLMInfo.ID != tc.wantMain || svc.FallbackInfo.ID != tc.wantBack || (svc.Fallback != nil) != (tc.wantBack != "") {
+				t.Errorf("model %q, fallback %q; want %q, %q", svc.LLMInfo.ID, svc.FallbackInfo.ID, tc.wantMain, tc.wantBack)
+			}
+		})
+	}
+}
+
 // speechShelf is llmShelf with a speech model that counts its openings.
 type speechShelf struct {
 	llmShelf

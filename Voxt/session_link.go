@@ -235,22 +235,41 @@ func resolver(lm local.Services) session.Resolver {
 		if c, ml, err := lm.LLM(ctx, m.ID); err == nil {
 			svc.LLM, svc.LLMInfo = c, sessionModel(ml)
 		}
-		// Translate's fallback model, or its model when that one did not open.
-		fb := s.Features.Translate.Fallback
-		if kind != store.KindTranslate || fb == "" || fb == m.ID || !slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
-			return svc, nil
-		}
-		c, ml, err := lm.LLM(ctx, fb)
-		if err != nil {
-			return svc, nil
-		}
-		if svc.LLM == nil {
-			svc.LLM, svc.LLMInfo = c, sessionModel(ml)
-		} else {
-			svc.Fallback, svc.FallbackInfo = c, sessionModel(ml)
+		// The fallback model, or the model when that one did not open: the
+		// first candidate that opens.
+		for _, id := range fallbackCandidates(kind, s, ready, m.ID) {
+			c, ml, err := lm.LLM(ctx, id)
+			if err != nil {
+				continue
+			}
+			if svc.LLM == nil {
+				svc.LLM, svc.LLMInfo = c, sessionModel(ml)
+			} else {
+				svc.Fallback, svc.FallbackInfo = c, sessionModel(ml)
+			}
+			break
 		}
 		return svc, nil
 	}
+}
+
+// fallbackCandidates are the models a session may fall back to, in order:
+// Translate's fallback model, then, with Models.LLMSwitch, every other
+// ready model in the Language models page's order.
+func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Model, chosen string) []string {
+	var ids []string
+	if fb := s.Features.Translate.Fallback; kind == store.KindTranslate && fb != "" && fb != chosen && slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
+		ids = append(ids, fb)
+	}
+	if !s.Models.LLMSwitch {
+		return ids
+	}
+	for _, x := range ready {
+		if x.ID != chosen && !slices.Contains(ids, x.ID) {
+			ids = append(ids, x.ID)
+		}
+	}
+	return ids
 }
 
 // sessionModel is how a session (and its history entry) names a model.

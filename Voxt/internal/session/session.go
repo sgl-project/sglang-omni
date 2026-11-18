@@ -301,7 +301,8 @@ type Services struct {
 	// LLM is nil when the feature has no language model ready.
 	LLM     LLM
 	LLMInfo Model
-	// Fallback is Translate's fallback model, asked once when LLM fails;
+	// Fallback is Translate's fallback model, or with the Language models
+	// page's switch another language model, asked once when LLM fails;
 	// nil: none.
 	Fallback     LLM
 	FallbackInfo Model
