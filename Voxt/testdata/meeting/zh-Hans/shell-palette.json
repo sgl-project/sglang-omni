@@ -1,0 +1,165 @@
+{
+  "name": "shell-palette",
+  "kind": "shell",
+  "shell": {
+    "theme": "system",
+    "scale": 1,
+    "still": true,
+    "nav": {
+      "groups": [
+        {
+          "id": "",
+          "pages": [
+            {
+              "path": "/home",
+              "title": "首页",
+              "keys": "⌘1",
+              "selected": true
+            },
+            {
+              "path": "/history",
+              "title": "历史",
+              "keys": "⌘2",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Features",
+          "title": "功能",
+          "pages": [
+            {
+              "path": "/transcribe",
+              "title": "转录",
+              "keys": "⌘3",
+              "selected": false
+            },
+            {
+              "path": "/translate",
+              "title": "翻译",
+              "keys": "⌘4",
+              "selected": false
+            },
+            {
+              "path": "/rewrite",
+              "title": "改写",
+              "keys": "⌘5",
+              "selected": false
+            },
+            {
+              "path": "/notes",
+              "title": "笔记",
+              "selected": false
+            },
+            {
+              "path": "/meetings",
+              "title": "会议",
+              "selected": false
+            },
+            {
+              "path": "/app-enhancement",
+              "title": "应用增强",
+              "keys": "⌘6",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Resources",
+          "title": "资源",
+          "pages": [
+            {
+              "path": "/dictionary",
+              "title": "词典",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "System",
+          "title": "系统",
+          "pages": [
+            {
+              "path": "/logs",
+              "title": "日志",
+              "selected": false
+            },
+            {
+              "path": "/settings",
+              "title": "设置",
+              "selected": false
+            }
+          ]
+        }
+      ],
+      "current": "/home",
+      "shortcut_pages": [
+        {
+          "path": "/home",
+          "num": 1
+        },
+        {
+          "path": "/history",
+          "num": 2
+        },
+        {
+          "path": "/transcribe",
+          "num": 3
+        },
+        {
+          "path": "/translate",
+          "num": 4
+        },
+        {
+          "path": "/rewrite",
+          "num": 5
+        },
+        {
+          "path": "/app-enhancement",
+          "num": 6
+        }
+      ],
+      "settings": {
+        "path": "/settings",
+        "title": "设置",
+        "keys": "⌘,",
+        "selected": false
+      },
+      "settings_selected": false,
+      "notices_count": 0,
+      "rail_chosen": false,
+      "rail": false,
+      "sidebar_width": 0,
+      "min_sidebar_width": 170,
+      "max_sidebar_width": 320
+    },
+    "logs_height": 220,
+    "palette": {
+      "items": [
+        {
+          "id": "go/models",
+          "group": "设置",
+          "title": "语音识别模型"
+        },
+        {
+          "id": "go/language-models",
+          "group": "设置",
+          "title": "语言模型"
+        },
+        {
+          "id": "llm-debug",
+          "group": "显示",
+          "title": "语言模型调试"
+        }
+      ]
+    },
+    "sheet": {
+      "groups": null
+    },
+    "settings_open": false
+  },
+  "shell_ui": {
+    "palette_open": true,
+    "palette_query": "mod"
+  }
+}

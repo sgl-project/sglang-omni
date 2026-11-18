@@ -1,0 +1,184 @@
+{
+  "name": "detail-playing",
+  "kind": "page",
+  "page": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "query": "",
+    "page": 0,
+    "has_more": true,
+    "active": true,
+    "settings_available": true,
+    "meeting_count": 6,
+    "items": [
+      {
+        "key": "head/Today",
+        "heading": "Today"
+      },
+      {
+        "key": "meeting-recording",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-recording",
+          "title": "Fixture recording",
+          "snippet": "Microphone and system audio",
+          "status_code": "recording",
+          "status_label": "In progress",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "1 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/Yesterday",
+        "heading": "Yesterday"
+      },
+      {
+        "key": "meeting-interrupted",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-interrupted",
+          "title": "Untitled meeting",
+          "snippet": "System audio only",
+          "status_code": "interrupted",
+          "status_label": "Interrupted",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "2 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/Previous 7 days",
+        "heading": "Previous 7 days"
+      },
+      {
+        "key": "meeting-asking",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-asking",
+          "title": "Fixture asking",
+          "snippet": "Microphone only",
+          "status_code": "asking",
+          "status_label": "In progress",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "3 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-finishing",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-finishing",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "finishing",
+          "status_label": "Finishing",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "4 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-done",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-done",
+          "title": "Fixture done",
+          "snippet": "System audio only",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "5 min",
+          "selected": true
+        }
+      },
+      {
+        "key": "meeting-failed",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-failed",
+          "title": "Untitled meeting",
+          "snippet": "Microphone only",
+          "status_code": "failed",
+          "status_label": "Failed",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "6 min",
+          "selected": false
+        }
+      }
+    ],
+    "detail": {
+      "id": "detail-1",
+      "title": "Detailed meeting",
+      "meta": "2026-01-02 14:04 · 1 h 5 min · Microphone and system audio",
+      "loading": false,
+      "error": "",
+      "correcting": false,
+      "answering": false,
+      "can_use_llm": true,
+      "show_more": true,
+      "can_reprocess": true,
+      "can_correct": true,
+      "can_reveal_audio": true,
+      "can_continue": false,
+      "delete_disabled": false,
+      "has_transcript": true,
+      "summary": {
+        "present": true,
+        "title": "Fixture summary",
+        "body": "A generated summary.\nSecond line.",
+        "todos": [
+          "Follow up"
+        ]
+      },
+      "chat": [
+        {
+          "user": true,
+          "text": "What happened?"
+        },
+        {
+          "user": false,
+          "text": "A generated answer."
+        }
+      ],
+      "segments": [
+        {
+          "key": "seg/0",
+          "index": 0,
+          "start_ms": 1000,
+          "time_text": "00:01",
+          "speaker": "You",
+          "me": true,
+          "text": "Microphone text",
+          "translation": "麦克风文本",
+          "source": "mic"
+        },
+        {
+          "key": "seg/1",
+          "index": 1,
+          "start_ms": 3000,
+          "time_text": "00:03",
+          "speaker": "Alice",
+          "me": false,
+          "text": "System text",
+          "translation": "",
+          "source": "system"
+        }
+      ],
+      "playback": {
+        "available": true,
+        "playing": true,
+        "position_text": "01:05",
+        "highlight": 1
+      }
+    }
+  }
+}

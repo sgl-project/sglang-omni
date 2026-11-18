@@ -12,128 +12,114 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // railWidth is the icon rail's width, DIPs at 100 %.
 const railWidth = 52
 
-// navState is the sidebar's view state.
-type navState struct {
-	navOpen    map[string]*bool // sections: open or closed
-	sideW      float32          // the sidebar's width, DIPs at the theme's scale
-	sideWScale float32          // the px factor sideW was computed at
-	sideWAt    time.Time        // when the user last resized it (saved after a pause)
-	// narrowWindow: the window was narrower than autoRailWidth at the
-	// last build (railMode).
-	narrowWindow bool
+// navLocalUI is the sidebar's interface-local state: the choice, the
+// rail's popover, what the view measures, the sections' open state and
+// the drag of the width.
+type navLocalUI struct {
+	nav         *string // the sidebar's choice (syncNav follows the router)
+	noticesOpen *bool   // the rail's popover of notifications
+	narrow      *bool   // the view writes it: the window is narrower than autoRailWidth
+
+	sections map[string]*bool // sections: open or closed (seeded from the settings)
+
+	rail       bool      // the layout this frame shows (sidebarFrame decides)
+	sideW      float32   // the sidebar's width, DIPs at the theme's scale
+	sideWScale float32   // the px factor sideW was computed at
+	sideWAt    time.Time // when the user last resized it (saved after a pause)
 }
 
-// autoRailWidth: below this window width (DIPs at 100 %) the automatic
-// sidebar shows icons only.
-const autoRailWidth = 740
-
-// railMode reports whether the sidebar shows icons only: the user's
-// choice (Settings → Appearance, the sidebar's button), else automatic,
-// while the window is narrower than autoRailWidth (narrowWindow, set by
-// each build). It is the only place that decides.
-func (a *app) railMode() bool {
-	ap := a.prefs.Appearance
-	if ap.Rail || ap.RailChosen {
-		return ap.Rail
+// navSectionOpen is the open state of a sidebar section, seeded from the
+// settings' closed sections on first use.
+func navSectionOpen(local *navLocalUI, state *navViewState, id string) *bool {
+	if local.sections == nil {
+		local.sections = map[string]*bool{}
 	}
-	return a.narrowWindow
-}
-
-// setRail is the user's choice of the sidebar's layout: it stays,
-// whatever the window's width.
-func (a *app) setRail(on bool) {
-	a.updateSettings(func(s *settings.Settings) { s.Appearance.Rail, s.Appearance.RailChosen = on, true })
-}
-
-// sectionOpen is the open state of a sidebar section, kept in the
-// settings when the user closes it.
-func (a *app) sectionOpen(id string) *bool {
-	if a.navOpen == nil {
-		a.navOpen = map[string]*bool{}
-	}
-	p, ok := a.navOpen[id]
+	p, ok := local.sections[id]
 	if !ok {
-		open := !slices.Contains(a.prefs.Appearance.ClosedSections, id)
+		open := !slices.Contains(state.ClosedSections, id)
 		p = &open
-		a.navOpen[id] = p
+		local.sections[id] = p
 	}
 	return p
 }
 
-// saveClosedSections saves the sections the user closed or opened.
-func (a *app) saveClosedSections() {
-	var closed []string
+// navIcon is a page's icon in the sidebar and the rail.
+func navIcon(path string) icons.Icon {
 	for _, g := range navGroups {
-		if p, ok := a.navOpen[g.id]; ok && !*p {
-			closed = append(closed, g.id)
+		for _, p := range g.pages {
+			if p.path == path {
+				return p.icon
+			}
 		}
 	}
-	if slices.Equal(closed, a.prefs.Appearance.ClosedSections) {
-		return
-	}
-	a.updateSettings(func(s *settings.Settings) { s.Appearance.ClosedSections = closed })
+	return icons.Settings
 }
 
 // sidebarFrame lays out the sidebar and the page: the rail, or the full
 // sidebar beside a divider that resizes it.
-func (a *app) sidebarFrame(c *ui.Context, page func()) {
+func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI, page func()) {
 	t := c.Theme()
 	k := tok(t)
 	headerInset = 0
 	w, _ := c.Size()
-	a.narrowWindow = w < px(t, autoRailWidth)
-	if a.railMode() {
+	*local.narrow = w < px(t, autoRailWidth)
+	// The layout: the user's choice, else the rail while the window is
+	// narrow (the same rule as railMode, for the frame being laid out).
+	rail := *local.narrow
+	if state.RailChosen {
+		rail = state.Rail
+	}
+	local.rail = rail
+	if rail {
 		// The window controls (the traffic lights) reach past the rail:
 		// page titles move over to keep clear of them.
 		headerInset = max(0, c.TitleBar().Left-px(t, railWidth)-px(t, sp6)+px(t, sp3))
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Width(px(t, railWidth)).Shrink(0).Background(k.Sidebar).Children(func() { a.navRail(c) })
+			ui.Column(c).Width(px(t, railWidth)).Shrink(0).Background(k.Sidebar).Children(func() {
+				navRail(c, state, notices, actions, noticeActs, local)
+			})
 			ui.Box(c).Width(1).Background(k.Line)
 			ui.Column(c).Grow(1).MinWidth(0).Background(k.Bg).Children(page)
 		})
 		return
 	}
-	a.noticesOpen = false // the rail's popover
+	*local.noticesOpen = false // the rail's popover
 	scale := px(t, 1)
-	if a.sideW == 0 || a.sideWScale != scale {
-		w := a.prefs.Appearance.SidebarWidth
+	if local.sideW == 0 || local.sideWScale != scale {
+		w := state.SidebarWidth
 		if w == 0 {
 			w = sidebarWidth
 		}
-		a.sideW, a.sideWScale = px(t, float32(w)), scale
+		local.sideW, local.sideWScale = px(t, float32(w)), scale
 	}
-	split := ui.Split(c.Key("sidebar-split"), &a.sideW, func() {
-		ui.Column(c).Fill().Background(k.Sidebar).Children(func() { a.sidebar(c) })
+	split := ui.Split(c.Key("sidebar-split"), &local.sideW, func() {
+		ui.Column(c).Fill().Background(k.Sidebar).Children(func() { sidebar(c, state, notices, actions, noticeActs, local) })
 	}, func() {
 		ui.Column(c).Grow(1).MinWidth(0).Background(k.Bg).Children(page)
 	}).Grow(1).MinHeight(0)
 	// Keep the width in its bounds, and save it once the drag rests.
-	lo, hi := px(t, settings.MinSidebarWidth), px(t, settings.MaxSidebarWidth)
-	if a.sideW < lo || a.sideW > hi {
-		a.sideW = min(max(a.sideW, lo), hi)
+	lo, hi := px(t, float32(state.MinSidebarWidth)), px(t, float32(state.MaxSidebarWidth))
+	if local.sideW < lo || local.sideW > hi {
+		local.sideW = min(max(local.sideW, lo), hi)
 	}
 	if split.Changed() {
-		a.sideWAt = time.Now()
+		local.sideWAt = time.Now()
 		c.After(600 * time.Millisecond)
 	}
-	if !a.sideWAt.IsZero() && time.Since(a.sideWAt) >= 500*time.Millisecond {
-		a.sideWAt = time.Time{}
-		w := float64(a.sideW / scale)
-		if w != a.prefs.Appearance.SidebarWidth {
-			a.updateSettings(func(s *settings.Settings) { s.Appearance.SidebarWidth = w })
-		}
+	if !local.sideWAt.IsZero() && time.Since(local.sideWAt) >= 500*time.Millisecond {
+		local.sideWAt = time.Time{}
+		actions.sidebarWidthChanged(float64(local.sideW / scale))
 	}
 }
 
 // navRail is the sidebar as a column of icons; their titles show as
 // tooltips, a badge as a dot.
-func (a *app) navRail(c *ui.Context) {
+func navRail(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI) {
 	t := c.Theme()
 	k := tok(t)
 	if bar := c.TitleBar(); bar.Left > 0 {
@@ -142,13 +128,13 @@ func (a *app) navRail(c *ui.Context) {
 		ui.Box(c).Height(titleBarHeight).Shrink(0).DragWindow()
 		ui.Row(c).Shrink(0).Justify(ui.Center).Children(func() {
 			if iconButton(c.Key("rail-off"), icons.SidebarMinimalistic, i18n.T("Show sidebar")).Clicked() {
-				a.setRail(false)
+				actions.setRail(false)
 			}
 		})
 	} else {
 		ui.Row(c).Height(titleBarHeight).Shrink(0).DragWindow().AlignItems(ui.End).Justify(ui.Center).Padding(0, 0, px(t, sp1), 0).Children(func() {
 			if iconButton(c.Key("rail-off"), icons.SidebarMinimalistic, i18n.T("Show sidebar")).Clicked() {
-				a.setRail(false)
+				actions.setRail(false)
 			}
 		})
 	}
@@ -156,19 +142,17 @@ func (a *app) navRail(c *ui.Context) {
 	// shorter one scrolls the list, with a fade at its foot as the
 	// sidebar's.
 	ui.Column(c).AlignItems(ui.Center).Padding(px(t, 2), 0).Shrink(0).Children(func() {
-		a.railButton(c, "rail-search", icons.Magnifer, i18n.T("Command palette"), i18n.T("Command palette")+" (⌘K)", false, "", a.openPalette)
+		railButton(c, "rail-search", icons.Magnifer, i18n.T("Command palette"), i18n.T("Command palette")+" (⌘K)", false, "", actions.openPalette)
 	})
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 			ui.Column(c).AlignItems(ui.Center).Padding(px(t, 2), 0).Children(func() {
-				for gi, g := range navGroups {
+				for gi, g := range state.Groups {
 					if gi > 0 {
 						ui.Box(c).Height(1).Width(px(t, 20)).Background(k.Line).Margin(px(t, 3), 0)
 					}
-					for _, p := range g.pages {
-						if !a.pageHidden(p.path) {
-							a.railItem(c, p.path, p.icon, pageTitle(p.path))
-						}
+					for _, p := range g.Pages {
+						railItem(c, p, state, notices, actions, noticeActs, local)
 					}
 				}
 			})
@@ -180,37 +164,37 @@ func (a *app) navRail(c *ui.Context) {
 // railItem is a page's icon in the rail. Settings' has a dot while there
 // are notifications: then it opens them, with Settings under them
 // (shell_notices.go).
-func (a *app) railItem(c *ui.Context, path string, ic icons.Icon, title string) {
-	tip := title
-	if k := pageKeys(path); k != "" {
-		tip += " (" + k + ")"
+func railItem(c *ui.Context, p navPageViewState, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI) {
+	ic := navIcon(p.Path)
+	tip := p.Title
+	if p.Keys != "" {
+		tip += " (" + p.Keys + ")"
 	}
-	if path != settingsPath {
-		selected := !a.settingsOpen && section(a.router.Path()) == path
-		a.railButton(c, "rail"+path, ic, title, tip, selected, a.navBadge(path), func() { a.navigate(path) })
+	if p.Path != settingsPath {
+		railButton(c, "rail"+p.Path, ic, p.Title, tip, p.Selected, p.Badge, func() { actions.navigate(p.Path) })
 		return
 	}
 	tip, dot := tip+" (⌘,)", ""
-	if n := len(a.notices); n > 0 {
-		tip = i18n.N(n, "%d notification", "%d notifications", n) + " · " + tip
+	if state.NoticesCount > 0 {
+		tip = state.NoticesLabel + " · " + tip
 		dot = "notices"
 	}
-	b := a.railButton(c, "rail"+path, ic, title, tip, a.settingsOpen || a.noticesOpen, dot, func() {
-		if len(a.notices) > 0 {
-			a.noticesOpen = !a.noticesOpen
+	b := railButton(c, "rail"+p.Path, ic, p.Title, tip, state.SettingsSelected || *local.noticesOpen, dot, func() {
+		if state.NoticesCount > 0 {
+			*local.noticesOpen = !*local.noticesOpen
 			return
 		}
-		a.navigate(settingsPath)
+		actions.navigate(settingsPath)
 	})
-	if len(a.notices) == 0 {
-		a.noticesOpen = false
+	if state.NoticesCount == 0 {
+		*local.noticesOpen = false
 	}
-	ui.Popover(c, b, &a.noticesOpen, func() { a.noticePopover(c) })
+	ui.Popover(c, b, local.noticesOpen, func() { noticePopover(c, notices, noticeActs) })
 }
 
 // railButton is a button of the rail: Bold on the pressed face while
 // selected, a dot for a badge.
-func (a *app) railButton(c *ui.Context, key string, ic icons.Icon, label, tip string, selected bool, badge string, click func()) ui.Element {
+func railButton(c *ui.Context, key string, ic icons.Icon, label, tip string, selected bool, badge string, click func()) ui.Element {
 	t := c.Theme()
 	k := tok(t)
 	b := ui.ButtonBase(c.Key(key)).Size(px(t, 36), px(t, 30)).Radius(px(t, radiusControl)).Center().Tooltip(tip).Label(label)
@@ -240,15 +224,15 @@ func (a *app) railButton(c *ui.Context, key string, ic icons.Icon, label, tip st
 	return b
 }
 
-func (a *app) sidebar(c *ui.Context) {
+func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c).Height(titleBarHeight).Shrink(0).DragWindow().AlignItems(ui.Center).Justify(ui.End).Padding(0, px(t, sp2), 0, 0).Children(func() {
 		if iconButton(c.Key("rail-on"), icons.SidebarMinimalistic, i18n.T("Show icons only")).Clicked() {
-			a.setRail(true)
+			actions.setRail(true)
 		}
 	})
-	a.sidebarSearch(c)
+	sidebarSearch(c, actions)
 	// The sidebar's own theme: icons in the secondary grey, the chosen
 	// page's in the text colour (MyGo draws a sidebar item's icon in the
 	// accent, and the chosen one's in the accent's text colour).
@@ -259,58 +243,56 @@ func (a *app) sidebar(c *ui.Context) {
 	chosen.Accent = k.Text
 	// Settings' item is the chosen one while its dialog shows, over the
 	// page, and the page's again once it closes.
-	if a.settingsOpen {
-		a.nav = settingsPath
-	} else if a.nav == settingsPath {
-		a.nav = section(a.router.Path())
+	if state.SettingsSelected {
+		*local.nav = settingsPath
+	} else if *local.nav == settingsPath {
+		*local.nav = state.Current
 	}
 	// The list scrolls: a fade at its foot says there is more below.
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		ui.Sidebar(c, &a.nav, func() {
-			for _, g := range navGroups {
+		ui.Sidebar(c, local.nav, func() {
+			for _, g := range state.Groups {
 				items := func() {
-					for _, p := range g.pages {
-						if a.pageHidden(p.path) {
-							continue
-						}
-						sel := p.path == a.nav
+					for _, p := range g.Pages {
+						sel := p.Path == *local.nav
 						if sel {
 							c.SetTheme(&chosen)
 						} else {
 							c.SetTheme(&side)
 						}
-						item := ui.SidebarItem(c, p.path, p.icon.Get(sel), pageTitle(p.path)).Padding(px(t, 4), px(t, sp2))
+						item := ui.SidebarItem(c, p.Path, navIcon(p.Path).Get(sel), p.Title).Padding(px(t, 4), px(t, sp2))
 						c.SetTheme(t)
 						if sel {
 							item.Background(k.Pressed).FontWeight(600)
 						} else {
 							item.TextColor(k.G[8])
 						}
-						if b := a.navBadge(p.path); b != "" {
-							item.Children(func() { ui.Badge(c, b) })
+						if p.Badge != "" {
+							item.Children(func() { ui.Badge(c, p.Badge) })
 						}
 					}
 				}
-				if g.id == "" {
+				if g.ID == "" {
 					items()
 					continue
 				}
-				ui.SidebarSection(c.Key("nav-"+g.id), groupTitle(g.id), a.sectionOpen(g.id), items).Margin(px(t, 2), 0, 0, 0)
+				ui.SidebarSection(c.Key("nav-"+g.ID), g.Title, navSectionOpen(local, state, g.ID), items).Margin(px(t, 2), 0, 0, 0)
 			}
 		}).Grow(1).MinHeight(0).Background(ui.Transparent).Padding(0, px(t, 10), px(t, sp2)).Label(i18n.T("Sections")).OnChange(func() {
-			a.navigate(a.nav)
+			actions.navigate(*local.nav)
 		})
 		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 20)).Gradient(k.Sidebar.Alpha(0), k.Sidebar, 180).PassThrough()
 	})
-	a.saveClosedSections()
 	// The notifications, at the foot (shell_notices.go).
-	if len(a.notices) > 0 {
-		ui.Column(c).Shrink(0).Padding(px(t, sp1), px(t, 10), px(t, sp2)).Children(func() { a.noticeStack(c) })
+	if len(notices) > 0 {
+		ui.Column(c).Shrink(0).Padding(px(t, sp1), px(t, 10), px(t, sp2)).Children(func() {
+			noticeStack(c, notices, noticeActs)
+		})
 	}
 }
 
 // sidebarSearch is the sidebar's search field: it opens the palette.
-func (a *app) sidebarSearch(c *ui.Context) {
+func sidebarSearch(c *ui.Context, actions navActions) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Column(c).Shrink(0).Padding(0, px(t, 10), px(t, sp2)).Children(func() {
@@ -325,7 +307,7 @@ func (a *app) sidebarSearch(c *ui.Context) {
 			ui.Text(c, "⌘K").FontSize(px(t, fsMicro)).TextColor(k.Text3)
 		})
 		if b.Clicked() {
-			a.openPalette()
+			actions.openPalette()
 		}
 	})
 }

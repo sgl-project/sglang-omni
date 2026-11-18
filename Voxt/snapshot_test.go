@@ -270,7 +270,7 @@ func snapshotsMain(t *testing.T, out string) {
 		save("settings-about-releases")
 		a.settingsOpen = false
 		a.navigate("/home")
-		a.relOpen = true // checking: the answer has not come yet
+		a.updUI.relOpen = true // checking: the answer has not come yet
 		save("release-checking")
 		a.checkForUpdates()
 		save("release-available")
@@ -283,7 +283,7 @@ func snapshotsMain(t *testing.T, out string) {
 		})
 		a.checkForUpdates()
 		save("release-failed")
-		a.relOpen = false
+		a.updUI.relOpen = false
 		srv.set(func(s *ghServer) { s.status, s.list = 0, newerReleases })
 		a.clearNotices()
 		a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck, s.Updates.Dismissed = time.Time{}, "" })

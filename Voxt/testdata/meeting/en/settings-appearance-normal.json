@@ -1,0 +1,104 @@
+{
+  "name": "settings-appearance-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/appearance",
+    "shown_path": "/settings/appearance",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "appearance": {
+      "theme": 0,
+      "theme_options": [
+        "System",
+        "Light",
+        "Dark"
+      ],
+      "theme_values": [
+        "system",
+        "light",
+        "dark"
+      ],
+      "scale": 1,
+      "scale_options": [
+        "90%",
+        "100%",
+        "110%",
+        "125%"
+      ],
+      "scale_values": [
+        0.9,
+        1,
+        1.1,
+        1.25
+      ],
+      "sidebar": 0,
+      "sidebar_options": [
+        "Automatic",
+        "Names and icons",
+        "Icons only"
+      ],
+      "sidebar_values": [
+        "automatic",
+        "names",
+        "icons"
+      ],
+      "reduce_motion": false
+    }
+  }
+}

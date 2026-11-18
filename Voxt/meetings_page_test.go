@@ -90,14 +90,14 @@ func TestMeetingsPageSearchPaginationEmpty(t *testing.T) {
 	}
 
 	a.navigate("/meetings")
-	a.mv.query = "budget"
-	a.mv.page = 0
+	a.mvUI.query = "budget"
+	a.mvUI.page = 0
 	a.loadMeetings()
 	frames(tt)
 	if !hasExact(tt, "sync 3") || hasExact(tt, "sync 20") {
 		t.Fatalf("search: %q", firstTexts(tt))
 	}
-	a.mv.query = "missing-xyz"
+	a.mvUI.query = "missing-xyz"
 	a.loadMeetings()
 	frames(tt)
 	if !has(tt, "Nothing matches") {
@@ -165,9 +165,13 @@ func TestMeetingDetailFollowsRecording(t *testing.T) {
 		t.Fatalf("details: %q", firstTexts(tt))
 	}
 	first.Translation = "第一行"
+	firstRow := &a.mv.detailView.Segments[0]
 	snap.Segments = []meeting.Segment{first, {ID: "s1", StoreIdx: 1, Source: meeting.SourceMic, Start: 2 * time.Second, End: 3 * time.Second, Text: "second line", Final: true}}
 	a.meetingChanged(snap)
 	frames(tt)
+	if &a.mv.detailView.Segments[0] != firstRow {
+		t.Fatal("live update rebuilt the transcript")
+	}
 	if !has(tt, "second line") || !has(tt, "第一行") {
 		t.Fatalf("the details did not follow the meeting: %q", firstTexts(tt))
 	}

@@ -1,0 +1,376 @@
+{
+  "name": "settings-language-models-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/language-models",
+    "shown_path": "/settings/language-models",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "language_models": {
+      "wait": {
+        "value": "",
+        "options": [
+          {
+            "title": "Automatic",
+            "value": ""
+          },
+          {
+            "title": "1 minute",
+            "value": "1m"
+          },
+          {
+            "title": "2 minutes",
+            "value": "2m"
+          },
+          {
+            "title": "5 minutes",
+            "value": "5m"
+          },
+          {
+            "title": "10 minutes",
+            "value": "10m"
+          },
+          {
+            "title": "30 minutes",
+            "value": "30m"
+          },
+          {
+            "title": "60 minutes",
+            "value": "60m"
+          },
+          {
+            "title": "No limit",
+            "value": "none"
+          }
+        ],
+        "selected": "Automatic",
+        "token": "\u0000en"
+      },
+      "cards": {
+        "kind": "llm",
+        "groups": [
+          {
+            "key": "remote-here",
+            "title": "On this Mac",
+            "caption": "Free, and the text stays on this Mac.",
+            "cards": [
+              {
+                "kind": "llm",
+                "id": "ollama",
+                "account": "llm.ollama",
+                "name": "Ollama",
+                "model": "qwen3",
+                "where": "On this Mac",
+                "configured": false,
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "omlx",
+                "account": "llm.omlx",
+                "name": "oMLX",
+                "model": "Model not chosen",
+                "where": "On this Mac",
+                "configured": false,
+                "missing": "model",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "lmstudio",
+                "account": "llm.lmstudio",
+                "name": "LM Studio",
+                "model": "Model not chosen",
+                "where": "On this Mac",
+                "configured": false,
+                "missing": "model",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              }
+            ]
+          },
+          {
+            "key": "remote-online",
+            "title": "Online services",
+            "cards": [
+              {
+                "kind": "llm",
+                "id": "anthropic",
+                "account": "llm.anthropic",
+                "name": "Anthropic",
+                "model": "claude-sonnet-4-6",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "gemini",
+                "account": "llm.gemini",
+                "name": "Google Gemini",
+                "model": "gemini-2.5-flash",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "openai",
+                "account": "llm.openai",
+                "name": "OpenAI",
+                "model": "gpt-4.1-mini",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "deepseek",
+                "account": "llm.deepseek",
+                "name": "DeepSeek",
+                "model": "deepseek-flash",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "openrouter",
+                "account": "llm.openrouter",
+                "name": "OpenRouter",
+                "model": "openai/gpt-4.1-mini",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "xai",
+                "account": "llm.xai",
+                "name": "xAI",
+                "model": "grok-4-1-fast-non-reasoning",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "zhipu",
+                "account": "llm.zhipu",
+                "name": "Zhipu GLM",
+                "model": "glm-4.5-air",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "volcengine",
+                "account": "llm.volcengine",
+                "name": "Volcengine Ark (Doubao)",
+                "model": "doubao-seed-2-0-pro-260215",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "moonshot",
+                "account": "llm.moonshot",
+                "name": "Moonshot (Kimi)",
+                "model": "kimi-k2.5",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "minimax",
+                "account": "llm.minimax",
+                "name": "MiniMax",
+                "model": "MiniMax-M2.5",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "dashscope",
+                "account": "llm.dashscope",
+                "name": "Qwen (Alibaba Cloud Model Studio)",
+                "model": "qwen-plus",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "stepfun",
+                "account": "llm.stepfun",
+                "name": "StepFun",
+                "model": "step-3.5-flash",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "mimo",
+                "account": "llm.mimo",
+                "name": "Xiaomi MiMo",
+                "model": "mimo-v2.5-pro",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "codex",
+                "account": "llm.codex",
+                "name": "ChatGPT (Codex)",
+                "model": "gpt-6.1-sol",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "custom",
+                "account": "llm.custom",
+                "name": "Custom (OpenAI-compatible)",
+                "model": "Model not chosen",
+                "where": "Remote",
+                "configured": false,
+                "missing": "endpoint",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -17,6 +17,18 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+func TestSettingsSectionNavigation(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/general")
+	if err := tt.ClickControl("Audio"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.shownPath() != "/settings/audio" || !has(tt, "Microphones") {
+		t.Fatalf("section: path %q, texts %q", a.shownPath(), firstTexts(tt))
+	}
+}
+
 func TestOverlayStyleSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/overlay")

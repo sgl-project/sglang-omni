@@ -1,0 +1,376 @@
+{
+  "name": "settings-language-models-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/language-models",
+    "shown_path": "/settings/language-models",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "language_models": {
+      "wait": {
+        "value": "",
+        "options": [
+          {
+            "title": "自动",
+            "value": ""
+          },
+          {
+            "title": "1 分钟",
+            "value": "1m"
+          },
+          {
+            "title": "2 分钟",
+            "value": "2m"
+          },
+          {
+            "title": "5 分钟",
+            "value": "5m"
+          },
+          {
+            "title": "10 分钟",
+            "value": "10m"
+          },
+          {
+            "title": "30 分钟",
+            "value": "30m"
+          },
+          {
+            "title": "60 分钟",
+            "value": "60m"
+          },
+          {
+            "title": "不限",
+            "value": "none"
+          }
+        ],
+        "selected": "自动",
+        "token": "\u0000zh-Hans"
+      },
+      "cards": {
+        "kind": "llm",
+        "groups": [
+          {
+            "key": "remote-here",
+            "title": "本机",
+            "caption": "免费，文字不离开这台 Mac。",
+            "cards": [
+              {
+                "kind": "llm",
+                "id": "ollama",
+                "account": "llm.ollama",
+                "name": "Ollama",
+                "model": "qwen3",
+                "where": "本机",
+                "configured": false,
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "omlx",
+                "account": "llm.omlx",
+                "name": "oMLX",
+                "model": "未选择模型",
+                "where": "本机",
+                "configured": false,
+                "missing": "model",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "lmstudio",
+                "account": "llm.lmstudio",
+                "name": "LM Studio",
+                "model": "未选择模型",
+                "where": "本机",
+                "configured": false,
+                "missing": "model",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              }
+            ]
+          },
+          {
+            "key": "remote-online",
+            "title": "在线服务",
+            "cards": [
+              {
+                "kind": "llm",
+                "id": "anthropic",
+                "account": "llm.anthropic",
+                "name": "Anthropic",
+                "model": "claude-sonnet-4-6",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "gemini",
+                "account": "llm.gemini",
+                "name": "Google Gemini",
+                "model": "gemini-2.5-flash",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "openai",
+                "account": "llm.openai",
+                "name": "OpenAI",
+                "model": "gpt-4.1-mini",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "deepseek",
+                "account": "llm.deepseek",
+                "name": "DeepSeek",
+                "model": "deepseek-flash",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "openrouter",
+                "account": "llm.openrouter",
+                "name": "OpenRouter",
+                "model": "openai/gpt-4.1-mini",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "xai",
+                "account": "llm.xai",
+                "name": "xAI",
+                "model": "grok-4-1-fast-non-reasoning",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "zhipu",
+                "account": "llm.zhipu",
+                "name": "智谱 GLM",
+                "model": "glm-4.5-air",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "volcengine",
+                "account": "llm.volcengine",
+                "name": "火山方舟（豆包）",
+                "model": "doubao-seed-2-0-pro-260215",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "moonshot",
+                "account": "llm.moonshot",
+                "name": "Kimi（月之暗面）",
+                "model": "kimi-k2.5",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "minimax",
+                "account": "llm.minimax",
+                "name": "MiniMax",
+                "model": "MiniMax-M2.5",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "dashscope",
+                "account": "llm.dashscope",
+                "name": "通义千问（阿里云百炼）",
+                "model": "qwen-plus",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "stepfun",
+                "account": "llm.stepfun",
+                "name": "阶跃星辰",
+                "model": "step-3.5-flash",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "mimo",
+                "account": "llm.mimo",
+                "name": "小米 MiMo",
+                "model": "mimo-v2.5-pro",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "codex",
+                "account": "llm.codex",
+                "name": "ChatGPT (Codex)",
+                "model": "gpt-6.1-sol",
+                "where": "远程",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "llm",
+                "id": "custom",
+                "account": "llm.custom",
+                "name": "自定义（OpenAI 兼容）",
+                "model": "未选择模型",
+                "where": "远程",
+                "configured": false,
+                "missing": "endpoint",
+                "status": "neutral",
+                "status_text": "未设置",
+                "key_text": "…",
+                "key_status": "neutral"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

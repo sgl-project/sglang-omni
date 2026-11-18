@@ -168,11 +168,11 @@ func TestAnswerCardStates(t *testing.T) {
 			for _, st := range cardSteps() {
 				st.apply(a)
 				a.overlaySync()
-				v := a.cardNow()
+				v := a.cachedCard()
 				if a.ov.mode != ovAnswer || !a.ov.shown || a.ov.passThrough || a.ov.w != layout.AnswerW {
 					t.Fatalf("%s: %s shown %v pass %v %d wide", st.name, a.ov.mode, a.ov.shown, a.ov.passThrough, a.ov.w)
 				}
-				body, _ := a.cardBodyHeight(v)
+				body, _ := a.cardBodyHeight(&v)
 				_, line := guessText(ovSized{"x", layout.CardTextSize, layout.CardTextWeight, layout.CardBodyW})
 				switch st.body {
 				case 0:
@@ -192,11 +192,11 @@ func TestAnswerCardStates(t *testing.T) {
 				if st.msg {
 					want += layout.CardMsgGap + layout.CardMsgH
 				}
-				if a.ov.h != want || (v.msg != "") != st.msg {
-					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.msg)
+				if a.ov.h != want || (v.Message != "") != st.msg {
+					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.Message)
 				}
 				anchored(t, st.name, a.prefs.Overlay, a.ov.frame)
-				got := []bool{v.canInsert, v.canCopy, v.canFollowUp, v.canStop, v.canRetry, v.canLang, v.busy, v.conversation, v.thinks}
+				got := []bool{v.CanInsert, v.CanCopy, v.CanFollowUp, v.CanStop, v.CanRetry, v.CanLanguage, v.Busy, v.Conversation, v.ShowThinking}
 				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo, st.think}
 				for i := range got {
 					if got[i] != exp[i] {
@@ -291,7 +291,7 @@ func TestAnswerCardMarkdown(t *testing.T) {
 	snap(a, long)
 	a.overlaySync()
 	frames(tt)
-	if body, _ := a.cardBodyHeight(a.cardNow()); body != layout.CardBodyMax {
+	if body, _ := a.cardBodyHeight(a.cachedCardRef()); body != layout.CardBodyMax {
 		t.Errorf("a long Markdown answer is %d high, not %d", body, layout.CardBodyMax)
 	}
 }
@@ -308,8 +308,8 @@ func TestAnswerCardInk(t *testing.T) {
 		st.apply(a)
 		a.overlaySync()
 		img := renderOverlay(t, a)
-		v := a.cardNow()
-		k, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, v))
+		v := a.cachedCard()
+		k, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, &v))
 		for _, b := range bad {
 			t.Errorf("%s: %s", st.name, b)
 		}
@@ -317,8 +317,8 @@ func TestAnswerCardInk(t *testing.T) {
 		if st.body == 0 && !st.msg && a.ov.h > layout.CardChrome+24 {
 			t.Errorf("%s: one line of text, the card %d high", st.name, a.ov.h)
 		}
-		if scrolls := a.ov.cardScroll.MaxY > 0; scrolls != (st.body == layout.CardBodyMax) && !v.conversation {
-			t.Errorf("%s: scrolls %v (%v)", st.name, scrolls, a.ov.cardScroll.MaxY)
+		if scrolls := a.ov.ui.cardScroll.MaxY > 0; scrolls != (st.body == layout.CardBodyMax) && !v.Conversation {
+			t.Errorf("%s: scrolls %v (%v)", st.name, scrolls, a.ov.ui.cardScroll.MaxY)
 		}
 		if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
 			var b bytes.Buffer
@@ -352,8 +352,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// so); the card does not move.
 	card := a.ov.frame
 	click(t, tt, "Translate into")
-	if !a.answer.langOpen || !a.ov.lang.shown || a.ov.frame != card {
-		t.Fatalf("menu: open %v shown %v, card %+v (was %+v)", a.answer.langOpen, a.ov.lang.shown, a.ov.frame, card)
+	if !a.answer.ui.langOpen || !a.ov.lang.shown || a.ov.frame != card {
+		t.Fatalf("menu: open %v shown %v, card %+v (was %+v)", a.answer.ui.langOpen, a.ov.lang.shown, a.ov.frame, card)
 	}
 	mt := hudTester(a.langMenuView, a.ov.lang.frame.Width, a.ov.lang.frame.Height)
 	frames(mt)
@@ -366,7 +366,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames(mt)
-	if a.answer.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is set up." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
+	if a.answer.ui.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is set up." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
 		t.Errorf("another language: %+v, menu %v", a.answer, a.ov.lang.shown)
 	}
 	// Escape closes the menu, not the card.
@@ -374,8 +374,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	a.overlaySync()
 	click(t, tt, "Translate into")
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
-	if a.answer.langOpen || a.ov.lang.shown || !a.answer.open {
-		t.Errorf("Escape on the menu: open %v, card %v", a.answer.langOpen, a.answer.open)
+	if a.answer.ui.langOpen || a.ov.lang.shown || !a.answer.open {
+		t.Errorf("Escape on the menu: open %v, card %v", a.answer.ui.langOpen, a.answer.open)
 	}
 	// Copy: the mark, then Copy again.
 	click(t, tt, "Copy")
@@ -412,7 +412,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if !a.answer.open || a.ov.mode != ovAnswer || a.followUp != "" || a.answer.text == "" {
 		t.Errorf("escape on a follow-up: %s %+v", a.ov.mode, a.answer)
 	}
-	if v := a.cardNow(); !v.conversation || !v.canFollowUp || len(v.bubbles) != 2 {
+	if v := a.cachedCard(); !v.Conversation || !v.CanFollowUp || len(cardBubblesForTest(v)) != 2 {
 		t.Errorf("after the cancel %+v", v)
 	}
 	// An answer's bubble shows Copy under the pointer.
@@ -430,11 +430,11 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// Its Copy: 8 from the bubble's top right corner, 22 high.
 	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW-8-10, title.Y-layout.BubblePadY+8+11)
 	frames(tt)
-	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.bubbleCopied == "" {
+	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.ui.bubbleCopied == "" {
 		t.Errorf("bubble copied %q", tt.Clipboard())
 	}
 	ft.advance(bubbleMark)
-	if a.ov.bubbleCopied != "" {
+	if a.ov.ui.bubbleCopied != "" {
 		t.Error("the bubble's mark stays")
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
@@ -458,10 +458,10 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 	for _, tc := range inputs {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
-			v := cardView{conversation: true, size: layout.CardSizes[0], bubbles: []cardBubble{{user: true, title: "You", text: tc.text}}}
-			block := cardBlocks(v)[0]
+			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Title: "You", Text: tc.text}}}
+			local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 			tt := hudTester(func(c *ui.Context) {
-				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { a.cardBlockView(c, block) })
+				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, card, card.Blocks[0], 0, a, local, nil) })
 			}, layout.AnswerW, 500)
 			frames(tt)
 			title, ok := tt.Find("You")
@@ -491,9 +491,9 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 				turns: []compose.Turn{{Instruction: tc.text, Answer: compose.Answer{Content: "Done."}}}}
 			a.overlaySync()
 			renderOverlay(t, a)
-			body, _ := a.cardBodyHeight(a.cardNow())
-			if body != layout.CardBodyMax || a.ov.cardScroll.MaxY <= 0 {
-				t.Errorf("long input body %d high, scroll limit %v", body, a.ov.cardScroll.MaxY)
+			body, _ := a.cardBodyHeight(a.cachedCardRef())
+			if body != layout.CardBodyMax || a.ov.ui.cardScroll.MaxY <= 0 {
+				t.Errorf("long input body %d high, scroll limit %v", body, a.ov.ui.cardScroll.MaxY)
 			}
 		})
 	}
@@ -579,13 +579,13 @@ func TestLanguageMenuPlace(t *testing.T) {
 			}
 			// Another app in front: it goes; the card stays.
 			a.helperNotified(appActivated(proto.App{PID: 9, BundleID: "com.apple.Notes", Name: "Notes"}))
-			if a.ov.lang.shown || a.answer.langOpen || !a.answer.open {
+			if a.ov.lang.shown || a.answer.ui.langOpen || !a.answer.open {
 				t.Errorf("another app: menu %v", a.ov.lang.shown)
 			}
 			// The card going takes it.
 			a.toggleLangMenu()
 			a.closeAnswer()
-			if a.ov.lang.shown || a.answer.langOpen {
+			if a.ov.lang.shown || a.answer.ui.langOpen {
 				t.Error("the menu stays without the card")
 			}
 		})
@@ -694,7 +694,7 @@ func TestCardSizes(t *testing.T) {
 		size layout.CardSize
 	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
 		a.answer = answerCard{open: true, kind: c.kind, text: long}
-		want := layout.CardChrome + a.cardBodyMax(a.cardNow())
+		want := layout.CardChrome + a.cardBodyMax(a.cachedCardRef())
 		if w, h, _ := a.cardSize(); w != c.size.W || h != want {
 			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, want)
 		}
@@ -703,7 +703,7 @@ func TestCardSizes(t *testing.T) {
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: long}
 	a.overlaySync()
 	img := renderOverlay(t, a)
-	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cardNow())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
+	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cachedCardRef())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
 		t.Errorf("the large card, %d wide: %v", a.ov.w, bad)
 	}
 	if dir := os.Getenv("VOXTNEW_INK"); dir != "" {

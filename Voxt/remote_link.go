@@ -157,6 +157,11 @@ type remoteState struct {
 	provDlg   providerDialog
 	chatgpt   *codexauth.Session // remote_chatgpt.go
 	chatLogin chatgptLogin
+	// Input-keyed display caches keep repeated build passes from cloning
+	// provider catalogs and reconstructing every DTO.
+	pageCache  remoteViewCacheEntry
+	cardsCache map[local.Kind]remoteCardsCacheEntry
+	debugCache llmDebugCacheEntry
 }
 
 // providerTest is a connection test running or done.

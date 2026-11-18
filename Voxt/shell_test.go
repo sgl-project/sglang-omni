@@ -102,6 +102,32 @@ func TestPaletteFitsTheWindow(t *testing.T) {
 	}
 }
 
+func TestPalettePopulatesItsFirstFrame(t *testing.T) {
+	for _, name := range []string{"keyboard", "sidebar"} {
+		t.Run(name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			var counts []int
+			var opens []bool
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.view(c)
+				counts = append(counts, len(a.paletteView.Items))
+				opens = append(opens, a.paletteOpen)
+			}, windowWidth, windowHeight)
+			before := len(counts)
+			if name == "keyboard" {
+				tt.Key(ui.Cmd, ui.KeyK)
+			} else if err := tt.Click("Command palette"); err != nil {
+				t.Fatal(err)
+			}
+			for i, open := range opens[before:] {
+				if open && counts[before+i] == 0 {
+					t.Fatalf("the palette's first open frame has no commands: counts %v, opens %v", counts, opens)
+				}
+			}
+		})
+	}
+}
+
 func TestPaletteAndDeepLinks(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.Key(ui.Cmd, ui.KeyK)

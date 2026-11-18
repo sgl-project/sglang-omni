@@ -1,0 +1,89 @@
+{
+  "name": "settings-privacy-clear-confirmation",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/privacy",
+    "shown_path": "/settings/privacy",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "privacy": {
+      "online": "Otherwise, Voxt goes online only to check for updates, download models and read its announcements. Reading them sends nothing about you.",
+      "send_window": false,
+      "send_clipboard": false,
+      "keep_history": true,
+      "keep_audio": false,
+      "keep_audio_enabled": true,
+      "log_text": false,
+      "clear_history_ask": true,
+      "history_access": {
+        "on": true,
+        "selection": true,
+        "ask": false,
+        "list_open": false,
+        "show_last_read": true,
+        "last_read": "Jan 2 15:03 · 1 entry · daily-editor (fixture-shell)",
+        "command": "/fixture/Voxt history export --day \"$(date +%F)\"",
+        "read_lines": [
+          "Jan 2 15:03 · 1 entry · daily-editor (fixture-shell)",
+          "Jan 2 15:02 · Status check · Unknown program"
+        ]
+      }
+    }
+  }
+}

@@ -71,8 +71,14 @@ func TestRedoDropsOldHighlights(t *testing.T) {
 	a.overlaySync()
 	a.answer.redo = "t2"
 	snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranscribe, State: session.Composing, Card: true, Draft: "短一些。"})
-	if v := a.cardNow(); v.text != "短一些。" || v.highlights != nil {
-		t.Errorf("the redo keeps the old spans over %q: %+v", v.text, v.highlights)
+	card := a.cachedCard()
+	if text := cardTextForTest(card); text != "短一些。" {
+		t.Errorf("the redo shows %q", text)
+	}
+	for index := 0; index < sessionCardBlockCount(&card); index++ {
+		if block := sessionCardBlockAt(&card, index); block.Highlights != nil {
+			t.Errorf("the redo keeps the old spans over %q: %+v", block.Text, block.Highlights)
+		}
 	}
 	a.overlaySync()
 	tt := cardTester(t, a)

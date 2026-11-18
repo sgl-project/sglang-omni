@@ -1,0 +1,262 @@
+{
+  "name": "card-cut-off",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 16,
+    "session_id": "t4",
+    "state": "done",
+    "problem_code": "truncated",
+    "mode": "answer",
+    "pill": {
+      "kind": "translate",
+      "title": "翻译",
+      "working_label": "正在翻译…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "t4",
+      "kind": "translate",
+      "title": "翻译",
+      "message": "模型到了长度上限，回答可能不完整。",
+      "target_name": "Arc",
+      "language": "zh-Hans",
+      "language_label": "简体中文",
+      "thinking": {},
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "insert_tooltip": "插入到 Arc",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "answer",
+          "kind": "body",
+          "turn": 0,
+          "text": "goroutine 是由 Go 运行时管理的",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": true,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    },
+    "language_menu": {
+      "kind": "language",
+      "label": "翻译成",
+      "options": [
+        {
+          "language": "en",
+          "thinking": {},
+          "label": "英语",
+          "selected": false
+        },
+        {
+          "language": "zh-Hans",
+          "thinking": {},
+          "label": "简体中文",
+          "selected": true
+        },
+        {
+          "language": "zh-Hant",
+          "thinking": {},
+          "label": "繁体中文",
+          "selected": false
+        },
+        {
+          "language": "ja",
+          "thinking": {},
+          "label": "日语",
+          "selected": false
+        },
+        {
+          "language": "ko",
+          "thinking": {},
+          "label": "韩语",
+          "selected": false
+        },
+        {
+          "language": "es",
+          "thinking": {},
+          "label": "西班牙语",
+          "selected": false
+        },
+        {
+          "language": "fr",
+          "thinking": {},
+          "label": "法语",
+          "selected": false
+        },
+        {
+          "language": "de",
+          "thinking": {},
+          "label": "德语",
+          "selected": false
+        },
+        {
+          "language": "it",
+          "thinking": {},
+          "label": "意大利语",
+          "selected": false
+        },
+        {
+          "language": "pt",
+          "thinking": {},
+          "label": "葡萄牙语",
+          "selected": false
+        },
+        {
+          "language": "ru",
+          "thinking": {},
+          "label": "俄语",
+          "selected": false
+        },
+        {
+          "language": "nl",
+          "thinking": {},
+          "label": "荷兰语",
+          "selected": false
+        },
+        {
+          "language": "tr",
+          "thinking": {},
+          "label": "土耳其语",
+          "selected": false
+        },
+        {
+          "language": "pl",
+          "thinking": {},
+          "label": "波兰语",
+          "selected": false
+        },
+        {
+          "language": "uk",
+          "thinking": {},
+          "label": "乌克兰语",
+          "selected": false
+        },
+        {
+          "language": "ar",
+          "thinking": {},
+          "label": "阿拉伯语",
+          "selected": false
+        },
+        {
+          "language": "he",
+          "thinking": {},
+          "label": "希伯来语",
+          "selected": false
+        },
+        {
+          "language": "hi",
+          "thinking": {},
+          "label": "印地语",
+          "selected": false
+        },
+        {
+          "language": "th",
+          "thinking": {},
+          "label": "泰语",
+          "selected": false
+        },
+        {
+          "language": "vi",
+          "thinking": {},
+          "label": "越南语",
+          "selected": false
+        },
+        {
+          "language": "id",
+          "thinking": {},
+          "label": "印度尼西亚语",
+          "selected": false
+        },
+        {
+          "language": "ms",
+          "thinking": {},
+          "label": "马来语",
+          "selected": false
+        }
+      ],
+      "selected_index": 1
+    }
+  }
+}

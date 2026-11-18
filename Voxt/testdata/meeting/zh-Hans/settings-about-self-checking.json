@@ -1,0 +1,109 @@
+{
+  "name": "settings-about-self-checking",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/about",
+    "shown_path": "/settings/about",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "about": {
+      "rows": [
+        {
+          "title": "Voxt",
+          "value": "fixture-version"
+        },
+        {
+          "title": "辅助进程",
+          "value": "fixture-helper-version"
+        },
+        {
+          "title": "辅助进程协议",
+          "value": "1"
+        },
+        {
+          "title": "系统",
+          "value": "Fixture OS"
+        },
+        {
+          "title": "芯片",
+          "value": "Fixture Chip"
+        },
+        {
+          "title": "内存",
+          "value": "16 GB"
+        }
+      ],
+      "self_checking": true,
+      "checks": null
+    },
+    "updates": {
+      "available": false,
+      "known": false,
+      "enabled": false,
+      "check_only": false,
+      "bundle_updated": false,
+      "auto_check": false,
+      "auto_install": false,
+      "beta": false,
+      "check_description": "",
+      "automatic_description": "",
+      "beta_note": ""
+    }
+  }
+}

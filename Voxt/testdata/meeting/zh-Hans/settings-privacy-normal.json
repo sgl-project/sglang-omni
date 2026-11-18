@@ -1,0 +1,89 @@
+{
+  "name": "settings-privacy-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/privacy",
+    "shown_path": "/settings/privacy",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "privacy": {
+      "online": "除此之外，Voxt 只在检查更新、下载模型和读取公告时联网，读取公告不会发送你的任何信息。",
+      "send_window": true,
+      "send_clipboard": true,
+      "keep_history": true,
+      "keep_audio": true,
+      "keep_audio_enabled": true,
+      "log_text": false,
+      "clear_history_ask": false,
+      "history_access": {
+        "on": true,
+        "selection": true,
+        "ask": false,
+        "list_open": false,
+        "show_last_read": true,
+        "last_read": "1月2日 15:03 · 1 条记录 · daily-editor (fixture-shell)",
+        "command": "/fixture/Voxt history export --day \"$(date +%F)\"",
+        "read_lines": [
+          "1月2日 15:03 · 1 条记录 · daily-editor (fixture-shell)",
+          "1月2日 15:02 · 状态查询 · 未知程序"
+        ]
+      }
+    }
+  }
+}

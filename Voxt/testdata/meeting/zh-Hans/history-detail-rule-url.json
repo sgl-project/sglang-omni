@@ -1,0 +1,142 @@
+{
+  "name": "history-detail-rule-url",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "1 条记录",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-inserted",
+        "title": "Weekly plan",
+        "failed_title": false,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": true,
+        "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
+        "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "重新识别",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "用保存的录音重新识别，不会插入文字。"
+        },
+        "marks": null
+      }
+    ],
+    "detail": {
+      "id": "history-inserted",
+      "error_text": "",
+      "error_detail": "",
+      "error_warning": false,
+      "can_reveal": true,
+      "retry": {
+        "available": true,
+        "wanted": false,
+        "active": false,
+        "label": "重新识别",
+        "disabled": false,
+        "stage": "",
+        "stage_text": "",
+        "tooltip": "用保存的录音重新识别，不会插入文字。"
+      },
+      "recording_kept_text": "",
+      "text_blocks": [
+        {
+          "key": "hist-result",
+          "title": "结果",
+          "copy_label": "复制结果",
+          "text": "Weekly plan\nI'll send the new agenda tonight."
+        },
+        {
+          "key": "hist-raw",
+          "title": "识别原文",
+          "copy_label": "复制识别原文",
+          "text": "weekly plan\nI'll send the new agenda tonight"
+        }
+      ],
+      "sections": [
+        {
+          "title": "详细信息",
+          "facts": [
+            {
+              "label": "时间",
+              "value": "1月2日 14:59",
+              "empty": false
+            },
+            {
+              "label": "App",
+              "value": "Notes",
+              "empty": false
+            },
+            {
+              "label": "输出方式",
+              "value": "已插入",
+              "empty": false
+            },
+            {
+              "label": "语音识别",
+              "value": "Fixture speech model",
+              "empty": false
+            },
+            {
+              "label": "声音优化",
+              "value": "已滤除低频嗡声，音量 +1.5 dB",
+              "empty": false
+            },
+            {
+              "label": "语言模型",
+              "value": "Fixture language model",
+              "empty": false
+            },
+            {
+              "label": "应用增强规则",
+              "value": "Fixture rule（网站）",
+              "empty": false
+            }
+          ]
+        },
+        {
+          "title": "耗时",
+          "facts": [
+            {
+              "label": "录音",
+              "value": "7.5 s，送去识别 2.5 s",
+              "empty": false
+            },
+            {
+              "label": "识别",
+              "value": "850 ms",
+              "empty": false
+            },
+            {
+              "label": "语言模型",
+              "value": "1.2 s",
+              "empty": false
+            },
+            {
+              "label": "总计",
+              "value": "2.4 s",
+              "empty": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

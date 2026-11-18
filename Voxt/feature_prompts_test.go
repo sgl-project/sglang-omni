@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -331,7 +332,7 @@ func TestFeaturePageShowsFilledRequest(t *testing.T) {
 	if !strings.Contains(a.fui(hotkey.Translate).prompt, "{{TARGET_LANGUAGE}}") {
 		t.Fatalf("rules field %q", a.fui(hotkey.Translate).prompt)
 	}
-	in := a.previewInput(hotkey.Translate)
+	in := previewInputFor(a.prefs, hotkey.Translate, a.fui(hotkey.Translate).prompt, i18n.CurrentTranslator())
 	target := compose.LanguageName(in.TargetLanguage, compose.TemplateSet(in.MainLanguage))
 	if !has(tt, "The Target language menu on the Translate page. Translate only. Now: "+target) {
 		t.Errorf("no note for {{TARGET_LANGUAGE}} = %q", target)
@@ -516,7 +517,7 @@ func TestPreviewFollowsTheDictionary(t *testing.T) {
 	if err := repo.Put(context.Background(), store.Term{ID: "g2", Term: "Quixotica", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	a.dv.query = "quix"
+	a.dictUI.query = "quix"
 	a.loadDict()
 	out, err = a.composedPreview(hotkey.Transcribe)
 	if err != nil {

@@ -1,0 +1,56 @@
+{
+  "name": "overlay-error",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot23",
+    "state": "failed",
+    "problem_code": "asr",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "Transcribe",
+      "working_label": "Recognising…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "Speech recognition failed: The speech model answered something Voxt does not understand.",
+      "action": "models",
+      "action_label": "Open Speech models",
+      "tone": "error"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

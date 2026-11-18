@@ -1,0 +1,142 @@
+{
+  "name": "history-problem-microphone",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "1 entry",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-problem-microphone",
+        "title": "Voxt does not have microphone access.",
+        "failed_title": true,
+        "meta": "5 minutes ago · Notes · 0:08",
+        "selected": true,
+        "copy_text": "weekly plan\nI'll send the new agenda tonight",
+        "raw_copy_text": "",
+        "can_reveal": false,
+        "retry": {
+          "available": false,
+          "wanted": true,
+          "active": false,
+          "label": "Retry",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": [
+          {
+            "label": "Failed",
+            "tooltip": "No recording was kept, so it cannot be retried",
+            "tone": "danger"
+          }
+        ]
+      }
+    ],
+    "detail": {
+      "id": "history-problem-microphone",
+      "error_text": "Failed: Voxt does not have microphone access.",
+      "error_detail": "Voxt does not have microphone access.",
+      "error_warning": false,
+      "can_reveal": false,
+      "retry": {
+        "available": false,
+        "wanted": true,
+        "active": false,
+        "label": "Retry",
+        "disabled": false,
+        "stage": "",
+        "stage_text": "",
+        "tooltip": ""
+      },
+      "recording_kept_text": "",
+      "text_blocks": [
+        {
+          "key": "hist-raw",
+          "title": "Recognised text",
+          "copy_label": "Copy recognised text",
+          "text": "weekly plan\nI'll send the new agenda tonight"
+        }
+      ],
+      "sections": [
+        {
+          "title": "Details",
+          "facts": [
+            {
+              "label": "Time",
+              "value": "Jan 2 14:59",
+              "empty": false
+            },
+            {
+              "label": "App",
+              "value": "Notes",
+              "empty": false
+            },
+            {
+              "label": "Delivery",
+              "value": "Inserted",
+              "empty": false
+            },
+            {
+              "label": "Speech recognition",
+              "value": "—",
+              "empty": true
+            },
+            {
+              "label": "Sound optimisation",
+              "value": "Hum filtered, volume +1.5 dB",
+              "empty": false
+            },
+            {
+              "label": "Language model",
+              "value": "—",
+              "empty": true
+            },
+            {
+              "label": "App rule",
+              "value": "Fixture rule (app)",
+              "empty": false
+            }
+          ]
+        },
+        {
+          "title": "Timing",
+          "facts": [
+            {
+              "label": "Recording",
+              "value": "7.5 s, 2.5 s sent",
+              "empty": false
+            },
+            {
+              "label": "Recognition",
+              "value": "850 ms",
+              "empty": false
+            },
+            {
+              "label": "Language model",
+              "value": "1.2 s",
+              "empty": false
+            },
+            {
+              "label": "Total",
+              "value": "2.4 s",
+              "empty": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -146,9 +146,12 @@ var ErrBusy = errors.New("meeting: one is running already")
 var ErrNoMeeting = errors.New("meeting: not found")
 
 // StartError means a track failed to start; the meeting does not begin.
-// GuidanceModel is StartError.Guidance when the track's speech model did
-// not load, as opposed to its capture.
-const GuidanceModel = "meeting.model.unavailable"
+// The Guidance values identify which capture or model needs attention.
+const (
+	GuidanceModel  = "meeting.model.unavailable"
+	GuidanceMic    = "meeting.mic.unavailable"
+	GuidanceSystem = "meeting.system.unavailable"
+)
 
 type StartError struct {
 	Source   Source
