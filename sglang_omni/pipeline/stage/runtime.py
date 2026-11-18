@@ -14,6 +14,7 @@ import gc
 import inspect
 import logging
 import os
+import pickle
 import queue as _queue_mod
 import threading
 from collections.abc import Iterable, Mapping
@@ -62,7 +63,7 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
-from sglang_omni.proto.messages import StreamChunkBatchMessage
+from sglang_omni.proto.messages import PayloadBatchMessage, StreamChunkBatchMessage
 from sglang_omni.proto.request import RoutedPayloads
 from sglang_omni.proto.session import SessionOperation, find_session_operation
 from sglang_omni.relay.base import Relay
@@ -82,6 +83,9 @@ logger = logging.getLogger(__name__)
 _SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
 _OUTBOX_DRAIN_BATCH_SIZE = 64
 BATCHED_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
+# Note (Junnan Li): One session unit's codes or audio frame; a prompt with its voice
+# embeddings is larger and keeps the relay.
+BATCHED_PAYLOAD_BYTES_LIMIT = 64 * 1024
 
 
 GetNextFn = Callable[[str, object], str | list[str] | None]
@@ -147,6 +151,7 @@ class Stage:
         local_dispatcher: LocalStageDispatcher | None = None,
         can_accept_stream_before_payload: bool = False,
         disable_direct_cuda_ipc_payload: bool = False,
+        batch_payloads: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
         replica_topology: dict[str, list[str]] | None = None,
@@ -179,6 +184,8 @@ class Stage:
         self.local_dispatcher = local_dispatcher
         self.can_accept_stream_before_payload = can_accept_stream_before_payload
         self.disable_direct_cuda_ipc_payload = disable_direct_cuda_ipc_payload
+        self.batch_payloads = batch_payloads
+        self.payload_batches: dict[str, list[tuple[str, StagePayload]]] | None = None
         self.tp_fanout = tp_fanout
         self.is_terminal = is_terminal
         self.owns_external_io = role in {"single", "leader"}
@@ -543,6 +550,7 @@ class Stage:
             | DataAckMessage
             | DataReadyMessage
             | StreamChunkBatchMessage
+            | PayloadBatchMessage
             | FreezeGCMessage
             | ProfilerStartMessage
             | ProfilerStopMessage
@@ -557,6 +565,8 @@ class Stage:
             self.schedule_receive_task(msg)
         elif isinstance(msg, StreamChunkBatchMessage):
             self.schedule_stream_chunk_batch(msg)
+        elif isinstance(msg, PayloadBatchMessage):
+            self.schedule_payload_batch(msg)
         elif isinstance(msg, FreezeGCMessage):
             gc.freeze()
         elif isinstance(msg, ProfilerStartMessage):
@@ -646,6 +656,35 @@ class Stage:
                     f"stream chunk {request_id}:{msg.from_stage}:{chunk.chunk_id}",
                     partial(self.route_batched_stream_chunk, msg.from_stage, chunk),
                 )
+
+    def schedule_payload_batch(self, msg: PayloadBatchMessage) -> None:
+        """Receive each payload behind its own request's unfinished receive work."""
+        payloads = pickle.loads(msg.pickled_payloads)
+        for request_id, payload in zip(msg.request_ids, payloads, strict=True):
+            self.record_replica_bindings(
+                request_id, msg.replica_bindings.get(request_id)
+            )
+            if request_id in self.aborted:
+                continue
+            else:
+                pass
+            self.schedule_lane_task(
+                (request_id, msg.from_stage),
+                f"data {request_id}:{msg.from_stage}",
+                partial(
+                    self.receive_batched_payload, request_id, msg.from_stage, payload
+                ),
+            )
+
+    async def receive_batched_payload(
+        self,
+        request_id: str,
+        from_stage: str,
+        payload: StagePayload,
+        predecessor: asyncio.Future[None] | None,
+    ) -> None:
+        await self.wait_for_receive_predecessor(predecessor)
+        await self.receive_payload_from_stage(request_id, from_stage, payload)
 
     async def route_batched_stream_chunk(
         self,
@@ -1519,6 +1558,7 @@ class Stage:
         outbox = self.scheduler.outbox
         while True:
             out = await self.wait_outbox_message()
+            self.hold_batched_sends()
 
             stream_run: list[OutgoingMessage] = []
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
@@ -1528,6 +1568,13 @@ class Stage:
                     if stream_run:
                         await self.route_stream_run(stream_run)
                         stream_run = []
+                    else:
+                        pass
+                    if out.type == "wakeup":
+                        await self.flush_batched_sends()
+                    elif out.type != "result":
+                        await self.flush_batched_sends()
+                        self.hold_batched_sends()
                     else:
                         pass
                     if out.type == "admitted":
@@ -1586,6 +1633,7 @@ class Stage:
                         await self.route_stream_run(stream_run)
                     else:
                         pass
+                    await self.flush_batched_sends()
                     await asyncio.sleep(0)
                     break
                 else:
@@ -1598,7 +1646,45 @@ class Stage:
                         await self.route_stream_run(stream_run)
                     else:
                         pass
+                    await self.flush_batched_sends()
                     break
+
+    def hold_batched_sends(self) -> None:
+        """With batch_payloads, collect what the drain sends until the next flush."""
+        if self.batch_payloads:
+            self.payload_batches = {}
+            self.control_plane.hold_coordinator_messages()
+        else:
+            pass
+
+    async def flush_batched_sends(self) -> None:
+        """Send each remote target its collected payloads in one message, and the
+        coordinator its held completions and streams in another."""
+        batches, self.payload_batches = self.payload_batches, None
+        if not self.batch_payloads:
+            return
+        else:
+            pass
+        await self.control_plane.flush_coordinator_messages()
+        for target, entries in batches.items():
+            await self.control_plane.send_to_stage(
+                target,
+                self.endpoints[target],
+                PayloadBatchMessage(
+                    from_stage=self.name,
+                    to_stage=target,
+                    request_ids=[request_id for request_id, _ in entries],
+                    pickled_payloads=pickle.dumps(
+                        [payload for _, payload in entries],
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    ),
+                    replica_bindings={
+                        request_id: self.replica_bindings[request_id]
+                        for request_id, _ in entries
+                        if self.replica_bindings.get(request_id)
+                    },
+                ),
+            )
 
     async def route_stream_run(self, messages: list[OutgoingMessage]) -> None:
         """Route targeted stream messages in order, one dispatch per same-process run and one packed batch per remote target."""
@@ -2072,6 +2158,32 @@ class Stage:
         else:
             pass
 
+        if (
+            self.payload_batches is not None
+            and target not in self.comm.router.remote_stage_names
+        ):
+            _, tensors = stage_io.extract_tensors(projected_payload.data)
+            batchable = (
+                all(tensor.device.type == "cpu" for tensor in tensors.values())
+                and sum(tensor.nbytes for tensor in tensors.values())
+                <= BATCHED_PAYLOAD_BYTES_LIMIT
+            )
+        else:
+            batchable = False
+        if batchable:
+            self.payload_batches.setdefault(target, []).append(
+                (request_id, projected_payload)
+            )
+            self.comm.router.note_transport_choice("payload", target, "inline")
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_hop_sent",
+                metadata={"to_stage": target, "transport": "inline"},
+            )
+            return
+        else:
+            pass
         transport_kind, relay = self.comm.router.relay_for_payload(
             target, projected_payload
         )

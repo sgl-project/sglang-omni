@@ -1,6 +1,7 @@
 """Control plane for inter-stage communication via ZMQ."""
 
 import asyncio
+import collections
 import logging
 from collections.abc import Callable
 
@@ -25,7 +26,11 @@ from sglang_omni.proto import (
     SubmitMessage,
     parse_message,
 )
-from sglang_omni.proto.messages import StreamChunkBatchMessage
+from sglang_omni.proto.messages import (
+    MessageBatchMessage,
+    PayloadBatchMessage,
+    StreamChunkBatchMessage,
+)
 
 logger = logging.getLogger(__name__)
 ControlMessage = (
@@ -34,6 +39,8 @@ ControlMessage = (
     | DataAckMessage
     | DataReadyMessage
     | StreamChunkBatchMessage
+    | PayloadBatchMessage
+    | MessageBatchMessage
     | KVTransferPrepareMessage
     | KVTransferReadyMessage
     | AbortMessage
@@ -305,6 +312,8 @@ class StageControlPlane:
         self.coordinator_socket: PushSocket | None = None
         self.abort_socket: SubSocket | None = None
         self.next_stage_sockets: dict[str, PushSocket] = {}
+        self.coordinator_batch: list[bytes] | None = None
+        self.coordinator_batch_callbacks: list[Callable[[], None]] = []
 
     async def start(self) -> None:
         """Initialize all sockets."""
@@ -323,6 +332,7 @@ class StageControlPlane:
         | DataAckMessage
         | DataReadyMessage
         | StreamChunkBatchMessage
+        | PayloadBatchMessage
         | SubmitMessage
         | ShutdownMessage
         | FreezeGCMessage
@@ -340,6 +350,7 @@ class StageControlPlane:
             (
                 DataReadyMessage,
                 StreamChunkBatchMessage,
+                PayloadBatchMessage,
                 DataAckMessage,
                 SubmitMessage,
                 ShutdownMessage,
@@ -358,7 +369,12 @@ class StageControlPlane:
         self,
         next_stage: str,
         next_stage_endpoint: str,
-        msg: DataReadyMessage | StreamChunkBatchMessage | DataAckMessage,
+        msg: (
+            DataReadyMessage
+            | StreamChunkBatchMessage
+            | PayloadBatchMessage
+            | DataAckMessage
+        ),
     ) -> None:
         """Send a stage-to-stage control message."""
         await send_to_endpoint(self.next_stage_sockets, next_stage_endpoint, msg)
@@ -372,17 +388,47 @@ class StageControlPlane:
         """Send completion, with an optional nonthrowing acceptance callback."""
         if self.coordinator_socket is None:
             raise RuntimeError("Control plane not started")
+        elif self.coordinator_batch is not None:
+            self.coordinator_batch.append(serialize_message(msg))
+            if on_submitted is not None:
+                self.coordinator_batch_callbacks.append(on_submitted)
+            else:
+                pass
         else:
-            pass
-        await self.coordinator_socket.send(msg, on_submitted=on_submitted)
+            await self.coordinator_socket.send(msg, on_submitted=on_submitted)
 
     async def send_stream(self, msg: StreamMessage) -> None:
         """Send a stream chunk to coordinator."""
         if self.coordinator_socket is None:
             raise RuntimeError("Control plane not started")
+        elif self.coordinator_batch is not None:
+            self.coordinator_batch.append(serialize_message(msg))
+        else:
+            await self.coordinator_socket.send(msg)
+
+    def hold_coordinator_messages(self) -> None:
+        """Hold completions and streams to the coordinator until the next flush."""
+        self.coordinator_batch = []
+
+    async def flush_coordinator_messages(self) -> None:
+        """Send the held messages as one, in order, and stop holding."""
+        messages, self.coordinator_batch = self.coordinator_batch, None
+        callbacks, self.coordinator_batch_callbacks = (
+            self.coordinator_batch_callbacks,
+            [],
+        )
+        if not messages:
+            return
         else:
             pass
-        await self.coordinator_socket.send(msg)
+
+        def submitted() -> None:
+            for callback in callbacks:
+                callback()
+
+        await self.coordinator_socket.send(
+            MessageBatchMessage(messages=messages), on_submitted=submitted
+        )
 
     async def send_admin_result(self, msg: AdminResultMessage) -> None:
         """Send an administrative result to coordinator."""
@@ -437,6 +483,9 @@ class CoordinatorControlPlane:
         self.completion_socket: PullSocket | None = None
         self.abort_socket: PubSocket | None = None
         self.stage_sockets: dict[str, PushSocket] = {}
+        self.batched_events: collections.deque[
+            CompleteMessage | StreamMessage | AdminResultMessage
+        ] = collections.deque()
 
     async def start(self) -> None:
         """Initialize all sockets."""
@@ -465,9 +514,17 @@ class CoordinatorControlPlane:
         """Receive completion or stream event from a stage."""
         if self.completion_socket is None:
             raise RuntimeError("Control plane not started")
+        elif self.batched_events:
+            return self.batched_events.popleft()
         else:
             pass
         msg = await self.completion_socket.recv()
+        if isinstance(msg, MessageBatchMessage):
+            events = [deserialize_message(message) for message in msg.messages]
+            msg = events[0]
+            self.batched_events.extend(events[1:])
+        else:
+            pass
         if isinstance(msg, (CompleteMessage, StreamMessage, AdminResultMessage)):
             return msg
         else:

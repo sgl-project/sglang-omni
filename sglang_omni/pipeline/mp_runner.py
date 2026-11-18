@@ -151,6 +151,7 @@ class StageLaunchKwargs(TypedDict):
     is_stream_receiver: bool
     can_accept_stream_before_payload: bool
     disable_direct_cuda_ipc_payload: bool
+    batch_payloads: bool
     replica_topology: dict[str, list[str]]
 
 
@@ -260,6 +261,7 @@ def build_stage_groups(
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
+            batch_payloads=stage_cfg.batch_payloads,
             replica_topology=replica_topology.to_dict(),
         )
         if tp_size == 1:
