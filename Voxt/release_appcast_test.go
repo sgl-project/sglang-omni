@@ -251,7 +251,8 @@ func TestNightlyArtifactLookupUsesPackageResult(t *testing.T) {
 	doc := string(data)
 	for _, want := range []string{
 		"--branch main",
-		"--status completed",
+		"voxt-nightly.yaml --branch main --event schedule --status completed",
+		"--event workflow_dispatch",
 		`select(.name == "nightly / Voxt release package" and .conclusion == "success")`,
 	} {
 		if !strings.Contains(doc, want) {

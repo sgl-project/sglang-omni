@@ -63,10 +63,10 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 [voxt-nightly.yaml](../../.github/workflows/voxt-nightly.yaml) 每天 12:34 UTC（北京时间 20:34）在 main 上先跑 Voxt CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)，Go 测试）和 Mac CI（[mac-ci.yaml](../../.github/workflows/mac-ci.yaml)，原生运行时和 Swift 测试），两个都通过才跑上面的工作流，版本号是 mygo.json 的版本加 `-nightly.YYYYMMDD`（UTC 日期）。它和 tag 发布一样进 `voxt-release` 环境，用 Developer ID 签名、公证，`release-verify.sh developer-id` 全部通过，只是不建 Release。改了 voxt-nightly.yaml 的 PR 也跑它：挂 `run-mac-ci` 才跑 Mac 测试，挂 `run-lint-only` 跳过 Mac 测试，不挂 CI 标签则 Mac CI 报红、不构建；构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行时和 main 上一样签名、公证（环境要放行那个分支，见上）。GitHub 不保证定时任务准点开始，负载高时会晚一些；漏掉的一次可以在 Actions 页面从 main 手动运行。
 
-dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天（app 的 ZIP 只有 tag 的 Release 才有）。漏洞扫描失败不会阻止打包，所以一次运行的整体结果可能是失败，但 dmg 已经生成。先列出已完成的运行，再确认 `nightly / Voxt release package` 成功：
+dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天（app 的 ZIP 只有 tag 的 Release 才有）。漏洞扫描失败不会阻止打包，所以一次运行的整体结果可能是失败，但 dmg 已经生成。先列出 main 上已完成的定时运行，再确认 `nightly / Voxt release package` 成功。`--event schedule` 会排除 PR 的 ad-hoc 构建，包括 fork 的 main 分支发起的构建。手动在 main 上补跑时，把它改成 `--event workflow_dispatch`：
 
 ```bash
-gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --branch main --status completed --limit 10
+gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --branch main --event schedule --status completed --limit 10
 gh run view RUN_ID --repo sgl-project/sglang-omni --json jobs --jq '.jobs[] | select(.name == "nightly / Voxt release package" and .conclusion == "success")'
 gh run download RUN_ID --repo sgl-project/sglang-omni
 ```
