@@ -20,14 +20,23 @@ var decodeBoxBitmap = ui.DecodeBitmap
 // boxThumb is a thumbnail's size in the box.
 const boxThumb = 40
 
+type boxDropWindow interface {
+	boxWindow
+	OnFileDrop(func(*mygo.FileDropEvent)) func()
+}
+
+var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
+
 // newBoxWindow creates the input box's native panel.
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) boxWindow {
-	return mygo.NewWindow(mygo.WindowOptions{
+	window := newBoxNativeWindow(mygo.WindowOptions{
 		Title: i18n.T("Rewrite"), Width: boxWinW, Height: boxWinH, UseContentSize: true,
 		Hidden: true, Frameless: true, Transparent: true, Vibrancy: mygo.VibrancyHUD,
 		Panel: true, DisableResize: true, DisableClose: true,
 		Content: hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) }),
 	})
+	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
+	return window
 }
 
 // rewriteBoxView draws the input box from its state, actions and local text.
@@ -39,9 +48,6 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 	root := ui.Column(context).Fill().Padding(12, 14, 12, 14).Gap(8)
 	if context.Shortcut(0, ui.KeyEscape) {
 		actions.close()
-	}
-	if files := root.DroppedFiles(); len(files) > 0 {
-		actions.drop(files)
 	}
 	root.Children(func() {
 		// The header: what it is, Send while it records or a resend
@@ -73,14 +79,12 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			Label(i18n.T("More text for the rewrite")).
 			Placeholder(i18n.T("Type or paste more text, or drop images")).
 			Lines(3, 8).FontSize(layout.CardTextSize).TextColor(ovCardText).Grow(1)
+		textArea.OnPaste(func(string) bool { return actions.paste(services) })
 		textArea.OnTextKey(func(key ui.TextKey) bool {
-			switch {
-			case key.Key == ui.KeyEnter && key.Mods == 0:
+			if key.Key == ui.KeyEnter && key.Mods == 0 {
 				actions.textChanged(local.text)
 				actions.send()
 				return true
-			case key.Key == ui.KeyV && key.Mods == ui.Cmd:
-				return actions.paste(services)
 			}
 			return false
 		})

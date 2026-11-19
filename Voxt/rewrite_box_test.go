@@ -403,7 +403,7 @@ func TestRewriteBoxView(t *testing.T) {
 	}
 	// Paste a picture: it goes into the box.
 	tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, boxPNG(t)))))
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
 	frames(tt)
 	if len(a.box.images) != 1 {
 		t.Fatalf("%d images after paste", len(a.box.images))
@@ -649,7 +649,7 @@ func TestRewriteBoxClipboardFailureNeedsConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.SetClipboardData(data)
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
 	a.boxSend()
 	if !a.boxSendQueued {
 		t.Fatal("the send did not wait for clipboard.image")
