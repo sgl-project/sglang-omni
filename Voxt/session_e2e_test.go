@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
@@ -312,6 +313,131 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 		if a.sess.State != session.Cancelled || len(a.history()) != 1 {
 			t.Errorf("the cancel key acted while idle: %+v, history %+v", a.sess, a.history())
 		}
+	})
+	t.Run("cancel refreshes open History and Home", func(t *testing.T) {
+		drain := func(a *sessionApp) {
+			for {
+				select {
+				case fn := <-a.queue:
+					fn()
+				default:
+					return
+				}
+			}
+		}
+		t.Run("open History page", func(t *testing.T) {
+			set, keys, _ := fileSetup(t, "hello there", &fakeChat{text: "Hello there."})
+			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(500, proto.HotkeyCancel, proto.PhaseTrigger))
+			a := newSessionApp(t, ev, set, keys)
+			tt := ui.NewTester(a.view, windowWidth, windowHeight)
+			a.navigate("/history")
+			frames(tt)
+			drain(a)
+			frames(tt)
+			if len(a.hist.list) != 0 || !has(tt, "No transcriptions yet") {
+				t.Fatalf("initial history: %+v, texts %q", a.hist.list, firstTexts(tt))
+			}
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			drain(a)
+			frames(tt)
+			if len(a.hist.list) != 1 || a.hist.list[0].Status != store.StatusCancelled {
+				t.Fatalf("open History did not refresh after cancel: %+v", a.hist.list)
+			}
+			if !has(tt, "No text") || !has(tt, "Retry") || !has(tt, "1 entry") {
+				t.Errorf("open History missing No text/Retry/1 entry: %q", firstTexts(tt))
+			}
+			if !a.hm.stale {
+				t.Error("Home was not marked stale after cancel")
+			}
+		})
+		t.Run("open Home and stale History", func(t *testing.T) {
+			set, keys, _ := fileSetup(t, "hello there", &fakeChat{text: "Hello there."})
+			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(500, proto.HotkeyCancel, proto.PhaseTrigger))
+			a := newSessionApp(t, ev, func(s *settings.Settings) {
+				set(s)
+				s.History.KeepCount = 50
+			}, keys)
+			base := time.Now()
+			midnight := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, base.Location())
+			for i := range 50 {
+				createdAt := midnight
+				if base.Sub(midnight) >= 100*time.Millisecond {
+					createdAt = base.Add(-time.Duration(i+1) * time.Millisecond)
+				}
+				if err := a.lib.store.History().Put(context.Background(), store.Entry{
+					ID: fmt.Sprintf("01DONEBEFORE000000000000%02d", i), Kind: store.KindTranscribe, Status: store.StatusDone,
+					CreatedAt: createdAt, Result: fmt.Sprintf("Earlier result %d.", i),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tt := ui.NewTester(a.view, windowWidth, windowHeight)
+			a.navigate("/history")
+			frames(tt)
+			drain(a)
+			a.navigate("/home")
+			frames(tt)
+			drain(a)
+			frames(tt)
+			if a.hm.today.count != 50 {
+				t.Fatalf("initial today count %d, want 50", a.hm.today.count)
+			}
+			genBefore := a.hm.gen
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			a.pump("Home post-prune refresh", func() bool { return a.hm.gen > genBefore && a.hm.today.count == 49 })
+			drain(a)
+			frames(tt)
+			if a.hm.gen <= genBefore {
+				t.Fatalf("Home did not refresh after cancel: gen %d -> %d", genBefore, a.hm.gen)
+			}
+			if a.hm.today.count != 49 {
+				t.Errorf("Home today count after pruning cancel: %d, want 49", a.hm.today.count)
+			}
+			if !a.hist.stale {
+				t.Error("History was not marked stale while on Home")
+			}
+			a.navigate("/history")
+			frames(tt)
+			drain(a)
+			frames(tt)
+			if len(a.hist.list) != 50 || a.hist.list[0].Status != store.StatusCancelled || a.hist.stale {
+				t.Fatalf("History did not reload on return: len=%d stale=%v first=%+v", len(a.hist.list), a.hist.stale, a.hist.list[0])
+			}
+		})
+		t.Run("cancel with KeepHistory off", func(t *testing.T) {
+			set, keys, _ := fileSetup(t, "hello there", &fakeChat{text: "Hello there."})
+			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(500, proto.HotkeyCancel, proto.PhaseTrigger))
+			a := newSessionApp(t, ev, func(s *settings.Settings) {
+				set(s)
+				s.Privacy.KeepHistory = false
+			}, keys)
+			tt := ui.NewTester(a.view, windowWidth, windowHeight)
+			a.navigate("/history")
+			frames(tt)
+			drain(a)
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			drain(a)
+			frames(tt)
+			if a.sess.State != session.Cancelled || len(a.history()) != 0 || len(a.hist.list) != 0 || !a.hm.stale {
+				t.Fatalf("cancel with KeepHistory off: state=%s store=%d view=%d hm.stale=%v", a.sess.State, len(a.history()), len(a.hist.list), a.hm.stale)
+			}
+		})
+		t.Run("rewrite cancel on History All tab", func(t *testing.T) {
+			set, keys, _ := fileSetup(t, "make it shorter", &fakeChat{text: "Short."})
+			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, proto.HotkeyCancel, proto.PhaseTrigger))
+			a := newSessionApp(t, ev, set, keys)
+			tt := ui.NewTester(a.view, windowWidth, windowHeight)
+			a.navigate("/history")
+			a.histUI.tab = len(store.Kinds)
+			frames(tt)
+			drain(a)
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			drain(a)
+			frames(tt)
+			if len(a.hist.list) != 1 || a.hist.list[0].Kind != store.KindRewrite || a.hist.list[0].Status != store.StatusCancelled {
+				t.Fatalf("All tab after rewrite cancel: %+v", a.hist.list)
+			}
+		})
 	})
 	t.Run("llm fails", func(t *testing.T) {
 		chat := &fakeChat{status: 500}
