@@ -3014,14 +3014,14 @@ class Qwen3TTSStreamingVocoderScheduler(
         Every first chunk queued when the replay is due runs ahead of it, so a first chunk waits for at most one replay.
         """
         if not self.whole_requests:
-            # note (ratish): a waiting whole request means a replay is due, so only an idle worker waits for a batch.
             batch = self.wait_for_first_chunks()
         elif self.is_whole_request_waiting_for_slot:
-            # note (ratish): no replay is due while every whole request waits for a slot that streams hold, so the worker waits for a first chunk at most one poll before it plans again.
+            # note (ratish): no replay is due while every whole request waits for a slot held elsewhere, so the worker waits at most one poll for a first chunk before it plans again.
             batch = self.wait_for_first_chunks(
                 timeout=QWEN3_TTS_WHOLE_REQUEST_SLOT_POLL_S
             )
         else:
+            # note (ratish): a whole request that holds or can take a slot means a replay is due, so the worker does not wait.
             batch = []
         if batch is None:
             return False
@@ -3063,10 +3063,12 @@ class Qwen3TTSStreamingVocoderScheduler(
 
         A request that finds every slot held waits, and those holding slots finish and release them.
         """
-        if self.cuda_decode_failed:
-            # note (ratish): a retired slot never frees, so a request waiting for one fails here, as its launch would.
+        if self.cuda_decode_failed or (
+            len(self.codec_arena.retired) == self.codec_arena.num_slots
+        ):
+            # note (ratish): a retired slot never frees, and a failed device can retire every slot before any launch disables decode, so a request waiting for one fails here.
             error = RuntimeError(
-                "Qwen3-TTS CUDA decode is disabled after an unrecoverable stream failure"
+                "Qwen3-TTS CUDA decode is disabled after an unrecoverable device failure"
             )
             for request in self.whole_requests:
                 self.fail_whole_request(request, error)

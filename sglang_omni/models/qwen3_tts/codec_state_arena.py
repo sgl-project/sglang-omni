@@ -177,6 +177,11 @@ class Qwen3TTSCodecStateArena:
         return slot
 
     def release(self, slot: int) -> None:
+        if slot in self.retired:
+            # note (ratish): retire only ever adds, so a retired slot returns before recording on a device that may have failed.
+            return
+        else:
+            pass
         released = None
         if has_device_streams(self.device):
             try:

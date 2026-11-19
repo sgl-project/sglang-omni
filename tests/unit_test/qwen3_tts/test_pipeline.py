@@ -4324,6 +4324,42 @@ def test_qwen3_tts_whole_request_waiting_for_a_stream_slot_blocks_between_plans(
     assert scheduler.is_whole_request_waiting_for_slot
 
 
+def test_qwen3_tts_initial_worker_waiting_for_a_slot_stops_on_the_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    arena = scheduler.codec_arena
+    for _ in range(arena.num_slots):
+        arena.acquire()
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
+    )
+    scheduler.run_initial_pass()
+    scheduler.initial_queue.put(None)
+
+    assert scheduler.is_whole_request_waiting_for_slot
+    assert scheduler.run_initial_pass() is False
+
+
+def test_qwen3_tts_whole_request_fails_once_every_slot_is_retired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device failure that retired every slot with no launch to disable decode left a whole request waiting for a slot forever."""
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    arena = scheduler.codec_arena
+    for slot in range(arena.num_slots):
+        arena.retire(slot)
+
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
+    )
+    scheduler.run_initial_pass()
+
+    assert scheduler.outbox.get_nowait().type == "error"
+    assert not scheduler.whole_requests
+    assert runner.calls == []
+
+
 def test_qwen3_tts_whole_request_whose_codes_never_land_fails_only_itself(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

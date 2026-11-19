@@ -1149,12 +1149,12 @@ def test_codec_state_arena_counts_only_misses_that_do_not_wait() -> None:
 
 class UnrecordableEvent:
     def record(self, stream: object) -> None:
-        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+        raise RuntimeError("CUDA error: event record failed")
 
 
 class FailedDeviceStream:
     def wait_event(self, event: object) -> None:
-        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+        raise RuntimeError("CUDA error: stream wait failed")
 
 
 def fail_device(
@@ -1193,7 +1193,7 @@ def test_codec_state_arena_never_loses_a_slot_whose_wait_fails(
     arena.release_events[0] = UnrecordableEvent()
     fail_device(arena, monkeypatch)
 
-    with pytest.raises(RuntimeError, match="illegal memory access"):
+    with pytest.raises(RuntimeError, match="stream wait failed"):
         arena.acquire()
 
     assert arena.retired == {0}
