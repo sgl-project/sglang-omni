@@ -214,6 +214,31 @@ func TestRedoDropsAutomaticImagePreviewWhenItWasNotResent(t *testing.T) {
 	}
 }
 
+func TestRedoAutomaticImageChipsClearWhileStreaming(t *testing.T) {
+	chat := &fakeChat{texts: []string{"First answer", "Second answer"}, delay: 200 * time.Millisecond}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the first answer", func() bool { return a.answer.open })
+	bitmap, _ := ui.DecodeBitmap(boxJPEGOf(t, 20, 10))
+	a.answer.attach = "clipboard"
+	a.answer.previews = append(a.answer.previews, answerInputPreview{Label: "Copied image", Image: bitmap})
+	input := a.answer.input
+	a.postQueue(func() {
+		a.redoAnswer(session.StartRequest{Kind: a.answer.kind, Target: a.answer.target, Text: &input})
+	})
+	a.pump("the redo streaming", func() bool {
+		return len(chat.requests()) == 2 && a.sess.ID == a.answer.redo && a.sess.State == session.Composing && a.sess.Draft != ""
+	})
+	if attachment := a.cachedCard().Attachment; attachment != "" {
+		t.Fatalf("the streaming redo kept %q", attachment)
+	}
+	for _, preview := range a.ov.ui.cardPreviews {
+		if preview.Image != nil {
+			t.Fatalf("the streaming redo kept an unsent image: %+v", a.answer.previews)
+		}
+	}
+	a.pump("the redo answer", func() bool { return a.answer.redo == "" })
+}
+
 func TestBoxLongPasteThroughEditorDoesNotDuplicate(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, focusText: true}
