@@ -127,7 +127,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 	if cfg.DisableVAD {
 		speech = []vad.Segment{{Start: 0, End: total}}
 	} else {
-		speech, err = speechRegions(ctx, pcm, rate, cfg.VAD, cfg.VADFallback)
+		speech, err = speechRegions(ctx, pcm, rate, cfg.VAD, cfg.VADFallback, cfg.VADStrategy)
 		if err != nil {
 			return nil, err
 		}
@@ -193,7 +193,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 // diarizeChunkMax is how much of a track one MTD request covers: small
 // enough that a dictation waits at most one request (the runtime lets it
 // in between), and far from the native decoder's own 20-minute split.
-const diarizeChunkMax = 2 * time.Minute
+const diarizeChunkMax = time.Minute
 
 // mossPrompt is the instruction MOSS gets with no prompt of its own
 // (moss_transcriber.cpp's kDefaultPrompt, repeated here: a prompt of ours
@@ -423,15 +423,30 @@ func segmentToStore(s Segment, src Source) store.MeetingSegment {
 	}
 }
 
-func speechRegions(ctx context.Context, pcm []byte, rate int, model vad.Model, onEnergyFallback func()) ([]vad.Segment, error) {
+func speechRegions(ctx context.Context, pcm []byte, rate int, model vad.Model, onEnergyFallback func(), strategy string) ([]vad.Segment, error) {
 	if rate <= 0 {
 		rate = asr.SampleRate
 	}
+	if strategy == "batched" {
+		return batchedSpeechRegions(ctx, pcm, rate, model, onEnergyFallback), nil
+	}
 	if model != nil {
 		segs, err := model.Speech(ctx, pcm, rate)
+		if strategy == "whole" {
+			if err != nil {
+				return nil, err
+			}
+			if len(segs) == 0 {
+				return nil, fmt.Errorf("meeting: no speech regions found")
+			}
+			return segs, nil
+		}
 		if err == nil && len(segs) > 0 {
 			return segs, nil
 		}
+	}
+	if strategy == "whole" {
+		return nil, fmt.Errorf("meeting: no VAD model configured")
 	}
 	return batchedSpeechRegions(ctx, pcm, rate, model, onEnergyFallback), nil
 }

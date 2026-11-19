@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,15 +25,16 @@ const fileASRFirstTokenReason = "file ASR and MTD return a complete result, not 
 // Recorder owns one run's report. Its methods are safe for native log and
 // resource goroutines as well as the sequential meeting pipeline.
 type Recorder struct {
-	mu           sync.Mutex
-	report       Report
-	now          func() time.Time
-	started      time.Time
-	finalStarted time.Time
-	stageIndexes map[string]int
-	signposts    *Signposts
-	firstASR     sync.Once
-	onFirstASR   func()
+	mu               sync.Mutex
+	report           Report
+	now              func() time.Time
+	started          time.Time
+	finalStarted     time.Time
+	stageIndexes     map[string]int
+	boundarySegments []vad.Segment
+	signposts        *Signposts
+	firstASR         sync.Once
+	onFirstASR       func()
 }
 
 func NewRecorder(config Config) *Recorder {
@@ -287,6 +289,11 @@ type timedVAD struct {
 func (v timedVAD) Speech(ctx context.Context, pcm []byte, rate int) ([]vad.Segment, error) {
 	timing := v.recorder.beginStage("vad", "", asr.Duration(pcm, rate))
 	segments, err := v.model.Speech(ctx, pcm, rate)
+	if len(segments) > 0 {
+		v.recorder.mu.Lock()
+		v.recorder.boundarySegments = append(v.recorder.boundarySegments, segments...)
+		v.recorder.mu.Unlock()
+	}
 	v.recorder.finishStage(timing, nil)
 	return segments, err
 }
@@ -311,10 +318,16 @@ func (c timedChat) Chat(ctx context.Context, request llm.Request) (llm.Response,
 	timing := c.recorder.beginStage(c.kind, "", 0)
 	response, err := c.chat.Chat(ctx, request)
 	c.recorder.RegisterSecrets(response.Model)
-	if err == nil && c.kind == "correction" {
-		err = validateCorrectionResponse(response.Text)
+	if c.kind == "correction" {
+		if err != nil {
+			timing.stage.ParserCategory = "transport_error"
+		} else {
+			var category string
+			category, err = validateCorrectionResponse(response.Text)
+			timing.stage.ParserCategory = category
+		}
 	}
-	timing.stage.Text = c.recorder.Clean(response.Text)
+	timing.stage.Text = asr.Clip(c.recorder.Clean(response.Text), 8000)
 	timing.stage.TextSHA256 = HashText(timing.stage.Text)
 	timing.stage.Attempts = response.Attempts
 	latency := optionalMilliseconds(response.Latency, "the language model does not report attempt latency")
@@ -353,6 +366,15 @@ func (r *Recorder) SetTranscripts(asrText, finalText, summary string) {
 	r.report.Transcript = TextArtifact{Text: finalText, SHA256: HashText(finalText)}
 	if summary != "" {
 		r.report.Summary = &TextArtifact{Text: summary, SHA256: HashText(summary)}
+		var content struct {
+			Title string   `json:"title"`
+			Body  string   `json:"body"`
+			Todos []string `json:"todos"`
+		}
+		if err := json.Unmarshal([]byte(summary), &content); err == nil {
+			encoded, _ := json.Marshal(content)
+			r.report.SummaryContentSHA256 = HashText(string(encoded))
+		}
 	}
 	r.mu.Unlock()
 }
@@ -376,6 +398,12 @@ func (r *Recorder) SetEvaluation(reference, asrText, finalText string) {
 func (r *Recorder) SetAudioDuration(audio time.Duration) {
 	r.mu.Lock()
 	r.report.AudioDurationMS = audio.Milliseconds()
+	r.mu.Unlock()
+}
+
+func (r *Recorder) SetAudioSHA256(audio []byte) {
+	r.mu.Lock()
+	r.report.AudioSHA256 = HashText(string(audio))
 	r.mu.Unlock()
 }
 
@@ -414,6 +442,16 @@ func (r *Recorder) Finish(runErr error) Report {
 		r.report.Status = "failed"
 	} else {
 		r.report.Status = "success"
+	}
+	if len(r.boundarySegments) > 0 {
+		slices.SortFunc(r.boundarySegments, func(a, b vad.Segment) int {
+			if a.Start != b.Start {
+				return int(a.Start - b.Start)
+			}
+			return int(a.End - b.End)
+		})
+		encoded, _ := json.Marshal(r.boundarySegments)
+		r.report.SpeechBoundarySHA256 = HashText(string(encoded))
 	}
 	return r.report
 }

@@ -64,7 +64,8 @@ go test -count=1 -run '^TestMeetingProfile$' -timeout 6h -v .
 | `decode_interval_ms` | Qwen3-ASR native server 的实时预览 decode interval；0 保留模型默认值。其他模型明确报错。此 harness 测离线 Final，不运行实时预览，所以该启动参数不应被解释为会改变离线 chunk 时间。 |
 | `segment_length_seconds` | 普通分段 ASR 的 `meeting.PlanChunks` 段长，0 使用默认 22 秒。必须大于 1 秒重叠；只改变会议切块，不改变 Omni 内部 Final 切块。`import` 的 MTD 整轨分人不生成 chunk plan，此字段不影响 MTD。 |
 | `cache_limit_mb` | Qwen3-ASR 的 `--cache-limit-mb`；省略保留模型默认策略，0 显式禁用缓存，正数设置 MB。其他模型明确报错。 |
-| `idle_timeout_ms` | Omni 模型在无人使用后的卸载等待。省略或 0 使用生产默认 10 分钟；正数用于生命周期诊断，例如 1000 表示 1 秒；负数拒绝。profiling 在 final pass 后先释放 ASR/VAD lease，再额外等待该时长加 100 ms 并记为 `idle_unload` 阶段，以证明模型是否在校对/总结前退出；0 不做这段额外等待。它不改变识别参数。 |
+| `idle_timeout_ms` | Omni 模型在无人使用后的卸载等待。省略或 0 使用生产默认 10 分钟；正数用于生命周期诊断，例如 1000 表示 1 秒；负数拒绝。profiling 在 final pass 前释放 VAD lease、final pass 后首个 correction 前释放 ASR lease，不插入人工等待，避免把计时器等待误算成模型工作。它不改变识别参数。 |
+| `vad_strategy` | 仅 profiling：`whole` 强制整轨一次 `Speech` 调用，`batched` 强制十分钟窗口的 `batchedSpeechRegions`。默认沿用生产路径。VAD 在 final pass 前释放 lease，请求级 VAD 使用仍照常进行；这项只改变 VAD 窗口策略，不改变 ASR、chunk 或文本规则。 |
 | `vad.enabled/model_dir` | 开启时创建并持有本地 Silero，目录必填；普通分段 ASR 用它检测语音。关闭时普通路径不调用神经或能量 VAD，而把整轨交给会议 chunk planner。`import` 有可用 MTD 时无论开关如何都直接整轨分人，不调用神经或能量 VAD，也不生成会议 chunk plan；没有 MTD 时仍以 `ErrNoDiarizer` 失败。 |
 | `language` | 语音识别语言提示和总结主语言；空字符串让模型检测，总结沿用转录稿主要语言。 |
 | `cleanup` | 调用 `Manager.CorrectTranscript`，按现有 30 行/3000 runes 规则分批。profiling 边界额外要求每批响应是 `{i,text}` 的 JSON array，malformed response 使 stage/run 失败；普通 Meeting 的容错不变。 |
@@ -194,7 +195,7 @@ VOXTNEW_OMNI_RUNTIME=/ABS/omni VOXTNEW_OMNI_MODELS='asr.moss=/ABS/moss;asr.accur
 go test -count=1 -run '^TestMacE2EFirstLatency$' -v -timeout 30m .
 ```
 
-JSON 分别记录 `first_partial_ms`、`stop_to_final_ms`（观察到 ASR 的最终文本）、`stop_to_insert_ms`（fake helper 收到实际 paste 调用）和 `stop_to_done_ms`（整个会话完成），另含 ASR/VAD cold 标记、模型加载、实时更新间隔、文本和 SHA-256。三个终点不得互相替代。测试在 paste 没有出现时失败，不会把 Done 当成插入。这里的插入覆盖 app 的真实投递逻辑，但终点仍是 fake helper，不是屏幕上的真实光标；真实 GUI 插入必须另行验收。
+JSON 分别记录 `app_ready_ms`（app 打开到模型/helper ready）、`first_partial_ms`、`stop_to_final_ms`（观察到 ASR 的最终文本）、`stop_to_insert_ms`（fake helper 收到实际 paste 调用）和 `stop_to_done_ms`（整个会话完成），另含 ASR/VAD cold 标记、模型加载、实时更新间隔、文本和 SHA-256。三个终点不得互相替代。测试在 paste 没有出现时失败，不会把 Done 当成插入。需要独立 cold 进程时，分别启动三个进程并各设 `VOXTNEW_LATENCY_ROUNDS=1`、`VOXTNEW_LATENCY_ATTEMPT=1/2/3`，这样 cold 和 warm 各得到三个不同样本，JSON 的 `round` 也不会重复。这里的插入覆盖 app 的真实投递逻辑，但终点仍是 fake helper，不是屏幕上的真实光标；真实 GUI 插入必须另行验收。
 
 ## 8. 听写/会议 overlap 调度实验
 

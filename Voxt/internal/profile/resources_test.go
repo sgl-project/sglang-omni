@@ -37,6 +37,9 @@ func TestResourceSamplerPeakCPUAndSwap(t *testing.T) {
 	if report.CPUUserMS.Value == nil || *report.CPUUserMS.Value != 21 || report.CPUSystemMS.Value == nil || *report.CPUSystemMS.Value != 2 {
 		t.Errorf("CPU %+v", report)
 	}
+	if len(report.ProcessPeaks) != 2 || report.ProcessPeaks[0].RSSBytes != 110 || report.ProcessPeaks[0].FootprintBytes != 120 || report.ProcessPeaks[1].RSSBytes != 111 || report.ProcessPeaks[1].FootprintBytes != 122 {
+		t.Errorf("per-process peaks %+v", report.ProcessPeaks)
+	}
 	if report.SwapinsDelta.Value == nil || *report.SwapinsDelta.Value != 7 || report.SwapoutsDelta.Value == nil || *report.SwapoutsDelta.Value != 6 {
 		t.Errorf("swap %+v", report)
 	}

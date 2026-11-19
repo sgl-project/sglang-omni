@@ -243,6 +243,83 @@ func TestReportDoesNotPersistEnvironmentSecret(t *testing.T) {
 	}
 }
 
+func TestCorrectionResponseCategoriesAndBoundedRaw(t *testing.T) {
+	tests := []struct {
+		name, raw, want string
+	}{
+		{"bare", `[{"i":0,"text":"answer"}]`, "successful_edit"},
+		{"fenced", "```json\n[{\"i\":0,\"text\":\"answer\"}]\n```", "successful_edit"},
+		{"embedded", "before [{\"i\":0,\"text\":\"answer\"}] after", "successful_edit"},
+		{"empty", `[]`, "valid_noop"},
+		{"malformed", "not json", "malformed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := NewRecorder(validConfig())
+			chat := chatFunc{chat: func(context.Context, llm.Request) (llm.Response, error) {
+				return llm.Response{Text: test.raw}, nil
+			}}
+			_, err := recorder.WrapChat("correction", chat).Chat(context.Background(), llm.Request{})
+			if test.want == "malformed" && err == nil {
+				t.Fatal("malformed response was accepted")
+			}
+			if test.want != "malformed" && err != nil {
+				t.Fatal(err)
+			}
+			report := recorder.Finish(nil)
+			if got := report.Stages[0].ParserCategory; got != test.want {
+				t.Fatalf("category %q, want %q", got, test.want)
+			}
+		})
+	}
+	recorder := NewRecorder(validConfig())
+	const secret = "profile-test-secret-value"
+	raw := `[{"i":0,"text":"answer"}]` + strings.Repeat(" ", 7990) + secret + "tail"
+	chat := chatFunc{chat: func(context.Context, llm.Request) (llm.Response, error) {
+		return llm.Response{Text: raw}, nil
+	}}
+	if _, err := recorder.WrapChat("correction", chat).Chat(context.Background(), llm.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	stage := recorder.Finish(nil).Stages[0]
+	if len(stage.Text) > 8000 || strings.Contains(stage.Text, secret) {
+		t.Fatalf("raw response was not safely bounded: length=%d", len(stage.Text))
+	}
+	if stage.TextSHA256 != HashText(stage.Text) {
+		t.Fatalf("stored text hash does not match the bounded raw text: %+v", stage)
+	}
+}
+
+func TestCorrectionTransportErrorCategory(t *testing.T) {
+	recorder := NewRecorder(validConfig())
+	chat := chatFunc{chat: func(context.Context, llm.Request) (llm.Response, error) {
+		return llm.Response{}, errors.New("timeout")
+	}}
+	if _, err := recorder.WrapChat("correction", chat).Chat(context.Background(), llm.Request{}); err == nil {
+		t.Fatal("transport error was accepted")
+	}
+	if got := recorder.Finish(nil).Stages[0].ParserCategory; got != "transport_error" {
+		t.Fatalf("category %q, want transport_error", got)
+	}
+}
+
+func TestSummaryContentHashIgnoresGeneratedAt(t *testing.T) {
+	first := NewRecorder(validConfig())
+	first.SetTranscripts("asr", "final", `{"title":"title","body":"body","todos":["one"],"generated_at":1}`)
+	second := NewRecorder(validConfig())
+	second.SetTranscripts("asr", "final", `{"title":"title","body":"body","todos":["one"],"generated_at":2}`)
+	if first.report.SummaryContentSHA256 != second.report.SummaryContentSHA256 {
+		t.Fatal("generated_at changed the summary content hash")
+	}
+	if first.report.Summary.SHA256 == second.report.Summary.SHA256 {
+		t.Fatal("the persisted artifact hash did not retain generated_at")
+	}
+	second.SetTranscripts("asr", "final", `{"title":"title","body":"changed","todos":["one"],"generated_at":2}`)
+	if first.report.SummaryContentSHA256 == second.report.SummaryContentSHA256 {
+		t.Fatal("changed body did not change the summary content hash")
+	}
+}
+
 func TestFirstASRHookRunsOnce(t *testing.T) {
 	recorder := NewRecorder(validConfig())
 	fires := 0

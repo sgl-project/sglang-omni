@@ -29,6 +29,7 @@ type Config struct {
 	SegmentLengthSeconds float64     `json:"segment_length_seconds,omitempty"`
 	CacheLimitMB         *int        `json:"cache_limit_mb,omitempty"`
 	IdleTimeoutMS        int         `json:"idle_timeout_ms,omitempty"`
+	VADStrategy          string      `json:"vad_strategy,omitempty"`
 	VAD                  VADConfig   `json:"vad"`
 	Language             string      `json:"language,omitempty"`
 	Cleanup              bool        `json:"cleanup"`
@@ -126,6 +127,9 @@ func (c *Config) Validate() error {
 	}
 	if c.IdleTimeoutMS < 0 {
 		return fmt.Errorf("profile: idle_timeout_ms cannot be negative")
+	}
+	if c.VADStrategy != "" && c.VADStrategy != "whole" && c.VADStrategy != "batched" {
+		return fmt.Errorf("profile: vad_strategy must be whole or batched")
 	}
 	if c.VAD.Enabled && c.VAD.ModelDir == "" {
 		return fmt.Errorf("profile: enabled VAD needs vad.model_dir")

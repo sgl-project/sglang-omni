@@ -2,6 +2,7 @@ package profile
 
 import (
 	"context"
+	"maps"
 	"os"
 	"slices"
 	"sync"
@@ -76,6 +77,7 @@ type ResourceSampler struct {
 	pressureWarnings []MemoryPressureEvent
 	peakSwapUsed     int64
 	swapSamples      int
+	processPeaks     map[int]ProcessPhaseMemory
 	phaseSamples     []PhaseSample
 }
 
@@ -84,7 +86,7 @@ func NewResourceSampler(processes func() []int) *ResourceSampler {
 	return &ResourceSampler{
 		processes: processes, memory: macx.Memory, cpu: macx.CPUTime,
 		sysmem: macx.ReadSystemMemory, now: now, started: now(),
-		latestCPU: map[int]macx.ProcCPU{},
+		latestCPU: map[int]macx.ProcCPU{}, processPeaks: map[int]ProcessPhaseMemory{},
 	}
 }
 
@@ -131,6 +133,15 @@ func (s *ResourceSampler) Sample() {
 		} else {
 			rss += memory.Resident
 			footprint += memory.Footprint
+			peak := s.processPeaks[process]
+			if memory.Resident > peak.RSSBytes {
+				peak.RSSBytes = memory.Resident
+			}
+			if memory.Footprint > peak.FootprintBytes {
+				peak.FootprintBytes = memory.Footprint
+			}
+			peak.PID = process
+			s.processPeaks[process] = peak
 		}
 		cpu, err := s.cpu(process)
 		if err != nil {
@@ -257,6 +268,15 @@ func (s *ResourceSampler) report(start, end MemorySample, hostStart, hostEnd Hos
 	}
 	report.SwapinsDelta = counterDelta(start.Swapins, end.Swapins)
 	report.SwapoutsDelta = counterDelta(start.Swapouts, end.Swapouts)
+	self := os.Getpid()
+	for _, process := range slices.Sorted(maps.Keys(s.processPeaks)) {
+		peak := s.processPeaks[process]
+		peak.Role = "native"
+		if process == self {
+			peak.Role = "harness"
+		}
+		report.ProcessPeaks = append(report.ProcessPeaks, peak)
+	}
 	report.PhaseSamples = slices.Clone(s.phaseSamples)
 	if s.pressureSamples == 0 {
 		reason := s.pressureError

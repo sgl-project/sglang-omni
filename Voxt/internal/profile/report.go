@@ -30,22 +30,23 @@ type DraftReport struct {
 }
 
 type Stage struct {
-	Name          string           `json:"name"`
-	Track         string           `json:"track,omitempty"`
-	Index         int              `json:"index"`
-	WallMS        float64          `json:"wall_ms"`
-	AudioMS       *int64           `json:"audio_ms,omitempty"`
-	RTF           *float64         `json:"rtf,omitempty"`
-	QueueAcquire  *OptionalFloat64 `json:"queue_acquire,omitempty"`
-	ResultLatency *OptionalFloat64 `json:"result_latency,omitempty"`
-	ASRFirstToken *OptionalFloat64 `json:"asr_first_token,omitempty"`
-	Draft         *DraftReport     `json:"draft,omitempty"`
-	Text          string           `json:"text,omitempty"`
-	TextSHA256    string           `json:"text_sha256,omitempty"`
-	Attempts      int              `json:"attempts,omitempty"`
-	Segments      []SegmentTiming  `json:"segments,omitempty"`
-	Warning       string           `json:"warning,omitempty"`
-	Error         string           `json:"error,omitempty"`
+	Name           string           `json:"name"`
+	Track          string           `json:"track,omitempty"`
+	Index          int              `json:"index"`
+	WallMS         float64          `json:"wall_ms"`
+	AudioMS        *int64           `json:"audio_ms,omitempty"`
+	RTF            *float64         `json:"rtf,omitempty"`
+	QueueAcquire   *OptionalFloat64 `json:"queue_acquire,omitempty"`
+	ResultLatency  *OptionalFloat64 `json:"result_latency,omitempty"`
+	ASRFirstToken  *OptionalFloat64 `json:"asr_first_token,omitempty"`
+	Draft          *DraftReport     `json:"draft,omitempty"`
+	Text           string           `json:"text,omitempty"`
+	TextSHA256     string           `json:"text_sha256,omitempty"`
+	ParserCategory string           `json:"parser_category,omitempty"`
+	Attempts       int              `json:"attempts,omitempty"`
+	Segments       []SegmentTiming  `json:"segments,omitempty"`
+	Warning        string           `json:"warning,omitempty"`
+	Error          string           `json:"error,omitempty"`
 }
 
 // SegmentTiming records text returned by MTD without pretending that the
@@ -136,6 +137,7 @@ type ResourceReport struct {
 	HostStart              HostSample            `json:"host_start"`
 	HostEnd                HostSample            `json:"host_end"`
 	PhaseSamples           []PhaseSample         `json:"phase_samples,omitempty"`
+	ProcessPeaks           []ProcessPhaseMemory  `json:"process_peaks,omitempty"`
 }
 
 type TracingReport struct {
@@ -159,16 +161,19 @@ type Report struct {
 	FirstFinalText  OptionalFloat64 `json:"first_final_text"`
 	// StopToSummaryMS is the wall from the final pass's start to the
 	// summary's return, including the gaps the stage measures miss.
-	StopToSummaryMS OptionalFloat64      `json:"stop_to_summary_ms,omitempty"`
-	Config          Config               `json:"config"`
-	Stages          []Stage              `json:"stages"`
-	ASRTranscript   TextArtifact         `json:"asr_transcript"`
-	Transcript      TextArtifact         `json:"transcript"`
-	Summary         *TextArtifact        `json:"summary,omitempty"`
-	Evaluation      Optional[Evaluation] `json:"evaluation"`
-	Resources       ResourceReport       `json:"resources"`
-	Tracing         TracingReport        `json:"tracing"`
-	Warnings        []string             `json:"warnings"`
-	Errors          []string             `json:"errors"`
-	redactor        *Redactor
+	StopToSummaryMS      OptionalFloat64      `json:"stop_to_summary_ms,omitempty"`
+	Config               Config               `json:"config"`
+	Stages               []Stage              `json:"stages"`
+	ASRTranscript        TextArtifact         `json:"asr_transcript"`
+	Transcript           TextArtifact         `json:"transcript"`
+	Summary              *TextArtifact        `json:"summary,omitempty"`
+	SummaryContentSHA256 string               `json:"summary_content_sha256,omitempty"`
+	AudioSHA256          string               `json:"audio_sha256,omitempty"`
+	SpeechBoundarySHA256 string               `json:"speech_boundary_sha256,omitempty"`
+	Evaluation           Optional[Evaluation] `json:"evaluation"`
+	Resources            ResourceReport       `json:"resources"`
+	Tracing              TracingReport        `json:"tracing"`
+	Warnings             []string             `json:"warnings"`
+	Errors               []string             `json:"errors"`
+	redactor             *Redactor
 }

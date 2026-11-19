@@ -126,8 +126,11 @@ type Config struct {
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
 	// VADFallback is called only when a configured model's batch actually
-	// falls back to energy analysis. Nil keeps the default silent fallback.
+	// falls back to energy analysis, not when a whole-track attempt fails.
 	VADFallback func()
+	// VADStrategy is a profiling-only whole/batched selector. The zero value
+	// preserves the production whole-then-batched fallback behavior.
+	VADStrategy string
 	// DisableVAD sends the whole track through the chunk planner without
 	// speech-region detection. The zero value keeps the normal VAD path.
 	DisableVAD bool

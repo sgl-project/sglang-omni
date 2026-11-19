@@ -19,7 +19,9 @@ package main
 // VOXTNEW_LATENCY_SPEAK (2s) how long a session records after its first
 // live text (long sessions: memory, the live text's pace, the Final).
 // VOXTNEW_LATENCY_OUT appends one JSON object per session with separate
-// ASR Final, helper-paste and whole-session completion times and a text hash:
+// ASR Final, helper-paste and whole-session completion times and a text hash.
+// VOXTNEW_LATENCY_ATTEMPT labels a run when several independent processes
+// each use VOXTNEW_LATENCY_ROUNDS=1, so their JSON objects stay distinct:
 //
 //	VOXTNEW_LATENCY=1 VOXTNEW_OMNI_RUNTIME=… VOXTNEW_OMNI_MODELS="asr.accurate=…;asr.fast=…;vad.silero=…" \
 //	  go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m .
@@ -52,7 +54,7 @@ import (
 // the speech model's server was ready: negative when it was before the
 // shortcut (warmed), zero when it ran already before this scenario.
 type latencyStages struct {
-	heard, ready, load, partial, final, insert, done time.Duration
+	appReady, heard, ready, load, partial, final, insert, done time.Duration
 }
 
 type latencyResult struct {
@@ -62,6 +64,7 @@ type latencyResult struct {
 	Model              string  `json:"model"`
 	ASRCold            bool    `json:"asr_cold"`
 	VADCold            bool    `json:"vad_cold"`
+	AppReadyMS         float64 `json:"app_ready_ms"`
 	FirstAudioMS       float64 `json:"first_audio_ms"`
 	ServerReadyMS      float64 `json:"server_ready_ms"`
 	ModelLoadMS        float64 `json:"model_load_ms"`
@@ -166,6 +169,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 	if n, err := strconv.Atoi(os.Getenv("VOXTNEW_LATENCY_ROUNDS")); err == nil && n > 0 {
 		rounds = n
 	}
+	attempt, _ := strconv.Atoi(os.Getenv("VOXTNEW_LATENCY_ATTEMPT"))
 	if d, err := time.ParseDuration(os.Getenv("VOXTNEW_LATENCY_SETTLE")); err == nil {
 		settle = d
 	}
@@ -184,6 +188,9 @@ func TestMacE2EFirstLatency(t *testing.T) {
 
 	got := map[string][]latencyStages{}
 	for round := 1; round <= rounds; round++ {
+		if attempt > 0 {
+			round = attempt
+		}
 		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) {
 			opened := time.Now()
 			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
@@ -195,13 +202,14 @@ func TestMacE2EFirstLatency(t *testing.T) {
 				_, ok := a.featureModel(local.ASR, "transcribe")
 				return ok && a.helperReady()
 			})
+			appReady := time.Now()
 			a.pumpFor(settle, func() bool { return false })
-			got["cold"] = append(got["cold"], latencySession(t, a, lg, opened, "cold", ids[0], round))
-			got["warm"] = append(got["warm"], latencySession(t, a, lg, time.Now(), "warm", ids[0], round))
+			got["cold"] = append(got["cold"], latencySession(t, a, lg, opened, appReady, "cold", ids[0], round))
+			got["warm"] = append(got["warm"], latencySession(t, a, lg, time.Now(), time.Time{}, "warm", ids[0], round))
 			changed := time.Now()
 			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", ids[1]) })
 			a.pumpFor(settle, func() bool { return false })
-			got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, "switch", ids[1], round))
+			got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, time.Time{}, "switch", ids[1], round))
 		})
 	}
 	for _, name := range []string{"cold", "warm", "switch"} {
@@ -250,9 +258,12 @@ func spread(all []latencyStages, get func(latencyStages) time.Duration) string {
 // the first live text and returns the session's stages; from is when the
 // scenario began (the app opened, the model changed): a server ready
 // since then counts as this scenario's.
-func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from time.Time, name, id string, round int) latencyStages {
+func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt time.Time, name, id string, round int) latencyStages {
 	t.Helper()
 	var st latencyStages
+	if !readyAt.IsZero() {
+		st.appReady = readyAt.Sub(from)
+	}
 	last := a.sess.ID
 	t0 := time.Now()
 	a.toggleTranscribe()
@@ -320,6 +331,7 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 	result := latencyResult{
 		MainSHA: latencyMainSHA(), Scenario: name, Round: round, Model: id,
 		ASRCold: name != "warm", VADCold: name == "cold",
+		AppReadyMS:   milliseconds(st.appReady),
 		FirstAudioMS: milliseconds(st.heard), ServerReadyMS: milliseconds(st.ready), ModelLoadMS: milliseconds(st.load),
 		FirstPartialMS: milliseconds(st.partial), StopToFinalMS: milliseconds(st.final),
 		StopToInsertMS: milliseconds(st.insert), StopToDoneMS: milliseconds(st.done),
@@ -342,7 +354,7 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 func TestLatencyResultJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "latency.jsonl")
 	t.Setenv("VOXTNEW_LATENCY_OUT", path)
-	stages := latencyStages{final: 1200 * time.Millisecond, insert: 1250 * time.Millisecond, done: 1300 * time.Millisecond}
+	stages := latencyStages{appReady: 1500 * time.Millisecond, final: 1200 * time.Millisecond, insert: 1250 * time.Millisecond, done: 1300 * time.Millisecond}
 	writeLatencyResult(t, "cold", "asr.test", 2, stages, 4, 275*time.Millisecond, "fixed text")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -352,8 +364,8 @@ func TestLatencyResultJSON(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.StopToFinalMS != 1200 || got.StopToInsertMS != 1250 || got.StopToDoneMS != 1300 {
-		t.Fatalf("the three endpoints collapsed: %+v", got)
+	if got.AppReadyMS != 1500 || got.StopToFinalMS != 1200 || got.StopToInsertMS != 1250 || got.StopToDoneMS != 1300 {
+		t.Fatalf("app readiness or the three endpoints collapsed: %+v", got)
 	}
 	if !got.ASRCold || !got.VADCold || got.Round != 2 || got.LiveUpdates != 4 || got.LongestUpdateGapMS != 275 {
 		t.Fatalf("scenario metadata: %+v", got)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,18 +25,30 @@ type fakeProfileASR struct {
 	diarizeCalls    int
 	segments        int
 	releases        *int
+	events          *[]string
 }
 
 func (f *fakeProfileASR) Caps() asr.Caps { return asr.Caps{File: true} }
 func (f *fakeProfileASR) Hold(context.Context) (func(), error) {
-	return func() { *f.releases++ }, nil
+	return func() {
+		*f.releases++
+		if f.events != nil {
+			*f.events = append(*f.events, "asr release")
+		}
+	}, nil
 }
 func (f *fakeProfileASR) Transcribe(context.Context, asr.FileRequest) (asr.Result, error) {
 	f.transcribeCalls++
+	if f.events != nil {
+		*f.events = append(*f.events, "mic asr")
+	}
 	return asr.Result{Text: "plain", Acquire: time.Millisecond, Latency: 2 * time.Millisecond}, nil
 }
 func (f *fakeProfileASR) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
 	f.diarizeCalls++
+	if f.events != nil {
+		*f.events = append(*f.events, "system diarization")
+	}
 	result := asr.Result{Acquire: time.Millisecond, Latency: 2 * time.Millisecond}
 	for index := 0; index < f.segments; index++ {
 		result.Segments = append(result.Segments, asr.SpeakerSegment{
@@ -51,10 +64,14 @@ type fakeProfileVAD struct {
 	releases     *int
 	speechError  error
 	succeedAfter int
+	events       *[]string
 }
 
 func (f *fakeProfileVAD) Speech(_ context.Context, pcm []byte, rate int) ([]vad.Segment, error) {
 	f.calls++
+	if f.events != nil {
+		*f.events = append(*f.events, "vad speech")
+	}
 	if f.speechError != nil && (f.succeedAfter == 0 || f.calls < f.succeedAfter) {
 		return nil, f.speechError
 	}
@@ -62,18 +79,31 @@ func (f *fakeProfileVAD) Speech(_ context.Context, pcm []byte, rate int) ([]vad.
 }
 func (f *fakeProfileVAD) Open(context.Context) (vad.ModelStream, error) { return nil, nil }
 func (f *fakeProfileVAD) Hold(context.Context) (func(), error) {
-	return func() { *f.releases++ }, nil
+	return func() {
+		*f.releases++
+		if f.events != nil {
+			*f.events = append(*f.events, "vad release")
+		}
+	}, nil
 }
 
 type fakeProfileChat struct {
 	correctionError   bool
 	releases          *int
 	firstCallReleases *int
+	events            *[]string
 }
 
 func (f fakeProfileChat) Chat(_ context.Context, request llm.Request) (llm.Response, error) {
 	if f.releases != nil && f.firstCallReleases != nil && *f.firstCallReleases < 0 {
 		*f.firstCallReleases = *f.releases
+	}
+	if f.events != nil {
+		if len(request.Messages) > 0 && request.Messages[0].Role == llm.System {
+			*f.events = append(*f.events, "correction")
+		} else {
+			*f.events = append(*f.events, "summary")
+		}
 	}
 	if len(request.Messages) > 0 && request.Messages[0].Role == llm.System {
 		if f.correctionError {
@@ -177,7 +207,7 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	for _, stage := range report.Stages {
 		counts[stage.Name]++
 	}
-	if counts["correction"] != 5 || counts["summary"] != 3 || counts["diarization"] != 1 || counts["idle_unload"] != 1 || counts["teardown"] != 1 || counts["vad"] != 1 {
+	if counts["correction"] != 5 || counts["summary"] != 3 || counts["diarization"] != 1 || counts["idle_unload"] != 0 || counts["teardown"] != 1 || counts["vad"] != 1 {
 		t.Errorf("stage counts %+v", counts)
 	}
 	if report.Evaluation.Value == nil || report.ASRTranscript.SHA256 == report.Transcript.SHA256 || !strings.Contains(report.Transcript.Text, "yyy") {
@@ -191,15 +221,23 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 func TestMeetingProfileFakeImportWithMicTrack(t *testing.T) {
 	config := fakeProfileConfig("import")
 	config.MicAudio = "mic.wav"
+	config.Cleanup = true
+	config.Summary = true
+	config.IdleTimeoutMS = 1
+	config.VADStrategy = "whole"
 	releases := 0
-	speech := &fakeProfileASR{segments: 65, releases: &releases}
-	detector := &fakeProfileVAD{releases: &releases}
+	events := []string{}
+	speech := &fakeProfileASR{segments: 65, releases: &releases, events: &events}
+	detector := &fakeProfileVAD{releases: &releases, events: &events}
 	dependencies := defaultProfileDependencies()
 	dependencies.decode = func(context.Context, string) ([]byte, error) {
 		return make([]byte, asr.SampleRate*2), nil
 	}
 	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
 	dependencies.newVAD = func(profile.Config) (profileVAD, error) { return detector, nil }
+	dependencies.newLLM = func(context.Context, profile.LLMConfig) (meeting.SummaryChat, error) {
+		return fakeProfileChat{events: &events}, nil
+	}
 	recorder := profile.NewRecorder(config)
 	report, runErr := runMeetingProfile(context.Background(), config, dependencies, recorder, nil, nil)
 	if runErr != nil {
@@ -210,8 +248,27 @@ func TestMeetingProfileFakeImportWithMicTrack(t *testing.T) {
 	if report.Status != "success" || speech.diarizeCalls != 1 || speech.transcribeCalls != 1 || detector.calls != 2 || releases != 2 {
 		t.Fatalf("status %s, ASR %+v, VAD %+v, releases %d", report.Status, speech, detector, releases)
 	}
+	previous := -1
+	for _, want := range []string{"vad release", "mic asr", "system diarization", "asr release", "correction", "summary"} {
+		index := slices.Index(events, want)
+		if index < 0 || index <= previous {
+			t.Fatalf("event order %v, missing or misplaced %q", events, want)
+		}
+		previous = index
+	}
+	for _, stage := range report.Stages {
+		if stage.Name == "idle_unload" {
+			t.Fatalf("idle_unload must not add artificial waiting to stop_to_summary: %+v", stage)
+		}
+	}
 	if report.AudioDurationMS != 1000 {
 		t.Errorf("audio duration %d, want the track duration 1000", report.AudioDurationMS)
+	}
+	if report.AudioSHA256 != profile.HashText(string(make([]byte, asr.SampleRate*2))) {
+		t.Errorf("decoded mic PCM hash %q", report.AudioSHA256)
+	}
+	if report.SpeechBoundarySHA256 == "" {
+		t.Error("speech boundary hash is missing")
 	}
 	var micChunks, sysDiarize int
 	for _, stage := range report.Stages {

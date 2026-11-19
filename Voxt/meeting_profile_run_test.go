@@ -70,13 +70,16 @@ func runMeetingProfile(
 ) (report profile.Report, runErr error) {
 	monitor := profile.StartResourceMonitor(ctx, profile.SelfAndNative(dependencies.nativePIDs))
 	var database store.Store
-	var releases []func()
+	var asrRelease, vadRelease func()
 	var temporaryDir string
 	defer func() {
 		teardownErr := recorder.Measure("teardown", 0, func() error {
 			var errs []error
-			for index := len(releases) - 1; index >= 0; index-- {
-				releases[index]()
+			if asrRelease != nil {
+				asrRelease()
+			}
+			if vadRelease != nil {
+				vadRelease()
 			}
 			if dependencies.closeRuntime != nil {
 				if err := dependencies.closeRuntime(); err != nil {
@@ -126,6 +129,13 @@ func runMeetingProfile(
 		}
 		return err
 	})
+	if config.VADStrategy != "" {
+		audioForHash := pcm
+		if len(micPCM) > 0 {
+			audioForHash = micPCM
+		}
+		recorder.SetAudioSHA256(audioForHash)
+	}
 	audioDuration := asr.Duration(pcm, asr.SampleRate)
 	if micDuration := asr.Duration(micPCM, asr.SampleRate); micDuration > audioDuration {
 		audioDuration = micDuration
@@ -204,21 +214,19 @@ func runMeetingProfile(
 		if err != nil {
 			return err
 		}
-		release, err := speech.Hold(ctx)
+		asrRelease, err = speech.Hold(ctx)
 		if err != nil {
 			return err
 		}
-		releases = append(releases, release)
 		if config.VAD.Enabled {
 			detector, err = dependencies.newVAD(config)
 			if err != nil {
 				return err
 			}
-			release, err = detector.Hold(ctx)
+			vadRelease, err = detector.Hold(ctx)
 			if err != nil {
 				return err
 			}
-			releases = append(releases, release)
 		}
 		return nil
 	})
@@ -250,6 +258,7 @@ func runMeetingProfile(
 			return recorder.WrapDiarizer("system", speech), nil
 		},
 		DisableVAD:   !config.VAD.Enabled,
+		VADStrategy:  config.VADStrategy,
 		VADFallback:  func() { recorder.Warn("VAD used energy fallback") },
 		MainLanguage: func() string { return config.Language },
 		Warn:         recorder.Warn,
@@ -269,6 +278,10 @@ func runMeetingProfile(
 		chunks.MaxDur = time.Duration(config.SegmentLengthSeconds * float64(time.Second))
 		meetingConfig.FinalizeChunkParams = &chunks
 	}
+	if vadRelease != nil {
+		vadRelease()
+		vadRelease = nil
+	}
 	manager := meeting.NewManager(meetingConfig)
 	stopToSummaryStart := time.Now()
 	runErr = recorder.Measure("final_pass", audioDuration, func() error {
@@ -281,18 +294,9 @@ func runMeetingProfile(
 	if runErr != nil {
 		return
 	}
-	for _, release := range releases {
-		release()
-	}
-	releases = nil
-	if config.IdleTimeoutMS > 0 {
-		runErr = recorder.Measure("idle_unload", 0, func() error {
-			time.Sleep(time.Duration(config.IdleTimeoutMS)*time.Millisecond + 100*time.Millisecond)
-			return nil
-		})
-		if runErr != nil {
-			return
-		}
+	if asrRelease != nil {
+		asrRelease()
+		asrRelease = nil
 	}
 	monitor.Snapshot("after_final_pass")
 	_, rawSegments, err := database.Meetings().Meeting(ctx, meetingRow.ID)
@@ -303,6 +307,25 @@ func runMeetingProfile(
 	rawText := profileMeetingText(rawSegments)
 	finalText := rawText
 	summaryText := ""
+	if config.Cleanup {
+		chatKind = "correction"
+		err := recorder.Measure("correction_pass", 0, func() error {
+			return manager.CorrectTranscript(ctx, meetingRow.ID)
+		})
+		if err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+	}
+	if config.Summary {
+		chatKind = "summary"
+		err := recorder.Measure("summary_pass", 0, func() error {
+			return manager.GenerateMeetingSummary(ctx, meetingRow.ID)
+		})
+		if err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+	}
+	recorder.SetStopToSummary(time.Since(stopToSummaryStart))
 	if !filepath.IsAbs(config.OutputDir) {
 		// Fake configurations use a relative placeholder; real runs pass
 		// an absolute output directory.
@@ -325,26 +348,6 @@ func runMeetingProfile(
 	} else {
 		recorder.Warn("segments.jsonl: " + segmentsErr.Error())
 	}
-
-	if config.Cleanup {
-		chatKind = "correction"
-		err := recorder.Measure("correction_pass", 0, func() error {
-			return manager.CorrectTranscript(ctx, meetingRow.ID)
-		})
-		if err != nil {
-			runErr = errors.Join(runErr, err)
-		}
-	}
-	if config.Summary {
-		chatKind = "summary"
-		err := recorder.Measure("summary_pass", 0, func() error {
-			return manager.GenerateMeetingSummary(ctx, meetingRow.ID)
-		})
-		if err != nil {
-			runErr = errors.Join(runErr, err)
-		}
-	}
-	recorder.SetStopToSummary(time.Since(stopToSummaryStart))
 	storedMeeting, finalSegments, err := database.Meetings().Meeting(ctx, meetingRow.ID)
 	if err != nil {
 		runErr = errors.Join(runErr, err)

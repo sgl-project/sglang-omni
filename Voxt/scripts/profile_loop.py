@@ -43,6 +43,7 @@ CONFIG_FIELDS = {
     "segment_length_seconds",
     "cache_limit_mb",
     "idle_timeout_ms",
+    "vad_strategy",
     "vad",
     "language",
     "cleanup",
@@ -299,6 +300,9 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
             "stages": stage_medians,
         },
     }
+    content_hashes = [report.get("summary_content_sha256") for report in reports]
+    if any(value is not None for value in content_hashes):
+        summary["summary_content_sha256"] = content_hashes
     if "stop_to_final_ms" in reports[0]:
         summary["median"].update(
             {
