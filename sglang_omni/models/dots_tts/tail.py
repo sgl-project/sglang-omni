@@ -460,12 +460,6 @@ class DotsTtsAcousticTail:
         )
         if self.device.type == "npu":
             self.dit_rotary.forward = MethodType(rotary_forward, self.dit_rotary)
-            if self.encoder_rotary is not None:
-                self.encoder_rotary.forward = MethodType(
-                    rotary_forward, self.encoder_rotary
-                )
-            else:
-                pass
         else:
             pass
         self.encoder_block = int(patch_encoder.out_ds_rate)

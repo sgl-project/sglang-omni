@@ -108,16 +108,10 @@ def test_tail_rotary_preserves_float32_without_changing_other_instances(
     acoustic_tail = build_tail(TailModel().to(device), slots=1, device=device)
     if device_type == "cpu":
         assert acoustic_tail.dit_rotary.forward.__func__ is original_forward
-        if acoustic_tail.encoder_rotary is not None:
-            assert acoustic_tail.encoder_rotary.forward.__func__ is original_forward
         return
     else:
         pass
     assert acoustic_tail.dit_rotary.forward.__func__ is tail.rotary_forward
-    if acoustic_tail.encoder_rotary is not None:
-        assert acoustic_tail.encoder_rotary.forward.__func__ is tail.rotary_forward
-    else:
-        pass
     positions = torch.tensor(
         [0, 255, 256, 257, 4095, 4096, 4097], dtype=torch.float32, device=device
     )
