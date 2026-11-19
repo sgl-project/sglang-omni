@@ -134,7 +134,7 @@ sgl-omni serve \
 
 ## Codec decoding defaults
 
-Streaming decodes run on the stateful incremental codec by default: each follow-up chunk decodes only its fresh frames against per-stream state held in a preallocated arena, and the follow-up workers collect for 4 ms. On NVIDIA, AMD and MUSA GPUs steady-state cohorts also decode asynchronously on a priority stream and replay CUDA graphs whose decode step is `torch.compile`d, which costs about a minute of startup compiling the steady shapes. The left-context decoder remains available as a rollback:
+Streaming decodes run on the stateful incremental codec by default: each follow-up chunk decodes only its fresh frames against per-stream state, held in a preallocated arena when decoding asynchronously, and the follow-up workers collect for 4 ms. On NVIDIA, AMD and MUSA GPUs steady-state cohorts also decode asynchronously on a priority stream and replay CUDA graphs whose decode step is `torch.compile`d, which costs about a minute of startup compiling the steady shapes. The left-context decoder remains available as a rollback:
 
 ```yaml
 stages:
@@ -147,9 +147,9 @@ stages:
 
 With asynchronous decode, each stream holds one of `codec_state_slots` from its first decode to its last, and its last decode comes after its engine slot frees. So the vocoder can hold every request the server admits at once, and `codec_state_slots` defaults to the server's in-flight cap: `max_running_requests` plus `max_queued_requests`, times the engine replicas (128 with the defaults). Requests bind to replicas round-robin with no cap per replica, so each vocoder replica takes the whole cap. Streams past the slots decode eagerly on the left-context path, which costs more per chunk. At startup the vocoder logs the decode graphs it captured and warns when `--vocoder.factory.codec_state_slots` is set below the cap. A server whose `max_queued_requests` is unbounded has no cap to size from, so with asynchronous decode it starts only with `--vocoder.factory.codec_state_slots` set and warns that streams past them decode on the left-context path. A slot takes 2.74 MiB on the 1.7B checkpoints.
 
-The cap counts a request until its result or its abort. A stream whose client leaves while one of its decodes runs gives its slot back only when that decode finishes, so a request admitted in that moment can find the slots full and decode on the left-context path to its end. Such a stream takes no slot, so the slots stay free for the requests after it.
+The cap counts a request until its result, or until the server publishes its abort or failure. The vocoder returns that stream's slot only once it has handled the abort and any decode of the stream already running has finished, so a request admitted in that moment can find the slots full and decode on the left-context path to its end. Such a stream takes no slot, so the slots stay free for the requests after it.
 
-A synchronous decode keeps each stream's state on the stream, so a server that decodes synchronously, including deterministic inference, allocates no slots and needs no `codec_state_slots`. Neither does the left-context rollback above.
+A synchronous decode keeps each stream's state on the stream and allocates no slots, so it needs no `codec_state_slots`. That covers the platforms that decode synchronously by default (Intel XPU, Ascend NPU, CPU and Apple MPS), `async_decode: false`, deterministic inference, and the left-context rollback above.
 
 Non-streaming requests decode on the same stateful decoder. Each finished request holds one of a second, equal set of `codec_state_slots` reserved for them and steps through the window graphs, with the first decode of a Base request on the tail graphs. A request past the reserved slots waits for one to free instead of decoding eagerly. The startup line reports both sets, so the arena is twice the stream slots' memory. A server whose window graphs fail to capture, or one started with `enable_stateful_codec_decoder: false`, decodes non-streaming requests whole on the whole-utterance graphs instead.
 

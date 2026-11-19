@@ -1124,8 +1124,6 @@ class Qwen3TTSStreamingVocoderScheduler(
                 "Qwen3-TTS sizes its Codec state arena from the in-flight cap, and this server admits without one; "
                 "set --tts_engine.engine.max_queued_requests or --vocoder.factory.codec_state_slots"
             )
-        elif num_slots <= 0:
-            raise ValueError("codec_state_slots must be > 0")
         else:
             pass
         arena_type = (
@@ -1355,14 +1353,13 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     def log_cuda_graph_coverage(self, max_in_flight: int | None) -> None:
         """Log the decode graphs startup captured; warn when the server admits more requests than slots."""
-        codec_stats = self.codec_state_stats()
         if self.incremental_decoder is None:
             logger.info(
                 "Qwen3-TTS vocoder: stateful Codec decoder off, so every stream "
                 "decodes on the left-context path"
             )
             return
-        elif not codec_stats["enabled"]:
+        elif self.codec_arena is None:
             logger.info(
                 "Qwen3-TTS vocoder decodes synchronously, each stream on its own "
                 "Codec state, so it holds no Codec slots"
@@ -1370,6 +1367,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             return
         else:
             pass
+        codec_stats = self.codec_state_stats()
         graph_stats = codec_stats["cuda_graphs"]
         runner_stats = {
             "cold": graph_stats["cold"],

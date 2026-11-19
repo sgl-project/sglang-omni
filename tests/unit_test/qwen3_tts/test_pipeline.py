@@ -11765,7 +11765,7 @@ def uncapped_vocoder(
     ("vocoder_overrides", "is_deterministic", "slots"),
     [
         ({"enable_stateful_codec_decoder": False}, False, None),
-        ({}, False, None),
+        ({"async_decode": False}, False, None),
         ({"async_decode": True}, True, None),
         ({"async_decode": True, "codec_state_slots": 8}, False, 8),
     ],
