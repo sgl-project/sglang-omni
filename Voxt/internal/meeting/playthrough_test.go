@@ -19,8 +19,8 @@ import (
 )
 
 // playedAudio is a microphone that plays a recording in 100 ms chunks, as
-// the helper sends them, 50 times faster than it was spoken, and then
-// stays quiet until it is stopped.
+// the helper sends them, as fast as the track takes them, and then stays
+// quiet until it is stopped.
 type playedAudio struct {
 	pcm   []byte
 	mu    sync.Mutex
@@ -36,8 +36,6 @@ func (p *playedAudio) Record(ctx context.Context, id string, _ proto.CapturePara
 	const chunk = asr.BytesPerSecond / 10
 	for off := 0; off < len(p.pcm); off += chunk {
 		fn(session.AudioEvent{PCM: &proto.PCMParams{Job: id, Data: p.pcm[off:min(off+chunk, len(p.pcm))]}})
-		// The model's text for a chunk reaches the captions before the next chunk, as it does live.
-		time.Sleep(2 * time.Millisecond)
 	}
 	select {
 	case <-ctx.Done():
@@ -148,6 +146,16 @@ func TestMeetingPlaythrough(t *testing.T) {
 			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
 		},
 	})
+	captioned := make(chan struct{}, 1)
+	cancel := m.Subscribe(func(snap meeting.Snapshot) {
+		if len(snap.Segments) >= len(sentences) {
+			select {
+			case captioned <- struct{}{}:
+			default:
+			}
+		}
+	})
+	t.Cleanup(cancel)
 	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
 	if err != nil {
 		t.Fatal(err)
@@ -159,10 +167,10 @@ func TestMeetingPlaythrough(t *testing.T) {
 		}
 		return out
 	}
-	for deadline := time.Now().Add(10 * time.Second); len(m.Current().Segments) < len(sentences); time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("live captions %q, want %q", texts(m.Current().Segments), sentences)
-		}
+	select {
+	case <-captioned:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("live captions %q, want %q", texts(m.Current().Segments), sentences)
 	}
 	live := m.Current().Segments
 	if got := texts(live); !slices.Equal(got, sentences) {
