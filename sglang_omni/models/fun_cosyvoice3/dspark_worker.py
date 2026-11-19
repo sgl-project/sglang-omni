@@ -305,6 +305,9 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         )
 
 
+# note (yaourt): measured on an H100 NVL, where folding the proposal into the draft graph raised throughput up to four running requests and changed it by about 1% beyond.
+FOLDED_PROPOSAL_MAX_BATCH_SIZE = 4
+
 MIRRORED_DRAFT_SAMPLING_LOCK = Lock()
 mirrored_draft_sampling_installed = False
 
@@ -414,6 +417,9 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
         assert (
             self._sampling_accept_graph is None
         )  # noqa: leading-underscore  # the inherited graph must not bypass exact verification
+        assert (
+            self._verify_epilogue is None
+        )  # noqa: leading-underscore  # an inherited epilogue would read draft tokens from its own buffer
         self._verify_executor = (
             self.exact_verify_executor
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -521,16 +527,21 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
 
     def _maybe_build_draft_sampler(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self,
-    ) -> ExactDraftGraphSampler | None:
-        """Optionally capture the exact sampler with fixed input buffers."""
+    ) -> ExactDraftGraphSampler:
+        """Capture the exact sampler in the draft graphs of small batches."""
         return ExactDraftGraphSampler(
-            model=self.draft_model,
+            draft_model=self.draft_model,
             gamma=self.gamma,
-            max_bs=max(get_exec().graph.cuda_graph_config.decode.bs),
+            # A running batch replays the smallest captured size that holds it, so the
+            # folded sizes end on a captured one.
+            max_batch_size=max(
+                batch_size
+                for batch_size in get_exec().graph.cuda_graph_config.decode.bs
+                if batch_size <= FOLDED_PROPOSAL_MAX_BATCH_SIZE
+            ),
             device=self.device,
-            noise=self._proposer.noise,  # noqa: leading-underscore  # inherited proposer
+            draft_noise=self._proposer.noise,  # noqa: leading-underscore  # inherited proposer
             tp_sync=self._tp_sync,  # noqa: leading-underscore  # inherited synchronization context
-            out=None,
         )
 
     def forward_batch_generation(
@@ -564,8 +575,19 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
             )
             self.draft_model.markov_head.sampling_state = state.draft
             self.exact_verify_executor.step_state = state
-            # note (yaourt): committed history changes even when sampling tensor identities match.
-            self._proposer._staged_params_key = None  # noqa: leading-underscore  # invalidate the inherited sampling-state cache
+            draft_sampler = (
+                self._draft_sampler
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            if draft_sampler is None or len(batch.reqs) > draft_sampler.max_bs:
+                self._proposer.attach_draft_sampler(  # noqa: leading-underscore  # inherited proposer
+                    None
+                )
+            else:
+                # note (yaourt): committed history changes every step, while the proposer restages only when the sampling tensors are rebound.
+                draft_sampler.stage_step_state(state.draft)
+                self._proposer.attach_draft_sampler(  # noqa: leading-underscore  # inherited proposer
+                    draft_sampler
+                )
         else:
             pass
         return super().forward_batch_generation(

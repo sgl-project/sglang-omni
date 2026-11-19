@@ -1093,31 +1093,30 @@ def test_drafting_routes_only_a_mirrored_head_through_its_own_block_draw(
     assert forwarded_heads == [other_head]
 
 
-@pytest.mark.parametrize("runs_graph", [False, True])
-def test_worker_refreshes_sampling_before_decode(
-    runs_graph: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Consecutive decodes reused stale history when sampling tensor identities matched."""
+def decode_step_worker(
+    draft_model: SimpleNamespace | dspark_draft.FunCosyVoice3DSparkDraftModel,
+    draft_sampler: SimpleNamespace | ExactDraftGraphSampler,
+    device: torch.device,
+) -> tuple[FunCosyVoice3DSparkWorker, SimpleNamespace, list[object]]:
+    """A worker reduced to its decode step, its batch, and the samplers it attaches."""
     worker = FunCosyVoice3DSparkWorker.__new__(FunCosyVoice3DSparkWorker)
-    worker.request_histories = RequestHistories(
-        slot_count=1, device=torch.device("cpu")
-    )
-    worker.draft_model = SimpleNamespace(
-        markov_head=SimpleNamespace(sampling_state=None)
-    )
+    worker.draft_model = draft_model
+    worker.request_histories = RequestHistories(slot_count=1, device=device)
     worker.exact_verify_executor = SimpleNamespace(step_state=None)
-    proposer = SimpleNamespace(
-        _staged_params_key=None,
-        num_staged_params_calls=0,
-        num_staged_params_skips=0,
+    attached_samplers: list[object] = []
+    worker._draft_sampler = (
+        draft_sampler  # noqa: leading-underscore  # inherited sampler slot under test
     )
     worker._proposer = (
-        proposer  # noqa: leading-underscore  # inherited proposer under test
+        SimpleNamespace(  # noqa: leading-underscore  # inherited proposer under test
+            attach_draft_sampler=attached_samplers.append
+        )
     )
     batch = SimpleNamespace(
         forward_mode=ForwardMode.DECODE,
         is_extend_in_batch=False,
         return_logprob=False,
+        reqs=[],
         sampling_info=SimpleNamespace(
             penalizer_orchestrator=None,
             need_min_p_sampling=False,
@@ -1125,44 +1124,39 @@ def test_worker_refreshes_sampling_before_decode(
             has_custom_logit_processor=False,
         ),
     )
+    return worker, batch, attached_samplers
+
+
+def test_worker_restages_every_folded_step_and_keeps_larger_batches_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consecutive decodes reused stale history when sampling tensor identities matched."""
+    staged_states: list[int] = []
+    sampler = SimpleNamespace(max_bs=2, stage_step_state=staged_states.append)
+    worker, batch, attached_samplers = decode_step_worker(
+        SimpleNamespace(markov_head=SimpleNamespace(sampling_state=None)),
+        sampler,
+        torch.device("cpu"),
+    )
     state_builder = Mock()
     monkeypatch.setattr(dspark_worker, "build_step_sampling_state", state_builder)
-    observed_lengths: list[int] = []
-
-    def stage_sampling_params(*, bs: int, sampling_info: None) -> None:
-        observed_lengths.append(worker.draft_model.markov_head.sampling_state)
-
-    sampler = SimpleNamespace(stage_sampling_params=stage_sampling_params)
-
-    def run_draft_step(
-        batch: ScheduleBatch,
-        on_publish: None,
-        grammar_barrier: None,
-        *,
-        pp_proxy_tensors: PPProxyTensors | None,
-    ) -> None:
-        if runs_graph:
-            sglang_dspark_draft.DraftBlockProposer._stage_sampling_params(  # noqa: leading-underscore  # execute the dependency's cache decision
-                proposer, sampler, bs=1, sampling_info=None
-            )
-        else:
-            pass
-
     monkeypatch.setattr(
-        dspark_worker.DSparkWorkerV2,
-        "forward_batch_generation",
-        Mock(side_effect=run_draft_step),
+        dspark_worker.DSparkWorkerV2, "forward_batch_generation", Mock()
     )
-    for output_length in (7, 14, 0, 7):
+
+    for output_length, request_count in ((7, 1), (14, 2), (21, 3), (0, 2)):
         state_builder.return_value = SimpleNamespace(draft=output_length)
+        batch.reqs = [None] * request_count
         worker.forward_batch_generation(batch)
         assert worker.exact_verify_executor.step_state is state_builder.return_value
-    assert observed_lengths == ([7, 14, 0, 7] if runs_graph else [])
+
+    assert staged_states == [7, 14, 0]
+    assert attached_samplers == [sampler, sampler, None, sampler]
 
 
 @pytest.mark.accelerator
 @REQUIRES_CUDA
-@pytest.mark.parametrize("graph_rows", [1, 4, 16])
+@pytest.mark.parametrize("graph_rows", [1, 4])
 @pytest.mark.parametrize("seeded", [False, True])
 def test_exact_draft_graph_refreshes_history_and_noise(
     graph_rows: int,
@@ -1187,44 +1181,18 @@ def test_exact_draft_graph_refreshes_history_and_noise(
         "unreachable_logits", torch.zeros(TOTAL_VOCAB_SIZE, device="cuda")
     )
     sampler = ExactDraftGraphSampler(
-        model=model,
+        draft_model=model,
         gamma=7,
-        max_bs=graph_rows,
+        max_batch_size=graph_rows,
         device=torch.device("cuda"),
-        noise=sglang_dspark_draft.DraftNoise(
+        draft_noise=sglang_dspark_draft.DraftNoise(
             key=0, offset=torch.zeros((), device="cuda", dtype=torch.int64)
         ),
         tp_sync=SpecTpSync(SimpleNamespace(world_size=1)),
-        out=None,
     )
     model.markov_head.block_sampler = sampler.compiled_sampler
-    proposer = sglang_dspark_draft.DraftBlockProposer.__new__(
-        sglang_dspark_draft.DraftBlockProposer
-    )
-    proposer._staged_params_key = (
-        None  # noqa: leading-underscore  # initialize the upstream cache under test
-    )
-    proposer.num_staged_params_calls = 0
-    proposer.num_staged_params_skips = 0
-    worker = FunCosyVoice3DSparkWorker.__new__(FunCosyVoice3DSparkWorker)
-    worker.draft_model = model
-    worker.request_histories = RequestHistories(
-        slot_count=graph_rows, device=torch.device("cuda")
-    )
-    worker.exact_verify_executor = SimpleNamespace(step_state=None)
-    worker._proposer = (
-        proposer  # noqa: leading-underscore  # inherited proposer under test
-    )
-    batch = SimpleNamespace(
-        forward_mode=ForwardMode.DECODE,
-        is_extend_in_batch=False,
-        return_logprob=False,
-        sampling_info=SimpleNamespace(
-            penalizer_orchestrator=None,
-            need_min_p_sampling=False,
-            logit_bias=None,
-            has_custom_logit_processor=False,
-        ),
+    worker, batch, attached_samplers = decode_step_worker(
+        model, sampler, torch.device("cuda")
     )
     state_builder = Mock()
     monkeypatch.setattr(dspark_worker, "build_step_sampling_state", state_builder)
@@ -1236,9 +1204,6 @@ def test_exact_draft_graph_refreshes_history_and_noise(
         *,
         pp_proxy_tensors: PPProxyTensors | None,
     ) -> None:
-        proposer._stage_sampling_params(  # noqa: leading-underscore  # exercise the unpatched dependency's staging cache
-            sampler, bs=request_count, sampling_info=None
-        )
         graph.replay()
 
     monkeypatch.setattr(
@@ -1281,6 +1246,7 @@ def test_exact_draft_graph_refreshes_history_and_noise(
                 ),
             )
             state_builder.return_value = SimpleNamespace(draft=state)
+            batch.reqs = [None] * request_count
             hidden_states.normal_()
             input_tokens.random_(0, VOCAB_SIZE)
             random_state = torch.cuda.get_rng_state()
@@ -1303,3 +1269,11 @@ def test_exact_draft_graph_refreshes_history_and_noise(
             torch.testing.assert_close(
                 actual_logits, expected_logits, rtol=1e-5, atol=1e-5
             )
+        assert attached_samplers == [sampler] * 5
+        # A graph above the folded batch size must capture no tail.
+        folded_tokens = sampler.out.clone()
+        sampler(
+            torch.randn((graph_rows + 1) * 8, 32, device="cuda", dtype=torch.bfloat16),
+            torch.randint(0, VOCAB_SIZE, ((graph_rows + 1) * 8,), device="cuda"),
+        )
+        assert torch.equal(sampler.out, folded_tokens)

@@ -2,90 +2,84 @@
 """Capture the exact CosyVoice proposal in the draft graph tail."""
 
 import torch
-from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.speculative.dspark_components.dspark_draft import DraftNoise
 from sglang.srt.speculative.dspark_components.dspark_draft_sampler import (
     DsparkDraftSampler,
 )
 from sglang.srt.speculative.spec_tp_sync import SpecTpSync
 
-from sglang_omni.models.fun_cosyvoice3.dspark_draft import FunCosyVoice3DSparkDraftModel
+from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
+    FunCosyVoice3DSparkDraftModel,
+    fill_draft_block_noise,
+)
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     DraftSamplingState,
     sample_draft_block,
 )
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
-from sglang_omni.sampling.speculative_noise import (
-    DRAFT_NOISE_SEED_SALT,
-    seeded_exponential_noise,
-)
 
 
 class ExactDraftGraphSampler(DsparkDraftSampler):
+    """Draft graph tail that draws the mirrored block from buffers staged each step."""
+
     def __init__(
         self,
         *,
-        model: FunCosyVoice3DSparkDraftModel,
+        draft_model: FunCosyVoice3DSparkDraftModel,
         gamma: int,
-        max_bs: int,
+        max_batch_size: int,
         device: torch.device,
-        noise: DraftNoise,
+        draft_noise: DraftNoise,
         tp_sync: SpecTpSync,
-        out: torch.Tensor | None,
     ) -> None:
         super().__init__(
-            model=model,
+            model=draft_model,
             gamma=gamma,
-            max_bs=max_bs,
+            max_bs=max_batch_size,
             device=device,
-            noise=noise,
+            noise=draft_noise,
             tp_sync=tp_sync,
             greedy_draft=False,
-            out=out,
         )
-        assert model.confidence_head is None
+        assert draft_model.confidence_head is None
         self.step_logits = torch.empty(
-            (max_bs, gamma, TOTAL_VOCAB_SIZE), dtype=torch.float32, device=device
+            (max_batch_size, gamma, TOTAL_VOCAB_SIZE),
+            dtype=torch.float32,
+            device=device,
         )
         self.exponential_noise = torch.ones_like(self.step_logits)
         self.presence_mask = torch.zeros(
-            (max_bs, TOTAL_VOCAB_SIZE), dtype=torch.bool, device=device
+            (max_batch_size, TOTAL_VOCAB_SIZE), dtype=torch.bool, device=device
         )
-        self.repetition_penalties = torch.ones(max_bs, device=device)
-        self.output_lengths = torch.zeros(max_bs, dtype=torch.long, device=device)
-        self.min_new_tokens = torch.zeros(max_bs, dtype=torch.long, device=device)
-        self.temperatures = self.params.temperatures
-        self.greedy = self.params.greedy_mask
+        self.repetition_penalties = torch.ones(max_batch_size, device=device)
+        self.output_lengths = torch.zeros(
+            max_batch_size, dtype=torch.long, device=device
+        )
+        self.min_new_tokens = torch.zeros(
+            max_batch_size, dtype=torch.long, device=device
+        )
+        self.temperatures = torch.ones(max_batch_size, device=device)
+        self.greedy = torch.zeros(max_batch_size, dtype=torch.bool, device=device)
         self.compiled_sampler = torch.compile(sample_draft_block, dynamic=True)
 
-    def stage_sampling_params(
-        self, *, bs: int, sampling_info: SamplingBatchInfo | None
-    ) -> None:
-        # note (yaourt): the stage state includes the exact temperatures and greedy mask.
-        state = self.markov_head.sampling_state
-        assert state is not None
-        assert state.output_lengths.shape[0] == bs
-        self.stage_exact_state(state)
-
-    def stage_exact_state(self, state: DraftSamplingState) -> None:
+    def stage_step_state(self, state: DraftSamplingState) -> None:
+        """Copy one step's histories and noise into the buffers a replay reads."""
         request_count = state.output_lengths.shape[0]
+        assert request_count <= self.max_bs
         self.presence_mask[:request_count].copy_(state.presence_mask)
         self.repetition_penalties[:request_count].copy_(state.repetition_penalties)
         self.output_lengths[:request_count].copy_(state.output_lengths)
         self.min_new_tokens[:request_count].copy_(state.min_new_tokens)
         self.temperatures[:request_count].copy_(state.temperatures)
         self.greedy[:request_count].copy_(state.greedy)
-        if state.seeds is None:
-            self.exponential_noise[:request_count].exponential_()
+        fill_draft_block_noise(self.exponential_noise[:request_count], state)
+
+    def __call__(self, hidden_states: torch.Tensor, input_ids: torch.Tensor) -> None:
+        # note (yaourt): a graph above the folded batch size captures no tail, so its proposal stays eager.
+        if hidden_states.shape[0] // self.query_token_num > self.max_bs:
+            pass
         else:
-            self.exponential_noise[:request_count].copy_(
-                seeded_exponential_noise(
-                    state.seeds,
-                    state.output_lengths,
-                    salt=DRAFT_NOISE_SEED_SALT,
-                    column_count=self.gamma * TOTAL_VOCAB_SIZE,
-                ).view(request_count, self.gamma, TOTAL_VOCAB_SIZE)
-            )
+            super().__call__(hidden_states, input_ids)
 
     def _markov_block(  # noqa: leading-underscore  # inherited sampler hook
         self,
