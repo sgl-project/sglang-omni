@@ -570,11 +570,11 @@ func CleanOutput(out, input string) string {
 }
 
 // Clean tidies a model's answer to input: without the <input> tags a
-// model echoed, or the quotes it wrapped the whole answer in (unless
+// model echoed (nor Rewrite's <instruction> and <selected_text>), or the quotes it wrapped the whole answer in (unless
 // the input was quoted so itself).
 func Clean(out, input string) string {
 	s := strings.TrimSpace(out)
-	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(stripInputTags(s), "<input>"), "</input>"))
 	in := strings.TrimSpace(input)
 	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}} {
 		wrapped := func(t string) bool {

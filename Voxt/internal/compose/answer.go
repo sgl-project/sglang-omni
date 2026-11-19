@@ -124,6 +124,16 @@ func partialTagSuffix(s, tag string) int {
 	return 0
 }
 
+// inputTags drops the tags RewriteMessage wraps the instruction and the
+// selection in (with the line break wrap puts inside each), keeping the
+// text between them, when a model echoes them into its answer.
+var inputTags = strings.NewReplacer(
+	"<instruction>\n", "", "\n</instruction>", "", "<instruction>", "", "</instruction>", "",
+	"<selected_text>\n", "", "\n</selected_text>", "", "<selected_text>", "", "</selected_text>", "",
+)
+
+func stripInputTags(s string) string { return inputTags.Replace(s) }
+
 // ParseAnswer reads a model's JSON answer {title, content}: the object
 // may sit in a code fence or among other text. ok is false when there is
 // no such object; the caller then takes the text as it is (Clean),
@@ -141,8 +151,8 @@ func ParseAnswer(text string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(a.Title), `"“”#*`))
-	a.Content = strings.TrimSpace(a.Content)
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripInputTags(a.Title)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripInputTags(a.Content))
 	return a, true
 }
 
@@ -197,9 +207,9 @@ func PartialAnswer(text string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
+		return Answer{Content: strings.TrimSpace(strings.TrimSuffix(stripInputTags(t), "```"))}
 	}
-	return Answer{Title: strings.TrimSpace(partialField(t, "title")), Content: strings.TrimLeft(partialField(t, "content"), " \n")}
+	return Answer{Title: strings.TrimSpace(stripInputTags(partialField(t, "title"))), Content: strings.TrimLeft(stripInputTags(partialField(t, "content")), " \n")}
 }
 
 // partialField is the string value of key in a JSON object that may be
