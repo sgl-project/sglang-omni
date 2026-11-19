@@ -186,8 +186,11 @@ func stripControlMarkup(s string, inputs ...string) string {
 		input, previous = inputs[0], inputs[1:]
 	}
 	trimmed := strings.TrimLeft(s, " \t\r\n")
-	if !strings.Contains(input, "<|im_start|>") && strings.HasPrefix(trimmed, assistantAnswerPrefix) {
+	if strings.HasPrefix(trimmed, assistantAnswerPrefix) {
 		s = strings.TrimLeft(trimmed[len(assistantAnswerPrefix):], " \t\r\n")
+		if end := strings.TrimSpace(s); strings.HasSuffix(end, "<|im_end|>") {
+			s = strings.TrimSpace(strings.TrimSuffix(end, "<|im_end|>"))
+		}
 	}
 	for _, tag := range thinkingTags {
 		if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
@@ -212,11 +215,11 @@ func stripControlMarkup(s string, inputs ...string) string {
 				}
 				if literalOpen >= 0 {
 					after := j + len(tag[1])
-					s = s[:literalOpen] + s[after:]
+					s = s[:j] + s[after:]
 					openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 					continue
 				}
-				if inlineLiteral(s, j, tag[1]) {
+				if tag[1] != "</think>" && inlineLiteral(s, j, tag[1]) {
 					closeSearchFrom = j + len(tag[1])
 					continue
 				}

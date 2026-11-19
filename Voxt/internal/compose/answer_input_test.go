@@ -14,7 +14,7 @@ func assertAnswerCleanup(t *testing.T, text, input, want string) {
 	if got := PartialClean(text, input); got != want {
 		t.Errorf("PartialClean(%q, %q) = %q, want %q", text, input, got, want)
 	}
-	structured := `{"title":"T","content":"` + text + `"}`
+	structured := `{"title":"T","content":` + strconv.Quote(text) + `}`
 	wantAnswer := Answer{Title: "T", Content: want}
 	if got, ok := ParseAnswer(structured, input); !ok || got != wantAnswer {
 		t.Errorf("ParseAnswer(%q, %q) = %+v, %v, want %+v", structured, input, got, ok, wantAnswer)
@@ -289,6 +289,54 @@ func TestAnswerCleanupKeepsProseControlTokens(t *testing.T) {
 			}
 			if got := PartialOutput(tc.text, "x"); got != tc.text {
 				t.Errorf("PartialOutput(%q) = %q, want %q", tc.text, got, tc.text)
+			}
+		})
+	}
+	assertAnswerCleanup(t, "The model emits <think> before it reasons.</think>", "x", "The model emits <think> before it reasons.")
+}
+
+func TestAnswerCleanupDoesNotPreserveReasoningAsProse(t *testing.T) {
+	const text = "Visible <think> before private reasoning"
+	if got := Clean(text, "x"); got != "Visible" {
+		t.Errorf("Clean(%q) = %q, want Visible", text, got)
+	}
+	if got := PartialClean(text, "x"); got != "Visible" {
+		t.Errorf("PartialClean(%q) = %q, want Visible", text, got)
+	}
+	if got := CleanOutput(text, "x"); got != "Visible" {
+		t.Errorf("CleanOutput(%q) = %q, want Visible", text, got)
+	}
+	if got := PartialOutput(text, "x"); got != "Visible " {
+		t.Errorf("PartialOutput(%q) = %q, want a streaming trailing space", text, got)
+	}
+	structured := `{"title":"T","content":` + strconv.Quote(text) + `}`
+	if got, ok := ParseAnswer(structured, "x"); !ok || got.Content != "Visible" {
+		t.Errorf("ParseAnswer(%q) = %+v, %v, want Visible", structured, got, ok)
+	}
+	if got := PartialAnswer(structured, "x"); got.Content != "Visible " {
+		t.Errorf("PartialAnswer(%q) = %+v, want a streaming trailing space", structured, got)
+	}
+	assertAnswerCleanup(t, "reasoning </think> Final answer", "x", "Final answer")
+	for index := 1; index <= len(text); index++ {
+		if got := PartialClean(text[:index], "x"); strings.Contains(got, "private") {
+			t.Fatalf("at %d: reasoning leaked in %q", index, got)
+		}
+	}
+}
+
+func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
+	for _, tc := range []struct{ name, text, input string }{
+		{name: "ChatML wrapper", text: "<|im_start|>assistant\nVisible<|im_end|>", input: "Explain <|im_start|> and <|im_end|>"},
+		{name: "JSON tool call", text: `Visible<|tool_call|>{"name":"view_image"}`, input: "Explain <|tool_call|>"},
+		{name: "plain tool payload", text: "Visible<|tool_call|>internal", input: "Explain <|tool_call|>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertAnswerCleanup(t, tc.text, tc.input, "Visible")
+			if got := CleanOutput(tc.text, tc.input); got != "Visible" {
+				t.Errorf("CleanOutput(%q) = %q, want Visible", tc.text, got)
+			}
+			if got := PartialOutput(tc.text, tc.input); got != "Visible" {
+				t.Errorf("PartialOutput(%q) = %q, want Visible", tc.text, got)
 			}
 		})
 	}

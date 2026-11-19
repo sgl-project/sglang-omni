@@ -24,7 +24,7 @@ func inlineLiteral(s string, start int, token string) bool {
 }
 
 func proseTagMention(rest string) bool {
-	if strings.HasPrefix(rest, " to ") || strings.HasPrefix(rest, " before ") {
+	if strings.HasPrefix(rest, " 标记") || strings.HasPrefix(rest, " literally") {
 		return true
 	}
 	if !strings.HasPrefix(rest, " tag") && !strings.HasPrefix(rest, "\ttag") {
@@ -44,7 +44,18 @@ func proseTokenMention(s string, start int, token string) bool {
 	if start > 0 && !strings.ContainsRune(" \t\r\n", rune(s[start-1])) {
 		return false
 	}
-	return proseTagMention(s[start+len(token):])
+	rest := s[start+len(token):]
+	if proseTagMention(rest) {
+		return true
+	}
+	switch token {
+	case "<|im_start|>", "<|im_end|>":
+		return strings.HasPrefix(rest, " to ")
+	case "<think>":
+		return strings.HasPrefix(rest, " before it ")
+	default:
+		return false
+	}
 }
 
 func quotedControlToken(s string, start int, token string) bool {
@@ -56,6 +67,21 @@ func quotedControlToken(s string, start int, token string) bool {
 	for _, quotes := range [][2]rune{{'`', '`'}, {'"', '"'}, {'“', '”'}, {'「', '」'}, {'‘', '’'}} {
 		if before == quotes[0] && after == quotes[1] {
 			return true
+		}
+	}
+	return false
+}
+
+func structuralControlToken(token, after string) bool {
+	rest := strings.TrimLeft(after, " \t\r\n")
+	switch token {
+	case "<|tool_call|>", "<|/tool_call|>", "<|tool_call_begin|>", "<|tool_call_end|>", "<|tool_calls_section_begin|>", "<|tool_calls_section_end|>":
+		return true
+	case "<|im_start|>", "<|start|>":
+		for _, role := range []string{"assistant", "user", "system"} {
+			if strings.HasPrefix(rest, role) {
+				return true
+			}
 		}
 	}
 	return false
@@ -80,19 +106,19 @@ func controlTokenStart(s string, inputs ...string) int {
 			}
 			i += offset
 			after := s[i+len(token):]
-			if preserved {
-				offset = i + len(token)
-				continue
-			}
 			if proseTokenMention(s, i, token) {
 				offset = i + len(token)
 				continue
 			}
-			if previousPreserved && trailingControlToken(token) && (strings.TrimSpace(s) == token || strings.TrimSpace(after) != "" && !onlyControlMarkup(after, input, previous...) && inlineLiteral(s, i, token)) {
+			if preserved && !structuralControlToken(token, after) {
 				offset = i + len(token)
 				continue
 			}
-			if trailingControlToken(token) && !onlyControlMarkup(after, input, previous...) {
+			if previousPreserved && trailingControlToken(token) && strings.TrimSpace(s) == token {
+				offset = i + len(token)
+				continue
+			}
+			if token != "</think>" && trailingControlToken(token) && !onlyControlMarkup(after, input, previous...) {
 				offset = i + len(token)
 				continue
 			}
