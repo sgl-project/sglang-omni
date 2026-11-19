@@ -137,6 +137,7 @@ func opts() Opts {
 // Record is one line of the log.
 type Record struct {
 	Event  string            `json:"event"` // launch, final, live, vad-timestamps, vad-stream, shutdown
+	Host   string            `json:"host,omitempty"`
 	Args   []string          `json:"args,omitempty"`
 	Fields map[string]string `json:"fields,omitempty"`
 	// Samples is the audio a request carried (a live session: all it got).
