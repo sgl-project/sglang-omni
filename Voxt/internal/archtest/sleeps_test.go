@@ -106,6 +106,8 @@ func sleepCallCount(t *testing.T, path string, data []byte) int {
 		case *ast.SelectorExpr:
 			packageName, ok := expression.X.(*ast.Ident)
 			return ok && timeNames[packageName.Name] && expression.Sel.Name == "Sleep"
+		case *ast.ParenExpr:
+			return isSleep(expression.X)
 		default:
 			return false
 		}
@@ -146,6 +148,8 @@ func TestSleepCallCount(t *testing.T) {
 		{"direct", "package p\nimport \"time\"\nfunc f() { time.Sleep(0) }", 1},
 		{"import alias", "package p\nimport clock \"time\"\nfunc f() { clock.Sleep(0) }", 1},
 		{"function value", "package p\nimport \"time\"\nfunc f() { sleep := time.Sleep; sleep(0) }", 1},
+		{"parenthesized direct", "package p\nimport \"time\"\nfunc f() { (time.Sleep)(0) }", 1},
+		{"parenthesized function value", "package p\nimport \"time\"\nfunc f() { sleep := (time.Sleep); sleep(0) }", 1},
 		{"dot import", "package p\nimport . \"time\"\nfunc f() { Sleep(0) }", 1},
 		{"comment", "package p\nimport \"time\"\n// time.Sleep(0)\nfunc f() {}", 0},
 		{"string", "package p\nvar source = \"time.Sleep(0)\"", 0},
