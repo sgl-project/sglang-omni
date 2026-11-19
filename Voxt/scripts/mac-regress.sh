@@ -29,7 +29,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 FULL=0 KEEP=0
 for a in "$@"; do
   case "$a" in
