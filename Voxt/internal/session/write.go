@@ -116,7 +116,7 @@ func (r *run) write(raw, selection string) {
 		}
 		if !automaticImageSuppressed {
 			r.shootWindow()
-			if r.req.Box && r.shot != nil && cfg.BoxReview != nil {
+			if r.req.Box && r.shot != nil && r.svc.LLM != nil && cfg.BoxReview != nil {
 				if jpeg := r.shot(); jpeg != nil {
 					r.previewImage("window", jpeg)
 					if err := cfg.BoxReview(r.ctx); err != nil {

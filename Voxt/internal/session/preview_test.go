@@ -85,6 +85,30 @@ func TestBoxWindowPreviewCanBeRemovedBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestBoxWindowReviewDoesNotBlockMissingLanguageModel(t *testing.T) {
+	review := make(chan struct{}, 1)
+	h := newHarness(t, &fakeFile{text: "make it polite"}, nil, func(c *Config, s *settings.Settings) {
+		s.Privacy.SendWindow = true
+		c.Window = func(context.Context, int) ([]byte, error) { return []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, nil }
+		c.BoxReview = func(context.Context) error {
+			review <- struct{}{}
+			return nil
+		}
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.State != Failed || end.Problem == nil || end.Problem.Code != ProblemNoLLM {
+		t.Fatalf("end %s, problem %+v", end.State, end.Problem)
+	}
+	select {
+	case <-review:
+		t.Fatal("the missing model error waited for an image review")
+	default:
+	}
+}
+
 func TestAutomaticImagePreviewFollowsTheImageSent(t *testing.T) {
 	clip, shot, own := []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, []byte{0xff, 0xd8, 'o', 0xff, 0xd9}
 	for _, tc := range []struct {
