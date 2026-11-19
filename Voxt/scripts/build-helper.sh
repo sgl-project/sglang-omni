@@ -9,6 +9,8 @@
 #   scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'
 #
 # SWIFT_BUILD_JOBS limits swift build's jobs (scripts/mac-e2e.sh: 2).
+# VOXTNEW_SWIFT_DISABLE_SANDBOX=1 opts into SwiftPM's --disable-sandbox
+# when the calling agent already isolates the build.
 #
 # It is signed with helper/Support/helper.entitlements and the hardened
 # runtime, ad hoc unless VOXTNEW_SIGN_IDENTITY names an identity (see
@@ -28,6 +30,10 @@ if [[ "${1:-}" == "--out" ]]; then
   OUT="$(mkdir -p "$2" && cd "$2" && pwd)"
 fi
 IDENTITY="${VOXTNEW_SIGN_IDENTITY:--}"
+swift_sandbox_flag=""
+if [[ "${VOXTNEW_SWIFT_DISABLE_SANDBOX:-0}" == "1" ]]; then
+  swift_sandbox_flag="--disable-sandbox"
+fi
 
 # The helper reports the app's version (helper.hello): keep them in step.
 # Read the plist with grep/sed, not PlistBuddy: the tests run on Linux too.
@@ -42,11 +48,11 @@ cd "$ROOT/helper"
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 # Where the product goes depends on SwiftPM's build system: ask it.
-binary="$(swift build -c release --arch arm64 --show-bin-path)/voxtnew-helper"
+binary="$(swift build -c release --arch arm64 ${swift_sandbox_flag} --show-bin-path)/voxtnew-helper"
 # Linked again each time: Support/Info.plist goes in at link time
 # (Package.swift), and swift build does not see it change.
 rm -f "$binary"
-if ! swift build -c release --arch arm64 ${SWIFT_BUILD_JOBS:+-j "$SWIFT_BUILD_JOBS"} >"$log" 2>&1; then
+if ! swift build -c release --arch arm64 ${swift_sandbox_flag} ${SWIFT_BUILD_JOBS:+-j "$SWIFT_BUILD_JOBS"} >"$log" 2>&1; then
   grep -E "error:" "$log" | sort -u | head -40 >&2 || cat "$log" >&2
   echo "swift build failed" >&2
   exit 1
