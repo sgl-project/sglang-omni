@@ -7,12 +7,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **Long dictations are cleaned up while you speak**: once a recording passes a minute, the speech model finishes stretch after stretch while you keep talking, and Voxt can send each finished stretch to the language model right away. When you stop, only the remaining text is left, so the cleaned text arrives sooner. Voxt waits until Stop instead when the short-input thinking threshold has not been reached, or glossary prompting is on and your dictionary has more than 30 enabled terms. The original recognised text stays in History.
 
 ### 中文
 
 #### 新增
 
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
+- **长口述边录边整理**：录音超过一分钟后，语音识别模型每整理好一段语音，Voxt 可以立即把这一段发给语言模型整理；你停下时只剩剩余文字需要整理，整理好的文字到得更快。还没到“短输入不思考”的门槛，或语言模型使用术语表且启用词条超过 30 条时，Voxt 会等到停止后再整理全文。识别原文照常保留在历史里。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### Fixed

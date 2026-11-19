@@ -220,7 +220,10 @@ type fakeStreamer struct {
 	// partials are what its partials say, one per send, the last one
 	// repeated (nil: "partial").
 	partials []string
-	salvage  string // the text its streams salvage (asr.Salvager), "" for none
+	// pieces are the cumulative "final so far" texts it reports while
+	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
+	pieces  []string
+	salvage string // the text its streams salvage (asr.Salvager), "" for none
 
 	mu      sync.Mutex
 	streams []*fakeStream
@@ -276,7 +279,7 @@ func (s *fakeStream) emit(ev asr.Event) {
 	if s.closed || s.done {
 		return
 	}
-	if ev.Kind != asr.EventPartial {
+	if ev.Kind == asr.EventFinal || ev.Kind == asr.EventError {
 		s.done = true
 	}
 	s.events <- ev
@@ -306,6 +309,9 @@ func (s *fakeStream) Send(pcm []byte) error {
 			text = s.f.partials[min(n, len(s.f.partials))-1]
 		}
 		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
+	}
+	if n <= len(s.f.pieces) && s.f.pieces[n-1] != "" {
+		s.emit(asr.Event{Kind: asr.EventPiece, Text: s.f.pieces[n-1]})
 	}
 	return nil
 }
@@ -381,8 +387,9 @@ type fakeLLM struct {
 	pause  time.Duration
 	finish string // the response's FinishReason
 
-	mu   sync.Mutex
-	reqs []llm.Request
+	mu       sync.Mutex
+	reqs     []llm.Request
+	answered int // the requests answered so far
 }
 
 func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -405,6 +412,13 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	if failed {
 		return llm.Response{}, f.err
 	}
+	if req.OnDelta == nil && f.pause > 0 {
+		select {
+		case <-time.After(f.pause):
+		case <-ctx.Done():
+			return llm.Response{}, ctx.Err()
+		}
+	}
 	if req.OnDelta != nil {
 		rs := []rune(text)
 		n := f.chunk
@@ -422,6 +436,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 			req.OnDelta(string(rs[i:min(i+n, len(rs))]))
 		}
 	}
+	f.mu.Lock()
+	f.answered++
+	f.mu.Unlock()
 	return llm.Response{Text: text, FinishReason: f.finish}, nil
 }
 
@@ -429,6 +446,12 @@ func (f *fakeLLM) requests() []llm.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]llm.Request(nil), f.reqs...)
+}
+
+func (f *fakeLLM) answeredCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.answered
 }
 
 // fakeText is the app in front.

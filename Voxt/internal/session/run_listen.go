@@ -37,6 +37,7 @@ func (r *run) awaitServices() bool {
 // useServices keeps the resolved services.
 func (r *run) useServices(s svcResult) {
 	r.resolved, r.svc, r.terms = true, s.svc, s.terms
+	close(r.svcResolved)
 	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
 	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
 }
