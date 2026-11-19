@@ -13,9 +13,13 @@ WORKFLOW_PATH = (
 NODE_RUNNER = r"""
 const {readFileSync} = require('node:fs');
 const input = JSON.parse(readFileSync(0, 'utf8'));
-let labels = [];
+let added = [];
+let removed = [];
 const pullRequest = input.pullRequest;
-const context = {payload: {pull_request: pullRequest}, repo: {owner: 'example', repo: 'example'}};
+const context = {
+  payload: {action: input.action ?? 'opened', pull_request: pullRequest},
+  repo: {owner: 'example', repo: 'example'},
+};
 const pages = input.filePages ?? [input.files ?? []];
 async function* fileIterator() {
   for (const data of pages) {
@@ -26,7 +30,10 @@ const github = {
   paginate: {iterator: () => fileIterator()},
   rest: {
     pulls: {get: async () => ({data: pullRequest})},
-    issues: {addLabels: async request => {labels = request.labels}},
+    issues: {
+      addLabels: async request => {added = request.labels},
+      removeLabel: async request => {removed.push(request.name)},
+    },
   },
 };
 const core = {info: () => {}};
@@ -37,7 +44,10 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     context,
     core
   );
-  process.stdout.write(JSON.stringify(labels.sort()));
+  process.stdout.write(JSON.stringify({
+    added: added.sort(),
+    removed: removed.sort(),
+  }));
 })().catch(error => {console.error(error); process.exit(1)});
 """
 
@@ -53,7 +63,8 @@ def run_labeler(
     branch: str,
     files: list[dict[str, str]],
     existing_labels: list[str] | None = None,
-) -> list[str]:
+    action: str = "opened",
+) -> tuple[list[str], list[str]]:
     pull_request = {
         "number": 42,
         "title": title,
@@ -64,6 +75,7 @@ def run_labeler(
         "script": labeler_script(),
         "pullRequest": pull_request,
         "files": files,
+        "action": action,
     }
     result = subprocess.run(
         ["node", "-e", NODE_RUNNER],
@@ -72,7 +84,8 @@ def run_labeler(
         text=True,
         check=True,
     )
-    return json.loads(result.stdout)
+    changes = json.loads(result.stdout)
+    return changes["added"], changes["removed"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
@@ -91,7 +104,7 @@ def run_labeler(
             "codex/fix/timeout",
             [{"filename": "sglang_omni/x.py", "status": "modified"}],
             None,
-            ["bug"],
+            [],
         ),
         (
             "[Docs] Add a Voxt Quickstart",
@@ -105,7 +118,7 @@ def run_labeler(
             "codex/docs/readme",
             [{"filename": "sglang_omni/x.py", "status": "modified"}],
             None,
-            ["documentation"],
+            [],
         ),
         (
             "docs-only",
@@ -146,18 +159,32 @@ def run_labeler(
             ["refactor"],
         ),
         (
-            "Good first issue: improve messages",
+            "[Good first issue] improve messages",
             "neutral",
             [{"filename": "sglang_omni/x.py", "status": "modified"}],
             None,
             ["good first issue"],
         ),
         (
+            "Good first issue: improve messages",
+            "codex/good-first-issue/messages",
+            [{"filename": "sglang_omni/x.py", "status": "modified"}],
+            None,
+            [],
+        ),
+        (
+            "[Help wanted] reproduce a failure",
+            "neutral",
+            [{"filename": "sglang_omni/x.py", "status": "modified"}],
+            None,
+            ["help wanted"],
+        ),
+        (
             "Help wanted: reproduce a failure",
             "codex/help-wanted/repro",
             [{"filename": "sglang_omni/x.py", "status": "modified"}],
             None,
-            ["help wanted"],
+            [],
         ),
         (
             "New model directory",
@@ -201,9 +228,51 @@ def test_suggested_labels(
     existing_labels: list[str] | None,
     expected_labels: list[str],
 ) -> None:
-    assert run_labeler(
+    added, removed = run_labeler(
         title=title,
         branch=branch,
         files=files,
         existing_labels=existing_labels,
-    ) == sorted(expected_labels)
+    )
+    assert added == sorted(expected_labels)
+    assert removed == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+def test_code_push_removes_stale_run_lint_only() -> None:
+    added, removed = run_labeler(
+        title="docs plus code",
+        branch="neutral",
+        files=[
+            {"filename": "docs/foo.md", "status": "modified"},
+            {"filename": "sglang_omni/models/minicpm_o/model.py", "status": "modified"},
+        ],
+        existing_labels=["documentation", "run-lint-only"],
+        action="synchronize",
+    )
+    assert added == []
+    assert removed == ["run-lint-only"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+def test_synchronize_does_not_restore_removed_title_label() -> None:
+    added, removed = run_labeler(
+        title="[Fix] Restore MoE expert probability normalization",
+        branch="codex/fix/timeout",
+        files=[{"filename": "sglang_omni/x.py", "status": "modified"}],
+        action="synchronize",
+    )
+    assert added == []
+    assert removed == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+def test_edited_title_still_adds_category_label() -> None:
+    added, removed = run_labeler(
+        title="[Fix] Restore MoE expert probability normalization",
+        branch="neutral",
+        files=[{"filename": "sglang_omni/x.py", "status": "modified"}],
+        action="edited",
+    )
+    assert added == ["bug"]
+    assert removed == []

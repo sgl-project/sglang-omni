@@ -38,8 +38,9 @@ jobs:
               pullRequest.labels.map(({ name }) => name)
             );
             const title = pullRequest.title;
-            const branch = pullRequest.head.ref;
             const { owner, repo } = context.repo;
+            // Skip pushes so they do not re-add a title label that a maintainer removed.
+            const skipTitleLabels = context.payload.action === 'synchronize';
 
             const leadingTags = (text) =>
               [...text.matchAll(/\[([^\]]+)\]/gy)].map(([, tag]) =>
@@ -92,98 +93,57 @@ jobs:
                 /^sglang_omni\/models\/[^/]+\/__init__\.py$/.test(filename)
             );
 
+            const titleLabelByTag = {
+              fix: 'bug',
+              bug: 'bug',
+              bugfix: 'bug',
+              hotfix: 'bug',
+              feat: 'enhancement',
+              feature: 'enhancement',
+              enhancement: 'enhancement',
+              refactor: 'refactor',
+              docs: 'documentation',
+              doc: 'documentation',
+              documentation: 'documentation',
+              'model support': 'model support',
+              'new model': 'model support',
+              'good first issue': 'good first issue',
+              'help wanted': 'help wanted',
+            };
+
             const labelsToAdd = new Set();
             const suggest = (label, matched) => {
               if (matched && !existingLabels.has(label)) {
                 labelsToAdd.add(label);
-              } else {
               }
             };
 
-            const tags = leadingTags(title);
-            const branchHas = (pattern) => pattern.test(branch);
-
-            suggest(
-              'documentation',
-              touchesDocumentationPath ||
-                tags.some((tag) => tag === 'docs' || tag === 'doc') ||
-                /^docs\s*:/i.test(title.trim()) ||
-                branchHas(/(?:^|[\/_.-])docs?(?=$|[\/_.-])/i)
-            );
-
-            suggest(
-              'bug',
-              tags.some((tag) =>
-                ['fix', 'bugfix', 'hotfix'].includes(tag)
-              ) ||
-                /^(?:\[[^\]]+\]\s*)*(?:fix|fixes)(?:\([^)]+\))?!?:/i.test(
-                  title
-                ) ||
-                /\b(?:bug(?:fix)?|regression|hotfix)\b/i.test(title) ||
-                branchHas(
-                  /(?:^|[\/_.-])(?:bug|bugfix|fix|hotfix|regression)(?=$|[\/_.-])/i
-                )
-            );
-
-            suggest(
-              'enhancement',
-              tags.some((tag) =>
-                ['feat', 'feature'].includes(tag)
-              ) ||
-                /\b(?:enhancement|feature|feat)\b/i.test(title) ||
-                /^(?:\[[^\]]+\]\s*)*feat(?:\([^)]+\))?!?:/i.test(title) ||
-                branchHas(
-                  /(?:^|[\/_.-])(?:enhancement|feature|feat)(?=$|[\/_.-])/i
-                )
-            );
-
-            suggest(
-              'refactor',
-              tags.some((tag) => tag === 'refactor') ||
-                /^refactor(?:\([^)]+\))?!?:/i.test(title.trim()) ||
-                branchHas(/(?:^|[\/_.-])refactor(?=$|[\/_.-])/i)
-            );
-
-            suggest(
-              'model support',
-              tags.some(
-                (tag) => tag === 'model support' || tag === 'new model'
-              ) ||
-                /\badd\b.*\bsupport\b/i.test(title) ||
-                /^support\s+\S+/i.test(title) ||
-                addedModelPackageInit
-            );
-
-            suggest(
-              'good first issue',
-              /\bgood[\s_-]+first[\s_-]+(?:issue|pr|pull request)\b/i.test(
-                title
-              ) ||
-                branchHas(
-                  /(?:^|[\/_.-])good[-_]first[-_](?:issue|pr)(?=$|[\/_.-])/i
-                )
-            );
-
-            suggest(
-              'help wanted',
-              /\b(?:help[\s_-]+wanted|needs?[\s_-]+help)\b/i.test(title) ||
-                branchHas(
-                  /(?:^|[\/_.-])(?:help[-_]wanted|needs?[-_]help)(?=$|[\/_.-])/i
-                )
-            );
-
-            suggest(
-              'run-lint-only',
-              docsOnlyPullRequest && !hasRunCiLabel
-            );
-
-            if (!labelsToAdd.size) {
-              return;
-            } else {
+            if (!skipTitleLabels) {
+              for (const tag of leadingTags(title)) {
+                const label = titleLabelByTag[tag];
+                if (label) {
+                  suggest(label, true);
+                }
+              }
             }
-            await github.rest.issues.addLabels({
-              owner,
-              repo,
-              issue_number: pullRequest.number,
-              labels: [...labelsToAdd],
-            });
+
+            suggest('documentation', touchesDocumentationPath);
+            suggest('model support', addedModelPackageInit);
+            suggest('run-lint-only', docsOnlyPullRequest && !hasRunCiLabel);
+
+            if (labelsToAdd.size) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pullRequest.number,
+                labels: [...labelsToAdd],
+              });
+            }
+            if (!docsOnlyPullRequest && existingLabels.has('run-lint-only')) {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number: pullRequest.number,
+                name: 'run-lint-only',
+              });
+            }
