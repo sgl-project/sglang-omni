@@ -2,6 +2,8 @@ package session
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -10,22 +12,57 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-func TestAnswerCleanupInputIncludesPreviousTurns(t *testing.T) {
-	input := answerCleanupInput(compose.Input{Instruction: "shorter", Previous: []compose.Turn{{Instruction: "Explain <think> literally", Answer: compose.Answer{Content: "Earlier answer"}}}})
-	const text = "The <think> tag wraps reasoning."
-	if got := compose.Clean(text, input); got != text {
-		t.Errorf("Clean(%q) = %q, want %q", text, got, text)
+func TestWriteFollowUpKeepsPreviousLiteralThinkingMarker(t *testing.T) {
+	const answer = "The <think> tag wraps reasoning."
+	for _, tc := range []struct {
+		name     string
+		previous compose.Turn
+	}{
+		{name: "instruction", previous: compose.Turn{Instruction: "explain <think>"}},
+		{name: "selection", previous: compose.Turn{Selection: "explain <think>"}},
+		{name: "answer title", previous: compose.Turn{Answer: compose.Answer{Title: "explain <think>"}}},
+		{name: "answer content", previous: compose.Turn{Answer: compose.Answer{Content: "explain <think>"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{}, &fakeLLM{text: answer, chunk: 4}, nil)
+			_, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack,
+				Text: &TextInput{Raw: "shorter"}, Previous: []compose.Turn{tc.previous}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			end := h.rec.wait(t)
+			if end.State != Done || end.Result != answer {
+				t.Fatalf("end %s %q (problem %+v)", end.State, end.Result, end.Problem)
+			}
+			if !slices.ContainsFunc(h.rec.all(), func(s Snapshot) bool { return s.State == Composing && s.Draft == answer }) {
+				t.Error("the streamed draft lost the previous turn's literal thinking marker")
+			}
+		})
 	}
-	if got := compose.PartialClean(text, input); got != text {
-		t.Errorf("PartialClean(%q) = %q, want %q", text, got, text)
-	}
-	structured := `{"title":"T","content":"` + text + `"}`
-	want := compose.Answer{Title: "T", Content: text}
-	if got, ok := compose.ParseAnswer(structured, input); !ok || got != want {
-		t.Errorf("ParseAnswer(%q) = %+v, %v, want %+v", structured, got, ok, want)
-	}
-	if got := compose.PartialAnswer(structured, input); got != want {
-		t.Errorf("PartialAnswer(%q) = %+v, want %+v", structured, got, want)
+}
+
+func TestWriteFollowUpStillStripsRealControlMarkup(t *testing.T) {
+	for _, tc := range []struct{ name, answer, want, forbidden string }{
+		{name: "trailing token", answer: "Shorter.<|im_end|>", want: "Shorter.", forbidden: "<|im_end|>"},
+		{name: "thinking block", answer: "Shorter.<think>private</think>", want: "Shorter.", forbidden: "private"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{}, &fakeLLM{text: tc.answer, chunk: 4}, nil)
+			_, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack,
+				Text: &TextInput{Raw: "shorter"}, Previous: []compose.Turn{{Instruction: "explain <think> and <|im_end|>"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			end := h.rec.wait(t)
+			if end.State != Done || end.Result != tc.want {
+				t.Fatalf("end %s %q (problem %+v)", end.State, end.Result, end.Problem)
+			}
+			for _, snapshot := range h.rec.all() {
+				if snapshot.State == Composing && strings.Contains(snapshot.Draft, tc.forbidden) {
+					t.Errorf("the streamed draft leaked real control markup %q", snapshot.Draft)
+				}
+			}
+		})
 	}
 }
 
