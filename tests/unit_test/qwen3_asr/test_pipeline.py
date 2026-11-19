@@ -19,6 +19,7 @@ from sglang.srt.arg_groups.cuda_graph_hook import (
 import sglang_omni.models.qwen3_asr.engine_builder as qwen3_asr_builder
 import sglang_omni.models.qwen3_asr.stages as qwen3_asr_stages
 import sglang_omni.scheduling.bootstrap as bootstrap
+import sglang_omni.scheduling.engine_factory as engine_factory
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
@@ -50,6 +51,7 @@ def fake_server_args_builder(
     build_kwargs: dict[str, object],
     *,
     resolved_chunked_prefill_size: int = 8192,
+    automatic_attention_backend: str = "fa3",
 ):
     def build(model_path, context_length, **overrides):
         del model_path
@@ -67,9 +69,11 @@ def fake_server_args_builder(
             ("moe_a2a_backend", "none"),
             ("max_prefill_tokens", 16384),
             ("max_total_tokens", None),
-            ("attention_backend", "fa3"),
+            ("attention_backend", automatic_attention_backend),
             ("prefill_attention_backend", None),
             ("decode_attention_backend", None),
+            ("kv_cache_dtype", "auto"),
+            ("speculative_algorithm", None),
         ):
             flat.setdefault(name, default)
         if flat.get("chunked_prefill_size") is None:
@@ -502,6 +506,7 @@ def patch_engine_dependencies(
     monkeypatch: pytest.MonkeyPatch,
     *,
     want_cuda_graph: bool = False,
+    automatic_attention_backend: str = "fa3",
 ) -> SimpleNamespace:
     recorded = SimpleNamespace(
         build_kwargs={},
@@ -593,7 +598,10 @@ def patch_engine_dependencies(
     monkeypatch.setattr(
         sglang_backend,
         "build_sglang_server_args",
-        fake_server_args_builder(recorded.build_kwargs),
+        fake_server_args_builder(
+            recorded.build_kwargs,
+            automatic_attention_backend=automatic_attention_backend,
+        ),
     )
 
     def fake_create_infrastructure(server_args, gpu_id, **kwargs):
@@ -912,6 +920,115 @@ def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
         builder.draft_checkpoint.cleanup()
     else:
         assert builder.infra_kwargs() == {}
+
+
+# note (Xuanfei): SGLang 0.5.23's automatic attention backend for an MHA model, per SM version; tests/unit_test/scheduling/test_engine_factory.py checks the SM100 entry against real argument parsing.
+SGLANG_AUTOMATIC_ATTENTION_BACKEND: dict[int, str] = {
+    100: "trtllm_mha",
+    103: "trtllm_mha",
+}
+
+
+def patch_cuda_platform(
+    monkeypatch: pytest.MonkeyPatch, sm_version: int | None
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    for module in (qwen3_asr_builder, engine_factory):
+        monkeypatch.setattr(
+            module, "get_visible_gpu_sm_version", lambda gpu_id: sm_version
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "sm_version",
+        "server_args_overrides",
+        "expected_prefill_attention_backend",
+        "expected_prefill_graph",
+    ),
+    [
+        (100, {}, "flashinfer", "full"),
+        (100, {"cuda_graph_backend_prefill": "full"}, "flashinfer", "full"),
+        (100, {"prefill_attention_backend": "trtllm_mha"}, "trtllm_mha", "breakable"),
+        (100, {"disable_cuda_graph": True}, None, "disabled"),
+        (103, {}, None, "breakable"),
+    ],
+    ids=["sm100_default", "sm100_explicit_full", "sm100_opt_out", "no_graphs", "sm103"],
+)
+def test_qwen3_asr_build_defaults_sm100_prefill_attention_to_flashinfer_for_the_full_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int | None,
+    server_args_overrides: dict[str, object],
+    expected_prefill_attention_backend: str | None,
+    expected_prefill_graph: str,
+) -> None:
+    recorded = patch_engine_dependencies(
+        monkeypatch,
+        want_cuda_graph=True,
+        automatic_attention_backend=SGLANG_AUTOMATIC_ATTENTION_BACKEND.get(
+            sm_version, "fa3"
+        ),
+    )
+    patch_cuda_platform(monkeypatch, sm_version)
+
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy", server_args_overrides=server_args_overrides
+    )
+
+    assert (
+        recorded.build_kwargs.get("prefill_attention_backend")
+        == expected_prefill_attention_backend
+    )
+    assert recorded.build_kwargs.get("attention_backend") == server_args_overrides.get(
+        "attention_backend"
+    )
+    assert (
+        recorded.server_args.cuda_graph_config.prefill.backend == expected_prefill_graph
+    )
+
+
+def test_qwen3_asr_build_keeps_automatic_prefill_attention_under_a_draft(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorded = patch_engine_dependencies(
+        monkeypatch, want_cuda_graph=True, automatic_attention_backend="trtllm_mha"
+    )
+    patch_cuda_platform(monkeypatch, 100)
+    write_dflash_checkpoint(tmp_path, non_causal=False)
+
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy",
+        server_args_overrides={
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        },
+    )
+
+    assert recorded.build_kwargs.get("attention_backend") is None
+    assert recorded.build_kwargs.get("prefill_attention_backend") is None
+    assert recorded.server_args.cuda_graph_config.prefill.backend == "breakable"
+
+
+def test_qwen3_asr_build_leaves_prefill_attention_alone_off_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = patch_engine_dependencies(monkeypatch)
+    for module in (qwen3_asr_builder, engine_factory):
+        monkeypatch.setattr(
+            module,
+            "get_visible_gpu_sm_version",
+            lambda gpu_id: pytest.fail(f"unexpected SM lookup for GPU {gpu_id}"),
+        )
+
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy",
+        mm_attention_backend="fa3",
+        server_args_overrides={"cuda_graph_backend_prefill": "full"},
+    )
+
+    assert recorded.build_kwargs.get("prefill_attention_backend") is None
 
 
 @pytest.mark.parametrize("with_draft", [False, True])
