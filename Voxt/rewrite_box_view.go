@@ -29,6 +29,7 @@ type rewriteBoxLocalUI struct {
 	expandedText  map[string]bool
 	previewImage  int
 	textScroll    ui.ScrollState
+	inputScroll   ui.ScrollState
 	previewScroll ui.ScrollState
 }
 
@@ -47,14 +48,23 @@ var decodeBoxBitmap = ui.DecodeBitmap
 // boxThumb is a thumbnail's size in the box.
 const boxThumb = 72
 
+type boxDropWindow interface {
+	boxWindow
+	OnFileDrop(func(*mygo.FileDropEvent)) func()
+}
+
+var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
+
 // newBoxWindow creates the input box's native panel.
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) boxWindow {
-	return mygo.NewWindow(mygo.WindowOptions{
+	window := newBoxNativeWindow(mygo.WindowOptions{
 		Title: i18n.T("Rewrite"), Width: boxWinW, Height: boxWinH, UseContentSize: true,
 		Hidden: true, Frameless: true, Transparent: true, Vibrancy: mygo.VibrancyHUD,
 		Panel: true, DisableResize: true, DisableClose: true,
 		Content: hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) }),
 	})
+	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
+	return window
 }
 
 // rewriteBoxView draws the input box from its state, actions and local text.
@@ -67,9 +77,6 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 	root := ui.Column(context).Fill().Padding(12, 14, 12, 14).Gap(8)
 	if context.Shortcut(0, ui.KeyEscape) {
 		actions.close()
-	}
-	if files := root.DroppedFiles(); len(files) > 0 {
-		actions.drop(files)
 	}
 	root.Children(func() {
 		// The header: what it is, Send while it records or a resend
@@ -94,54 +101,56 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			return
 		}
 
-		// The text selected when the shortcut fired: the input, as the
-		// model gets it first.
-		if state.Selection != "" {
-			boxTextBlockView(context, "selection", state.SelectionBlock, local, actions.removeSelection)
-		}
-		for index, segment := range state.TextSegments {
-			if segment.Pasted {
-				boxTextBlockView(context, "segment-"+strconv.Itoa(segment.ID), segment, local, func() { actions.removeText(index) })
-				continue
+		ui.Scroll(context.Key("box-inputs")).Grow(1).MinHeight(0).TrackScroll(&local.inputScroll).Children(func() {
+			// The text selected when the shortcut fired: the input, as the
+			// model gets it first.
+			if state.Selection != "" {
+				boxTextBlockView(context, "selection", state.SelectionBlock, local, actions.removeSelection)
 			}
-			if local.segmentText == nil {
-				local.segmentText = map[int]*string{}
-			}
-			text := local.segmentText[segment.ID]
-			if text == nil {
-				text = new(string)
-				local.segmentText[segment.ID] = text
-				*text = segment.Text
-			}
-			if !hadPaste && *text != segment.Text {
-				*text = segment.Text
-			}
-			boxTextEditor(context, index, text, state, actions, local)
-		}
-
-		// The trailing text box.
-		boxTextEditor(context, -1, &local.text, state, actions, local)
-
-		// The pictures.
-		if len(state.Thumbnails) > 0 {
-			ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Start).Children(func() {
-				for index, bitmap := range state.Thumbnails {
-					info := boxImageInfo{Source: i18n.T("Image")}
-					if index < len(state.ImageInfo) {
-						info = state.ImageInfo[index]
-					}
-					var remove func()
-					remove = actions.removeAutoImage
-					if index < state.ManualImages {
-						remove = func() { actions.remove(index) }
-					}
-					boxThumbView(context.Key(index), bitmap, info, remove, func() { local.previewImage = index + 1 })
+			for index, segment := range state.TextSegments {
+				if segment.Pasted {
+					boxTextBlockView(context, "segment-"+strconv.Itoa(segment.ID), segment, local, func() { actions.removeText(index) })
+					continue
 				}
-			})
-		}
-		if state.Limit {
-			ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
-		}
+				if local.segmentText == nil {
+					local.segmentText = map[int]*string{}
+				}
+				text := local.segmentText[segment.ID]
+				if text == nil {
+					text = new(string)
+					local.segmentText[segment.ID] = text
+					*text = segment.Text
+				}
+				if !hadPaste && *text != segment.Text {
+					*text = segment.Text
+				}
+				boxTextEditor(context, index, text, state, actions, local)
+			}
+
+			// The pictures.
+			if len(state.Thumbnails) > 0 {
+				ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Start).Children(func() {
+					for index, bitmap := range state.Thumbnails {
+						info := boxImageInfo{Source: i18n.T("Image")}
+						if index < len(state.ImageInfo) {
+							info = state.ImageInfo[index]
+						}
+						var remove func()
+						remove = actions.removeAutoImage
+						if index < state.ManualImages {
+							remove = func() { actions.remove(index) }
+						}
+						boxThumbView(context.Key(index), bitmap, info, remove, func() { local.previewImage = index + 1 })
+					}
+				})
+			}
+			if state.Limit {
+				ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
+			}
+		})
+
+		// The trailing text box stays visible while earlier inputs scroll.
+		boxTextEditor(context, -1, &local.text, state, actions, local)
 
 		// The voice line: the instruction, being heard or kept.
 		ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -210,17 +219,21 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 		actions.segmentChanged(index, *text)
 	}
 	textArea.OnTextKey(func(key ui.TextKey) bool {
-		switch {
-		case key.Key == ui.KeyEnter && key.Mods == 0:
+		if key.Key == ui.KeyEnter && key.Mods == 0 {
 			changed()
 			actions.send()
 			return true
-		case key.Key == ui.KeyV && key.Mods == ui.Cmd:
-			return actions.paste(context.Services())
 		}
 		return false
 	})
+	editorID := index
+	if index >= 0 {
+		editorID = state.TextSegments[index].ID
+	}
 	start, end := textArea.TextSelection()
+	if local.pasteFocusID == editorID {
+		start, end = local.pasteCaret, local.pasteCaret
+	}
 	textArea.OnPaste(func(paste string) bool {
 		original := *text
 		if local.paste != nil {
@@ -240,7 +253,7 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 			start, end = local.pasteCaret, local.pasteCaret
 		}
 		if !actions.pasteText(index, paste, start, end) {
-			return false
+			return actions.paste(context.Services())
 		}
 		suffixID := -1
 		if index >= 0 {
@@ -249,10 +262,6 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 		local.paste = &boxPasteUI{index: index, original: original, prefix: string([]rune(original)[:start]), suffix: string([]rune(original)[end:]), suffixID: suffixID, start: start, end: end}
 		return true
 	})
-	editorID := index
-	if index >= 0 {
-		editorID = state.TextSegments[index].ID
-	}
 	if local.pasteFocusID == editorID {
 		textArea.Focus()
 		textArea.SetTextSelection(local.pasteCaret, local.pasteCaret)

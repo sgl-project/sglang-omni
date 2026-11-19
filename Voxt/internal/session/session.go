@@ -361,9 +361,10 @@ type Config struct {
 	ClipboardImage func(ctx context.Context) ([]byte, error)
 	// BoxInput returns the Rewrite input box's typed text and pictures
 	// (JPEGs, encoded once when they were pasted) as they are when the
-	// answer is asked for (StartRequest.Box). It is called on the
-	// session's goroutine. Nil: the box sends nothing of its own.
-	BoxInput func() (string, [][]byte)
+	// answer is asked for (StartRequest.Box). It waits for pending image
+	// conversions and returns their error, if one needs confirmation. It
+	// is called on the session's goroutine. Nil: the box sends nothing.
+	BoxInput func(context.Context) (string, [][]byte, error)
 	// BoxAutoSuppressed reports whether the user removed the automatic
 	// selection or clipboard/window image from the box's preview. Nil: send both.
 	BoxAutoSuppressed func() (selection, image bool)

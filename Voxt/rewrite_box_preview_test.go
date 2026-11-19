@@ -84,6 +84,20 @@ func TestBoxSelectionUsesCollapsibleTextBlock(t *testing.T) {
 	}
 }
 
+func TestBoxTwoPastedBlocksKeepTrailingEditorVisible(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
+	a.boxPasteText("first\nsecond\nthird\nfourth")
+	a.boxPasteText("fifth\nsixth\nseventh\neighth")
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "selected first\nselected second\nselected third\nselected fourth"})
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	editor, ok := tt.Find("More text for the rewrite")
+	if !ok || editor.H <= 0 || editor.Y < 0 || editor.Y+editor.H > boxWinH {
+		t.Fatalf("the trailing editor is clipped: bounds %+v, present %v, window height %d", editor, ok, boxWinH)
+	}
+}
+
 func TestAnswerCardInputChipsOpenOriginals(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	jpeg := boxJPEGOf(t, 20, 10)
@@ -137,7 +151,7 @@ func TestBoxLongPasteThroughEditorDoesNotDuplicate(t *testing.T) {
 	frames(tt)
 	long := "first\nsecond\nthird\nfourth"
 	tt.SetClipboardData(transfer.TextData(long))
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
 	frames(tt)
 	if got, want := a.boxTextContent(), "before\n"+long; got != want {
 		t.Fatalf("request text %q, want %q", got, want)
@@ -158,7 +172,7 @@ func TestBoxTypingImmediatelyAfterPaste(t *testing.T) {
 	frames(tt)
 	long := "first\nsecond\nthird\nfourth"
 	tt.SetClipboardData(transfer.TextData(long))
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
 	if got, want := a.boxTextContent(), "before\n"+long+"X"; got != want {
@@ -179,7 +193,7 @@ func TestBoxCaretMovesAfterPastedBlock(t *testing.T) {
 	frames(tt)
 	long := "one\ntwo\nthree\nfour"
 	tt.SetClipboardData(transfer.TextData(long))
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
 	if got, want := a.boxTextContent(), "hello"+long+"X world"; got != want {
@@ -198,7 +212,7 @@ func TestBoxSelectedReplacementFollowedByTyping(t *testing.T) {
 	frames(tt)
 	long := "one\ntwo\nthree\nfour"
 	tt.SetClipboardData(transfer.TextData(long))
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
 	if got, want := a.boxTextContent(), long+"X"; got != want {
@@ -220,9 +234,12 @@ func TestBoxBackToBackPastesKeepTheirOrder(t *testing.T) {
 	first := "one\ntwo\nthree\nfour"
 	second := "five\nsix\nseven\neight"
 	tt.SetClipboardData(transfer.TextData(first))
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
+	if got, want := a.boxTextContent(), "hello"+first+" world"; got != want {
+		t.Fatalf("request text after the first paste %q, want %q", got, want)
+	}
 	tt.SetClipboardData(transfer.TextData(second))
-	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
 	if got, want := a.boxTextContent(), "hello"+first+second+"X world"; got != want {

@@ -198,7 +198,7 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
-		BoxInput:          func() (string, [][]byte) { return a.boxShare.load() },
+		BoxInput:          a.boxShare.load,
 		BoxAutoSuppressed: func() (bool, bool) { return a.boxShare.automaticSuppressed() },
 		Resolve:           resolver(lm),
 		History:           lib.store.History(),

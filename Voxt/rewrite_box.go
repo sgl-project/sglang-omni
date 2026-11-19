@@ -24,9 +24,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo/transfer"
@@ -132,41 +132,6 @@ type boxWindow interface {
 	Destroy()
 }
 
-// boxShare is the box's content as the sending session reads it
-// (Config.BoxInput, on the session's goroutine): stored on every box
-// change and every frame the card shows (a keystroke is one).
-type boxShare struct {
-	mu                       sync.Mutex
-	text                     string
-	images                   [][]byte
-	selectionSuppressed      bool
-	automaticImageSuppressed bool
-}
-
-func (b *boxShare) store(text string, images [][]byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.text, b.images = text, slices.Clone(images)
-}
-
-func (b *boxShare) load() (string, [][]byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.text, b.images
-}
-
-func (b *boxShare) suppressAutomatic(selection, image bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.selectionSuppressed, b.automaticImageSuppressed = selection, image
-}
-
-func (b *boxShare) automaticSuppressed() (bool, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.selectionSuppressed, b.automaticImageSuppressed
-}
-
 // openBox opens the input box and starts the microphone with it (the
 // Rewrite shortcut): the card shows what the session reads and hears,
 // the typed text and the pictures going with it when the recording is
@@ -202,7 +167,7 @@ func (a *app) closeBox() {
 func (a *app) dropBox() {
 	a.closeBoxWindow()
 	a.box = rewriteBox{}
-	a.boxShare.store("", nil)
+	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
 	// A send queued behind a picture's conversion dies with the box: an
@@ -223,6 +188,7 @@ func (a *app) boxSend() {
 		a.boxSendQueued = true
 		return
 	}
+	a.boxShare.clearError() // a failed conversion is confirmed by this send
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		if a.sess.State == session.Recording {
 			a.stopSession()
@@ -257,8 +223,10 @@ func (a *app) boxEnded(s session.Snapshot) {
 	case session.Failed:
 		// Nothing of the box's is dropped: it comes back with the
 		// error, the text and the pictures kept, the instruction ready
-		// for Enter.
-		a.box.err, _, _ = sessionProblemText(s.Problem)
+		// for Enter. A conversion error already says what happened.
+		if a.box.err == "" {
+			a.box.err, _, _ = sessionProblemText(s.Problem)
+		}
 		if s.Spoken != "" {
 			a.box.instruction = s.Spoken
 		}
@@ -286,6 +254,7 @@ type boxLanding struct {
 // so batches keep the drop order whatever converts first.
 func (a *app) boxReserve() int {
 	a.boxPending++
+	a.boxShare.start()
 	seq := a.boxSeq
 	a.boxSeq++
 	return seq
@@ -353,6 +322,8 @@ func (a *app) boxPaste(svc uiServices) bool {
 	case has(transfer.PNG):
 		raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
 		if err != nil {
+			a.box.err = i18n.T("This image could not be read.")
+			a.boxSync()
 			return true
 		}
 		gen := a.boxGen
@@ -417,6 +388,10 @@ func (a *app) boxDrop(files []string) {
 // order, not the drop order. A send that waited for it goes now.
 func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...string) {
 	a.boxPending--
+	var conversionErr error
+	if gen == a.boxGen && errText != "" {
+		conversionErr = errors.New(errText)
+	}
 	if a.boxHeld == nil {
 		a.boxHeld = map[int]boxLanding{}
 	}
@@ -443,6 +418,8 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...
 		}
 		a.boxSync()
 	}
+	// Wake the session only after boxSync has stored every landed image.
+	a.boxShare.done(conversionErr)
 	if a.boxPending == 0 && a.boxSendQueued {
 		a.boxSendQueued = false
 		a.boxSend()
