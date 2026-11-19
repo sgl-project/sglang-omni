@@ -1,0 +1,58 @@
+{
+  "name": "legacy-imported",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 0,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "欢迎使用 Voxt",
+    "subtitle": "在任何 App 里说话，文字就出现在光标处，可以转录、翻译、改写。接下来几步都很短，每一步都可以跳过。",
+    "recording": false,
+    "welcome": {
+      "legacy_available": true,
+      "legacy": {
+        "done": true,
+        "failed": "",
+        "imported": [
+          "Fixture dictionary"
+        ],
+        "skipped": [
+          "Fixture unsupported setting"
+        ],
+        "todos": [
+          {
+            "text": "Finish the speech model setup",
+            "kind": "asr",
+            "id": "asr.accurate",
+            "service_name": "asr.accurate"
+          }
+        ]
+      }
+    },
+    "footer": {
+      "mode": "welcome",
+      "busy": false,
+      "back": false,
+      "continue_label": "开始设置",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

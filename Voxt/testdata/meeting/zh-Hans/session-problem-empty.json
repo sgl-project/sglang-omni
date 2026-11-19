@@ -1,0 +1,129 @@
+{
+  "name": "session-problem-empty",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "session-problem",
+    "state": "failed",
+    "problem_code": "empty",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "session-problem",
+      "kind": "translate",
+      "title": "翻译",
+      "target_name": "Slack",
+      "language": "zh-Hans",
+      "language_label": "简体中文",
+      "thinking": {},
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "problem_code": "empty",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "problem",
+          "kind": "problem",
+          "turn": 0,
+          "text": "语言模型没有返回任何内容。",
+          "selectable": false
+        },
+        {
+          "key": "source-last",
+          "kind": "source",
+          "turn": 0,
+          "text": "Source text",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": true,
+      "copied": false,
+      "heard": false,
+      "can_insert": false,
+      "can_copy": false,
+      "can_follow_up": false,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": true,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

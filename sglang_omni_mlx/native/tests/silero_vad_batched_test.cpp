@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
   std::vector<float> per_chunk;
   for (size_t offset = 0; offset < padded.size();
        offset += silero_vad::kChunkSamples) {
-    per_chunk.push_back(vad.Feed(padded.data() + offset, state));
+    per_chunk.push_back(vad.Feed(padded.data() + offset, 1, state)[0]);
   }
 
   if (batched.size() != per_chunk.size()) {
