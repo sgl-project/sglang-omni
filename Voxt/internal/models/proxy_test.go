@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/hehehai/actnowkit/hfhub"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 )
 
 // testProxy is a systemProxy with no environment's proxy, the given
@@ -99,6 +101,18 @@ func TestSystemProxy(t *testing.T) {
 	for host, want := range map[string]bool{"intranet": true, "192.168.1.20": true, "huggingface.co": false} {
 		if got := bypassProxy(host, local); got != want {
 			t.Errorf("%s: bypass %v", host, got)
+		}
+	}
+}
+
+// TestBypassProxyThisMac: a host goes direct, with no exceptions, exactly
+// when the local-only checks (core.IsLoopback) call it this Mac.
+func TestBypassProxyThisMac(t *testing.T) {
+	proxies := SystemProxies{HTTPS: "127.0.0.1:7897"}
+	for _, host := range []string{"localhost", "localhost.", "LocalHost", "ollama.localhost", "Ollama.LocalHost.", "127.0.0.2", "::1",
+		"localhost.example.com", "foolocalhost", "huggingface.co", "10.0.0.2"} {
+		if got, want := bypassProxy(host, proxies), core.IsLoopback(host); got != want {
+			t.Errorf("%s: bypass %v, IsLoopback %v", host, got, want)
 		}
 	}
 }
