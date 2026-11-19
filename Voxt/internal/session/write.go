@@ -76,7 +76,7 @@ func (r *run) write(raw, selection string) {
 		// clipboard's picture and the window's, which an empty box
 		// leaves to today's rule — the window's is shot only now, so
 		// that one that will not be sent is never taken.
-		readBoxInput := func() bool {
+		readBox := func() bool {
 			if !r.req.Box || cfg.BoxInput == nil {
 				return true
 			}
@@ -92,9 +92,9 @@ func (r *run) write(raw, selection string) {
 				r.endWriteFailed(ProblemOf(err), false)
 				return false
 			}
-			// "": the box is closed or holds no text — a retry from the
-			// card keeps the typed text it carries.
-			if typed != "" {
+			// A live box can be cleared; a retry from the card keeps its
+			// typed text when the closed box returns nothing.
+			if typed != "" || r.req.Text == nil {
 				r.typed = typed
 			}
 			if len(images) > 0 {
@@ -102,7 +102,7 @@ func (r *run) write(raw, selection string) {
 			}
 			return true
 		}
-		if !readBoxInput() {
+		if !readBox() {
 			return
 		}
 		automaticImageSuppressed := false
@@ -130,9 +130,13 @@ func (r *run) write(raw, selection string) {
 						r.endCancelled(nil)
 						return
 					}
-					// The user can keep editing while the review is open.
-					if !readBoxInput() {
+					// The user may have typed or pasted while reviewing; the
+					// box's pictures then win over the window's.
+					if !readBox() {
 						return
+					}
+					if len(r.req.Images) > 0 {
+						r.previewImage("", nil)
 					}
 					if cfg.BoxAutoSuppressed != nil {
 						selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
