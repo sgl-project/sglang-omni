@@ -237,7 +237,7 @@ class MossTranscribeDiarizeEngineBuilder(
         else:
             # note (wilsonzheng0327): hosts without a draft never load its kernels.
             from sglang_omni.speculative.dflash_draft import (
-                ReducedVocabularyDFlashWorker,
+                draft_worker_class,
                 materialize_draft_checkpoint,
             )
 
@@ -248,7 +248,9 @@ class MossTranscribeDiarizeEngineBuilder(
             )
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
-            self.speculative_worker_class = ReducedVocabularyDFlashWorker
+            self.speculative_worker_class = draft_worker_class(
+                self.draft_checkpoint.name
+            )
             # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
             if self.enable_async_decode is None:
                 self.enable_async_decode = False
