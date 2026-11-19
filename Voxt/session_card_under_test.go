@@ -104,6 +104,24 @@ func TestCardStaysAfterCancelledTranscribe(t *testing.T) {
 	}
 }
 
+// A restyle that grows the card (its text measured taller) moves the
+// pill with it; it used to stay and end up inside the taller card.
+func TestPillFollowsACardRestyle(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	startSaying(a, tr, "transcribe/0", textEditApp, "dictated")
+	pillBesideCard(t, a, "recording beside the open card")
+	long := strings.Repeat("a much longer answer. ", 40)
+	a.answer.text = long
+	a.overlayRestyle()
+	pillBesideCard(t, a, "after the card grew")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if c := a.answer; !c.open || c.target.Name != "Slack" || c.text != long || a.under.open || a.overlayModeNow() != ovAnswer || a.pill.shown {
+		t.Fatalf("after the transcription: card %+v under=%v mode=%s pill=%s", c, a.under.open, a.overlayModeNow(), a.pill.mode)
+	}
+}
+
 // The transcription's notice (nothing heard) shows in the pill's window,
 // beside the card.
 func TestCardStaysAfterTranscribeNotice(t *testing.T) {
