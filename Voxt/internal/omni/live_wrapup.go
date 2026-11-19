@@ -10,7 +10,7 @@ import (
 
 // previewDrain bounds the wait for the socket's writer to deliver the
 // queued audio: at most maxQueued (30 s) on a loopback socket. A server
-// that stops reading must not stall the Final.
+// that stops reading must not stall the stream's end.
 const previewDrain = 5 * time.Second
 
 // previewCompleteTimeout bounds the wait for the server to recognise
@@ -46,7 +46,7 @@ func (s *live) drainPreview() (drained bool) {
 // weighs the preview's text when the Final fails, and a fast-failing
 // Final does not give the tail's recognition time to arrive on its own.
 // The bound covers the write too: a server that stopped reading must
-// not stall the Final.
+// not stall the stream's end.
 func (s *live) completePreview() {
 	done, _ := json.Marshal(map[string]string{"type": "transcription.done"})
 	ctx, cancel := context.WithTimeout(s.ctx, previewCompleteTimeout)

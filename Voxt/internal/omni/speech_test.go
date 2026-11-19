@@ -242,6 +242,46 @@ func TestSalvageAwaitsTailRecognition(t *testing.T) {
 	}
 }
 
+// TestLiveFinalDoesNotWaitForThePreview: the wrap-up (draining the
+// preview's queue and awaiting the server's recognition of it) is for
+// Salvage, so a succeeding Final does not wait for it. The realtime
+// partial after the first lags 2 s behind; Stop comes with it lagging,
+// and the Final's result still arrives well inside the lag.
+func TestLiveFinalDoesNotWaitForThePreview(t *testing.T) {
+	f, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}", LiveSegDelay: 2 * time.Second})
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two stretches of speech: the second one's partial lags 2 s behind.
+	// The append that triggers it precedes any wrap-up on the socket, so
+	// a wrap-up would always land behind the lag.
+	sendAll(t, st, tone(1500*time.Millisecond, 0.3))
+	select {
+	case ev := <-st.Events():
+		if ev.Kind != asr.EventPartial {
+			t.Fatalf("before the second stretch: %+v", ev)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no live partial")
+	}
+	sendAll(t, st, tone(1500*time.Millisecond, 0.3))
+	stopped := time.Now()
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if took := time.Since(stopped); took > 2*time.Second {
+		t.Errorf("the Final's result came %v after Stop: it waited for the lagging partial", took)
+	}
+	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != "p1" {
+		t.Fatalf("last %+v", last)
+	}
+	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples != 3*sampleRate {
+		t.Errorf("finals %+v", finals)
+	}
+}
+
 func TestMossDiarizeNoSpeech(t *testing.T) {
 	f, a := mossWithVAD(t, omnitest.Opts{Segments: true})
 	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: silence(5 * time.Second), Format: "pcm", SampleRate: sampleRate})

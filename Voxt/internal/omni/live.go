@@ -245,7 +245,7 @@ func (s *live) stopPreview(why string) {
 }
 
 // write sends the queued messages in order. A closed out is drained
-// first: Finish delivers the recording's tail before the Final runs.
+// first: a failed Final delivers the recording's tail before Salvage.
 func (s *live) write() {
 	defer close(s.writeDone)
 	for {
@@ -355,16 +355,13 @@ func (s *live) Finish() error {
 }
 
 // finalPass recognises pcm, the whole recording, once more (what the
-// pieces left of it) and ends the stream with the result. The preview's
-// queue is drained and the server's recognition of it awaited first, so
-// its text (and coverage, for Salvage) keeps the recording's tail; the
-// socket stays open while the Final runs, so the tail's segments still
-// arrive.
+// pieces left of it) and ends the stream with the result. The Final
+// starts at once: the wrap-up (draining the preview's queue and awaiting
+// the server's recognition of it) matters only for Salvage, so it runs
+// only when the Final fails, not on every Stop. The socket stays open
+// while the Final runs, so the tail's segments still arrive.
 func (s *live) finalPass(pcm []byte) {
 	if s.conn != nil {
-		if s.drainPreview() {
-			s.completePreview()
-		}
 		defer s.conn.CloseNow()
 	}
 	start := time.Now()
@@ -403,6 +400,11 @@ func (s *live) finalPass(pcm []byte) {
 	if err != nil {
 		if s.ctx.Err() != nil {
 			err = asr.NetError(s.ctx, Provider, s.ctx.Err())
+		} else if s.conn != nil && s.drainPreview() {
+			// Salvage weighs the preview: deliver the tail still queued
+			// for the socket and await its recognition first (bounded,
+			// so a stuck server cannot stall the error either).
+			s.completePreview()
 		}
 		s.end(asr.Event{Kind: asr.EventError, Err: err})
 		return
