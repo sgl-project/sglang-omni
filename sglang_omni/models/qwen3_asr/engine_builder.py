@@ -373,10 +373,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         kv_cache_bytes = peek_stage_kv_cache_bytes()
         logger.info(
             "Qwen3-ASR runtime profile: dtype=%s attention_backend=%s "
+            "prefill_attention_backend=%s decode_attention_backend=%s "
             "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
             "torch_compile=%s max_running_requests=%s kv_sizing=%s",
             getattr(server_args, "dtype", None),
             getattr(server_args, "attention_backend", None),
+            getattr(server_args, "prefill_attention_backend", None),
+            getattr(server_args, "decode_attention_backend", None),
             getattr(server_args, "mm_attention_backend", None),
             not getattr(server_args, "disable_cuda_graph", False),
             get_decode_cuda_graph_bs(server_args),
@@ -473,7 +476,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             and overrides.get("kv_cache_dtype") in (None, "auto")
             and get_visible_gpu_sm_version(self.gpu_id) == 100
         ):
-            # note (Xuanfei): the automatic SM100 choice, trtllm_mha, cannot capture the full prefill graph; decode keeps it. Measured on B200 only.
+            # note (Xuanfei): the automatic SM100 choice, trtllm_mha, cannot capture the full prefill graph; decode keeps it. Measured on B200 only; issue 4269 tracks when to drop this.
             overrides["prefill_attention_backend"] = "flashinfer"
         else:
             pass

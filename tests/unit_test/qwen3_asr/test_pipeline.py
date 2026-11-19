@@ -921,6 +921,8 @@ def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
         (100, {}, "flashinfer"),
         (100, {"kv_cache_dtype": "auto"}, "flashinfer"),
         (100, {"decode_attention_backend": "fa3"}, "flashinfer"),
+        (100, {"cuda_graph_backend_prefill": "full"}, "flashinfer"),
+        (100, {"cuda_graph_config": {"prefill": {"backend": "full"}}}, "flashinfer"),
         (90, {}, None),
         (103, {}, None),
         (120, {}, None),
