@@ -65,6 +65,7 @@ dependencies = [
     "librosa>=0.11.0",
     "av>=16.1.0",
     "soundfile>=0.12.0",
+    "audioread>=3.0.0",       # MiniCPM-o video_frontend imports it; librosa 1.x no longer pulls it in
     "scipy>=1.10.0",
 
     # --- OpenAI Whisper ----------------------------------------------------
@@ -76,6 +77,10 @@ dependencies = [
     # --- MiniCPM-o ---------------------------------------------------------
     "einops>=0.8.1",
     "onnx>=1.18.0",
+    "decord==0.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",  # Timed video input; the prebuilt wheel is x86_64-only
+
+    # --- Zonos2 ------------------------------------------------------------
+    "nemo_text_processing==1.2.0",  # Text normalization (tts_norm, on by default); without it requests reach the model unnormalized
 
     # --- PersonaPlex -------------------------------------------------------
     "sentencepiece>=0.2.0",
