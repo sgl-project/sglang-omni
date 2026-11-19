@@ -220,8 +220,8 @@ func stripControlMarkup(s string, inputs ...string) string {
 			}
 			if j >= 0 && (i < 0 || j < i) {
 				next, _ := utf8.DecodeRuneInString(s[j+len(tag[1]):])
-				if j > 0 && j+len(tag[1]) < len(s) && strings.ContainsRune(" \t\r\n", rune(s[j-1])) &&
-					(strings.ContainsRune(" \t\r\n", next) || unicode.IsPunct(next)) {
+				if j > 0 && j+len(tag[1]) < len(s) && strings.ContainsRune(" \t", rune(s[j-1])) &&
+					(strings.ContainsRune(" \t", next) || unicode.IsPunct(next)) {
 					closeSearchFrom = j + len(tag[1])
 					continue
 				}

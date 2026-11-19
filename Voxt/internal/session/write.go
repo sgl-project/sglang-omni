@@ -200,6 +200,14 @@ func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, err
 	return r.ask(in)
 }
 
+func answerCleanupInput(in compose.Input) string {
+	input := in.Text + "\n" + in.Instruction
+	for _, turn := range in.Previous {
+		input += "\n" + turn.Selection + "\n" + turn.Instruction + "\n" + turn.Answer.Title + "\n" + turn.Answer.Content
+	}
+	return input
+}
+
 // ask sends one request and streams its answer into the snapshot. It
 // returns the answer (Content only, but for a JSON answer), the
 // composition's profile, and whether the model stopped at its length
@@ -219,7 +227,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
-	answerInput := in.Text + "\n" + in.Instruction
+	answerInput := answerCleanupInput(in)
 	quoteSource := cmp.Or(in.Text, in.Instruction)
 	var last time.Time
 	publish := func(force bool) {
