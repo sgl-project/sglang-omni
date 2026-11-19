@@ -42,7 +42,7 @@ scripts/mac.sh 'cd helper && swift test'                     # the helper's test
 MAC_DIR=code/VoxtNew-mt scripts/mac.sh scripts/mac-e2e.sh    # headless Mac tests: real helper, fake models, no window or key
 scripts/mac-latency.sh ACCURATE_DIR FAST_DIR [ROUNDS [SETTLE]]   # on the Mac: the first transcription's stages after a launch and a change of model, real speech models, fake helper (TestMacE2EFirstLatency)
 MAC_DIR=code/VoxtNew-logsel scripts/mac.sh scripts/mac-logs-shots.sh  # the logs' selection worked with the real pointer and captured (only while nobody uses the Mac; VOXTNEW_SHOTS_DRY=1: the window only)
-MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real models ($HUB, ~/voxtnew-runtime): Swift tests, omni, LLM, quick eval, app smoke
+MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real speech models ($HUB, ~/voxtnew-runtime): Swift tests, omni, quick eval, app smoke
 scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni go test -run TestEval -v .'  # the eval (docs/eval.md)
 scripts/vendor-mygo.sh --check                               # third_party/mygo is MyGo + our patches
 scripts/snapshots.sh check                                   # every snapshot, pixel for pixel, against the merge base
