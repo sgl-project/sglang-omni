@@ -71,6 +71,13 @@ func (b *boxShare) reset() {
 	b.signalLocked()
 }
 
+// clearReview keeps one send's approval from confirming the next send's image.
+func (b *boxShare) clearReview() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.review, b.reviewApproved = nil, false
+}
+
 // waitForReview holds an automatic window image's request until the user
 // confirms the preview that is already visible in the box.
 func (b *boxShare) waitForReview(ctx context.Context) error {

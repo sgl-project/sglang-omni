@@ -138,6 +138,9 @@ type boxWindow interface {
 // stopped. A box that stayed open (a send failed) keeps its content.
 func (a *app) openBox(target proto.App, req session.StartRequest) {
 	req.Box = true
+	if !a.sess.State.Live() {
+		a.boxShare.clearReview()
+	}
 	id, n := a.startSessionID(req)
 	if n != nil || id == "" {
 		return // the notice says what is missing
@@ -155,7 +158,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 // closeBox closes the box and drops its content (Esc, its Close button,
 // the window's close); the recording is cancelled.
 func (a *app) closeBox() {
-	if a.box.session != "" && a.sess.State.Live() && a.sess.ID == a.box.session {
+	if id := a.boxSessionID(); id != "" && a.sess.State.Live() && a.sess.ID == id {
 		a.cancelSession()
 	}
 	a.dropBox()
@@ -210,10 +213,12 @@ func (a *app) boxSend() {
 	if a.box.instruction == "" || a.sess.State.Live() {
 		return
 	}
+	a.boxShare.clearReview()
 	in := session.TextInput{Raw: a.box.instruction, Selection: a.box.selection}
 	id, n := a.startSessionID(session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in})
 	if n == nil && id != "" {
 		a.box.sending, a.box.err = id, ""
+		a.box.shown = false
 		a.boxSync()
 	}
 }

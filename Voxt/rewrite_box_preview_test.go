@@ -197,10 +197,16 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	a.pump("the first window review", func() bool {
 		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
 	})
-	a.postQueue(a.boxSend)
+	a.postQueue(func() {
+		a.boxSend()
+		a.boxSend()
+	})
 	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
 	sent := len(chat.requests())
 	chat.set("Recovered.", 0)
+	// A second click after the first review finished leaves this approval
+	// for the next send unless the resend clears it.
+	a.boxShare.reviewApproved = true
 
 	a.postQueue(a.boxSend)
 	a.pump("the resend's window review", func() bool {
@@ -209,7 +215,16 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	if !a.box.shown || !a.boxViewState().CanSend {
 		t.Fatalf("the resend's screenshot cannot be confirmed: shown %v, canSend %v", a.box.shown, a.boxViewState().CanSend)
 	}
-	a.postQueue(a.boxSend)
+	a.drain(100 * time.Millisecond)
+	if got := len(chat.requests()); got != sent {
+		t.Fatalf("the resend used the first send's approval: %d requests before its own confirmation, want %d", got, sent)
+	}
+	a.postQueue(func() {
+		a.boxSend()
+		if a.box.shown {
+			t.Error("the confirmed resend stayed visible")
+		}
+	})
 	a.pump("the resend's answer", func() bool { return a.answer.open })
 	if a.sess.State != session.Done || a.sess.Result != "Recovered." {
 		t.Fatalf("resend ended %s with %q", a.sess.State, a.sess.Result)
@@ -222,6 +237,65 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	if len(images) != 1 {
 		t.Fatalf("the confirmed resend sent %d images, want the window screenshot", len(images))
 	}
+}
+
+func TestBoxResendWithoutWindowReviewHides(t *testing.T) {
+	chat := &fakeChat{status: 400, delay: 100 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, set, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(a.boxSend)
+	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
+	sent := len(chat.requests())
+	chat.set("Recovered.", 0)
+
+	a.postQueue(a.boxSend)
+	a.pump("the resend", func() bool { return a.box.sending != "" })
+	if a.box.shown {
+		t.Fatal("a resend without a window review stayed visible")
+	}
+	a.pump("the resend's answer", func() bool { return a.answer.open })
+	if a.sess.State != session.Done || len(chat.requests()) <= sent {
+		t.Fatalf("resend ended %s after %d requests", a.sess.State, len(chat.requests()))
+	}
+}
+
+func TestBoxCloseCancelsResendWindowReview(t *testing.T) {
+	chat := &fakeChat{status: 400}
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Privacy.SendWindow = true
+	}, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(a.boxSend)
+	a.pump("the first window review", func() bool {
+		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
+	})
+	a.postQueue(a.boxSend)
+	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
+	sent := len(chat.requests())
+	chat.set("Recovered.", 0)
+
+	a.postQueue(a.boxSend)
+	a.pump("the resend's window review", func() bool {
+		return a.box.sending != "" && a.sess.ID == a.box.sending && a.sess.State == session.Composing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
+	})
+	target, resend := a.box.target, a.box.sending
+	a.postQueue(a.closeBox)
+	a.pump("the resend's cancellation", func() bool { return !a.box.open && a.sess.State.Ended() })
+	if a.sess.State != session.Cancelled {
+		t.Fatalf("Close ended the resend as %s, want cancelled", a.sess.State)
+	}
+	if got := len(chat.requests()); got != sent {
+		t.Fatalf("Close sent the reviewed screenshot: %d requests, want %d", got, sent)
+	}
+	a.postQueue(func() { a.openBox(target, session.StartRequest{Kind: store.KindRewrite, Target: target}) })
+	a.pump("a new recording", func() bool {
+		return a.box.open && a.box.session != resend && a.sess.ID == a.box.session && a.sess.State == session.Recording
+	})
 }
 
 func TestAutomaticImageAppearsOnAnswerCardOnlyWhenSent(t *testing.T) {

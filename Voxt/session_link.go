@@ -302,6 +302,9 @@ func (a *app) sessionChanged(s session.Snapshot) {
 				a.box.shown = false // sent: the pill and the card take over
 			}
 		}
+		if s.ID == a.box.sending && s.ImagePreviewKind == "window" && len(s.ImagePreview) > 0 {
+			a.box.shown = true
+		}
 		a.boxSync() // the box's lines follow its session
 	}
 	for _, fn := range a.onSession { // events.go: the setup guide, the sounds
