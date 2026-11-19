@@ -42,9 +42,24 @@ def test_vocoder_platform_default_keeps_npu_opt_in(
         (EngineArgs(max_queued_requests=32), {}, "pipeline", {}),
         (EngineArgs(max_queued_requests=None), {}, "pipeline", {}),
         (EngineArgs(), {"max_running_requests": 96}, "pipeline", {}),
-        (EngineArgs(), {}, "pipeline", {"pipeline": ProcessConfig(num_replicas=2)}),
-        (EngineArgs(), {}, "vocoder", {"pipeline": ProcessConfig(num_replicas=2)}),
-        (EngineArgs(), {}, "vocoder", {"vocoder": ProcessConfig(num_replicas=3)}),
+        (
+            EngineArgs(),
+            {},
+            "pipeline",
+            {"pipeline": ProcessConfig(num_replicas=2, replica_devices=[0, 1])},
+        ),
+        (
+            EngineArgs(),
+            {},
+            "vocoder",
+            {"pipeline": ProcessConfig(num_replicas=2, replica_devices=[0, 1])},
+        ),
+        (
+            EngineArgs(),
+            {},
+            "vocoder",
+            {"vocoder": ProcessConfig(num_replicas=3, replica_devices=[0, 1, 2])},
+        ),
     ],
     ids=[
         "default",
