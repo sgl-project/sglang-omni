@@ -158,6 +158,9 @@ func goOperations(n uint) transfer.Operation {
 	if n&1 != 0 {
 		o |= transfer.Copy
 	}
+	if n&4 != 0 {
+		o |= transfer.Copy
+	}
 	if n&16 != 0 {
 		o |= transfer.Move
 	}
