@@ -187,25 +187,6 @@ func (a *app) boxReadInputFile(path string) {
 }
 
 func (a *app) boxAddFileText(text, source string) {
-	if text != "" && !strings.HasSuffix(text, "\n") {
-		text += "\n"
-	}
-	if a.box.text != "" && !strings.HasSuffix(a.box.text, "\n") {
-		a.box.text += "\n"
-	}
-	if a.box.text == "" && len(a.box.textSegments) > 0 {
-		for index := len(a.box.textSegments) - 1; index >= 0; index-- {
-			last := &a.box.textSegments[index]
-			if last.Text == "" {
-				continue
-			}
-			if !strings.HasSuffix(last.Text, "\n") {
-				last.Text += "\n"
-				last.Chars++
-			}
-			break
-		}
-	}
 	if a.box.text != "" {
 		a.box.textSegments = append(a.box.textSegments, a.newBoxTextSegment(a.box.text, "", false))
 		a.box.text = ""

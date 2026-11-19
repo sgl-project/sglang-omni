@@ -96,10 +96,22 @@ func (a *app) boxTextContent() string {
 		return a.box.textCache
 	}
 	var content strings.Builder
-	for _, segment := range a.box.textSegments {
-		content.WriteString(segment.Text)
+	afterFile := false
+	add := func(text string, file bool) {
+		if text == "" {
+			return
+		}
+		// An imported file starts and ends on its own line, or two files glue together.
+		if (file || afterFile) && content.Len() > 0 && !strings.HasSuffix(content.String(), "\n") {
+			content.WriteByte('\n')
+		}
+		content.WriteString(text)
+		afterFile = file
 	}
-	content.WriteString(a.box.text)
+	for _, segment := range a.box.textSegments {
+		add(segment.Text, segment.File)
+	}
+	add(a.box.text, false)
 	a.box.textCache = content.String()
 	a.box.cachedEditor = a.box.text
 	a.box.textCacheValid = true
