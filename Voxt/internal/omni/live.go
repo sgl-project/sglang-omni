@@ -51,6 +51,15 @@ type live struct {
 	preview   bool          // the socket still takes audio
 	cut       *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
 	writeDone chan struct{} // closed when write returns (the queue is drained)
+	// idle, cap 1, gets a token whenever the writer empties the queue
+	// (a test waits on it and re-checks queued under s.mu).
+	idle chan struct{}
+	// lastRecv is when the server last said anything (s.mu): the
+	// wrap-up calls a quiet server unresponsive.
+	lastRecv time.Time
+	// finalOnly: Finish went straight to the Final, not finishLive.
+	// Only then may the wrap-up close s.out.
+	finalOnly bool
 	// writeGate, set by a test only, holds the writer before each write.
 	writeGate <-chan struct{}
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
@@ -120,7 +129,8 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn,
 		language: hint, bias: a.spec.ASR.contextBias(req.Hints, req.Prompt),
 		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
-		completed: make(chan string, 1), readDone: make(chan struct{}), writeDone: make(chan struct{})}
+		completed: make(chan string, 1), readDone: make(chan struct{}), writeDone: make(chan struct{}),
+		idle: make(chan struct{}, 1), lastRecv: time.Now()}
 	if conn != nil {
 		if a.spec.ASR.SpeechOnly && a.vad != nil {
 			s.cut = newPauseCut()
@@ -272,6 +282,12 @@ func (s *live) write() {
 			s.mu.Lock()
 			s.queued -= n
 			s.previewed += n
+			if s.queued == 0 {
+				select {
+				case s.idle <- struct{}{}:
+				default:
+				}
+			}
 			s.mu.Unlock()
 		case <-s.ctx.Done():
 			return
@@ -309,6 +325,9 @@ func (s *live) read() {
 			s.mu.Unlock()
 			return
 		}
+		s.mu.Lock()
+		s.lastRecv = time.Now()
+		s.mu.Unlock()
 		switch ev.Type {
 		case "transcription.completed":
 			s.completed <- s.a.plainText(ev.Text)
@@ -352,6 +371,7 @@ func (s *live) Finish() error {
 		return nil
 	}
 	s.preview = false
+	s.finalOnly = true
 	s.mu.Unlock()
 	go s.finalPass(pcm)
 	return nil

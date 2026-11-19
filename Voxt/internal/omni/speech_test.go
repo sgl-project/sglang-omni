@@ -51,33 +51,23 @@ func TestMossLivePauses(t *testing.T) {
 	pcm := append(append(tone(time.Second, 0.3), silence(6*time.Second)...), tone(time.Second, 0.3)...)
 	sendAll(t, st, pcm)
 	s := st.(*live)
-	written := func() (int, int) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return s.queued, s.previewed
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for queued, _ := written(); queued > 0 && time.Now().Before(deadline); queued, _ = written() {
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitIdle(t, s)
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
 	drain(t, st)
-	var got int
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		if live := f.records("live"); len(live) == 1 {
-			got = live[0].Samples
-			break
-		} else if len(live) > 1 || time.Now().After(deadline) {
-			t.Fatalf("live records %+v", live)
-		}
-		time.Sleep(10 * time.Millisecond)
+	f.waitLogged(t, "live session ended") // the fake's record is written first
+	live := f.records("live")
+	if len(live) != 1 {
+		t.Fatalf("live records %+v", live)
 	}
-	if got >= 4*sampleRate || got < 2*sampleRate {
+	if got := live[0].Samples; got >= 4*sampleRate || got < 2*sampleRate {
 		t.Errorf("the socket got %d samples of %d", got, len(pcm)/2)
 	}
-	if _, previewed := written(); previewed < len(pcm)-sampleRate*2 {
+	s.mu.Lock()
+	previewed := s.previewed
+	s.mu.Unlock()
+	if previewed < len(pcm)-sampleRate*2 {
 		t.Errorf("the preview covers %d bytes of %d", previewed, len(pcm))
 	}
 	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples < 2*sampleRate || finals[0].Samples >= 4*sampleRate {
@@ -109,15 +99,7 @@ func TestSalvageAfterPauseCut(t *testing.T) {
 		t.Fatal("no live partial")
 	}
 	f.waitLogged(t, "piece 1 of the recording")
-	s := st.(*live)
-	previewed := func() int {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return s.previewed
-	}
-	for deadline := time.Now().Add(10 * time.Second); previewed() < sampleRate*2*12/10 && time.Now().Before(deadline); {
-		time.Sleep(10 * time.Millisecond) // the second stretch reached the socket
-	}
+	waitIdle(t, st.(*live)) // the second stretch reached the socket
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
@@ -162,12 +144,7 @@ func TestSalvageDrainsQueuedTail(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("no live partial")
 	}
-	for deadline := time.Now().Add(10 * time.Second); queued() != 0 && time.Now().Before(deadline); {
-		time.Sleep(10 * time.Millisecond) // the writer is idle before it is held
-	}
-	if queued() != 0 {
-		t.Fatal("the first stretch did not reach the socket")
-	}
+	waitIdle(t, s) // the writer is idle before it is held
 	// Hold the writer: the stretch after the pause is still queued at Stop.
 	gate := make(chan struct{})
 	s.writeGate = gate
@@ -182,19 +159,7 @@ func TestSalvageDrainsQueuedTail(t *testing.T) {
 	}
 	close(gate)
 	// The Final fails; the drain then delivers the tail, and its
-	// (different) text joins the preview before Salvage.
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		s.mu.Lock()
-		text := s.asm.text()
-		s.mu.Unlock()
-		if text != "" && text != before {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the tail's text never arrived: %q (before the pause %q)", text, before)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// (different) text joins the preview before Salvage proves it.
 	evs := drain(t, st)
 	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
 		t.Fatalf("last %+v", last)

@@ -196,13 +196,17 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 
 // smallRecvListener gives accepted sockets a small receive buffer, so a
 // client whose server stopped reading (Opts.LiveStall) blocks on its
-// socket writes quickly and for certain.
+// socket writes quickly and for certain. A buffer the kernel refuses
+// fails the accept: the stall tests prove nothing without it.
 type smallRecvListener struct{ net.Listener }
 
 func (l *smallRecvListener) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
 	if tc, ok := c.(*net.TCPConn); err == nil && ok {
-		_ = tc.SetReadBuffer(16 << 10)
+		if err := tc.SetReadBuffer(16 << 10); err != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("smallRecvListener: %w", err)
+		}
 	}
 	return c, err
 }
@@ -231,6 +235,9 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 	stalled := false
 	defer func() {
 		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
+		// The runtime forwards stderr to its log: a test can wait for
+		// the session's end instead of polling the record file.
+		fmt.Fprintf(os.Stderr, "live session ended: %d samples\n", samples)
 	}()
 	for {
 		if stalled {

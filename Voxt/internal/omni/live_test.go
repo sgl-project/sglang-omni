@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,6 +32,26 @@ func drain(t *testing.T, st asr.Stream) []asr.Event {
 			evs = append(evs, ev)
 		case <-timeout:
 			t.Fatal("the stream did not end")
+		}
+	}
+}
+
+// waitIdle waits until the preview's writer has nothing queued: the
+// idle token only triggers a re-check, so a stale one cannot pass early.
+func waitIdle(t *testing.T, s *live) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		s.mu.Lock()
+		q := s.queued
+		s.mu.Unlock()
+		if q == 0 {
+			return
+		}
+		select {
+		case <-s.idle:
+		case <-deadline:
+			t.Fatal("the preview's writer did not go idle")
 		}
 	}
 }
@@ -186,7 +207,10 @@ func TestLiveFinalWhenTheSocketStalls(t *testing.T) {
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			c, err := new(net.Dialer).DialContext(ctx, network, addr)
 			if tc, ok := c.(*net.TCPConn); err == nil && ok {
-				_ = tc.SetWriteBuffer(16 << 10)
+				if err := tc.SetWriteBuffer(16 << 10); err != nil {
+					_ = c.Close()
+					return nil, err // without it the writer never blocks: no stall to test
+				}
 			}
 			return c, err
 		},
@@ -218,6 +242,60 @@ func TestLiveFinalWhenTheSocketStalls(t *testing.T) {
 		t.Errorf("finals %+v: the whole recording goes to the Final", finals)
 	}
 	st.Close()
+}
+
+// TestLiveFinalFailsWhenTheSocketStalls: the server answers the session
+// update, then hangs, and the Final fails. The wrap-up's wait for an
+// answer gives up on a quiet server (previewQuiet) instead of running
+// the full previewCompleteTimeout behind a dead one, so the error ends
+// the stream within the quiet bound. The queue is empty at Stop (the
+// kernel took the small send), so this is the drain-succeeds path.
+func TestLiveFinalFailsWhenTheSocketStalls(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sendAll(t, st, tone(100*time.Millisecond, 0.3))
+	stopped := time.Now()
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if took := time.Since(stopped); took > previewQuiet+3*time.Second {
+		t.Errorf("the error came %v after Stop, over the %v quiet bound", took, previewQuiet)
+	}
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+}
+
+// TestLiveResultSalvageAfterFinish: a LiveResult stream's finishLive
+// owns s.out (transcription.done goes through it) until it ends the
+// stream, so a Salvage after Finish must not close s.out under it
+// (it panicked with send on closed channel). LiveDrop keeps finishLive
+// pending on the server's answer. One goroutine at a time, a few
+// rounds: the race needs the close to land before the send.
+func TestLiveResultSalvageAfterFinish(t *testing.T) {
+	old := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(old)
+	for range 5 {
+		f := newFake(t, omnitest.Opts{LiveDrop: true}, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		st, err := f.asr(t, ASRFast).Open(ctx, asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sendAll(t, st, tone(500*time.Millisecond, 0.3))
+		if err := st.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		_ = st.(asr.Salvager).Salvage()
+		st.Close()
+		cancel()
+	}
 }
 
 func TestLiveClose(t *testing.T) {
