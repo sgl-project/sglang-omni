@@ -1,15 +1,19 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // earlySeg is a stretch of dictation of about 290 characters, distinct
@@ -154,5 +158,209 @@ func TestEarlyCleanFallback(t *testing.T) {
 	last := reqs[len(reqs)-1].Messages
 	if last[len(last)-1].Content != compose.UserMessage(parts[len(parts)-1].Text) {
 		t.Errorf("the last request did not clean the whole text's last piece")
+	}
+}
+
+func newEarlyUnitRun(t *testing.T, model LLM, terms []store.Term) *run {
+	t.Helper()
+	h := newHarness(t, nil, model, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s := settings.Defaults()
+	s.Features.Transcribe.Enhance = true
+	s.Dictionary.Enabled = true
+	s.Dictionary.Glossary = true
+	r := &run{
+		m: h.m, id: "early-test", req: StartRequest{Kind: store.KindTranscribe}, settings: s,
+		ctx: ctx, cancel: cancel, svcResolved: make(chan struct{}),
+		svc: Services{LLM: model, LLMInfo: Model{ID: "deepseek"}}, terms: terms,
+	}
+	r.llmCtx, r.llmStop = context.WithCancel(ctx)
+	r.startScene()
+	close(r.svcResolved)
+	return r
+}
+
+func TestEarlyCleanShortInputThinking(t *testing.T) {
+	full := strings.Repeat("a", 1000)
+	model := &fakeLLM{text: "clean"}
+	r := newEarlyUnitRun(t, model, nil)
+	r.settings.Providers.LLM = []settings.Provider{{
+		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 200},
+	}}
+	r.hearPiece(full[:100])
+	_, _, err := r.cleanUpFirst(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := model.requests()
+	if len(reqs) != 4 {
+		t.Fatalf("%d requests, want the 4 whole-text requests", len(reqs))
+	}
+	for i, req := range reqs {
+		if req.InputChars != len([]rune(full)) || req.OnDelta == nil {
+			t.Errorf("request %d has InputChars %d and streaming %t, want 1000 and whole-text streaming", i+1, req.InputChars, req.OnDelta != nil)
+		}
+	}
+}
+
+func TestEarlyCleanThinkingCountsReplacedText(t *testing.T) {
+	model := &fakeLLM{text: "clean"}
+	r := newEarlyUnitRun(t, model, []store.Term{{Term: "X", Aliases: []string{"aaaaaaaaaaaaaaaaaaaa"}, Enabled: true}})
+	r.settings.Providers.LLM = []settings.Provider{{
+		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 20},
+	}}
+	r.hearPiece("aaaaaaaaaaaaaaaaaaaa")
+	_, _, err := r.cleanUpFirst("X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 || reqs[0].InputChars != 1 || reqs[0].OnDelta == nil {
+		t.Fatalf("requests %+v, want one whole-text request with the replaced length 1", reqs)
+	}
+}
+
+func TestEarlyCleanLargeGlossary(t *testing.T) {
+	terms := make([]store.Term, 31)
+	for i := range terms {
+		terms[i] = store.Term{Term: fmt.Sprintf("Term%02d", i), Enabled: true}
+	}
+	first := strings.Repeat("a", 295) + "Term00"
+	full := first + strings.Repeat("b", 293) + "Term30"
+	model := &fakeLLM{text: "clean"}
+	r := newEarlyUnitRun(t, model, terms)
+	r.hearPiece(first)
+	_, _, err := r.cleanUpFirst(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := model.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("%d requests, want the 2 whole-text requests", len(reqs))
+	}
+	for i, req := range reqs {
+		message := req.Messages[len(req.Messages)-1].Content
+		if req.InputChars != 600 || !strings.Contains(message, "- Term00") || !strings.Contains(message, "- Term30") {
+			t.Errorf("request %d lacks the whole-text length or glossary: InputChars %d, message %q", i+1, req.InputChars, message)
+		}
+	}
+}
+
+func TestEarlyCleanRequestCountFollowsSpeechStretches(t *testing.T) {
+	first := strings.Repeat("a", 301)
+	full := first + strings.Repeat("b", 299)
+	model := &fakeLLM{text: "clean"}
+	r := newEarlyUnitRun(t, model, nil)
+	r.hearPiece(first)
+	_, _, err := r.cleanUpFirst(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := model.requests()
+	if len(reqs) != 3 {
+		t.Fatalf("%d requests, want 2 for the first stretch and 1 for the tail", len(reqs))
+	}
+	if reqs[0].InputChars != 301 || reqs[1].InputChars != 301 || reqs[2].InputChars != 600 {
+		t.Errorf("request lengths are %d, %d, %d, want 301, 301, 600", reqs[0].InputChars, reqs[1].InputChars, reqs[2].InputChars)
+	}
+}
+
+type earlyFallbackLLM struct {
+	mu            sync.Mutex
+	calls         int
+	answered      chan struct{}
+	secondStarted chan struct{}
+	secondErr     error
+	thirdStarted  bool
+}
+
+func (f *earlyFallbackLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if req.OnDelta != nil {
+		return llm.Response{Text: "fallback"}, nil
+	}
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	f.mu.Unlock()
+	switch call {
+	case 1:
+		if f.answered != nil {
+			close(f.answered)
+		}
+		return llm.Response{Text: "early one"}, nil
+	case 2:
+		close(f.secondStarted)
+		<-ctx.Done()
+		f.mu.Lock()
+		f.secondErr = ctx.Err()
+		f.mu.Unlock()
+		return llm.Response{}, ctx.Err()
+	default:
+		f.mu.Lock()
+		f.thirdStarted = true
+		f.mu.Unlock()
+		return llm.Response{Text: "early three"}, nil
+	}
+}
+
+func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
+	model := &earlyFallbackLLM{secondStarted: make(chan struct{})}
+	r := newEarlyUnitRun(t, model, nil)
+	r.hearPiece("one")
+	r.hearPiece("one two")
+	r.hearPiece("one two three")
+	<-model.secondStarted
+	result, _, err := r.cleanUpFirst("one changed three")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "fallback" {
+		t.Errorf("result %q, want the whole-text fallback", result)
+	}
+	model.mu.Lock()
+	defer model.mu.Unlock()
+	if !errors.Is(model.secondErr, context.Canceled) {
+		t.Errorf("the discarded request ended with %v, want cancellation", model.secondErr)
+	}
+	if model.thirdStarted {
+		t.Error("the queued third request started after the final-text mismatch")
+	}
+}
+
+func waitEarlyWorker(t *testing.T, r *run) {
+	t.Helper()
+	select {
+	case <-r.early.workerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the early clean-up worker did not stop")
+	}
+}
+
+func TestEarlyCleanCancelStopsWorker(t *testing.T) {
+	model := &earlyFallbackLLM{answered: make(chan struct{})}
+	r := newEarlyUnitRun(t, model, nil)
+	r.hearPiece("one")
+	<-model.answered
+	r.cancel()
+	waitEarlyWorker(t, r)
+}
+
+func TestEarlyCleanBrokenPieceCancelsBacklog(t *testing.T) {
+	model := &earlyFallbackLLM{secondStarted: make(chan struct{})}
+	r := newEarlyUnitRun(t, model, nil)
+	r.hearPiece("one")
+	r.hearPiece("one two")
+	r.hearPiece("one two three")
+	<-model.secondStarted
+	r.hearPiece("changed")
+	waitEarlyWorker(t, r)
+	model.mu.Lock()
+	defer model.mu.Unlock()
+	if !errors.Is(model.secondErr, context.Canceled) {
+		t.Errorf("the discarded request ended with %v, want cancellation", model.secondErr)
+	}
+	if model.thirdStarted {
+		t.Error("the queued third request started after the broken event")
 	}
 }
