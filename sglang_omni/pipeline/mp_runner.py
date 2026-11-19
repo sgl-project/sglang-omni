@@ -981,6 +981,33 @@ class MultiProcessPipelineRunner:
                 task.cancel()
             await asyncio.gather(*waits, return_exceptions=True)
 
+    def sizes_kv_from_free_memory(
+        self,
+        group: StageGroup,
+        stages_by_name: Mapping[str, StageConfig],
+    ) -> bool:
+        config_cls = type(self.config)
+        for process_spec in group.process_specs:
+            for stage_spec in process_spec.stage_specs:
+                if (
+                    not stage_spec.owned_gpu_ids
+                    or stage_spec.kv_cache_bytes is not None
+                ):
+                    continue
+                else:
+                    pass
+                logical_name, _ = parse_replica_instance_name(stage_spec.stage_name)
+                stage_config = stages_by_name.get(logical_name)
+                if (
+                    stage_config is not None
+                    and config_cls.stage_config_cls(logical_name).engine_stage
+                    and stage_config.gpu_memory_fraction is None
+                ):
+                    return True
+                else:
+                    pass
+        return False
+
     def spawn_waves(self) -> list[list[StageGroup]]:
         """Order startup waves so free-memory KV engines precede colocated stages and weight-share followers run last."""
         followers = [
