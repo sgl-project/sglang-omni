@@ -21,6 +21,8 @@ func TestDocsEnvironmentVariables(t *testing.T) {
 
 	name := regexp.MustCompile(`\bVOXTNEW_[A-Z0-9_]+\b`)
 	used := make(map[string]string)
+	testFunc := regexp.MustCompile(`(?m)^func (Test\w+)\(`)
+	tests := make(map[string]bool)
 	err = filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -40,6 +42,9 @@ func TestDocsEnvironmentVariables(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		for _, match := range testFunc.FindAllStringSubmatch(string(source), -1) {
+			tests[match[1]] = true
+		}
 		for _, found := range name.FindAllString(string(source), -1) {
 			if _, seen := used[found]; !seen {
 				used[found] = path
@@ -52,6 +57,12 @@ func TestDocsEnvironmentVariables(t *testing.T) {
 	}
 	if len(used) == 0 {
 		t.Fatal("found no VOXTNEW_ variables in the code")
+	}
+	// a renamed test leaves the page pointing at a command that runs nothing
+	for _, match := range regexp.MustCompile("`(Test\\w+)`").FindAllStringSubmatch(string(content), -1) {
+		if !tests[match[1]] {
+			t.Errorf("docs/development.md names %s, but no test function has that name", match[1])
+		}
 	}
 	for found, path := range used {
 		if !documented[found] {
