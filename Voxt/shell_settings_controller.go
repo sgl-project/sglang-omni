@@ -92,6 +92,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.General.Language != new.General.Language {
 		a.applyLocale()
 	}
+	if !slices.Equal(old.Features.Hidden, new.Features.Hidden) {
+		a.buildMenu() // the Go menu lists the shown pages
+	}
 	if old.General.MenuBar != new.General.MenuBar {
 		a.applyTray() // tray.go
 	}

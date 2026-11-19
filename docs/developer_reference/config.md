@@ -109,7 +109,8 @@ Every published draft a stage serves has one entry in
 revision, the algorithm and its other `speculative_*` settings, the license
 and whether the model turns it on by default. A draft whose model card states
 no license stays off by default. No two entries share a draft repo. A stage
-that names a registry draft without a `speculative_draft_model_revision` key
+can have several drafts of one algorithm, and at most one of them is on by
+default. A stage that names a registry draft without a `speculative_draft_model_revision` key
 loads the entry's revision. A revision the stage sets wins, and `none` loads
 the repo's default branch. A cookbook command, an example config or a model's
 defaults that serve the draft give that entry's algorithm, draft repo and
