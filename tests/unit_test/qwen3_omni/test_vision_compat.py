@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_omni.components import image_encoder, vision_compa
 from sglang_omni.models.qwen3_omni.components.vision_encoder import (
     Qwen3OmniVisionEncoder,
 )
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 GRID_CASES = {
     "single": [[1, 16, 16]],
@@ -277,10 +278,28 @@ def test_image_encoder_preserves_outputs_with_platform_rotary(
     )
     assert kernel.call_count == expected_kernel_calls
     if platform_device == "cpu":
-        # note (siju): the platform must see the serving head dimension to decline it.
-        provider.assert_called_once_with(rotary_dimension=72)
+        provider.assert_called_once_with()
     else:
         provider.assert_not_called()
+
+
+def test_xpu_platform_is_asked_for_the_vision_head_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+) -> None:
+    platform = Mock(spec=XPUOmniPlatform)
+    platform.device_type = "cpu"
+    platform.get_joint_rope_inplace_kernel.return_value = None
+    monkeypatch.setattr(vision_runtime, "current_platform", platform)
+
+    vision_runtime.instantiate_visual(
+        vision_encoder.config,
+        device="cpu",
+        dtype=torch.bfloat16,
+        native_visual_class=vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+    )
+
+    platform.get_joint_rope_inplace_kernel.assert_called_once_with(rotary_dimension=72)
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for device-spec retargeting (no accelerator required) and for the
-XPU platform's copy of its RoPE kernel's capabilities (XPU only)."""
+"""Unit tests for device-spec retargeting (no accelerator required)."""
 
 from __future__ import annotations
 
@@ -41,8 +40,6 @@ def test_a_device_string_naming_its_own_index_is_rejected():
     """device names only the type; a caller who wants a card passes gpu_id, not
     'cpu:N'.
     """
-    import pytest
-
     with pytest.raises(ValueError, match="names an index"):
         dev.resolve_device_spec("cpu:1")
     with pytest.raises(ValueError, match="names an index"):
@@ -53,8 +50,6 @@ def test_a_device_this_host_cannot_serve_is_rejected_not_retargeted():
     """Silently remapping could not tell a legacy 'cuda' default from an operator
     genuinely asking for CUDA, so a mismatch is an error at the boundary now.
     """
-    import pytest
-
     live = current_platform.device_type
     absent = "xpu" if live == "cuda" else "cuda"
 
@@ -92,11 +87,6 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
 @pytest.mark.accelerator
 @pytest.mark.skipif(not current_platform.is_xpu(), reason="Requires an XPU")
 def test_xpu_joint_rope_dimensions_match_the_installed_kernel() -> None:
-    """XPUOmniPlatform copies the rotary dimensions sgl_kernel's XPU RoPE
-    compiles, because the kernel keeps that list private. The XPU lane runs this
-    file, so an SGLang bump that changes the list, or renames it, fails here
-    instead of going stale.
-    """
     kernel_dimensions = rope._SUPPORTED_XPU_ROPE_DIMS  # noqa: leading-underscore
 
     assert tuple(kernel_dimensions) == XPU_JOINT_ROTARY_DIMENSIONS

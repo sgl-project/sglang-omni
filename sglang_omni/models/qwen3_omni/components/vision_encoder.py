@@ -24,6 +24,7 @@ from sglang_omni.models.qwen3_omni.components.vision_compat import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.interface import JointRopeInplaceKernel
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.utils.hf import instantiate_module
 
 
@@ -103,13 +104,15 @@ def instantiate_visual(
     else:
         # note (ratish): per-image Transformers attention reaches cuDNN on Hopper, whose output changes between processes.
         packed_attention = resolve_packed_attention(torch.device(device), dtype)
-        # note (siju): the vision rotary covers the whole head dimension.
-        head_dimension = vision_config.hidden_size // vision_config.num_heads
+        if isinstance(current_platform, XPUOmniPlatform):
+            joint_rope_kernel = current_platform.get_joint_rope_inplace_kernel(
+                rotary_dimension=vision_config.hidden_size // vision_config.num_heads
+            )
+        else:
+            joint_rope_kernel = current_platform.get_joint_rope_inplace_kernel()
         with no_init_weights():
             return Qwen3OmniVisionEncoder._from_config(  # noqa: leading-underscore  # Transformers construction API
                 vision_config,
-                joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(
-                    rotary_dimension=head_dimension
-                ),
+                joint_rope_kernel=joint_rope_kernel,
                 packed_attention=packed_attention,
             )

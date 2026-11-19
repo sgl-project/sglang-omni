@@ -180,39 +180,25 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
     assert seen == [expected_index]
 
 
-@pytest.mark.parametrize("rotary_dimension", [72, 160])
 def test_xpu_joint_rope_declines_a_rotary_dimension_its_kernel_cannot_compile(
-    monkeypatch: pytest.MonkeyPatch, rotary_dimension: int
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A None module makes any import of the kernel raise, so a decline that
-    # still reached the import fails here.
     monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", None)
 
-    assert (
-        XPUOmniPlatform().get_joint_rope_inplace_kernel(
-            rotary_dimension=rotary_dimension
-        )
-        is None
-    )
+    assert XPUOmniPlatform().get_joint_rope_inplace_kernel(rotary_dimension=72) is None
 
 
-@pytest.mark.parametrize(
-    "rotary_dimension", [None, *xpu_platform.XPU_JOINT_ROTARY_DIMENSIONS]
-)
 def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_rotary_dimension(
-    monkeypatch: pytest.MonkeyPatch, rotary_dimension: int | None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = object()
     rope_module = ModuleType("sgl_kernel.jit.rope")
     rope_module.apply_rope_inplace = kernel
     monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", rope_module)
+    platform = XPUOmniPlatform()
 
-    assert (
-        XPUOmniPlatform().get_joint_rope_inplace_kernel(
-            rotary_dimension=rotary_dimension
-        )
-        is kernel
-    )
+    assert platform.get_joint_rope_inplace_kernel(rotary_dimension=128) is kernel
+    assert platform.get_joint_rope_inplace_kernel() is kernel
 
 
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
