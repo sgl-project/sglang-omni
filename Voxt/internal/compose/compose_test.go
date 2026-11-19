@@ -413,6 +413,7 @@ func TestParseAnswer(t *testing.T) {
 		{`{"title":"Update","content":"Ships Friday."}`, Answer{"Update", "Ships Friday."}, true},
 		{"```json\n{\"title\": \" **Update** \", \"content\": \"Line 1\\nLine 2\"}\n```", Answer{"Update", "Line 1\nLine 2"}, true},
 		{`Sure! {"title":"T","content":"x {y} z"} hope it helps`, Answer{"T", "x {y} z"}, true},
+		{`{"title":"T","content":"No image was provided.<|tool_call|>internal"}`, Answer{"T", "No image was provided."}, true},
 		{`{"title":"T","content":"  "}`, Answer{Title: "T"}, true},
 		{`{"title":"T","text":"x"}`, Answer{}, false},
 		{`{"title":"T"`, Answer{}, false},
@@ -445,6 +446,9 @@ func TestPartialAnswer(t *testing.T) {
 	for text, want := range map[string]Answer{
 		"":                               {},
 		"Plain text answer":              {Content: "Plain text answer"},
+		"Answer<|tool_call|>internal":    {Content: "Answer"},
+		"Answer<|tool_":                  {Content: "Answer"},
+		"Use <b>bold</b>":                {Content: "Use <b>bold</b>"},
 		"```":                            {},
 		"```json\n{\"title\":\"T\",\"co": {Title: "T"},
 		`{"content":"a\`:                 {Content: "a"},
@@ -551,6 +555,10 @@ func TestClean(t *testing.T) {
 		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
 		{`"Quoted."`, `"quoted"`, `"Quoted."`},
 		{"", "x", ""},
+		{"No image was provided.<|tool_call|>{\"name\":\"view_image\"}<|im_end|>", "help me explain this picture", "No image was provided."},
+		{"Answer<think>private</think>", "x", "Answer"},
+		{"Answer<|tool_", "x", "Answer"},
+		{"Use <b>bold</b> and 2 < 3.", "format this as HTML", "Use <b>bold</b> and 2 < 3."},
 		// Only Transcribe's clean-up asks for <output> tags: a Rewrite
 		// or Translate answer whose text itself has them (HTML it was
 		// asked for) keeps them.
@@ -614,6 +622,8 @@ func TestPartialOutput(t *testing.T) {
 		"<outpu":                      "",
 		"<output>":                    "",
 		"plain text":                  "plain text",
+		"Answer<|tool_call|>internal": "Answer",
+		"Answer<|tool_":               "Answer",
 		"<output>\nHello.":            "Hello.",
 		"<output>Hello.</output>\n":   "Hello.",
 		"Here you go: <output>Hello.": "Hello.",

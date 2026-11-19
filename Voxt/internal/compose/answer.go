@@ -75,6 +75,31 @@ func unwrappedOutput(s string) string {
 	}
 }
 
+// stripControlMarkup removes model control blocks, including a block
+// whose opening marker is all a stream has produced. Ordinary HTML and
+// angle-bracket text stay.
+func stripControlMarkup(s string) string {
+	for _, tag := range [][2]string{{"<think>", "</think>"}, {"<|channel>", "<channel|>"}} {
+		for {
+			i := strings.Index(s, tag[0])
+			if i < 0 {
+				break
+			}
+			rest := s[i+len(tag[0]):]
+			j := strings.Index(rest, tag[1])
+			if j < 0 {
+				s = s[:i]
+				break
+			}
+			s = s[:i] + rest[j+len(tag[1]):]
+		}
+	}
+	if i := strings.Index(s, "<|"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
 // PartialOutput is a streaming clean-up answer's text so far, for the
 // card: without the contract's <output> tags, whole or as far as they
 // came, and nothing of the commentary around them. A closing tag only
@@ -83,7 +108,7 @@ func unwrappedOutput(s string) string {
 // input itself has the tags, one outermost wrapper pair goes, as in
 // CleanOutput.
 func PartialOutput(s, input string) string {
-	t := strings.TrimLeft(s, " \t\r\n")
+	t := strings.TrimLeft(stripControlMarkup(s), " \t\r\n")
 	if strings.Contains(input, outputOpen) {
 		return unwrappedOutput(t)
 	}
@@ -141,8 +166,8 @@ func ParseAnswer(text string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(a.Title), `"“”#*`))
-	a.Content = strings.TrimSpace(a.Content)
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripControlMarkup(a.Title)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripControlMarkup(a.Content))
 	return a, true
 }
 
@@ -185,7 +210,7 @@ func extractObject(text string) string {
 // the content of a JSON answer as far as they came, or, when the model
 // writes plain text instead, the text itself as content.
 func PartialAnswer(text string) Answer {
-	t := strings.TrimSpace(text)
+	t := strings.TrimSpace(stripControlMarkup(text))
 	if t == "" {
 		return Answer{}
 	}

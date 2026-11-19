@@ -585,5 +585,5 @@ func Clean(out, input string) string {
 			s = strings.TrimSpace(s[len(q[0]) : len(s)-len(q[1])])
 		}
 	}
-	return s
+	return strings.TrimSpace(stripControlMarkup(s))
 }
