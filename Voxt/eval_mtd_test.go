@@ -181,6 +181,71 @@ func TestEvalMTD(t *testing.T) {
 	e.report(t, "mtd.md", md.String())
 }
 
+// TestEvalMTDExpectedLanguages checks the two short English clips whose
+// translations into other languages prompted the native-runtime regression.
+func TestEvalMTDExpectedLanguages(t *testing.T) {
+	e := evalSetup(t)
+	if os.Getenv("VOXTNEW_MTD_DIR") == "" {
+		t.Skip("set VOXTNEW_MTD_DIR to the MTD snapshot")
+	}
+	exe, _ := os.Executable()
+	server, err := omni.Locate(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := omni.NewRuntime(omni.Config{Binary: server, Log: func(level, msg string) {
+		if level != "info" && level != "debug" {
+			t.Logf("omni %s: %s", level, msg)
+		}
+	}})
+	defer rt.Close()
+	ctx := context.Background()
+	for _, cfg := range mtdConfigs(t, e) {
+		if cfg.id != models.ASRMoss {
+			continue
+		}
+		a, err := omni.NewASR(rt, cfg.id, cfg.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.draft != "" {
+			a = a.WithDraft(cfg.draft)
+		}
+		required := map[string][]string{
+			"en-1": {"first thing is we need to update the docs", "login bug"},
+			"en-3": {"remind me to call the dentist"},
+		}
+		seen := map[string]int{}
+		failures := 0
+		for _, c := range e.clips() {
+			wants, ok := required[c.ID]
+			if !ok {
+				continue
+			}
+			seen[c.ID]++
+			res, err := a.Transcribe(ctx, asr.FileRequest{Audio: c.PCM, Format: "pcm", Lang: c.Lang, Hints: e.set.Dictionary})
+			if err != nil {
+				t.Fatalf("%s %s: %v", cfg.name, c.ID, err)
+			}
+			for _, want := range wants {
+				if !strings.Contains(res.Text, want) {
+					failures++
+					t.Errorf("%s %s: expected English %q in %q", cfg.name, c.ID, want, res.Text)
+				}
+			}
+		}
+		for _, id := range []string{"en-1", "en-3"} {
+			if seen[id] != 1 {
+				t.Fatalf("%s: required en-1 and en-3 exactly once, got %s=%d", cfg.name, id, seen[id])
+			}
+		}
+		if failures > 0 {
+			t.Errorf("%s: %d expected-language assertions failed", cfg.name, failures)
+		}
+		rt.Unload(cfg.id)
+	}
+}
+
 // mtdAccuracy is one config's error-rate table by set, over all rounds.
 func mtdAccuracy(name string, runs []*mtdRun) string {
 	var b strings.Builder

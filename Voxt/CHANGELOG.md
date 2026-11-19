@@ -18,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **History and Home refresh after a cancelled session**: cancelling a recording that kept a history entry now updates an open History page and refreshes Home instead of leaving them stale until restart or another session.
 - **A shortcut pressed on Home after your first result keeps its result** (#4199): with Voxt's window in front on Home, a Transcribe, Translate or Rewrite shortcut still ran as a Try after Home had stopped offering its Try area. The result showed nowhere and History kept no entry, so History could list fewer sessions than you ran. Once Home has no Try area, the shortcut now runs a normal session, as on History or Settings: the result shows, and History keeps it. Before your first result, Home's Try area works as before, and so do the Try areas on the Transcribe, Translate and Rewrite pages.
 - **A text selection no longer takes the copied image with it** (#4152): with Settings → Privacy → Send the copied image with Rewrite on, an image copied earlier stayed on the clipboard and went to the language model even when you had selected text, so a summarize or rewrite of the selection was handled as an image task. Now a text selection takes the text path and the image stays out, including when the same selection stays in place for a follow-up. A copied `[Image]` placeholder sends the actual image selected through ⌘C before the old clipboard is restored, not the earlier clipboard image; literal `[Image]` text without an image stays text-only.
+- **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
 
 ### 中文
 
@@ -35,6 +36,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **取消录音后历史和首页会立即刷新**：取消一段已写入历史的录音后，当前打开的历史记录页和首页会立即刷新，不再需要重启或等下一次会话才看到变化。
 - **得到第一个结果后，在首页按快捷键的结果不再丢失**（#4199）：Voxt 窗口在前台、停在首页时，首页已经不显示「试一试」了，按转录、翻译或改写的快捷键却仍按试一试处理。结果哪里都不显示，历史里也没有记录，所以历史的条数会比实际用的次数少。现在首页没有试一试区域时，按快捷键和在历史、设置页一样走正常流程：结果照常显示，历史也会记下。第一次得到结果之前，首页的试一试不变；转录、翻译、改写页上的试一试也不变。
 - **选中文字时不再带上剪贴板里早前复制的图片**（#4152）：打开设置 → 隐私 →“改写时发送复制的图片”后，早前复制的图片留在剪贴板里，即使选中了文字也会发给语言模型，对选中内容的总结或改写被当成看图任务。现在选中文字时只走文字，图片不跟着发，追问时选区没变也一样。⌘C 回退返回 `[Image]` 占位时，发送恢复旧剪贴板之前实际选中的新图片，不是早前那张；只有 `[Image]` 文字而没有图片时仍只走文字。
+- **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
 
 ## [2.1.1] - 2026-11-17
 
