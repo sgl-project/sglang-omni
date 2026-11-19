@@ -16,6 +16,8 @@
   "Keys of shortcut %d": "快捷键 %d 的按键",
   "Keys to cancel recording": "取消录音的按键",
   "Keys to paste the last result": "粘贴最近结果的按键",
+  "Return finishes dictation": "按回车完成转录",
+  "While Transcribe records, Return stops recording. The key does not add a newline after the result.": "转录录音时，按回车停止录音。结果插入后不会再输入一次回车。",
   "Language model for Rewrite": "改写使用的语言模型",
   "Language model for Transcribe": "转录使用的语言模型",
   "Language model for Translate": "翻译使用的语言模型",

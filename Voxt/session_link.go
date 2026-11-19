@@ -72,6 +72,10 @@ type sessionState struct {
 	hotkeyCardIdentity      string
 	hotkeyCardGeneration    uint64
 	carbon                  []string
+	// hotkeyGen numbers the hotkey.configure requests sent (1 on the
+	// first). The helper applies only a newer one and reports it on the
+	// events it decides under it; hotkeyFired drops the rest.
+	hotkeyGen int64
 	// keysListening: a shortcut field takes pressed keys (key_recorder.go),
 	// and the shortcuts are off meanwhile; keysHeard is this frame's.
 	keysListening, keysHeard bool
@@ -280,7 +284,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	if s.State.Ended() && !was.State.Ended() {
 		a.sessionEnded(s)
 	}
-	if s.State.Live() != was.State.Live() {
+	if s.State.Live() != was.State.Live() || (s.State == session.Recording) != (was.State == session.Recording) {
 		a.syncHotkeys()
 	}
 	for _, fn := range a.afterSession { // events.go: the menu bar, the overlay

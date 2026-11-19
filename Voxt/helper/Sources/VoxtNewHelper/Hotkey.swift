@@ -48,12 +48,15 @@ final class HotkeyTap: @unchecked Sendable {
         configureCoordinator.configure(p) { current in
             let c = HotkeyConfig(bindings: current.bindings, doubleTapMs: current.doubleTapMs ?? systemDoubleClickMs(),
                                  longPressMs: current.longPressMs ?? 300, tapMaxMs: current.tapMaxMs ?? 1500,
-                                 swallowFn: current.swallowFn ?? false, active: current.active ?? false, cancel: current.cancel)
-            lock.withLock { recognizer.configure(c) }
+                                 swallowFn: current.swallowFn ?? false, active: current.active ?? false, cancel: current.cancel,
+                                 generation: current.generation ?? 0)
+            // Requests run on their own tasks, so they can land out of order;
+            // a configuration older than the one in effect changes nothing.
+            guard lock.withLock({ recognizer.configure(c) }) else { return }
             if current.bindings.isEmpty && current.cancel == nil {
                 uninstall()
             } else if lock.withLock({ tap == nil && retry == nil }) {
-                install()
+                if let installTap { installTap() } else { install() }
             }
         }
         return status()
@@ -199,6 +202,14 @@ final class HotkeyTap: @unchecked Sendable {
         if let loop { CFRunLoopStop(loop) }
     }
 
+    /// Runs between a decision and its send: a test lands a configure
+    /// there to prove the send keeps the decision's generation. Nil in
+    /// the app.
+    var decided: (() -> Void)?
+
+    /// Creates the real event tap; tests replace it to run without one.
+    var installTap: (() -> Void)?
+
     /// The tap callback: true swallows the event.
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
         let start = monotonicMs()
@@ -213,25 +224,50 @@ final class HotkeyTap: @unchecked Sendable {
         }
         let injected = InjectedEvent.isOurs(event.getIntegerValueField(.eventSourceUserData))
         guard let input = HotkeyTapEvents.input(type, event, t: start) else { return false }
-        let (fired, swallow, deadline): ([HotkeyEvent], Bool, Double?) = lock.withLock {
-            events += 1
-            if injected { return ([], false, nil) }
-            let r = recognizer.handle(input, hasMarkedText: { front.hasMarkedText() })
-            return (r.events, r.swallow, recognizer.nextDeadline)
-        }
-        send(fired)
-        armTimer(deadline)
+        let swallow = decide(input, injected: injected)
         let micros = (monotonicMs() - start) * 1000
         lock.withLock { maxCallbackMicros = max(maxCallbackMicros, micros) }
         return swallow
     }
 
-    /// Sends what fired, with the app in front (as cached at this moment).
-    private func send(_ fired: [HotkeyEvent]) {
+    /// Runs the recognizer under the lock and sends what fired, with the
+    /// generation read in the same lock hold as the decision: a configure
+    /// landing between the two cannot mistag the events. True swallows
+    /// the input.
+    func decide(_ input: KeyInput, injected: Bool = false) -> Bool {
+        let (fired, swallow, deadline, generation): ([HotkeyEvent], Bool, Double?, Int) = lock.withLock {
+            events += 1
+            if injected { return ([], false, nil, recognizer.config.generation) }
+            let r = recognizer.handle(input, hasMarkedText: { front.hasMarkedText() })
+            return (r.events, r.swallow, recognizer.nextDeadline, recognizer.config.generation)
+        }
+        decided?()
+        send(fired, generation: generation)
+        armTimer(deadline)
+        return swallow
+    }
+
+    /// The one-shot timer's handler: deferred taps and long presses fire
+    /// here, with the generation read in the same lock hold as the tick.
+    func tick() {
+        let (fired, next, generation): ([HotkeyEvent], Double?, Int) = lock.withLock {
+            let f = recognizer.tick(now: monotonicMs())
+            return (f, recognizer.nextDeadline, recognizer.config.generation)
+        }
+        decided?()
+        send(fired, generation: generation)
+        armTimer(next)
+    }
+
+    /// Sends what fired, with the app in front (as cached at this moment);
+    /// generation is the configuration the events were decided under, read
+    /// with the decision, so a configure landing meanwhile cannot mistag
+    /// them.
+    private func send(_ fired: [HotkeyEvent], generation: Int) {
         guard !fired.isEmpty else { return }
         let app = front.cached
         sendQueue.async { [out] in
-            for e in fired { out.notify(Method.hotkeyEvent, HotkeyEventParams(e, front: app)) }
+            for e in fired { out.notify(Method.hotkeyEvent, HotkeyEventParams(e, front: app, generation: generation)) }
         }
     }
 
@@ -244,13 +280,7 @@ final class HotkeyTap: @unchecked Sendable {
         guard let deadline else { return }
         let delay = max(0, deadline - monotonicMs()) / 1000
         let t = CFRunLoopTimerCreateWithHandler(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + delay, 0, 0, 0) { [weak self] _ in
-            guard let self else { return }
-            let (fired, next) = self.lock.withLock { () -> ([HotkeyEvent], Double?) in
-                let f = self.recognizer.tick(now: monotonicMs())
-                return (f, self.recognizer.nextDeadline)
-            }
-            self.send(fired)
-            self.armTimer(next)
+            self?.tick()
         }
         lock.withLock { timer = t }
         CFRunLoopAddTimer(loop, t, .commonModes)

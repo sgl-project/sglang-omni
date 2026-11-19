@@ -287,6 +287,9 @@ const (
 	// CancelID is the binding id of Features.Cancel: the helper reports
 	// it only while active (proto.HotkeyCancel).
 	CancelID = proto.HotkeyCancel
+	// FinishID is the fixed Return binding that finishes a Transcribe
+	// recording. Build includes it only when the app asks for it.
+	FinishID = "finish"
 	// Note is the binding id of Features.Note: it starts a Transcribe
 	// session whose text becomes a note.
 	Note = "note"
@@ -370,6 +373,9 @@ type Plan struct {
 	// while nothing records. Nil when it is off or clashes with an
 	// earlier binding.
 	Cancel *proto.HotkeyBinding
+	// Finish is the fixed Return binding that stops a Transcribe
+	// recording. Configure includes it only while active.
+	Finish *proto.HotkeyBinding
 	// Carbon are the bindings that work without Accessibility, through
 	// MyGo's Carbon shortcuts: keys with ⌃⌥⇧⌘ (no fn, no sides). They
 	// fire on key down only, so a long press there acts as a tap.
@@ -385,8 +391,9 @@ type Plan struct {
 func Build(f settings.Features, enabled []string) Plan {
 	var p Plan
 	type seen struct {
-		c Chord
-		b string
+		id string
+		c  Chord
+		b  string
 	}
 	var taken []seen
 	add := func(id string, h settings.Hotkey, behavior string) {
@@ -399,7 +406,7 @@ func Build(f settings.Features, enabled []string) Plan {
 				return
 			}
 		}
-		taken = append(taken, seen{c, behavior})
+		taken = append(taken, seen{id, c, behavior})
 		p.Bindings = append(p.Bindings, binding(id, c, behavior))
 		if acc, ok := c.Accelerator(); ok {
 			p.Carbon = append(p.Carbon, Carbon{ID: id, Accelerator: acc})
@@ -424,6 +431,28 @@ func Build(f settings.Features, enabled []string) Plan {
 	if slices.Contains(enabled, Meeting) {
 		for i, h := range f.Meeting.Hotkeys {
 			add(ID(Meeting, i), h, Behavior(h.Trigger))
+		}
+	}
+	if slices.Contains(enabled, FinishID) {
+		c, _ := Parse("Return")
+		dup := false
+		for _, s := range taken {
+			if !s.c.Equal(c) || s.b != proto.BehaviorTap {
+				continue
+			}
+			// An existing Return binding covers Finish only if it stops
+			// the recording as routed: a feature's under the common stop
+			// (Strict shortcuts: only Transcribe's own, the recording it
+			// plans for), Paste last's as Route stops it.
+			feature, _, _ := ParseID(s.id)
+			if feature == PasteLast || !f.StrictShortcuts || feature == Transcribe {
+				dup = true
+			}
+		}
+		if !dup {
+			b := binding(FinishID, c, proto.BehaviorTap)
+			p.Finish = &b
+			taken = append(taken, seen{FinishID, c, proto.BehaviorTap})
 		}
 	}
 	if f.Cancel.Keys != "" {
@@ -469,9 +498,15 @@ func (p Plan) UsesFn() bool {
 
 // Configure is the hotkey.configure of the plan; active while a session
 // runs or the answer card shows (taps fire at once, the cancel shortcut
-// is reported).
+// is reported). Finish joins the ordinary bindings only while active,
+// first: a binding it was kept beside (Strict shortcuts filters it) must
+// not win its keys.
 func (p Plan) Configure(active bool) proto.HotkeyConfigureParams {
-	bs := p.Bindings
+	var bs []proto.HotkeyBinding
+	if active && p.Finish != nil {
+		bs = append(bs, *p.Finish)
+	}
+	bs = append(bs, p.Bindings...)
 	if bs == nil {
 		bs = []proto.HotkeyBinding{}
 	}

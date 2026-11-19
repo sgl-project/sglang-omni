@@ -6,6 +6,8 @@ package main
 // Accessibility.
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -72,6 +74,13 @@ func (a *app) cardHotkeyGeneration() uint64 {
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
+	// An event the helper decided under a configuration since replaced
+	// (it was on its way when the session changed) belongs to that old
+	// configuration, not to whatever runs now: drop it. Generation 0 is
+	// an old helper or a Carbon shortcut the app fired itself.
+	if e.Generation > 0 && e.Generation < a.hotkeyGen {
+		return
+	}
 	target := a.front
 	if e.Front != nil {
 		target = *e.Front
@@ -117,7 +126,13 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		}
 		return
 	}
-	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature())
+	finish := a.returnFinishes()
+	if e.Binding == hotkey.PasteLast && finish {
+		chord, err := hotkey.Parse(a.prefs.Features.PasteLast.Keys)
+		returnChord, _ := hotkey.Parse("Return")
+		finish = err == nil && chord.Equal(returnChord)
+	}
+	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), finish)
 	switch d.Action {
 	case hotkey.Start:
 		hold := ""
@@ -177,9 +192,19 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	}
 }
 
+// returnFinishes is whether Return finishes the session: a Transcribe
+// recording (not a note) with the setting on. The plan binds Finish then,
+// and routing reads it for a paste-last tap on the same key.
+func (a *app) returnFinishes() bool {
+	return a.sess.State == session.Recording && a.sess.Kind == store.KindTranscribe && !a.sess.Note && a.prefs.Features.Transcribe.ReturnFinishes
+}
+
 // hotkeyPlan is what the settings' shortcuts become.
 func (a *app) hotkeyPlan() hotkey.Plan {
 	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.prefs.Features.IsHidden)
+	if a.returnFinishes() {
+		shown = append(shown, hotkey.FinishID)
+	}
 	return hotkey.Build(a.prefs.Features, shown)
 }
 
@@ -210,6 +235,9 @@ func (a *app) syncHotkeys() {
 	a.hotkeysSent = key
 	a.hotkeyConfigureSequence++
 	params.Sequence = a.hotkeyConfigureSequence
+	a.hotkeyGen++
+	generation := a.hotkeyGen
+	params.Generation = generation
 	helperCall(a, proto.MethodHotkeyConfigure, params, 5*time.Second, func(st proto.HotkeyStatus, err error) {
 		if params.Sequence < a.hotkeyStatusSequence {
 			return
@@ -218,6 +246,9 @@ func (a *app) syncHotkeys() {
 		if err != nil {
 			if a.hotkeysSent == key {
 				a.hotkeysSent = ""
+			}
+			if errors.Is(err, context.DeadlineExceeded) && a.hotkeyGen == generation {
+				a.syncHotkeys()
 			}
 			a.logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: "hotkey.configure: " + err.Error()})
 			return

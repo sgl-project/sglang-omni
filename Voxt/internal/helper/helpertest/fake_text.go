@@ -31,6 +31,15 @@ func (f *fake) hotkeys(m proto.Message) {
 		return
 	}
 	f.mu.Lock()
+	if p.Generation < f.hkGen {
+		// A configuration older than the one in effect (requests land
+		// out of order) changes nothing, as the real helper.
+		f.mu.Unlock()
+		f.result(m.ID, f.hotkeyStatus())
+		return
+	}
+	f.hkGen = p.Generation
+	f.hkBindings = p.Bindings
 	f.bindings = len(p.Bindings)
 	f.hkCancel = p.Cancel != nil
 	f.installed = (f.bindings > 0 || f.hkCancel) && f.trusted
