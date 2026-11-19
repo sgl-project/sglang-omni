@@ -43,7 +43,6 @@
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
-      "input_count": 1,
       "inputs": [
         {
           "label": "Selected text",

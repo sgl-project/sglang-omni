@@ -47,6 +47,9 @@ func cardInputChips(context *ui.Context, local sessionOverlayLocal) {
 }
 
 func cardInputOriginal(context *ui.Context, card *sessionCardViewState, local sessionOverlayLocal, bodyHeight float32) bool {
+	if card.InputCount == 0 {
+		return false
+	}
 	index := local.Card.preview - 1
 	if index < 0 || index >= len(local.Overlay.cardPreviews) || bodyHeight <= 0 {
 		return false

@@ -9,7 +9,15 @@ import (
 )
 
 func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
-	if !segment.Pasted || segment.Lines <= boxTextCollapseLines {
+	boxBlockView(context, key, segment, local, remove, false)
+}
+
+func boxSelectionBlockView(context *ui.Context, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
+	boxBlockView(context, "selection", segment, local, remove, true)
+}
+
+func boxBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func(), selection bool) {
+	if !selection && (!segment.Pasted || segment.Lines <= boxTextCollapseLines) {
 		ui.Row(context.Key(key)).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.Text(context, segment.Text).FontSize(12).TextColor(ovText2).MaxLines(3).Grow(1).MinWidth(0)
 			if remove != nil {
@@ -20,12 +28,18 @@ func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, l
 		})
 		return
 	}
+	previewLines, removeLabel := boxTextCollapseLines, i18n.T("Remove pasted text")
+	header := i18n.T("%s · %d chars · %d lines", segment.Source, segment.Chars, segment.Lines)
+	if selection {
+		previewLines, removeLabel = 2, i18n.T("Remove selected text")
+		header = i18n.T("%s · %d chars", segment.Source, segment.Chars)
+	}
 	expanded := local.expandedText[key]
 	ui.Column(context.Key(key)).Shrink(0).Padding(6, 8, 6, 8).Gap(5).Radius(6).Background(ui.RGBA(255, 255, 255, 0.06)).Children(func() {
 		ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(context, i18n.T("%s · %d chars · %d lines", segment.Source, segment.Chars, segment.Lines)).FontSize(11).FontWeight(600).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+			ui.Text(context, header).FontSize(11).FontWeight(600).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
 			if remove != nil {
-				if cardIconButton(context.Key("remove-text"), i18n.T("Remove pasted text"), "", icons.Close, true) {
+				if cardIconButton(context.Key("remove-text"), removeLabel, "", icons.Close, true) {
 					remove()
 				}
 			}
@@ -35,8 +49,8 @@ func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, l
 				ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
 			})
 		} else {
-			lines := strings.SplitN(segment.Text, "\n", boxTextCollapseLines+1)
-			ui.Text(context, strings.Join(lines[:min(len(lines), boxTextCollapseLines)], "\n")).FontSize(12).TextColor(ovText2).MaxLines(boxTextCollapseLines).Shrink(0)
+			lines := strings.SplitN(segment.Text, "\n", previewLines+1)
+			ui.Text(context, strings.Join(lines[:min(len(lines), previewLines)], "\n")).FontSize(12).TextColor(ovText2).MaxLines(previewLines).Shrink(0)
 		}
 		label := i18n.T("Show all")
 		if expanded {

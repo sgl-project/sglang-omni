@@ -43,7 +43,6 @@
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
       "insert_tooltip": "Insert into Slack",
-      "input_count": 1,
       "inputs": [
         {
           "label": "Selected text",

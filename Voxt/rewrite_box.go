@@ -23,18 +23,18 @@ package main
 // with the same instruction (StartRequest.Text).
 
 import (
-	"bytes"
 	"errors"
 	"path/filepath"
 	"slices"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -83,25 +83,38 @@ type rewriteBox struct {
 	// focusText: the text box takes the focus on show; winShown: the
 	// window is on screen (native only).
 	focusText bool
+	showTip   bool
 	win       boxWindow
 	winShown  bool
+	style     mygo.VibrancyStyle
 	ui        rewriteBoxLocalUI
 }
 
 // rewriteBoxViewState is the input box's display state.
 type rewriteBoxViewState struct {
-	Selection      string
-	SelectionBlock boxTextSegment
-	Text           string
-	TextSegments   []boxTextSegment
-	Thumbnails     []*boxBitmap
-	ImageInfo      []boxImageInfo
-	ManualImages   int
-	VoiceLine      string
-	Error          string
-	CanSend        bool
-	Limit          bool
-	FocusText      bool
+	Selection         string
+	SelectionBlock    boxTextSegment
+	Text              string
+	TextSegments      []boxTextSegment
+	Thumbnails        []*boxBitmap
+	ImageInfo         []boxImageInfo
+	ManualImages      int
+	VoiceLine         string
+	EditorPlaceholder string
+	Subtitle          string
+	SubtitleError     bool
+	CanSend           bool
+	Limit             bool
+	FocusText         bool
+	ShowTip           bool
+	Recording         bool
+	Heard             bool
+	Levels            [session.Bars]float64
+	Motion            bool
+	Phase             float64
+	Radius            float32
+	Alpha             float32
+	Palette           string
 }
 
 // rewriteBoxActions are the input box's user intents.
@@ -118,6 +131,7 @@ type rewriteBoxActions struct {
 	removeAutoImage func()
 	textChanged     func(string)
 	segmentChanged  func(int, string)
+	dismissTip      func()
 	focused         func()
 }
 
@@ -130,6 +144,7 @@ type boxWindow interface {
 	Focus()
 	Hide()
 	Destroy()
+	SetVibrancyStyle(mygo.VibrancyStyle)
 }
 
 // openBox opens the input box and starts the microphone with it (the
@@ -146,7 +161,14 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 		return // the notice says what is missing
 	}
 	if !a.box.open {
-		a.box = rewriteBox{}
+		a.box = rewriteBox{showTip: !a.prefs.Setup.RewriteBoxTipDismissed && a.prefs.Setup.RewriteBoxOpens < 3}
+		if a.prefs.Setup.RewriteBoxOpens < 3 {
+			a.updateSettings(func(s *settings.Settings) {
+				if s.Setup.RewriteBoxOpens < 3 {
+					s.Setup.RewriteBoxOpens++
+				}
+			})
+		}
 	}
 	a.box.open, a.box.shown, a.box.err = true, true, ""
 	a.box.target, a.box.session = target, id
@@ -466,118 +488,4 @@ func (a *app) boxSelection() string {
 		return a.sess.Selection
 	}
 	return a.box.selection
-}
-
-// boxVoiceLine is the voice line's text: the hint, the instruction
-// being heard, or the recognised one (Enter sends it again).
-func (a *app) boxVoiceLine() string {
-	b := &a.box
-	if b.session != "" && a.sess.ID == b.session && a.sess.State.Live() {
-		switch a.sess.State {
-		case session.Recording:
-			if partial := a.sess.Partial; partial != "" {
-				return partial
-			}
-			return i18n.T("Listening…")
-		default:
-			return i18n.T("Recognising…")
-		}
-	}
-	if b.instruction != "" {
-		return b.instruction
-	}
-	if keys := a.featureKeys(hotkey.Rewrite); keys != "" {
-		return i18n.T("Say the instruction (%s), then Enter sends", keys)
-	}
-	return i18n.T("Say the instruction, then Enter sends")
-}
-
-func (a *app) boxViewState() rewriteBoxViewState {
-	box := &a.box
-	selectionSource := i18n.T("Selected text")
-	selectionVia := box.selectionVia
-	if box.session != "" && a.sess.ID == box.session {
-		selectionVia = a.sess.SelectionVia
-	}
-	if selectionVia == "copy" {
-		selectionSource = i18n.T("Copied text")
-	}
-	thumbnails := slices.Clone(box.thumbs)
-	imageInfo := slices.Clone(box.imageInfo)
-	if !box.automaticImageSuppressed && len(thumbnails) == 0 && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && len(a.sess.ImagePreview) > 0 {
-		if !bytes.Equal(box.autoImage, a.sess.ImagePreview) || box.autoKind != a.sess.ImagePreviewKind {
-			box.autoImage = bytes.Clone(a.sess.ImagePreview)
-			box.autoKind = a.sess.ImagePreviewKind
-			box.autoThumb, _ = decodeBoxBitmap(a.sess.ImagePreview)
-			label := i18n.T("Copied image")
-			if a.sess.ImagePreviewKind == "window" {
-				label = i18n.T("Screenshot")
-			}
-			box.autoInfo = boxImageCaption(box.autoThumb, label)
-		}
-		thumbnails = append(thumbnails, box.autoThumb)
-		imageInfo = append(imageInfo, box.autoInfo)
-	}
-	selection := a.boxSelection()
-	resendReview := box.sending != "" && box.shown && a.sess.ID == box.sending && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
-	return rewriteBoxViewState{
-		Selection: selection, SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
-		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), Error: box.err,
-		CanSend: resendReview || box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
-		Limit:   box.limit, FocusText: box.focusText,
-	}
-}
-
-func (a *app) boxActions() rewriteBoxActions {
-	return rewriteBoxActions{
-		viewState: a.boxViewState,
-		close:     a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteTextAt,
-		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
-		textChanged: func(text string) {
-			if !a.box.open {
-				return
-			}
-			a.box.text = text
-			a.boxShare.store(a.boxTextContent(), a.box.images)
-		},
-		focused: func() { a.box.focusText = false },
-	}
-}
-
-// boxSync shows, hides or refreshes the box's window. Main thread.
-func (a *app) boxSync() {
-	a.boxShare.store(a.boxTextContent(), a.box.images)
-	a.boxShare.suppressAutomatic(a.box.selectionSuppressed, a.box.automaticImageSuppressed)
-	show := a.box.open && a.box.shown
-	if !show {
-		if a.box.win != nil && a.box.winShown {
-			a.box.win.Hide()
-		}
-		a.box.winShown = false
-		return
-	}
-	if !a.overlayNative() {
-		return // tests: the state is enough
-	}
-	if a.box.win == nil {
-		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui)
-	}
-	a.box.win.Invalidate()
-	if !a.box.winShown {
-		a.box.win.Center()
-		a.box.win.Show()
-		a.box.win.Focus()
-		a.box.winShown = true
-	}
-}
-
-// boxWinW and boxWinH are the box window's size.
-const boxWinW, boxWinH = 480, 340
-
-// closeBoxWindow destroys the window (quit).
-func (a *app) closeBoxWindow() {
-	if a.box.win != nil {
-		a.box.win.Destroy()
-		a.box.win = nil
-	}
 }

@@ -35,6 +35,7 @@ func TestRewriteBoxWindowAcceptsFileDrops(t *testing.T) {
 		func() rewriteBoxViewState { return rewriteBoxViewState{} },
 		rewriteBoxActions{drop: func(paths []string) { dropped = paths }},
 		&rewriteBoxLocalUI{},
+		floatingWindowOptions("Rewrite", boxWinW, boxWinH, nil),
 	)
 	if native.onDrop == nil {
 		t.Fatal("the panel does not accept file drops")

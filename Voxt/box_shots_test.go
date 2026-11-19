@@ -95,6 +95,11 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			a.box.ui.previewImage = 1
 			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
 		}},
+		{"box-first-open-tip", func() {
+			a.box.showTip = true
+			a.box.session = "shot-box"
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording})
+		}},
 		{"box-limit-error", func() {
 			a.box.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t), shotBitmap(t), shotBitmap(t)}
 			a.box.images = [][]byte{{1}, {2}, {3}, {4}}
@@ -113,7 +118,7 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			ui.Box(c).Absolute().Fill().Background(desk)
 			ui.Box(c).Absolute().Fill().Children(func() { a.boxView(c) })
 		}, boxWinW, boxWinH)
-		tt.SetDark(true)
+		tt.SetDark(dark)
 		tt.SetScale(2)
 		frames(tt)
 		f, err := os.Create(filepath.Join(out, "overlay-"+st.name+"-"+suffix+".png"))

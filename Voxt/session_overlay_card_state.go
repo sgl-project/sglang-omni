@@ -122,7 +122,7 @@ func sessionCardAttachment(input sessionCardProjectionInput) (string, int) {
 		return input.Answer.attach, len(input.Answer.ui.thumbs)
 	}
 	if input.Writing {
-		if input.Snapshot.ID == input.BoxSessionID {
+		if input.Snapshot.ID == input.BoxSessionID && input.Snapshot.ImageHint == "box" {
 			return "box", input.BoxThumbnailCount
 		}
 		return input.Snapshot.ImageHint, 0
@@ -173,7 +173,19 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	}
 	state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
 	state.Inputs = sessionCardInputs(card.previews)
-	state.InputCount = len(state.Inputs)
+	inputKinds := 0
+	if card.input.Selection != "" {
+		inputKinds++
+	}
+	if card.input.Typed != "" {
+		inputKinds++
+	}
+	if state.Attachment != "" {
+		inputKinds++
+	}
+	if inputKinds > 1 {
+		state.InputCount = len(state.Inputs)
+	}
 	if sessionCardRedoWriting(input) {
 		// The answer asked again streams in over the card's; a failure or a
 		// cancel brings the card's back (endRedo).
@@ -469,9 +481,10 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	input.CanFollowUp = a.canFollowUp()
 	input.ThinkingProvider, _ = a.llmService(a.answer.llmID)
 	input.Generation = a.llmGeneration(a.answer.llmID)
-	if sessionCardRedoWriting(input) && input.Answer.attach != "box" {
+	if sessionCardRedoWriting(input) && input.Snapshot.ImageHint != "box" {
 		input.Answer.attach = input.Snapshot.ImageHint
 		input.Answer.previews = answerInputPreviews(input.Snapshot, nil)
+		input.Answer.images, input.Answer.ui.thumbs = nil, nil
 	}
 	return input
 }

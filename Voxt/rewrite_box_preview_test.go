@@ -80,12 +80,12 @@ func TestBoxSelectionUsesCollapsibleTextBlock(t *testing.T) {
 	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: selection, SelectionVia: "copy"})
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	if !has(tt, "Copied text") || !has(tt, "Show all") || has(tt, "fourth line") {
+	if !hasExact(tt, "Copied text · 45 chars") || !has(tt, "Show all") || has(tt, "third line") || has(tt, "fourth line") {
 		t.Fatalf("collapsed selection texts %q", firstTexts(tt))
 	}
 	click(t, tt, "Show all")
 	frames(tt)
-	if !has(tt, "fourth line") || !has(tt, "Show less") {
+	if !has(tt, "third line") || !has(tt, "fourth line") || !has(tt, "Show less") {
 		t.Fatalf("expanded selection texts %q", firstTexts(tt))
 	}
 }
@@ -97,7 +97,7 @@ func TestBoxShortSelectionCanBeRemoved(t *testing.T) {
 		snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: selection})
 		tt := hudTester(a.boxView, boxWinW, boxWinH)
 		frames(tt)
-		click(t, tt, "Remove pasted text")
+		click(t, tt, "Remove selected text")
 		frames(tt)
 		if !a.box.selectionSuppressed || a.boxViewState().Selection != "" {
 			t.Fatalf("short selection %q survived removal", selection)
@@ -579,19 +579,39 @@ func TestBoxOversizePasteKeepsExistingText(t *testing.T) {
 	}
 }
 
-func TestAnswerCardChipsCoverTextOnlyRewrite(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Done, Card: true,
-		Raw: "make it formal", Selection: "source text", Result: "Formal answer."})
-	if len(a.answer.previews) != 1 || a.cachedCard().InputCount != 1 {
-		t.Fatalf("previews %+v, DTO count %d", a.answer.previews, a.cachedCard().InputCount)
-	}
-	tt := cardTester(t, a)
-	frames(tt)
-	click(t, tt, "Selected text")
-	frames(tt)
-	if !has(tt, "source text") || !has(tt, "Back to answer") {
-		t.Fatalf("text-only original did not open: %q", firstTexts(tt))
+func TestAnswerCardChipsNeedTwoInputKinds(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		typed string
+		chips bool
+	}{
+		{name: "selection only"},
+		{name: "selection and typed text", typed: "typed source", chips: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Done, Card: true,
+				Raw: "make it formal", Selection: "source text", Typed: test.typed, Result: "Formal answer."})
+			wantPreviews, wantCount := 1, 0
+			if test.chips {
+				wantPreviews, wantCount = 2, 2
+			}
+			if len(a.answer.previews) != wantPreviews || a.cachedCard().InputCount != wantCount {
+				t.Fatalf("previews %+v, DTO count %d, want count %d", a.answer.previews, a.cachedCard().InputCount, wantCount)
+			}
+			tt := cardTester(t, a)
+			frames(tt)
+			if got := has(tt, "Inputs sent with the instruction"); got != test.chips {
+				t.Fatalf("chips visible %v, want %v (texts %q)", got, test.chips, firstTexts(tt))
+			}
+			if test.chips {
+				click(t, tt, "Selected text")
+				frames(tt)
+				if !has(tt, "source text") || !has(tt, "Back to answer") {
+					t.Fatalf("the original did not open: %q", firstTexts(tt))
+				}
+			}
+		})
 	}
 }
 
@@ -629,7 +649,7 @@ func TestAutomaticInputsCanBeRemoved(t *testing.T) {
 	if len(a.boxViewState().Thumbnails) != 0 {
 		t.Fatal("the automatic image survived removal")
 	}
-	click(t, tt, "Remove pasted text")
+	click(t, tt, "Remove selected text")
 	frames(tt)
 	if a.boxViewState().Selection != "" {
 		t.Fatal("the automatic text survived removal")

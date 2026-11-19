@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
@@ -504,14 +505,18 @@ func TestAnswerCardAttach(t *testing.T) {
 }
 
 // fakeBoxWindow records the panel's life (boxWindow).
-type fakeBoxWindow struct{ hidden, destroyed bool }
+type fakeBoxWindow struct {
+	hidden, destroyed bool
+	style             mygo.VibrancyStyle
+}
 
-func (f *fakeBoxWindow) Invalidate() {}
-func (f *fakeBoxWindow) Center()     {}
-func (f *fakeBoxWindow) Show()       {}
-func (f *fakeBoxWindow) Focus()      {}
-func (f *fakeBoxWindow) Hide()       { f.hidden = true }
-func (f *fakeBoxWindow) Destroy()    { f.destroyed = true }
+func (f *fakeBoxWindow) Invalidate()                           {}
+func (f *fakeBoxWindow) Center()                               {}
+func (f *fakeBoxWindow) Show()                                 {}
+func (f *fakeBoxWindow) Focus()                                {}
+func (f *fakeBoxWindow) Hide()                                 { f.hidden = true }
+func (f *fakeBoxWindow) Destroy()                              { f.destroyed = true }
+func (f *fakeBoxWindow) SetVibrancyStyle(s mygo.VibrancyStyle) { f.style = s }
 
 // TestRewriteBoxCloseClosesWindow: Esc drops the box's state, but the
 // panel must go with it — zeroing the window pointer first would
