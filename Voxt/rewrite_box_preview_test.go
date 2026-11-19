@@ -292,14 +292,25 @@ func TestFollowUpChipsKeepNewTextAndOriginalImages(t *testing.T) {
 	}
 }
 
-func TestAutomaticImageHasNoRemoveButton(t *testing.T) {
+func TestAutomaticInputsCanBeRemoved(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	jpeg := boxJPEGOf(t, 20, 10)
 	a.box = rewriteBox{open: true, shown: true, session: "v1"}
-	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, ImagePreviewKind: "clipboard", ImagePreview: jpeg})
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "first\nsecond\nthird\nfourth", SelectionVia: "copy", ImagePreviewKind: "clipboard", ImagePreview: jpeg})
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	if has(tt, "Remove this image") {
-		t.Fatal("an automatic image has a button that cannot remove it")
+	click(t, tt, "Remove this image")
+	frames(tt)
+	if len(a.boxViewState().Thumbnails) != 0 {
+		t.Fatal("the automatic image survived removal")
+	}
+	click(t, tt, "Remove pasted text")
+	frames(tt)
+	if a.boxViewState().Selection != "" {
+		t.Fatal("the automatic text survived removal")
+	}
+	selectionSuppressed, imageSuppressed := a.boxShare.automaticSuppressed()
+	if !selectionSuppressed || !imageSuppressed {
+		t.Fatalf("suppression did not reach the session: text %v, image %v", selectionSuppressed, imageSuppressed)
 	}
 }

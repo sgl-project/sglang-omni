@@ -364,6 +364,9 @@ type Config struct {
 	// answer is asked for (StartRequest.Box). It is called on the
 	// session's goroutine. Nil: the box sends nothing of its own.
 	BoxInput func() (string, [][]byte)
+	// BoxAutoSuppressed reports whether the user removed the automatic
+	// selection or clipboard/window image from the box's preview. Nil: send both.
+	BoxAutoSuppressed func() (selection, image bool)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History

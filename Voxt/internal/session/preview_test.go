@@ -9,6 +9,32 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func TestBoxAutomaticInputsCanBeSuppressed(t *testing.T) {
+	model := &fakeLLM{text: "We ship on Friday."}
+	var clipReads, shots int
+	h := newHarness(t, &fakeFile{text: "unused"}, model, func(c *Config, s *settings.Settings) {
+		s.Privacy.SendClipboardImage, s.Privacy.SendWindow = true, true
+		c.ClipboardImage = func(context.Context) ([]byte, error) { clipReads++; return []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, nil }
+		c.Window = func(context.Context, int) ([]byte, error) { shots++; return []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, nil }
+		c.BoxAutoSuppressed = func() (bool, bool) { return true, true }
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?"}}); err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.State != Done || end.Selection != "" || end.ImageHint != "" {
+		t.Fatalf("suppressed input survived: end %s, selection %q, hint %q", end.State, end.Selection, end.ImageHint)
+	}
+	if clipReads != 0 || shots != 0 {
+		t.Fatalf("automatic captures still ran: clipboard %d, window %d", clipReads, shots)
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 || len(reqs[0].Images) != 0 {
+		t.Fatalf("images sent after suppression: %+v", reqs)
+	}
+}
+
 func TestAutomaticImagePreviewFollowsTheImageSent(t *testing.T) {
 	clip, shot, own := []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, []byte{0xff, 0xd8, 'o', 0xff, 0xd9}
 	for _, tc := range []struct {

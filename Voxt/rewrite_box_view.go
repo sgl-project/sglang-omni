@@ -97,7 +97,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 		// The text selected when the shortcut fired: the input, as the
 		// model gets it first.
 		if state.Selection != "" {
-			boxTextBlockView(context, "selection", state.SelectionBlock, local, nil)
+			boxTextBlockView(context, "selection", state.SelectionBlock, local, actions.removeSelection)
 		}
 		for index, segment := range state.TextSegments {
 			if segment.Pasted {
@@ -130,11 +130,12 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					if index < len(state.ImageInfo) {
 						info = state.ImageInfo[index]
 					}
-					var remove func(int)
+					var remove func()
+					remove = actions.removeAutoImage
 					if index < state.ManualImages {
-						remove = actions.remove
+						remove = func() { actions.remove(index) }
 					}
-					boxThumbView(context.Key(index), index, bitmap, info, remove, func() { local.previewImage = index + 1 })
+					boxThumbView(context.Key(index), bitmap, info, remove, func() { local.previewImage = index + 1 })
 				}
 			})
 		}
@@ -265,7 +266,7 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 
 // boxThumbView is one picture's thumbnail, source and pixel size, with
 // a full-size preview on click and a remove button over the corner.
-func boxThumbView(context *ui.Context, index int, bitmap *ui.Bitmap, info boxImageInfo, remove func(int), preview func()) {
+func boxThumbView(context *ui.Context, bitmap *ui.Bitmap, info boxImageInfo, remove func(), preview func()) {
 	label := i18n.T("Remove this image")
 	ui.Column(context).Width(boxThumb + 12).Shrink(0).Gap(3).Children(func() {
 		ui.Box(context).Width(boxThumb).Height(boxThumb).Shrink(0).Children(func() {
@@ -285,7 +286,7 @@ func boxThumbView(context *ui.Context, index int, bitmap *ui.Bitmap, info boxIma
 					Children(func() {
 						ui.Icon(context, icons.Close.Linear).Size(9, 9).TextColor(ui.RGBA(255, 255, 255, 0.94))
 					}).Clicked() {
-					remove(index)
+					remove()
 				}
 			}
 		})

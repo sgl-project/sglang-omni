@@ -198,9 +198,10 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
-		BoxInput: func() (string, [][]byte) { return a.boxShare.load() },
-		Resolve:  resolver(lm),
-		History:  lib.store.History(),
+		BoxInput:          func() (string, [][]byte) { return a.boxShare.load() },
+		BoxAutoSuppressed: func() (bool, bool) { return a.boxShare.automaticSuppressed() },
+		Resolve:           resolver(lm),
+		History:           lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},

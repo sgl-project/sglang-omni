@@ -87,12 +87,25 @@ func (r *run) write(raw, selection string) {
 				r.req.Images = images
 			}
 		}
-		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil {
+		automaticImageSuppressed := false
+		if r.req.Box && cfg.BoxAutoSuppressed != nil {
+			selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
+			if selectionSuppressed {
+				selection = ""
+			}
+			automaticImageSuppressed = imageSuppressed
+			if imageSuppressed {
+				r.clip, r.shot = nil, nil
+			}
+		}
+		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil && !automaticImageSuppressed {
 			// A send again (Text) with no pictures of its own keeps
 			// today's rule: the clipboard's picture, else the window's.
 			r.readClipboardImage()
 		}
-		r.shootWindow()
+		if !automaticImageSuppressed {
+			r.shootWindow()
+		}
 	}
 	if r.svc.LLM == nil {
 		r.endWriteFailed(&Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}, false)

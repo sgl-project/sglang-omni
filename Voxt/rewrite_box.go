@@ -68,10 +68,12 @@ type rewriteBox struct {
 	imageInfo []boxImageInfo
 	limit     bool
 	// autoImage caches the clipboard/window preview's decoded bitmap.
-	autoImage []byte
-	autoKind  string
-	autoThumb *boxBitmap
-	autoInfo  boxImageInfo
+	autoImage                []byte
+	autoKind                 string
+	autoThumb                *boxBitmap
+	autoInfo                 boxImageInfo
+	selectionSuppressed      bool
+	automaticImageSuppressed bool
 	// instruction is the recognised spoken instruction, kept so a send
 	// that failed can go again with Enter.
 	instruction string
@@ -104,17 +106,19 @@ type rewriteBoxViewState struct {
 
 // rewriteBoxActions are the input box's user intents.
 type rewriteBoxActions struct {
-	viewState      func() rewriteBoxViewState
-	close          func()
-	send           func()
-	drop           func([]string)
-	paste          func(uiServices) bool
-	pasteText      func(int, string, int, int) bool
-	remove         func(int)
-	removeText     func(int)
-	textChanged    func(string)
-	segmentChanged func(int, string)
-	focused        func()
+	viewState       func() rewriteBoxViewState
+	close           func()
+	send            func()
+	drop            func([]string)
+	paste           func(uiServices) bool
+	pasteText       func(int, string, int, int) bool
+	remove          func(int)
+	removeText      func(int)
+	removeSelection func()
+	removeAutoImage func()
+	textChanged     func(string)
+	segmentChanged  func(int, string)
+	focused         func()
 }
 
 // boxWindow is the box's panel as boxSync and closeBoxWindow use it
@@ -132,9 +136,11 @@ type boxWindow interface {
 // (Config.BoxInput, on the session's goroutine): stored on every box
 // change and every frame the card shows (a keystroke is one).
 type boxShare struct {
-	mu     sync.Mutex
-	text   string
-	images [][]byte
+	mu                       sync.Mutex
+	text                     string
+	images                   [][]byte
+	selectionSuppressed      bool
+	automaticImageSuppressed bool
 }
 
 func (b *boxShare) store(text string, images [][]byte) {
@@ -147,6 +153,18 @@ func (b *boxShare) load() (string, [][]byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.text, b.images
+}
+
+func (b *boxShare) suppressAutomatic(selection, image bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.selectionSuppressed, b.automaticImageSuppressed = selection, image
+}
+
+func (b *boxShare) automaticSuppressed() (bool, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.selectionSuppressed, b.automaticImageSuppressed
 }
 
 // openBox opens the input box and starts the microphone with it (the
@@ -185,6 +203,7 @@ func (a *app) dropBox() {
 	a.closeBoxWindow()
 	a.box = rewriteBox{}
 	a.boxShare.store("", nil)
+	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
 	// A send queued behind a picture's conversion dies with the box: an
 	// old life's conversion landing later must not send the new life.
@@ -311,6 +330,16 @@ func (a *app) boxRemoveImage(i int) {
 	a.boxSync()
 }
 
+func (a *app) boxRemoveSelection() {
+	a.box.selectionSuppressed = true
+	a.boxSync()
+}
+
+func (a *app) boxRemoveAutoImage() {
+	a.box.automaticImageSuppressed = true
+	a.boxSync()
+}
+
 // boxPaste is ⌘V in the box: a picture on the clipboard goes into the
 // box (text it also holds wins, as with the copied-image setting); an
 // image file copied in Finder comes through the helper (HEIC too); text
@@ -430,6 +459,9 @@ func (a *app) boxSessionID() string {
 // boxSelection is the selection the box shows: the session's while it
 // runs, the kept one after a send failed.
 func (a *app) boxSelection() string {
+	if a.box.selectionSuppressed {
+		return ""
+	}
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		return a.sess.Selection
 	}
@@ -472,7 +504,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	}
 	thumbnails := slices.Clone(box.thumbs)
 	imageInfo := slices.Clone(box.imageInfo)
-	if len(thumbnails) == 0 && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && len(a.sess.ImagePreview) > 0 {
+	if !box.automaticImageSuppressed && len(thumbnails) == 0 && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && len(a.sess.ImagePreview) > 0 {
 		if !bytes.Equal(box.autoImage, a.sess.ImagePreview) || box.autoKind != a.sess.ImagePreviewKind {
 			box.autoImage = bytes.Clone(a.sess.ImagePreview)
 			box.autoKind = a.sess.ImagePreviewKind
@@ -499,7 +531,7 @@ func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
 		viewState: a.boxViewState,
 		close:     a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteTextAt,
-		remove: a.boxRemoveImage, removeText: a.boxRemoveText, segmentChanged: a.boxSegmentChanged,
+		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
 		textChanged: func(text string) {
 			if !a.box.open {
 				return
@@ -514,6 +546,7 @@ func (a *app) boxActions() rewriteBoxActions {
 // boxSync shows, hides or refreshes the box's window. Main thread.
 func (a *app) boxSync() {
 	a.boxShare.store(a.boxTextContent(), a.box.images)
+	a.boxShare.suppressAutomatic(a.box.selectionSuppressed, a.box.automaticImageSuppressed)
 	show := a.box.open && a.box.shown
 	if !show {
 		if a.box.win != nil && a.box.winShown {
