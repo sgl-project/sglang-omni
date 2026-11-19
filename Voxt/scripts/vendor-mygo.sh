@@ -43,6 +43,10 @@ for p in "$PATCHES"/*.patch; do
 done
 # Patch 0015 carries the atlas regression test; run it before tests leave the tree.
 (cd "$out" && CGO_ENABLED=0 go test ./internal/scene/)
+# Patches 0018 and 0019 carry native file-drop regressions; run them before tests leave too.
+if [[ -d "$out/internal/e2e" ]]; then
+  (cd "$out" && MYGO_E2E_NO_WARMUP=1 MYGO_E2E=1 CGO_ENABLED=0 go test -run '^(TestContentWindowFileURLDrop|TestContentWindowGenericFileDrop)$' ./internal/e2e/)
+fi
 # Tests and their data stay upstream (some hold sample credentials that
 # look real to secret scanners); so do git's settings for the module.
 find "$out" -name '*_test.go' -delete
