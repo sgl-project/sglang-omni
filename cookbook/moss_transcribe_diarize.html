@@ -970,6 +970,16 @@ ready without it.</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>The DFlash2 draft <a class="reference external" href="https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2"><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2</span></code></a> continues that draft’s training with DFlash2’s two additions: small convolutions in each layer, and a candidate selector that picks each proposed token from the target head’s top 16, so the draft has no output head of its own. It is 1% to 6% faster than the DFlash draft synchronously, with the same CER and DER (table below). Serve it by its path:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>OpenMOSS-Team/MOSS-Transcribe-Diarize<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.speculative_algorithm<span class="w"> </span>DFLASH<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.speculative_draft_model_path<span class="w"> </span>wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>The selector takes its top 16 with FlashInfer’s top-k kernel. The Docker image ships that kernel prebuilt. Without FlashInfer’s prebuilt kernels, the first start compiles it, which took about 13 minutes on an H200 host, and later starts reuse it. Install them with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">flashinfer-jit-cache==0.7.2</span> <span class="pre">--index-url</span> <span class="pre">https://flashinfer.ai/whl/cu130</span></code> to skip the compile.</p>
+<p>The notes below apply to both drafts:</p>
 <ul class="simple">
 <li><p><strong>Acceptance length.</strong> Send the form field <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> to get <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> (<code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code>, <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram) on <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> responses and on the streamed <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event. Audio long enough to be transcribed in chunks returns none. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive.</p></li>
 <li><p><strong>Transcripts.</strong> The target verifies every proposed token, so accuracy stays at the target’s level, but the text is not byte-identical to a run without the draft: MOSS-TD has many near-tied decisions, mostly timestamp hundredths, which any numeric change, including batching, can flip.</p></li>
@@ -979,10 +989,11 @@ ready without it.</p>
 <li><p><strong>Sampling.</strong> <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> applies as ordinary decoding does: each verified position is penalized over the transcript so far and the drafted tokens before it. On one H200 with every <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> clip sent at 1.2, no request failed, and transcripts differed from a synchronous server without the draft about as often as they do with no penalty (79 and 35 of 400 at 1 and 16 concurrent requests, against 100 and 28), while the penalty itself changes 392 of 400. Throughput fell 4% at one request and 10% at 16, and the logged acceptance length 6%. Requests with <code class="docutils literal notranslate"><span class="pre">frequency_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">min_p</span></code> or logprobs are rejected, because the draft worker applies those penalties once per verify block, drops <code class="docutils literal notranslate"><span class="pre">min_p</span></code>, and skips the sampler that records logprobs.</p></li>
 <li><p><strong>Scheduling.</strong> Scheduling is synchronous by default. Add <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">true</span></code> to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting <code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk</span></code> is rejected.</p></li>
 </ul>
-<p>Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">benchmarks.eval.speculative_sweep</span></code>):</p>
+<p>Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">benchmarks.eval.speculative_sweep</span></code>). Each draft ran on its own GPU of one node, against its own server without a draft. <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> is the mean of 3 passes per load and <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> one pass over its first 8 recordings (<code class="docutils literal notranslate"><span class="pre">--max-samples</span> <span class="pre">8</span></code>):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Dataset</p></th>
+<th class="head"><p>Draft</p></th>
 <th class="head"><p>Scheduling</p></th>
 <th class="head text-right"><p>Concurrency 1</p></th>
 <th class="head text-right"><p>4</p></th>
@@ -992,51 +1003,73 @@ ready without it.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">movies800times</span></code></p></td>
+<td><p>DFlash2</p></td>
 <td><p>Synchronous</p></td>
-<td class="text-right"><p>1.68x</p></td>
-<td class="text-right"><p>1.54x</p></td>
-<td class="text-right"><p>1.34x</p></td>
-<td class="text-right"><p>1.15x</p></td>
+<td class="text-right"><p>1.69x</p></td>
+<td class="text-right"><p>1.60x</p></td>
+<td class="text-right"><p>1.42x</p></td>
+<td class="text-right"><p>1.22x</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">movies800times</span></code></p></td>
+<td><p>DFlash</p></td>
+<td><p>Synchronous</p></td>
+<td class="text-right"><p>1.63x</p></td>
+<td class="text-right"><p>1.54x</p></td>
+<td class="text-right"><p>1.41x</p></td>
+<td class="text-right"><p>1.21x</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">movies800times</span></code></p></td>
+<td><p>DFlash2</p></td>
 <td><p>Overlapped</p></td>
-<td class="text-right"><p>1.90x</p></td>
-<td class="text-right"><p>1.72x</p></td>
-<td class="text-right"><p>1.56x</p></td>
-<td class="text-right"><p>1.42x</p></td>
+<td class="text-right"><p>1.93x</p></td>
+<td class="text-right"><p>1.74x</p></td>
+<td class="text-right"><p>1.57x</p></td>
+<td class="text-right"><p>1.41x</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">movies800times</span></code></p></td>
+<td><p>DFlash</p></td>
+<td><p>Overlapped</p></td>
+<td class="text-right"><p>1.87x</p></td>
+<td class="text-right"><p>1.68x</p></td>
+<td class="text-right"><p>1.51x</p></td>
+<td class="text-right"><p>1.37x</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code></p></td>
+<td><p>DFlash2</p></td>
 <td><p>Synchronous</p></td>
-<td class="text-right"><p>2.50x</p></td>
-<td class="text-right"><p>3.17x</p></td>
-<td class="text-right"><p>3.56x</p></td>
+<td class="text-right"><p>2.57x</p></td>
+<td class="text-right"><p>3.31x</p></td>
+<td class="text-right"><p>3.70x</p></td>
 <td class="text-right"><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code></p></td>
-<td><p>Overlapped</p></td>
-<td class="text-right"><p>3.19x</p></td>
-<td class="text-right"><p>3.64x</p></td>
-<td class="text-right"><p>3.89x</p></td>
-<td class="text-right"><p></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">googletime</span></code></p></td>
+<td><p>DFlash</p></td>
 <td><p>Synchronous</p></td>
-<td class="text-right"><p>2.97x</p></td>
-<td class="text-right"><p>4.14x</p></td>
-<td class="text-right"><p>4.27x</p></td>
+<td class="text-right"><p>2.50x</p></td>
+<td class="text-right"><p>3.15x</p></td>
+<td class="text-right"><p>3.51x</p></td>
 <td class="text-right"><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">googletime</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code></p></td>
+<td><p>DFlash2</p></td>
 <td><p>Overlapped</p></td>
-<td class="text-right"><p>3.73x</p></td>
-<td class="text-right"><p>4.68x</p></td>
-<td class="text-right"><p>4.57x</p></td>
+<td class="text-right"><p>3.29x</p></td>
+<td class="text-right"><p>3.82x</p></td>
+<td class="text-right"><p>4.15x</p></td>
+<td class="text-right"><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code></p></td>
+<td><p>DFlash</p></td>
+<td><p>Overlapped</p></td>
+<td class="text-right"><p>3.13x</p></td>
+<td class="text-right"><p>3.58x</p></td>
+<td class="text-right"><p>3.85x</p></td>
 <td class="text-right"><p></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.</p>
+<p>In its own throughput DFlash2 is 1% to 6% faster than DFlash synchronously, 5% to 8% faster overlapped on <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code>, and within 1% overlapped on <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> from 4 requests up, where the server without a draft ran 3% to 4% slower on the DFlash2 GPU. The logged acceptance length is 5.16 with DFlash2 and 4.82 with DFlash on <code class="docutils literal notranslate"><span class="pre">movies800times</span></code>, and 5.80 and 5.28 on <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code>. Neither draft or mode is slower than the server without a draft at any load measured, and CER and DER do not change. On <code class="docutils literal notranslate"><span class="pre">googletime</span></code>, measured earlier with the DFlash draft only, the gain was 2.97x, 4.14x and 4.27x at 1, 4 and 16 concurrent requests synchronously, and 3.73x, 4.68x and 4.57x overlapped.</p>
 </section>
 <section id="per-request-plain-fallback">
 <h3>Per-request plain fallback<a class="headerlink" href="#per-request-plain-fallback" title="Link to this heading">#</a></h3>
