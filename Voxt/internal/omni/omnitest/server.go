@@ -211,6 +211,7 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		_ = c.Write(ctx, websocket.MessageText, b)
 	}
 	samples, next, language, prompt := 0, 1600, "", ""
+	segs := 0
 	defer func() {
 		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
 	}()
@@ -239,6 +240,14 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			samples += len(pcm) / 2
 			if samples >= next {
 				next = samples + 16000
+				if segs > 0 && o.LiveSegDelay > 0 {
+					select {
+					case <-time.After(o.LiveSegDelay):
+					case <-ctx.Done():
+						return
+					}
+				}
+				segs++
 				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
 			}
 		case "input_audio_buffer.commit":

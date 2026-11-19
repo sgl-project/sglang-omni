@@ -80,6 +80,9 @@ type Opts struct {
 	// LiveDrop: the realtime socket closes at transcription.done without
 	// its answer, as a server that crashed.
 	LiveDrop bool
+	// LiveSegDelay slows the realtime partials after the first: the
+	// server's recognition of the later audio lags behind the socket.
+	LiveSegDelay time.Duration
 	// NoDraft is a server from before --draft-model-path: it refuses the
 	// flag as an unknown argument.
 	NoDraft bool
@@ -106,6 +109,7 @@ func Env(o Opts) []string {
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
+	v.Set("livesegdelay", o.LiveSegDelay.String())
 	return []string{EnvFake + "=" + v.Encode()}
 }
 
@@ -125,6 +129,7 @@ func opts() Opts {
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
+	o.LiveSegDelay, _ = time.ParseDuration(v.Get("livesegdelay"))
 	if o.Text == "" {
 		o.Text = "fake transcript"
 	}

@@ -359,14 +359,20 @@ func (s *live) Finish() error {
 // that stops reading must not stall the Final.
 const previewDrain = 5 * time.Second
 
+// previewCompleteTimeout bounds the wait for the server to recognise
+// what the socket took: the same job liveResultTimeout gives 20 s.
+const previewCompleteTimeout = 20 * time.Second
+
 // finalPass recognises pcm, the whole recording, once more (what the
 // pieces left of it) and ends the stream with the result. The preview's
-// queue is drained first, so its text (and coverage, for Salvage) keeps
-// the recording's tail; the socket stays open while the Final runs, so
-// the tail's segments still arrive.
+// queue is drained and the server's recognition of it awaited first, so
+// its text (and coverage, for Salvage) keeps the recording's tail; the
+// socket stays open while the Final runs, so the tail's segments still
+// arrive.
 func (s *live) finalPass(pcm []byte) {
 	if s.conn != nil {
 		s.drainPreview()
+		s.completePreview()
 		defer s.conn.CloseNow()
 	}
 	start := time.Now()
@@ -426,6 +432,25 @@ func (s *live) drainPreview() {
 	case <-s.ctx.Done():
 	case <-time.After(previewDrain):
 		s.a.rt.logf("warning", "%s: the preview's writer did not drain in %v", s.a.spec.ID, previewDrain)
+	}
+}
+
+// completePreview wraps the live session up (transcription.done, as
+// finishLive) and waits, bounded, for the server's answer: the
+// recognition of everything the socket took, segments first. Salvage
+// weighs the preview's text when the Final fails, and a fast-failing
+// Final does not give the tail's recognition time to arrive on its own.
+func (s *live) completePreview() {
+	done, _ := json.Marshal(map[string]string{"type": "transcription.done"})
+	if err := s.conn.Write(s.ctx, websocket.MessageText, done); err != nil {
+		return // the socket is gone: the read side said why
+	}
+	select {
+	case <-s.completed:
+	case <-s.readDone:
+	case <-s.ctx.Done():
+	case <-time.After(previewCompleteTimeout):
+		s.a.rt.logf("warning", "%s: the server did not wrap the live session up in %v", s.a.spec.ID, previewCompleteTimeout)
 	}
 }
 

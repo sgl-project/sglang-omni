@@ -203,6 +203,45 @@ func TestSalvageDrainsQueuedTail(t *testing.T) {
 	}
 }
 
+// TestSalvageAwaitsTailRecognition: the Final can fail (in 50 ms here)
+// before the server recognized the tail it already accepted — the
+// partial after the pause lags 2 s behind. Salvage still has the tail's
+// words: the stream wraps the live session up (transcription.done) and
+// waits for the server's answer before it ends.
+func TestSalvageAwaitsTailRecognition(t *testing.T) {
+	f, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}", FailFrom: 2, LiveSegDelay: 2 * time.Second})
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 2*time.Second, time.Second, 1500*time.Millisecond, 3*time.Second
+	a.spec.ASR.PauseMin = 150 * time.Millisecond
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, tone(500*time.Millisecond, 0.3))
+	var before string
+	select {
+	case ev := <-st.Events():
+		if ev.Kind != asr.EventPartial {
+			t.Fatalf("before the pause: %+v", ev)
+		}
+		before = ev.Text
+	case <-time.After(10 * time.Second):
+		t.Fatal("no live partial")
+	}
+	sendAll(t, st, silence(10*time.Second))
+	f.waitLogged(t, "piece 1 of the recording") // the first Final of two
+	sendAll(t, st, tone(500*time.Millisecond, 0.3))
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+	if got := st.(asr.Salvager).Salvage(); !strings.HasPrefix(got, "partial ") || got == before {
+		t.Errorf("salvaged %q, want the preview's text with the stretch after the pause (before it %q)", got, before)
+	}
+}
+
 func TestMossDiarizeNoSpeech(t *testing.T) {
 	f, a := mossWithVAD(t, omnitest.Opts{Segments: true})
 	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: silence(5 * time.Second), Format: "pcm", SampleRate: sampleRate})
