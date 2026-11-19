@@ -83,7 +83,7 @@ var controlTokens = []string{
 	"<|tool_call|>", "<|/tool_call|>", "<|tool_call_begin|>", "<|tool_call_end|>",
 	"<|tool_calls_section_begin|>", "<|tool_calls_section_end|>",
 	"<|im_end|>", "<|im_start|>", "<|start|>", "<|end|>", "<|message|>",
-	"<|channel>", "<|channel|>", "<|endoftext|>", "</think>",
+	"<|channel>", "<|channel|>", "<channel|>", "<|endoftext|>", "</think>",
 }
 
 // controlTokenStart is the start of the first control token in s, or of
