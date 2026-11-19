@@ -314,3 +314,30 @@ func TestTranscribeFallbackRethink(t *testing.T) {
 		}
 	})
 }
+
+type cleanupBackend struct{ *fakeLLM }
+
+func (*cleanupBackend) Info() llm.BackendInfo { return llm.BackendInfo{ID: "cleanup-test"} }
+
+// TestCleanupProtocolFallback: tool serialization must never be pasted, while ordinary short words remain unchanged.
+func TestCleanupProtocolFallback(t *testing.T) {
+	for _, test := range []struct{ name, raw, reply, result, problem string }{
+		{"tool reply", "As.", `<|open|>tools<|sep|><|open|>call tool="thinking"<|sep|>discard`, "As.", ProblemLLM},
+		{"response tool", "你好", `<|open|>tools<|sep|><|open|>call tool="response"<|sep|>`, "你好", ProblemLLM},
+		{"single word", "As.", "<output>As.</output>", "As.", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &cleanupBackend{&fakeLLM{text: test.reply, finish: llm.FinishStop, chunk: 1}}
+			h := newHarness(t, &fakeFile{text: test.raw}, &llm.Client{Backend: backend}, nil)
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			if end.Result != test.result || end.Raw != test.raw || (end.Problem == nil) != (test.problem == "") || end.Problem != nil && end.Problem.Code != test.problem {
+				t.Fatalf("result %q, raw %q, problem %+v", end.Result, end.Raw, end.Problem)
+			}
+			pasted := h.text.pastes()
+			if len(pasted) != 1 || pasted[0] != test.result {
+				t.Fatalf("pasted %q", pasted)
+			}
+		})
+	}
+}
