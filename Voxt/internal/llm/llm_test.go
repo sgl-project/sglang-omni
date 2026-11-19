@@ -260,11 +260,11 @@ func TestExtractJSONAndSchema(t *testing.T) {
 		}
 	}
 	s := Object(map[string]*Schema{
-		"e":    Enum("a", "b"),
-		"n":    Number().Range(0, 1),
-		"i":    Integer(),
+		"e":    {Type: "string", Enum: []string{"a", "b"}},
+		"n":    (&Schema{Type: "number"}).Range(0, 1),
+		"i":    {Type: "integer"},
 		"opt":  {Type: "string", Nullable: true},
-		"list": Array(Boolean()).Count(1, -1),
+		"list": Array(&Schema{Type: "boolean"}).Count(1, -1),
 	}, "e", "n", "list")
 	errs := s.Validate(json.RawMessage(`{"e":"c","n":2,"i":1.5,"opt":null,"list":[],"x":1}`))
 	var paths []string
