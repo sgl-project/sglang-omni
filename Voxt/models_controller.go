@@ -243,10 +243,6 @@ func (a *app) applyKeepLoaded(m settings.Models) {
 	})
 }
 
-func keepLabels() []string {
-	return keepLabelsFor(i18n.CurrentTranslator())
-}
-
 func keepLabel(value string) string {
 	return keepLabelFor(i18n.CurrentTranslator(), value)
 }
