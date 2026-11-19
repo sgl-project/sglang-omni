@@ -15,7 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Rewrite cleanup uses the whole conversation and rejects newline-wrapped reasoning** (#4085): literal thinking markup in earlier turns stays intact, while an orphan close surrounded by newlines is removed with its reasoning. Inline literal closes still keep the surrounding answer.
+- **Rewrite cleanup uses earlier turns without exempting new control markup** (#4085): literal thinking markup in earlier turns stays intact, while new reasoning blocks and control tokens are still removed. An orphan close surrounded by newlines is removed with its reasoning; inline literal closes keep the surrounding answer.
 - **Rewrite keeps quoted selections and literal thinking markers intact** (#4085): a quoted selection keeps the model answer's surrounding quotes after an instruction is added. A `<channel|>` mention before punctuation or an unmatched `</think>` mention between words no longer discards the surrounding streamed, final, or structured answer.
 - **Answers no longer show a model's raw tool-call or thinking control markup, or fenced JSON after that markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged. An unmatched thinking-close marker no longer discards the answer that follows it, and a literal control-token mention inside a sentence stays intact. A code fence around a structured answer is removed after the control blocks too, so the card shows the answer instead of the raw JSON.
 - **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
@@ -34,7 +34,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **改写清理覆盖整段对话，并去除换行包围的推理**（#4085）：先前轮次里字面提到的思考标记原样保留；被换行包围的未配对结束标记连同推理一起去掉，同行内联的字面标记仍保留周围回答。
+- **改写清理参考先前轮次，但仍去除新的控制标记**（#4085）：先前轮次里字面提到的思考标记原样保留，新的推理块和控制标记仍会去掉。被换行包围的未配对结束标记连同推理一起去掉，同行内联的字面标记仍保留周围回答。
 - **改写保留选区引号和字面提到的思考标记**（#4085）：带引号的选区加上指令后，模型回答仍保留外围引号。`<channel|>` 后面紧跟标点，或 `</think>` 未配对地出现在句子中时，流式、最终和结构化回答都会保留周围文字。
 - **回答不再显示语言模型原始的内部工具调用、思考控制标记或跟在标记后的代码块 JSON**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。未配对的思考结束标记不再误删后面的正式回答，句子中字面提到的控制标记也原样保留。控制块后的结构化回答也会去掉代码块标记，答案卡片显示回答内容，不再显示原始 JSON。
 - **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。

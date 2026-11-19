@@ -51,8 +51,19 @@ func TestAnswerCleanupWithPreviousInput(t *testing.T) {
 		{name: "spaced role marker", text: "Visible <|im_start|> user", previous: "explain <|im_start|>", want: "Visible"},
 		{name: "padded trailing token", text: "Visible <|im_end|> ", previous: "<|im_end|>", want: "Visible"},
 		{name: "unclosed real thinking block", text: "Shorter. <think>private", previous: "<think>", want: "Shorter."},
+		{name: "spaced real thinking block", text: "Visible <think> private</think>", previous: "explain <think>", want: "Visible"},
+		{name: "unclosed spaced real thinking block", text: "Visible <think> private", previous: "explain <think>", want: "Visible"},
+		{name: "previous end token before a role marker", text: "Visible <|im_end|> <|im_start|>user", previous: "explain <|im_end|>", want: "Visible"},
 		{name: "literal opener before real block", text: "The <think> tag <think>private</think>", previous: "<think>", want: "The <think> tag"},
 		{name: "two inline literals", text: "Use <|im_end|> <think> tag", previous: "explain <|im_end|> and <think>", want: "Use <|im_end|> <think> tag"},
+		{name: "literal channel opener", text: "The <|channel> tag wraps reasoning.", previous: "explain <|channel>", want: "The <|channel> tag wraps reasoning."},
+		{name: "literal tool call opener", text: "The <|tool_call|> tag starts a call.", previous: "explain <|tool_call|>", want: "The <|tool_call|> tag starts a call."},
+		{name: "literal thinking opener at answer start", text: "<think> tag wraps reasoning.", previous: "explain <think>", want: "<think> tag wraps reasoning."},
+		{name: "literal thinking closer at answer start", text: "</think> tag ends reasoning.", previous: "explain </think>", want: "</think> tag ends reasoning."},
+		{name: "literal thinking tag pair", text: "The <think> tag and </think> tag are markers.", previous: "explain <think> and </think>", want: "The <think> tag and </think> tag are markers."},
+		{name: "real close after a literal thinking tag pair", text: "The <think> tag and </think> tag are markers.</think>", previous: "explain <think> and </think>", want: "The <think> tag and </think> tag are markers."},
+		{name: "literal thinking opener after an orphan close", text: "reasoning</think> <think> tag", previous: "explain <think>", want: "<think> tag"},
+		{name: "literal tool call after an orphan close", text: "reasoning</think> <|tool_call|> tag", previous: "explain </think> and <|tool_call|>", want: "<|tool_call|> tag"},
 		{name: "literal trailing token only", text: "<|im_end|>", previous: "<|im_end|>", want: "<|im_end|>"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -266,7 +277,7 @@ func TestAnswerControlTokenVariants(t *testing.T) {
 func TestAnswerCleanupThinkingClose(t *testing.T) {
 	for _, tc := range []struct{ name, text, want string }{
 		{"answer after thinking close", "reasoning here</think>Final answer", "Final answer"},
-		{"orphan thinking close between newlines", "reasoning\n</think>\n\nFinal answer", "Final answer"},
+		{"answer after newline-wrapped thinking close", "reasoning\n</think>\n\nFinal answer", "Final answer"},
 		{"orphan thinking close before a newline", "reasoning </think>\nFinal answer", "Final answer"},
 		{"answer after channel close", "reasoning here<channel|>Final answer", "Final answer"},
 		{"answer after duplicate thinking closes", "reasoning</think></think>Final answer", "Final answer"},

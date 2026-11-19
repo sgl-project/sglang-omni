@@ -120,7 +120,7 @@ func trailingControlToken(token string) bool {
 
 // onlyControlMarkup reports whether s is a control-only ending. A block
 // token makes the rest its payload, including braces and plain text.
-func onlyControlMarkup(s, input string) bool {
+func onlyControlMarkup(s, input string, previous ...string) bool {
 	for {
 		s = strings.TrimLeft(s, " \t\r\n")
 		if s == "" {
@@ -136,6 +136,9 @@ func onlyControlMarkup(s, input string) bool {
 			}
 			if strings.HasPrefix(s, tag[0]) {
 				rest := s[len(tag[0]):]
+				if previousControlToken(tag[0], previous) && proseTagMention(rest) {
+					return false
+				}
 				j := strings.Index(rest, tag[1])
 				if j < 0 {
 					return true
@@ -158,6 +161,9 @@ func onlyControlMarkup(s, input string) bool {
 				continue
 			}
 			if !trailingControlToken(token) {
+				if previousControlToken(token, previous) && proseTagMention(s[len(token):]) {
+					return false
+				}
 				return true
 			}
 			s = strings.TrimPrefix(s, token)
@@ -200,9 +206,15 @@ func stripControlMarkup(s string, inputs ...string) string {
 				j += closeSearchFrom
 			}
 			if j >= 0 && (i < 0 || j < i) {
-				if literalOpen >= 0 {
+				if previousTag && proseTokenMention(s, j, tag[1]) {
 					literalOpen = -1
 					closeSearchFrom = j + len(tag[1])
+					continue
+				}
+				if literalOpen >= 0 {
+					after := j + len(tag[1])
+					s = s[:literalOpen] + s[after:]
+					openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 					continue
 				}
 				if inlineLiteral(s, j, tag[1]) {
@@ -210,7 +222,7 @@ func stripControlMarkup(s string, inputs ...string) string {
 					continue
 				}
 				after := j + len(tag[1])
-				if onlyControlMarkup(s[after:], input) {
+				if onlyControlMarkup(s[after:], input, previous...) {
 					s = s[:j]
 				} else {
 					s = s[after:]
@@ -221,13 +233,13 @@ func stripControlMarkup(s string, inputs ...string) string {
 			if i < 0 {
 				break
 			}
-			if previousTag && inlineLiteral(s, i, tag[0]) {
+			rest := s[i+len(tag[0]):]
+			if previousTag && proseTokenMention(s, i, tag[0]) {
 				literalOpen = i
 				openSearchFrom = i + len(tag[0])
 				closeSearchFrom = openSearchFrom
 				continue
 			}
-			rest := s[i+len(tag[0]):]
 			j = strings.Index(rest, tag[1])
 			if j < 0 {
 				s = s[:i]

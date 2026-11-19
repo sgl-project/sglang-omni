@@ -23,6 +23,24 @@ func inlineLiteral(s string, start int, token string) bool {
 	return start+len(token) < len(s) && (strings.ContainsRune(" \t", next) || unicode.IsPunct(next))
 }
 
+func proseTagMention(rest string) bool {
+	if !strings.HasPrefix(rest, " tag") && !strings.HasPrefix(rest, "\ttag") {
+		return false
+	}
+	if len(rest) == len(" tag") {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(rest[len(" tag"):])
+	return unicode.IsSpace(next) || unicode.IsPunct(next)
+}
+
+func proseTokenMention(s string, start int, token string) bool {
+	if start > 0 && !strings.ContainsRune(" \t", rune(s[start-1])) {
+		return false
+	}
+	return proseTagMention(s[start+len(token):])
+}
+
 // controlTokenStart is the start of the first model control token in s
 // that did not occur in the user's input; -1 when s has only answer text.
 func controlTokenStart(s string, inputs ...string) int {
@@ -46,11 +64,15 @@ func controlTokenStart(s string, inputs ...string) int {
 				offset = i + len(token)
 				continue
 			}
-			if previousPreserved && trailingControlToken(token) && (strings.TrimSpace(s) == token || strings.TrimSpace(after) != "" && inlineLiteral(s, i, token)) {
+			if previousPreserved && proseTokenMention(s, i, token) {
 				offset = i + len(token)
 				continue
 			}
-			if trailingControlToken(token) && !onlyControlMarkup(after, input) {
+			if previousPreserved && trailingControlToken(token) && (strings.TrimSpace(s) == token || strings.TrimSpace(after) != "" && !onlyControlMarkup(after, input, previous...) && inlineLiteral(s, i, token)) {
+				offset = i + len(token)
+				continue
+			}
+			if trailingControlToken(token) && !onlyControlMarkup(after, input, previous...) {
 				offset = i + len(token)
 				continue
 			}
