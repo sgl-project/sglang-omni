@@ -46,6 +46,7 @@ from sglang_omni.scheduling.engine_factory import (
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     get_decode_cuda_graph_bs,
+    nested_prefill_overrides,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import DeferredAdmission
@@ -253,29 +254,14 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             defaults["prefill_attention_backend"] = "triton"
         else:
             pass
-        sm_version = (
-            get_visible_gpu_sm_version(self.gpu_id)
-            if current_platform.is_cuda() or self.mm_attention_backend is None
-            else None
-        )
-        requested = self.server_args_overrides
-        if (
-            current_platform.is_cuda()
-            and sm_version == 100
-            and requested.get("speculative_algorithm") is None
-            and requested.get("attention_backend") is None
-            and requested.get("prefill_attention_backend") is None
-        ):
-            # note (Xuanfei): the automatic SM100 choice, trtllm_mha, cannot capture the full prefill graph; decode keeps it.
-            defaults["prefill_attention_backend"] = "flashinfer"
-        else:
-            pass
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
-        elif sm_version is not None and sm_version >= 100:
-            defaults["mm_attention_backend"] = "triton_attn"
         else:
-            pass
+            sm_version = get_visible_gpu_sm_version(self.gpu_id)
+            if sm_version is not None and sm_version >= 100:
+                defaults["mm_attention_backend"] = "triton_attn"
+            else:
+                pass
         return defaults
 
     def make_model_runner(
@@ -471,6 +457,24 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                     **prefill_config,
                 },
             }
+        else:
+            pass
+
+        prefill_graph_backend = nested_prefill_overrides(overrides).get(
+            "backend", overrides.get("cuda_graph_backend_prefill")
+        )
+        if (
+            current_platform.is_cuda()
+            and algorithm is None
+            and not overrides.get("disable_cuda_graph", False)
+            and prefill_graph_backend == CudaGraphBackend.FULL
+            and overrides.get("attention_backend") is None
+            and overrides.get("prefill_attention_backend") is None
+            and overrides.get("kv_cache_dtype") in (None, "auto")
+            and get_visible_gpu_sm_version(self.gpu_id) == 100
+        ):
+            # note (Xuanfei): the automatic SM100 choice, trtllm_mha, cannot capture the full prefill graph; decode keeps it. Measured on B200 only.
+            overrides["prefill_attention_backend"] = "flashinfer"
         else:
             pass
 
