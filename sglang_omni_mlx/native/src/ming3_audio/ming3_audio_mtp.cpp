@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include "common/kv_cache.h"
 #include "ming3_audio/ming3_audio_model.h"
 
 #include <stdexcept>
@@ -22,7 +23,7 @@ SpeculativeAlgorithm ParseSpeculativeAlgorithm(const std::string &value) {
 
 mx::array Model::DraftForward(const mx::array &next_embeddings,
                               const mx::array &hidden,
-                              qwen3_asr::KVCache &cache) const {
+                              omni_common::KVCache &cache) const {
   const auto prefix = "model.layers." + std::to_string(text_.num_hidden_layers);
   auto drafted = checkpoint_.Linear(
       mx::concatenate({RmsNorm(next_embeddings, prefix + ".enorm"),
@@ -54,7 +55,7 @@ Model::GenerateWithDraft(const mx::array &embeddings,
   };
   const auto draft_token = [&](const mx::array &next_ids,
                                const mx::array &hidden,
-                               qwen3_asr::KVCache &draft_cache) {
+                               omni_common::KVCache &draft_cache) {
     return mx::reshape(mx::astype(mx::argmax(Logits(DraftForward(
                                       Embed(next_ids), hidden, draft_cache))),
                                   mx::int32),
@@ -66,7 +67,7 @@ Model::GenerateWithDraft(const mx::array &embeddings,
     mx::array draft;
     mx::array following_draft;
   };
-  qwen3_asr::KVCache draft_cache;
+  omni_common::KVCache draft_cache;
   const auto submit = [&](const mx::array &anchor, const mx::array &draft) {
     const auto hidden =
         Forward(Embed(mx::concatenate({anchor, draft}, 1)), caches);

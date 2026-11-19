@@ -1,0 +1,69 @@
+{
+  "name": "sheet-hotkeys",
+  "kind": "shell-sheet",
+  "shell_ui": {
+    "sheet_open": true
+  },
+  "shell_sheet": {
+    "groups": [
+      {
+        "title": "Anywhere on the Mac",
+        "rows": [
+          {
+            "keys": "Right ⌥",
+            "title": "Transcribe"
+          },
+          {
+            "keys": "Right ⌥ ⇧",
+            "title": "Translate"
+          },
+          {
+            "keys": "⌃ Right ⌥",
+            "title": "Rewrite"
+          },
+          {
+            "keys": "⌃⌥V",
+            "title": "Paste the last result"
+          }
+        ]
+      },
+      {
+        "title": "Navigation",
+        "rows": [
+          {
+            "keys": "⌘K",
+            "title": "Command palette"
+          },
+          {
+            "keys": "⌘1  ⌘2",
+            "title": "Home, History"
+          },
+          {
+            "keys": "⌘3 … ⌘6",
+            "title": "Transcribe, Translate, Rewrite, App enhancement"
+          },
+          {
+            "keys": "⌘,",
+            "title": "Settings"
+          },
+          {
+            "keys": "⌘[  ⌘]",
+            "title": "Back, forward"
+          },
+          {
+            "keys": "⇧⌘L",
+            "title": "Show or hide the logs panel"
+          },
+          {
+            "keys": "?",
+            "title": "Keyboard shortcuts"
+          },
+          {
+            "keys": "Esc",
+            "title": "Close a dialog or popover"
+          }
+        ]
+      }
+    ]
+  }
+}
