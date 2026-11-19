@@ -489,3 +489,78 @@ class IsolationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class AttemptsTests(unittest.TestCase):
+    def test_single_attempt_diagnostic_succeeds_without_median(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            audio = source / "meeting.wav"
+            audio.write_bytes(b"short fake PCM")
+            model = source / "model"
+            model.mkdir()
+            (model / "weights").write_bytes(b"fake weights")
+            matrix = root / "matrix.json"
+            matrix.write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "diag",
+                            "audio": str(audio),
+                            "model": {"id": "asr.fast", "dir": str(model)},
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            environment = {
+                "power_source": "AC Power",
+                "idle_seconds": 1000,
+                "contenders": [],
+            }
+
+            def fake_process(arguments, env, log_path, idle, sample, secrets, sampler=None):
+                attempt_dir = Path(env["VOXTNEW_PROFILE_CONFIG"]).parent
+                report = raw_report(100)
+                attempt_dir.joinpath("result.json").write_text(
+                    json.dumps(report), encoding="utf-8"
+                )
+                return 0, []
+
+            with (
+                mock.patch.object(
+                    loop, "wait_for_gate", return_value=environment
+                ),
+                mock.patch.object(
+                    loop, "run_profile_process", side_effect=fake_process
+                ),
+                mock.patch.object(
+                    loop, "host_environment", return_value=environment
+                ),
+            ):
+                results = root / "results"
+                self.assertEqual(
+                    loop.run_matrix(matrix, results, 0, 0.01, None, "1s", max_attempts=1),
+                    0,
+                )
+            batches = [path for path in results.iterdir() if path.is_dir()]
+            self.assertEqual(len(batches), 1)
+            summary = json.loads(
+                batches[0].joinpath("diag", "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["status"], "success")
+            self.assertEqual(summary["valid_runs"], 1)
+            self.assertIn("without a three-run median", summary["note"])
+            self.assertEqual(
+                summary["attempts"],
+                [
+                    {
+                        "attempt": 1,
+                        "returncode": 0,
+                        "result_invalid_reason": [],
+                        "environment_invalid_reason": [],
+                        "valid": True,
+                    }
+                ],
+            )

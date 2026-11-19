@@ -603,6 +603,7 @@ def run_matrix(
     temp_root: Path | None,
     go_timeout: str,
     environment_sample_seconds: float = 15,
+    max_attempts: int = 3,
 ) -> int:
     configurations = load_configurations(matrix_path)
     results_root.mkdir(parents=True, exist_ok=True)
@@ -625,7 +626,7 @@ def run_matrix(
             config_error = ""
             try:
                 prepared = prepare_config(original, prepare_dir)
-                for attempt in range(1, 4):
+                for attempt in range(1, max_attempts + 1):
                     attempt_dir = config_dir / f"run-{attempt}"
                     attempt_dir.mkdir(parents=True, exist_ok=True)
                     run_config = copy.deepcopy(prepared)
@@ -681,20 +682,28 @@ def run_matrix(
                         raw_paths.append(str(attempt_dir / "result.json"))
             except (OSError, RuntimeError, ValueError, KeyError) as error:
                 config_error = str(error)
-            if valid_count == 3 and not config_error:
-                try:
-                    summary = summarize_reports(reports)
-                except ValueError as error:
+            if valid_count == max_attempts and not config_error:
+                if max_attempts != 3:
                     summary = {
-                        "status": "failed",
+                        "status": "success",
                         "valid_runs": valid_count,
-                        "error": str(error),
+                        "note": "diagnostic run without a three-run median",
                     }
+                else:
+                    try:
+                        summary = summarize_reports(reports)
+                    except ValueError as error:
+                        summary = {
+                            "status": "failed",
+                            "valid_runs": valid_count,
+                            "error": str(error),
+                        }
             else:
                 summary = {
                     "status": "failed",
                     "valid_runs": valid_count,
-                    "error": config_error or "fewer than three valid runs",
+                    "error": config_error
+                    or f"fewer than {max_attempts} valid runs",
                 }
             summary["raw_results"] = raw_paths
             summary["attempts"] = attempts
@@ -725,6 +734,12 @@ def main() -> int:
     parser.add_argument("--temp-root", type=Path)
     parser.add_argument("--go-timeout", default="6h")
     parser.add_argument("--environment-sample-seconds", type=float, default=15)
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=3,
+        help="runs per configuration (1 for a single gated diagnostic)",
+    )
     arguments = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("profile-loop runs only on macOS")
@@ -732,9 +747,11 @@ def main() -> int:
         arguments.idle_seconds < 0
         or arguments.poll_seconds <= 0
         or arguments.environment_sample_seconds <= 0
+        or arguments.attempts <= 0
     ):
         parser.error(
-            "idle seconds must be nonnegative and poll/sample seconds positive"
+            "idle seconds must be nonnegative, poll/sample seconds positive, "
+            "and attempts a positive count"
         )
     try:
         return run_matrix(
@@ -745,6 +762,7 @@ def main() -> int:
             arguments.temp_root,
             arguments.go_timeout,
             arguments.environment_sample_seconds,
+            arguments.attempts,
         )
     except (OSError, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"profile-loop: {error}", file=sys.stderr)
