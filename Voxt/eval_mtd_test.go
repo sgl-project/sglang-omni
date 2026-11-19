@@ -3,7 +3,7 @@ package main
 // TestEvalMTD measures MOSS-Transcribe-Diarize (MTD) against Qwen3-ASR on
 // this Mac, through VoxtNew's own runtime path (internal/omni: the same
 // servers, flags and request policies the app uses), for the decision
-// whether MTD can be the default speech model (docs/MTDEvaluation.zh-CN.md):
+// whether MTD can be the default speech model (docs/MTDEvaluation.md):
 //
 //	VOXTNEW_EVAL=1 \
 //	  VOXTNEW_OMNI_RUNTIME=/Applications/Voxt.app/Contents/Resources/omni \
