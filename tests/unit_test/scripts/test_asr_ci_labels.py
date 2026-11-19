@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The ARK-ASR model label must reach the ASR workflow without selecting a stage."""
+"""The ARK-ASR model label must select only the SeedTTS ASR job, on ARK-ASR."""
 
 import json
 import subprocess
@@ -16,14 +16,23 @@ LABEL_RESOLVER = REPO_ROOT / ".github/scripts/resolve_ci_labels.py"
     "labels, expected_status, expected_output",
     [
         (
-            ["run-asr-ci", "run-ark-asr-3b"],
+            ["run-ark-asr-3b"],
             0,
-            ["run_asr=true", "asr_ci_model=ark", "run_self_hosted=true"],
+            [
+                "run_asr_multi_speaker=false",
+                "run_asr_seedtts=true",
+                "asr_seedtts_ci_model=ark",
+                "run_self_hosted=true",
+            ],
         ),
         (
-            ["run-ark-asr-3b"],
-            1,
-            ["No CI label found"],
+            ["run-asr-ci", "run-ark-asr-3b"],
+            0,
+            [
+                "run_asr_multi_speaker=true",
+                "run_asr_seedtts=true",
+                "asr_seedtts_ci_model=ark",
+            ],
         ),
         (
             ["run-asr-ci", "run-ark-asr-3b", "run-fun-asr-nano-2512"],
@@ -59,6 +68,6 @@ def test_arkasr_label_selects_only_the_requested_asr_preset(
     for expected in expected_output:
         assert expected in result.stdout
     if expected_status == 0:
-        assert "asr_ci_model=ark" in output_path.read_text().splitlines()
+        assert "asr_seedtts_ci_model=ark" in output_path.read_text().splitlines()
     else:
         assert not output_path.exists()

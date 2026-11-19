@@ -1,0 +1,28 @@
+{
+  "name": "history-page-search-empty",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "nothing like this",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [],
+    "empty": {
+      "search": true,
+      "kind": "",
+      "title": "Nothing matches “nothing like this”",
+      "body": "",
+      "action_label": "Clear search"
+    }
+  }
+}

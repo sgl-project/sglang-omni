@@ -8,9 +8,11 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // The capsule's controls fit in its window, with a long warning too.
@@ -21,7 +23,7 @@ func TestMeetingOverlayControlsFit(t *testing.T) {
 		if problem != "" {
 			s.Problem = &meeting.Problem{Key: problem}
 		}
-		a.meetSnap, a.meetOvCollapsed = s, true
+		a.meetSnap, a.meetOvUI.collapsed = s, true
 		m := overlayModel(s, true, 0, meetingMenuNone)
 		tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
 		frames(tt)
@@ -41,7 +43,7 @@ func TestMeetingOverlayControlsFit(t *testing.T) {
 func TestMeetingOverlayStartingCanEnd(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	s := meeting.Snapshot{ID: "m1", State: meeting.StateStarting, Mode: meeting.ModeMeeting}
-	a.meetSnap, a.meetOvCollapsed = s, true
+	a.meetSnap, a.meetOvUI.collapsed = s, true
 	m := overlayModel(s, true, 0, meetingMenuNone)
 	tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
 	frames(tt)
@@ -124,7 +126,7 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 		}
 		a.meetSnap = s
 	}
-	a.meetOvCollapsed = false
+	a.meetOvUI.collapsed = false
 	m := overlayModel(s, false, 0, meetingMenuNone)
 	m.Layout.Height = meetingOvMaxFaceH + 2*layout.Pad // as high as it grows with the lines below
 	tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
@@ -182,11 +184,11 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 		t.Fatalf("back at the end: %q or the live line not in view", newest())
 	}
 	// Collapsed while more is said, it opens again at the end.
-	a.meetOvCollapsed = true
+	a.meetOvUI.collapsed = true
 	frames(tt)
 	s.Live = nil
 	add(50)
-	a.meetOvCollapsed = false
+	a.meetOvUI.collapsed = false
 	frames(tt)
 	if !shows(newest()) {
 		t.Fatalf("expanded again: %q not in view", newest())
@@ -207,7 +209,7 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 func TestMeetingOverlayMenus(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	s := meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Mode: meeting.ModeMeeting}
-	a.meetSnap, a.meetOvCollapsed = s, false
+	a.meetSnap, a.meetOvUI.collapsed = s, false
 	tt := ui.NewTester(a.meetingOverlayView, meetingOvWidths[0]+2*layout.Pad, meetingOvMaxFaceH+2*layout.Pad)
 	frames(tt)
 	for _, label := range []string{"Meeting mode", "Pause meeting", "End meeting", "More", "Collapse"} {
@@ -227,17 +229,28 @@ func TestMeetingOverlayMenus(t *testing.T) {
 	}
 	click("More")
 	click("Cancel meeting")
-	if !a.meetingAbandon || a.meetOvMenu != meetingMenuNone {
-		t.Fatalf("after Cancel meeting: asks %v, menu %v", a.meetingAbandon, a.meetOvMenu)
+	if !a.meetOvUI.abandon || a.meetOvUI.menu != meetingMenuNone {
+		t.Fatalf("after Cancel meeting: asks %v, menu %v", a.meetOvUI.abandon, a.meetOvUI.menu)
 	}
-	a.meetingAbandon = false
+	a.meetOvUI.abandon = false
 	click("Meeting mode")
-	if _, ok := tt.Find("System audio only"); !ok || a.meetOvMenu != meetingMenuMode {
-		t.Fatalf("the modes do not show: menu %v", a.meetOvMenu)
+	if _, ok := tt.Find("System audio only"); !ok || a.meetOvUI.menu != meetingMenuMode {
+		t.Fatalf("the modes do not show: menu %v", a.meetOvUI.menu)
 	}
 	click("Subtitles")
-	if a.meetOvMenu != meetingMenuNone {
+	if a.meetOvUI.menu != meetingMenuNone {
 		t.Fatal("the menu stays after a mode is picked")
+	}
+}
+
+func TestMeetingOverlayRebuildsAfterLocaleChange(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.meetSnap = meeting.Snapshot{ID: "m-locale", State: meeting.StatePaused, Mode: meeting.ModeMeeting}
+	a.meetingOverlayModel()
+	a.updateSettings(func(state *settings.Settings) { state.General.Language = "zh-Hans" })
+	want := i18n.NewTranslator("zh-Hans").T("Meeting paused")
+	if a.meetOvView.StatusText != want {
+		t.Fatalf("status after locale change %q, want %q", a.meetOvView.StatusText, want)
 	}
 }
 

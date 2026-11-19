@@ -31,6 +31,14 @@ def single_stage_config(model_path: str) -> PipelineConfig:
     )
 
 
+def file_config_manager(
+    file_path: str, *, model_path_override: str | None = None
+) -> ConfigManager:
+    return ConfigManager(
+        single_stage_config(model_path_override or f"from:{file_path}")
+    )
+
+
 class DummyManager:
     def __init__(self, model_path: str):
         self.config = single_stage_config(model_path)
@@ -115,7 +123,7 @@ def test_adapter_preserves_config_only_launch(monkeypatch) -> None:
     monkeypatch.setattr(
         ConfigManager,
         "from_file",
-        staticmethod(lambda path: DummyManager(f"from:{path}")),
+        staticmethod(file_config_manager),
     )
     monkeypatch.setattr(
         "sglang_omni.cli.serve.launch_server",
@@ -169,7 +177,7 @@ def launches(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[ServeOutcome]]:
     monkeypatch.setattr(
         ConfigManager,
         "from_file",
-        staticmethod(lambda path: ConfigManager(single_stage_config(f"file:{path}"))),
+        staticmethod(file_config_manager),
     )
     monkeypatch.setattr("sglang_omni.cli.serve.launch_server", record_launch)
     yield recorded

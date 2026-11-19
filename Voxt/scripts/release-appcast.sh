@@ -19,6 +19,9 @@
 #   scripts/release-appcast.sh notes-by-locale < NOTES.md   # the release notes as HTML by locale, JSON
 #   scripts/release-appcast.sh items < appcast.xml # each item's sparkle:version and hardware requirement
 #   scripts/release-appcast.sh hardware-kept BUILD REPLY < APPCASTS   # fails unless the update service kept arm64
+#   scripts/release-appcast.sh feed-base        # Voxt 2's MyGo update feed base URL
+#   scripts/release-appcast.sh feed-url beta    # the channel's MyGo manifest URL (beta or stable)
+#   scripts/release-appcast.sh github-manifest 2.0.1 OWNER/REPO < update-darwin-arm64.json
 #   scripts/release-appcast.sh cask 2.0.1 SHA256 OWNER/REPO   # Homebrew's Casks/voxt.rb
 set -euo pipefail
 
@@ -26,6 +29,8 @@ set -euo pipefail
 public_key="iMt1voRdgfUUpKxdY7DliGLaOl17gJFB8Jhlo5ox2eE="
 # Voxt 2 runs on Apple silicon only.
 hardware=arm64
+# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads.
+voxt2_feed="https://voxt.actnow.dev/updates/voxt2"
 
 usage() {
   sed -n 's/^#   //p' "$0" >&2
@@ -142,16 +147,36 @@ case "${1:-}" in
   hardware-kept)
     (($# == 3)) || usage
     [[ "$2" =~ ^[0-9]+$ ]] || fail "'$2' is not a build number"
-    # The update service's reply to the entry: ok, with the requirement in the entry it kept (data),
-    # so that a reply that echoes the request fails. Or the item of the build in the appcasts on stdin.
-    if jq -e --arg hw "$hardware" '.ok == true and .data.hardwareRequirements == $hw' <<< "$3" >/dev/null 2>&1; then
-      echo "The update service keeps hardwareRequirements $hardware"
-    elif items | grep -xF "$2 $hardware" >/dev/null; then
+    # Only the appcast proves what Voxt 1.x will read: an API reply that kept
+    # the field does not prove the service renders it.
+    if items | grep -xF "$2 $hardware" >/dev/null; then
       echo "The appcast's item of build $2 has sparkle:hardwareRequirements $hardware"
     else
       echo "release-appcast.sh: the update service does not output hardwareRequirements yet, so Voxt 1.x on an Intel Mac would get a version it cannot open: add it on the server (/api/pkg/update, and <sparkle:hardwareRequirements>$hardware</sparkle:hardwareRequirements> in the appcast)" >&2
       exit 1
     fi
+    ;;
+  feed-base)
+    (($# == 1)) || usage
+    echo "$voxt2_feed"
+    ;;
+  feed-url)
+    (($# == 2)) || usage
+    case "$2" in
+      beta) echo "$voxt2_feed/beta/update-darwin-arm64.json" ;;
+      stable) echo "$voxt2_feed/update-darwin-arm64.json" ;;
+      *) fail "the Voxt 2 feed channel is beta or stable, got '$2'" ;;
+    esac
+    ;;
+  github-manifest)
+    (($# == 3)) || usage
+    build_number "$2" >/dev/null
+    [[ "$3" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$3' is not OWNER/REPO"
+    jq --arg version "$2" --arg base "https://github.com/$3/releases/download/voxt-v$2/" \
+      'if .version != $version or .url == "" or .signature == "" or .size <= 0
+       then error("not a signed update manifest of " + $version) else . end
+       | .url = ($base + (.url | split("/") | last))
+       | if .deltas then .deltas |= map(.url = ($base + (.url | split("/") | last))) else . end'
     ;;
   notes)
     (($# == 1)) || usage
@@ -172,7 +197,10 @@ case "${1:-}" in
     build_number "$version" >/dev/null
     [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || fail "'$sha256' is not a SHA-256"
     [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$repo' is not OWNER/REPO"
-    # No auto_updates: Voxt 2 does not update itself, so brew upgrade updates it.
+    # No auto_updates yet: brew-installed 2.0.x/2.1.0 cannot update
+    # themselves, and auto_updates would exclude the cask from brew
+    # upgrade. It returns once self-updating releases are widely
+    # installed (the app then takes over from brew).
     cat <<CASK
 cask "voxt" do
   version "$version"

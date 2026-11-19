@@ -4,18 +4,20 @@ import (
 	"math"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
+
+// defaultPalette is settings.DefaultPalette: views do not import settings.
+const defaultPalette = "#0d9384"
 
 type paletteColors struct{ accent, background ui.Color }
 
 // The default keeps Voxt's neutral surfaces and original teal accents.
 // Only an explicitly selected custom color tints the window and cards.
-var defaultLightTokens = makeTokens(false, paletteColors{accent: ui.Hex(settings.DefaultPalette)})
+var defaultLightTokens = makeTokens(false, paletteColors{accent: ui.Hex(defaultPalette)})
 var defaultDarkTokens = makeTokens(true, paletteColors{accent: ui.Hex("#2bb3a3")})
 
 func paletteTokens(hex string, dark bool) *tokens {
-	if hex == "" || hex == settings.DefaultPalette {
+	if hex == "" || hex == defaultPalette {
 		if dark {
 			return defaultDarkTokens
 		}

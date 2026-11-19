@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model presets and thresholds for the SeedTTS ASR CI (ASR CI stage 2).
+"""Model presets and thresholds for the SeedTTS ASR CI job.
 
 Mirrors tests/test_model/tts_ci_config.py: each preset bundles the model
 path and calibrated gate thresholds for one ASR model, and CI selects one

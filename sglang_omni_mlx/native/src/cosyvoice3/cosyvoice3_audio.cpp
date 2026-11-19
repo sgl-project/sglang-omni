@@ -73,7 +73,7 @@ mx::array PromptMelFilters() {
 mx::array PromptMel(const std::vector<float> &samples_24k) {
   static const mx::array filters = [] {
     mx::array built = PromptMelFilters();
-    mx::eval(built);
+    mx::async_eval(built);
     return built;
   }();
   constexpr int padding = (kMelFftSize - kMelHopSamples) / 2;

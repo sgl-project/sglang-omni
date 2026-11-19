@@ -65,14 +65,12 @@ private:
   // suppressed logits: sampled at a positive temperature, else the most likely.
   mlx::core::array NextToken(mlx::core::array logits, bool first_step,
                              float temperature) const;
-  WindowResult TranscribeWindow(const mlx::core::array &encoder_states,
-                                const std::vector<int> &prompt_ids,
-                                int max_new_tokens, float temperature,
-                                const std::atomic<bool> &cancel) const;
+  // Windows' encoder states [windows, 1500, width] decoded together, one step
+  // for all unfinished ones at a time, or one window alone with the draft.
   std::vector<WindowResult>
-  TranscribeBatch(const mlx::core::array &encoder_states,
-                  const std::vector<int> &prompt_ids, int max_new_tokens,
-                  const std::atomic<bool> &cancel) const;
+  TranscribeWindows(const mlx::core::array &encoder_states,
+                    const std::vector<int> &prompt_ids, int max_new_tokens,
+                    float temperature, const std::atomic<bool> &cancel) const;
   // Greedy decoding with the draft after the prompt the caches hold and the
   // first token after it: each round the target verifies the draft's
   // proposals and keeps the agreeing ones plus its own next token.
