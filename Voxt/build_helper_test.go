@@ -64,7 +64,7 @@ func TestBuildHelperCopiesFromSwiftBinPath(t *testing.T) {
 			fakes := map[string]string{
 				"uname": "#!/bin/sh\necho Darwin\n",
 				"swift": `#!/bin/sh
-printf '%s\n' "$@" > "$FAKE_SWIFT_LOG"
+printf '%s\n' "$@" >> "$FAKE_SWIFT_LOG"
 case " $* " in
 *" --show-bin-path "*)
 	echo "$FAKE_SWIFT_PRODUCTS"
@@ -118,8 +118,12 @@ printf '<key>CFBundleShortVersionString</key>\n<string>%s</string>\n' "$version"
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := strings.Contains(string(swiftLog), "--disable-sandbox"); got != testCase.disableSandbox {
-				t.Fatalf("--disable-sandbox present=%v, want %v; swift args:\n%s", got, testCase.disableSandbox, swiftLog)
+			wantSandboxFlags := 0
+			if testCase.disableSandbox {
+				wantSandboxFlags = 2
+			}
+			if got := strings.Count(string(swiftLog), "--disable-sandbox"); got != wantSandboxFlags {
+				t.Fatalf("--disable-sandbox count=%d, want %d; swift args:\n%s", got, wantSandboxFlags, swiftLog)
 			}
 		})
 	}
