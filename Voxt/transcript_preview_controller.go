@@ -28,22 +28,54 @@ type transcriptPreview struct {
 	version                        uint64
 	height                         int
 	ready, loaded, running, closed bool
+	// restyle relayouts an overlay card when a preview it measured goes
+	// away; the main window's preview leaves it nil.
+	restyle func()
+	// queue replaces Window.Update in tests, so a test observes the parse
+	// and its completion without a running event loop.
+	queue func(*mygo.Window, func())
 }
 
 var transcriptUpdate = mygo.NewEvent[transcriptpreview.Update]("transcript-preview")
 
+// schedule runs fn on the window's queue.
+func (p *transcriptPreview) schedule(win *mygo.Window, fn func()) {
+	if p.queue != nil {
+		p.queue(win, fn)
+		return
+	}
+	win.Update(fn)
+}
+
 // request takes the input a frame shows and renders it when it changed.
 func (p *transcriptPreview) request(win *mygo.Window, in transcriptPreviewInput) {
-	if p.input == in && (p.view == nil || !p.view.IsDestroyed()) {
+	if !p.adopt(in) {
 		return
+	}
+	p.schedule(win, func() { p.update(win) })
+}
+
+// adopt records the input a frame shows and reports whether the markup
+// must be parsed anew. A view that died with its input unchanged (the
+// overlay hid) renders again; a frame revives a closed preview, even one
+// closed before its first parse finished. A stream that ends drops the
+// height its partial markup measured: the final render measures it anew
+// (Resize).
+func (p *transcriptPreview) adopt(in transcriptPreviewInput) bool {
+	if !p.closed && p.input == in && (p.view == nil || !p.view.IsDestroyed()) {
+		return false
 	}
 	old := p.input
 	p.input = in
 	p.version++
+	p.closed = false
 	if old.key != in.key || old.size != in.size || old.rightPadding != in.rightPadding || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
 		p.height, p.ready, p.loaded = 0, false, false
 	}
-	win.Update(func() { p.update(win) })
+	if old.streaming && !in.streaming {
+		p.height = 0
+	}
+	return true
 }
 
 // Only one parse runs per preview. Updates arriving meanwhile replace the
@@ -56,7 +88,7 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 	p.running = true
 	go func() {
 		markup := transcriptMarkup(in.source, in.streaming)
-		win.Update(func() {
+		p.schedule(win, func() {
 			p.running = false
 			if p.closed || win.IsDestroyed() {
 				return
@@ -65,27 +97,50 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 				p.update(win)
 				return
 			}
-			if markup == "" {
-				p.ready = false
-				return
-			}
-			if p.view == nil || p.view.IsDestroyed() {
-				view, err := win.NewWebView(mygo.WebViewOptions{BackgroundColor: cssColor(in.background)})
-				if err != nil {
-					return
-				}
-				p.view, p.loaded = view, false
-			}
-			data := transcriptpreview.Update{HTML: markup, Version: version, Streaming: in.streaming}
-			if !p.loaded {
-				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
-				p.loaded = true
-			} else {
-				_ = transcriptUpdate.EmitPage(p.view.Page(), data)
-			}
-			p.ready = true
+			p.parsed(win, in, markup)
 		})
 	}()
+}
+
+// parsed applies a finished parse: plain text takes the shown page down
+// (dropPage); markup loads into the page, creating it first when needed.
+func (p *transcriptPreview) parsed(win *mygo.Window, in transcriptPreviewInput, markup string) {
+	if markup == "" {
+		p.dropPage()
+		return
+	}
+	if p.view == nil || p.view.IsDestroyed() {
+		view, err := win.NewWebView(mygo.WebViewOptions{BackgroundColor: cssColor(in.background)})
+		if err != nil {
+			return
+		}
+		p.view, p.loaded = view, false
+	}
+	data := transcriptpreview.Update{HTML: markup, Version: p.version, Streaming: in.streaming}
+	if !p.loaded {
+		p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
+		p.loaded = true
+	} else {
+		_ = transcriptUpdate.EmitPage(p.view.Page(), data)
+	}
+	p.ready = true
+}
+
+// dropPage takes the shown page down when its text turned plain: the
+// native text view takes over, and a card that showed the page relayouts
+// without it. A nil view keeps adopt from parsing the same input again.
+func (p *transcriptPreview) dropPage() {
+	replaced := p.ready || p.height > 0 || p.view != nil && !p.view.IsDestroyed()
+	p.height, p.ready, p.loaded = 0, false, false
+	if p.view != nil {
+		if !p.view.IsDestroyed() {
+			p.view.Destroy()
+		}
+		p.view = nil
+	}
+	if replaced && p.restyle != nil {
+		p.restyle()
+	}
 }
 
 func cssColor(c uiColor) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A) }
@@ -109,14 +164,14 @@ type transcriptPreviewBridge struct{ app *app }
 
 func (b transcriptPreviewBridge) Resize(ctx context.Context, version uint64, height int) {
 	page := mygo.CallerPage(ctx)
-	if page == nil || page.WebView() == nil || height < 1 {
+	if page == nil || page.WebView() == nil || page.WebView().IsDestroyed() || height < 1 {
 		return
 	}
 	page.Window().Update(func() {
 		a := b.app
 		previews := append([]*transcriptPreview{&a.mainTranscript, &a.overlayTranscript}, a.bubbleTranscripts...)
 		for _, preview := range previews {
-			if preview == nil || !preview.ready || preview.view != page.WebView() || preview.version != version || preview.height == height {
+			if preview == nil || !preview.ready || preview.view != page.WebView() || preview.view.IsDestroyed() || preview.version != version || preview.height == height {
 				continue
 			}
 			preview.height = height

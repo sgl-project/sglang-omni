@@ -23,6 +23,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Paste last on Return honours the opt-out**: with Paste last on Return and Return finishes dictation off, pressing Return while Transcribe records no longer stops the recording, and it never stops a Translate, Rewrite or note recording. A queued Return also does nothing after the setting or session kind changes, and one a finished dictation's replaced configuration reported on its way out never stops the next dictation, whichever shortcut Return is.
 - **Recording shortcuts keep their roles**: Paste last on a key other than Return no longer stops dictation. A timed-out hotkey configuration is retried, and with Return finishes dictation on, binding Cancel to Return no longer cancels the recording instead.
 
+### Fixed
+
+- **The answer card lets go of a formula preview it no longer shows**: hiding or closing the card closes its previews; an answer that ends up as plain text drops the preview and the height it had measured, so the card no longer keeps a gap or a stale formula, and a finished stream measures its final height instead of keeping the half-rendered one.
+
 ### 中文
 
 #### 新增
@@ -43,6 +47,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
 - **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。设置或会话类型变化后，排队中的旧回车事件同样不再停止录音；上一段听写结束后来送到的旧配置回车事件，无论回车绑定在哪个快捷键上，都不会停止下一段听写。
 - **录音快捷键不再串用动作**：“粘贴最近结果”绑定回车以外的键时，不再停止转录录音；快捷键配置超时后会重试；打开“按回车完成转录”时，即使取消快捷键也设为回车，按回车仍会完成录音而不会取消。
+
+#### 修复
+
+- **回答卡片释放不再显示的公式预览**：隐藏或关闭卡片时关闭预览；回答最终是纯文本时丢掉预览和它量出的高度，卡片不再留空白或显示过时的公式；流式输出结束后按最终渲染重新测量高度。
 
 ## [2.1.1] - 2026-11-17
 
