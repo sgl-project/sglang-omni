@@ -61,25 +61,27 @@ type boxDropWindow interface {
 var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
 
 // newBoxWindow creates the input box's native panel.
-func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) boxWindow {
-	window := newBoxNativeWindow(mygo.WindowOptions{
-		Title: i18n.T("Rewrite"), Width: boxWinW, Height: boxWinH, UseContentSize: true,
-		Hidden: true, Frameless: true, Transparent: true, Vibrancy: mygo.VibrancyHUD,
-		Panel: true, DisableResize: true, DisableClose: true,
-		Content: hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) }),
-	})
+func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI, options mygo.WindowOptions) boxWindow {
+	options.Content = hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) })
+	options.Vibrancy = mygo.VibrancyHUD
+	options.Panel = true
+	options.NonActivating = false
+	options.DisableClose = true
+	window := newBoxNativeWindow(options)
 	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
 	return window
 }
 
 // rewriteBoxView draws the input box from its state, actions and local text.
 func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) {
+	context.SetTheme(overlayTheme(state.Palette))
+	defer context.Root().Background(ui.Transparent)
 	hadPaste := local.paste != nil
 	applyBoxPaste(local, state)
 	if !hadPaste && local.text != state.Text {
 		local.text = state.Text
 	}
-	root := ui.Column(context).Fill().Padding(12, 14, 12, 14).Gap(8)
+	root := ui.Column(context).Fill().Padding(layout.Pad)
 	if context.Shortcut(0, ui.KeyEscape) {
 		if local.addOpen {
 			local.addOpen = false
@@ -88,120 +90,145 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 		}
 	}
 	root.Children(func() {
-		// The header: what it is, Send while it records or a resend
-		// waits, Close.
-		ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
-			ui.Icon(context, icons.VoxtAnswer.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Shrink(0).Label(i18n.T("Rewrite"))
-			ui.Text(context, i18n.T("Rewrite")).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine()
-			ui.Box(context).Grow(1).MinWidth(0)
-			if state.CanSend {
-				if cardCapsule(context.Key("box-send"), i18n.T("Send"), i18n.T("Send (Enter)")) {
-					actions.textChanged(local.text)
-					actions.send()
-				}
-			}
-			if cardIconButton(context.Key("box-close"), i18n.T("Close"), "", icons.Close, true) {
-				actions.close()
-			}
-		})
-		ui.Box(context).Height(1).Shrink(0).Background(ovCardRule)
+		faceStyle(context, ui.Column(context.Key("box-face")).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Gap(8), state.Radius, state.Alpha).Children(func() {
+			// The header: what it is, Send while it records or a resend
+			// waits, Close.
+			ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
+				ui.Icon(context, icons.VoxtAnswer.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Shrink(0).Label(i18n.T("Rewrite"))
+				ui.Text(context, i18n.T("Rewrite")).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine()
 
-		if boxFullImagePreview(context, state, local) {
-			return
-		}
-
-		ui.Scroll(context.Key("box-input-scroll")).Grow(1).MinHeight(0).MinWidth(0).TrackScroll(&local.inputScroll).Children(func() {
-			ui.Column(context).MinWidth(0).Gap(8).Children(func() {
-				// The text selected when the shortcut fired: the input, as the
-				// model gets it first.
-				if state.Selection != "" {
-					boxTextBlockView(context, "selection", state.SelectionBlock, local, actions.removeSelection)
+				if state.Recording {
+					cardWave(context, state.Levels[:], state.Recording, state.Heard, state.Motion, state.Phase)
 				}
-				for index, segment := range state.TextSegments {
-					if segment.Pasted {
-						boxTextBlockView(context, "segment-"+strconv.Itoa(segment.ID), segment, local, func() { actions.removeText(index) })
-						continue
+				ui.Box(context).Grow(1).MinWidth(0)
+				if state.CanSend {
+					if cardCapsule(context.Key("box-send"), i18n.T("Send"), i18n.T("Send (Enter)")) {
+						actions.textChanged(local.text)
+						actions.send()
 					}
-					if local.segmentText == nil {
-						local.segmentText = map[int]*string{}
-					}
-					text := local.segmentText[segment.ID]
-					if text == nil {
-						text = new(string)
-						local.segmentText[segment.ID] = text
-						*text = segment.Text
-					}
-					if !hadPaste && *text != segment.Text {
-						*text = segment.Text
-					}
-					boxTextEditor(context, index, text, state, actions, local)
+				}
+				if cardIconButton(context.Key("box-close"), i18n.T("Close"), "", icons.Close, true) {
+					actions.close()
 				}
 			})
-		})
+			ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 
-		// The pictures stay reachable while earlier text inputs scroll.
-		if len(state.Thumbnails) > 0 {
-			ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Start).Children(func() {
-				for index, bitmap := range state.Thumbnails {
-					info := boxImageInfo{Source: i18n.T("Image")}
-					if index < len(state.ImageInfo) {
-						info = state.ImageInfo[index]
+			if state.Subtitle != "" {
+				ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+					if state.SubtitleError {
+						ui.Icon(context, icons.DangerCircle.Linear).Size(12, 12).TextColor(tok(context.Theme()).Danger).Shrink(0)
 					}
-					var remove func()
-					remove = actions.removeAutoImage
-					if index < state.ManualImages {
-						remove = func() { actions.remove(index) }
-					}
-					boxThumbView(context.Key(index), bitmap, info, remove, func() { local.previewImage = index + 1 })
-				}
-			})
-		}
-
-		if state.Limit {
-			ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
-		}
-
-		// An error, kept with the box's content.
-		if state.Error != "" {
-			ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Icon(context, icons.DangerCircle.Linear).Size(12, 12).TextColor(tok(context.Theme()).Danger).Shrink(0)
-				ui.Text(context, state.Error).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").Tooltip(state.Error)
-			})
-		}
-
-		// The trailing text box stays visible while earlier inputs scroll.
-		boxTextEditor(context, -1, &local.text, state, actions, local)
-
-		// The voice line: the instruction, being heard or kept.
-		ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Icon(context, icons.VoxtTranscribe.Bold).Size(14, 14).TextColor(ovText2).Shrink(0).Label(i18n.T("The spoken instruction"))
-			ui.Text(context, state.VoiceLine).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
-		})
-		ui.Row(context).Shrink(0).Children(func() {
-			add := dropButton(context.Key("box-add"), icons.Add, i18n.T("Add"))
-			if add.Clicked() {
-				local.addOpen = !local.addOpen
+					ui.Text(context, state.Subtitle).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").Tooltip(state.Subtitle)
+				})
 			}
-			ui.Popover(context, add, &local.addOpen, func() {
-				ui.Column(context).MinWidth(180).Children(func() {
-					if menuRow(context.Key("box-choose-images"), i18n.T("Choose images…"), false) {
-						local.addOpen = false
-						actions.chooseImages()
-					}
-					if menuRow(context.Key("box-choose-file"), i18n.T("Choose file…"), false) {
-						local.addOpen = false
-						actions.chooseFile()
-					}
-					if menuRow(context.Key("box-paste-clipboard"), i18n.T("Paste clipboard"), false) {
-						local.addOpen = false
-						services := context.Services()
-						if !actions.paste(services) {
-							index, start, end := boxClipboardEditor(actions.viewState(), local)
-							actions.pasteClipboard(services, index, start, end)
-							local.text = actions.viewState().Text
-						}
+			if state.ShowTip {
+				ui.Row(context.Key("box-tip")).Shrink(0).Padding(6, 8, 6, 8).Gap(8).Radius(6).Background(ui.RGBA(255, 255, 255, 0.06)).AlignItems(ui.Center).Children(func() {
+					ui.Text(context, i18n.T("Speak what to do. Type, paste or drop images to add material. Enter sends.")).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0)
+					if cardCapsule(context.Key("box-got-it"), i18n.T("Got it"), "") {
+						actions.dismissTip()
 					}
 				})
+			}
+
+			if boxFullImagePreview(context, state, local) {
+				return
+			}
+
+			ui.Scroll(context.Key("box-input-scroll")).Grow(1).MinHeight(0).MinWidth(0).TrackScroll(&local.inputScroll).Children(func() {
+				ui.Column(context).MinWidth(0).Gap(8).Children(func() {
+					// The text selected when the shortcut fired: the input, as the
+					// model gets it first.
+					if state.Selection != "" {
+						boxSelectionBlockView(context, state.SelectionBlock, local, actions.removeSelection)
+					}
+					for index, segment := range state.TextSegments {
+						if segment.Pasted {
+							boxTextBlockView(context, "segment-"+strconv.Itoa(segment.ID), segment, local, func() { actions.removeText(index) })
+							continue
+						}
+						if local.segmentText == nil {
+							local.segmentText = map[int]*string{}
+						}
+						text := local.segmentText[segment.ID]
+						if text == nil {
+							text = new(string)
+							local.segmentText[segment.ID] = text
+							*text = segment.Text
+						}
+						if !hadPaste && *text != segment.Text {
+							*text = segment.Text
+						}
+						boxTextEditor(context, index, text, state, actions, local)
+					}
+				})
+			})
+
+			// The pictures stay reachable while earlier text inputs scroll.
+			if len(state.Thumbnails) > 0 {
+				ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Start).Children(func() {
+					for index, bitmap := range state.Thumbnails {
+						info := boxImageInfo{Source: i18n.T("Image")}
+						if index < len(state.ImageInfo) {
+							info = state.ImageInfo[index]
+						}
+						var remove func()
+						remove = actions.removeAutoImage
+						if index < state.ManualImages {
+							remove = func() { actions.remove(index) }
+						}
+						boxThumbView(context.Key(index), bitmap, info, remove, func() { local.previewImage = index + 1 })
+					}
+				})
+			}
+
+			if state.Limit {
+				ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
+			}
+
+			// The trailing text box stays visible while earlier inputs scroll.
+			boxTextEditor(context, -1, &local.text, state, actions, local)
+
+			// The voice line carries actual speech, not another hint.
+			if state.VoiceLine != "" {
+				ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Icon(context, icons.VoxtTranscribe.Bold).Size(14, 14).TextColor(ovText2).Shrink(0).Label(i18n.T("The spoken instruction"))
+					ui.Text(context, state.VoiceLine).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+				})
+			}
+
+			ui.Row(context.Key("box-footer")).Shrink(0).Gap(5).AlignItems(ui.Center).Children(func() {
+				add := dropButton(context.Key("box-add"), icons.Add, i18n.T("Add"))
+				if add.Clicked() {
+					local.addOpen = !local.addOpen
+				}
+				ui.Popover(context, add, &local.addOpen, func() {
+					ui.Column(context).MinWidth(180).Children(func() {
+						if menuRow(context.Key("box-choose-images"), i18n.T("Choose images…"), false) {
+							local.addOpen = false
+							actions.chooseImages()
+						}
+						if menuRow(context.Key("box-choose-file"), i18n.T("Choose file…"), false) {
+							local.addOpen = false
+							actions.chooseFile()
+						}
+						if menuRow(context.Key("box-paste-clipboard"), i18n.T("Paste clipboard"), false) {
+							local.addOpen = false
+							services := context.Services()
+							if !actions.paste(services) {
+								index, start, end := boxClipboardEditor(actions.viewState(), local)
+								actions.pasteClipboard(services, index, start, end)
+								local.text = actions.viewState().Text
+							}
+						}
+					})
+				})
+				keycap(context, "Enter")
+				ui.Text(context, i18n.T("send")).FontSize(11).TextColor(ovText2).SingleLine()
+				ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
+				keycap(context, "Esc")
+				ui.Text(context, i18n.T("close")).FontSize(11).TextColor(ovText2).SingleLine()
+				ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
+				ui.Text(context, i18n.T("paste or drop up to 4 images")).FontSize(11).TextColor(ovText2).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 			})
 		})
 	})
@@ -259,7 +286,7 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 	key := "box-text-" + strconv.Itoa(index)
 	textArea := ui.TextAreaBase(context.Key(key), text).
 		Label(i18n.T("More text for the rewrite")).
-		Placeholder(i18n.T("Type or paste more text, or drop images")).
+		Placeholder(state.EditorPlaceholder).
 		Lines(1, 4).FontSize(layout.CardTextSize).TextColor(ovCardText)
 	if index == -1 {
 		textArea.Lines(3, 8).Grow(1)

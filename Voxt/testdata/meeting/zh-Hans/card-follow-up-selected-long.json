@@ -43,7 +43,6 @@
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
       "insert_tooltip": "插入到 Slack",
-      "input_count": 1,
       "inputs": [
         {
           "label": "选中的文字",

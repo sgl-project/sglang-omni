@@ -218,8 +218,7 @@ func (a *app) syncOverlayMaterial() {
 	if a.ov.win == nil {
 		return
 	}
-	style := mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
-		Radius: float64(faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h)), Dark: true}
+	style := floatingVibrancyStyle(faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h))
 	if style != a.ov.style {
 		a.ov.style = style
 		a.ov.win.SetVibrancyStyle(style)
@@ -261,6 +260,9 @@ func (a *app) overlayFace(mode overlayMode) (int, int) {
 }
 
 func (a *app) overlayRestyle() {
+	if a.box.open {
+		a.boxSync()
+	}
 	if !a.ov.shown {
 		return
 	}
@@ -287,6 +289,9 @@ func (a *app) invalidatePaletteOverlays() {
 		if window != nil {
 			window.Invalidate()
 		}
+	}
+	if a.box.win != nil {
+		a.box.win.Invalidate()
 	}
 }
 

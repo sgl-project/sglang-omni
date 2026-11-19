@@ -323,6 +323,8 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.done` | bool | The setup guide is finished |
 | `setup.openingShown` | bool | The first-use opening was shown |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
+| `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
+| `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
 | `updates.dismissed` | string | The version whose "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |

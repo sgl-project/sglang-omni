@@ -50,12 +50,12 @@ func cardSizeButton(context *ui.Context, card *sessionCardViewState, actions ses
 
 // cardAttachView says which picture went to the language model.
 func cardAttachView(context *ui.Context, card *sessionCardViewState, local sessionOverlayLocal) {
-	if len(local.Overlay.cardPreviews) > 0 {
+	if card.InputCount > 0 && len(local.Overlay.cardPreviews) > 0 {
 		cardInputChips(context, local)
 		return
 	}
 	thumbnails := local.Overlay.cardThumbs
-	if len(thumbnails) > 0 {
+	if card.Attachment == "box" && len(thumbnails) > 0 {
 		ui.Row(context).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(i18n.T("Images sent with the instruction")).Children(func() {
 			for index, bitmap := range thumbnails {
 				if bitmap != nil {
@@ -105,7 +105,7 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	}
 	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
 	if card.Conversation {
-		cardWave(context, card, animation.Motion, animation.Phase)
+		cardWave(context, card.Levels[:], card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
 	} else {
 		if !sessionCardLanguageCapsule(card) {
@@ -262,15 +262,15 @@ func cardLanguage(context *ui.Context, card *sessionCardViewState, actions sessi
 	})
 }
 
-func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phase float64) {
+func cardWave(context *ui.Context, levels []float64, recording, heard, motion bool, phase float64) {
 	const scaleX, scaleY = 0.84, 0.82
-	bars := layout.WaveBars(card.Levels[:])
+	bars := layout.WaveBars(levels)
 	quiet := [...]float32{3.2, 3.9, 4.6, 5.1, 4.2, 3.5, 4.4, 4.9}
 	label := i18n.T("Input level")
 	ui.Row(context.Key("ov-card-wave")).Width(layout.CardWaveW).Height(layout.CardIcon).Shrink(0).Gap(layout.WaveBarGap * scaleX).AlignItems(ui.Center).Label(label).Children(func() {
 		for index, level := range bars {
 			height := quiet[index%len(quiet)] * scaleY
-			if card.Recording && card.Heard {
+			if recording && heard {
 				height = (layout.WaveBarMinH + (layout.WaveBarMaxH-layout.WaveBarMinH)*float32(level)) * scaleY
 				if motion {
 					height += float32(layout.WaveIdle(index, level, phase)) * scaleY

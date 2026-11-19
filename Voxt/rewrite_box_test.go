@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
@@ -381,7 +383,10 @@ func TestReopenBoxTypedAfterRestart(t *testing.T) {
 // selection, typing, Enter (taken; Shift+Enter is a new line), the
 // pictures and their limit, the voice line, Esc.
 func TestRewriteBoxView(t *testing.T) {
-	a, _, _ := newTestApp(t)
+	a, fs, _ := newTestApp(t)
+	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+		return proto.ClipboardImageResult{JPEG: boxJPEG(t)}, nil
+	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
 	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "the selected text"})
@@ -500,14 +505,18 @@ func TestAnswerCardAttach(t *testing.T) {
 }
 
 // fakeBoxWindow records the panel's life (boxWindow).
-type fakeBoxWindow struct{ hidden, destroyed bool }
+type fakeBoxWindow struct {
+	hidden, destroyed bool
+	style             mygo.VibrancyStyle
+}
 
-func (f *fakeBoxWindow) Invalidate() {}
-func (f *fakeBoxWindow) Center()     {}
-func (f *fakeBoxWindow) Show()       {}
-func (f *fakeBoxWindow) Focus()      {}
-func (f *fakeBoxWindow) Hide()       { f.hidden = true }
-func (f *fakeBoxWindow) Destroy()    { f.destroyed = true }
+func (f *fakeBoxWindow) Invalidate()                           {}
+func (f *fakeBoxWindow) Center()                               {}
+func (f *fakeBoxWindow) Show()                                 {}
+func (f *fakeBoxWindow) Focus()                                {}
+func (f *fakeBoxWindow) Hide()                                 { f.hidden = true }
+func (f *fakeBoxWindow) Destroy()                              { f.destroyed = true }
+func (f *fakeBoxWindow) SetVibrancyStyle(s mygo.VibrancyStyle) { f.style = s }
 
 // TestRewriteBoxCloseClosesWindow: Esc drops the box's state, but the
 // panel must go with it — zeroing the window pointer first would
