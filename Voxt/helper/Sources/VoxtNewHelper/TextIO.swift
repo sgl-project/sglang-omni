@@ -170,8 +170,10 @@ final class TextIO: @unchecked Sendable {
             let text = pb.string(forType: .string)
             let types = (pb.types ?? []).map(\.rawValue)
             var data: [String: Data] = [:]
-            for type in ClipboardPicture.imageTypes where types.contains(type) {
-                data[type] = pb.data(forType: NSPasteboard.PasteboardType(type))
+            if ClipboardPicture.copiedSelectionHasImagePlaceholder(text) {
+                for type in ClipboardPicture.imageTypes where types.contains(type) {
+                    data[type] = pb.data(forType: NSPasteboard.PasteboardType(type))
+                }
             }
             let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
             Clipboard.restore(pb, snap)

@@ -116,7 +116,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `privacy.logText` | bool | `false` | | Write text to the log |
 | `privacy.sendWindow` | bool | `false` | | Send a screenshot |
 | `privacy.sendClipboardImage` | bool | `false` | | Send a copied image |
-| `privacy.sendClipboardImageWithSelection` | bool | `false` for fresh installs; migrated pre-5 documents without the key use `true` | | Text and a copied image together |
+| `privacy.sendClipboardImageWithSelection` | bool | `false` | | Text and a copied image together |
 | `privacy.historyAccess` | bool | `false` | | Let programs on this Mac read the history ([history-access.md](history-access.md)) |
 | `privacy.historySelection` | bool | `false` | | Also include the text you selected |
 

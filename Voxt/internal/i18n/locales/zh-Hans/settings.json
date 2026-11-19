@@ -244,7 +244,7 @@
   "For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. With text selected, only the text goes unless Text and a copied image together is also on. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone.": "用于能看图的语言模型：改写时，Voxt 会把你复制（⌘C）的图片和你说的话一起发给语言模型。选中了文字时只发文字，除非同时打开“同时发送选中文字和复制的图片”。复制的是文字，或者复制的文件不是图片时，不会发送。不能看图的模型只收到文字。",
   "Send the copied image with Rewrite": "改写时发送复制的图片",
   "Text and a copied image together": "同时发送选中文字和复制的图片",
-  "For fresh installs, a text selection sends only text. Existing documents keep the earlier behavior: selected text and the copied image go together. Turn it off to make any selection text-only.": "新安装时，选中文字只发文字。已有设置保持原来的行为：选中文字和复制的图片一起发送。关闭后，任何选区都只发文字。",
+  "Off by default: a text selection sends only the text, so an image you copied earlier cannot take over a text rewrite. Turn it on to send the selected text and the copied image together.": "默认关闭：选中文字只发文字，避免早前复制的图片取代选中文字成为改写输入。打开后，选中文字和复制的图片一起发送。",
   "Send both with Rewrite": "改写时同时发送",
   "To send screenshots, allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording.": "要发送截图，请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”里允许 Voxt。",
   "Upload size limit": "上传大小上限",

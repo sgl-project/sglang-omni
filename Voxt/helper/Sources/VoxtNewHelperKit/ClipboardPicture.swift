@@ -41,11 +41,18 @@ public enum ClipboardPicture {
         return nil
     }
 
+    /// A copied selection opts into an image only through an [Image]
+    /// placeholder; without one the copy fallback skips reading image
+    /// representations at all (a rich-text copy can carry a large TIFF).
+    public static func copiedSelectionHasImagePlaceholder(_ text: String?) -> Bool {
+        text?.contains("[Image]") == true
+    }
+
     /// The image a copy fallback captured from the copied selection.
     /// An [Image] placeholder opts in only when image bytes or a file exist;
     /// literal placeholder text without one remains text-only.
     public static func imageForCopiedSelection(types: [String], data: [String: Data], file: URL?, maxSide: Int, text: String?) -> CGImage? {
-        guard text?.contains("[Image]") == true else { return nil }
+        guard copiedSelectionHasImagePlaceholder(text) else { return nil }
         if let file {
             guard UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true else { return nil }
             return thumbnail(CGImageSourceCreateWithURL(file as CFURL, nil), maxSide: maxSide)

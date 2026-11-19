@@ -55,6 +55,16 @@ final class ClipboardPictureTests: XCTestCase {
                      "ordinary selected text does not opt into an image")
     }
 
+    func testPlainTextSelectionSkipsTheImageRead() {
+        XCTAssertFalse(ClipboardPicture.copiedSelectionHasImagePlaceholder("caption"))
+        XCTAssertFalse(ClipboardPicture.copiedSelectionHasImagePlaceholder(nil))
+        XCTAssertTrue(ClipboardPicture.copiedSelectionHasImagePlaceholder("[Image]"))
+        XCTAssertTrue(ClipboardPicture.copiedSelectionHasImagePlaceholder("caption [Image]"))
+        let tiff = UTType.tiff.identifier
+        XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text, tiff], data: [tiff: imageData(12, 8, type: .tiff)], file: nil, maxSide: 1600, text: "caption"),
+                     "plain text with a TIFF on the pasteboard stays text-only, its image bytes unread")
+    }
+
     func testImageSelectionFallsBackFromUnreadablePNGToTIFF() {
         let tiff = UTType.tiff.identifier
         let validPNG = imageData(40, 20)

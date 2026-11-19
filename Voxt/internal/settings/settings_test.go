@@ -148,19 +148,37 @@ func TestMemory(t *testing.T) {
 }
 
 func TestMigrateClipboardImageWithSelection(t *testing.T) {
+	// Documents that predate the switch never chose the old
+	// selected-text-plus-image behavior, which was the #4152 demo
+	// configuration, so they migrate to text-only like a fresh install.
 	legacy, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImage":true}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !legacy.Privacy.SendClipboardImageWithSelection {
-		t.Error("an older document lost selected text plus copied image")
+	if legacy.Privacy.SendClipboardImageWithSelection {
+		t.Error("an older document kept the selected-text-plus-image behavior of #4152")
 	}
 	versionFour, err := Migrate([]byte(`{"version":4,"privacy":{"sendClipboardImage":true}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !versionFour.Privacy.SendClipboardImageWithSelection {
-		t.Error("a version-4 document without the new key lost selected text plus copied image")
+	if versionFour.Privacy.SendClipboardImageWithSelection {
+		t.Error("a version-4 document without the new key kept the selected-text-plus-image behavior of #4152")
+	}
+	explicitOn, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !explicitOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice was not preserved")
+	}
+	rawOn, _ := json.Marshal(explicitOn)
+	reloadedOn, err := Migrate(rawOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloadedOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice did not survive a save and reload")
 	}
 	explicit, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":false}}`))
 	if err != nil {
@@ -181,8 +199,8 @@ func TestMigrateClipboardImageWithSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !unrelated.Privacy.SendClipboardImageWithSelection {
-		t.Error("unrelated text was mistaken for an explicit text-only choice")
+	if unrelated.Privacy.SendClipboardImageWithSelection {
+		t.Error("unrelated text was mistaken for an explicit together choice")
 	}
 	if Defaults().Privacy.SendClipboardImageWithSelection {
 		t.Error("a fresh install should default to text-only")
