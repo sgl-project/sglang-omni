@@ -8,11 +8,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 
+### Fixed
+
+- **Transcribe works while a Rewrite answer streams, and the card stays put**: pressing the Transcribe shortcut while a Rewrite or Translate answer was still streaming into its card did nothing, and a transcription after it finished closed the card and reopened it at the screen's center when done. The answer now keeps streaming into the unmoved card, the recording window shows beside it in its own window, and the card is never closed or recreated by a transcription. The answer's Stop and the cancel shortcut still work on it while it finishes.
+
 ### 中文
 
 #### 新增
 
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
+
+#### 修复
+
+- **改写的回答还在写时也能转录，卡片不再被关掉**：改写或翻译的回答还在流进卡片时按转录快捷键以前没有反应，回答写完后再转录又会把卡片关掉、转录完在屏幕中央重新打开。现在回答在原地不动的卡片里继续写完，录音浮窗显示在它旁边自己的窗口里，转录不再关闭或重建卡片；回答写完前，它的“停止”和取消快捷键照旧可用。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### 中文

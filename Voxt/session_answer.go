@@ -185,11 +185,11 @@ func (a *app) canFollowUp() bool {
 	return card.open && ok && card.problem == nil && !a.sess.State.Live()
 }
 
-// closeAnswer closes the answer card (and cancels a follow-up, or another
-// language, on its way).
+// closeAnswer closes the answer card (and cancels a follow-up, another
+// language, or the backgrounded answer, on its way).
 func (a *app) closeAnswer() {
 	if a.cardSessionLive() || a.writingAnswer() {
-		a.cancelSession()
+		a.cancelCardSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""
 	a.resurface()
@@ -223,10 +223,11 @@ func (a *app) resurface() bool {
 }
 
 // cardSessionLive says whether the session running is the card's own: a
-// follow-up, or the text into another language.
+// follow-up, or the text into another language. The backgrounded answer
+// is its card's own too.
 func (a *app) cardSessionLive() bool {
-	s := a.sess
-	return a.answer.open && s.State.Live() && !s.Try && (a.followUp != "" && a.followUp == a.answer.id || s.ID == a.answer.redo)
+	s := a.cardSnapshot()
+	return a.answer.open && s.State.Live() && !s.Try && (a.followUp != "" && a.followUp == a.answer.id || s.ID == a.answer.redo || s.ID == a.answer.id)
 }
 
 // copyMark is how long Copy shows its mark (Voxt's).

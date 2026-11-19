@@ -50,6 +50,11 @@ type sessionState struct {
 	mgr *session.Manager
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
+	// bgID is the backgrounded answer's session ("" for none) and bgSess
+	// its newest snapshot: an answer that kept streaming into its card
+	// while a new session started (session_background.go, wall 116).
+	bgID   string
+	bgSess session.Snapshot
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
 	// under is the card a new session took the place of: it comes back
@@ -259,8 +264,13 @@ func sessionModel(m local.Model) session.Model {
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and
-// updates the overlay, the shortcuts and the menu bar.
+// updates the overlay, the shortcuts and the menu bar. The backgrounded
+// answer's snapshots go to its card (backgroundChanged).
 func (a *app) sessionChanged(s session.Snapshot) {
+	if a.bgID != "" && s.ID == a.bgID {
+		a.backgroundChanged(s)
+		return
+	}
 	if s.Rev <= a.sess.Rev {
 		return
 	}
@@ -300,7 +310,29 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)
 	case s.Card && (s.Result != "" || s.State == session.Failed):
-		a.openAnswer(s)
+		switch {
+		case s.ID == a.bgID:
+			// The backgrounded answer's own end: its card opens (and its
+			// conversation merges) as the foreground path's would.
+			a.openAnswer(s)
+		case a.answer.open && a.answer.id != s.ID && a.bgID != "" &&
+			(a.followUp != "" && a.followUp == a.answer.id || a.answer.redo == a.bgID):
+			// The open card's own answer still streams in the background:
+			// this card waits under it, conversation and redo untouched.
+			saved, followUp := a.answer, a.followUp
+			a.followUp = ""
+			a.openAnswer(s)
+			a.under, a.answer = a.answer, saved
+			a.followUp = followUp
+		case a.answer.open && a.answer.id != s.ID && !(a.followUp != "" && a.followUp == a.answer.id):
+			// A card that is not this session's own waits under the new
+			// one and comes back when it closes, as setAside would have
+			// held it. A follow-up is the card's own: it merges instead.
+			a.setAside(false)
+			a.openAnswer(s)
+		default:
+			a.openAnswer(s)
+		}
 		a.syncHotkeys() // the cancel shortcut closes the card
 	}
 	back := a.resurface()
@@ -401,10 +433,13 @@ func (a *app) noticeAction(action string) {
 	}
 }
 
-// closeSessions cancels a running session and removes the Carbon
+// closeSessions cancels the running sessions and removes the Carbon
 // shortcuts; it runs on quit.
 func (a *app) closeSessions() {
 	a.cancelSession()
+	if a.mgr != nil && a.bgID != "" {
+		a.mgr.Cancel(a.bgID)
+	}
 	if a.hasMenu {
 		for _, acc := range a.carbon {
 			mygo.GlobalShortcut.Unregister(acc)

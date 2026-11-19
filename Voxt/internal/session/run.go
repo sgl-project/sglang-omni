@@ -305,7 +305,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	if r.asrDegraded != nil && (problem == nil || problem.Degraded) {
 		problem = r.asrDegraded
 	}
-	snap := r.m.Current()
+	snap := r.m.snapshot(r)
 	total := r.now().Sub(snap.StartedAt)
 	var highlights []dict.Span
 	if r.req.Kind == store.KindTranscribe && r.settings.Dictionary.Enabled {
@@ -344,7 +344,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 	}
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem = p
@@ -367,7 +367,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	}
 	r.cancel()
 	r.logf("info", "cancelled")
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
@@ -406,7 +406,7 @@ func (r *run) saveNote(text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt, AppName: r.req.Target.Name})
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.snapshot(r).StartedAt, AppName: r.req.Target.Name})
 }
 
 // keep writes the history entry of an ended session (and its recording),

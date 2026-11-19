@@ -415,7 +415,7 @@ func sessionCardLiveKeyFor(input sessionCardProjectionInput) sessionCardLiveProj
 }
 
 func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
-	snapshot := a.sess
+	snapshot := a.cardSnapshot()
 	kind := a.answer.kind
 	if !a.answer.open {
 		kind = snapshot.Kind
@@ -445,8 +445,9 @@ func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection,
 		updateSessionCardLiveState(projection.translator, &projection.card, input)
 	}
 	projection.cardLiveKey = liveKey
-	projection.card.Heard = !a.sess.HeardAt.IsZero()
-	copySessionLevels(&projection.card.Levels, a.sess.Levels)
+	snapshot := a.cardSnapshot()
+	projection.card.Heard = !snapshot.HeardAt.IsZero()
+	copySessionLevels(&projection.card.Levels, snapshot.Levels)
 	next.Card = &projection.card
 }
 
@@ -458,6 +459,10 @@ func cmpOr(first, second string) string {
 }
 
 func (a *app) writingAnswer() bool {
+	if a.bgID != "" {
+		s := a.bgSess
+		return s.State.Live() && s.Card && strings.TrimSpace(s.Draft) != ""
+	}
 	snapshot := a.pillSession()
 	return !a.answer.open && snapshot.State == session.Composing && snapshot.Card && !snapshot.Try && strings.TrimSpace(snapshot.Draft) != ""
 }

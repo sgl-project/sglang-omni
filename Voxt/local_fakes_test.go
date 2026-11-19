@@ -33,6 +33,8 @@ type fakeLocal struct {
 	MoreLLM []local.Model
 	// NoStream: its speech model gets the recording once it stops.
 	NoStream bool
+	// ASRFeatures: its speech model serves only these features (nil: all).
+	ASRFeatures []string
 }
 
 // readyLocal is a speech model and a language model, both installed,
@@ -46,6 +48,7 @@ func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 	case kind == local.ASR && f.ASRP != nil:
 		m := fakeASRModel
 		m.Stream = !f.NoStream
+		m.Features = f.ASRFeatures
 		return []local.Model{m}
 	case kind == local.LLM && f.Chat != nil:
 		return append([]local.Model{fakeLLMModel}, f.MoreLLM...)
