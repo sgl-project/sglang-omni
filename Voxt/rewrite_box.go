@@ -317,8 +317,7 @@ func (a *app) boxPaste(svc uiServices) bool {
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
 			errText := ""
 			if err != nil {
-				res.JPEG = nil
-				errText = i18n.T("This image could not be read.")
+				res.JPEG, errText = nil, i18n.T("This image could not be read.")
 			}
 			a.boxConverted(gen, seq, res.JPEG, errText)
 		})

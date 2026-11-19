@@ -411,7 +411,6 @@ func TestParseAnswer(t *testing.T) {
 		ok   bool
 	}{
 		{`{"title":"Update","content":"Ships Friday."}`, Answer{"Update", "Ships Friday."}, true},
-		{`{"title":"T","content":"Ships Friday.<|tool_call_end|>"}`, Answer{"T", "Ships Friday."}, true},
 		{"```json\n{\"title\": \" **Update** \", \"content\": \"Line 1\\nLine 2\"}\n```", Answer{"Update", "Line 1\nLine 2"}, true},
 		{`Sure! {"title":"T","content":"x {y} z"} hope it helps`, Answer{"T", "x {y} z"}, true},
 		{`{"title":"T","content":"  "}`, Answer{Title: "T"}, true},
@@ -446,7 +445,6 @@ func TestPartialAnswer(t *testing.T) {
 	for text, want := range map[string]Answer{
 		"":                               {},
 		"Plain text answer":              {Content: "Plain text answer"},
-		"Ships Friday.<|tool_call_end|>": {Content: "Ships Friday."},
 		"```":                            {},
 		"```json\n{\"title\":\"T\",\"co": {Title: "T"},
 		`{"content":"a\`:                 {Content: "a"},
@@ -555,7 +553,8 @@ func TestClean(t *testing.T) {
 		{"", "x", ""},
 		// A model's internal control blocks never reach the user (#4085).
 		{"Hello.<|tool_call_begin|>call vision<|tool_call_end|>", "x", "Hello."},
-		{"a<|tool_call_end|>b", "x", "ab"},
+		{"Hello.<|tool_call_end|>", "x", "Hello."},
+		{"before<|tool_call_end|>after", "x", "beforeafter"},
 		{"<|channel|>thought<channel|>你好。", "x", "你好。"},
 		{"cut off at the stream's end <|tool_call_be", "x", "cut off at the stream's end"},
 		// Only the control markers are markup; other <| stays (F#'s
@@ -579,9 +578,6 @@ func TestClean(t *testing.T) {
 // internal control blocks too (#4085), a partial one's unfinished tail
 // included.
 func TestStripControlAnswer(t *testing.T) {
-	if got := StripControl("a<|tool_call_end|>b"); got != "ab" {
-		t.Errorf("StripControl %q", got)
-	}
 	if got := StripControl("a<|x|>b<|tool_call_be"); got != "a<|x|>b" {
 		t.Errorf("StripControl %q", got)
 	}
@@ -601,6 +597,16 @@ func TestStripControlAnswer(t *testing.T) {
 	}
 	if got := PartialAnswer("plain text <|tool_calls_section_be"); got.Content != "plain text" {
 		t.Errorf("PartialAnswer %+v", got)
+	}
+	a, ok = ParseAnswer(`{"title":"T<|tool_call_end|>","content":"Ships Friday.<|tool_call_end|>"}`)
+	if !ok || a.Title != "T" || a.Content != "Ships Friday." {
+		t.Errorf("ParseAnswer with a close marker %+v %v", a, ok)
+	}
+	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool_call_end|>"}`); got.Content != "Ships Friday." {
+		t.Errorf("PartialAnswer with a close marker %+v", got)
+	}
+	if got := PartialAnswer("plain text<|tool_call_end|>"); got.Content != "plain text" {
+		t.Errorf("PartialAnswer with a close marker %+v", got)
 	}
 }
 

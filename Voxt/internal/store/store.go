@@ -84,12 +84,12 @@ type Entry struct {
 	// (appctx.Source); "" for none.
 	RuleSource string
 
-	// RawText is the recognised speech, or Rewrite's typed input;
-	// SourceText the selected text (translate, rewrite); PromptText the
-	// spoken instruction (rewrite); Result what was delivered; TargetLang
-	// the translation's target.
+	// RawText is the recognised speech; SourceText the selected text and
+	// TypedText the Rewrite input box's typed text; PromptText the spoken
+	// instruction (rewrite); Result what was delivered; TargetLang the target.
 	RawText    string
 	SourceText string
+	TypedText  string
 	PromptText string
 	Result     string
 	Title      string // Rewrite's answer title; "" for other kinds and older entries

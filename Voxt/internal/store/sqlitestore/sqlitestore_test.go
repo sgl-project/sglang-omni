@@ -190,7 +190,7 @@ func TestHistory(t *testing.T) {
 		entry("b", store.KindTranslate, t0.Add(time.Minute), "send the draft to Anna", "把草稿发给 Anna"),
 		entry("c", store.KindRewrite, t0.Add(2*time.Minute), "", "Dear team, the release moves to Friday."),
 	}
-	es[2].SourceText, es[2].PromptText = "release friday", "改正式一点"
+	es[2].SourceText, es[2].TypedText, es[2].PromptText = "release friday", "and cc the team", "改正式一点"
 	es[0].Conversation, es[1].Conversation, es[2].Conversation = "first", "first", "second"
 	es[2].Title, es[2].Replaces = "Release", "b"
 	es[0].Audio = "a.wav"
@@ -216,7 +216,7 @@ func TestHistory(t *testing.T) {
 	if got != want {
 		t.Errorf("round trip:\n%+v\n%+v", got, want)
 	}
-	if got, err := h.Get(ctx, "c"); err != nil || got.Title != "Release" || got.Replaces != "b" {
+	if got, err := h.Get(ctx, "c"); err != nil || got.Title != "Release" || got.Replaces != "b" || got.SourceText != "release friday" || got.TypedText != "and cc the team" {
 		t.Errorf("rewrite round trip: %+v, %v", got, err)
 	}
 	ids := func(q store.HistoryQuery) string {

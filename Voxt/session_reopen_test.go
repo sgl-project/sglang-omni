@@ -85,6 +85,32 @@ func TestCardFromHistoryRedo(t *testing.T) {
 	}
 }
 
+// Typed text returns with its original role after a restart: typed-only
+// text is the first turn's source, while selected and typed text stay apart.
+func TestCardFromHistoryTyped(t *testing.T) {
+	for _, tc := range []struct{ name, selected, typed string }{
+		{"typed only", "", "a rough draft"},
+		{"selected and typed", "the selected text", "and the tickets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := reopenEntry("typed", "make it shorter", "A shorter text.", time.Now())
+			entry.SourceText, entry.TypedText = tc.selected, tc.typed
+			card, ok := cardFromHistory([]store.Entry{entry}, "typed")
+			if !ok || card.input.Typed != tc.typed || len(card.turns) != 1 {
+				t.Fatalf("restored %+v", card)
+			}
+			turn := card.turns[0]
+			if tc.selected == "" {
+				if turn.Selection != tc.typed || turn.Typed != "" {
+					t.Errorf("typed-only turn %+v", turn)
+				}
+			} else if turn.Selection != tc.selected || turn.Typed != tc.typed {
+				t.Errorf("selected and typed turn %+v", turn)
+			}
+		})
+	}
+}
+
 // A translation that became a Rewrite conversation is restored as its first turn.
 func TestCardFromHistoryTranslation(t *testing.T) {
 	now := time.Now()
@@ -109,7 +135,7 @@ func TestCardFromHistoryTypedText(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := reopenEntry("rewrite", "polish", "Polished", time.Now())
-			entry.SourceText, entry.RawText = tc.selection, tc.typed
+			entry.SourceText, entry.TypedText = tc.selection, tc.typed
 			card, ok := cardFromHistory([]store.Entry{entry}, "rewrite")
 			if !ok || len(card.turns) != 1 {
 				t.Fatalf("restored %+v", card)
@@ -156,8 +182,8 @@ func TestReopenCardAfterRestartTypedInput(t *testing.T) {
 				conversation = a.answer.conv
 				a.pump("the history entry", func() bool { return len(a.history()) == 1 })
 				entry := a.history()[0]
-				if entry.RawText != tc.typed || entry.SourceText != tc.selection {
-					t.Fatalf("saved typed input %q and selection %q, want %q and %q", entry.RawText, entry.SourceText, tc.typed, tc.selection)
+				if entry.TypedText != tc.typed || entry.SourceText != tc.selection {
+					t.Fatalf("saved typed input %q and selection %q, want %q and %q", entry.TypedText, entry.SourceText, tc.typed, tc.selection)
 				}
 			})
 

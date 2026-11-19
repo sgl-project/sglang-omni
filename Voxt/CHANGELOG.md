@@ -13,7 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first.
 - **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
-- **Rewrite keeps typed input and handles conversion failures safely**: typed text survives closing or restarting the card for redo and follow-ups, and History shows it separately. Tap-stop and hold-release now wait for image conversion like Enter. A failed conversion leaves the box open with its error instead of sending without the image. Standalone tool-call end markers no longer appear in answers.
+- **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut or a hold release waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and full model close markers no longer leak into answers.
 
 ### 中文
 
@@ -23,15 +23,15 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
-#### 修复
-
-- **改写保留输入文字并安全处理图片转换失败**：关闭或重启卡片后，输入的文字仍用于重做和追问，历史详情也单独显示。点按停止和长按松开现在都和 Enter 一样等待图片转换完成。转换失败时卡片保留并显示错误，不会在缺少图片的情况下自动发送。独立的工具调用结束标记不再出现在回答里。
-
 ### 中文
 
 #### 新增
 
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+
+#### 修复
+
+- **改写保留补充输入的文字，并等待图片转换**：按快捷键或松开按住停止输入框时，和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文；完整的模型结束标记也不再漏进回答。
 
 ## [2.1.1] - 2026-11-17
 
