@@ -553,6 +553,8 @@ func TestClean(t *testing.T) {
 		{"", "x", ""},
 		// A model's internal control blocks never reach the user (#4085).
 		{"Hello.<|tool_call_begin|>call vision<|tool_call_end|>", "x", "Hello."},
+		{"Hello.<|tool_call_end|>", "x", "Hello."},
+		{"before<|tool_call_end|>after", "x", "beforeafter"},
 		{"<|channel|>thought<channel|>你好。", "x", "你好。"},
 		{"cut off at the stream's end <|tool_call_be", "x", "cut off at the stream's end"},
 		// Only the control markers are markup; other <| stays (F#'s
@@ -595,6 +597,16 @@ func TestStripControlAnswer(t *testing.T) {
 	}
 	if got := PartialAnswer("plain text <|tool_calls_section_be"); got.Content != "plain text" {
 		t.Errorf("PartialAnswer %+v", got)
+	}
+	a, ok = ParseAnswer(`{"title":"T<|tool_call_end|>","content":"Ships Friday.<|tool_call_end|>"}`)
+	if !ok || a.Title != "T" || a.Content != "Ships Friday." {
+		t.Errorf("ParseAnswer with a close marker %+v %v", a, ok)
+	}
+	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool_call_end|>"}`); got.Content != "Ships Friday." {
+		t.Errorf("PartialAnswer with a close marker %+v", got)
+	}
+	if got := PartialAnswer("plain text<|tool_call_end|>"); got.Content != "plain text" {
+		t.Errorf("PartialAnswer with a close marker %+v", got)
 	}
 }
 

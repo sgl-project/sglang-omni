@@ -308,6 +308,75 @@ func TestRewriteBoxTypedOnlyFollowUp(t *testing.T) {
 	}
 }
 
+// TestReopenBoxTypedAfterRestart: a restored box answer keeps typed text
+// for both another thinking level and a follow-up, with the same messages.
+func TestReopenBoxTypedAfterRestart(t *testing.T) {
+	for _, tc := range []struct{ name, selected, typed string }{
+		{"typed only", "", "a rough draft"},
+		{"selected and typed", "the selected text", "and the tickets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var conversation, originalUser string
+			t.Run("before restart", func(t *testing.T) {
+				chat := &fakeChat{text: "A shorter text."}
+				set, models, _ := fileSetup(t, "make it shorter", chat)
+				a := newSessionAppIn(t, dir, helpertest.Opt("selection", tc.selected)+","+boxScript(t), func(s *settings.Settings) {
+					set(s)
+					s.Features.Rewrite.ShowCard = true
+				}, models)
+				a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+				a.postQueue(func() { a.box.text = tc.typed; a.boxSync() })
+				a.pump("the answer", func() bool { return a.answer.open })
+				originalUser = lastUserOf(chat.requests()[0])
+				conversation = a.answer.conv
+				entries := a.history()
+				if len(entries) != 1 || entries[0].TypedText != tc.typed {
+					t.Fatalf("history %+v", entries)
+				}
+			})
+
+			chat := &fakeChat{texts: []string{"A shorter text!", "More formal."}}
+			set, models, transcriptions := fileSetup(t, "more formal", chat)
+			a := newSessionAppIn(t, dir, "", func(s *settings.Settings) {
+				set(s)
+				s.Features.Rewrite.ShowCard = true
+			}, models)
+			a.loadTrayRecent()
+			a.restoreAnswer(conversation)
+			a.pump("the restored card", func() bool { return a.answer.open })
+			if a.answer.input.Typed != tc.typed || len(a.answer.turns) != 1 {
+				t.Fatalf("restored %+v", a.answer)
+			}
+			turn := a.answer.turns[0]
+			wantSelection, wantTyped := tc.selected, tc.typed
+			if tc.selected == "" {
+				wantSelection, wantTyped = tc.typed, ""
+			}
+			if turn.Selection != wantSelection || turn.Typed != wantTyped {
+				t.Fatalf("restored turn %+v", turn)
+			}
+
+			a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
+			a.answer.llmID = "deepseek"
+			if !a.cachedCard().CanThink {
+				t.Fatal("no thinking levels on the restored card")
+			}
+			a.postQueue(func() { a.chooseThinking(sessionThinkingValueOf(&llm.Thinking{Mode: llm.ThinkOn})) })
+			a.pump("the redo", func() bool { return len(chat.requests()) == 1 && a.answer.redo == "" })
+			if got := lastUserOf(chat.requests()[0]); got != originalUser {
+				t.Fatalf("redo changed the input:\n%s\n--- want ---\n%s", got, originalUser)
+			}
+
+			a.recordFollowUp(t, transcriptions, "more formal")
+			messages := chatMessages(chat.requests()[1])
+			if len(messages) != 4 || messages[1][1] != originalUser {
+				t.Fatalf("follow-up changed the first turn:\n%s\n--- want ---\n%s", messages, originalUser)
+			}
+		})
+	}
+}
+
 // TestRewriteBoxView: the box's states as its view shows them: the
 // selection, typing, Enter (taken; Shift+Enter is a new line), the
 // pictures and their limit, the voice line, Esc.
@@ -531,6 +600,100 @@ func TestRewriteBoxSendWaitsForConversion(t *testing.T) {
 	}
 	if imgs, _ := reqs[0]["images"].([][]byte); len(imgs) != 1 {
 		t.Errorf("%d images sent", len(imgs))
+	}
+}
+
+// TestRewriteBoxConversionFailureNeedsConfirmation: a failed conversion
+// cancels a queued send but keeps the box and its error. Enter confirms
+// the remaining content instead of sending it unseen.
+func TestRewriteBoxConversionFailureNeedsConfirmation(t *testing.T) {
+	chat := &fakeChat{text: "A shorter text."}
+	a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(func() {
+		gen := a.boxGen
+		seq := a.boxReserve()
+		a.boxSend()
+		if !a.boxSendQueued {
+			t.Error("the send did not wait for the conversion")
+		}
+		a.boxConverted(gen, seq, nil, "This image could not be read.")
+	})
+	a.drain(100 * time.Millisecond)
+	if !a.box.open || !a.box.shown || a.box.err == "" || a.boxSendQueued || a.sess.State != session.Recording {
+		t.Fatalf("box %+v, session %s", a.box, a.sess.State)
+	}
+	if n := len(chat.requests()); n != 0 {
+		t.Fatalf("%d chats after the failed conversion", n)
+	}
+	a.postQueue(a.boxSend)
+	a.pump("the confirmed answer", func() bool { return a.answer.open })
+	reqs := chat.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d chats", len(reqs))
+	}
+	if imgs, _ := reqs[0]["images"].([][]byte); len(imgs) != 0 {
+		t.Errorf("%d images sent after the failed conversion", len(imgs))
+	}
+}
+
+// TestRewriteBoxClipboardFailureNeedsConfirmation: a clipboard.image
+// failure is a failed conversion too, never a silent text-only send.
+func TestRewriteBoxClipboardFailureNeedsConfirmation(t *testing.T) {
+	chat := &fakeChat{text: "A shorter text."}
+	a := newBoxApp(t, helpertest.Opt("clipboard-error", "1")+","+script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	data, err := transfer.FileData(filepath.Join(t.TempDir(), "picture.heic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt.SetClipboardData(data)
+	tt.Key(ui.Cmd, ui.KeyV)
+	a.boxSend()
+	if !a.boxSendQueued {
+		t.Fatal("the send did not wait for clipboard.image")
+	}
+	frames(tt)
+	a.drain(100 * time.Millisecond)
+	if !a.box.open || !a.box.shown || a.box.err == "" || a.boxSendQueued || a.sess.State != session.Recording {
+		t.Fatalf("box %+v, session %s", a.box, a.sess.State)
+	}
+	if n := len(chat.requests()); n != 0 {
+		t.Fatalf("%d chats after clipboard.image failed", n)
+	}
+}
+
+// TestRewriteBoxHotkeyStopWaitsForConversion: the Rewrite shortcut and a
+// hold's release use the same conversion wait as Enter in the box.
+func TestRewriteBoxHotkeyStopWaitsForConversion(t *testing.T) {
+	for _, tc := range []struct{ name, startPhase, stopPhase string }{
+		{"tap", proto.PhaseTrigger, proto.PhaseTrigger},
+		{"hold release", proto.PhaseDown, proto.PhaseUp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fakeChat{text: "A shorter text."}
+			a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", tc.startPhase)), chat)
+			a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+			front := helpertest.Apps["com.tinyspeck.slackmacgap"]
+			a.postQueue(func() {
+				gen := a.boxGen
+				seq := a.boxReserve()
+				a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: tc.stopPhase, Behavior: proto.BehaviorTap, Front: &front})
+				if !a.boxSendQueued || a.sess.State != session.Recording {
+					t.Errorf("queued %v, session %s", a.boxSendQueued, a.sess.State)
+				}
+				a.boxConverted(gen, seq, boxJPEG(t), "")
+			})
+			a.pump("the answer", func() bool { return a.answer.open })
+			reqs := chat.requests()
+			if len(reqs) != 1 {
+				t.Fatalf("%d chats", len(reqs))
+			}
+			if imgs, _ := reqs[0]["images"].([][]byte); len(imgs) != 1 {
+				t.Errorf("%d images sent", len(imgs))
+			}
+		})
 	}
 }
 

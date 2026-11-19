@@ -433,7 +433,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	e := store.Entry{
 		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status, Conversation: cmp.Or(r.req.Conversation, r.id), Replaces: r.req.Replaces,
 		AppBundle: s.Target.BundleID, AppName: s.Target.Name,
-		RawText: s.Raw, Result: s.Result, Title: s.Title, SourceText: s.Selection, TargetLang: s.TargetLanguage,
+		RawText: s.Raw, Result: s.Result, Title: s.Title, SourceText: s.Selection, TypedText: s.Typed, TargetLang: s.TargetLanguage,
 		ASRProvider: s.ASR.ID, ASRModel: s.ASR.Model, LLMProvider: s.LLM.ID, LLMModel: s.LLM.Model,
 		AudioMS: s.Timings.Audio.Milliseconds(), SentMS: s.Timings.Sent.Milliseconds(), ASRMS: s.Timings.ASR.Milliseconds(), LLMMS: s.Timings.LLM.Milliseconds(),
 		TotalMS: s.Timings.Total.Milliseconds(), DSP: s.DSP, GainDB: s.GainDB,

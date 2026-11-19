@@ -9,25 +9,26 @@ import (
 // TestMigrationNumbering guards the numbering contract the migrator
 // enforces: the embedded files are consecutive from 1. Migrations 9 and 10
 // are the notes app name and the history reopen, shared with the notes and
-// history changes byte for byte; 11 is the dictionary profiles.
+// history changes byte for byte; 11 is the dictionary profiles and 12 is
+// the Rewrite input box's typed text.
 func TestMigrationNumbering(t *testing.T) {
 	for i, m := range migrations {
 		if m.version != i+1 {
 			t.Fatalf("migration %d is missing", i+1)
 		}
 	}
-	if Version() != 11 {
-		t.Fatalf("schema version %d, want 11", Version())
+	if Version() != 12 {
+		t.Fatalf("schema version %d, want 12", Version())
 	}
 }
 
 // TestCombinedUpgrade opens a database at each schema the merged tree can
 // meet — 8 (before the notes, history and profile changes), 9 (notes app
-// name), 10 (plus history reopen) — and migrates it to 11: every change's
-// columns land and the old dictionary's terms move into the active Default
-// profile.
+// name), 10 (plus history reopen), 11 (dictionary profiles) — and migrates
+// it to 12: every change's columns land and the old dictionary's terms move
+// into the active Default profile.
 func TestCombinedUpgrade(t *testing.T) {
-	for _, from := range []int{8, 9, 10} {
+	for _, from := range []int{8, 9, 10, 11} {
 		t.Run(strconv.Itoa(from), func(t *testing.T) {
 			saved := migrations
 			t.Cleanup(func() { migrations = saved })
@@ -38,8 +39,11 @@ func TestCombinedUpgrade(t *testing.T) {
 			if v, _ := userVersion(ctx, s.db); v != from {
 				t.Fatalf("user_version %d, want %d", v, from)
 			}
-			if _, err := s.db.Execute(ctx,
-				`INSERT INTO dictionary_terms (id, term, aliases, created_at, updated_at) VALUES ('t1', 'voxt', '["voxted"]', 1, 1)`); err != nil {
+			insertTerm := `INSERT INTO dictionary_terms (id, term, aliases, created_at, updated_at) VALUES ('t1', 'voxt', '["voxted"]', 1, 1)`
+			if from >= 11 {
+				insertTerm = `INSERT INTO dictionary_terms (profile_id, id, term, aliases, created_at, updated_at) VALUES ('default', 't1', 'voxt', '["voxted"]', 1, 1)`
+			}
+			if _, err := s.db.Execute(ctx, insertTerm); err != nil {
 				t.Fatal(err)
 			}
 			s.Close()
@@ -51,7 +55,7 @@ func TestCombinedUpgrade(t *testing.T) {
 			}
 			for table, cols := range map[string][]string{
 				"notes":   {"app_name"},
-				"history": {"title", "replaces"},
+				"history": {"title", "replaces", "typed_text"},
 			} {
 				rows, err := s.db.Query(ctx, "PRAGMA table_info("+table+")")
 				if err != nil {
