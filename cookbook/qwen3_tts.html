@@ -669,19 +669,7 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </section>
 <section id="synthesizing-speech">
 <h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail-with-body<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",</span>
-<span class="s1">    "input": "Hello! This is Qwen3-TTS running with SGLang-Omni.",</span>
-<span class="s1">    "voice": "Ryan",</span>
-<span class="s1">    "language": "English",</span>
-<span class="s1">    "instructions": "Speak clearly and calmly."</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output.wav
-</pre></div>
-</div>
-<p>Open <code class="docutils literal notranslate"><span class="pre">output.wav</span></code> in an audio player. The response is WAV audio by default. For Python or the OpenAI SDK, use the <a class="reference internal" href="../basic_usage/tts.html#python"><span class="std std-ref">TTS client examples</span></a>.</p>
+<p>With the 1.7B CustomVoice server running, use the <a class="reference internal" href="../basic_usage/tts.html#curl"><span class="std std-ref">cURL example</span></a> in TTS Model Usage to generate <code class="docutils literal notranslate"><span class="pre">output.wav</span></code>. The same guide includes <a class="reference internal" href="../basic_usage/tts.html#python"><span class="std std-ref">Python and OpenAI SDK examples</span></a>.</p>
 </section>
 <section id="choose-a-model">
 <h2>Choose a model<a class="headerlink" href="#choose-a-model" title="Link to this heading">#</a></h2>
@@ -764,43 +752,14 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </section>
 <section id="streaming">
 <h2>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h2>
-<p>With the CustomVoice server running, send a streaming request:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail-with-body<span class="w"> </span>-N<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",</span>
-<span class="s1">    "input": "Hello! This is Qwen3-TTS running with SGLang-Omni.",</span>
-<span class="s1">    "voice": "Ryan",</span>
-<span class="s1">    "language": "English",</span>
-<span class="s1">    "stream": true,</span>
-<span class="s1">    "response_format": "wav"</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>streaming.wav
-</pre></div>
-</div>
-<p>This saves the streamed audio to <code class="docutils literal notranslate"><span class="pre">streaming.wav</span></code>.</p>
-<p>All three voice modes support streaming. For detailed examples, see <a class="reference internal" href="../basic_usage/tts.html#raw-wav-and-pcm"><span class="std std-ref">TTS streaming examples</span></a>, <a class="reference internal" href="../basic_usage/tts.html#sse-event-framing"><span class="std std-ref">SSE</span></a>, and <a class="reference internal" href="../basic_usage/tts.html#websocket-speech-streaming"><span class="std std-ref">WebSocket</span></a>.</p>
+<p>All three voice modes support streaming. With the CustomVoice server running, use the <a class="reference internal" href="../basic_usage/tts.html#raw-wav-and-pcm"><span class="std std-ref">raw WAV and PCM examples</span></a> in TTS Model Usage. The guide also includes <a class="reference internal" href="../basic_usage/tts.html#sse-event-framing"><span class="std std-ref">SSE</span></a> and <a class="reference internal" href="../basic_usage/tts.html#websocket-speech-streaming"><span class="std std-ref">WebSocket</span></a> clients.</p>
 <p>The default chunk schedule favors early audio. If playback stalls under load, see <a class="reference internal" href="qwen3_tts/tuning.html#first-audio-chunk-ramp"><span class="std std-ref">first-audio chunk tuning</span></a>.</p>
 <p><span id="generation-parameters"></span>
 <span id="language-hint"></span></p>
 </section>
 <section id="common-options">
 <h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
-<p>With the 1.7B CustomVoice server running, customize the language, speaking style, generation limit, and sampling seed:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail-with-body<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",</span>
-<span class="s1">    "input": "你好，欢迎使用 SGLang-Omni。",</span>
-<span class="s1">    "voice": "Vivian",</span>
-<span class="s1">    "language": "Chinese",</span>
-<span class="s1">    "instructions": "用平静、自然的语气说话。",</span>
-<span class="s1">    "max_new_tokens": 512,</span>
-<span class="s1">    "seed": 42</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>chinese-speech.wav
-</pre></div>
-</div>
+<p>The 1.7B CustomVoice checkpoint supports speaking-style control through <code class="docutils literal notranslate"><span class="pre">instructions</span></code>; see <a class="reference internal" href="#customvoice"><span class="std std-ref">CustomVoice</span></a> for checkpoint differences.</p>
 <p>Reaching <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> can truncate speech. A fixed <code class="docutils literal notranslate"><span class="pre">seed</span></code> does not guarantee byte-identical audio; see <a class="reference internal" href="qwen3_tts/tuning.html#deterministic-inference"><span class="std std-ref">deterministic inference</span></a>.</p>
 <p>See <a class="reference internal" href="qwen3_tts/reference.html#generation-parameters"><span class="std std-ref">Qwen3-TTS parameters</span></a> for defaults and model-specific controls, and the <a class="reference internal" href="../basic_usage/tts.html#request-parameters"><span class="std std-ref">shared TTS API</span></a> for common request fields.</p>
 <section id="known-limitations">
