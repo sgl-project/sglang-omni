@@ -194,8 +194,12 @@ func TestPlainText(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"[0.25]然后现在我们的[2.12][3.35]这个[4.12][4.45]MTD[5.45][6.52]有一些非常weird的[8.52][9.87]事情[10.62]", "然后现在我们的这个MTD有一些非常weird的事情"},
 		{"[0.00][S01]Hello[1.20][1.50][S02]world.[2,40]", "Hello world."},
+		{"0.00]Hello", "Hello"},
+		{"S01]Hello world.", "Hello world."},
+		{"0.00]Sentence number zero: [1.20]one.", "Sentence number zero: one."},
 		{"非常weird[7.98] [9.85]事情。", "非常weird事情。"},
 		{"see [1] and [x]", "see [1] and [x]"},
+		{"a 3.5] rating", "a 3.5] rating"},
 		{"no tags", "no tags"},
 	} {
 		if got := moss.plainText(c.in); got != c.want {

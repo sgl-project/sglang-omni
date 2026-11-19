@@ -272,6 +272,49 @@ func TestLiveFinalFailsWhenTheSocketStalls(t *testing.T) {
 	}
 }
 
+// TestLiveFinalFailsWhenTheDrainTimesOut: the stall of
+// TestLiveFinalWhenTheSocketStalls, but the Final fails: the writer is
+// provably blocked (800 KB queued, small buffers, a server that never
+// reads), the drain gives up after previewDrain (the log says so) and
+// closes the socket, the wrap-up is skipped, and the error ends the
+// stream within the bound.
+func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
+	old := loopback
+	loopback = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := new(net.Dialer).DialContext(ctx, network, addr)
+			if tc, ok := c.(*net.TCPConn); err == nil && ok {
+				if err := tc.SetWriteBuffer(16 << 10); err != nil {
+					_ = c.Close()
+					return nil, err // without it the writer never blocks: no stall to test
+				}
+			}
+			return c, err
+		},
+	}}
+	defer func() { loopback = old }()
+	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sendAll(t, st, tone(25*time.Second, 0.3))
+	stopped := time.Now()
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	f.waitLogged(t, "did not drain") // the drain really timed out
+	evs := drain(t, st)
+	if took := time.Since(stopped); took > previewDrain+5*time.Second {
+		t.Errorf("the error came %v after Stop, over the %v drain bound", took, previewDrain)
+	}
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+}
+
 // TestLiveResultSalvageAfterFinish: a LiveResult stream's finishLive
 // owns s.out (transcription.done goes through it) until it ends the
 // stream, so a Salvage after Finish must not close s.out under it

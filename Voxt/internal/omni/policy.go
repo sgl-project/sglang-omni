@@ -261,6 +261,11 @@ func joinParts(parts []string) string {
 // ([1]) stays: a reference, not a timestamp.
 var mossTag = regexp.MustCompile(`\[(?:\d+[.,]\d+|S\d+)\]`)
 
+// mossTail is a tag's end at the text's start (0.00], S01]): MOSS also
+// writes it bare, and a piece's text can begin with it. Mid-text it
+// stays: a real 3.5] is the user's.
+var mossTail = regexp.MustCompile(`^\s*(?:\d+[.,]\d+|S\d+)\]`)
+
 // plainText is MOSS's text without those tags when it was asked for
 // plain text; other models', and MOSS's other tasks', as it is.
 func (a *ASR) plainText(text string) string {
@@ -271,7 +276,9 @@ func (a *ASR) plainText(text string) string {
 }
 
 // stripTags is text without MOSS's tags.
-func stripTags(text string) string { return joinParts(mossTag.Split(text, -1)) }
+func stripTags(text string) string {
+	return joinParts(mossTag.Split(mossTail.ReplaceAllString(text, ""), -1))
+}
 
 func itoa(v int) string { return strconv.Itoa(v) }
 
