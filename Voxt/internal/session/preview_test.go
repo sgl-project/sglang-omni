@@ -85,6 +85,63 @@ func TestBoxWindowPreviewCanBeRemovedBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestBoxWindowReviewRefreshesInput(t *testing.T) {
+	model := &fakeLLM{text: "We ship on Friday."}
+	shot, lateImage := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, []byte{0xff, 0xd8, 'l', 0xff, 0xd9}
+	reviewStarted, approve := make(chan struct{}), make(chan struct{})
+	var inputCalls atomic.Int32
+	h := newHarness(t, &fakeFile{text: "unused"}, model, func(c *Config, s *settings.Settings) {
+		s.Privacy.SendWindow = true
+		c.Window = func(context.Context, int) ([]byte, error) { return shot, nil }
+		c.BoxInput = func(context.Context) (string, [][]byte, error) {
+			if inputCalls.Add(1) == 1 {
+				return "", nil, nil
+			}
+			return "LATE789", [][]byte{lateImage}, nil
+		}
+		c.BoxReview = func(ctx context.Context) error {
+			close(reviewStarted)
+			select {
+			case <-approve:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?"}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reviewStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request did not wait for the window preview's review")
+	}
+	if len(model.requests()) != 0 {
+		t.Fatal("the request ran before the window preview was approved")
+	}
+	close(approve)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Typed != "LATE789" || end.ImageHint != "box" {
+		t.Fatalf("late input was not sent: end %s, typed %q, hint %q", end.State, end.Typed, end.ImageHint)
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	want := "<selected_text>\nship friday?\n</selected_text>\n\n<typed_text>\nLATE789\n</typed_text>\n\n<instruction>\nmake it polite\n</instruction>"
+	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; user != want {
+		t.Errorf("user message:\n%s", user)
+	}
+	if !equalBytes(reqs[0].Images, [][]byte{lateImage}) || !reqs[0].ImagesRequired {
+		t.Errorf("images %q, required %v", reqs[0].Images, reqs[0].ImagesRequired)
+	}
+	if inputCalls.Load() != 2 {
+		t.Errorf("box input reads %d, want 2", inputCalls.Load())
+	}
+}
+
 func TestBoxWindowReviewDoesNotBlockMissingLanguageModel(t *testing.T) {
 	review := make(chan struct{}, 1)
 	h := newHarness(t, &fakeFile{text: "make it polite"}, nil, func(c *Config, s *settings.Settings) {

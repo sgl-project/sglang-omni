@@ -630,8 +630,8 @@ func TestDropFilesOperation(handle uintptr, x, y float64, paths []string, mask u
 		}
 		send(testDragPB, "writeObjects:", uintptr(nsArray(urls...)))
 		v := w.surface.view
-		over = send(v, "draggingEntered:", uintptr(testDragInfo)) != 0
-		over = send(v, "draggingUpdated:", uintptr(testDragInfo)) != 0 && over
+		over = uint(send(v, "draggingEntered:", uintptr(testDragInfo)))&mask != 0
+		over = uint(send(v, "draggingUpdated:", uintptr(testDragInfo)))&mask != 0 && over
 		if !over {
 			send(v, "draggingExited:", uintptr(testDragInfo))
 			return

@@ -1,21 +1,33 @@
 MyGo patch 0019: accept AppKit's generic file-drag operation.
 
 A file drag whose source advertises only NSDragOperationGeneric was rejected
-before the Rewrite panel saw its files. Treat that native effect as Copy, and
-cover the panel's native drag path with a source mask of Generic alone.
+before the Rewrite panel saw its files. Treat that native effect as Copy in the
+Go event, but answer AppKit with Generic when the source does not offer Copy.
+The native test checks that the answer intersects the source mask.
 diff --git a/internal/darwin/surface_drag.go b/internal/darwin/surface_drag.go
 --- a/internal/darwin/surface_drag.go
 +++ b/internal/darwin/surface_drag.go
-@@ -156,6 +156,9 @@ func macOperations(o transfer.Operation) uint {
+@@ -156,6 +156,6 @@ func macOperations(o transfer.Operation) uint {
  func goOperations(n uint) transfer.Operation {
  	var o transfer.Operation
- 	if n&1 != 0 {
-+		o |= transfer.Copy
-+	}
-+	if n&4 != 0 {
+-	if n&1 != 0 {
++	if n&5 != 0 {
  		o |= transfer.Copy
  	}
  	if n&16 != 0 {
+@@ -346,6 +346,11 @@ func (s *surface) nativeDataOperation(info id) uint {
+ func (s *surface) nativeDataOperation(info id) uint {
+ 	if !s.nativeDataEvent(info, platform.DataDragOver) {
+ 		return 0
+ 	}
+-	return macOperations(s.dragOperation)
++	operation := macOperations(s.dragOperation)
++	sourceOperations := uint(send(info, "draggingSourceOperationMask"))
++	if operation&sourceOperations == 0 && sourceOperations&4 != 0 {
++		return 4
++	}
++	return operation
+ }
 diff --git a/internal/darwin/testhooks.go b/internal/darwin/testhooks.go
 --- a/internal/darwin/testhooks.go
 +++ b/internal/darwin/testhooks.go
@@ -41,6 +53,16 @@ diff --git a/internal/darwin/testhooks.go b/internal/darwin/testhooks.go
  		testDragAt = NSPoint{x, content.Size.Height - y}
  		send(testDragPB, "clearContents")
  		var urls []id
+@@ -625,7 +633,7 @@ func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped
+ 		send(testDragPB, "writeObjects:", uintptr(nsArray(urls...)))
+ 		v := w.surface.view
+-		over = send(v, "draggingEntered:", uintptr(testDragInfo)) != 0
+-		over = send(v, "draggingUpdated:", uintptr(testDragInfo)) != 0 && over
++		over = uint(send(v, "draggingEntered:", uintptr(testDragInfo)))&mask != 0
++		over = uint(send(v, "draggingUpdated:", uintptr(testDragInfo)))&mask != 0 && over
+ 		if !over {
+ 			send(v, "draggingExited:", uintptr(testDragInfo))
+ 			return
 diff --git a/internal/e2e/file_url_drop_operation_test.go b/internal/e2e/file_url_drop_operation_test.go
 new file mode 100644
 --- /dev/null
