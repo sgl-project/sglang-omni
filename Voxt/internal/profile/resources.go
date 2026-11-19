@@ -315,6 +315,16 @@ func (m *ResourceMonitor) Snapshot(label string) PhaseSample {
 	return m.sampler.Snapshot(label)
 }
 
+// PeakPressure is the highest pressure seen since the monitor started, ""
+// before the first system sample. Load gates check it as well as the
+// instantaneous snapshot: a transient critical between two snapshots still
+// archives the run.
+func (m *ResourceMonitor) PeakPressure() string {
+	m.sampler.mu.Lock()
+	defer m.sampler.mu.Unlock()
+	return m.sampler.peakPressure
+}
+
 func (m *ResourceMonitor) Stop(ctx context.Context) ResourceReport {
 	m.stopOnce.Do(func() {
 		m.cancel()

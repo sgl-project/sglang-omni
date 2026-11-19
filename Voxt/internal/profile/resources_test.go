@@ -157,3 +157,27 @@ func TestResourceSamplerSnapshotToleratesProcessMemoryErrors(t *testing.T) {
 		t.Fatalf("pressure %+v", sample)
 	}
 }
+
+func TestResourceMonitorPeakPressureKeepsATransient(t *testing.T) {
+	monitor := &ResourceMonitor{sampler: NewResourceSampler(func() []int { return nil })}
+	pressures := []string{"normal", "critical", "normal"}
+	i := 0
+	monitor.sampler.sysmem = func() (macx.SystemMemory, error) {
+		p := pressures[min(i, len(pressures)-1)]
+		i++
+		return macx.SystemMemory{Pressure: p}, nil
+	}
+	monitor.sampler.Sample()
+	if peak := monitor.PeakPressure(); peak != "normal" {
+		t.Fatalf("peak %q, want normal", peak)
+	}
+	monitor.sampler.Sample()
+	monitor.sampler.Sample()
+	sample := monitor.Snapshot("first_request")
+	if sample.Pressure != "normal" {
+		t.Fatalf("instantaneous %q, want normal again", sample.Pressure)
+	}
+	if peak := monitor.PeakPressure(); peak != "critical" {
+		t.Fatalf("peak %q, want the transient critical kept", peak)
+	}
+}

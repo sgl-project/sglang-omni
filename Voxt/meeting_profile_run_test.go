@@ -225,7 +225,7 @@ func runMeetingProfile(
 	if runErr != nil {
 		return
 	}
-	if ready := monitor.Snapshot("ready"); ready.Pressure == "critical" {
+	if ready := monitor.Snapshot("ready"); ready.Pressure == "critical" || monitor.PeakPressure() == "critical" {
 		// Loading already pushed the machine to critical memory pressure:
 		// archive the run instead of spending the whole input on a sample
 		// the validator would reject anyway.
