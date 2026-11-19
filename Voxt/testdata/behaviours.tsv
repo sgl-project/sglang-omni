@@ -7,7 +7,8 @@ Spoken translation	L	TestTranslateSpeechCard	No real-app check that History file
 Selection translation, both directions	L	TestTranslateSelectionEndToEnd	No check that the result is in the target language
 Translation follow-up and fallback model	L	TestTranslateContinue	none
 Translation follow-up and fallback model	L	TestTranslateFallbackModel	none
-Rewrite a selection by a spoken instruction	L	TestRewriteSelectionInCard	The fake helper has no selection that is only whitespace
+Rewrite a selection by a spoken instruction	L	TestRewriteSelectionInCard	none
+Rewrite a selection by a spoken instruction	L	TestRewriteBlankSelectionReadsTheCopy	none
 Rewrite continue with a new selection	L	TestRewriteFollowUpNewSelection	none
 Image input: window screenshot and clipboard image	L	TestWindowScreenshotEndToEnd	No test of an unreadable selection with the image switch on
 Image input: window screenshot and clipboard image	L	TestClipboardImageEndToEnd	none
@@ -29,7 +30,8 @@ Dictionary profiles	L	TestDictionaryProfileExternalSwitch	none
 Dictionary suggestions, history scan, learning from edits	L	TestLearnFromCorrection	Reading a real text field is checked by hand only
 Dictionary suggestions, history scan, learning from edits	L	TestScanButtonNeedsTheTranscribeLanguageModel	none
 Notes	L	TestSessionNote	none
-Meeting live captions	L	TestCommitterLive	No test plays a recording through a whole meeting
+Meeting live captions	L	TestCommitterLive	none
+Meeting live captions	L	TestMeetingPlaythrough	none
 Meeting live captions	L	TestDedupeOverlapText	none
 Meeting speakers and clean-up	L	TestDiarizeTrackChunksAndCarriesSpeakers	none
 Meeting speakers and clean-up	L	TestCorrectTranscript	none
@@ -39,13 +41,15 @@ History	L	TestHistoryTabs	No real-app check that each session leaves one entry
 History	L	TestHistoryAllTab	none
 Reopen a card from the menu bar, history for other programs	L	TestHistoryAccessOff	none
 Reopen a card from the menu bar, history for other programs	L	TestHistoryAccessReopens	none
-Local speech models	L	TestKeepIdle	No self-check that the catalogue and the interface list the same models
+Local speech models	L	TestKeepIdle	none
+Local speech models	L	TestModelsPageMatchesCatalogue	none
 Local speech models	L	TestModelsMemory	none
 Local speech models	M	TestMacE2EOmni	none
-Remote speech recognition and system dictation	L	TestRemoteSpeechUpload	The fake system dictation never ends with an empty result
+Remote speech recognition and system dictation	L	TestRemoteSpeechUpload	none
 Remote speech recognition and system dictation	L	TestRemoteSpeechStreaming	none
 Remote speech recognition and system dictation	L	TestSessionSystemDictation	none
-Remote language models	L	TestRemoteModelEndToEnd	No check that the menu lists only installed models
+Remote language models	L	TestRemoteModelEndToEnd	none
+Remote language models	L	TestSavedOllamaSetupMenuIsTheServersModels	none
 Remote language models	L	TestRemoteErrorKeepsNoKey	none
 Audio settings	L	TestSessionMutesOutput	A changed microphone setting is checked on a real device only
 Audio settings	M	TestMacHelperMicrophoneSelection	none
@@ -53,9 +57,11 @@ Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none
 Command-line transcription	L	TestTranscribeCLIFailures	none
 In-app update	L	TestAppUpdated	The upgrade from 1.x has no automatic run
 In-app update	M	scripts/mac-update-e2e.sh	none
-First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionControls	No test walks the whole guide; fixtures only
+First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionControls	none
+First use: opening, setup guide, import from 1.x	L	TestOnboardingWalk	none
 First use: opening, setup guide, import from 1.x	L	TestLegacyImportAsksForOptionalKey	none
 Settings and appearance	L	TestWindowTransparencySettings	none
 Announcements and release notes	L	TestAnnouncements	none
-Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	No test lists every address a default session contacts
+Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
+Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	none
 Privacy and where data goes	L	TestLearnNeverLogsTheEdit	none

@@ -68,3 +68,29 @@ func TestBehaviours(t *testing.T) {
 		t.Errorf("%d features listed, want at least 32", len(features))
 	}
 }
+
+// TestBehaviourGapsReflectCoverage keeps closed gaps out of the manifest.
+func TestBehaviourGapsReflectCoverage(t *testing.T) {
+	data, err := os.ReadFile("testdata/behaviours.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered := map[string]string{
+		"The fake helper has no selection that is only whitespace":                "TestRewriteBlankSelectionReadsTheCopy",
+		"No test plays a recording through a whole meeting":                       "TestMeetingPlaythrough",
+		"No self-check that the catalogue and the interface list the same models": "TestModelsPageMatchesCatalogue",
+		"The fake system dictation never ends with an empty result":               "TestSessionSystemDictation",
+		"No check that the menu lists only installed models":                      "TestSavedOllamaSetupMenuIsTheServersModels",
+		"No test walks the whole guide; fixtures only":                            "TestOnboardingWalk",
+		"No test lists every address a default session contacts":                  "TestDefaultSessionContactsNoRemoteHost",
+	}
+	for i, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 4 {
+			continue
+		}
+		if check, ok := covered[fields[3]]; ok {
+			t.Errorf("line %d: %s covers this gap; list it and clear the stale gap", i+1, check)
+		}
+	}
+}
