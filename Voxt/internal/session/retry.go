@@ -61,7 +61,7 @@ func (m *Manager) Retry(ctx context.Context, req RetryRequest) (store.Entry, err
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel, llmCtx: ctx,
-		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang, onDraft: req.OnDraft}
+		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang, typed: e.TypedText, onDraft: req.OnDraft}
 	r.pcm.append(pcm)
 	r.retryScene(e)
 	stage := func(st State) {

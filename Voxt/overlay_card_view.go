@@ -20,12 +20,13 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 	if card.Message != "" {
 		messageHeight = layout.CardMsgGap + layout.CardMsgH
 	}
-	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-messageHeight, 0))
+	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-sessionCardAttachmentHeight(card)-messageHeight, 0))
 	ui.Column(context).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).DragWindow().Children(func() {
 		ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+		cardAttachView(context, card, local.Overlay.cardThumbs)
 		cardBody(context, state.SessionID, card, bodyHeight, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)
 		if card.Message != "" {
@@ -45,6 +46,35 @@ func cardSizeButton(context *ui.Context, card *sessionCardViewState, actions ses
 	if sizeStepButton(context.Key("ov-card-size"), card.SizeStep) {
 		actions.cycleOverlayCardSize()
 	}
+}
+
+// cardAttachView says which picture went to the language model.
+func cardAttachView(context *ui.Context, card *sessionCardViewState, thumbnails []*ui.Bitmap) {
+	if len(thumbnails) > 0 {
+		ui.Row(context).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(i18n.T("Images sent with the instruction")).Children(func() {
+			for index, bitmap := range thumbnails {
+				if bitmap != nil {
+					ui.Image(context.Key(index), bitmap).Size(layout.CardAttachThumb, layout.CardAttachThumb).Fit(ui.Cover).Radius(4).Shrink(0)
+				}
+			}
+		})
+		return
+	}
+	var label string
+	var icon icons.Icon
+	switch card.Attachment {
+	case "clipboard":
+		label, icon = i18n.T("Copied image"), icons.ClipboardList
+	case "window":
+		label, icon = i18n.T("Screenshot"), icons.WindowFrame
+	}
+	if label == "" {
+		return
+	}
+	ui.Row(context).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(label).Children(func() {
+		ui.Icon(context, icon.Linear).Size(14, 14).TextColor(ovText2).Shrink(0)
+		ui.Text(context, label).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
+	})
 }
 
 func sizeStepButton(context *ui.Context, step int) bool {

@@ -52,6 +52,22 @@ type sessionState struct {
 	sess session.Snapshot
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
+	// box is Rewrite's card with the input box (rewrite_box.go): the
+	// Rewrite shortcut opens it with the microphone. boxShare is its
+	// content as the sending session reads it (Config.BoxInput).
+	box      rewriteBox
+	boxShare boxShare
+	// boxGen numbers the box's lives: a picture conversion posted for an
+	// older life is dropped. boxPending counts the conversions not yet
+	// landed in order, including held ones; boxSendQueued: Enter came
+	// while one converted.
+	boxGen, boxPending int
+	boxSendQueued      bool
+	// boxSeq numbers the picture conversions in drop (or paste) order;
+	// one lands only after every earlier number (boxNext is the next
+	// due), boxHeld keeping one whose earlier numbers still convert.
+	boxSeq, boxNext int
+	boxHeld         map[int]boxLanding
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
@@ -103,6 +119,10 @@ type answerCard struct {
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
+	// attach says which picture went to the language model
+	// (Snapshot.ImageHint); images are the input box's pictures.
+	attach string
+	images [][]byte
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
@@ -178,8 +198,9 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
-		Resolve: resolver(lm),
-		History: lib.store.History(),
+		BoxInput: a.boxShare.load,
+		Resolve:  resolver(lm),
+		History:  lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
@@ -266,6 +287,20 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	was := a.sess
 	a.sess = s
+	if a.box.open {
+		if s.ID == a.box.session {
+			if s.Selection != "" {
+				a.box.selection = s.Selection
+			}
+			if s.Spoken != "" {
+				a.box.instruction = s.Spoken
+			}
+			if was.State == session.Recording && s.State != session.Recording {
+				a.box.shown = false // sent: the pill and the card take over
+			}
+		}
+		a.boxSync() // the box's lines follow its session
+	}
 	for _, fn := range a.onSession { // events.go: the setup guide, the sounds
 		fn(was, s)
 	}
@@ -300,9 +335,14 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)
 	case s.Card && (s.Result != "" || s.State == session.Failed):
-		a.openAnswer(s)
-		a.syncHotkeys() // the cancel shortcut closes the card
+		// The box's send failed: the box shows the error and keeps its
+		// text and pictures, no failed card.
+		if s.State != session.Failed || s.ID != a.box.sending && s.ID != a.box.session {
+			a.openAnswer(s)
+			a.syncHotkeys() // the cancel shortcut closes the card
+		}
 	}
+	a.boxEnded(s)
 	back := a.resurface()
 	var copied *sessionNotice
 	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {

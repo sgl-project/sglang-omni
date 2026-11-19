@@ -202,6 +202,9 @@ type Snapshot struct {
 	// Selection is the selected text read when the shortcut fired
 	// (Translate, Rewrite; "" for none), SelectionVia how ("ax", "copy").
 	Selection, SelectionVia string
+	// Typed is Rewrite's typed text that went with the request (the
+	// input box's; "" for none).
+	Typed string
 	// TargetLanguage is Translate's (a code: "en", "zh-Hans").
 	TargetLanguage string
 	// Draft is the answer so far while the language model writes
@@ -223,6 +226,10 @@ type Snapshot struct {
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
+	// ImageHint says which picture went to the language model
+	// ("window", "clipboard", "box"; "" for none), so the answer card
+	// can say so.
+	ImageHint string
 	// Landing says where the result was pasted (nil: not inserted): the
 	// app, Target or the app the user went to and focused a text field
 	// in. Target stays the app the scene was chosen for (the history's app).
@@ -347,6 +354,12 @@ type Config struct {
 	// model, when the settings send it (Privacy.SendClipboardImage).
 	// Nil: never.
 	ClipboardImage func(ctx context.Context) ([]byte, error)
+	// BoxInput returns the Rewrite input box's typed text and pictures
+	// (JPEGs, encoded once when they were pasted) as they are when the
+	// answer is asked for (StartRequest.Box). It waits for pending image
+	// conversions and returns their error, if one needs confirmation. It
+	// is called on the session's goroutine. Nil: the box sends nothing.
+	BoxInput func(context.Context) (string, [][]byte, error)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History
@@ -464,6 +477,15 @@ type StartRequest struct {
 	// or reading the selection: a retry from the answer card, or the
 	// same text into another language.
 	Text *TextInput
+	// Box marks a Rewrite session as the input box's: the box's typed
+	// text and pictures come from Config.BoxInput when the answer is
+	// asked for. The pictures are the user's own: they always go to the
+	// language model (llm.Request.ImagesRequired), ahead of a copied
+	// picture or the window's, which an empty box leaves to today's
+	// rule. Images, when set, goes the same way without the box (a
+	// follow-up or a new take on the card's answer).
+	Box    bool
+	Images [][]byte
 	// TargetLanguage overrides Translate's target ("": the settings').
 	TargetLanguage string
 	// Thinking overrides the language model's thinking for Translate's
@@ -495,6 +517,8 @@ type TextInput struct {
 	Raw string
 	// Selection is the selected text ("" for none).
 	Selection string
+	// Typed is Rewrite's typed text ("" for none).
+	Typed string
 }
 
 func (s Snapshot) clone() Snapshot {

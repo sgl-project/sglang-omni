@@ -48,6 +48,7 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 			actions.setSendClipboardImage(local.sendClipboard)
 		}
 	})
+	caption(c, i18n.T("With both on, the copied image goes, not the screenshot."))
 
 	sectionTitle(c, i18n.T("Kept on this Mac"))
 	settingRow(c, "priv-history", i18n.T("Keep a history"), i18n.T("When off, the menu bar and Dock menus do not list cards to reopen."), func() {

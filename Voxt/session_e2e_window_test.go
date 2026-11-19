@@ -39,9 +39,13 @@ func TestWindowScreenshotEndToEnd(t *testing.T) {
 			if len(reqs) != 1 {
 				t.Fatalf("%d chats", len(reqs))
 			}
-			img, _ := reqs[0]["image"].([]byte)
-			if want := helpertest.Shot(812); tc.image != bytes.Equal(img, want) || !tc.image && img != nil {
-				t.Errorf("image %q, want it %v\n%s", img, tc.image, a.logText())
+			imgs, _ := reqs[0]["images"].([][]byte)
+			var img []byte
+			if len(imgs) > 0 {
+				img = imgs[0]
+			}
+			if want := helpertest.Shot(812); tc.image != bytes.Equal(img, want) || !tc.image && img != nil || len(imgs) > 1 {
+				t.Errorf("images %q, want it %v\n%s", imgs, tc.image, a.logText())
 			}
 		})
 	}
@@ -79,13 +83,17 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 				t.Fatalf("%d chats", len(reqs))
 			}
 			msgs := chatMessages(reqs[0])
-			want := [2]string{"user", "<instruction>\n" + instruction + "\n</instruction>\n\n<selected_text>\n" + selection + "\n</selected_text>"}
+			want := [2]string{"user", "<selected_text>\n" + selection + "\n</selected_text>\n\n<instruction>\n" + instruction + "\n</instruction>"}
 			if len(msgs) == 0 || msgs[len(msgs)-1] != want {
 				t.Fatalf("last user message lost selected text or instruction: %q", msgs)
 			}
-			img, _ := reqs[0]["image"].([]byte)
-			if tc.image != bytes.Equal(img, helpertest.ClipImage) || !tc.image && img != nil {
-				t.Errorf("image %q, want it %v\n%s", img, tc.image, a.logText())
+			imgs, _ := reqs[0]["images"].([][]byte)
+			var img []byte
+			if len(imgs) > 0 {
+				img = imgs[0]
+			}
+			if tc.image != bytes.Equal(img, helpertest.ClipImage) || !tc.image && img != nil || len(imgs) > 1 {
+				t.Errorf("images %q, want it %v\n%s", imgs, tc.image, a.logText())
 			}
 		})
 	}

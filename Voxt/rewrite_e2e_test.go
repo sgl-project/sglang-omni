@@ -3,7 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -96,7 +98,7 @@ func TestRewriteSelectionInCard(t *testing.T) {
 		t.Errorf("card %+v", v)
 	}
 	msgs := chatMessages(chat.requests()[0])
-	if msgs[1][1] != "<instruction>\nmake it formal\n</instruction>\n\n<selected_text>\nhey all, ship friday\n</selected_text>" {
+	if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
 		t.Errorf("user message %q", msgs[1][1])
 	}
 	es := a.history()
@@ -197,7 +199,61 @@ func TestRewriteNoCard(t *testing.T) {
 		chat := &fakeChat{text: `{"title":"Note","content":"A note."}`}
 		a, _ := rewriteWith(t, "readonly,", chat, "write a note", false)
 		if v := a.cachedCard(); a.sess.Inserted || !a.answer.open || len(a.pasted()) != 0 || cardTextForTest(v) != "A note." || !v.CanFollowUp {
-			t.Fatalf("end %+v card %+v", a.sess, v)
+			t.Fatalf("end %+v card %+v, pasted %+v", a.sess, v, a.pasted())
 		}
 	})
+}
+
+// TestRewriteBoxAutomaticStopWaitsForConversion: a recording that stops
+// at its length limit or end word waits for a box picture just as Enter
+// does. A failed conversion needs confirmation instead of a silent send.
+func TestRewriteBoxAutomaticStopWaitsForConversion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		provider   asr.Provider
+		configure  func(*settings.Settings)
+		conversion string
+	}{
+		{"length limit", &fakeTranscriptions{text: "make it shorter"}, func(s *settings.Settings) { s.Audio.MaxSeconds = 2 }, ""},
+		{"end word", fakeStreamer{final: "make it shorter over", partial: "make it shorter over"}, func(s *settings.Settings) { s.Features.EndWord = "over" }, ""},
+		{"failed conversion", &fakeTranscriptions{text: "make it shorter"}, func(s *settings.Settings) { s.Audio.MaxSeconds = 2 }, "This image could not be read."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fakeChat{text: "A shorter text."}
+			ev := helpertest.Opt("selection", "the selected text") + "," + script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+			a := newSessionApp(t, ev, tc.configure, withChat(&fakeLocal{ASRP: tc.provider}, chat))
+			a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+			var gen, seq int
+			a.postQueue(func() { gen, seq = a.boxGen, a.boxReserve() })
+			a.drain(2400 * time.Millisecond)
+			if n := len(chat.requests()); n != 0 {
+				t.Errorf("%d chats before the conversion landed", n)
+			}
+			jpeg := boxJPEG(t)
+			if tc.conversion != "" {
+				jpeg = nil
+			}
+			a.postQueue(func() { a.boxConverted(gen, seq, jpeg, tc.conversion) })
+			if tc.conversion != "" {
+				a.drain(100 * time.Millisecond)
+				if !a.box.open || !a.box.shown || a.box.err != tc.conversion || len(chat.requests()) != 0 {
+					t.Fatalf("failed conversion: box %+v, %d chats", a.box, len(chat.requests()))
+				}
+				a.postQueue(a.boxSend) // confirm the remaining text without the picture
+			}
+			a.pump("the answer", func() bool { return a.answer.open })
+			reqs := chat.requests()
+			if len(reqs) != 1 {
+				t.Fatalf("%d chats", len(reqs))
+			}
+			imgs, _ := reqs[0]["images"].([][]byte)
+			want := 1
+			if tc.conversion != "" {
+				want = 0
+			}
+			if len(imgs) != want {
+				t.Errorf("%d images sent, want %d", len(imgs), want)
+			}
+		})
+	}
 }

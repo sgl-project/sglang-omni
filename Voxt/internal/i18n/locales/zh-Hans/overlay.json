@@ -5,5 +5,8 @@
   "Stop recording the follow-up": "结束追问录音",
   "Stop writing and keep the text so far": "停止生成，保留已写出的内容",
   "Show all": "展开",
-  "Show less": "收起"
+  "Show less": "收起",
+  "Copied image": "复制的图片",
+  "Images sent with the instruction": "随指令发送的图片",
+  "Screenshot": "截图"
 }

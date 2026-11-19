@@ -76,6 +76,8 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
 		return ovHidden
+	case live && snapshot.State == session.Recording && snapshot.ID == a.box.session:
+		return ovHidden // the Rewrite card with the input box shows the recording
 	case live && snapshot.State == session.Recording:
 		return ovRecording
 	case live:

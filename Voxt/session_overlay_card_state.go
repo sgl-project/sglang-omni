@@ -26,36 +26,38 @@ const (
 
 // sessionCardViewState is the JSON-safe display state of one answer card.
 type sessionCardViewState struct {
-	ID            string                `json:"id"`
-	Kind          string                `json:"kind"`
-	Title         string                `json:"title"`
-	Message       string                `json:"message,omitempty"`
-	Why           string                `json:"why,omitempty"`
-	TargetName    string                `json:"target_name,omitempty"`
-	Language      string                `json:"language,omitempty"`
-	LanguageLabel string                `json:"language_label,omitempty"`
-	Thinking      sessionThinkingValue  `json:"thinking"`
-	ThinkingLabel string                `json:"thinking_label,omitempty"`
-	FollowTooltip string                `json:"follow_tooltip,omitempty"`
-	InsertTooltip string                `json:"insert_tooltip,omitempty"`
-	ProblemCode   string                `json:"problem_code,omitempty"`
-	SizeStep      int                   `json:"size_step"`
-	Levels        [session.Bars]float64 `json:"levels"`
-	Blocks        []sessionCardBlock    `json:"blocks"`
-	Live          [2]sessionCardBlock   `json:"live"`
-	LiveCount     int                   `json:"live_count"`
-	Busy          bool                  `json:"busy"`
-	Recording     bool                  `json:"recording"`
-	Writing       bool                  `json:"writing"`
-	Conversation  bool                  `json:"conversation"`
-	Failed        bool                  `json:"failed"`
-	Copied        bool                  `json:"copied"`
-	Heard         bool                  `json:"heard"`
-	CanInsert     bool                  `json:"can_insert"`
-	CanCopy       bool                  `json:"can_copy"`
-	CanFollowUp   bool                  `json:"can_follow_up"`
-	CanStop       bool                  `json:"can_stop"`
-	CanStopAnswer bool                  `json:"can_stop_answer"`
+	ID             string                `json:"id"`
+	Kind           string                `json:"kind"`
+	Title          string                `json:"title"`
+	Message        string                `json:"message,omitempty"`
+	Why            string                `json:"why,omitempty"`
+	TargetName     string                `json:"target_name,omitempty"`
+	Language       string                `json:"language,omitempty"`
+	LanguageLabel  string                `json:"language_label,omitempty"`
+	Thinking       sessionThinkingValue  `json:"thinking"`
+	ThinkingLabel  string                `json:"thinking_label,omitempty"`
+	FollowTooltip  string                `json:"follow_tooltip,omitempty"`
+	InsertTooltip  string                `json:"insert_tooltip,omitempty"`
+	Attachment     string                `json:"attachment,omitempty"`
+	ThumbnailCount int                   `json:"thumbnail_count,omitempty"`
+	ProblemCode    string                `json:"problem_code,omitempty"`
+	SizeStep       int                   `json:"size_step"`
+	Levels         [session.Bars]float64 `json:"levels"`
+	Blocks         []sessionCardBlock    `json:"blocks"`
+	Live           [2]sessionCardBlock   `json:"live"`
+	LiveCount      int                   `json:"live_count"`
+	Busy           bool                  `json:"busy"`
+	Recording      bool                  `json:"recording"`
+	Writing        bool                  `json:"writing"`
+	Conversation   bool                  `json:"conversation"`
+	Failed         bool                  `json:"failed"`
+	Copied         bool                  `json:"copied"`
+	Heard          bool                  `json:"heard"`
+	CanInsert      bool                  `json:"can_insert"`
+	CanCopy        bool                  `json:"can_copy"`
+	CanFollowUp    bool                  `json:"can_follow_up"`
+	CanStop        bool                  `json:"can_stop"`
+	CanStopAnswer  bool                  `json:"can_stop_answer"`
 	// CanUseTranscript: Transcribe's clean-up or Translate's speech can go in as recognised instead (#3821).
 	CanUseTranscript bool `json:"can_use_transcript,omitempty"`
 	CanRetry         bool `json:"can_retry"`
@@ -87,17 +89,32 @@ type sessionCardBlock struct {
 
 // sessionCardProjectionInput contains the domain inputs used by the pure card builder.
 type sessionCardProjectionInput struct {
-	Snapshot         session.Snapshot
-	Answer           answerCard
-	Own              bool
-	Writing          bool
-	HideLiveText     bool
-	ShownDraft       string
-	FollowKeys       string
-	CanFollowUp      bool
-	ThinkingProvider settings.Provider
-	Generation       settings.Generation
-	SizeStep         int
+	Snapshot          session.Snapshot
+	Answer            answerCard
+	Own               bool
+	Writing           bool
+	HideLiveText      bool
+	ShownDraft        string
+	FollowKeys        string
+	CanFollowUp       bool
+	ThinkingProvider  settings.Provider
+	Generation        settings.Generation
+	SizeStep          int
+	BoxSessionID      string
+	BoxThumbnailCount int
+}
+
+func sessionCardAttachment(input sessionCardProjectionInput) (string, int) {
+	if input.Answer.open {
+		return input.Answer.attach, len(input.Answer.ui.thumbs)
+	}
+	if input.Writing {
+		if input.Snapshot.ID == input.BoxSessionID {
+			return "box", input.BoxThumbnailCount
+		}
+		return input.Snapshot.ImageHint, 0
+	}
+	return "", 0
 }
 
 func buildSessionCardViewState(translator *i18n.Translator, input sessionCardProjectionInput) sessionCardViewState {
@@ -115,6 +132,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 			state.LanguageLabel = compose.LanguageName(snapshot.TargetLanguage, translator.Locale())
 			state.Busy, state.Writing, state.CanStopAnswer = true, true, snapshot.CanStop()
 			state.CanUseTranscript = snapshot.CanSkip
+			state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
 			state.Live[0] = sessionCardWritingBlock(input.ShownDraft, snapshot.Kind)
 			state.LiveCount = 1
 		}
@@ -140,6 +158,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		CanStopAnswer: follow && snapshot.CanStop(), CanRetry: card.problem != nil && !snapshot.State.Live(),
 		FollowTooltip: continueTipFor(translator, input.FollowKeys),
 	}
+	state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
 	if sessionCardRedoWriting(input) {
 		// The answer asked again streams in over the card's; a failure or a
 		// cancel brings the card's back (endRedo).
@@ -339,6 +358,7 @@ func continueTipFor(translator *i18n.Translator, keys string) string {
 }
 
 func updateSessionCardLiveState(translator *i18n.Translator, card *sessionCardViewState, input sessionCardProjectionInput) {
+	card.Attachment, card.ThumbnailCount = sessionCardAttachment(input)
 	follow := input.Own && input.Snapshot.ID != input.Answer.redo
 	card.Recording = follow && input.Snapshot.State == session.Recording
 	card.CanStop = follow && input.Snapshot.State == session.Recording
@@ -367,7 +387,8 @@ type sessionCardProjectionKey struct {
 	own, writing, hideLiveText            bool
 	canFollowUp, copied, conversation     bool
 	redoWriting                           bool
-	problemCode                           string
+	problemCode, attachment               string
+	thumbnailCount                        int
 	// highlights is the card's dictionary spans by identity: they are
 	// set with the text, or after it (openAnswer).
 	highlights *dict.Span
@@ -391,6 +412,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 	if len(card.highlights) > 0 {
 		highlights = &card.highlights[0]
 	}
+	attachment, thumbnailCount := sessionCardAttachment(input)
 	return sessionCardProjectionKey{
 		sessionID: snapshot.ID, answerID: card.id, kind: string(card.kind), state: string(snapshot.State),
 		answerText: card.text, title: card.title, message: card.msg, why: card.why,
@@ -402,7 +424,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		turnCount: len(card.turns), followKeys: input.FollowKeys,
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
-		redoWriting: sessionCardRedoWriting(input), highlights: highlights,
+		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, highlights: highlights,
 	}
 }
 
@@ -423,7 +445,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	input := sessionCardProjectionInput{
 		Snapshot: snapshot, Answer: a.answer, Own: a.cardSessionLive(), Writing: a.writingAnswer(),
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShownDraft: a.shownDraft(snapshot),
-		SizeStep: a.prefs.Features.CardSize(string(kind)),
+		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs),
 	}
 	if !a.answer.open {
 		return input
@@ -436,6 +458,10 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 }
 
 func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection, next *sessionOverlayViewState) {
+	a.ov.ui.cardThumbs = a.answer.ui.thumbs
+	if !a.answer.open && a.sess.ID == a.boxSessionID() {
+		a.ov.ui.cardThumbs = a.box.thumbs
+	}
 	input := a.sessionCardProjectionInput()
 	key, liveKey := sessionCardKeyFor(input), sessionCardLiveKeyFor(input)
 	if !projection.cardReady || key != projection.cardKey {

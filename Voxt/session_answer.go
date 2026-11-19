@@ -25,8 +25,11 @@ import (
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, conv: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
-		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
-		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
+		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection, Typed: s.Typed}, lang: s.TargetLanguage, llmID: s.LLM.ID,
+		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name), attach: s.ImageHint,
+	}
+	if s.ID == a.box.session || s.ID == a.box.sending {
+		card.images, card.ui.thumbs = a.box.images, a.box.thumbs
 	}
 	if s.State == session.Failed {
 		card.problem = s.Problem
@@ -47,16 +50,23 @@ func (a *app) openAnswer(s session.Snapshot) {
 		if a.followUp != "" && a.answer.id == a.followUp {
 			card.turns, card.conv = append(card.turns, a.answer.turns...), a.answer.conv
 			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
+			if card.attach == "box" {
+				card.images, card.ui.thumbs = a.answer.images, a.answer.ui.thumbs
+			}
 			if card.why == "" {
 				card.why = a.answer.why
 			}
 		}
 		if card.problem == nil {
 			// Any answer takes follow-ups, a rewritten selection's too
-			// (Voxt's): the selection goes with its turn.
-			card.turns = append(card.turns, compose.Turn{Instruction: s.Raw, Selection: s.Selection, Answer: compose.Answer{Title: s.Title, Content: s.Result}})
+			// (Voxt's). Typed text alone was the first turn's source.
+			selection, typed := s.Selection, s.Typed
+			if selection == "" {
+				selection, typed = typed, ""
+			}
+			card.turns = append(card.turns, compose.Turn{Instruction: s.Raw, Selection: selection, Typed: typed, Answer: compose.Answer{Title: s.Title, Content: s.Result}})
 		} else if card.problem != nil && len(card.turns) > 0 {
-			card.input.Raw = s.Raw // Try again asks the same follow-up
+			card.input.Raw, card.input.Typed = s.Raw, s.Typed // Try again asks the same follow-up
 		}
 	}
 	a.followUp = ""
@@ -106,6 +116,11 @@ func (a *app) retryAnswer(lang string) {
 	}
 	in := card.input
 	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang, Thinking: card.think}
+	if card.kind == store.KindRewrite && card.attach == "box" {
+		// The box's pictures go with its answer again (another thinking
+		// level), not the contents of a box opened since.
+		req.Images = card.images
+	}
 	if req.TargetLanguage == "" {
 		req.TargetLanguage = card.lang
 	}
@@ -166,7 +181,11 @@ func (a *app) followUpAnswer(hold string) bool {
 	}
 	card := a.answer
 	a.followUp = card.id
-	if n := a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}); n != nil {
+	req := session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}
+	// The box's pictures go with the follow-up too: the same bytes in
+	// the same position, so the server's prefix cache reuses them.
+	req.Images = card.images
+	if n := a.startSession(req); n != nil {
 		a.followUp = ""
 	} else {
 		// The card turns into a conversation, where the follow-up records

@@ -124,6 +124,20 @@ func (s *sessionApp) pump(what string, cond func() bool) {
 	}
 }
 
+// drain serves the queue for d: a wait during which nothing is
+// expected, with the posts that do come still run.
+func (s *sessionApp) drain(d time.Duration) {
+	deadline := time.After(d)
+	for {
+		select {
+		case fn := <-s.queue:
+			fn()
+		case <-deadline:
+			return
+		}
+	}
+}
+
 // pasted is what the fake helper pasted.
 func (s *sessionApp) pasted() []proto.PasteParams {
 	data, _ := os.ReadFile(s.pasteLog)

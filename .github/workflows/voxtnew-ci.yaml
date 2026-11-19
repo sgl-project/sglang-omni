@@ -15,11 +15,13 @@ on:
       - "README.md"
       - "docs/get_started/voxt.md"
       - ".github/workflows/voxtnew-ci.yaml"
+      - ".github/workflows/mac-ci.yaml"
   push:
     branches: [main]
     paths:
       - "Voxt/**"
       - ".github/workflows/voxtnew-ci.yaml"
+      - ".github/workflows/mac-ci.yaml"
   workflow_dispatch:
   workflow_call:
 

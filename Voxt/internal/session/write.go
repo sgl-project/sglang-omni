@@ -45,11 +45,18 @@ func (r *run) writeInput(raw, selection string) compose.Input {
 		}
 	case store.KindRewrite:
 		f := r.settings.Features.Rewrite
-		in.Task, in.TaskPrompt, in.Cleanup, in.Instruction, in.Text = compose.Rewrite, f.Prompt, f.Cleanup, raw, selection
+		// The source is the selection; typed text alone takes its place
+		// (its order stays: the source, the typed text, the instruction).
+		source, typed := selection, r.typed
+		if source == "" {
+			source, typed = typed, ""
+		}
+		in.Task, in.TaskPrompt, in.Cleanup, in.Instruction, in.Text = compose.Rewrite, f.Prompt, f.Cleanup, raw, source
+		in.Typed = typed
 		in.Previous = r.req.Previous
 		// Written from an instruction: an answer with a title; a follow-up
 		// answers in plain text, as a conversation does (Voxt's).
-		in.Answer = selection == "" && len(in.Previous) == 0
+		in.Answer = source == "" && len(in.Previous) == 0
 	}
 	return in
 }
@@ -63,6 +70,41 @@ func (r *run) writeInput(raw, selection string) compose.Input {
 func (r *run) write(raw, selection string) {
 	cfg := r.m.cfg
 	kind := r.req.Kind
+	if kind == store.KindRewrite {
+		// The box's own text and pictures, as they are now (the user
+		// typed and pasted while it recorded). They win over the
+		// clipboard's picture and the window's, which an empty box
+		// leaves to today's rule — the window's is shot only now, so
+		// that one that will not be sent is never taken.
+		if r.req.Box && cfg.BoxInput != nil {
+			typed, images, err := cfg.BoxInput(r.ctx)
+			if err != nil {
+				if r.ctx.Err() != nil {
+					r.endCancelled(nil)
+					return
+				}
+				// The box keeps this error and the recognised instruction
+				// for the user's confirmation before another send.
+				r.m.update(r, func(s *Snapshot) { s.Spoken, s.Selection = raw, selection })
+				r.endWriteFailed(ProblemOf(err), false)
+				return
+			}
+			// "": the box is closed or holds no text — a retry from the
+			// card keeps the typed text it carries.
+			if typed != "" {
+				r.typed = typed
+			}
+			if len(images) > 0 {
+				r.req.Images = images
+			}
+		}
+		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil {
+			// A send again (Text) with no pictures of its own keeps
+			// today's rule: the clipboard's picture, else the window's.
+			r.readClipboardImage()
+		}
+		r.shootWindow()
+	}
 	if r.svc.LLM == nil {
 		r.endWriteFailed(&Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}, false)
 		return
@@ -91,6 +133,7 @@ func (r *run) write(raw, selection string) {
 	keepSpeech := kind == store.KindTranslate && selection == "" && raw != ""
 	r.m.update(r, func(s *Snapshot) {
 		s.State, s.Selection, s.Card, s.CanSkip, s.Spoken = Composing, selection, o.card != "" && !r.req.Try, keepSpeech, raw
+		s.Typed = r.typed
 		if kind == store.KindTranslate {
 			s.TargetLanguage = r.target
 		}
@@ -230,7 +273,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		if in.Answer {
 			a = compose.PartialAnswer(buf.String())
 		} else {
-			a.Content = strings.TrimSpace(buf.String())
+			a.Content = strings.TrimSpace(compose.StripControl(buf.String()))
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
@@ -244,10 +287,10 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	if in.Answer {
 		req.Format, req.Schema = llm.FormatJSON, answerSchema
 	}
-	chars := utf8.RuneCountInString(in.Text + in.Instruction)
+	chars := utf8.RuneCountInString(in.Text + in.Typed + in.Instruction)
 	req.InputChars = chars          // this turn's: a follow-up's earlier turns do not make it long
 	for _, t := range in.Previous { // note (luojiaxuan): a follow-up sends the earlier turns again, read before the first token
-		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Answer.Title + t.Answer.Content)
+		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Typed + t.Answer.Title + t.Answer.Content)
 	}
 	resp, err := r.llmChat(cfg.llmDeadlines(req, chars, r.llmFloor(cfg.WriteTimeout)))
 	if buf.Len() > 0 {

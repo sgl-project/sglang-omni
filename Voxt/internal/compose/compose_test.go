@@ -355,7 +355,7 @@ func TestLayersOfTheTasks(t *testing.T) {
 	out, _ := Build(Input{Task: Rewrite, Instruction: "y", Answer: true, Previous: []Turn{{Instruction: "z", Selection: "s", Answer: Answer{Title: "T", Content: "c"}}}})
 	msgs := out.Messages()
 	if len(msgs) != 4 || msgs[1].Role != "user" || msgs[2].Content != `{"title":"T","content":"c"}` || msgs[3].Content != "<instruction>\ny\n</instruction>" ||
-		msgs[1].Content != "<instruction>\nz\n</instruction>\n\n<selected_text>\ns\n</selected_text>" {
+		msgs[1].Content != "<selected_text>\ns\n</selected_text>\n\n<instruction>\nz\n</instruction>" {
 		t.Errorf("messages %+v", msgs)
 	}
 }
@@ -551,6 +551,18 @@ func TestClean(t *testing.T) {
 		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
 		{`"Quoted."`, `"quoted"`, `"Quoted."`},
 		{"", "x", ""},
+		// A model's internal control blocks never reach the user (#4085).
+		{"Hello.<|tool_call_begin|>call vision<|tool_call_end|>", "x", "Hello."},
+		{"Hello.<|tool_call_end|>", "x", "Hello."},
+		{"before<|tool_call_end|>after", "x", "beforeafter"},
+		{"<|channel|>thought<channel|>你好。", "x", "你好。"},
+		{"cut off at the stream's end <|tool_call_be", "x", "cut off at the stream's end"},
+		// Only the control markers are markup; other <| stays (F#'s
+		// pipe, a tag the user wrote).
+		{"let y = f <| x", "x", "let y = f <| x"},
+		{"let y = f <|x", "x", "let y = f <|x"},
+		{"One <|mid|> two.", "x", "One <|mid|> two."},
+		{"code <| x then <|tool_call_begin|>c<|tool_call_end|>", "x", "code <| x then"},
 		// Only Transcribe's clean-up asks for <output> tags: a Rewrite
 		// or Translate answer whose text itself has them (HTML it was
 		// asked for) keeps them.
@@ -559,6 +571,42 @@ func TestClean(t *testing.T) {
 		if got := Clean(tc.out, tc.in); got != tc.want {
 			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
 		}
+	}
+}
+
+// TestStripControlAnswer: ParseAnswer and PartialAnswer strip a model's
+// internal control blocks too (#4085), a partial one's unfinished tail
+// included.
+func TestStripControlAnswer(t *testing.T) {
+	if got := StripControl("a<|x|>b<|tool_call_be"); got != "a<|x|>b" {
+		t.Errorf("StripControl %q", got)
+	}
+	// A bare word is no control tag: F#'s pipe keeps its operand.
+	if got := StripControl("let y = f <|x"); got != "let y = f <|x" {
+		t.Errorf("StripControl %q", got)
+	}
+	if got := StripControl("no blocks"); got != "no blocks" {
+		t.Errorf("StripControl %q", got)
+	}
+	a, ok := ParseAnswer(`{"title":"T<|x|>","content":"Ships Friday.<|tool_call_begin|>c<|tool_call_end|>"}`)
+	if !ok || a.Title != "T<|x|>" || a.Content != "Ships Friday." {
+		t.Errorf("ParseAnswer %+v %v", a, ok)
+	}
+	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool_call_be`); got.Content != "Ships Friday." {
+		t.Errorf("PartialAnswer %+v", got)
+	}
+	if got := PartialAnswer("plain text <|tool_calls_section_be"); got.Content != "plain text" {
+		t.Errorf("PartialAnswer %+v", got)
+	}
+	a, ok = ParseAnswer(`{"title":"T<|tool_call_end|>","content":"Ships Friday.<|tool_call_end|>"}`)
+	if !ok || a.Title != "T" || a.Content != "Ships Friday." {
+		t.Errorf("ParseAnswer with a close marker %+v %v", a, ok)
+	}
+	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool_call_end|>"}`); got.Content != "Ships Friday." {
+		t.Errorf("PartialAnswer with a close marker %+v", got)
+	}
+	if got := PartialAnswer("plain text<|tool_call_end|>"); got.Content != "plain text" {
+		t.Errorf("PartialAnswer with a close marker %+v", got)
 	}
 }
 
@@ -669,6 +717,12 @@ func TestGlossaryInUser(t *testing.T) {
 		if out.Glossary == "" || !strings.HasPrefix(out.User, out.Glossary+"\n\n") || o2.System != out.System || strings.Contains(out.System, "Term") ||
 			!strings.Contains(out.Profile(), "glossary") || o2.Glossary != "" || !strings.Contains(out.System, "<glossary>") {
 			t.Errorf("%s: glossary %q, user %q, profiles %s / %s", c.name, out.Glossary, out.User, out.Profile(), o2.Profile())
+		}
+	}
+	for _, taskPrompt := range []string{"", "Rewrite formally"} {
+		out, err := Build(Input{Task: Rewrite, MainLanguage: "en", Glossary: large, Instruction: "make it shorter", Text: "selected", Typed: "Term03", TaskPrompt: taskPrompt})
+		if err != nil || !strings.Contains(out.Glossary, "- Term03\n") {
+			t.Errorf("typed-only glossary match %q, %v", out.Glossary, err)
 		}
 	}
 	small := Input{Task: Transcribe, MainLanguage: "en", Glossary: large[:GlossaryAllUpTo], Text: "Term01"}

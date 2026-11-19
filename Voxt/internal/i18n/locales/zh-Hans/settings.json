@@ -265,5 +265,6 @@
   "Color": "颜色",
   "Reset color": "恢复默认颜色",
   "Transparent": "透明",
-  "Window transparency": "窗口透明度"
+  "Window transparency": "窗口透明度",
+  "With both on, the copied image goes, not the screenshot.": "两个都打开时，发送复制的图片，不发送截图。"
 }

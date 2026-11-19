@@ -15,10 +15,11 @@ var (
 	ovCardRule = ui.RGBA(255, 255, 255, 0.08)
 )
 
-// answerCardUI is the card's view-local menu and quote state.
+// answerCardUI is the card's view-local menu, quote and thumbnail state.
 type answerCardUI struct {
 	langOpen, thinkMenu, pillMenu bool
 	quotesOpen                    map[int]bool
+	thumbs                        []*ui.Bitmap
 }
 
 const quoteGap, quoteToggleH, quoteSize = layout.BubbleTitleGap, 16, 12

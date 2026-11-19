@@ -143,6 +143,7 @@ func (a *app) quit() {
 	}
 	a.closeSessions() // session_link.go
 	a.closeOverlay()  // overlay.go
+	a.closeBoxWindow()
 	a.stopMeetingAudioWatch(a.mv.detail)
 	a.destroyMeetingOverlay()
 	a.closeTray()

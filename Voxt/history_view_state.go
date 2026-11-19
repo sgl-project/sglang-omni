@@ -200,11 +200,18 @@ func historyEntryCopyText(entry store.Entry) string {
 	if text := strings.TrimSpace(entry.Result); text != "" {
 		return text
 	}
+	if entry.Kind == store.KindRewrite {
+		return strings.TrimSpace(entry.PromptText)
+	}
 	return strings.TrimSpace(entry.RawText)
 }
 
 func historyEntryRawCopy(entry store.Entry) string {
-	if raw := strings.TrimSpace(entry.RawText); raw != historyEntryCopyText(entry) {
+	raw := strings.TrimSpace(entry.RawText)
+	if entry.Kind == store.KindRewrite {
+		raw = strings.TrimSpace(entry.PromptText)
+	}
+	if raw != historyEntryCopyText(entry) {
 		return raw
 	}
 	return ""
@@ -320,7 +327,11 @@ func buildHistoryDetailViewState(translator *i18n.Translator, input historyDetai
 	if entry.SourceText != "" {
 		addTextBlock("hist-source", translator.T("Selected text"), translator.T("Copy selected text"), entry.SourceText)
 	}
-	addTextBlock("hist-raw", translator.T("Recognised text"), translator.T("Copy recognised text"), entry.RawText)
+	if entry.Kind == store.KindRewrite && entry.PromptText != "" {
+		addTextBlock("hist-typed", translator.T("Typed text"), translator.T("Copy typed text"), entry.TypedText)
+	} else {
+		addTextBlock("hist-raw", translator.T("Recognised text"), translator.T("Copy recognised text"), entry.RawText)
+	}
 	appName := entry.AppName
 	if entry.URLHost != "" {
 		appName += " · " + entry.URLHost

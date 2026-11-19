@@ -34,6 +34,7 @@ type sessionOverlayLocalUI struct {
 	lines         linesScroll
 	cardScroll    ui.ScrollState
 	cardScrollKey string
+	cardThumbs    []*ui.Bitmap
 	bubbleCopied  string
 	bubbleSeq     int
 	langScroll    ui.ScrollState

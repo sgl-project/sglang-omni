@@ -423,5 +423,16 @@
   "Thinking level": "思考强度",
   "Edit %s": "编辑 %s",
   "Could not save the settings: %v": "无法保存设置：%v",
-  "Reset to default prompt": "恢复默认提示词"
+  "Reset to default prompt": "恢复默认提示词",
+  "At most %d images": "最多 %d 张图片",
+  "Say the instruction (%s), then Enter sends": "说出指令（%s），然后按 Enter 发送",
+  "Say the instruction, then Enter sends": "说出指令，然后按 Enter 发送",
+  "Send": "发送",
+  "Send (Enter)": "发送（Enter）",
+  "The spoken instruction": "口述的指令",
+  "This image could not be read.": "这张图片读不出来。",
+  "This image could not be read; paste it (⌘V) instead.": "这张图片读不出来，请改用粘贴（⌘V）。",
+  "Remove this image": "移除这张图片",
+  "More text for the rewrite": "为改写补充的文字",
+  "Type or paste more text, or drop images": "输入或粘贴更多文字，或拖入图片"
 }

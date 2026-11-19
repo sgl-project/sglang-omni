@@ -6,12 +6,21 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Rewrite opens one card with the microphone and an input box** (#4085): the Rewrite shortcut starts the microphone and opens the Rewrite card at once; there is no switch and no separate recording window any more. The text selected at the press goes into the card as the input; while you speak, you can type more text and paste or drop up to 4 images (thumbnails, each with a remove button). Press the shortcut again (or Enter) to finish and send; Shift+Enter is a new line, Esc closes without sending. What the language model gets is in one fixed order: the selected text, then the typed text and images, then what you said, with the same Rewrite prompt and the same shortcut as before. With nothing selected, typed or pasted, Rewrite works as before with speech alone. Images you put in the box are sent because you put them there (the Privacy switches do not gate them); a model that takes no images gets an error and the card keeps your text and images, and sending again uses the same image bytes in the same position, so the server's prefix cache can reuse them. A request can carry several images, in one order everywhere: the box's images, else the copied image, else the window screenshot; the card says which one went ("Screenshot" / "Copied image" / the box's thumbnails), and a screenshot that would not be sent is no longer taken. Settings → Privacy says under the two switches that with both on, the copied image goes, not the screenshot. Answers no longer show a model's internal tool or thinking markers when no image reached it.
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+
+### Fixed
+
+- **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first. An image that finishes early still reserves its slot until it lands, so later drops cannot use that slot to exceed the limit.
+- **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
+- **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut, a hold release, the recording length limit or the end word waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and History details and the typed history export now read that stored value. History search also finds words that appear only in the typed text. Full model close markers no longer leak into answers.
+- **Rewrite accepts pasted and dropped images**: ⌘V and dragging an image onto the input box attach it instead of doing nothing, including native drops offered only as file URLs or with AppKit's generic drag operation. A clipboard with HTML and PNG but no plain text pastes the image. If the clipboard image cannot be read, the box says so instead of failing silently. Images over the four-image limit are refused before conversion.
 
 ### 中文
 
 #### 新增
 
+- **改写同时打开麦克风和一个带输入框的卡片**（#4085）：按改写快捷键会立刻开始录音并打开改写卡片，不再有开关，也不再有单独的录音窗口。按下快捷键时选中的文字会自动进入卡片作为原文；说话的同时可以补充输入文字，粘贴或拖入最多 4 张图片（缩略图带删除按钮）。再按一次快捷键（或按 Enter）结束录音并发送；Shift+Enter 换行，Esc 关闭不发送。发给语言模型的内容顺序固定：先是选中的文字，然后是输入的文字和图片，最后是说出的指令；改写 prompt 和快捷键都不变。没有选中、没有输入、没有图片时，改写和以前一样只用语音。放进卡片的图片是你主动放的，不需要隐私开关；模型不收图片时会报错，卡片里的文字和图片都保留，再次发送时图片的字节和位置完全相同，服务器的前缀缓存可以复用。一次请求可以带多张图片，顺序统一为：卡片的图片 > 复制的图片 > 窗口截图；卡片上写明这次发的是哪一种（“截图”/“复制的图片”/缩略图），不会被发送的截图不再截取。设置 → 隐私的两个开关下面写明：两个都打开时，发送复制的图片，不发送截图。模型没有收到图片时，回答里不再出现它的内部工具或思考标记。
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 - **Choose a meeting transcript's correction style** (#4134): Meeting settings now include an editable correction style. Your style replaces the built-in correction rules, while Voxt still corrects each line in place with your dictionary and Speech context and keeps the summary prompt separate. Reset to default prompt, or save a blank style, to restore the previous behavior.
@@ -22,6 +31,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 - **会议转录稿可以自定义校对风格**（#4134）：会议设置新增可编辑的校对风格。你的风格会替换内置校对规则；Voxt 仍逐行校对，使用词典和识别上下文，总结提示词保持独立。点“恢复默认提示词”或保存空白风格，即可恢复原来的行为。
+
+#### 修复
+
+- **改写分批拖入图片时保持顺序**：先拖入的大图不会再排到后拖入的小图后面，输入框和发给语言模型的请求都按拖入顺序排列。提前完成转换但还在等待按序入箱的图片继续占用位置，后续拖入不会因此超过 4 张上限。
+- **改写保留补充输入的文字，并等待图片转换**：按快捷键、松开按住、达到录音时长上限或听到结束词而停止输入框时，都和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文，历史详情和 typed 导出也读取这份保存的内容，历史搜索也能找到只出现在补充输入里的文字；完整的模型结束标记也不再漏进回答。
+- **改写可以粘贴和拖入图片**：按 ⌘V 或把图片拖到输入框会添加图片，不再没有反应，包括只提供文件网址或仅声明通用操作的原生拖放。剪贴板只有 HTML 和 PNG、没有纯文本时也会粘贴 PNG。剪贴板图片读取失败时，输入框会显示错误，不再静默失败。超过 4 张的图片会在转换前拒绝。
 
 ## [2.1.1] - 2026-11-17
 
@@ -112,6 +127,11 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **系统没有声音时也能开始会议**（#4132）：录音立即开始，有声音播放时开始录系统声音。
 - **开始会议失败时说明是哪里失败**（#4128）：只有权限被拒绝时才提示去开权限；其他失败会指出是哪一路声音，并提供重试或只录麦克风。
 - **会议波形和静音提醒跟着系统声音的空闲和暂停走**（#4195）：系统不出声时波形回到静音，30 秒静音提醒能正常出现，暂停的时间不再算进去。
+
+#### 修复
+
+- **改写：分几次拖入的图片保持拖入顺序**：先拖入的大图不再排到后拖入的小图后面，卡片和发给语言模型的请求都按拖入的顺序，不受转换快慢影响。
+- **改写：竖线后紧跟单词的代码不再丢尾巴，旧卡片排队的 Enter 不会发送新录音**：竖线和后面的单词之间没有空格的代码（如 F# 的 `<|x`）在回答里不再被截断，只有模型真正的控制标记会被移除。粘贴的图片还在转换时按了 Enter，再按 Esc、按快捷键重开，旧图片转换完成不会再停止并发送新录音，只有你在新卡片里按 Enter 才会发送。
 
 ## [2.1.0] - 2026-11-15
 

@@ -149,8 +149,8 @@ func requestBody(req llm.Request) map[string]any {
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
-	if req.Image != nil {
-		body["image"] = req.Image
+	if len(req.Images) > 0 {
+		body["images"] = req.Images
 	}
 	if req.Format == llm.FormatJSON {
 		body["response_format"] = map[string]any{"type": "json_object"}
@@ -202,22 +202,23 @@ func (f *fakeTranscriptions) uploads() (calls, size int) {
 	return f.calls, f.size
 }
 
-// fakeStreamer is a streaming speech model: a partial "hello" after
-// three pieces of audio, the final text on Finish.
-type fakeStreamer struct{ final string }
+// fakeStreamer is a streaming speech model: a partial after three pieces
+// of audio ("hello" unless partial says otherwise), the final on Finish.
+type fakeStreamer struct{ final, partial string }
 
 func (fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
 
 func (f fakeStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
-	return &fakeStream{final: f.final, ev: make(chan asr.Event, 16)}, nil
+	return &fakeStream{final: f.final, partial: f.partial, ev: make(chan asr.Event, 16)}, nil
 }
 
 type fakeStream struct {
-	mu     sync.Mutex
-	final  string
-	sends  int
-	ev     chan asr.Event
-	closed bool
+	mu      sync.Mutex
+	final   string
+	partial string
+	sends   int
+	ev      chan asr.Event
+	closed  bool
 }
 
 func (s *fakeStream) Send([]byte) error {
@@ -225,7 +226,11 @@ func (s *fakeStream) Send([]byte) error {
 	defer s.mu.Unlock()
 	s.sends++
 	if s.sends == 3 && !s.closed {
-		s.ev <- asr.Event{Kind: asr.EventPartial, Text: "hello"}
+		text := s.partial
+		if text == "" {
+			text = "hello"
+		}
+		s.ev <- asr.Event{Kind: asr.EventPartial, Text: text}
 	}
 	return nil
 }
