@@ -5,6 +5,7 @@ report	fix	symptom	level	check
 #3778	#3779	A Logs filter with no match says there are no log lines yet	L	TestLogsFilterNoMatch
 #3781	#3783	The Try prompts dialog cannot be closed	L	TestLLMDebugCloses
 #3785	#3787	The overlay preview's pill leaves the chosen side at some edge distances	L	TestOverlayPreviewKeepsItsSide
+#3788	#3792	Show in the Dock loses the choice made in 1.x	L	TestLegacyDockAtStart
 #3790	#3792	Settings search misses rows that are on the page	L	TestSettingsSearchFindsRows
 #3798	#3799	Test connection without a key shows the raw message key llm.no_key	L	TestDialogTestWithoutKey
 #3835	#3841	Rewrite gets no selected text from a PDF view or a web page that reports an empty range	L	testEndsAtCaret
