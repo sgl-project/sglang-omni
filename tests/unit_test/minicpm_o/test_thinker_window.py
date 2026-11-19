@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The thinker history window: which units the checkpoint's basic window drops, and the in-place cut of an SGLang session."""
+"""The thinker history window: which units it drops and in what order, and the in-place cut of an SGLang session."""
 
 import random
 from array import array
+from collections.abc import Sequence
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -30,15 +31,18 @@ from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto.session import SessionIdentity
+from sglang_omni.scheduling.history_policies import HistoryUnit, KeyDiff, UnitKeys
 from sglang_omni.scheduling.sglang_backend.history_cut import (
     HistoryCut,
     cut_retained_kv,
     cut_token_ids,
+    read_retained_keys,
     retained_history_length,
 )
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 IDENTITY = SessionIdentity("window")
+NO_RETAINED_KEYS = SimpleNamespace(read=lambda start, end, layer_stride: iter(()))
 HEAD_DIM = 128
 ROPE_THETA = 1_000_000.0
 
@@ -115,6 +119,7 @@ def test_window_keeps_the_units_the_checkpoint_window_keeps(seed: int) -> None:
             SimpleNamespace(unit_token_index=unit_token_index),
             history_length,
             history_capacity=4096,
+            retained_keys=NO_RETAINED_KEYS,
         )
         if cut is not None:
             starts = [prefix_length]
@@ -144,11 +149,54 @@ def test_window_cuts_early_when_the_next_unit_would_not_fit() -> None:
     adapter.states[IDENTITY].unit_starts = [10, 110, 210, 310]
     request = SimpleNamespace(unit_token_index=1)
 
-    assert adapter.plan_history_cut(IDENTITY, request, 409, 500) is None
-    cut = adapter.plan_history_cut(IDENTITY, request, 409, 250)
+    assert (
+        adapter.plan_history_cut(IDENTITY, request, 409, 500, NO_RETAINED_KEYS) is None
+    )
+    cut = adapter.plan_history_cut(IDENTITY, request, 409, 250, NO_RETAINED_KEYS)
 
     assert cut == HistoryCut(((10, 210),))
     assert adapter.states[IDENTITY].unit_starts == [10, 110]
+
+
+class NewestFirst:
+    """An out-of-tree drop policy: the newest units go first."""
+
+    def drop_order(self, units: Sequence[HistoryUnit], keys: UnitKeys) -> list[int]:
+        return list(reversed(range(len(units))))
+
+
+def test_window_drops_in_the_policy_order_and_the_protected_units_last() -> None:
+    """The unit at 310 lies within protect_tokens of the next unit at 510, so it goes after the older ones."""
+    adapter = make_adapter(
+        MiniCPMODuplexWindow(drop_policy=f"{__name__}:NewestFirst", protect_tokens=250)
+    )
+    state = adapter.states[IDENTITY]
+    state.unit_starts = [10, 110, 210, 310, 410]
+
+    cut = adapter.plan_history_cut(
+        IDENTITY, SimpleNamespace(unit_token_index=1), 509, 310, NO_RETAINED_KEYS
+    )
+
+    assert cut == HistoryCut(((110, 310),)), "the newest unprotected units go first"
+    assert state.unit_starts == [10, 110, 210]
+
+
+@pytest.mark.parametrize(
+    ("layer_count", "expected_order"), [(2, [1, 2, 0]), (0, [0, 1, 2])]
+)
+def test_keydiff_drops_the_unit_whose_keys_sit_closest_to_the_mean_key_first(
+    layer_count: int, expected_order: list[int]
+) -> None:
+    """Rows point along x, then x + y, then y, so the mean key leans to y and the middle unit sits on it; with no retained KV the oldest go first."""
+    units = [HistoryUnit(10, 13), HistoryUnit(13, 15), HistoryUnit(15, 19)]
+    layer = torch.tensor([[1.0, 0.0]] * 3 + [[1.0, 1.0]] * 2 + [[0.0, 1.0]] * 4)
+    keys = SimpleNamespace(
+        read=lambda start, end, layer_stride: iter([layer[:, None, :]] * layer_count)
+    )
+
+    order = KeyDiff().drop_order(units, keys)
+
+    assert order == expected_order
 
 
 def test_window_key_shift_rounds_the_exact_rotation_once() -> None:
@@ -309,6 +357,41 @@ def test_cut_moves_the_kept_kv_down_the_session_row(
     assert (kv.kv_committed_len, kv.kv_allocated_len) == (70, 70)
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float8_e4m3fn])
+def test_read_retained_keys_reads_the_session_rows_of_every_strided_layer(
+    dtype: torch.dtype,
+) -> None:
+    kv_cache = make_kv_cache(dtype, "cpu")
+    request_rows = ReqToTokenPool(
+        size=1, max_context_len=128, device="cpu", enable_memory_saver=False
+    )
+    generator = torch.Generator().manual_seed(0)
+    slots = torch.randperm(255, generator=generator)[:40] + 1
+    request_rows.req_to_token[0, :40] = slots.to(torch.int32)
+    for layer_id in range(2):
+        buffer = kv_cache.get_key_buffer(layer_id)
+        storage(buffer).copy_(
+            storage(torch.randn(buffer.shape, generator=generator).to(dtype))
+        )
+    rows = SimpleNamespace(req_to_token_pool=request_rows, page_size=1)
+
+    [keys] = read_retained_keys(
+        rows,
+        kv_cache,
+        SimpleNamespace(req_pool_idx=0),
+        10,
+        30,
+        2,
+        lambda keys, positions: keys + positions[:, None, None],
+    )
+
+    expected = storage(kv_cache.get_key_buffer(0))[slots[10:30].to(torch.int64)]
+    assert torch.equal(
+        keys,
+        expected.view(dtype).to(torch.float32) + torch.arange(10, 30)[:, None, None],
+    ), "layer 0's rows 10 to 29 in float32, each shifted back by its position"
+
+
 @pytest.mark.parametrize(
     ("kv_cache", "refused"),
     [
@@ -353,6 +436,10 @@ def test_window_settings_reach_the_thinker_stage() -> None:
                 "7000",
                 "--window.basic_window_low_tokens",
                 "5000",
+                "--window.drop_policy",
+                "keydiff",
+                "--window.protect_tokens",
+                "1000",
             ]
         )
     )
@@ -364,7 +451,10 @@ def test_window_settings_reach_the_thinker_stage() -> None:
         7000,
         5000,
     )
+    assert (kwargs["drop_policy"], kwargs["protect_tokens"]) == ("keydiff", 1000)
     with pytest.raises(ValidationError, match="must be below"):
         MiniCPMODuplexWindow(
             basic_window_high_tokens=6000, basic_window_low_tokens=6000
         )
+    with pytest.raises(ValidationError, match="unknown drop policy 'lru'"):
+        MiniCPMODuplexWindow(drop_policy="lru")

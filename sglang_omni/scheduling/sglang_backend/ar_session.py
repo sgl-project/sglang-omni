@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from array import array
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -40,6 +40,7 @@ from sglang_omni.scheduling.sglang_backend.history_cut import (
     SessionRows,
     cut_retained_kv,
     cut_token_ids,
+    read_retained_keys,
     retained_history_length,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import (
@@ -133,6 +134,32 @@ class ARSessionPreparation:
     kept_token_count: int | None = None
 
 
+@dataclass(frozen=True, kw_only=True)
+class RetainedKeys:
+    """A session's cached keys, read only when a drop policy asks for them."""
+
+    tree_cache: SessionTreeCache
+    kv_cache: LayerKVCache
+    session_id: str
+    adapter: ARSessionAdapter
+
+    def read(self, start: int, end: int, layer_stride: int) -> Iterator[torch.Tensor]:
+        """Float32 keys of positions [start, end) rotated back to position zero, per layer_stride-th layer; none while the session holds no KV."""
+        record = self.tree_cache.session_records().get(self.session_id)
+        if record is None or not record.holds_kv:
+            return iter(())
+        else:
+            return read_retained_keys(
+                self.tree_cache,
+                self.kv_cache,
+                record,
+                start,
+                end,
+                layer_stride,
+                self.adapter.shift_key_positions,
+            )
+
+
 class ARSessionAdapter:
     """Convert unit inputs and outputs without mutating streaming session state."""
 
@@ -194,6 +221,7 @@ class ARSessionAdapter:
         request_data: SGLangARRequestData,
         history_length: int,
         history_capacity: int,
+        retained_keys: RetainedKeys,
     ) -> HistoryCut | None:
         """Choose whole units of retained history to drop before this unit joins the session.
 
@@ -475,7 +503,16 @@ class ARSessionBridge:
             - int(adapter_request.sampling_params.max_new_tokens or 0)
         )
         history_cut = self.adapter.plan_history_cut(
-            unit.session_identity, request_data, history_length, history_capacity
+            unit.session_identity,
+            request_data,
+            history_length,
+            history_capacity,
+            RetainedKeys(
+                tree_cache=self.bridge_scheduler.tree_cache,
+                kv_cache=self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache(),
+                session_id=native_session.session_id,
+                adapter=self.adapter,
+            ),
         )
         if history_cut is not None:
             self.drop_history(session, native_session, history_cut)
