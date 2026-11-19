@@ -377,6 +377,7 @@ class SpeechWebSocketSession:
     ) -> int:
         assert self.config is not None
         request = self.speech_request_from_config(sentence=sentence, stream=True)
+        encode_speed = self.speech_service.resolve_encode_speed(request)
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
@@ -402,9 +403,9 @@ class SpeechWebSocketSession:
                 continue
             else:
                 pass
-            if self.config.speed != 1.0:
+            if encode_speed != 1.0:
                 audio_data, sample_rate = apply_speed(
-                    audio_data, self.config.speed, sample_rate
+                    audio_data, encode_speed, sample_rate
                 )
             else:
                 pass
@@ -451,7 +452,7 @@ class SpeechWebSocketSession:
             gen_req,
             request_id=request_id,
             response_format=request.response_format,
-            speed=request.speed,
+            speed=self.speech_service.resolve_encode_speed(request),
             allow_format_fallback=False,
         )
         if self.active_request_id == request_id:
