@@ -344,7 +344,7 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 		},
 	}}
 	defer func() { loopback = old }()
-	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1}, nil)
+	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1, Delay: 5 * time.Second}, nil)
 	a := f.asr(t, ASRFast)
 	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
 	if err != nil {
@@ -358,14 +358,17 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 	s.writeGate = gate
 	defer close(gate)
 	sendAll(t, st, tone(25*time.Second, 0.3))
-	stopped := time.Now()
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
+	// The Final may take as long as the drain. Wait for it first so the
+	// log wait and the bound cannot expire between the two timeouts.
+	f.waitLogged(t, "failed after")
+	failed := time.Now()
 	f.waitLogged(t, "did not drain") // the drain really timed out
 	evs := drain(t, st)
-	if took := time.Since(stopped); took > previewDrain+5*time.Second {
-		t.Errorf("the error came %v after Stop, over the %v drain bound", took, previewDrain)
+	if took := time.Since(failed); took > previewDrain+5*time.Second {
+		t.Errorf("the error came %v after the Final failed, over the %v drain bound", took, previewDrain)
 	}
 	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
 		t.Fatalf("last %+v", last)
