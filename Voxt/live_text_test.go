@@ -235,6 +235,22 @@ func TestLiveLinesFromStart(t *testing.T) {
 	}
 }
 
+// The first answer inherits the recording overlay's drag when no earlier
+// card has a position of its own.
+func TestFirstCardKeepsLiveDrag(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording}
+	a.overlaySync()
+	a.ov.dragged.x, a.ov.dragged.y = -200, -100
+	a.sess = session.Snapshot{}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	anchored := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+	if frame := a.ov.frame; frame.X != anchored.X-200 || frame.Y != anchored.Y-100 {
+		t.Errorf("the first card lost the recording drag: %+v, anchored %+v", frame, anchored)
+	}
+}
+
 // TestLiveLinesScroll: live text in lines longer than the face takes the
 // wheel: the overlay does not let the pointer through, the wheel scrolls
 // up to what came before and new words leave it there; back at the end,

@@ -12,6 +12,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -106,6 +108,9 @@ func TestReopenCardAndFollowUp(t *testing.T) {
 	slack := a.answer.target
 	rewriteSaid(t, a, tr, slack, "shorter", "two")
 	conversation := a.answer.conv
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
 	a.closeAnswer()
 	waitReopenItems(a, "Slack · decline politely")
 	a.restoreAnswer(conversation)
@@ -113,6 +118,9 @@ func TestReopenCardAndFollowUp(t *testing.T) {
 	card := a.answer
 	if len(card.turns) != 2 || !card.conversation || card.text != "two" || card.target != slack || card.turns[0].Selection != chatA {
 		t.Fatalf("restored %+v; target want %+v", card, slack)
+	}
+	if a.ov.frame != moved {
+		t.Fatalf("restored frame %+v, want the card's moved frame %+v", a.ov.frame, moved)
 	}
 	waitReopenItems(a)
 	rewriteSaid(t, a, tr, slack, "warmer", "three")
@@ -165,6 +173,62 @@ func TestReopenCardAfterRestart(t *testing.T) {
 	if len(messages) != 6 || !strings.Contains(messages[1][1], "decline politely") || !strings.Contains(messages[3][1], "shorter") || !strings.Contains(messages[5][1], "warmer") {
 		t.Fatalf("follow-up messages %q", messages)
 	}
+}
+
+// A window restored after an app restart can hold a different mode, answer
+// length, or size setting from the new card. Its saved center and pinned
+// edge are the user's position; the size difference is not a drag offset.
+func TestRestoredCardFrameAllowsNewContentSize(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "same size", width: 476, height: 130},
+		{name: "longer saved answer", width: 476, height: 345},
+		{name: "saved recording pill", width: 520, height: 96},
+		{name: "saved large card", width: 796, height: 130},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+			a.overlaySync()
+			saved := mygo.Rectangle{Width: test.width, Height: test.height}
+			x, y := layout.Place(a.ov.area, a.prefs.Overlay, saved.Width, saved.Height)
+			saved.X, saved.Y = x-300, y-200
+			a.overlayDraggedAt(saved)
+			a.overlaySync()
+			frame := a.ov.frame
+			if frame.X+frame.Width/2 != saved.X+saved.Width/2 || frame.Y+frame.Height != saved.Y+saved.Height {
+				t.Errorf("restored %+v, want the center and bottom of saved window %+v", frame, saved)
+			}
+		})
+	}
+}
+
+// A recording can be the first overlay after an app restart. Adopting the
+// restored window there keeps the position for the card that follows it.
+func TestRestoredOverlayPositionSurvivesRecordingFirst(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.sess = session.Snapshot{ID: "recording", State: session.Recording}
+	a.overlaySync()
+	saved := mygo.Rectangle{Width: 476, Height: 345}
+	x, y := layout.Place(a.ov.area, a.prefs.Overlay, saved.Width, saved.Height)
+	saved.X, saved.Y = x-300, y-200
+	a.overlayDraggedAt(saved)
+	a.overlaySync()
+	assertSavedPosition := func(mode overlayMode) {
+		t.Helper()
+		frame := a.ov.frame
+		if frame.X+frame.Width/2 != saved.X+saved.Width/2 || frame.Y+frame.Height != saved.Y+saved.Height {
+			t.Errorf("%s lost restored position: %+v, saved window %+v", mode, frame, saved)
+		}
+	}
+	assertSavedPosition(ovRecording)
+	a.sess = session.Snapshot{}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	assertSavedPosition(ovAnswer)
 }
 
 // Deleting an entry or clearing history removes its menu row and prevents reopening.

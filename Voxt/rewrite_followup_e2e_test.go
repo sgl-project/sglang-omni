@@ -208,6 +208,9 @@ func TestRewriteFollowUpSelectionRetry(t *testing.T) {
 		t.Fatalf("after the failure %+v", a.answer)
 	}
 	chat.set("two", 0)
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
 	failed := a.sess.ID
 	a.retryAnswer("")
 	a.pump("the retry", func() bool { return a.sess.ID != failed && a.sess.State.Ended() })
@@ -217,5 +220,8 @@ func TestRewriteFollowUpSelectionRetry(t *testing.T) {
 	}
 	if a.answer.text != "two" || len(a.answer.turns) != 2 || a.answer.turns[1].Selection != chatB || !a.answer.conversation {
 		t.Errorf("card %+v", a.answer)
+	}
+	if frame := a.ov.frame; frame.X != moved.X || frame.Y+frame.Height != moved.Y+moved.Height || frame.Width != moved.Width {
+		t.Errorf("retry moved the card: %+v, want the position and width of %+v", frame, moved)
 	}
 }

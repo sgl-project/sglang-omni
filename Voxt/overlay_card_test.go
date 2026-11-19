@@ -772,7 +772,7 @@ func TestCardFitsTheScreen(t *testing.T) {
 
 // TestCardDragged: a card the user dragged (overlayDragged keeps the
 // offset) keeps its place as its answer grows, stays on the screen, and
-// the next card shows at the anchor again.
+// returns to that place when it is closed and reopened.
 func TestCardDragged(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
@@ -789,11 +789,12 @@ func TestCardDragged(t *testing.T) {
 	if a.ov.frame.Y != a.ov.area.Y-layout.Pad {
 		t.Errorf("dragged past the top: %+v", a.ov.frame)
 	}
+	moved := a.ov.frame
 	a.answer = answerCard{}
 	a.overlaySync()
-	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A longer answer, a few lines more. ", 12)}
 	a.overlaySync()
-	if a.ov.frame != anchored {
-		t.Errorf("the next card: %+v, want %+v", a.ov.frame, anchored)
+	if a.ov.frame != moved {
+		t.Errorf("the reopened card: %+v, want %+v", a.ov.frame, moved)
 	}
 }
