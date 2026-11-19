@@ -20,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Deleting a speech model's draft no longer leaves an old provider using its missing path**: Qwen3-ASR, MOSS-Transcribe-Diarize and Whisper Large v3 continue without the draft.
 - **Translate does not silently deliver an untranslated answer** (#4153): after a strict retry, Voxt rejects an answer with clear script or vocabulary evidence of no translation and shows a localized failure with Try again. Parenthesized original names, language-neutral names, numbers, same-language text, and shared vocabulary still count as valid results.
 - **History and Home refresh after a cancelled session**: cancelling a recording that kept a history entry now updates an open History page and refreshes Home instead of leaving them stale until restart or another session.
+- **A shortcut pressed on Home after your first result keeps its result** (#4199): with Voxt's window in front on Home, a Transcribe, Translate or Rewrite shortcut still ran as a Try after Home had stopped offering its Try area. The result showed nowhere and History kept no entry, so History could list fewer sessions than you ran. Once Home has no Try area, the shortcut now runs a normal session, as on History or Settings: the result shows, and History keeps it. Before your first result, Home's Try area works as before, and so do the Try areas on the Transcribe, Translate and Rewrite pages.
 
 ### 中文
 
@@ -32,6 +33,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **删除语音识别模型的草稿模型后，旧提供方不再使用已删除的路径**：Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 会不使用草稿模型继续转录。
 - **翻译不会再静默交付未翻译的回答**（#4153）：严格重试后，如果回答仍有明确的文字系统或常见词汇证据表明没有翻译，Voxt 会显示对应语言的失败提示，可以重试。括号中的原名、语言中立名称、数字、同语言文本和共享词仍算有效结果。
 - **取消录音后历史和首页会立即刷新**：取消一段已写入历史的录音后，当前打开的历史记录页和首页会立即刷新，不再需要重启或等下一次会话才看到变化。
+- **得到第一个结果后，在首页按快捷键的结果不再丢失**（#4199）：Voxt 窗口在前台、停在首页时，首页已经不显示「试一试」了，按转录、翻译或改写的快捷键却仍按试一试处理。结果哪里都不显示，历史里也没有记录，所以历史的条数会比实际用的次数少。现在首页没有试一试区域时，按快捷键和在历史、设置页一样走正常流程：结果照常显示，历史也会记下。第一次得到结果之前，首页的试一试不变；转录、翻译、改写页上的试一试也不变。
 
 ## [2.1.1] - 2026-11-17
 
