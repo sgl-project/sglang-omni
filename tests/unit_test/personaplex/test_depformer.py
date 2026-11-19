@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import torch
+from sglang.srt.batch_invariant_ops import set_batch_invariant_mode
 from torch import nn
 
 import sglang_omni.models.personaplex.components.depformer as depformer_module
@@ -633,6 +634,42 @@ def test_cuda_depformer_matches_eager_logits_and_codes(
         rtol=2 * torch.finfo(dtype).eps,
         atol=1e-6,
     )
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@torch.inference_mode()
+def test_deterministic_depformer_logits_ignore_batch_size() -> None:
+    """Flash attention changed audio codes despite identical temporal hidden states."""
+    torch.manual_seed(42)
+    model_spec = replace(DEPFORMER, num_layers=1, input_dim=SPEC.input_dim)
+    model = Depformer(model_spec).to(device="cuda", dtype=torch.bfloat16)
+    for parameter in model.parameters():
+        nn.init.normal_(parameter, std=0.05)
+    text_tokens = torch.tensor([3], device="cuda")
+    hidden_states = torch.randn(
+        1, model_spec.input_dim, device="cuda", dtype=torch.bfloat16
+    )
+    forced_codes = torch.full(
+        (1, model_spec.steps), -1, device="cuda", dtype=torch.long
+    )
+    logits_by_batch: list[torch.Tensor] = []
+    with set_batch_invariant_mode():
+        for batch_size in (1, 4):
+            logits_by_step: list[torch.Tensor] = []
+
+            def sample(logits: torch.Tensor) -> torch.Tensor:
+                logits_by_step.append(logits[:1].clone())
+                return logits.argmax(-1)
+
+            model.generate(
+                text_tokens.expand(batch_size).contiguous(),
+                hidden_states.expand(batch_size, -1).contiguous(),
+                forced_codes.expand(batch_size, -1).contiguous(),
+                sample,
+            )
+            logits_by_batch.append(torch.stack(logits_by_step))
+    torch.testing.assert_close(*logits_by_batch, rtol=0, atol=0)
 
 
 @pytest.mark.accelerator

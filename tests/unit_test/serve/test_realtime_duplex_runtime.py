@@ -327,6 +327,78 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("max_coalesced_units", [1, 2, 4])
+async def test_backlog_coalescing_preserves_receipts_order_and_padded_tail(
+    max_coalesced_units: int,
+) -> None:
+    """A stalled call can advance several queued units per bounded request."""
+    adapter = GatedAdapter([])
+    capabilities = Capabilities(
+        max_coalesced_units=max_coalesced_units, tail_policy="pad"
+    )
+    recording = b"".join(bytes([index]) * UNIT_BYTES for index in range(6))
+    recording += b"\6" * (UNIT_BYTES // 2)
+    async with open_runtime(adapter, capabilities=capabilities) as runtime:
+        await runtime.append(recording[:UNIT_BYTES], 0, None, "first")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        await runtime.append(recording[UNIT_BYTES:], 1, None, "backlog")
+        await runtime.end("end")
+        adapter.release.set()
+        envelopes = await receive_until(runtime, Drained)
+        receipts = [
+            envelope.unit
+            for envelope in envelopes
+            if isinstance(envelope.event, UnitCompleted)
+        ]
+        assert [receipt.index for receipt in receipts] == list(range(7))
+        assert [receipt.start_sample for receipt in receipts] == [
+            index * UNIT_BYTES // 2 for index in range(7)
+        ]
+        assert sum(receipt.real_samples for receipt in receipts) == len(recording) // 2
+        assert b"".join(unit.pcm for unit in adapter.units) == (
+            recording + b"\0" * (UNIT_BYTES // 2)
+        )
+        assert adapter.units[0].real_samples == UNIT_BYTES // 2
+        assert all(
+            len(unit.pcm) <= max_coalesced_units * UNIT_BYTES for unit in adapter.units
+        )
+        assert sum(unit.eos for unit in adapter.units) == 1
+        assert adapter.units[-1].eos
+        assert (
+            len(adapter.units)
+            == 2 + (5 + max_coalesced_units - 1) // max_coalesced_units
+        )
+        assert runtime.consumed_samples == runtime.accepted_samples
+        assert runtime.padding_samples == UNIT_BYTES // 4
+        assert runtime.discarded_samples == 0
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_a_coalesced_request_without_completing_its_receipts() -> (
+    None
+):
+    """Closing during catch-up must not acknowledge the unfinished original units."""
+    adapter = GatedAdapter([])
+    capabilities = Capabilities(max_coalesced_units=4, tail_policy="pad")
+    async with open_runtime(adapter, capabilities=capabilities) as runtime:
+        await runtime.append(b"\0" * UNIT_BYTES, 0, None, "first")
+        adapter.release.set()
+        await receive_until(runtime, UnitCompleted)
+        adapter.release.clear()
+        adapter.has_started.clear()
+        await runtime.append(b"\1" * (5 * UNIT_BYTES), 1, None, "backlog")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        assert len(adapter.units[-1].pcm) == 4 * UNIT_BYTES
+        await runtime.close("client_closed")
+        envelopes = await receive_until(runtime, Closed)
+        assert not any(
+            isinstance(envelope.event, UnitCompleted) for envelope in envelopes
+        )
+        assert adapter.close_call_count == 1
+        assert runtime.consumed_samples == UNIT_BYTES // 2
+
+
+@pytest.mark.asyncio
 async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) -> None:
     recorder = get_recorder()
     if recorder.is_active():

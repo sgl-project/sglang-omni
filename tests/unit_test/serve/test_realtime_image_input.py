@@ -158,7 +158,7 @@ async def test_adapter_payload_preserves_audio_and_bundles_image() -> None:
     assert (chunk.modality, chunk.format, chunk.seq, chunk.eos) == (
         "audio",
         "pcm16",
-        2,
+        0,
         True,
     )
 

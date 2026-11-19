@@ -248,6 +248,7 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     }
 
     max_sessions: int = Field(default=1, ge=1)
+    max_coalesced_units: int = Field(default=1, ge=1)
     # Note (Junnan Li): None keeps the offline default voice and role prompt.
     voice: str | None = None
     instructions: str | None = None
@@ -296,6 +297,14 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
                 "server_args_overrides": {
                     "max_running_requests": self.lm_request_slots()
                 },
+            }
+        elif stage_name == CODE2WAV_STAGE:
+            engine = self.stage_named(LM_STAGE).engine
+            return {
+                "max_open_sessions": self.max_sessions,
+                "batch_sessions": not engine.model_extra.get(
+                    "enable_deterministic_inference", False
+                ),
             }
         else:
             return {"max_open_sessions": self.max_sessions}

@@ -134,6 +134,7 @@ def create_realtime_deployment(
             tail_policy="pad",
             sampling_parameters=tuple(PersonaPlexSessionSampling.model_fields),
             voices=packaged_voices(resolve_model_path(pipeline_config.model_path)),
+            max_coalesced_units=pipeline_config.max_coalesced_units,
         ),
         adapter_factory=create_adapter,
         limits=runtime_limits_for_pipeline(pipeline_config),
