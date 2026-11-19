@@ -372,17 +372,20 @@ def av_duration(audio_bytes: bytes) -> float:
             else {}
         )
         with av.open(io.BytesIO(audio_bytes), **open_kwargs) as container:
+            # note (suninnn): the container's duration also covers a longer video track.
+            audio_stream = next(iter(container.streams.audio), None)
+            if (
+                audio_stream is not None
+                and audio_stream.duration
+                and audio_stream.time_base
+            ):
+                return max(float(audio_stream.duration * audio_stream.time_base), 0.0)
+            else:
+                pass
             if container.duration:  # in av.time_base units (microseconds)
                 return max(container.duration / 1_000_000, 0.0)
             else:
                 pass
-            for audio_stream in container.streams.audio:
-                if audio_stream.duration and audio_stream.time_base:
-                    return max(
-                        float(audio_stream.duration * audio_stream.time_base), 0.0
-                    )
-                else:
-                    pass
     except (av.error.FFmpegError, ValueError):
         logger.debug("Could not probe audio duration", exc_info=True)
     return 0.0
@@ -394,9 +397,9 @@ def probe_audio_duration(audio_bytes: bytes) -> float:
     Metadata-only: reads container headers, never decodes. soundfile answers
     WAV/FLAC in microseconds of CPU and only serves formats whose header
     states the exact sample count; every other format (MP3, M4A, WebM, ...)
-    keeps the PyAV path, which wraps the same FFmpeg demuxers load_audio
-    decodes with, so their measurements are unchanged. 0.0 means unknown;
-    callers treat that as "duration not available".
+    goes to PyAV, which reads the first audio track (the one load_audio
+    decodes) and falls back to the container when the track states no
+    duration. 0.0 means unknown; callers treat that as "duration not available".
     """
     duration_s = soundfile_duration(audio_bytes)
     if duration_s > 0:

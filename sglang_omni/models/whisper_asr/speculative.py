@@ -46,6 +46,7 @@ from sglang.srt.speculative.spec_utils import draft_pp_context
 from torch import nn
 from transformers import WhisperConfig
 
+from sglang_omni.models.whisper_asr.draft_cuda_graph import DraftDecodeGraph
 from sglang_omni.models.whisper_asr.sglang_model import (
     LogitsProcessor,
     WhisperDecoderModel,
@@ -516,6 +517,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         check_shared_encoder(target_model, get_spec().speculative_draft_model_path)
         draft_model.target_encoder = target_model.run_encoder
         self.previous_token_ids: torch.Tensor | None = None
+        self.draft_graph: DraftDecodeGraph | None = None
 
     def alloc_memory_pool(
         self,
@@ -536,6 +538,21 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             dtype=torch.int64,
             device=self.device,
         )
+
+    def init_cuda_graphs(self) -> None:
+        self.draft_worker.init_cuda_graphs()
+        # note (Haoling Pu): the draft graph follows the draft's decode graphs, so disable_cuda_graph turns it off too, and its attention reads the KV cache without scales, so it needs the model's dtype there.
+        if (
+            self.speculative_num_steps > 1
+            and self.draft_runner.decode_cuda_graph_runner is not None
+            and self.draft_runner.kv_cache_dtype == self.draft_runner.dtype
+        ):
+            self.draft_graph = DraftDecodeGraph(
+                self.draft_runner, self.speculative_num_steps - 1
+            )
+            self.draft_graph.capture()
+        else:
+            pass
 
     def forward_batch_generation(self, batch: ScheduleBatch) -> GenerationBatchResult:
         if batch.forward_mode.is_extend():
@@ -589,16 +606,26 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             slots=slots[:, :2],
         )
         drafts = [sampler.draw(logits.view(batch_size, 2, -1)[:, 1])]
-        for step in range(1, draft_steps):
-            logits = self.decode_forward(
-                batch,
-                self.draft_runner,
-                token_ids=drafts[-1],
-                offset=step + 1,
-                slots=slots[:, step + 1],
-            )
-            drafts.append(sampler.draw(logits))
-        draft_token_ids = torch.stack(drafts, dim=1)
+        # note (Haoling Pu): the draft graph is captured for one request and drafts by plain argmax.
+        if (
+            self.draft_graph is not None
+            and batch_size == 1
+            and sampler.is_all_greedy
+            and sampler.timestamp_rows is None
+        ):
+            self.draft_graph.load_inputs(batch, drafts[0], sampler.logit_bias)
+            draft_token_ids = self.draft_graph.replay()
+        else:
+            for step in range(1, draft_steps):
+                logits = self.decode_forward(
+                    batch,
+                    self.draft_runner,
+                    token_ids=drafts[-1],
+                    offset=step + 1,
+                    slots=slots[:, step + 1],
+                )
+                drafts.append(sampler.draw(logits))
+            draft_token_ids = torch.stack(drafts, dim=1)
 
         verify_token_ids = torch.cat(
             [newest_token_ids[:, None], draft_token_ids], dim=1

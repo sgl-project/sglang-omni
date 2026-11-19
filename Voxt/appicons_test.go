@@ -70,7 +70,7 @@ func TestAppIcons(t *testing.T) {
 	r := sampleRules()
 	r.Groups[0].Apps = append(r.Groups[0].Apps, appctx.App{BundleID: "com.example.removed", Name: "Removed"})
 	a.setRules(r)
-	a.aePage.sel = "g-chat"
+	a.aeUI.sel = "g-chat"
 	frames(tt)
 	if b, st := a.appIconBitmap(proto.AppRef{BundleID: "com.tinyspeck.slackmacgap"}, false); b == nil || st != appicons.Ready {
 		t.Fatalf("slack: %v %v; asked %v", b, st, *asked)
@@ -118,7 +118,7 @@ func TestAppIconsNoHelper(t *testing.T) {
 	frames(tt)
 	asked := snapshotIcons(fs, "")
 	a.setRules(sampleRules())
-	a.aePage.sel = "g-chat"
+	a.aeUI.sel = "g-chat"
 	frames(tt)
 	if b, st := a.appIconBitmap(proto.AppRef{BundleID: "com.tinyspeck.slackmacgap"}, false); b == nil || st != appicons.Ready {
 		t.Errorf("slack from disk: %v %v", b, st)

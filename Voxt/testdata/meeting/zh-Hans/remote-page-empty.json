@@ -1,0 +1,49 @@
+{
+  "name": "remote-page-empty",
+  "kind": "remote",
+  "remote": {
+    "wait": {
+      "value": "",
+      "options": [
+        {
+          "title": "自动",
+          "value": ""
+        },
+        {
+          "title": "1 分钟",
+          "value": "1m"
+        },
+        {
+          "title": "2 分钟",
+          "value": "2m"
+        },
+        {
+          "title": "5 分钟",
+          "value": "5m"
+        },
+        {
+          "title": "10 分钟",
+          "value": "10m"
+        },
+        {
+          "title": "30 分钟",
+          "value": "30m"
+        },
+        {
+          "title": "60 分钟",
+          "value": "60m"
+        },
+        {
+          "title": "不限",
+          "value": "none"
+        }
+      ],
+      "selected": "自动",
+      "token": "\u0000zh-Hans"
+    },
+    "cards": {
+      "kind": "llm",
+      "groups": null
+    }
+  }
+}
