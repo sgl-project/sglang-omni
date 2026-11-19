@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypedDict
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     )
 else:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 class DisabledCodecGraphStats(TypedDict):
@@ -161,11 +164,11 @@ class Qwen3TTSCodecStateArena:
                 pass
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
-        if released is not None:
-            self.device_module.current_stream(self.device).wait_event(released)
-        else:
-            pass
         try:
+            if released is not None:
+                self.device_module.current_stream(self.device).wait_event(released)
+            else:
+                pass
             self.zero_slot(slot)
         except BaseException:
             # note (ratish): no decode has read the slot yet, so it goes back and the next acquire zeroes it again.
@@ -176,8 +179,17 @@ class Qwen3TTSCodecStateArena:
     def release(self, slot: int) -> None:
         released = None
         if has_device_streams(self.device):
-            released = self.device_module.Event()
-            released.record(self.device_module.current_stream(self.device))
+            try:
+                released = self.device_module.Event()
+                released.record(self.device_module.current_stream(self.device))
+            except RuntimeError:
+                # note (ratish): without the event no later holder is ordered after this one's work, so the slot is withdrawn like a decode never proven complete.
+                logger.warning(
+                    f"Qwen3-TTS codec state slot {slot} could not record its release and is retired",
+                    exc_info=True,
+                )
+                self.retire(slot)
+                return
         else:
             pass
         with self.lock:

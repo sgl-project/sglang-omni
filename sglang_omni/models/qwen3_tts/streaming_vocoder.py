@@ -89,6 +89,8 @@ QWEN3_TTS_FULL_DECODE_GRAPH_MAX_REQUESTS = 4
 QWEN3_TTS_FULL_DECODE_GRAPH_FRAME_STEP = 16
 # note (ratish): first-chunk widths with tail graphs; longer first chunks use the window graphs.
 QWEN3_TTS_TAIL_GRAPH_FRAMES = (32, 48, 64, 96, 128, 192, 256)
+# note (ratish): CPython's default thread switch interval, so a worker re-planning a whole request that waits for a stream's slot takes the GIL no more often than a runnable thread.
+QWEN3_TTS_WHOLE_REQUEST_SLOT_POLL_S = 0.005
 _CODEC_STATS_LOG_INTERVAL_S = 60.0
 _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES = (1, 2, 4, 8)
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
@@ -1080,6 +1082,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         # note (ratish): whole requests belong to the initial worker alone. An abort only marks
         # the request, and the worker drops it at the next replay.
         self.whole_requests: deque[Qwen3TTSWholeRequest] = deque()
+        self.is_whole_request_waiting_for_slot = False
         self.followup_queue: queue.PriorityQueue[
             tuple[float, int, str, Qwen3TTSStreamState | None]
         ] = queue.PriorityQueue()
@@ -1390,17 +1393,22 @@ class Qwen3TTSStreamingVocoderScheduler(
             f"Qwen3-TTS vocoder CUDA graphs: {coverage}; "
             f"Codec slots {codec_stats['slots']}"
         )
+        past_slots = (
+            "streams past the slots decode eagerly on the left-context path and "
+            "non-streaming requests wait for a slot"
+            if self.decodes_whole_requests
+            else "streams past the slots decode eagerly on the left-context path"
+        )
         if max_in_flight is None:
             logger.warning(
-                f"Qwen3-TTS admission has no in-flight cap, so streams past the "
-                f"{codec_stats['slots']} Codec slots decode eagerly on the "
-                "left-context path."
+                f"Qwen3-TTS admission has no in-flight cap for the "
+                f"{codec_stats['slots']} Codec slots, so {past_slots}."
             )
         elif codec_stats["slots"] < max_in_flight:
             logger.warning(
                 f"Qwen3-TTS vocoder has {codec_stats['slots']} Codec slots, fewer "
                 f"than the {max_in_flight} requests the server admits at once; "
-                "streams past the slots decode eagerly on the left-context path. "
+                f"{past_slots}. "
                 f"Set --vocoder.factory.codec_state_slots to at least {max_in_flight}."
             )
         else:
@@ -2783,13 +2791,18 @@ class Qwen3TTSStreamingVocoderScheduler(
             (state.playback_deadline_s, next(self.followup_sequence), request_id, state)
         )
 
-    def wait_for_first_chunks(self) -> list[tuple[str, Qwen3TTSStreamState]] | None:
-        """The idle initial worker's wait for a batch of first chunks.
+    def wait_for_first_chunks(
+        self, timeout: float | None = None
+    ) -> list[tuple[str, Qwen3TTSStreamState]] | None:
+        """The initial worker's wait for a batch of first chunks, for at most timeout when one is given.
 
         A whole request joins the whole requests and ends the wait, since its replay is due.
         """
         batch: list[tuple[str, Qwen3TTSStreamState]] = []
-        queued = self.initial_queue.get()
+        try:
+            queued = self.initial_queue.get(timeout=timeout)
+        except queue.Empty:
+            return batch
         if queued is None or self.async_stop.is_set():
             return None
         else:
@@ -3003,12 +3016,17 @@ class Qwen3TTSStreamingVocoderScheduler(
         if not self.whole_requests:
             # note (ratish): a waiting whole request means a replay is due, so only an idle worker waits for a batch.
             batch = self.wait_for_first_chunks()
-            if batch is None:
-                return False
-            elif batch:
-                self.run_initial_batch(batch)
-            else:
-                pass
+        elif self.is_whole_request_waiting_for_slot:
+            # note (ratish): no replay is due while every whole request waits for a slot that streams hold, so the worker waits for a first chunk at most one poll before it plans again.
+            batch = self.wait_for_first_chunks(
+                timeout=QWEN3_TTS_WHOLE_REQUEST_SLOT_POLL_S
+            )
+        else:
+            batch = []
+        if batch is None:
+            return False
+        elif batch:
+            self.run_initial_batch(batch)
         else:
             pass
         if not self.whole_requests:
@@ -3053,6 +3071,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             for request in self.whole_requests:
                 self.fail_whole_request(request, error)
             self.whole_requests.clear()
+            self.is_whole_request_waiting_for_slot = False
             return None
         else:
             pass
@@ -3116,13 +3135,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             replay.requests.append(request)
             replay.frames.append(frames)
         self.whole_requests = waiting
+        # note (ratish): a request holding a slot always joins an empty replay, so no replay with requests left means each of them found every slot held.
+        self.is_whole_request_waiting_for_slot = replay is None and bool(waiting)
         return replay
 
     def release_whole_request_slot(self, request: Qwen3TTSWholeRequest) -> None:
-        if request.slot is not None and not self.cuda_decode_failed:
+        if request.slot is not None:
             self.codec_arena.release(request.slot)
         else:
-            # note (ratish): once CUDA decode is disabled no decode reads a slot again, and a release would record an event on the failed device.
             pass
         request.slot = None
 

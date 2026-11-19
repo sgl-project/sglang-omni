@@ -90,6 +90,7 @@ from sglang_omni.models.qwen3_tts.sglang_model import (
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
+    QWEN3_TTS_WHOLE_REQUEST_SLOT_POLL_S,
     IncrementalDecodeBatch,
     IncrementalDecodePlan,
     PendingIncrementalGroup,
@@ -4076,7 +4077,11 @@ def test_qwen3_tts_whole_request_waits_for_the_slot_a_stream_holds(
 ) -> None:
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
     arena = scheduler.codec_arena
-    held_slots = [arena.acquire() for _ in range(arena.num_slots)]
+    streams = []
+    for index in range(arena.num_slots):
+        state = scheduler.create_stream_state(f"stream-{index}")
+        state.codec_slot = arena.acquire()
+        streams.append(state)
 
     scheduler.run_non_streaming_batch(
         [whole_request_message("whole", 4)], asyncio.new_event_loop()
@@ -4086,11 +4091,11 @@ def test_qwen3_tts_whole_request_waits_for_the_slot_a_stream_holds(
 
     assert runner.calls == []
     assert scheduler.outbox.empty()
-    arena.release(held_slots.pop())
+    scheduler.release_codec_slot(streams.pop())
     while scheduler.whole_requests:
         scheduler.run_initial_pass()
-    for slot in held_slots:
-        arena.release(slot)
+    for state in streams:
+        scheduler.release_codec_slot(state)
     results = run_whole_requests(scheduler)
     assert len(runner.calls) == 1
     assert chunk_samples(results["whole"].data) == expected_whole_samples(scheduler, 4)
@@ -4258,7 +4263,7 @@ def test_qwen3_tts_whole_request_never_reuses_a_retired_slot(
 def test_qwen3_tts_whole_requests_waiting_for_a_slot_fail_once_cuda_decode_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A replay that disabled CUDA decode and retired every whole-request slot left the requests waiting for a slot unanswered."""
+    """A replay that disabled CUDA decode and retired the slots whole requests could take left the requests waiting for a slot unanswered."""
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
     arena = scheduler.codec_arena
     for _ in range(arena.num_slots - runner.bucket):
@@ -4293,25 +4298,52 @@ def test_qwen3_tts_whole_requests_waiting_for_a_slot_fail_once_cuda_decode_is_di
     assert not scheduler.whole_requests
 
 
-def test_qwen3_tts_whole_request_fails_without_a_device_release_once_cuda_decode_is_disabled(
+def test_qwen3_tts_whole_request_waiting_for_a_stream_slot_blocks_between_plans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """With every slot held by streams, a whole request was planned again at once on every pass, so the initial worker spun until a stream ended."""
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    arena = scheduler.codec_arena
+    for _ in range(arena.num_slots):
+        arena.acquire()
     scheduler.run_non_streaming_batch(
-        [whole_request_message("whole", 8)], asyncio.new_event_loop()
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
     )
     scheduler.run_initial_pass()
-    scheduler.cuda_decode_failed = True
+    timeouts: list[float | None] = []
 
-    def release_on_a_failed_device(slot: int) -> None:
-        raise RuntimeError("device context failed")
+    def empty_get(block: bool = True, timeout: float | None = None) -> None:
+        timeouts.append(timeout)
+        raise Empty
 
-    monkeypatch.setattr(scheduler.codec_arena, "release", release_on_a_failed_device)
+    monkeypatch.setattr(scheduler.initial_queue, "get", empty_get)
     scheduler.run_initial_pass()
 
-    assert scheduler.outbox.get_nowait().type == "error"
-    assert not scheduler.whole_requests
-    assert len(runner.calls) == 1
+    assert timeouts == [QWEN3_TTS_WHOLE_REQUEST_SLOT_POLL_S]
+    assert runner.calls == []
+    assert scheduler.is_whole_request_waiting_for_slot
+
+
+def test_qwen3_tts_whole_request_whose_codes_never_land_fails_only_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    wait_codes_ready = scheduler.wait_codes_ready
+
+    def fail_one(request: Qwen3TTSWholeRequest) -> None:
+        if request.request_id == "faulted":
+            raise RuntimeError("device fault")
+        else:
+            wait_codes_ready(request)
+
+    monkeypatch.setattr(scheduler, "wait_codes_ready", fail_one)
+    messages = [whole_request_message("faulted", 4), whole_request_message("next", 4)]
+
+    scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
+    results = run_whole_requests(scheduler)
+
+    assert results["faulted"].type == "error"
+    assert chunk_samples(results["next"].data) == expected_whole_samples(scheduler, 4)
 
 
 def test_qwen3_tts_whole_requests_finish_on_the_stateful_decoder_without_window_graphs(
@@ -11635,21 +11667,28 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
 
 
 @pytest.mark.parametrize(
-    ("max_in_flight", "warning_parts"),
+    ("max_in_flight", "decodes_whole_requests", "warning_parts"),
     [
-        (None, ("no in-flight cap", "64 Codec slots")),
-        (64, ()),
-        (65, ("64 Codec slots", "65 requests", "codec_state_slots to at least 65")),
+        (None, False, ("no in-flight cap", "64 Codec slots")),
+        (64, False, ()),
+        (
+            65,
+            False,
+            ("64 Codec slots", "65 requests", "codec_state_slots to at least 65"),
+        ),
+        (65, True, ("left-context path and non-streaming requests wait for a slot",)),
     ],
 )
 def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     max_in_flight: int | None,
+    decodes_whole_requests: bool,
     warning_parts: tuple[str, ...],
 ) -> None:
     """A server with no in-flight cap got 64 slots and no warning, so past 64 live streams the left-context decoder took over unannounced."""
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    scheduler.decodes_whole_requests = decodes_whole_requests
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):

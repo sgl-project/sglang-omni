@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch._dynamo.utils import counters
 
-from sglang_omni.models.qwen3_tts import incremental_codec
+from sglang_omni.models.qwen3_tts import codec_state_arena, incremental_codec
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -1145,6 +1145,59 @@ def test_codec_state_arena_counts_only_misses_that_do_not_wait() -> None:
     assert arena.exhausted_count == 0
     assert arena.acquire() is None
     assert arena.exhausted_count == 1
+
+
+class UnrecordableEvent:
+    def record(self, stream: object) -> None:
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+
+class FailedDeviceStream:
+    def wait_event(self, event: object) -> None:
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+
+def fail_device(
+    arena: Qwen3TTSCodecStateArena, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(codec_state_arena, "has_device_streams", lambda device: True)
+    monkeypatch.setattr(
+        arena,
+        "device_module",
+        SimpleNamespace(
+            Event=UnrecordableEvent, current_stream=lambda device: FailedDeviceStream()
+        ),
+    )
+
+
+def test_codec_state_arena_retires_a_slot_whose_release_cannot_be_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A release on a failed device raised out of the worker that freed the slot."""
+    _, arena = make_arena(Decoder(), slots=2)
+    slot = arena.acquire()
+    fail_device(arena, monkeypatch)
+
+    arena.release(slot)
+
+    assert arena.retired == {slot}
+    assert slot not in arena.free
+    assert arena.active_slots() == 0
+
+
+def test_codec_state_arena_never_loses_a_slot_whose_wait_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wait that raised after acquire took the slot left it neither free nor retired, so the arena lost a row for good."""
+    _, arena = make_arena(Decoder(), slots=1)
+    arena.release_events[0] = UnrecordableEvent()
+    fail_device(arena, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="illegal memory access"):
+        arena.acquire()
+
+    assert arena.retired == {0}
+    assert arena.active_slots() == 0
 
 
 @pytest.mark.accelerator
