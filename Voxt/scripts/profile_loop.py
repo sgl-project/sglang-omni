@@ -219,6 +219,11 @@ def report_memory_pressure_valid(report: dict[str, object]) -> bool:
     return report_peak_memory_pressure(report) == "normal"
 
 
+def report_fast_profile_pressure_recorded(report: dict[str, object]) -> bool:
+    pressure = report_peak_memory_pressure(report)
+    return pressure == "warning" or pressure == "critical"
+
+
 def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
     if len(reports) != 3 or any(
         report.get("status") != "success"
@@ -226,7 +231,10 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
         or report.get("errors")
         or (
             not report_memory_pressure_valid(report)
-            and not report.get("config", {}).get("fast_profile")
+            and not (
+                report.get("config", {}).get("fast_profile")
+                and report_fast_profile_pressure_recorded(report)
+            )
         )
         for report in reports
     ):
@@ -301,6 +309,19 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
             "peak_rss_bytes": optional_median(reports, ["resources", "peak_rss_bytes"]),
             "peak_physical_footprint_bytes": optional_median(
                 reports, ["resources", "peak_physical_footprint_bytes"]
+            ),
+            "peak_swap_used_bytes": optional_median(
+                reports, ["resources", "peak_swap_used_bytes"]
+            ),
+            "memory_pressure_critical_count": median(
+                [
+                    sum(
+                        1
+                        for event in report.get("resources", {}).get("memory_pressure_warnings", [])
+                        if event.get("pressure") == "critical"
+                    )
+                    for report in reports
+                ]
             ),
             "stages": stage_medians,
         },
@@ -485,7 +506,10 @@ def result_invalid_reasons(
     if report.get("errors"):
         reasons.append(f"errors={len(report['errors'])}")
     pressure = report_peak_memory_pressure(report)
-    if pressure != "normal" and not report.get("config", {}).get("fast_profile"):
+    if pressure != "normal" and not (
+        report.get("config", {}).get("fast_profile")
+        and report_fast_profile_pressure_recorded(report)
+    ):
         reasons.append(f"peak_memory_pressure={pressure or 'missing'}")
     return reasons, report
 
@@ -599,7 +623,7 @@ def run_profile_process(
                     try:
                         environment_sample = sampler()
                         violations = environment_violations(
-                            environment_sample, idle_seconds
+                            environment_sample, idle_seconds, fast_profile
                         )
                         samples.append(
                             {
@@ -661,6 +685,9 @@ def run_matrix(
                     attempt_temp = prepare_dir / f"tmp-{attempt}"
                     attempt_temp.mkdir()
                     environment["TMPDIR"] = str(attempt_temp)
+                    fast_profile_options = {}
+                    if run_config.get("fast_profile") is True:
+                        fast_profile_options["fast_profile"] = True
                     returncode, during = run_profile_process(
                         [
                             "go",
@@ -677,7 +704,7 @@ def run_matrix(
                         idle_seconds,
                         environment_sample_seconds,
                         redaction_values(run_config),
-                        run_config.get("fast_profile") is True,
+                        **fast_profile_options,
                     )
                     after = host_environment()
                     write_json(
