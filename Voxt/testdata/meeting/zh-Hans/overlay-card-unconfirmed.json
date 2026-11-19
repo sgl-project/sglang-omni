@@ -45,6 +45,7 @@
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
       "insert_tooltip": "文字没有出现在输入位置，已放到剪贴板。按 ⌘V 粘贴，或者再插入一次。",
+      "copy_tooltip": "复制（C）",
       "size_step": 0,
       "levels": [
         0,

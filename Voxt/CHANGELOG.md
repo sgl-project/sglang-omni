@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Rewrite can deliberately send selected text and a copied image together**: the new Settings → Privacy → Text and a copied image together switch sends both when you mean it. It defaults off — on fresh installs and on upgraded settings that never touched it — so an earlier copied image cannot take over a text Rewrite; an explicit choice is kept.
+- **Single-letter keys on the answer card** (#4127): while the answer card shows, press c to copy the answer and r to insert it over the selection, as the card's Copy and Insert buttons do. The keys bind from the first streaming draft and only while the card is actually visible; a notice or an insertion unbinds them, and a late event cannot act on a newer card. During IME composition bare keys go to the editor, while modified shortcuts and mouse bindings still work. If your cancel shortcut is c or r, it keeps priority and only the other card key is advertised. A stalled or timed-out open cannot reinstall c/r after a newer close unbinds them. Without Accessibility the card keys do not work, like the cancel shortcut.
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
@@ -23,6 +24,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **改写可以明确同时发送选中文字和复制的图片**：设置 → 隐私 →“同时发送选中文字和复制的图片”打开后，两者一起发送。默认关闭——新安装和升级前没碰过这个开关的设置都一样——避免早前复制的图片取代选中文字成为改写输入；明确选过的值保留。
+- **答案卡片的单字母键**（#4127）：答案卡片显示时，按 c 复制回答、按 r 把回答插入选中的位置，和卡片上的“复制”“插入”按钮一样。第一段流式文字出现时就绑定，卡片实际可见才有效；通知盖住卡片或插入时解绑，迟到的按键事件不会作用于新卡片。中文输入法有组合文字时，裸键先给编辑器，带修饰键的快捷键和鼠标绑定仍照常触发。取消键如果也是 c 或 r，取消键优先，只提示另一个卡片键。旧 open 卡住或超时后，新 close 仍会解绑，旧请求完成时不会把 c/r 装回去。没有辅助功能时，卡片键和取消键一样不生效。
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
@@ -95,7 +97,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **自选主题色，窗口可以透明**（#4123、#4180）：「设置 → 外观」新增“颜色”选择器，附浅色和深色预览，“恢复默认颜色”回到默认的青绿色。按钮、侧边栏选中项、录音窗口和答案卡片都跟随这个颜色。“透明”主题让侧边栏和页面背景半透明，“窗口透明度”滑块调节透明程度。使用默认颜色时，“试一试”的开始、停止按钮和音量条保持原来的橙红色。
 - **首次使用的开场动画**（#4173）：第一次打开设置向导前播放一段简短开场，只播一次。已经设置过的，或打开了「减少动态效果」的，不播放。
 - **MOSS-Transcribe-Diarize 和 Whisper Large v3 支持加速转录**（#4133）：这两个语音模型的卡片上有了加速转录开关。
-
 #### 变更
 
 - **结果支持排版**：转录、翻译和改写在“试一试”、历史详情和答案卡片中显示 Markdown、代码高亮和 LaTeX 公式，也支持流式输出和连续追问。复制和插入使用原文。

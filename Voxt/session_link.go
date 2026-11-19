@@ -62,11 +62,16 @@ type sessionState struct {
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
 	noticeSeq int
-	// hotkeysSent is the hotkey.configure last sent (as JSON), so the
-	// same one is not sent again; carbon the accelerators registered
-	// with MyGo while the event tap is missing.
-	hotkeysSent string
-	carbon      []string
+	// hotkeysSent is the newest hotkey.configure requested, so the same
+	// one is not sent again. Sequence numbers let a newer close supersede
+	// an older open even after a timeout. carbon is the accelerators
+	// registered with MyGo while the event tap is missing.
+	hotkeysSent             string
+	hotkeyConfigureSequence uint64
+	hotkeyStatusSequence    uint64
+	hotkeyCardIdentity      string
+	hotkeyCardGeneration    uint64
+	carbon                  []string
 	// keysListening: a shortcut field takes pressed keys (key_recorder.go),
 	// and the shortcuts are off meanwhile; keysHeard is this frame's.
 	keysListening, keysHeard bool

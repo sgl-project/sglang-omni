@@ -48,6 +48,27 @@ func (a *app) strictFeature() string {
 	return hotkey.Transcribe
 }
 
+// cardHotkeyGeneration numbers each visible answer-card incarnation. An
+// event acts only on the card that was visible when the helper read its id.
+func (a *app) cardHotkeyGeneration() uint64 {
+	identity := ""
+	if a.overlayModeNow() == ovAnswer {
+		identity = a.sess.ID + "/draft"
+		if a.answer.open {
+			identity = a.answer.id + "/open"
+		}
+	}
+	if identity == "" {
+		a.hotkeyCardIdentity = ""
+		return 0
+	}
+	if identity != a.hotkeyCardIdentity {
+		a.hotkeyCardGeneration++
+		a.hotkeyCardIdentity = identity
+	}
+	return a.hotkeyCardGeneration
+}
+
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
@@ -79,6 +100,22 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			}
 			return
 		}
+	}
+	if action, generation, ok := hotkey.CardAction(e.Binding); ok {
+		if generation != a.cardHotkeyGeneration() {
+			return
+		}
+		switch action {
+		case hotkey.CardCopy: // the card's c: what its Copy does (#4127)
+			if a.answer.open && a.answer.text != "" && !sessionCardRedoWriting(a.sessionCardProjectionInput()) {
+				a.copyAnswer()
+			}
+		case hotkey.CardInsert: // the card's r: what its Insert does
+			if a.answer.open && a.answer.problem == nil && a.answer.text != "" && !a.cardSessionLive() {
+				a.insertAnswer()
+			}
+		}
+		return
 	}
 	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature())
 	switch d.Action {
@@ -155,20 +192,33 @@ func (a *app) syncHotkeys() {
 	if paused {
 		plan = hotkey.Plan{} // the keys go to the field that records them
 	}
+	cardGeneration := a.cardHotkeyGeneration()
 	a.syncCarbon(plan)
 	if !a.helperReady() {
 		a.hotkeysSent = ""
 		return
 	}
 	params := plan.Configure(a.sess.State.Live() || a.answer.open)
+	if cardGeneration != 0 && !paused {
+		// The card's single-letter keys (#4127) bind only while it shows.
+		params.Bindings = append(slices.Clone(params.Bindings), hotkey.CardBindings(cardGeneration, plan.Cancel)...)
+	}
 	key := fmt.Sprintf("%+v", params)
 	if key == a.hotkeysSent {
 		return
 	}
 	a.hotkeysSent = key
+	a.hotkeyConfigureSequence++
+	params.Sequence = a.hotkeyConfigureSequence
 	helperCall(a, proto.MethodHotkeyConfigure, params, 5*time.Second, func(st proto.HotkeyStatus, err error) {
+		if params.Sequence < a.hotkeyStatusSequence {
+			return
+		}
+		a.hotkeyStatusSequence = params.Sequence
 		if err != nil {
-			a.hotkeysSent = ""
+			if a.hotkeysSent == key {
+				a.hotkeysSent = ""
+			}
 			a.logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: "hotkey.configure: " + err.Error()})
 			return
 		}

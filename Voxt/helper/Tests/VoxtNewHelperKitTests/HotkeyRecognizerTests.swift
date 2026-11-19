@@ -1,6 +1,18 @@
 @testable import VoxtNewHelperKit
 import XCTest
 
+private final class ConfigureRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var configs: [HotkeyConfig] = []
+
+    func record(_ params: HotkeyConfigureParams) {
+        let config = HotkeyConfig(bindings: params.bindings, active: params.active ?? false, cancel: params.cancel)
+        lock.withLock { configs.append(config) }
+    }
+
+    var last: HotkeyConfig { lock.withLock { configs.last! } }
+}
+
 // Table-style tests of the recognizer with synthetic flag sequences.
 final class HotkeyRecognizerTests: XCTestCase {
     let fn = RawFlags.secondaryFn
@@ -357,6 +369,82 @@ final class HotkeyRecognizerTests: XCTestCase {
             fired += r.handle(i).events.map { "\($0.binding):\($0.phase.rawValue)" }
         }
         XCTAssertEqual(fired, ["hold:down", "hold:up", "dbl:trigger"])
+    }
+    func testMarkedTextPassesMatchingKeysWithoutSwallowing() {
+        var c = HotkeyConfig(bindings: [
+            Binding(id: "card.copy/1", modifiers: [:], key: 8, behavior: .tap),
+            Binding(id: "card.insert/1", modifiers: [:], key: 15, behavior: .tap),
+        ], active: true, cancel: Binding(id: "cancel", modifiers: [:], key: 8, behavior: .tap))
+        var r = HotkeyRecognizer(config: c)
+        for key in [UInt16(8), 15] {
+            let down = r.handle(.keyDown(keyCode: key, flags: 0, isRepeat: false, t: 0), hasMarkedText: { true })
+            XCTAssertTrue(down.events.isEmpty)
+            XCTAssertFalse(down.swallow)
+            XCTAssertFalse(r.handle(.keyUp(keyCode: key, flags: 0, t: 10)).swallow)
+        }
+        let cancel = r.handle(.keyDown(keyCode: 8, flags: 0, isRepeat: false, t: 20), hasMarkedText: { false })
+        XCTAssertEqual(cancel.events.map(\.binding), ["cancel"])
+        XCTAssertTrue(cancel.swallow)
+        let card = r.handle(.keyDown(keyCode: 15, flags: 0, isRepeat: false, t: 30), hasMarkedText: { false })
+        XCTAssertEqual(card.events.map(\.binding), ["card.insert/1"])
+        XCTAssertTrue(card.swallow)
+        c.cancel = nil
+        r.configure(c)
+        var probeCalls = 0
+        _ = r.handle(.keyDown(keyCode: 9, flags: 0, isRepeat: false, t: 40), hasMarkedText: {
+            probeCalls += 1
+            return true
+        })
+        XCTAssertEqual(probeCalls, 0, "a nonmatching key does not need the composition probe")
+    }
+    func testModifiedShortcutAndMouseStillFireWithMarkedText() {
+        let c = HotkeyConfig(bindings: [
+            Binding(id: "rewrite", modifiers: [.option: .any], key: 49, behavior: .tap),
+            Binding(id: "mouse", modifiers: [:], button: 3, behavior: .tap),
+        ], active: true)
+        var r = HotkeyRecognizer(config: c)
+        let modified = r.handle(.keyDown(keyCode: 49, flags: RawFlags.option, isRepeat: false, t: 0), hasMarkedText: { true })
+        XCTAssertEqual(modified.events.map(\.binding), ["rewrite"])
+        XCTAssertTrue(modified.swallow)
+        let mouse = r.handle(.mouseDown(button: 3, flags: 0, t: 10), hasMarkedText: { true })
+        XCTAssertEqual(mouse.events.map(\.binding), ["mouse"])
+        XCTAssertTrue(mouse.swallow)
+    }
+
+    func testStalledOpenCannotReinstallCardKeysAfterClose() async {
+        let open = HotkeyConfigureParams(sequence: 1, bindings: [
+            Binding(id: "card.copy/1", modifiers: [:], key: 8, behavior: .tap),
+            Binding(id: "card.insert/1", modifiers: [:], key: 15, behavior: .tap),
+        ], active: true)
+        let close = HotkeyConfigureParams(sequence: 2, bindings: [], active: false)
+        let coordinator = HotkeyConfigureCoordinator()
+        let openStarted = DispatchSemaphore(value: 0)
+        let releaseOpen = DispatchSemaphore(value: 0)
+        let recorder = ConfigureRecorder()
+        let openTask = Task {
+            coordinator.configure(open) { config in
+                if !config.bindings.isEmpty {
+                    openStarted.signal()
+                    releaseOpen.wait()
+                }
+                recorder.record(config)
+            }
+        }
+        XCTAssertEqual(openStarted.wait(timeout: .now() + 1), .success)
+        let closeTask = Task { coordinator.configure(close, apply: recorder.record) }
+        await closeTask.value
+        var recognizer = HotkeyRecognizer(config: recorder.last)
+        let hidden = recognizer.handle(.keyDown(keyCode: 8, flags: 0, isRepeat: false, t: 20))
+        XCTAssertTrue(hidden.events.isEmpty, "the hidden card no longer emits copy")
+        XCTAssertFalse(hidden.swallow, "the hidden card no longer swallows c")
+        releaseOpen.signal()
+        await openTask.value
+        recognizer = HotkeyRecognizer(config: recorder.last)
+        let late = recognizer.handle(.keyDown(keyCode: 8, flags: 0, isRepeat: false, t: 30))
+        XCTAssertTrue(late.events.isEmpty, "the stalled open cannot reinstall copy after close")
+        XCTAssertFalse(late.swallow)
+        coordinator.configure(open, apply: recorder.record)
+        XCTAssertTrue(recorder.last.bindings.isEmpty, "an older request is ignored after close")
     }
 }
 

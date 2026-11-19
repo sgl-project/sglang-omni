@@ -87,6 +87,7 @@ func (a *app) overlayModeNow() overlayMode {
 }
 
 func (a *app) overlaySync() {
+	defer a.syncHotkeys()
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
 	mode := a.overlayModeNow()
