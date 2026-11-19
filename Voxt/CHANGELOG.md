@@ -19,6 +19,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Answers no longer show a model's raw tool-call or thinking control markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged.
 - **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
+- **Transcribe no longer sends a built-in example for the language model to copy** (#4228): a short dictation could look like an instruction to rewrite the example, so the model returned the built-in weekly-report text instead of your words. Cleanup rules now go in the system prompt without an example conversation, in both the built-in and custom prompt paths. Spoken Translate keeps its translated example.
 
 ### 中文
 
@@ -30,6 +31,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **回答不再显示语言模型原始的内部工具调用或思考控制标记**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。
 - **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
+- **转录不再发送可能被语言模型复制的内置示例**（#4228）：短听写以前可能被当成改写示例的指令，导致模型返回内置周报文本而不是你说的话。现在，清理规则直接写在系统提示词里，内置提示词和自定义提示词都不再附带示例对话；语音翻译仍保留翻译示例。
 
 ## [2.1.1] - 2026-11-17
 

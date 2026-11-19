@@ -228,8 +228,8 @@ func TestSessionEndToEnd(t *testing.T) {
 	}
 	msgs, _ := reqs[0]["messages"].([]any)
 	sys, _ := msgs[0].(map[string]any)["content"].(string)
-	user, _ := msgs[len(msgs)-1].(map[string]any)["content"].(string) // after the clean-up's example turn
-	if len(msgs) != 4 || !strings.Contains(sys, "Keep it short.") || strings.Contains(sys, "hello aura link") || user != "<input>\nhello aura link\n</input>" ||
+	user, _ := msgs[len(msgs)-1].(map[string]any)["content"].(string) // after the system prompt, with no example turn
+	if len(msgs) != 2 || !strings.Contains(sys, "Keep it short.") || strings.Contains(sys, "hello aura link") || user != "<input>\nhello aura link\n</input>" ||
 		reqs[0]["temperature"] != nil {
 		t.Errorf("chat %v", reqs[0])
 	}
