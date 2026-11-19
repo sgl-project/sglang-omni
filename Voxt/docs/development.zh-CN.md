@@ -58,6 +58,10 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 
 存储的测试用 MyGo 的 SQLite 插件，它会下载一次自己的库（按 SHA-256 校验），或者用 `MYGO_SQLITE_LIBRARY`。在 Linux 上，浮窗中文文字的像素检查需要 CJK 字体（Ubuntu：`fonts-noto-cjk`）。
 
+## 环境变量
+
+Go 代码、Swift helper 和 `scripts/` 读取的每个 `VOXTNEW_*` 变量，用途和默认值都列在[英文版的环境变量表](development.md#environment-variables)里。哪个变量没有对应的行，`TestDocsEnvironmentVariables` 就失败。
+
 ## 修改 fixture 驱动的 view state 和 actions
 
 [UI 开发指南](ui-development.zh-CN.md) 说明了如何在不使用辅助进程和模型的情况下渲染 fixture、修改会议、历史、会话浮窗、更新、首页、引导、应用增强、词典、笔记、语言模型、模型、功能页、设置或 shell 视图。功能侧改动遵守同一条边界：
