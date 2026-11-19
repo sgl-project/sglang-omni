@@ -626,7 +626,9 @@ def serve(
     )
     if config:
         try:
-            config_manager = ConfigManager.from_file(config)
+            config_manager = ConfigManager.from_file(
+                config, model_path_override=model_path
+            )
         except (ConfigPathError, ValueError) as exc:
             # A file that does not parse, an unknown path in a stage entry,
             # two entries disagreeing about one path: all of these carry a
@@ -674,10 +676,7 @@ def serve(
         mem_fraction_static=mem_fraction_static,
     )
     if config and model_path is not None:
-        # Given both, the flag is a command line source and outranks the
-        # file's model_path. Merged as a patch rather than assigned onto the
-        # result, so `sgl-omni config resolve/explain` previews exactly what
-        # launches here.
+        # note (kermit): Keep the path flag in the CLI patch set to detect conflicting dotted overrides.
         flag_patches = flag_patches.merge(
             patches_from_model_path_flag(model_path, config_manager.config)
         )
