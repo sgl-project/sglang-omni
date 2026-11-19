@@ -189,15 +189,28 @@ func (r *run) write(raw, selection string) {
 // requests, the snapshot and the history entry use it.
 func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, error) {
 	res, profile, truncated, err := r.ask(in)
-	// A used-up plan is the user's to manage: moving to another paid
-	// service without asking would spend it unseen.
-	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || llm.Code(err) == llm.CodeUsageLimit {
+	if !r.useFallback(err) {
 		return res, profile, truncated, err
 	}
+	r.swapFallback(err)
+	return r.ask(in)
+}
+
+// useFallback says a failed request may go to the fallback model once:
+// there is one, the session goes on (not cancelled, skipped, stopped or
+// asked to rethink), and the failure is not the user's to manage — a
+// used-up plan is, so moving to another paid service without asking
+// would spend it unseen.
+func (r *run) useFallback(err error) bool {
+	return err != nil && r.svc.Fallback != nil && r.ctx.Err() == nil && !r.skipped.Load() && !r.stopped.Load() && !r.rethink.Load() && llm.Code(err) != llm.CodeUsageLimit
+}
+
+// swapFallback makes the fallback the session's model: later requests,
+// the snapshot and the history entry use it.
+func (r *run) swapFallback(err error) {
 	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
 	r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, r.svc.FallbackInfo, nil
 	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft = r.svc.LLMInfo, "" })
-	return r.ask(in)
 }
 
 // ask sends one request and streams its answer into the snapshot. It

@@ -184,10 +184,14 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	var llmErr error
 	if e.Kind == store.KindTranscribe {
 		e.Result, _, llmErr = r.cleanUp(text, nil)
+		if r.useFallback(llmErr) {
+			r.swapFallback(llmErr)
+			e.Result, _, llmErr = r.cleanUp(text, nil)
+		}
 		if llmErr != nil {
 			// As a session: the text as recognised, with the warning.
 			e.LLMMS = r.now().Sub(llmStart).Milliseconds()
-			e.LLMProvider, e.LLMModel = svc.LLMInfo.ID, svc.LLMInfo.Model
+			e.LLMProvider, e.LLMModel = r.svc.LLMInfo.ID, r.svc.LLMInfo.Model
 			e.Error = llmErr.Error()
 			return e, nil
 		}

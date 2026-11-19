@@ -43,6 +43,10 @@ func (r *run) transcribe(text string) {
 		for r.askAgain() {
 			cleaned, profile, err = r.cleanUp(text, r.thinking())
 		}
+		if r.useFallback(err) {
+			r.swapFallback(err)
+			cleaned, profile, err = r.cleanUp(text, nil)
+		}
 		llmTime := r.now().Sub(llmStart)
 		if r.cancelled.Load() {
 			r.endCancelled(nil)

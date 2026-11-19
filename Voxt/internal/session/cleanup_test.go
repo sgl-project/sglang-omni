@@ -177,3 +177,43 @@ func TestLongTranslate(t *testing.T) {
 		t.Errorf("result %q, %d requests", end.Result, len(reqs))
 	}
 }
+
+// TestTranscribeFallback: when Transcribe's language model fails and a
+// fallback model is there (the Language models page's switch), the
+// clean-up is asked of the fallback once, which then is the session's
+// model: the snapshot and the entry name it. When both fail, the text
+// goes on as recognised, degraded.
+func TestTranscribeFallback(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	for _, tc := range []struct {
+		name             string
+		main, fallback   *fakeLLM
+		result, model    string
+		mainN, fallbackN int
+	}{
+		{"the model fails", &fakeLLM{err: boom}, &fakeLLM{text: "Hello, VoxtNew."}, "Hello, VoxtNew.", "ollama", 1, 1},
+		{"both fail", &fakeLLM{err: boom}, &fakeLLM{err: boom}, "hello VoxtNew", "ollama", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: " hello aura link "}, tc.main, func(_ *Config, s *settings.Settings) {
+				s.Features.Transcribe.Prompt = "Be brief."
+			})
+			h.fallback = tc.fallback
+			id := h.start()
+			h.speak(id, 5)
+			end := h.rec.wait(t)
+			if end.State != Done || end.Result != tc.result || end.LLM.ID != tc.model {
+				t.Errorf("end %s %q by %q, want %s %q by %q (problem %+v)", end.State, end.Result, end.LLM.ID, Done, tc.result, tc.model, end.Problem)
+			}
+			if failed := tc.main.err != nil && tc.fallback.err != nil; failed != (end.Problem != nil && end.Problem.Code == ProblemLLM && end.Problem.Degraded) {
+				t.Errorf("problem %+v", end.Problem)
+			}
+			if n, m := len(tc.main.requests()), len(tc.fallback.requests()); n != tc.mainN || m != tc.fallbackN {
+				t.Errorf("%d requests to the model, %d to the fallback; want %d, %d", n, m, tc.mainN, tc.fallbackN)
+			}
+			if es := h.hist.all(); len(es) != 1 || es[0].LLMProvider != tc.model || es[0].LLMModel != end.LLM.Model {
+				t.Errorf("entries %+v", es)
+			}
+		})
+	}
+}
