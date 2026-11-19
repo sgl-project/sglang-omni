@@ -45,6 +45,7 @@ MAC_DIR=code/VoxtNew-logsel scripts/mac.sh scripts/mac-logs-shots.sh  # the logs
 MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real speech models ($HUB, ~/voxtnew-runtime): Swift tests, omni, quick eval, app smoke
 scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni go test -run TestEval -v .'  # the eval (docs/eval.md)
 scripts/vendor-mygo.sh --check                               # third_party/mygo is MyGo + our patches
+scripts/release-preflight.sh 2.1.2                           # before a stable tag, read-only: versions, CHANGELOG section, download links, unnamed pull requests, certificate date
 scripts/snapshots.sh check                                   # every snapshot, pixel for pixel, against the merge base
 GOMAXPROCS=1 scripts/w0-snapshots.sh check                   # the same comparison, accepting the measured PNG noise in scripts/w0-snapshots-noisy.list (docs/architecture.md, Testing)
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .  # regenerate meeting, history, session, updates, home, onboarding, app enhancement, dictionary, remote, models, feature, settings and shell fixtures in English and Chinese
