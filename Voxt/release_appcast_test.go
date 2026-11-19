@@ -11,6 +11,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -224,6 +225,43 @@ const releaseAppcastXML = `<?xml version="1.0" encoding="utf-8"?>
   </channel>
 </rss>
 `
+
+func TestNightlyVulnerabilityScanUsesDarwin(t *testing.T) {
+	data, err := os.ReadFile("../.github/workflows/voxt-nightly.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	start := strings.Index(workflow, "  vulnerabilities:\n")
+	end := strings.Index(workflow, "\n  nightly:\n")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("vulnerability job not found")
+	}
+	job := workflow[start:end]
+	if !strings.Contains(job, "runs-on: macos-26") {
+		t.Errorf("vulnerability job must scan the release's Darwin arm64 packages:\n%s", job)
+	}
+}
+
+func TestNightlyArtifactLookupUsesPackageResult(t *testing.T) {
+	data, err := os.ReadFile("docs/release.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(data)
+	for _, want := range []string{
+		"--branch main",
+		"--status completed",
+		`select(.name == "nightly / Voxt release package" and .conclusion == "success")`,
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("release instructions do not contain %q", want)
+		}
+	}
+	if strings.Contains(doc, "--workflow voxt-nightly.yaml --status success") {
+		t.Error("release instructions still require the vulnerability job to succeed")
+	}
+}
 
 func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 	out, err := runReleaseAppcast(t, releaseAppcastXML, "items")
