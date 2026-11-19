@@ -16,7 +16,7 @@
             "default": true,
             "installed": false,
             "size_text": "2.5 GB download",
-            "used_by": "Used by Transcribe · Translate · Rewrite",
+            "used_by": "Used by Transcribe · Translate · Rewrite · Meetings",
             "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
             "tags": [
               "Local",
@@ -417,6 +417,14 @@
               "label": "Hide",
               "accessibility_label": "Hide System dictation",
               "tooltip": "Hide it from the features' menus"
+            },
+            {
+              "kind": "assign",
+              "model_id": "asr.system",
+              "model_kind": "asr",
+              "label": "Apply to",
+              "accessibility_label": "Apply System dictation to features",
+              "tooltip": "Choose the features that use this model"
             }
           ]
         }

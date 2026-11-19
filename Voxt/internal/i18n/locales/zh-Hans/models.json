@@ -86,5 +86,18 @@
   "Password (optional)": "密码（可选）",
   "The password is kept in the Keychain.": "密码保存在钥匙串里。",
   "The password cannot have quotes, backslashes or line breaks.": "密码里不能有引号、反斜杠或换行。",
-  "Could not save the proxy's password in the Keychain.": "无法把代理密码保存到钥匙串。"
+  "Could not save the proxy's password in the Keychain.": "无法把代理密码保存到钥匙串。",
+  "Apply": "应用",
+  "Apply to features": "应用到功能",
+  "Apply model to %s": "将模型应用到%s",
+  "Choose the features that use this model": "选择使用此模型的功能",
+  "Clean-up is off. This model will be used when you turn it on.": "整理已关闭，开启后才会使用此模型。",
+  "Current: %s": "当前：%s",
+  "Model applied to selected features.": "已将模型应用到所选功能。",
+  "Only checked features change their model. Other settings and feature switches stay unchanged.": "仅更改勾选功能的模型，其他设置和功能开关保持不变。",
+  "This model does not support this feature.": "此模型不支持该功能。",
+  "This model is no longer available. Close this dialog and set it up again.": "此模型已不可用，请关闭对话框并重新设置。",
+  "Transcribe clean-up": "转录整理",
+  "Unavailable: %s": "不可用：%s",
+  "Recordings from the selected features will be sent to this speech service.": "所选功能的录音将发送到此语音识别服务。"
 }
