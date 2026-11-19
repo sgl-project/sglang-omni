@@ -28,6 +28,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Rewrite answers no longer show echoed input tags** (#4313): when the language model repeats `<selected_text>` or `<instruction>` around your selection or instruction, the answer card removes those tags and keeps the text inside them. Only a pair that wraps the whole answer or exactly your selection or instruction goes; tags that belong in the answer, such as a prompt template you asked for, stay.
 
+### Fixed
+
+- **Recording time keeps seconds after ten minutes**: the recording preview sizes its timer to the full duration, so times such as 10:59 and 61:05 no longer lose their seconds.
+
 ### 中文
 
 #### 新增
@@ -53,6 +57,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **改写回答不再显示重复的输入标签**（#4313）：语言模型重复输出 `<selected_text>` 或 `<instruction>` 标签时，答案卡片会去掉标签，保留标签内的文字。只去掉包住整段回答、或正好包住你的选中文字或指令的那一对；回答本身需要的标签（比如你要的提示词模板）保留。
+
+#### 修复
+
+- **录音超过 10 分钟仍显示秒数**：录音预览按完整时长调整计时文字的宽度，10:59、61:05 等时长不再丢失秒数。
 
 ## [2.1.1] - 2026-11-17
 
