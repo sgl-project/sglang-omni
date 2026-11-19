@@ -34,10 +34,10 @@ Lint runs on GitHub-hosted runners for every PR, and Test Layout, Docs Check, Pl
 
 - `run-lint-only` runs lint only. The self-hosted gates succeed and run no tests. Use `/tag-and-rerun-ci lint` to add it. It does not turn off a stage label that is also present.
 - A stage label runs one stage, and there is no label that runs every stage: `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex` and `run-cascaded-duplex` on H100, `run-intel-cpu-ci` (Intel Xeon), `run-intel-xpu-ci` (Intel GPU) and `run-mac-ci` (Apple Silicon). The hardware stages still skip a PR that touches none of their paths.
-- Any stage label except `run-mac-ci` also runs the H100 unit tests.
+- Any stage label except `run-mac-ci`, and any ASR model label, also runs the H100 unit tests.
 - `run-unit-test-ci-only` runs just the H100 unit tests after shared setup when no other stage labels are present. Use `/tag-and-rerun-ci unit-test` to add it and re-run completed CI.
-- A model label picks the model of every selected stage that accepts it. It does not select a stage. Without one, a selected stage draws its model at random. Keep at most one model label per stage.
-  - ASR: `run-fun-asr-nano-2512`, `run-qwen3-asr-1.7b`, `run-whisper-large-v3`
+- A model label picks the model of every selected stage that accepts it. Outside ASR it does not select a stage. Without one, a selected stage draws its model at random. Keep at most one model label per stage.
+  - ASR: `run-asr-ci` runs both ASR jobs. A model label alone runs only the job for its model: `run-moss-transcribe-diarize` runs MOSS-TD multi-speaker, and `run-fun-asr-nano-2512`, `run-qwen3-asr-1.7b` or `run-whisper-large-v3` runs SeedTTS ASR on that model.
   - TTS and MPS: `run-higgs-tts-3-4b`, `run-moss-tts-local-transformer-v1.5`. `run-mps-ci` is the only MPS stage label. With both stage labels, one model label selects that model for both. With only `run-tts-ci`, MPS does not run.
   - TTS: `run-qwen3-tts-12hz-1.7b-base`, `run-qwen3-tts-12hz-1.7b-customvoice` (label only, never drawn), `run-fun-cosyvoice3-0.5b-2512`
   - Omni: `run-qwen3-omni-30b-a3b-instruct`, `run-minicpm-o-4.5`
