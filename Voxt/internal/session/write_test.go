@@ -323,6 +323,19 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{
+			name: "literal control markup survives streaming", kind: store.KindTranslate,
+			sel: &fakeSelector{text: "Explain <|im_end|> literally"}, llm: &fakeLLM{text: "Explain <|im_end|> literally, then keep the rest of this answer", chunk: 5, pause: 10 * time.Millisecond},
+			states: "reading composing delivering done", state: Done, result: "Explain <|im_end|> literally, then keep the rest of this answer", pasted: true,
+			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
+				for _, s := range h.rec.all() {
+					if s.State == Composing && strings.Contains(s.Draft, "<|im_end|>") {
+						return
+					}
+				}
+				t.Error("the streamed draft lost the selection's literal control markup")
+			},
+		},
+		{
 			name: "a try reads no selection", kind: store.KindTranslate, sel: &fakeSelector{text: "unused"}, llm: &fakeLLM{text: "你好"},
 			req:   StartRequest{Try: true},
 			speak: true, states: "recording recognizing composing done", state: Done, result: "你好",

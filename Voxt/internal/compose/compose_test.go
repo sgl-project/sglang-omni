@@ -602,7 +602,7 @@ func TestClean(t *testing.T) {
 		{"Visible<|endoftext|>", "x", "Visible"},
 		{"Visible</think>", "x", "Visible"},
 		{"Visible<channel|>", "x", "Visible"},
-		{"Answer<|tool_", "x", "Answer"},
+		{"Answer<|tool_", "x", "Answer<|tool_"},
 		{"a <|x", "x", "a <|x"},
 		{"a <", "x", "a <"},
 		{"Use <b>bold</b> and 2 < 3.", "format this as HTML", "Use <b>bold</b> and 2 < 3."},

@@ -219,6 +219,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
+	answerInput := in.Text + "\n" + in.Instruction
 	var last time.Time
 	publish := func(force bool) {
 		now := time.Now()
@@ -228,7 +229,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		last = now
 		var a compose.Answer
 		if in.Answer {
-			a = compose.PartialAnswer(buf.String())
+			a = compose.PartialAnswer(buf.String(), answerInput)
 		} else {
 			a.Content = compose.PartialClean(buf.String(), in.Text)
 		}
@@ -258,11 +259,11 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
-		if a, ok := compose.ParseAnswer(resp.Text); ok {
+		if a, ok := compose.ParseAnswer(resp.Text, answerInput); ok {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), in.Instruction)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInput)}, out.Profile(), truncated, nil
 	}
 	input := in.Text
 	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), truncated, nil
