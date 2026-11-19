@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Literal thinking markers keep the surrounding answer** (#4085): a `<channel|>` mention before punctuation and an unmatched `</think>` mention between words no longer discard the text around them in streamed, final, or structured answers.
 - **Answers no longer show a model's raw tool-call or thinking control markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged. An unmatched thinking-close marker no longer discards the answer that follows it, and a literal control-token mention inside a sentence stays intact.
 
 ### 中文
@@ -20,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **字面提到的思考标记不再误删周围回答**（#4085）：`<channel|>` 后面紧跟标点，或 `</think>` 未配对地出现在句子中时，流式、最终和结构化回答都会保留周围文字。
 - **回答不再显示语言模型原始的内部工具调用或思考控制标记**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。未配对的思考结束标记不再误删后面的正式回答，句子中字面提到的控制标记也原样保留。
 
 ## [2.1.1] - 2026-11-17

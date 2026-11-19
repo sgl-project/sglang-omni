@@ -3,6 +3,7 @@ package compose
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -138,7 +139,7 @@ func controlTokenStart(s, input string) int {
 func trailingControlToken(token string) bool {
 	switch token {
 	case "<|/tool_call|>", "<|tool_call_end|>", "<|tool_calls_section_end|>", "<|im_end|>", "<|end|>",
-		"<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>":
+		"<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "</think>":
 		return true
 	default:
 		return false
@@ -218,8 +219,9 @@ func stripControlMarkup(s string, inputs ...string) string {
 				j += closeSearchFrom
 			}
 			if j >= 0 && (i < 0 || j < i) {
-				if tag[1] == "<channel|>" && j > 0 && j+len(tag[1]) < len(s) &&
-					strings.ContainsRune(" \t\r\n", rune(s[j-1])) && strings.ContainsRune(" \t\r\n", rune(s[j+len(tag[1])])) {
+				next, _ := utf8.DecodeRuneInString(s[j+len(tag[1]):])
+				if j > 0 && j+len(tag[1]) < len(s) && strings.ContainsRune(" \t\r\n", rune(s[j-1])) &&
+					(strings.ContainsRune(" \t\r\n", next) || unicode.IsPunct(next)) {
 					closeSearchFrom = j + len(tag[1])
 					continue
 				}
