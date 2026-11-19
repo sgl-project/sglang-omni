@@ -10,13 +10,19 @@ import pickle
 import struct
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import LocalEntryNotFoundError
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
 from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
+from sglang.srt.runtime_context import override_platform
 
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.comm.stage_io import extract_tensors, restore_tensors
@@ -50,9 +56,11 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     set_moss_tts_local_preprocessing_context,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
     build_generation_batch_overrides,
 )
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
@@ -61,6 +69,8 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
 from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.port_claim import claim_tcp_port
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
+from tests.unit_test.fixtures.sm100_build import SM100_PLATFORM, patch_visible_gpu
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 N_VQ = 12
@@ -677,7 +687,9 @@ def install_fake_moss_ar_factory(
     monkeypatch,
     *,
     process_memory_bytes: int | None,
+    sm_version: int | None = None,
 ):
+    """With sm_version, SGLang parses the arguments on a mini checkpoint, the visible GPU reports that SM version, and each infrastructure call also records its server args."""
     pytest.importorskip("PIL")
 
     from sglang_omni.models.moss_tts import hf_loading
@@ -713,14 +725,17 @@ def install_fake_moss_ar_factory(
     )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        infrastructure_calls.append(
-            {
-                "mem_fraction_static": server_args.mem_fraction_static,
-                "context_length": server_args.context_length,
-                "gpu_id": gpu_id,
-                "total_gpu_memory_fraction": kwargs.get("total_gpu_memory_fraction"),
-            }
-        )
+        call = {
+            "mem_fraction_static": server_args.mem_fraction_static,
+            "context_length": server_args.context_length,
+            "gpu_id": gpu_id,
+            "total_gpu_memory_fraction": kwargs.get("total_gpu_memory_fraction"),
+        }
+        if sm_version is not None:
+            call["server_args"] = server_args
+        else:
+            pass
+        infrastructure_calls.append(call)
         return (
             model_worker,
             object(),
@@ -791,6 +806,22 @@ def install_fake_moss_ar_factory(
         "get_process_gpu_memory_bytes",
         fake_get_process_gpu_memory_bytes,
     )
+    if sm_version is not None:
+        monkeypatch.setattr(
+            sglang_backend, "build_sglang_server_args", build_sglang_server_args
+        )
+        monkeypatch.setattr(
+            hf_loading,
+            "get_hf_text_config",
+            lambda config: types.SimpleNamespace(max_position_embeddings=1024),
+        )
+        monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
+        patch_visible_gpu(monkeypatch, sm_version=sm_version)
+        model_worker.model_runner.model = types.SimpleNamespace(
+            init_frame_decode_graphs=lambda batch_sizes: None
+        )
+    else:
+        pass
 
     return stages, infrastructure_calls, process_memory_queries
 
@@ -852,6 +883,44 @@ def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
     else:
         assert overrides["cuda_graph_backend_prefill"] == "full"
         assert overrides["cuda_graph_bs_prefill"] == [64, 128, 256, 512]
+
+
+def test_moss_tts_local_default_launch_starts_on_sm100(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Issue 4316: on SM100 SGLang picks trtllm_mha, this model refuses the breakable fallback, and the default launch did not start."""
+    stages, infrastructure_calls, _ = install_fake_moss_ar_factory(
+        monkeypatch, process_memory_bytes=None, sm_version=100
+    )
+
+    with override_platform(**SM100_PLATFORM):
+        stages.create_sglang_tts_engine_executor(
+            write_mini_llama_checkpoint(tmp_path), device="cuda", gpu_id=0
+        )
+
+    (call,) = infrastructure_calls
+    cfg = resolved_view(call["server_args"])
+    assert attention_backends_of(cfg) == ("flashinfer", "trtllm_mha")
+    assert cfg.cuda_graph_config.prefill.backend == CudaGraphBackend.FULL
+
+
+def test_moss_tts_local_default_launch_is_refused_on_sm103(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The full prefill graph substitute is verified on SM100 only, so SM103, where SGLang also picks trtllm_mha, still refuses the breakable fallback."""
+    stages, infrastructure_calls, _ = install_fake_moss_ar_factory(
+        monkeypatch, process_memory_bytes=None, sm_version=103
+    )
+
+    with (
+        override_platform(**SM100_PLATFORM),
+        pytest.raises(RuntimeError, match="has not adopted the breakable prefill"),
+    ):
+        stages.create_sglang_tts_engine_executor(
+            write_mini_llama_checkpoint(tmp_path), device="cuda", gpu_id=0
+        )
+
+    assert infrastructure_calls == []
 
 
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(

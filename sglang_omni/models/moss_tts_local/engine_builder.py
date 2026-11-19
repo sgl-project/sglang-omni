@@ -46,6 +46,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
     model_arch_override = "MossTTSLocalSGLangModel"
     supports_context_length_override = True
     supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
+    # note (Xuanfei): this model refuses the breakable prefill graph, so on B200 the automatic trtllm_mha stops startup (issue 4316); FlashInfer captures the full graph.
+    full_prefill_substitute_sm_versions = frozenset({100})
 
     def resolve_context_length(
         self,

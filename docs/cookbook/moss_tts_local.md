@@ -60,6 +60,10 @@ For non-streaming workloads, set `vocoder_cuda_graph: false` in YAML or pass `--
 
 The same names are used by the pipeline configuration and the vocoder factory/scheduler APIs. Replace the former `cuda_graph`, `cuda_graph_frames`, and `cuda_graph_min_free_gb` spellings in YAML, CLI overrides, and direct Python calls with the `vocoder_` prefix.
 
+### Blackwell SM100 prefill attention
+
+The AR backbone uses the `full` prefill CUDA graph and does not support the `breakable` one. On SM100 GPUs (B200) SGLang's automatic attention backend, `trtllm_mha`, cannot capture the full graph, so the server sets the prefill attention backend to `flashinfer` and decode keeps `trtllm_mha`, a split SGLang serves with its hybrid attention backend, which it logs as experimental; without this it would refuse to start. The default is not applied with an explicit `--tts_engine.engine.attention_backend`, `--tts_engine.engine.prefill_attention_backend` or `--tts_engine.engine.decode_attention_backend` (the server then starts only if the resolved prefill backend can capture the full graph, as `flashinfer` does on B200) or with an explicit `--tts_engine.engine.kv_cache_dtype` other than `auto`; with such a KV cache dtype the server starts only if `--tts_engine.engine.prefill_attention_backend flashinfer` is passed as well. It was verified on B200 (SM100) only; other SM versions keep their automatic backend, and on SM103 the server still refuses to start.
+
 ## Synthesizing Speech
 
 ### Basic Speech
