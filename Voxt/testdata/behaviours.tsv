@@ -3,7 +3,7 @@ Transcribe	L	TestSessionEndToEnd	Pasting into a real app is checked by hand only
 Transcribe	M	TestMacE2ESessionLocal	none
 Transcript clean-up by the language model	L	TestStopAnswerEndToEnd	No check of a real model's answer format
 Transcript clean-up by the language model	L	TestSkipLLMEndToEnd	none
-Spoken translation	L	TestTranslateSpeechCard	No real-app check that History files it under Translate
+Spoken translation	L	TestTranslateSpeechCard	none
 Selection translation, both directions	L	TestTranslateSelectionEndToEnd	No check that the result is in the target language
 Translation follow-up and fallback model	L	TestTranslateContinue	none
 Translation follow-up and fallback model	L	TestTranslateFallbackModel	none

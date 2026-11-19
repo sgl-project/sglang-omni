@@ -249,7 +249,8 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
 3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过。正式版打 tag 之前做三件事，beta 不用：
    - 跑 `scripts/release-preflight.sh 2.0.1`（只读，不构建、不签名、不上传、不打 tag）：检查两处版本号、CHANGELOG 里这个版本的一节有英文和中文、六个页面的下载链接是这个版本，列出上一个正式版以来 CHANGELOG 没提到的 `[Voxt]` PR，并报 Developer ID 证书的到期日。有 `FAIL` 的行就先改掉。
    - 在 Mac 上跑一遍回归 `scripts/mac-regress.sh`（[manual-test.md](manual-test.md) §10）和 `scripts/mac-e2e.sh`。
-   - 把 preflight 的输出和两个脚本结尾的结果表贴进发版 PR。
+   - 列出不在每个 PR 上自动检查的行为：`awk -F'\t' 'NR>1 && ($2!="L" || $4!="none")' testdata/behaviours.tsv`。按每行的 check（脚本、测试或 manual-test.md 的步骤）在 Mac 上过一遍，gap 一列写的是还要用手看的部分。
+   - 把 preflight 的输出、两个脚本结尾的结果表和上面这张表的结果贴进发版 PR。
 4. 从 Linux 同步到发布用的 checkout 并构建（§1.1 的 `mac-gui.sh`；更新私钥 `release.sh` 自己从 `~/.config/voxtnew-release/` 读，§1.3）：
    ```sh
    # 先不发布：构建、公证、检查、actnow-publish.sh --dry-run
