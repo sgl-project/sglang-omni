@@ -332,7 +332,7 @@ class NEOChatModel(PreTrainedModel):
     def extract_feature(
         self,
         pixel_values: torch.Tensor,
-        grid_hw: torch.Tensor | None = None,
+        grid_hw: torch.Tensor,
         *,
         gen_model: bool = True,
     ) -> torch.Tensor:
