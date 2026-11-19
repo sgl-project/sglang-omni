@@ -41,6 +41,10 @@ Tests:
 - **A test restores the globals it sets** (`t.Cleanup`). New code takes the translator and the clock as parameters, as the `...For(translator, ...)` functions do.
 - **A test that fails with no change behind it is a bug**: open an issue with the log before the rerun, and fix or remove the test.
 - **A skipped test has a runner**: a test behind an environment switch says in the docs who runs it and when (nightly, before a release, by hand).
+- **A failure found on a real Mac becomes a test.** The PR that fixes it adds a check that fails with the fix reverted, at the first level that can show the failure: a test on every pull request (fake models, fake helper), then a Mac script (`scripts/mac-e2e.sh`), then a step in `docs/manual-test.md`. When only a Mac or a person can show it, the PR adds or updates the feature's row in `testdata/behaviours.tsv` and gives the reason in the gap column.
+- **A real-Mac result names the commit and the features**: the comment that reports it gives the head it ran on and the `testdata/behaviours.tsv` features it exercised. A result on an older head does not count for the current one.
+- **A test that closes a gap sets the gap to `none`** in the same PR. The rows left are the hand checks of a release: `awk -F'\t' 'NR>1 && ($2!="L" || $4!="none")' testdata/behaviours.tsv`.
+- **One more fact about a flow is an assertion in the test that drives the flow.** Add a test only for a flow that no test drives.
 
 Pull requests:
 
