@@ -18,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Answers no longer show a model's raw tool-call or thinking control markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged.
+- **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
 
 ### 中文
 
@@ -28,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **回答不再显示语言模型原始的内部工具调用或思考控制标记**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。
+- **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
 
 ## [2.1.1] - 2026-11-17
 
