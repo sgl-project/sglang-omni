@@ -24,7 +24,7 @@ These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its codi
 
 ## Quality rules
 
-For every change, by a person or an agent.
+For every change, by a person or an agent. A rule here comes with a number measured in this repository and names its check. Once a test or a CI step enforces a rule, the rule shrinks to the name of that check.
 
 Code:
 
@@ -39,6 +39,7 @@ Tests:
 - **A test fails when the behaviour it names breaks.** The PR of a fix names the test that fails with the fix reverted.
 - **Tests are tight**: a fake clock or an event instead of `time.Sleep`, the running test binary instead of the `go` tool, loopback instead of the network.
 - **A test restores the globals it sets** (`t.Cleanup`). New code takes the translator and the clock as parameters, as the `...For(translator, ...)` functions do.
+- **A test that fails with no change behind it is a bug**: open an issue with the log before the rerun, and fix or remove the test.
 - **A skipped test has a runner**: a test behind an environment switch says in the docs who runs it and when (nightly, before a release, by hand).
 
 Pull requests:
