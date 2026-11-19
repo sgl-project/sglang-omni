@@ -605,6 +605,8 @@ def run_matrix(
     environment_sample_seconds: float = 15,
     max_attempts: int = 3,
 ) -> int:
+    if max_attempts not in {1, 3}:
+        raise ValueError("attempts must be 1 (diagnostic) or 3 (median)")
     configurations = load_configurations(matrix_path)
     results_root.mkdir(parents=True, exist_ok=True)
     batch_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -683,11 +685,11 @@ def run_matrix(
             except (OSError, RuntimeError, ValueError, KeyError) as error:
                 config_error = str(error)
             if valid_count == max_attempts and not config_error:
-                if max_attempts != 3:
+                if max_attempts == 1:
                     summary = {
-                        "status": "success",
+                        "status": "diagnostic",
                         "valid_runs": valid_count,
-                        "note": "diagnostic run without a three-run median",
+                        "note": "single diagnostic run; no three-run median",
                     }
                 else:
                     try:
@@ -709,11 +711,14 @@ def run_matrix(
             summary["attempts"] = attempts
             write_json(config_dir / "summary.json", summary)
             summaries.append({"name": name, **summary})
-            if summary["status"] != "success":
+            if summary["status"] not in {"success", "diagnostic"}:
                 all_valid = False
     batch_summary = {
         "batch": batch_id,
-        "status": "success" if all_valid else "failed",
+        "status": (
+            "diagnostic" if max_attempts == 1 and all_valid else
+            "success" if all_valid else "failed"
+        ),
         "configurations": summaries,
     }
     write_json(batch_dir / "summary.json", batch_summary)
@@ -747,12 +752,10 @@ def main() -> int:
         arguments.idle_seconds < 0
         or arguments.poll_seconds <= 0
         or arguments.environment_sample_seconds <= 0
-        or arguments.attempts <= 0
     ):
-        parser.error(
-            "idle seconds must be nonnegative, poll/sample seconds positive, "
-            "and attempts a positive count"
-        )
+        parser.error("idle seconds must be nonnegative and poll/sample seconds positive")
+    if arguments.attempts not in {1, 3}:
+        parser.error("attempts must be 1 (diagnostic) or 3 (median)")
     try:
         return run_matrix(
             arguments.matrix.resolve(),

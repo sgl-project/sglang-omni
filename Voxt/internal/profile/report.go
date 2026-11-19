@@ -130,6 +130,7 @@ type ResourceReport struct {
 	MemoryEnd              MemorySample          `json:"memory_end"`
 	PeakMemoryPressure     OptionalString        `json:"peak_memory_pressure"`
 	MemoryPressureWarnings []MemoryPressureEvent `json:"memory_pressure_warnings,omitempty"`
+	PeakSwapUsedBytes      OptionalInt64         `json:"peak_swap_used_bytes"`
 	SwapinsDelta           OptionalInt64         `json:"swapins_delta"`
 	SwapoutsDelta          OptionalInt64         `json:"swapouts_delta"`
 	HostStart              HostSample            `json:"host_start"`

@@ -76,7 +76,7 @@ func realProfileDependencies(config profile.Config, nativeLog *profile.NativeLog
 	if err != nil {
 		return dependencies, err
 	}
-	runtime := omni.NewRuntime(omni.Config{Binary: binary, IdleTimeout: -1, Log: nativeLog.Write})
+	runtime := omni.NewRuntime(omni.Config{Binary: binary, IdleTimeout: time.Duration(config.IdleTimeoutMS) * time.Millisecond, Log: nativeLog.Write})
 	dependencies.nativePIDs = func() []int {
 		processes := runtime.Processes()
 		pids := make([]int, 0, len(processes))

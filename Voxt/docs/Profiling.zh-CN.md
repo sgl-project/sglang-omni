@@ -64,6 +64,7 @@ go test -count=1 -run '^TestMeetingProfile$' -timeout 6h -v .
 | `decode_interval_ms` | Qwen3-ASR native server 的实时预览 decode interval；0 保留模型默认值。其他模型明确报错。此 harness 测离线 Final，不运行实时预览，所以该启动参数不应被解释为会改变离线 chunk 时间。 |
 | `segment_length_seconds` | 普通分段 ASR 的 `meeting.PlanChunks` 段长，0 使用默认 22 秒。必须大于 1 秒重叠；只改变会议切块，不改变 Omni 内部 Final 切块。`import` 的 MTD 整轨分人不生成 chunk plan，此字段不影响 MTD。 |
 | `cache_limit_mb` | Qwen3-ASR 的 `--cache-limit-mb`；省略保留模型默认策略，0 显式禁用缓存，正数设置 MB。其他模型明确报错。 |
+| `idle_timeout_ms` | Omni 模型在无人使用后的卸载等待。省略或 0 使用生产默认 10 分钟；正数用于生命周期诊断，例如 1000 表示 1 秒；负数拒绝。它只改变卸载时机，不改变识别参数。 |
 | `vad.enabled/model_dir` | 开启时创建并持有本地 Silero，目录必填；普通分段 ASR 用它检测语音。关闭时普通路径不调用神经或能量 VAD，而把整轨交给会议 chunk planner。`import` 有可用 MTD 时无论开关如何都直接整轨分人，不调用神经或能量 VAD，也不生成会议 chunk plan；没有 MTD 时仍以 `ErrNoDiarizer` 失败。 |
 | `language` | 语音识别语言提示和总结主语言；空字符串让模型检测，总结沿用转录稿主要语言。 |
 | `cleanup` | 调用 `Manager.CorrectTranscript`，按现有 30 行/3000 runes 规则分批。profiling 边界额外要求每批响应是 `{i,text}` 的 JSON array，malformed response 使 stage/run 失败；普通 Meeting 的容错不变。 |
@@ -114,7 +115,7 @@ go test -count=1 -run '^TestMeetingProfile$' -timeout 6h -v .
 scripts/profile-loop.sh /ABS/matrix.json /ABS/profile-results --idle-seconds 300 --environment-sample-seconds 15 --temp-root /ABS/same-filesystem-temp
 ```
 
-每个配置执行三次，每次都是新的 `go test` 进程和新的临时 SQLite。每次开始前等待 AC Power 和至少 300 秒 HID idle，并用 pgrep 检查已知 native server 是否争用；`Popen` 运行期间每 15 秒采样 power/idle，结束后再检查 power/idle/contenders。before/after 正常也不能掩盖中途违规。用户输入、掉到电池、出现争用、进程非零退出、result 带 warning/error，都会使该次无效；违规后不杀进程。无效样本不会加入 reports，因而也不会进入 median。不足三次有效结果时配置失败，脚本最终返回非零。`environment.json` 分别保存 before、during、after，process.log 持续落盘并逐行脱敏。
+每个配置默认执行三次，每次都是新的 `go test` 进程和新的临时 SQLite。`--attempts` 只接受 1 或 3：1 次只作诊断，config 和 batch 都写 `status="diagnostic"`，不生成 median；3 次才进入三次中位数汇总，2 次及其他次数直接拒绝。每次开始前等待 AC Power 和至少 300 秒 HID idle，并用 pgrep 检查已知 native server 是否争用；`Popen` 运行期间每 15 秒采样 power/idle，结束后再检查 power/idle/contenders。before/after 正常也不能掩盖中途违规。用户输入、掉到电池、出现争用、进程非零退出、result 带 warning/error，都会使该次无效；违规后不杀进程。无效样本不会加入 reports，因而也不会进入 median。不足三次有效结果时配置失败，脚本最终返回非零。`environment.json` 分别保存 before、during、after，process.log 持续落盘并逐行脱敏。
 
 结果目录按 UTC 批次追加，不覆盖旧批次：
 
@@ -147,7 +148,7 @@ profile-results/
   需要按真实 MTD 请求定位编辑差异时，在 `Voxt/` 运行 `go run ./scripts/meetingquality CAP_SECONDS /ABS/result.json`。脚本用同一 `eval.Tokens` 和 Levenshtein traceback，按参考 clip 在原始时间线的起点归入请求；硬切后下一段重读 1 秒，所以 cap120 的未加 padding 起点是 0/119/238/357/476/595 秒，不能简单按 0/120/240…分组。输出包含每个请求的 timeline/native 起止和 S/D/I；`go test ./scripts/meetingquality` 覆盖这个边界和请求数上限。
 - `peak_rss_bytes` 和 `peak_physical_footprint_bytes` 是每 100 ms 对 harness 与 native server 求和后的最大观测值，不是内核生命周期 high-water mark；短峰值可能漏掉。`Runtime.Processes` 同时返回 ready 和已 spawned、仍在加载的 PID，因此 ready 前的权重加载也可采样；`Running()` 的 ready 语义不变。physical footprint 包含 Metal buffer，适合观察 Apple silicon 统一内存。
 - CPU user/system 是这些进程累计 CPU 时间之和；native 进程退出后保留最后成功样本。GPU 时间、独立 GPU 内存和能耗没有安全可用的精确接口，写 `null` 和 `unavailable_reason`，不填 0。
-- start/end 记录 memory pressure、available%、swap 用量和 swapin/out 累计计数；delta 只由同次 start/end 相减。thermal 来自 `pmset -g therm` 原文，power source 来自 `pmset -g batt`。不可得字段一律是 `{"value": null, "unavailable_reason": "..."}`。
+- start/end 记录 memory pressure、available%、swap 用量和 swapin/out 累计计数；delta 只由同次 start/end 相减。`peak_swap_used_bytes` 另存 100 ms 采样期间看到的最大系统 swap 用量，评估内存预算时用 start-to-peak，不用结束值掩盖过程峰值。thermal 来自 `pmset -g therm` 原文，power source 来自 `pmset -g batt`。不可得字段一律是 `{"value": null, "unavailable_reason": "..."}`。
 - `native.log` 独立保存 `omni.Config.Log`（含 native 自带计时）。Omni 将 native stderr 统一标为 warning，因此正常计时行不会误判失败；native error、崩溃/停滞、草稿或 cache 回退等会使配置失效的 warning 仍会使结果无效。VAD wrapper 只计时：普通路径整轨 Speech 失败后，10 分钟窗口的神经 VAD 成功不算 fallback；只有实际进入能量分析的窗口才通过 `VADFallback` 通知并使配置失效，默认 Meeting 的 nil 通知行为不变。MTD 分块路径也调用 VAD 取得切点，因此不能把 VAD 耗时或 fallback 当作普通 ASR 专属阶段。
 
 ## 5. pprof 与 Instruments
@@ -181,7 +182,21 @@ TMPDIR=/tmp CGO_ENABLED=0 go test -run 'TestMeetingProfileFake' .
 
 这些测试只用短 fake PCM、fake ASR/VAD/语言模型和临时文件，不下载模型、不播放音频、不访问真实用户数据。
 
-## 7. 听写/会议 overlap 调度实验
+## 7. 短听写的首字、Final 与投递延迟
+
+`TestMacE2EFirstLatency` 通过真实 app 会话和真实 ASR 测量 cold、warm、切换模型三种场景，每类默认 3 轮。每轮 cold 都新建 app、ASR 和 VAD；warm 复用同一 app 的模型；switch 只重新加载 ASR。`VOXTNEW_LATENCY_PCM` 指定已复制的短音频，`VOXTNEW_LATENCY_ROUNDS` 改轮数，`VOXTNEW_LATENCY_OUT` 每轮追加一行 JSON：
+
+```sh
+VOXTNEW_LATENCY=1 VOXTNEW_LATENCY_ROUNDS=3 \
+VOXTNEW_LATENCY_PCM=/ABS/copied-input/short.wav \
+VOXTNEW_LATENCY_OUT=/ABS/results/short-open.jsonl \
+VOXTNEW_OMNI_RUNTIME=/ABS/omni VOXTNEW_OMNI_MODELS='asr.moss=/ABS/moss;asr.accurate=/ABS/qwen;vad.silero=/ABS/vad' \
+go test -count=1 -run '^TestMacE2EFirstLatency$' -v -timeout 30m .
+```
+
+JSON 分别记录 `first_partial_ms`、`stop_to_final_ms`（观察到 ASR 的最终文本）、`stop_to_insert_ms`（fake helper 收到实际 paste 调用）和 `stop_to_done_ms`（整个会话完成），另含 ASR/VAD cold 标记、模型加载、实时更新间隔、文本和 SHA-256。三个终点不得互相替代。测试在 paste 没有出现时失败，不会把 Done 当成插入。这里的插入覆盖 app 的真实投递逻辑，但终点仍是 fake helper，不是屏幕上的真实光标；真实 GUI 插入必须另行验收。
+
+## 8. 听写/会议 overlap 调度实验
 
 这个入口回答的是“真实 ASR 与可控模拟语言模型怎样调度”，不是语言模型质量评测，也不改变 #4060、生产流式识别、校对、总结或插入行为。只有显式设置 `VOXTNEW_OVERLAP_CONFIG` 才会启动真实 ASR；该配置没有远程语言模型、endpoint、API key 字段，未知字段会直接报错。
 

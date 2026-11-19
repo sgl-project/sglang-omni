@@ -41,6 +41,7 @@ func TestConfigValidation(t *testing.T) {
 		{"segment", func(c *Config) { c.SegmentLengthSeconds = -1 }},
 		{"segment overlap", func(c *Config) { c.SegmentLengthSeconds = 1 }},
 		{"cache", func(c *Config) { c.CacheLimitMB = &negative }},
+		{"idle timeout", func(c *Config) { c.IdleTimeoutMS = -1 }},
 		{"VAD", func(c *Config) { c.VAD.ModelDir = "" }},
 		{"provider", func(c *Config) { c.LanguageModel.Provider = "" }},
 		{"key environment", func(c *Config) { c.LanguageModel.KeyEnv = "BAD;env" }},

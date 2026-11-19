@@ -28,6 +28,7 @@ type Config struct {
 	DecodeIntervalMS     int         `json:"decode_interval_ms,omitempty"`
 	SegmentLengthSeconds float64     `json:"segment_length_seconds,omitempty"`
 	CacheLimitMB         *int        `json:"cache_limit_mb,omitempty"`
+	IdleTimeoutMS        int         `json:"idle_timeout_ms,omitempty"`
 	VAD                  VADConfig   `json:"vad"`
 	Language             string      `json:"language,omitempty"`
 	Cleanup              bool        `json:"cleanup"`
@@ -122,6 +123,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CacheLimitMB != nil && *c.CacheLimitMB < 0 {
 		return fmt.Errorf("profile: cache_limit_mb cannot be negative")
+	}
+	if c.IdleTimeoutMS < 0 {
+		return fmt.Errorf("profile: idle_timeout_ms cannot be negative")
 	}
 	if c.VAD.Enabled && c.VAD.ModelDir == "" {
 		return fmt.Errorf("profile: enabled VAD needs vad.model_dir")

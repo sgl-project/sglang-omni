@@ -102,6 +102,9 @@ func TestResourceSamplerCapturesTransientMemoryPressureWarning(t *testing.T) {
 	if len(report.MemoryPressureWarnings) != 1 || report.MemoryPressureWarnings[0].Pressure != "warning" {
 		t.Fatalf("memory_pressure_warnings = %+v, want 1 warning event", report.MemoryPressureWarnings)
 	}
+	if report.PeakSwapUsedBytes.Value == nil || *report.PeakSwapUsedBytes.Value != 500 {
+		t.Fatalf("peak_swap_used_bytes = %+v, want 500", report.PeakSwapUsedBytes)
+	}
 }
 
 func TestResourceSamplerSnapshotSplitsProcessesAndKeepsPressure(t *testing.T) {

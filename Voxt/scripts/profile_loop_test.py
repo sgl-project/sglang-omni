@@ -487,9 +487,6 @@ class IsolationTests(unittest.TestCase):
                 )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class AttemptsTests(unittest.TestCase):
     def test_single_attempt_diagnostic_succeeds_without_median(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -549,9 +546,10 @@ class AttemptsTests(unittest.TestCase):
             summary = json.loads(
                 batches[0].joinpath("diag", "summary.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(summary["status"], "success")
+            self.assertEqual(summary["status"], "diagnostic")
             self.assertEqual(summary["valid_runs"], 1)
-            self.assertIn("without a three-run median", summary["note"])
+            self.assertIn("no three-run median", summary["note"])
+            self.assertNotIn("median", summary)
             self.assertEqual(
                 summary["attempts"],
                 [
@@ -564,3 +562,36 @@ class AttemptsTests(unittest.TestCase):
                     }
                 ],
             )
+            batch = json.loads(
+                batches[0].joinpath("summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(batch["status"], "diagnostic")
+
+    def test_two_attempts_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(ValueError, r"1 \(diagnostic\) or 3"):
+                loop.run_matrix(
+                    root / "matrix.json",
+                    root / "results",
+                    0,
+                    0.01,
+                    None,
+                    "1s",
+                    max_attempts=2,
+                )
+        with (
+            mock.patch.object(loop.sys, "platform", "darwin"),
+            mock.patch.object(
+                loop.sys,
+                "argv",
+                ["profile_loop.py", "matrix.json", "results", "--attempts", "2"],
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            loop.main()
+        self.assertEqual(raised.exception.code, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

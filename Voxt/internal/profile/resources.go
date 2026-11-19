@@ -74,6 +74,8 @@ type ResourceSampler struct {
 	peakPressure     string
 	lastPressure     string
 	pressureWarnings []MemoryPressureEvent
+	peakSwapUsed     int64
+	swapSamples      int
 	phaseSamples     []PhaseSample
 }
 
@@ -152,6 +154,10 @@ func (s *ResourceSampler) Sample() {
 			}
 		} else {
 			s.pressureSamples++
+			if sysmem.SwapValid {
+				s.swapSamples++
+				s.peakSwapUsed = max(s.peakSwapUsed, sysmem.SwapUsedBytes)
+			}
 			if pressureRank(sysmem.Pressure) > pressureRank(s.peakPressure) {
 				s.peakPressure = sysmem.Pressure
 			}
@@ -261,6 +267,11 @@ func (s *ResourceSampler) report(start, end MemorySample, hostStart, hostEnd Hos
 	} else {
 		report.PeakMemoryPressure = Available(s.peakPressure)
 		report.MemoryPressureWarnings = slices.Clone(s.pressureWarnings)
+	}
+	if s.swapSamples == 0 {
+		report.PeakSwapUsedBytes = Unavailable[int64]("vm.swapusage is unavailable in every sample")
+	} else {
+		report.PeakSwapUsedBytes = Available(s.peakSwapUsed)
 	}
 	return report
 }
