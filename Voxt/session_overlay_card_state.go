@@ -41,6 +41,7 @@ type sessionCardViewState struct {
 	Attachment     string                `json:"attachment,omitempty"`
 	ThumbnailCount int                   `json:"thumbnail_count,omitempty"`
 	InputCount     int                   `json:"input_count,omitempty"`
+	Inputs         []sessionCardInput    `json:"inputs,omitempty"`
 	ProblemCode    string                `json:"problem_code,omitempty"`
 	SizeStep       int                   `json:"size_step"`
 	Levels         [session.Bars]float64 `json:"levels"`
@@ -65,6 +66,17 @@ type sessionCardViewState struct {
 	CanLanguage      bool `json:"can_language"`
 	ShowThinking     bool `json:"show_thinking"`
 	CanThink         bool `json:"can_think"`
+}
+
+// sessionCardInput is the JSON-safe form of one original sent with the answer.
+type sessionCardInput struct {
+	Label  string `json:"label"`
+	Text   string `json:"text,omitempty"`
+	Chars  int    `json:"chars,omitempty"`
+	Lines  int    `json:"lines,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Image  bool   `json:"image,omitempty"`
 }
 
 // sessionCardBlock is one laid-out body, failure, source, or conversation block.
@@ -160,7 +172,8 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		FollowTooltip: continueTipFor(translator, input.FollowKeys),
 	}
 	state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
-	state.InputCount = len(card.previews)
+	state.Inputs = sessionCardInputs(card.previews)
+	state.InputCount = len(state.Inputs)
 	if sessionCardRedoWriting(input) {
 		// The answer asked again streams in over the card's; a failure or a
 		// cancel brings the card's back (endRedo).

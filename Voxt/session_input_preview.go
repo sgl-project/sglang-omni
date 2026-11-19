@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // answerInputPreview keeps one original that went to the language model.
@@ -22,11 +23,11 @@ func answerTextPreview(text, label string) answerInputPreview {
 }
 
 func answerInputPreviews(snapshot session.Snapshot, box *rewriteBox) []answerInputPreview {
-	boxOwned := snapshot.ImageHint == "box" && box != nil && (snapshot.ID == box.session || snapshot.ID == box.sending)
-	automatic := snapshot.ImageHint != "" && snapshot.ImageHint == snapshot.ImagePreviewKind && len(snapshot.ImagePreview) > 0
-	if !boxOwned && !automatic {
+	if snapshot.Kind != store.KindRewrite {
 		return nil
 	}
+	boxOwned := snapshot.ImageHint == "box" && box != nil && (snapshot.ID == box.session || snapshot.ID == box.sending)
+	automatic := snapshot.ImageHint != "" && snapshot.ImageHint == snapshot.ImagePreviewKind && len(snapshot.ImagePreview) > 0
 	var previews []answerInputPreview
 	if snapshot.Selection != "" {
 		label := i18n.T("Selected text")
@@ -55,6 +56,30 @@ func answerInputPreviews(snapshot session.Snapshot, box *rewriteBox) []answerInp
 		}
 		info := boxImageCaption(bitmap, label)
 		previews = append(previews, answerInputPreview{Label: label, Image: bitmap, Width: info.Width, Height: info.Height})
+	}
+	return previews
+}
+
+func sessionCardInputs(previews []answerInputPreview) []sessionCardInput {
+	if len(previews) == 0 {
+		return nil
+	}
+	inputs := make([]sessionCardInput, 0, len(previews))
+	for _, preview := range previews {
+		inputs = append(inputs, sessionCardInput{Label: preview.Label, Text: preview.Text, Chars: preview.Chars, Lines: preview.Lines,
+			Width: preview.Width, Height: preview.Height, Image: preview.Image != nil})
+	}
+	return inputs
+}
+
+func answerInputPreviewsFromDTO(inputs []sessionCardInput) []answerInputPreview {
+	if len(inputs) == 0 {
+		return nil
+	}
+	previews := make([]answerInputPreview, 0, len(inputs))
+	for _, input := range inputs {
+		previews = append(previews, answerInputPreview{Label: input.Label, Text: input.Text, Chars: input.Chars, Lines: input.Lines,
+			Width: input.Width, Height: input.Height})
 	}
 	return previews
 }

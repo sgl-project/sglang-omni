@@ -20,6 +20,9 @@ func (host *meetingDemoHost) resetSessionFixture(fixture meetingFixtureState) {
 		return
 	}
 	host.sessionState = cloneSessionOverlayViewState(*fixture.Session)
+	if host.sessionState.Card != nil {
+		host.sessionUI.cardPreviews = answerInputPreviewsFromDTO(host.sessionState.Card.Inputs)
+	}
 	seed := *fixture.SessionUI
 	seed.OpenQuotes = slices.Clone(seed.OpenQuotes)
 	seed.LanguageMenu = cloneSessionMenuViewState(seed.LanguageMenu)

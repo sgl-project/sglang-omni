@@ -1,10 +1,10 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -29,7 +29,7 @@ func TestBoxPastedTextCollapseThreshold(t *testing.T) {
 		t.Fatalf("%d segments, want typed prefix plus pasted block", len(a.box.textSegments))
 	}
 	block := a.box.textSegments[1]
-	if !block.Pasted || block.Lines != 4 || block.Chars != utf8.RuneCountInString(long) {
+	if !block.Pasted || block.Lines != 4 || block.Chars != utf8.RuneCountInString(long) || block.Chars == len(long) || block.Text != long {
 		t.Fatalf("block %+v", block)
 	}
 	a.boxRemoveText(1)
@@ -128,15 +128,97 @@ func TestAutomaticImageAppearsOnAnswerCardOnlyWhenSent(t *testing.T) {
 	}
 }
 
-func TestBoxPastedTextUsesRunesNotBytes(t *testing.T) {
+func TestBoxLongPasteThroughEditorDoesNotDuplicate(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	a.box = rewriteBox{open: true}
-	text := "中🙂\n二\n三\n四"
-	a.boxPasteText(text)
-	if got := a.box.textSegments[0].Chars; got != utf8.RuneCountInString(text) || got == len(text) {
-		t.Fatalf("chars %d, bytes %d", got, len(text))
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("before\n")
+	frames(tt)
+	long := "first\nsecond\nthird\nfourth"
+	tt.SetClipboardData(transfer.TextData(long))
+	tt.Key(ui.Cmd, ui.KeyV)
+	frames(tt)
+	if got, want := a.boxTextContent(), "before\n"+long; got != want {
+		t.Fatalf("request text %q, want %q", got, want)
 	}
-	if !strings.Contains(a.box.textSegments[0].Text, "中🙂") {
-		t.Fatal("the original text changed")
+	tt.Type("after")
+	frames(tt)
+	if got, want := a.boxTextContent(), "before\n"+long+"after"; got != want {
+		t.Fatalf("request text after typing %q, want %q", got, want)
+	}
+}
+
+func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	a.box.text = "hello world"
+	long := "one\ntwo\nthree\nfour"
+	if !a.boxPasteTextAt(-1, long, 5, 5) {
+		t.Fatal("the long paste was not taken")
+	}
+	if got, want := a.boxTextContent(), "hello"+long+" world"; got != want {
+		t.Fatalf("request text %q, want %q", got, want)
+	}
+	a.boxRemoveText(1)
+	a.boxSegmentChanged(0, "HELLO")
+	if got, want := a.boxTextContent(), "HELLO world"; got != want {
+		t.Fatalf("text after removing and editing %q, want %q", got, want)
+	}
+	if !a.boxPasteTextAt(0, long, 3, 3) {
+		t.Fatal("a paste into an earlier typed segment was not taken")
+	}
+	if got, want := a.boxTextContent(), "HEL"+long+"LO world"; got != want {
+		t.Fatalf("text after pasting into an earlier segment %q, want %q", got, want)
+	}
+}
+
+func TestAnswerCardChipsCoverTextOnlyRewrite(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Done, Card: true,
+		Raw: "make it formal", Selection: "source text", Result: "Formal answer."})
+	if len(a.answer.previews) != 1 || a.cachedCard().InputCount != 1 {
+		t.Fatalf("previews %+v, DTO count %d", a.answer.previews, a.cachedCard().InputCount)
+	}
+	tt := cardTester(t, a)
+	frames(tt)
+	click(t, tt, "Selected text")
+	frames(tt)
+	if !has(tt, "source text") || !has(tt, "Back to answer") {
+		t.Fatalf("text-only original did not open: %q", firstTexts(tt))
+	}
+}
+
+func TestFollowUpChipsKeepNewTextAndOriginalImages(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	jpeg := boxJPEGOf(t, 20, 10)
+	a.box = rewriteBox{open: true, session: "r1", images: [][]byte{jpeg}, imageInfo: []boxImageInfo{{Source: "draft.png", Width: 20, Height: 10}}}
+	bitmap, _ := ui.DecodeBitmap(jpeg)
+	a.box.thumbs = []*ui.Bitmap{bitmap}
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Done, Card: true,
+		Raw: "first", Selection: "old source", Result: "First answer.", ImageHint: "box"})
+	a.followUp = "r1"
+	a.box = rewriteBox{}
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Recording})
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true,
+		Raw: "second", Selection: "new source", Result: "Second answer.", ImageHint: "box"})
+	labels := make([]string, 0, len(a.answer.previews))
+	for _, preview := range a.answer.previews {
+		labels = append(labels, preview.Label)
+	}
+	if len(a.answer.previews) != 2 || a.answer.previews[0].Text != "new source" || a.answer.previews[1].Label != "draft.png" {
+		t.Fatalf("follow-up previews %+v, labels %q", a.answer.previews, labels)
+	}
+}
+
+func TestAutomaticImageHasNoRemoveButton(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	jpeg := boxJPEGOf(t, 20, 10)
+	a.box = rewriteBox{open: true, shown: true, session: "v1"}
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, ImagePreviewKind: "clipboard", ImagePreview: jpeg})
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	if has(tt, "Remove this image") {
+		t.Fatal("an automatic image has a button that cannot remove it")
 	}
 }

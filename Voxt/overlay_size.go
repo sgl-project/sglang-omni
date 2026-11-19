@@ -212,7 +212,11 @@ func sessionOverlayCardBodyMax(card *sessionCardViewState, workAreaHeight int, m
 	if card != nil && card.Message != "" {
 		room -= layout.CardMsgGap + layout.CardMsgH
 	}
-	return max(room, layout.CardBodyMax)
+	limit := max(room, layout.CardBodyMax)
+	if card != nil {
+		limit = max(limit-sessionCardAttachmentHeight(card), 0)
+	}
+	return limit
 }
 
 func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, measureHeight func(ovSized) (float32, bool), previewHeights map[string]int, bodyMax int, previousStreamHeight float32) (int, float32, bool) {

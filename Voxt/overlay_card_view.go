@@ -50,8 +50,8 @@ func cardSizeButton(context *ui.Context, card *sessionCardViewState, actions ses
 
 // cardAttachView says which picture went to the language model.
 func cardAttachView(context *ui.Context, card *sessionCardViewState, local sessionOverlayLocal) {
-	if card.InputCount > 0 && len(local.Overlay.cardPreviews) > 0 {
-		cardInputChips(context, card, local)
+	if len(local.Overlay.cardPreviews) > 0 {
+		cardInputChips(context, local)
 		return
 	}
 	thumbnails := local.Overlay.cardThumbs

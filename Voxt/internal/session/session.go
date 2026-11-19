@@ -230,8 +230,8 @@ type Snapshot struct {
 	// ("window", "clipboard", "box"; "" for none), so the answer card
 	// can say so.
 	ImageHint string
-	// ImagePreview is the clipboard/window JPEG available for display,
-	// with ImagePreviewKind identifying its source. It is preview-only:
+	// ImagePreview is the immutable clipboard/window JPEG available for
+	// display, with ImagePreviewKind identifying its source. It is preview-only:
 	// ImageHint remains the record of what the request actually sent.
 	ImagePreview     []byte
 	ImagePreviewKind string
@@ -526,9 +526,6 @@ type TextInput struct {
 }
 
 func (s Snapshot) clone() Snapshot {
-	if s.ImagePreview != nil {
-		s.ImagePreview = append([]byte(nil), s.ImagePreview...)
-	}
 	if s.Levels != nil {
 		s.Levels = append([]float64(nil), s.Levels...)
 	}

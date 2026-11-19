@@ -53,7 +53,11 @@ func (a *app) openAnswer(s session.Snapshot) {
 			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
 			if card.attach == "box" {
 				card.images, card.ui.thumbs = a.answer.images, a.answer.ui.thumbs
-				card.previews = a.answer.previews
+				for _, preview := range a.answer.previews {
+					if preview.Image != nil {
+						card.previews = append(card.previews, preview)
+					}
+				}
 			}
 			if card.why == "" {
 				card.why = a.answer.why

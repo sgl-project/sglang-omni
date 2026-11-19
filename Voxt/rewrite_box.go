@@ -52,9 +52,15 @@ type rewriteBox struct {
 	session, sending string
 	// selection is the text selected when the shortcut fired (the
 	// session reads it; the box shows it).
-	selection    string
-	text         string
-	textSegments []boxTextSegment
+	selection         string
+	selectionVia      string
+	text              string
+	textSegments      []boxTextSegment
+	nextTextID        int
+	textSegmentsDirty bool
+	textCache         string
+	cachedEditor      string
+	textCacheValid    bool
 	// images are the box's pictures (JPEGs), thumbs their decoded
 	// bitmaps; limit: one over boxMaxImages was refused.
 	images    [][]byte
@@ -63,6 +69,7 @@ type rewriteBox struct {
 	limit     bool
 	// autoImage caches the clipboard/window preview's decoded bitmap.
 	autoImage []byte
+	autoKind  string
 	autoThumb *boxBitmap
 	autoInfo  boxImageInfo
 	// instruction is the recognised spoken instruction, kept so a send
@@ -87,6 +94,7 @@ type rewriteBoxViewState struct {
 	TextSegments   []boxTextSegment
 	Thumbnails     []*boxBitmap
 	ImageInfo      []boxImageInfo
+	ManualImages   int
 	VoiceLine      string
 	Error          string
 	CanSend        bool
@@ -96,15 +104,16 @@ type rewriteBoxViewState struct {
 
 // rewriteBoxActions are the input box's user intents.
 type rewriteBoxActions struct {
-	close       func()
-	send        func()
-	drop        func([]string)
-	paste       func(uiServices) bool
-	pasteText   func(string) bool
-	remove      func(int)
-	removeText  func(int)
-	textChanged func(string)
-	focused     func()
+	close          func()
+	send           func()
+	drop           func([]string)
+	paste          func(uiServices) bool
+	pasteText      func(int, string, int, int) bool
+	remove         func(int)
+	removeText     func(int)
+	textChanged    func(string)
+	segmentChanged func(int, string)
+	focused        func()
 }
 
 // boxWindow is the box's panel as boxSync and closeBoxWindow use it
@@ -154,7 +163,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 	}
 	a.box.open, a.box.shown, a.box.err = true, true, ""
 	a.box.target, a.box.session = target, id
-	a.box.sending, a.box.instruction, a.box.selection = "", "", ""
+	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
 	a.box.focusText = true
 	a.boxSync()
 }
@@ -235,6 +244,7 @@ func (a *app) boxEnded(s session.Snapshot) {
 		}
 		if s.Selection != "" {
 			a.box.selection = s.Selection
+			a.box.selectionVia = s.SelectionVia
 		}
 		a.box.shown = true
 	default: // cancelled: as Esc always did
@@ -452,14 +462,19 @@ func (a *app) boxVoiceLine() string {
 func (a *app) boxViewState() rewriteBoxViewState {
 	box := &a.box
 	selectionSource := i18n.T("Selected text")
-	if box.session != "" && a.sess.ID == box.session && a.sess.SelectionVia == "copy" {
+	selectionVia := box.selectionVia
+	if box.session != "" && a.sess.ID == box.session {
+		selectionVia = a.sess.SelectionVia
+	}
+	if selectionVia == "copy" {
 		selectionSource = i18n.T("Copied text")
 	}
 	thumbnails := slices.Clone(box.thumbs)
 	imageInfo := slices.Clone(box.imageInfo)
 	if len(thumbnails) == 0 && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && len(a.sess.ImagePreview) > 0 {
-		if !bytes.Equal(box.autoImage, a.sess.ImagePreview) {
+		if !bytes.Equal(box.autoImage, a.sess.ImagePreview) || box.autoKind != a.sess.ImagePreviewKind {
 			box.autoImage = bytes.Clone(a.sess.ImagePreview)
+			box.autoKind = a.sess.ImagePreviewKind
 			box.autoThumb, _ = decodeBoxBitmap(a.sess.ImagePreview)
 			label := i18n.T("Copied image")
 			if a.sess.ImagePreviewKind == "window" {
@@ -473,7 +488,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	selection := a.boxSelection()
 	return rewriteBoxViewState{
 		Selection: selection, SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
-		Thumbnails: thumbnails, ImageInfo: imageInfo, VoiceLine: a.boxVoiceLine(), Error: box.err,
+		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), Error: box.err,
 		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording || box.session == "" && box.instruction != ""),
 		Limit:   box.limit, FocusText: box.focusText,
 	}
@@ -481,8 +496,8 @@ func (a *app) boxViewState() rewriteBoxViewState {
 
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
-		close: a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteText,
-		remove: a.boxRemoveImage, removeText: a.boxRemoveText,
+		close: a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteTextAt,
+		remove: a.boxRemoveImage, removeText: a.boxRemoveText, segmentChanged: a.boxSegmentChanged,
 		textChanged: func(text string) {
 			if !a.box.open {
 				return

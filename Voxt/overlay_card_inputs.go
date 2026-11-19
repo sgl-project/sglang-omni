@@ -6,7 +6,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
-func cardInputChips(context *ui.Context, card *sessionCardViewState, local sessionOverlayLocal) {
+func cardInputChips(context *ui.Context, local sessionOverlayLocal) {
 	ui.ScrollHorizontal(context.Key("answer-inputs")).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Label(i18n.T("Inputs sent with the instruction")).Children(func() {
 		ui.Row(context).Gap(6).AlignItems(ui.Center).Children(func() {
 			for index, preview := range local.Overlay.cardPreviews {

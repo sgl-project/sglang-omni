@@ -20,6 +20,8 @@ type boxBitmap = ui.Bitmap
 // rewriteBoxLocalUI owns widget state that is not part of the box's content.
 type rewriteBoxLocalUI struct {
 	text          string
+	segmentText   map[int]*string
+	pasteAccepted map[int]bool
 	expandedText  map[string]bool
 	previewImage  int
 	textScroll    ui.ScrollState
@@ -46,8 +48,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 	if local.text != state.Text {
 		local.text = state.Text
 	}
-	services := context.Services()
 	root := ui.Column(context).Fill().Padding(12, 14, 12, 14).Gap(8)
+	skipTrailingSync := local.pasteAccepted[-1]
+	delete(local.pasteAccepted, -1)
 	if context.Shortcut(0, ui.KeyEscape) {
 		actions.close()
 	}
@@ -83,34 +86,28 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			boxTextBlockView(context, "selection", state.SelectionBlock, local, nil)
 		}
 		for index, segment := range state.TextSegments {
-			var remove func()
 			if segment.Pasted {
-				remove = func() { actions.removeText(index) }
+				boxTextBlockView(context, "segment-"+strconv.Itoa(segment.ID), segment, local, func() { actions.removeText(index) })
+				continue
 			}
-			boxTextBlockView(context, "segment-"+strconv.Itoa(index), segment, local, remove)
+			if local.segmentText == nil {
+				local.segmentText = map[int]*string{}
+			}
+			text := local.segmentText[segment.ID]
+			if text == nil {
+				text = new(string)
+				local.segmentText[segment.ID] = text
+			}
+			if *text != segment.Text {
+				*text = segment.Text
+			}
+			skipSync := local.pasteAccepted[index]
+			delete(local.pasteAccepted, index)
+			boxTextEditor(context, index, text, state, actions, local, skipSync)
 		}
 
-		// The text box.
-		textArea := ui.TextAreaBase(context.Key("box-text"), &local.text).
-			Label(i18n.T("More text for the rewrite")).
-			Placeholder(i18n.T("Type or paste more text, or drop images")).
-			Lines(3, 8).FontSize(layout.CardTextSize).TextColor(ovCardText).Grow(1)
-		textArea.OnTextKey(func(key ui.TextKey) bool {
-			switch {
-			case key.Key == ui.KeyEnter && key.Mods == 0:
-				actions.textChanged(local.text)
-				actions.send()
-				return true
-			case key.Key == ui.KeyV && key.Mods == ui.Cmd:
-				return actions.paste(services)
-			}
-			return false
-		})
-		textArea.OnPaste(actions.pasteText)
-		if state.FocusText {
-			textArea.Focus()
-			actions.focused()
-		}
+		// The trailing text box.
+		boxTextEditor(context, -1, &local.text, state, actions, local, skipTrailingSync)
 
 		// The pictures.
 		if len(state.Thumbnails) > 0 {
@@ -120,7 +117,11 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					if index < len(state.ImageInfo) {
 						info = state.ImageInfo[index]
 					}
-					boxThumbView(context.Key(index), index, bitmap, info, actions.remove, func() { local.previewImage = index + 1 })
+					var remove func(int)
+					if index < state.ManualImages {
+						remove = actions.remove
+					}
+					boxThumbView(context.Key(index), index, bitmap, info, remove, func() { local.previewImage = index + 1 })
 				}
 			})
 		}
@@ -142,7 +143,62 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			})
 		}
 	})
-	actions.textChanged(local.text)
+	if !skipTrailingSync {
+		actions.textChanged(local.text)
+	}
+}
+
+func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI, skipSync bool) {
+	key := "box-text-" + strconv.Itoa(index)
+	textArea := ui.TextAreaBase(context.Key(key), text).
+		Label(i18n.T("More text for the rewrite")).
+		Placeholder(i18n.T("Type or paste more text, or drop images")).
+		Lines(1, 4).FontSize(layout.CardTextSize).TextColor(ovCardText)
+	if index == -1 {
+		textArea.Lines(3, 8).Grow(1)
+	}
+	changed := func() {
+		if index == -1 {
+			actions.textChanged(*text)
+			return
+		}
+		actions.segmentChanged(index, *text)
+	}
+	textArea.OnTextKey(func(key ui.TextKey) bool {
+		switch {
+		case key.Key == ui.KeyEnter && key.Mods == 0:
+			changed()
+			actions.send()
+			return true
+		case key.Key == ui.KeyV && key.Mods == ui.Cmd:
+			return actions.paste(context.Services())
+		}
+		return false
+	})
+	start, end := textArea.TextSelection()
+	textArea.OnPaste(func(paste string) bool {
+		if !actions.pasteText(index, paste, start, end) {
+			return false
+		}
+		runes := []rune(*text)
+		if index == -1 {
+			*text = string(runes[end:])
+		} else {
+			*text = string(runes[:start])
+		}
+		if local.pasteAccepted == nil {
+			local.pasteAccepted = map[int]bool{}
+		}
+		local.pasteAccepted[index] = true
+		return true
+	})
+	if index == -1 && state.FocusText {
+		textArea.Focus()
+		actions.focused()
+	}
+	if !skipSync {
+		changed()
+	}
 }
 
 // boxThumbView is one picture's thumbnail, source and pixel size, with
@@ -161,12 +217,14 @@ func boxThumbView(context *ui.Context, index int, bitmap *ui.Bitmap, info boxIma
 			}).Clicked() {
 				preview()
 			}
-			if ui.ButtonBase(context.Key("rm")).Absolute().Top(-4).Right(-4).Size(16, 16).Radius(8).Center().
-				Background(ui.RGBA(0, 0, 0, 0.85)).Border(1, ui.RGBA(255, 255, 255, 0.24)).Label(label).Tooltip(label).
-				Children(func() {
-					ui.Icon(context, icons.Close.Linear).Size(9, 9).TextColor(ui.RGBA(255, 255, 255, 0.94))
-				}).Clicked() {
-				remove(index)
+			if remove != nil {
+				if ui.ButtonBase(context.Key("rm")).Absolute().Top(-4).Right(-4).Size(16, 16).Radius(8).Center().
+					Background(ui.RGBA(0, 0, 0, 0.85)).Border(1, ui.RGBA(255, 255, 255, 0.24)).Label(label).Tooltip(label).
+					Children(func() {
+						ui.Icon(context, icons.Close.Linear).Size(9, 9).TextColor(ui.RGBA(255, 255, 255, 0.94))
+					}).Clicked() {
+					remove(index)
+				}
 			}
 		})
 		ui.Text(context, info.Source).FontSize(10).TextColor(ovText2).SingleLine().Ellipsis("…").Shrink(0)

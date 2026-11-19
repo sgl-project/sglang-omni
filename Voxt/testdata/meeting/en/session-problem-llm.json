@@ -43,6 +43,15 @@
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "input_count": 1,
+      "inputs": [
+        {
+          "label": "Selected text",
+          "text": "the release slips",
+          "chars": 17,
+          "lines": 1
+        }
+      ],
       "problem_code": "llm",
       "size_step": 0,
       "levels": [
