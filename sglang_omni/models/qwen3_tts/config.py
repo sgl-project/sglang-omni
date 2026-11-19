@@ -21,8 +21,10 @@ from sglang_omni.config.runtime import (
     resolve_stage_typed_kwargs,
 )
 from sglang_omni.config.schema import stage_process_name
-from sglang_omni.config.topology import compile_logical_processes
-from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
+from sglang_omni.config.topology import (
+    compile_logical_processes,
+    resolve_coordinator_max_in_flight,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes

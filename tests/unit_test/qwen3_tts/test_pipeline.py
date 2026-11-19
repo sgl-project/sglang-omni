@@ -11699,7 +11699,7 @@ def test_qwen3_tts_vocoder_without_stateful_decoder_logs_the_left_context_path(
 def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_in_flight_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A server with no in-flight cap got a 128-row arena and no warning, so past 128 live streams the left-context decoder came back unannounced."""
+    """A server with no in-flight cap got 64 rows and no warning, so past 64 live streams the left-context decoder took over unannounced."""
     assert vocoder_factory_capture(monkeypatch, max_in_flight=96)["max_in_flight"] == 96
     assert (
         vocoder_factory_capture(monkeypatch, max_in_flight=None)["max_in_flight"]

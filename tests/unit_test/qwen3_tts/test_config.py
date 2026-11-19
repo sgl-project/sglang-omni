@@ -10,10 +10,12 @@ import pytest
 
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import EngineArgs, FactoryArgs, ProcessConfig
-from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.config.topology import (
+    compile_logical_processes,
+    resolve_coordinator_max_in_flight,
+)
 from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
-from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.serve.speech_service import SpeechRequestValidator
