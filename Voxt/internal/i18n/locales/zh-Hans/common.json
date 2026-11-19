@@ -30,6 +30,8 @@
   "Accessibility": "辅助功能",
   "Accurate": "准确",
   "Add": "添加",
+  "Apply %s to features": "将 %s 应用到功能",
+  "Apply to": "应用到",
   "Adds Voxt to the list in System Settings": "把 Voxt 加入系统设置中的列表",
   "Advanced": "高级",
   "After changing a permission, you may need to reopen Voxt.": "更改权限后，可能需要重新打开 Voxt。",

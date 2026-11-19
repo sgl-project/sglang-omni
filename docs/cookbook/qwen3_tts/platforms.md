@@ -42,7 +42,7 @@ hf download mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 \
   --model-name Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice --port 8000
 ```
 
-The [CustomVoice quick-start request](../qwen3_tts.md#synthesizing-speech) works with the native model ID substituted, with the same speakers, `language` values, sampling defaults (`max_new_tokens` 2048), `stage_params.tts_engine` overrides and prompt: the whole text is in the prompt, as the CUDA server's CustomVoice requests are. The native server differs from the CUDA server in that:
+The [CustomVoice request](../../basic_usage/tts.md#curl) works with the native model ID substituted, with the same speakers, `language` values, sampling defaults (`max_new_tokens` 2048), `stage_params.tts_engine` overrides and prompt: the whole text is in the prompt, as the CUDA server's CustomVoice requests are. The native server differs from the CUDA server in that:
 
 - `response_format` is `wav` or `pcm`; `stream_format` must be `audio`.
 - The prompt and `max_new_tokens` must fit the talker's 8192 positions, as on CUDA: a larger `max_new_tokens` returns 400, and the default 2048 shrinks to fit. `instructions` are at most 4096 characters, and `repetition_penalty` must be above 0.
