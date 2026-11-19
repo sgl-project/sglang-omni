@@ -29,7 +29,6 @@ from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import (
     dump_user_config,
     patches_from_dotted_cli,
-    patches_from_model_path_flag,
     sources_from_config_file,
 )
 from sglang_omni.config.topology import compile_logical_processes
@@ -151,15 +150,9 @@ def resolve_sources(
 
     try:
         if config_file:
-            baseline, patches = sources_from_config_file(config_file)
-            if model_path is not None:
-                # `serve` semantics: given both, the flag is a command line
-                # source and outranks the file's own model_path.
-                patches = patches.merge(
-                    patches_from_model_path_flag(model_path, baseline)
-                )
-            else:
-                pass
+            baseline, patches = sources_from_config_file(
+                config_file, model_path_override=model_path
+            )
         else:
             manager = ConfigManager.from_model_path(
                 str(model_path), variant=selected_variant
@@ -176,6 +169,11 @@ def resolve_sources(
             patches_from_dotted_cli(extra_args, baseline, origin="command line")
         )
         resolved = ConfigResolver(baseline).resolve(patches)
+        if config_file and model_path is not None:
+            # note (kermit): The checkpoint selected at construction is a CLI value, so it has no model default.
+            resolved.provenance.baseline.pop("model_path", None)
+        else:
+            pass
         logical_plan, logical_stages = compile_logical_processes(resolved.config)
         warn_replica_device_overrides(logical_stages, logical_plan)
         # The same post-merge derivations serve runs; they only fill engine
@@ -284,7 +282,25 @@ def resolve(
     if show is ResolveOutput.diff:
         # Against the baseline config rather than against the recorded patches,
         # so that a field an alias carried along is shown as changed too.
-        changes = diff_configs(resolution.baseline, resolution.resolved.config)
+        baseline_values = resolution.baseline.model_dump()
+        file_model_path = next(
+            (
+                entry.value
+                for entry in provenance.entries.get("model_path", [])
+                if entry.source.kind is SourceKind.YAML_FILE and not entry.winning
+            ),
+            None,
+        )
+        if model_path is not None and isinstance(file_model_path, str):
+            # note (kermit): Preserve the diff against the YAML path without loading that checkpoint.
+            baseline_values["model_path"] = file_model_path
+            if resolution.baseline.name == resolution.baseline.model_path:
+                baseline_values["name"] = file_model_path
+            else:
+                pass
+        else:
+            pass
+        changes = diff_configs(baseline_values, resolution.resolved.config)
         if not changes:
             print("No configuration source changed the pipeline's defaults.")
             return
