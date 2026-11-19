@@ -612,10 +612,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 if self.async_decode_min_batch_size is None
                 else self.async_decode_min_batch_size
             ),
-            # note (rsi): ASR prompts fit one chunk, so a prefill's first
-            # tokens can be resolved after the next decode launches.
-            # note (siju-samuel): on XPU this follows async decode, or a run with
-            # async decode off would still admit finished builds out of order.
+            # note (siju-samuel): on XPU, disabling async decode keeps request-build admission FIFO.
             "async_prefill": (
                 current_platform.is_cuda()
                 or (current_platform.is_xpu() and self.enable_async_decode)

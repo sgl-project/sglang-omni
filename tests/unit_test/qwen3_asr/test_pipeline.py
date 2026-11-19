@@ -28,6 +28,10 @@ from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.platforms.cpu import CPUOmniPlatform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -1229,13 +1233,13 @@ def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
 
 
 @pytest.mark.parametrize(
-    ("platform", "enable_async_decode", "expected_async_prefill"),
+    ("platform_type", "enable_async_decode", "expected_async_prefill"),
     [
-        ("cuda", True, True),
-        ("cuda", False, True),
-        ("xpu", True, True),
-        ("xpu", False, False),
-        ("cpu", True, False),
+        (CUDAOmniPlatform, True, True),
+        (CUDAOmniPlatform, False, True),
+        (XPUOmniPlatform, True, True),
+        (XPUOmniPlatform, False, False),
+        (CPUOmniPlatform, True, False),
     ],
     ids=[
         "cuda_async_decode_on",
@@ -1247,25 +1251,19 @@ def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
 )
 def test_qwen3_asr_async_prefill_follows_platform_and_async_decode(
     monkeypatch: pytest.MonkeyPatch,
-    platform: str,
+    platform_type: type[OmniPlatform],
     enable_async_decode: bool,
     expected_async_prefill: bool,
 ) -> None:
-    """XPU launches whole-prompt prefills ahead only with async decode on, since
-    the launch-first drain admits finished request builds out of queue order."""
-    patch_engine_dependencies(monkeypatch)
+    monkeypatch.setattr(qwen3_asr_builder, "current_platform", platform_type())
     monkeypatch.setattr(
-        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+        request_builders,
+        "make_qwen3_asr_stream_output_builder",
+        lambda tokenizer, min_emit_interval_s: None,
     )
-    monkeypatch.setattr(
-        qwen3_asr_builder.current_platform, "is_xpu", lambda: platform == "xpu"
-    )
+    builder = make_engine_builder(enable_async_decode=enable_async_decode)
 
-    scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
-        "dummy", enable_async_decode=enable_async_decode
-    )
-
-    assert scheduler.async_prefill is expected_async_prefill
+    assert builder.extra_scheduler_kwargs()["async_prefill"] is expected_async_prefill
 
 
 @pytest.mark.parametrize("decode_backend", ["fa3", "flashinfer"])
