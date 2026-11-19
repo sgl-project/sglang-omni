@@ -84,6 +84,38 @@ On a full GPU the default `16 × 500` layout is intended. On tighter cards, lowe
 
 Incremental / bucketed tail-KV allocation is not implemented yet; capacity is still the eager full-length pool.
 
+## Ascend NPU
+
+Use `examples/configs/dots_tts_npu.yaml` with the pinned MeanFlow checkpoint and dots_tts 0.2.1. Follow the [NPU installation guide](../other_platforms/installation_npu.md) for runtime requirements. SOAR and base checkpoints have not been validated on NPU.
+
+### Install model dependencies
+
+Set up the Ascend runtime first, then install the model dependency in the same Python environment you will use to run the server. The command pins Torch and Torchaudio to their installed versions while allowing pip to resolve the remaining dependencies.
+
+If a Pynini wheel is unavailable for your platform, install the OpenFst development libraries and a C++ toolchain before running pip.
+
+```bash
+python -m pip install "dots.tts==0.2.1" -c <(
+  python -c 'from importlib.metadata import version; print("torch==" + version("torch")); print("torchaudio==" + version("torchaudio"))'
+)
+```
+
+### Start the server
+
+After the installation succeeds, select the visible NPU and start the service.
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+sgl-omni serve \
+  --config examples/configs/dots_tts_npu.yaml \
+  --allowed-local-media-path docs/_static/audio \
+  --port 8000
+```
+
+The NPU config uses 16 request slots, four solver steps, and a maximum of 500 generated patches. It sets `npu_decoder_precision: float16` for the AudioVAE decoder; set it to `float32` to use FP32 instead.
+
+The reference worker sets `npu_conv_allow_hf32: false` for NPU convolution HF32. This setting is process-wide; keep the reference worker separate from the vocoder when changing it.
+
 ## Synthesizing Speech
 
 dots.tts needs a reference clip and its transcript. The speaker comes entirely from the reference (x-vector plus prompt latents), so there is no zero-shot `voice` preset. Under the default continuous-batching deployment, a request without `references` is rejected.
