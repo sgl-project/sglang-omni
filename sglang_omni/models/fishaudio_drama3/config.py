@@ -81,6 +81,8 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     reference_sampling: bool | None = None
     reference_sampling_fallback: ReferenceSamplingFallback | None = None
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS
+    # Off by default: serve dense linears with the optional block-FP8 backend.
+    fp8_dense: bool = False
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1

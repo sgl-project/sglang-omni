@@ -56,11 +56,15 @@ from sglang_omni.models.fishaudio_drama3.model_inputs import (
 )
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
 from sglang_omni.models.fishaudio_drama3.moe_configs import install_tuned_moe_configs
+from sglang_omni.models.fishaudio_drama3.dense_fp8 import (
+    prepare_fp8_dense_backend,
+)
 from sglang_omni.models.fishaudio_drama3.quantization import (
     INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
     ExpertDenseInt4Config,
     ExpertFp8Config,
+    ExpertFp8DenseConfig,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3FrameStreamer,
@@ -131,6 +135,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        fp8_dense: bool = False,
         tp_rank: int = 0,
         tp_size: int = 1,
         nccl_port: int | None = None,
@@ -151,6 +156,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.fp8_dense = fp8_dense
         self.tp_rank = tp_rank
         self.tp_size = tp_size
         self.nccl_port = nccl_port
@@ -167,7 +173,14 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         """Register the classes the checkpoint names; the directory is the contract."""
         AutoConfig.register(FishOmniConfig.model_type, FishOmniConfig, exist_ok=True)
         ModelRegistry.models[FISH_OMNI_ARCHITECTURE] = Drama3ForCausalLM
-        QUANTIZATION_METHODS[QUANTIZATION_METHOD] = ExpertFp8Config
+        # Optional block-FP8 dense backend: only register its quant config when
+        # the flag is set and the library/JIT are usable. Otherwise the model
+        # loads exactly as before.
+        QUANTIZATION_METHODS[QUANTIZATION_METHOD] = (
+            ExpertFp8DenseConfig
+            if self.fp8_dense and prepare_fp8_dense_backend()
+            else ExpertFp8Config
+        )
         QUANTIZATION_METHODS[INT4_QUANTIZATION_METHOD] = ExpertDenseInt4Config
         install_tuned_moe_configs()
         install_gdn_prefill_graph(

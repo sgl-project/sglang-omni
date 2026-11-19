@@ -26,6 +26,8 @@ from sglang.srt.layers.quantization.gptq.gptq import (
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.layers.quantization.utils import replace_parameter
 
+from sglang_omni.models.fishaudio_drama3.dense_fp8 import FsoDenseLinearMethod
+
 QUANTIZATION_METHOD = "bsgemm-moe"
 EXPERT_WEIGHT_BLOCK_SIZE = [128, 128]
 EXPERT_ACTIVATION_SCHEME = "dynamic"
@@ -105,6 +107,22 @@ class ExpertFp8Config(QuantizationConfig):
 
     def get_scaled_act_names(self) -> list[str]:
         return []
+
+
+class ExpertFp8DenseConfig(ExpertFp8Config):
+    """FP8 routed experts plus the optional block-FP8 dense backend.
+
+    Registered only when ``--tts_engine.factory.fp8_dense true`` is passed and
+    the backend is available. Dense linears it cannot serve fall back to bf16
+    per layer.
+    """
+
+    def get_quant_method(
+        self, layer: torch.nn.Module, prefix: str
+    ) -> QuantizeMethodBase | None:
+        if isinstance(layer, LinearBase):
+            return FsoDenseLinearMethod()
+        return super().get_quant_method(layer, prefix)
 
 
 class ExpertMarlinMoEMethod(GPTQMarlinMoEMethod):

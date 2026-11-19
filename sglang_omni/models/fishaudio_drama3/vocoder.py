@@ -6,7 +6,10 @@ from __future__ import annotations
 import asyncio
 import bisect
 import collections
+import json
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 
 import torch
@@ -645,6 +648,12 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         self.stream_arrivals = 0
         self.messages_since_decode_step = 0
         self.DECODE_STEP_MESSAGE_BUDGET = decode_step_message_budget
+        # Optional server-side chunk timeline: one row per emitted audio window,
+        # with its production instant and pure playback duration. Off by default.
+        timeline_path = os.environ.get("DRAMA3_CHUNK_TIMELINE", "")
+        self.timeline = open(timeline_path, "a", buffering=1) if timeline_path else None
+        if self.timeline is not None:
+            logger.info("Drama 3 chunk timeline -> %s", timeline_path)
 
     def handle_message(
         self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
@@ -902,6 +911,20 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
                     metadata={"modality": "audio"},
                 )
             )
+            if self.timeline is not None:
+                self.timeline.write(
+                    json.dumps(
+                        {
+                            "rid": request_id,
+                            "t": time.perf_counter() * 1000,
+                            "play_ms": window_frames
+                            * frame_length
+                            / sample_rate
+                            * 1000,
+                        }
+                    )
+                    + "\n"
+                )
             if decode_metadata is not None:
                 emit(
                     request_id=request_id,

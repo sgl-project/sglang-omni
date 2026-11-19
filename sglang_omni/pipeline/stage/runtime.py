@@ -349,6 +349,11 @@ class Stage:
             pass
 
         logger.info("Stage %s started", self.name)
+        # Mirrors Hanabi's engine: after warm-up/graph capture, move the long-lived
+        # objects out of GC tracking so a 5-minute ramp cannot stall every stream
+        # with one full collection.
+        gc.collect()
+        gc.freeze()
 
     async def start_http_routes(self, socket_path: str) -> None:
         """Serve the scheduler's HTTP app before the stage reports ready."""
