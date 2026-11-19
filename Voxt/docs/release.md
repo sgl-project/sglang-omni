@@ -245,7 +245,10 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
    ```
    app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007），`release.sh` 的构建再改成 Voxt 1.x 的构建号（见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)）。
 2. **写 CHANGELOG.md**：把最上面的 `## [Unreleased]` 改成 `## [2.0.1] - 2026-11-20`（版本号和 mygo.json 完全一样），英文在前（`### Added`、`### Fixed`…），然后是 `### 中文`，下面用 `####` 小标题（`#### 新增`、`#### 修复`…）。更新窗口显示整节；官网用同一节：发布脚本从第一个含汉字的 `###` 标题（`### 中文`，这个标题本身去掉）分成 `notes`（英文）和 `notesZh`，后台还要求清单里的 notes（整节）包含英文部分。`--publish` 时没有这一节就失败。
-3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过，在 mac-air 上跑一遍回归（`scripts/mac-regress.sh`，[manual-test.md](manual-test.md) §10）。
+3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过。正式版打 tag 之前做三件事，beta 不用：
+   - 跑 `scripts/release-preflight.sh 2.0.1`（只读，不构建、不签名、不上传、不打 tag）：检查两处版本号、CHANGELOG 里这个版本的一节有英文和中文、六个页面的下载链接是这个版本，列出上一个正式版以来 CHANGELOG 没提到的 `[Voxt]` PR，并报 Developer ID 证书的到期日。有 `FAIL` 的行就先改掉。
+   - 在 Mac 上跑一遍回归 `scripts/mac-regress.sh`（[manual-test.md](manual-test.md) §10）和 `scripts/mac-e2e.sh`。
+   - 把 preflight 的输出和两个脚本结尾的结果表贴进发版 PR。
 4. 从 Linux 同步到发布用的 checkout 并构建（§1.1 的 `mac-gui.sh`；更新私钥 `release.sh` 自己从 `~/.config/voxtnew-release/` 读，§1.3）：
    ```sh
    # 先不发布：构建、公证、检查、actnow-publish.sh --dry-run
