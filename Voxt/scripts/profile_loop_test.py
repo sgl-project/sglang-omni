@@ -511,6 +511,9 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_vad_strategy_is_an_allowed_profiling_field(self):
         loop.validate_config_schema({"vad_strategy": "batched"})
 
+    def test_diarize_chunk_seconds_is_an_allowed_profiling_field(self):
+        loop.validate_config_schema({"diarize_chunk_seconds": 90})
+
     def test_lease_strategy_is_an_allowed_profiling_field(self):
         loop.validate_config_schema({"lease_strategy": "per-track"})
 

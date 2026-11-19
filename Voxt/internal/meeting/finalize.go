@@ -158,7 +158,11 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 			if d != nil {
 				// MTD alone does this track: the selected model's missing
 				// file ASR (aerr) must not stop an import.
-				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress)
+				var diarizeParams []ChunkParams
+				if cfg.DiarizeChunkParams != nil {
+					diarizeParams = append(diarizeParams, *cfg.DiarizeChunkParams)
+				}
+				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress, diarizeParams...)
 				if err != nil {
 					return nil, err
 				}
@@ -204,14 +208,18 @@ const mossPrompt = "Transcribe the audio into text. Start each segment with the 
 // after the first carrying the last labeled lines, so a voice keeps its
 // number across the boundaries (the native decoder starts its labels
 // over per chunk).
-func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64)) ([]Segment, error) {
+func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64), overrides ...ChunkParams) ([]Segment, error) {
 	p := DefaultChunkParams()
 	p.Rate = rate
-	p.MaxDur = diarizeChunkMax
-	// Pack speech across pauses up to the chunk cap: with the plain-ASR
-	// pause threshold every pause would start a new request, and the
-	// fixed per-request cost would dominate a pause-rich track.
-	p.PauseMin = diarizeChunkMax
+	if len(overrides) > 0 {
+		p = overrides[0]
+	} else {
+		p.MaxDur = diarizeChunkMax
+		// Pack speech across pauses up to the chunk cap: with the plain-ASR
+		// pause threshold every pause would start a new request, and the
+		// fixed per-request cost would dominate a pause-rich track.
+		p.PauseMin = diarizeChunkMax
+	}
 	chunks := PlanChunks(speech, len(pcm)/2, p)
 	if len(chunks) == 0 {
 		chunks = []Chunk{{Start: 0, End: len(pcm) / 2}}

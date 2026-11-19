@@ -62,11 +62,12 @@ go test -count=1 -run '^TestMeetingProfile$' -timeout 6h -v .
 | `model.id/dir` | `internal/omni` 已支持的模型 id 和本地目录；不会查 app 的模型设置或下载模型。 |
 | `draft.enabled/dir/bits` | 草稿开关、目录和量化位数。开启时目录必填，bits 为 4、6、8，省略 bits 时为 8；只有 Qwen3-ASR 和 MTD 支持。服务拒绝草稿而回退会产生 warning，整轮失败。 |
 | `decode_interval_ms` | Qwen3-ASR native server 的实时预览 decode interval；0 保留模型默认值。其他模型明确报错。此 harness 测离线 Final，不运行实时预览，所以该启动参数不应被解释为会改变离线 chunk 时间。 |
-| `segment_length_seconds` | 普通分段 ASR 的 `meeting.PlanChunks` 段长，0 使用默认 22 秒。必须大于 1 秒重叠；只改变会议切块，不改变 Omni 内部 Final 切块。`import` 的 MTD 整轨分人不生成 chunk plan，此字段不影响 MTD。 |
+| `segment_length_seconds` | 普通分段 ASR 的 `meeting.PlanChunks` 段长，0 使用默认 22 秒。必须大于 1 秒重叠；只改变会议切块，不改变 Omni 内部 Final 切块。`import` 的 MTD 分人由 `diarize_chunk_seconds` 另行控制。 |
+| `diarize_chunk_seconds` | 仅 profiling 的 MTD 分人块长和打包阈值，0 使用生产 `diarizeChunkMax`；正数必须大于 1 秒重叠。它只改变 `diarizeTrack` 的请求分块，不改变 mic 的 `PlanChunks`、识别参数或生产默认值。 |
 | `cache_limit_mb` | Qwen3-ASR 的 `--cache-limit-mb`；省略保留模型默认策略，0 显式禁用缓存，正数设置 MB。其他模型明确报错。 |
 | `idle_timeout_ms` | Omni 模型在无人使用后的卸载等待。省略或 0 使用生产默认 10 分钟；正数用于生命周期诊断，例如 1000 表示 1 秒；负数拒绝。profiling 在 final pass 前释放 VAD lease、final pass 后首个 correction 前释放 ASR lease，不插入人工等待，避免把计时器等待误算成模型工作。它不改变识别参数。 |
 | `vad_strategy` | 仅 profiling：`whole` 强制整轨一次 `Speech` 调用，`batched` 强制十分钟窗口的 `batchedSpeechRegions`。默认沿用生产路径。VAD 在 final pass 前释放 lease，请求级 VAD 使用仍照常进行；这项只改变 VAD 窗口策略，不改变 ASR、chunk 或文本规则。 |
-| `vad.enabled/model_dir` | 开启时创建并持有本地 Silero，目录必填；普通分段 ASR 用它检测语音。关闭时普通路径不调用神经或能量 VAD，而把整轨交给会议 chunk planner。`import` 有可用 MTD 时无论开关如何都直接整轨分人，不调用神经或能量 VAD，也不生成会议 chunk plan；没有 MTD 时仍以 `ErrNoDiarizer` 失败。 |
+| `vad.enabled/model_dir` | 开启时创建并持有本地 Silero，目录必填；普通分段 ASR 用它检测语音。关闭时普通路径不调用神经或能量 VAD，而把整轨交给会议 chunk planner。`import` 有可用 MTD 时先调用 VAD 取得切点，再按 `diarize_chunk_seconds` 合段；没有 MTD 时仍以 `ErrNoDiarizer` 失败。 |
 | `language` | 语音识别语言提示和总结主语言；空字符串让模型检测，总结沿用转录稿主要语言。 |
 | `cleanup` | 调用 `Manager.CorrectTranscript`，按现有 30 行/3000 runes 规则分批。profiling 边界额外要求每批响应是 `{i,text}` 的 JSON array，malformed response 使 stage/run 失败；普通 Meeting 的容错不变。 |
 | `summary` | 调用 `Manager.GenerateMeetingSummary`，保留现有层次总结请求。可在 cleanup 关闭时单独开启。 |

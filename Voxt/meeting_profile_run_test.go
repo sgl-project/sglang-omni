@@ -338,6 +338,12 @@ func runMeetingProfile(
 		chunks.MaxDur = time.Duration(config.SegmentLengthSeconds * float64(time.Second))
 		meetingConfig.FinalizeChunkParams = &chunks
 	}
+	if config.DiarizeChunkSeconds > 0 {
+		chunks := meeting.DefaultChunkParams()
+		seconds := time.Duration(config.DiarizeChunkSeconds * float64(time.Second))
+		chunks.MaxDur, chunks.PauseMin = seconds, seconds
+		meetingConfig.DiarizeChunkParams = &chunks
+	}
 	if vadRelease != nil {
 		vadRelease()
 		vadRelease = nil

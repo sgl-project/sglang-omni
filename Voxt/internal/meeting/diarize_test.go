@@ -150,6 +150,26 @@ func TestDiarizeTrackPacksPausesToTheCap(t *testing.T) {
 	}
 }
 
+func TestDiarizeTrackHonorsProfilingChunkParams(t *testing.T) {
+	rate := asr.SampleRate
+	pcm := make([]byte, rate*300*2)
+	speech := []vad.Segment{{Start: 0, End: rate * 300}}
+	d := &seqDiarizer{results: []asr.Result{
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "one"}}},
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "two"}}},
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "three"}}},
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "four"}}},
+	}}
+	params := DefaultChunkParams()
+	params.MaxDur, params.PauseMin = 90*time.Second, 90*time.Second
+	if _, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil, params); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.requests) != 4 {
+		t.Fatalf("%d requests with a 90-second profiling cap, want 4", len(d.requests))
+	}
+}
+
 // Speaker numbers past S04 keep their number (an import can have more
 // voices than a call's other side).
 func TestMTDSpeakerNumbers(t *testing.T) {

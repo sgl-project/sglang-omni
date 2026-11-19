@@ -40,6 +40,7 @@ func TestConfigValidation(t *testing.T) {
 		{"decode", func(c *Config) { c.DecodeIntervalMS = -1 }},
 		{"segment", func(c *Config) { c.SegmentLengthSeconds = -1 }},
 		{"segment overlap", func(c *Config) { c.SegmentLengthSeconds = 1 }},
+		{"diarize chunk overlap", func(c *Config) { c.DiarizeChunkSeconds = 1 }},
 		{"cache", func(c *Config) { c.CacheLimitMB = &negative }},
 		{"idle timeout", func(c *Config) { c.IdleTimeoutMS = -1 }},
 		{"VAD strategy", func(c *Config) { c.VADStrategy = "windows" }},

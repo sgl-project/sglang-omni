@@ -137,6 +137,9 @@ type Config struct {
 	// FinalizeChunkParams overrides the final pass's chunk planner for
 	// profiling; nil keeps DefaultChunkParams.
 	FinalizeChunkParams *ChunkParams
+	// DiarizeChunkParams overrides MTD diarization chunking for profiling;
+	// nil keeps the production diarizeChunkMax policy.
+	DiarizeChunkParams *ChunkParams
 	// Context is what the language model corrects a transcript with;
 	// nil for none.
 	Context func(ctx context.Context) TranscriptContext

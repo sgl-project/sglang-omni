@@ -41,6 +41,7 @@ CONFIG_FIELDS = {
     "draft",
     "decode_interval_ms",
     "segment_length_seconds",
+    "diarize_chunk_seconds",
     "cache_limit_mb",
     "idle_timeout_ms",
     "vad_strategy",

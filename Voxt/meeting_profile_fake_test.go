@@ -219,6 +219,28 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	}
 }
 
+func TestMeetingProfileDiarizeChunkSeconds(t *testing.T) {
+	config := fakeProfileConfig("import")
+	config.DiarizeChunkSeconds = 90
+	releases := 0
+	speech := &fakeProfileASR{segments: 1, releases: &releases}
+	detector := &fakeProfileVAD{releases: &releases}
+	dependencies := defaultProfileDependencies()
+	dependencies.decode = func(context.Context, string) ([]byte, error) {
+		return make([]byte, asr.SampleRate*300*2), nil
+	}
+	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
+	dependencies.newVAD = func(profile.Config) (profileVAD, error) { return detector, nil }
+	recorder := profile.NewRecorder(config)
+	report, runErr := runMeetingProfile(context.Background(), config, dependencies, recorder, nil, nil)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if report.Status != "success" || speech.diarizeCalls != 4 {
+		t.Fatalf("status %s, diarize calls %d, want 4 with a 90-second cap", report.Status, speech.diarizeCalls)
+	}
+}
+
 func TestMeetingProfileFakeImportWithMicTrack(t *testing.T) {
 	config := fakeProfileConfig("import")
 	config.MicAudio = "mic.wav"

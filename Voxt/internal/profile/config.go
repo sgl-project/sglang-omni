@@ -27,6 +27,7 @@ type Config struct {
 	Draft                DraftConfig `json:"draft"`
 	DecodeIntervalMS     int         `json:"decode_interval_ms,omitempty"`
 	SegmentLengthSeconds float64     `json:"segment_length_seconds,omitempty"`
+	DiarizeChunkSeconds  float64     `json:"diarize_chunk_seconds,omitempty"`
 	CacheLimitMB         *int        `json:"cache_limit_mb,omitempty"`
 	IdleTimeoutMS        int         `json:"idle_timeout_ms,omitempty"`
 	VADStrategy          string      `json:"vad_strategy,omitempty"`
@@ -124,6 +125,9 @@ func (c *Config) Validate() error {
 	}
 	if c.SegmentLengthSeconds > 0 && c.SegmentLengthSeconds <= 1 {
 		return fmt.Errorf("profile: segment_length_seconds must exceed the one-second chunk overlap")
+	}
+	if c.DiarizeChunkSeconds < 0 || c.DiarizeChunkSeconds > 0 && c.DiarizeChunkSeconds <= 1 {
+		return fmt.Errorf("profile: diarize_chunk_seconds must exceed the one-second chunk overlap")
 	}
 	if c.CacheLimitMB != nil && *c.CacheLimitMB < 0 {
 		return fmt.Errorf("profile: cache_limit_mb cannot be negative")
