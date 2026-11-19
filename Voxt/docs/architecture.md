@@ -51,7 +51,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     runtimes' ASROpener and LLMOpener; ErrNoRuntime without one), Choose,
 │   │                     ForFeature, ErrNotInstalled; NotInstalled; VoiceActivity (a speech
 │   │                     provider that brings its VAD model)
-│   ├── models/           the model catalogue (six curated models pinned to the family's commits,
+│   ├── models/           the model catalogue (the speech models pinned to the family's commits,
 │   │   │                 every file's SHA-256; two borrowed family LLMs; the language models
 │   │   │                 Retired since 2.1; Name: "Qwen3-ASR 1.7B (8bit)"), the models in the
 │   │   │                 ActNow family's library ($HUB, the Hugging Face cache) through
@@ -95,7 +95,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     Butterworth, 80 Hz), one gain from the speech (files) or a slow one
 │   │                     (streams, Leveler), a peak limiter; pure Go
 │   ├── compose/          the layered prompt composer: Transcribe, Translate, Rewrite;
-│   │                     templates/{en,zh-Hans}; 112 golden prompts; Untranslated, ParseAnswer;
+│   │                     templates/{en,zh-Hans}; golden prompts; Untranslated, ParseAnswer;
 │   │                     long speech in pieces (Pieces, BuildParts, JoinParts)
 │   ├── deliver/          the insert transaction: textio.focus, then textio.paste or the answer card
 │   ├── historyapi/       other programs reading the history: the exported fields (Row), its renderers, the Unix-socket server and client (`Voxt history`, docs/history-access.md)  (store)
@@ -137,7 +137,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │                         w0snapcmp (measured snapshot noise), declhash (pure-move check),
 │                         evalsynth (the speech fixtures, Qwen3-TTS on a Mac)
 ├── helper/               the Swift helper (helper/README.md): Sources/, Tests/, Fixtures/, Support/
-└── third_party/mygo/     MyGo 0.5.5 with nine patches (scripts/vendor-mygo.sh)
+└── third_party/mygo/     MyGo with the patches recorded by scripts/vendor-mygo.sh
 ```
 
 The plan's `textio` is the helper's `textio.*` (session.HelperText adapts it).
@@ -251,8 +251,8 @@ hotkey.event (helper) ─▶ helperNotified ─▶ hotkeyFired ─▶ hotkey.Rou
          (internal/vad: a stream gets nothing before the speech, an upload no silence around it; no speech: nothing is sent)
          (the recording kept in the history is the original)
    dict.Replace: the dictionary's aliases ─▶ their terms (the history keeps the text as recognised)
-   compose.BuildParts (+ the Scene layer, the glossary): one request, or one per piece where the language changes or over 300 characters
-      ─▶ a chat per part (progress deadlines: first token 15 s, 5 s between tokens, a cap growing with the piece; behavior.md 5.5), streaming into the draft ─▶ compose.Clean, compose.JoinParts
+compose.BuildParts (+ the Scene layer, the glossary): one request, or one per piece where the language changes or over 300 characters
+       ─▶ a chat per part (no separate first-token deadline, 5 s between tokens, a cap growing with the piece; behavior.md 5.5), streaming into the draft ─▶ compose.Clean, compose.JoinParts
          (a part fails: its text as recognised, a warning)
    deliver.Insert: textio.focus (the app in front now) ─▶ textio.paste {targetPid: that app, press: the group's auto key only in the start app, verifyMs: 1000}   (or the answer card)
          (the field did not change after ⌘V: not inserted, the text stays on the clipboard, the answer card; behavior.md 5.8a)
@@ -293,7 +293,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | `settingsAudioViewState`, `settingsSoundsViewState`; `settingsAudioActions`, `settingsSoundsActions`; `a.audio` (the inputs `capture.devices` listed), `a.loadDevices()`, `deviceInUse(list, devs)`, `recordingCue(was, s)` (start, stop or none) | settings_audio_view_state.go, settings_sounds_view_state.go (builders); settings_actions.go (intents); settings_audio_controller.go, settings_sounds_controller.go (implementations); settings_audio.go, settings_sounds.go (views) | Settings → Audio, helperlink.go (a helper that became ready), mute_link.go (`recordingAudio` plays the cues) |
 | `a.mute` (`*outmute.Controller`), `a.muting`, `a.recordingAudio(was, s)` (the cues and the mute around a recording; `startCueWait(sound)`), `a.muteHelperChanged`, `a.muteNotified`, `a.muteSettingChanged`, `a.pillSession()` (the pill's text line with the output's note), `a.closeMute()` | mute_link.go | events.go (onSession), helperlink.go, settings_audio.go, overlay_face.go, overlay_size.go, app.go (quit) |
 | `faceStyle(e, radius, alpha)`, `overlayPill(c, state, look, actions)`, `a.overlayRestyle()` | overlay_face.go (the pill's view), session_overlay_window.go (restyling) | the overlay, the preview of Settings → Overlay style (settings_overlay.go), `settingsChanged` |
-| `uitext.TriggerTextFor(translator, trigger)`, `featurePath(feature)` | internal/uitext (keys.go), settings_shortcuts_controller.go | Settings → Shortcuts |
+| `uitext.TriggerTextFor(translator, trigger)`, `featurePath(feature)` | internal/uitext (keys.go), settings_shortcuts_view_state.go | Settings → Shortcuts |
 | `a.trayItems()`, `a.loadTrayRecent()` (the last three results), `trayicon.Icon(recording)` (Voxt's microphone, `internal/trayicon`), `a.copyText` (tests) | tray.go | `historyChanged`, the menu bar |
 | `a.helperStatus()`, `helperCall[T](a, method, params, timeout, then)`, `a.helperNotified(m)`, `a.restartHelper()`, `a.hotkeys` (hotkey.state), `a.front` (app.activated) | helperlink.go | the helper's card (shell_notices.go), Home, permissions, Diagnostics, sessions |
 | `a.mgr` (`*session.Manager`), `a.sess` (the newest snapshot), `a.startSession(req)`, `a.startTranscribe(target, hold, try)`, `a.sessionBlocker(kind)`, `a.stopSession()`, `a.cancelSession()`, `a.toggleTranscribe()`, `a.pasteLast(target)`, `a.answer` + `openAnswer` / `insertAnswer` / `copyAnswer` / `closeAnswer` / `retryAnswer(lang)` / `followUpAnswer(hold)`, `a.showNotice`, `sessionProblemText(p)`, `a.syncHotkeys()` | session_link.go (the snapshots, notices), session_control.go (start, stop, paste the last), session_answer.go and session_overlay_actions.go (the card's actions), session_text.go (problem and notice text), session_hotkeys.go | the overlay, the feature pages' Try areas, the menu bar, helperlink.go |
@@ -304,7 +304,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | `uitext.SourceTextFor(translator, source, pattern)` | internal/uitext (history.go) | App enhancement's preview |
 | `dictionaryViewState`, `dictionaryNotesViewState`, `notesViewState`; `dictionaryActions`, `notesActions`; `a.loadDict()`, `a.loadNotes()` | dictionary_view_state.go, dictionary_notes_state.go, notes_view_state.go (builders); dictionary_actions.go (intents); dictionary_controller.go, dictionary_notes_controller.go, dictionary_scan_controller.go, dictionary_suggest_controller.go, dictionary_transfer.go, notes_controller.go (implementations) | pages.go and the fixture demo; selection, correction learning, legacy import, and completed note sessions refresh the controllers |
 | `permissionsViewState`; `permissionsActions`; `a.permSys` (`permission.System`), `a.recheckPermissions()`, `a.askPermission(which, then)` | permissions_view_state.go (builder), permissions.go (view and intents), permissions_controller.go (implementation) | Settings → Permissions, Diagnostics, Home, the setup guide |
-| `tryCardViewState`; `tryCardActions`; `a.tryCard(c, tryOpts)`, `a.tryIntro(feature)`, `a.startTry(kind)`, `a.startSessionID(req)` (the id, to tell a try from another session) | try_view_state.go (builder); try_actions.go (intents); try_controller.go (state); pages.go (`a.tryCard`); session_control.go | the feature pages, Home, the setup guide, and the fixture demo |
+| `tryCardViewState`; `tryCardActions`; `a.tryCard(c, tryOpts)`, `a.tryIntro(feature)`, `a.startTry(kind)`, `a.startSessionID(req)` (the id, to tell a try from another session) | try_view_state.go (builder); try_actions.go (intents); try_controller.go; pages.go (`a.tryCard`); session_control.go | the feature pages, Home, the setup guide, and the fixture demo |
 | `homeViewState`, `homeReadinessViewState`; `homeActions`; `a.prepareHomePage()`, `a.homePageModel(now)`, `a.homeChanged()`, `readHome`; `a.tryPlace(kind, target)`, `a.tryStarted` | home_view_state.go, home_readiness_state.go (builders); home_actions.go (intents); home_controller.go (history, readiness, actions); home_try.go (try places) | pages.go and the fixture demo; session_hotkeys.go (`hotkeyFired`); events.go after history changes |
 | `onboardingViewState`, `onboardingBackViewState`; `onboardingActions`; `a.openOnboarding()`, `a.maybeOnboard()` (first start), `a.obSessionChanged(s)` (a step passes on its own session's result), `a.obOwns(id)` | onboarding_view_state.go, onboarding_models_state.go, onboarding_steps_state.go, onboarding_try_state.go (builders); onboarding_actions.go (intents); onboarding.go (implementation) | shell.go (`openWindow`), session_link.go, Settings → General, Home, ⌘K, and the fixture demo |
 | `floatingWindowOptions(…)`, `showFloating(w, x, y)` (non-activating windows, mygo patch 0003), `hudContent(view)` (their text unsmoothed, patch 0005), `activateTarget(pid)` (`macx.Activate`) | floating.go | the recording pill and the answer card (M3, M4) |
@@ -336,8 +336,8 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | The output's mutes (crash recovery) | `~/Library/Caches/VoxtNew/output-mute/<helper pid>.json`: the devices a helper muted, written before each mute, removed when it gives them back; the next helper undoes a dead one's (`output.recover`). Empty while nothing records |
 | Apps' icons (App enhancement's lists) | `~/Library/Caches/VoxtNew/icons/<bundle id>-64.png`, drawn by the helper (`app.icons`), redrawn after a week (`internal/appicons`) |
 | Logs | `~/Library/Logs/VoxtNew/voxtnew.log` (app, rotated at 5 MB) `helper.log` (the helper's stderr) and `crash.log` (a Go crash's stack; the one before is `crash.log.1`) |
-| Helper | `VoxtNew.app/Contents/Resources/helper/voxtnew-helper` (or `$VOXTNEW_HELPER`) |
-| Omni runtime | `VoxtNew.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `silero_vad_server` (its copy, for Silero VAD, so that Activity Monitor tells the two apart), `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
+| Helper | `Voxt.app/Contents/Resources/helper/voxtnew-helper` (or `$VOXTNEW_HELPER`) |
+| Omni runtime | `Voxt.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `silero_vad_server` (its copy, for Silero VAD, so that Activity Monitor tells the two apart), `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
 
 ## 5. What came from Auralink, and from AudioSmith before it
 
@@ -391,7 +391,7 @@ Not taken: jobs, hub (downloads), catalog, licence, engine's MLX side, services,
 | Omni on a Mac | `scripts/mac.sh 'scripts/build-omni.sh --out build/omni-stage'`, then `TestMacE2EOmni` with `VOXTNEW_MAC_E2E=1`, `VOXTNEW_HELPER`, `VOXTNEW_OMNI_RUNTIME`, `VOXTNEW_OMNI_MODELS` (mac_e2e_omni_test.go's header) | the real models: a Final cold and warm, a live session with the helper playing the sample, Silero's speech; it logs the times (`MEASURE` lines) |
 | Loaded models' memory on a Mac | `go test -run TestMemory -v ./internal/macx` | a process's memory as Settings → Speech models measures it |
 | The ActNow family | `go test ./internal/actnow ./internal/models` | actnowkit's conformance scenarios (spec §16.1: reuse without downloading, deletion protection by claims, locks and loaded models, deleting for all apps, concurrent and resumed downloads against another app, settings that follow the family, shortcut conflicts, uninstalled apps, forward compatibility) through VoxtNew's Manager and Family; the runtime file (`internal/actnow` `TestRuntimeFile`, `TestOnMemory`, `TestReserve`, `TestPaste`; the runtimes' events, `internal/resident`, `TestModelEvents*` in omni; across a session, `family_runtime_test.go`); the catalogue as hfhub entries and family pins (`TestFamilyPins`, `TestEntry`); the manifest. Every test uses temporary `$FAMILY`/`$HUB` (`conformance.New`; the app's tests put both in each test app's data folder, `testutil_test.go` `runIsolated`). On a Mac: `go run github.com/hehehai/actnowkit/cmd/actnow-conformance check|discover|claims|watch|lock` |
-| Eval on a Mac | `VOXTNEW_EVAL=1 … go test -run TestEval -v .` (eval_test.go's header; `VOXTNEW_EVAL_QUICK=1`, `VOXTNEW_EVAL_ONLY`, `VOXTNEW_EVAL_OUT`) | the eval set through the real runtimes and the catalogue's models in `$HUB`: both speech models under three language hints, with and without the dictionary, live (`TestEvalASR`); the clean-up with and without compose's example, spoken Translate, Hy-MT2 (`TestEvalLLM`); app enhancement and the dictionary in whole sessions (`TestEvalAppEnhancement`, `TestEvalDictionary`); [eval.md](eval.md) has the numbers |
+| Eval on a Mac | `VOXTNEW_EVAL=1 … go test -run TestEval -v .` (eval_test.go's header; `VOXTNEW_EVAL_QUICK=1`, `VOXTNEW_EVAL_ONLY`, `VOXTNEW_EVAL_OUT`) | the eval set through the real runtimes and the catalogue's models in `$HUB`: the speech models under three language hints, with and without the dictionary, live (`TestEvalASR`); long recordings recognised whole, live, and in pieces (`TestEvalLongASR`); the dictionary as recognition context and its echo guard (`TestEvalDictASR`); MOSS-Transcribe-Diarize against Qwen3-ASR (`TestEvalMTD`), speaker labels (`TestEvalMTDSpeakers`), and language consistency (`TestEvalMTDLanguages`); [eval.md](eval.md) has the speech-model numbers and the retired language-model evals' historical measurements |
 | Mac regression | `MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh [--full]` | the helper's Swift tests, `TestMacE2EOmni`, the eval (quick: floors), the app built with the Omni runtime, started with `--smoke` (smoke.go: its own data, no window, no shortcuts; the speech model answers once) and quit with nothing left running; a summary table |
 | By hand on a Mac | [manual-test.md](manual-test.md) | what needs permissions, a GUI and the real models, in order |
 | Text fit | `VOXTNEW_TEXTFIT_PROBE=1` / `VOXTNEW_TEXTFIT_AUDIT=1 go test -run 'TestTextFits|TestTranslationsFit' .` | meaningful on macOS (Core Text) |
