@@ -22,6 +22,11 @@ func TestStableBehaviorTestsRunBeforeVersionRewrite(t *testing.T) {
 	if behaviorStep > resolveStep {
 		t.Error("stable behavior tests must run before Resolve the version rewrites mygo.json")
 	}
+	behavior := workflow[behaviorStep:]
+	behavior = behavior[:strings.Index(behavior[1:], "      - name: ")+1]
+	if !strings.Contains(behavior, "TMPDIR: ${{ runner.temp }}") {
+		t.Error("stable behavior tests must run with a short TMPDIR: the runner's leaves the socket tests' paths a few bytes under macOS's limit")
+	}
 }
 
 // TestDownloadLinks: every Voxt 2 download link in the docs downloads the

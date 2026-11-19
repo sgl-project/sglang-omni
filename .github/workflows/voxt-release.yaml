@@ -89,6 +89,9 @@ jobs:
 
       - name: Stable behavior regression tests
         if: env.IS_RELEASE == 'true'
+        env:
+          # Under the runner's TMPDIR (/var/folders/…) the socket tests' paths come within a few bytes of macOS's 104-byte Unix socket limit.
+          TMPDIR: ${{ runner.temp }}
         run: |
           CGO_ENABLED=0 go test -count=1 ./...
           swift test --package-path helper
