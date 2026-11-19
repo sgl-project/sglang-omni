@@ -77,11 +77,13 @@ func unwrappedOutput(s string) string {
 
 var thinkingTags = [][2]string{{"<think>", "</think>"}, {"<|channel>", "<channel|>"}}
 
+const assistantAnswerPrefix = "<|im_start|>assistant\n"
+
 var controlTokens = []string{
 	"<|tool_call|>", "<|/tool_call|>", "<|tool_call_begin|>", "<|tool_call_end|>",
 	"<|tool_calls_section_begin|>", "<|tool_calls_section_end|>",
 	"<|im_end|>", "<|im_start|>", "<|start|>", "<|end|>", "<|message|>",
-	"<|channel>", "<|channel|>",
+	"<|channel>", "<|channel|>", "<|endoftext|>", "</think>",
 }
 
 // controlTokenStart is the start of the first control token in s, or of
@@ -104,6 +106,10 @@ func controlTokenStart(s string) int {
 // stripControlMarkup removes model control blocks, including an opening
 // marker whose block has not closed. Ordinary angle-bracket text stays.
 func stripControlMarkup(s string) string {
+	trimmed := strings.TrimLeft(s, " \t\r\n")
+	if strings.HasPrefix(trimmed, assistantAnswerPrefix) {
+		s = trimmed[len(assistantAnswerPrefix):]
+	}
 	for _, tag := range thinkingTags {
 		for {
 			i := strings.Index(s, tag[0])
