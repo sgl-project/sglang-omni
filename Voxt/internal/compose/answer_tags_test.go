@@ -2,6 +2,8 @@ package compose
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +28,26 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 		}
 		if got := PartialAnswer(tc.out); got.Content != tc.want {
 			t.Errorf("PartialAnswer(%q) = %q, want %q", tc.out, got.Content, tc.want)
+		}
+	}
+}
+
+// TestAnswerDropsRewriteTagsChangelog keeps the user-visible fix in the release notes.
+func TestAnswerDropsRewriteTagsChangelog(t *testing.T) {
+	data, err := os.ReadFile("../../CHANGELOG.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sections := strings.SplitN(string(data), "\n## [", 3)
+	if len(sections) < 2 {
+		t.Fatal("CHANGELOG.md has no Unreleased section")
+	}
+	for _, entry := range []string{
+		"Rewrite answers no longer show echoed input tags",
+		"改写回答不再显示重复的输入标签",
+	} {
+		if !strings.Contains(sections[1], entry) {
+			t.Errorf("Unreleased changelog missing %q", entry)
 		}
 	}
 }
