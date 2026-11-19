@@ -533,6 +533,20 @@ func TestBuildFinishDedup(t *testing.T) {
 	}
 }
 
+// TestBuildFinishBeatsCancelOnReturn: while Return finishes a recording,
+// the same chord cannot also be configured as its cancelling shortcut.
+func TestBuildFinishBeatsCancelOnReturn(t *testing.T) {
+	f := settings.Defaults().Features
+	f.Cancel = settings.Hotkey{Keys: "Return", Trigger: settings.TriggerTap}
+	p := Build(f, []string{FinishID})
+	if p.Finish == nil {
+		t.Fatal("Return was not bound to finish the recording")
+	}
+	if p.Cancel != nil {
+		t.Fatalf("Return was also bound to cancel: %+v", p.Cancel)
+	}
+}
+
 // TestRoutePasteLastRoute: paste last pastes in Idle. While Recording it
 // stops only with Return finishing live (its Return may be the finish the
 // plan dropped for it); with the setting off, or in a session the plan

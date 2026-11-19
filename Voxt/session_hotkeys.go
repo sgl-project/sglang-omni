@@ -6,6 +6,8 @@ package main
 // Accessibility.
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -87,7 +89,13 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			return
 		}
 	}
-	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes())
+	finish := a.returnFinishes()
+	if e.Binding == hotkey.PasteLast && finish {
+		chord, err := hotkey.Parse(a.prefs.Features.PasteLast.Keys)
+		returnChord, _ := hotkey.Parse("Return")
+		finish = err == nil && chord.Equal(returnChord)
+	}
+	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), finish)
 	switch d.Action {
 	case hotkey.Start:
 		hold := ""
@@ -184,10 +192,14 @@ func (a *app) syncHotkeys() {
 	}
 	a.hotkeysSent = key
 	a.hotkeyGen++
-	params.Generation = a.hotkeyGen
+	generation := a.hotkeyGen
+	params.Generation = generation
 	helperCall(a, proto.MethodHotkeyConfigure, params, 5*time.Second, func(st proto.HotkeyStatus, err error) {
 		if err != nil {
 			a.hotkeysSent = ""
+			if errors.Is(err, context.DeadlineExceeded) && a.hotkeyGen == generation {
+				a.syncHotkeys()
+			}
 			a.logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: "hotkey.configure: " + err.Error()})
 			return
 		}

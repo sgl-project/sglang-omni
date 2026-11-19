@@ -12,6 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Paste last on Return honours the opt-out**: with Paste last on Return and Return finishes dictation off, pressing Return while Transcribe records no longer stops the recording, and it never stops a Translate, Rewrite or note recording. A queued Return also does nothing after the setting or session kind changes, and one a finished dictation's replaced configuration reported on its way out never stops the next dictation, whichever shortcut Return is.
+- **Recording shortcuts keep their roles**: Paste last on a key other than Return no longer stops dictation. A timed-out hotkey configuration is retried, and with Return finishes dictation on, binding Cancel to Return no longer cancels the recording instead.
 
 ### 中文
 
@@ -23,6 +24,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。设置或会话类型变化后，排队中的旧回车事件同样不再停止录音；上一段听写结束后来送到的旧配置回车事件，无论回车绑定在哪个快捷键上，都不会停止下一段听写。
+- **录音快捷键不再串用动作**：“粘贴最近结果”绑定回车以外的键时，不再停止转录录音；快捷键配置超时后会重试；打开“按回车完成转录”时，即使取消快捷键也设为回车，按回车仍会完成录音而不会取消。
 
 ## [2.1.1] - 2026-11-17
 

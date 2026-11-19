@@ -288,6 +288,28 @@ func TestSessionReturnFinishes(t *testing.T) {
 	}
 }
 
+// TestSessionPasteLastOtherKeyKeepsRecording: Paste last's ordinary
+// shortcut is not the Return finish binding, so it must not end dictation.
+func TestSessionPasteLastOtherKeyKeepsRecording(t *testing.T) {
+	set, keys, _ := fileSetup(t, "still recording", &fakeChat{text: "unused"})
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, set, keys)
+	a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: "paste-last", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: a.hotkeyGen})
+	a.settle(250 * time.Millisecond)
+	if a.sess.State != session.Recording {
+		t.Fatalf("Paste last on its ordinary shortcut stopped dictation: %+v", a.sess)
+	}
+}
+
+// TestSessionHotkeyConfigureTimeoutRetries: a configuration whose reply
+// times out is sent again, so its events do not stay stale and get dropped.
+func TestSessionHotkeyConfigureTimeoutRetries(t *testing.T) {
+	a := newSessionApp(t, "delay=hotkey.configure:5100", func(*settings.Settings) {}, nil)
+	first := a.hotkeyGen
+	a.pump("a hotkey.configure retry", func() bool { return a.hotkeyGen > first })
+}
+
 // TestSessionStaleFinishEvent: a Return event the helper decided under a
 // dictation's old configuration (S1 ended another way before the event
 // arrived) must not stop the next dictation (S2), whichever binding

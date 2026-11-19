@@ -452,6 +452,7 @@ func Build(f settings.Features, enabled []string) Plan {
 		if !dup {
 			b := binding(FinishID, c, proto.BehaviorTap)
 			p.Finish = &b
+			taken = append(taken, seen{FinishID, c, proto.BehaviorTap})
 		}
 	}
 	if f.Cancel.Keys != "" {
