@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -17,26 +16,28 @@ import (
 // the remaining early work and tail to clean. add is the
 // stream's reader goroutine's, work the worker's, drain the session
 // goroutine's (which runs after the reader returned); mu guards the
-// rest.
+// rest, and cond (on mu) wakes the worker for new stretches, the
+// recording's end (closed) or a cancellation.
 type earlyClean struct {
 	r          *run
-	queue      chan segJob
+	cond       *sync.Cond
 	workerDone chan struct{}
-	workerOnce sync.Once
 	ctx        context.Context
 	cancel     context.CancelFunc
 
 	mu      sync.Mutex
 	stable  string // the last EventPiece's text
 	jobs    []segJob
+	covered string // the stretches joined as recognised, aliases replaced
+	chars   int    // covered's length in characters
 	segs    []*segResult
 	failed  error // the first request's failure
 	broken  bool  // an event did not extend the text so far: give up
-	gotWork bool  // a stretch was queued (the worker runs)
+	closed  bool  // the recording ended: no more stretches
 }
 
 type segJob struct {
-	sep, text string // the stretch and what joined it to the one before
+	sep, replaced string // what joined the stretch to the one before, and the stretch with the dictionary's aliases replaced
 }
 
 // segResult is one stretch's clean-up: its parts and their answers, in
@@ -53,7 +54,24 @@ type segResult struct {
 
 func newEarlyClean(r *run) *earlyClean {
 	ctx, cancel := context.WithCancel(r.llmCtx)
-	return &earlyClean{r: r, queue: make(chan segJob, 256), workerDone: make(chan struct{}), ctx: ctx, cancel: cancel}
+	e := &earlyClean{r: r, workerDone: make(chan struct{}), ctx: ctx, cancel: cancel}
+	e.cond = sync.NewCond(&e.mu)
+	go func() {
+		<-ctx.Done()
+		e.mu.Lock()
+		e.cond.Broadcast()
+		e.mu.Unlock()
+	}()
+	return e
+}
+
+// stop gives the early clean-up up (the whole text is cleaned at Stop,
+// as without the events) and wakes the worker.
+func (e *earlyClean) stop() {
+	e.mu.Lock()
+	e.broken = true
+	e.mu.Unlock()
+	e.cancel()
 }
 
 // hearPiece takes the final text so far of a recording that finalises
@@ -75,15 +93,14 @@ func (r *run) hearPiece(stable string) {
 // Stop as without the events.
 func (e *earlyClean) add(stable string) {
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.broken || !strings.HasPrefix(stable, e.stable) {
 		e.broken = true
-		e.mu.Unlock()
 		e.cancel()
 		return
 	}
 	delta := stable[len(e.stable):]
 	e.stable = stable
-	e.mu.Unlock()
 	sep := ""
 	if rest, ok := strings.CutPrefix(delta, " "); ok {
 		sep, delta = " ", rest
@@ -92,28 +109,18 @@ func (e *earlyClean) add(stable string) {
 	if text == "" {
 		return
 	}
-	e.mu.Lock()
-	e.gotWork = true
-	e.mu.Unlock()
-	e.workerOnce.Do(func() { go e.work() })
-	job := segJob{sep: sep, text: text}
-	e.mu.Lock()
-	e.jobs = append(e.jobs, job)
-	e.mu.Unlock()
-	select {
-	case e.queue <- job:
-	default:
-		// The reader must not block on the clean-up; this much audio is
-		// cleaned at Stop as without the events.
-		e.mu.Lock()
-		e.broken = true
-		e.mu.Unlock()
-		e.cancel()
+	replaced := e.r.spoken(text)
+	e.jobs = append(e.jobs, segJob{sep: sep, replaced: replaced})
+	e.covered += sep + replaced
+	e.chars += utf8.RuneCountInString(sep + replaced)
+	if len(e.jobs) == 1 {
+		go e.work()
 	}
+	e.cond.Broadcast()
 }
 
 // work cleans the queued stretches in order, one request at a time,
-// until the queue closes or the session ends.
+// until the recording ends (drain closed it) or the session ends.
 func (e *earlyClean) work() {
 	defer close(e.workerDone)
 	r := e.r
@@ -128,10 +135,7 @@ func (e *earlyClean) work() {
 	// Later text can add terms to a large glossary, so only whole-text
 	// clean-up can give every part the same prompt.
 	if len(r.glossary()) > compose.GlossaryAllUpTo {
-		e.mu.Lock()
-		e.broken = true
-		e.mu.Unlock()
-		e.cancel()
+		e.stop()
 		return
 	}
 	thinkOffUnder := 0
@@ -141,59 +145,43 @@ func (e *earlyClean) work() {
 			break
 		}
 	}
+	next := 0
 	for {
-		if e.ctx.Err() != nil {
+		e.mu.Lock()
+		for !e.closed && e.ctx.Err() == nil && next >= len(e.jobs) {
+			e.cond.Wait()
+		}
+		if e.ctx.Err() != nil || (e.closed && next >= len(e.jobs)) {
+			e.mu.Unlock()
 			return
 		}
-		select {
-		case <-e.ctx.Done():
-			return
-		case job, ok := <-e.queue:
-			if !ok || e.ctx.Err() != nil {
-				return
-			}
-			e.clean(job, thinkOffUnder)
-		}
+		job := e.jobs[next]
+		next++
+		e.mu.Unlock()
+		e.clean(job, thinkOffUnder)
 	}
-}
-
-func (e *earlyClean) coveredText() string {
-	e.mu.Lock()
-	jobs := append([]segJob(nil), e.jobs...)
-	e.mu.Unlock()
-	covered := ""
-	for _, job := range jobs {
-		replaced := job.text
-		if e.r.settings.Dictionary.Enabled {
-			replaced = dict.Replace(job.text, e.r.terms)
-		}
-		covered += job.sep + replaced
-	}
-	return covered
 }
 
 func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 	r := e.r
-	chars := utf8.RuneCountInString(e.coveredText())
+	e.mu.Lock()
+	chars := e.chars
+	e.mu.Unlock()
 	// A shorter prefix must not turn thinking off when the finished
 	// dictation would leave it on.
 	if thinkOffUnder > 0 && chars < thinkOffUnder {
-		e.mu.Lock()
-		e.broken = true
-		e.mu.Unlock()
-		e.cancel()
+		e.stop()
 		return
 	}
-	replaced := r.spoken(job.text)
-	parts, err := compose.BuildParts(r.transcribeInput(replaced))
+	parts, err := compose.BuildParts(r.transcribeInput(job.replaced))
 	if err != nil {
 		e.fail(err)
 		e.mu.Lock()
-		e.segs = append(e.segs, &segResult{sep: job.sep, replaced: replaced, done: true})
+		e.segs = append(e.segs, &segResult{sep: job.sep, replaced: job.replaced, done: true})
 		e.mu.Unlock()
 		return
 	}
-	res := &segResult{sep: job.sep, replaced: replaced, parts: parts}
+	res := &segResult{sep: job.sep, replaced: job.replaced, parts: parts}
 	for _, p := range parts {
 		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, InputChars: chars}
 		resp, err := r.llmChatContext(e.ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
@@ -222,7 +210,9 @@ func (e *earlyClean) fail(err error) {
 }
 
 func (e *earlyClean) finalMatches(text string) bool {
-	covered := e.coveredText()
+	e.mu.Lock()
+	covered := e.covered
+	e.mu.Unlock()
 	return covered != "" && strings.HasPrefix(text, covered)
 }
 
@@ -235,14 +225,17 @@ func (e *earlyClean) finalMatches(text string) bool {
 func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string, tail string, failed error, ok bool) {
 	defer e.cancel()
 	e.mu.Lock()
-	got := e.gotWork
+	got := len(e.jobs) > 0
 	broken := e.broken
 	e.mu.Unlock()
 	if !got {
 		return nil, nil, "", nil, false
 	}
 	fallback := broken || !e.finalMatches(text)
-	close(e.queue)
+	e.mu.Lock()
+	e.closed = true
+	e.mu.Unlock()
+	e.cond.Broadcast()
 	if fallback {
 		e.cancel()
 	}
