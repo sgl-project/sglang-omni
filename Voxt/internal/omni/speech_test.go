@@ -131,10 +131,11 @@ func TestSalvageAfterPauseCut(t *testing.T) {
 }
 
 // TestSalvageDrainsQueuedTail: speech still queued for the socket when
-// Stop comes is delivered before the Final runs, so a failed Final
-// salvages the tail's words too. Speech, a long pause and more speech;
-// the writer is held, so the stretch after the pause is provably still
-// queued at Stop, and its text differs from the stretch before it.
+// Stop comes is delivered after the Final fails, before Salvage, so a
+// failed Final salvages the tail's words too. Speech, a long pause and
+// more speech; the writer is held, so the stretch after the pause is
+// provably still queued at Stop, and its text differs from the stretch
+// before it.
 func TestSalvageDrainsQueuedTail(t *testing.T) {
 	f, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}", FailFrom: 2, Delay: 2 * time.Second})
 	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 2*time.Second, time.Second, 1500*time.Millisecond, 3*time.Second
@@ -180,8 +181,8 @@ func TestSalvageDrainsQueuedTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(gate)
-	// The drain delivers the tail; its (different) text joins the preview
-	// while the Final runs, and the Final fails.
+	// The Final fails; the drain then delivers the tail, and its
+	// (different) text joins the preview before Salvage.
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		s.mu.Lock()
 		text := s.asm.text()
@@ -279,6 +280,44 @@ func TestLiveFinalDoesNotWaitForThePreview(t *testing.T) {
 	}
 	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples != 3*sampleRate {
 		t.Errorf("finals %+v", finals)
+	}
+}
+
+// TestSalvageDuringASlowFinal: Salvage is also the fallback when the
+// Final takes too long (the session's recognition limit fires with the
+// Final still running). The wrap-up runs then too, so the tail whose
+// partial lags (2 s here) joins the preview Salvage reads; the slow
+// Final (5 s) still ends the stream with its own result afterwards.
+func TestSalvageDuringASlowFinal(t *testing.T) {
+	_, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}", Delay: 5 * time.Second, LiveSegDelay: 2 * time.Second})
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, tone(500*time.Millisecond, 0.3))
+	var before string
+	select {
+	case ev := <-st.Events():
+		if ev.Kind != asr.EventPartial {
+			t.Fatalf("before the pause: %+v", ev)
+		}
+		before = ev.Text
+	case <-time.After(10 * time.Second):
+		t.Fatal("no live partial")
+	}
+	sendAll(t, st, silence(10*time.Second))
+	sendAll(t, st, tone(500*time.Millisecond, 0.3))
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	// The Final is still running (5 s): Salvage is the timeout fallback,
+	// and it must carry the tail whose partial lags 2 s.
+	if got := st.(asr.Salvager).Salvage(); !strings.HasPrefix(got, "partial ") || got == before {
+		t.Errorf("salvaged %q, want the preview's text with the stretch after the pause (before it %q)", got, before)
+	}
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != "p1" {
+		t.Fatalf("last %+v", last)
 	}
 }
 

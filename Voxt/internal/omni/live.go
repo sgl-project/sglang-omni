@@ -60,6 +60,9 @@ type live struct {
 	events    chan asr.Event
 	asm       assembler
 	once      sync.Once // release
+	// wrapUpOnce runs the preview's wrap-up once (live_wrapup.go): a
+	// failed Final and a Salvage asked while the Final runs share it.
+	wrapUpOnce sync.Once
 	// completed takes the server's whole text at transcription.completed
 	// (LiveResult, live_result.go); readDone closes when read returns.
 	completed chan string
@@ -357,9 +360,10 @@ func (s *live) Finish() error {
 // finalPass recognises pcm, the whole recording, once more (what the
 // pieces left of it) and ends the stream with the result. The Final
 // starts at once: the wrap-up (draining the preview's queue and awaiting
-// the server's recognition of it) matters only for Salvage, so it runs
-// only when the Final fails, not on every Stop. The socket stays open
-// while the Final runs, so the tail's segments still arrive.
+// the server's recognition of it) matters only when the stream's text is
+// the fallback, so it runs only for Salvage — the Final failed, or it is
+// still running when Salvage is asked — not on every Stop. The socket
+// stays open while the Final runs, so the tail's segments still arrive.
 func (s *live) finalPass(pcm []byte) {
 	if s.conn != nil {
 		defer s.conn.CloseNow()
@@ -400,11 +404,11 @@ func (s *live) finalPass(pcm []byte) {
 	if err != nil {
 		if s.ctx.Err() != nil {
 			err = asr.NetError(s.ctx, Provider, s.ctx.Err())
-		} else if s.conn != nil && s.drainPreview() {
+		} else {
 			// Salvage weighs the preview: deliver the tail still queued
 			// for the socket and await its recognition first (bounded,
 			// so a stuck server cannot stall the error either).
-			s.completePreview()
+			s.wrapUpPreview()
 		}
 		s.end(asr.Event{Kind: asr.EventError, Err: err})
 		return
@@ -444,8 +448,17 @@ func (s *live) logFinal(pcm []byte, done, pieces int, busy, took time.Duration, 
 
 // Salvage is the best text the stream has when its Final failed or took
 // too long (asr.Salvager): the pieces' when they cover at least what the
-// preview heard, else the preview's; "" for none.
+// preview heard, else the preview's; "" for none. Asked after Finish, it
+// first wraps the preview up (once, outside s.mu, as a failed Final
+// does), so a Final still running when its time ran out does not lose
+// the tail either.
 func (s *live) Salvage() string {
+	s.mu.Lock()
+	finished := s.finished
+	s.mu.Unlock()
+	if finished {
+		s.wrapUpPreview()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	preview := s.asm.text()

@@ -175,9 +175,8 @@ func TestLiveLargeFirstSend(t *testing.T) {
 // TestLiveFinalWhenTheSocketStalls: the server takes the live session,
 // then hangs (it never reads the socket again), so the preview's writer
 // blocks on the socket with audio still queued. Stop must still run the
-// Final: the drain gives up after previewDrain and closes the socket,
-// and the wrap-up's own write is bounded, so the stream ends with the
-// Final's result instead of waiting on the stuck writer forever.
+// Final: a succeeding Final never waits for the stuck writer (the
+// wrap-up is for Salvage only), and the socket closes under it.
 func TestLiveFinalWhenTheSocketStalls(t *testing.T) {
 	// A small send buffer on this end too (the fake caps its receive
 	// buffer): the kernels' autotuning would otherwise take the whole

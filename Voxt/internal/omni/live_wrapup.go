@@ -17,6 +17,20 @@ const previewDrain = 5 * time.Second
 // what the socket took: the same job liveResultTimeout gives 20 s.
 const previewCompleteTimeout = 20 * time.Second
 
+// wrapUpPreview drains the preview's queue and awaits the server's
+// recognition of it, so Salvage weighs the recording's tail too. It
+// matters only when the stream's own text is the fallback, so it runs
+// once, and only the fallback paths call it: a Final that failed, and a
+// Salvage asked while the Final is still running (it took too long).
+// A successful Final never waits for it.
+func (s *live) wrapUpPreview() {
+	s.wrapUpOnce.Do(func() {
+		if s.conn != nil && s.drainPreview() {
+			s.completePreview()
+		}
+	})
+}
+
 // drainPreview hands the audio queued for the preview's socket to the
 // server: Send accepted it, and closing the socket with the queue
 // pending would lose it. A writer that does not drain in time is stuck
