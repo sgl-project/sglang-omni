@@ -537,6 +537,20 @@ func TestRewriteBoxStaleConversionDropped(t *testing.T) {
 	}
 }
 
+func TestOpenBoxResetsAutomaticInputSuppression(t *testing.T) {
+	a := newBoxApp(t, "", &fakeChat{text: "A shorter text."})
+	a.box = rewriteBox{open: true, selectionSuppressed: true, automaticImageSuppressed: true}
+	a.postQueue(func() { a.openBox(slackApp, session.StartRequest{Kind: store.KindRewrite}) })
+	a.pump("the new recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	if a.box.selectionSuppressed || a.box.automaticImageSuppressed {
+		t.Fatal("the new box kept the previous box's removed inputs")
+	}
+	selectionSuppressed, imageSuppressed := a.boxShare.automaticSuppressed()
+	if selectionSuppressed || imageSuppressed {
+		t.Fatal("the session still suppresses the new automatic inputs")
+	}
+}
+
 // TestRewriteBoxQueuedSendDiesWithTheBox: Enter queued behind a pasted
 // picture's conversion belongs to that box's life. Esc and a reopen
 // start a new one: the old life's conversion, landing now, must not

@@ -151,6 +151,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 	a.box.open, a.box.shown, a.box.err = true, true, ""
 	a.box.target, a.box.session = target, id
 	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
+	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
 	a.box.focusText = true
 	a.boxSync()
 }

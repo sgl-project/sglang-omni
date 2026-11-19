@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -518,6 +519,63 @@ func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	}
 	if got, want := a.boxTextContent(), "HEL"+long+"LO world"; got != want {
 		t.Fatalf("text after pasting into an earlier segment %q, want %q", got, want)
+	}
+}
+
+func TestBoxPasteTextRejectsOversize(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	if a.boxPasteText(strings.Repeat("x", (32<<20)+1)) {
+		t.Fatal("the oversized paste was accepted")
+	}
+	if a.box.err == "" || len(a.box.textSegments) != 0 || a.box.text != "" {
+		t.Fatalf("oversized text reached the box: err %q, segments %d, editor %d", a.box.err, len(a.box.textSegments), len(a.box.text))
+	}
+}
+
+func TestBoxOversizePasteKeepsTrailingEditorText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("hello")
+	tt.SetClipboardData(transfer.TextData(strings.Repeat("x", (32<<20)+1)))
+	tt.Command("paste")
+	frames(tt)
+	if got := a.boxTextContent(); got != "hello" {
+		t.Fatalf("the rejected paste changed the editor to %q", got)
+	}
+	if a.box.err == "" {
+		t.Fatal("the rejected paste has no error")
+	}
+}
+
+func TestBoxOversizePasteKeepsExistingText(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		index int
+	}{
+		{name: "trailing editor", index: -1},
+		{name: "earlier typed segment", index: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true, text: "hello"}
+			if tc.index == 0 {
+				a.boxPasteText("one\ntwo\nthree\nfour")
+				a.boxRemoveText(1)
+			}
+			before := a.boxTextContent()
+			if a.boxPasteTextAt(tc.index, strings.Repeat("x", (32<<20)+1), 0, 0) {
+				t.Fatal("the oversized paste was accepted")
+			}
+			if got := a.boxTextContent(); got != before {
+				t.Fatalf("the rejected paste changed %q to %q", before, got)
+			}
+			if a.box.err == "" {
+				t.Fatal("the rejected paste has no error")
+			}
+		})
 	}
 }
 
