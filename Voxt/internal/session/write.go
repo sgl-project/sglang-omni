@@ -200,6 +200,14 @@ func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, err
 	return r.ask(in)
 }
 
+func answerCleanupInput(in compose.Input) string {
+	input := in.Text + "\n" + in.Instruction
+	for _, turn := range in.Previous {
+		input += "\n" + turn.Selection + "\n" + turn.Instruction + "\n" + turn.Answer.Title + "\n" + turn.Answer.Content
+	}
+	return input
+}
+
 // ask sends one request and streams its answer into the snapshot. It
 // returns the answer (Content only, but for a JSON answer), the
 // composition's profile, and whether the model stopped at its length
@@ -219,7 +227,8 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
-	answerInput := in.Text + "\n" + in.Instruction
+	answerInput := answerCleanupInput(in)
+	quoteSource := cmp.Or(in.Text, in.Instruction)
 	var last time.Time
 	publish := func(force bool) {
 		now := time.Now()
@@ -231,7 +240,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		if in.Answer {
 			a = compose.PartialAnswer(buf.String(), answerInput)
 		} else {
-			a.Content = compose.PartialClean(buf.String(), in.Text)
+			a.Content = compose.PartialClean(buf.String(), answerInput, quoteSource)
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
@@ -263,10 +272,9 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInput)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInput, quoteSource)}, out.Profile(), truncated, nil
 	}
-	input := in.Text
-	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), truncated, nil
+	return compose.Answer{Content: compose.Clean(resp.Text, answerInput, quoteSource)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,

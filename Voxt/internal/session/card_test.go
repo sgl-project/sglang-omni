@@ -10,6 +10,25 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func TestAnswerCleanupInputIncludesPreviousTurns(t *testing.T) {
+	input := answerCleanupInput(compose.Input{Instruction: "shorter", Previous: []compose.Turn{{Instruction: "Explain <think> literally", Answer: compose.Answer{Content: "Earlier answer"}}}})
+	const text = "The <think> tag wraps reasoning."
+	if got := compose.Clean(text, input); got != text {
+		t.Errorf("Clean(%q) = %q, want %q", text, got, text)
+	}
+	if got := compose.PartialClean(text, input); got != text {
+		t.Errorf("PartialClean(%q) = %q, want %q", text, got, text)
+	}
+	structured := `{"title":"T","content":"` + text + `"}`
+	want := compose.Answer{Title: "T", Content: text}
+	if got, ok := compose.ParseAnswer(structured, input); !ok || got != want {
+		t.Errorf("ParseAnswer(%q) = %+v, %v, want %+v", structured, got, ok, want)
+	}
+	if got := compose.PartialAnswer(structured, input); got != want {
+		t.Errorf("PartialAnswer(%q) = %+v, want %+v", structured, got, want)
+	}
+}
+
 // TestShowCard: each feature's own card switch sends its result to the
 // card or inserts it (over the selection when there is one); the other
 // features' switches, set the other way, change nothing. A follow-up

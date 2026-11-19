@@ -210,6 +210,7 @@ func TestAnswerControlTokenVariants(t *testing.T) {
 func TestAnswerCleanupThinkingClose(t *testing.T) {
 	for _, tc := range []struct{ name, text, want string }{
 		{"answer after thinking close", "reasoning here</think>Final answer", "Final answer"},
+		{"answer after newline-wrapped thinking close", "reasoning\n</think>\n\nFinal answer", "Final answer"},
 		{"answer after channel close", "reasoning here<channel|>Final answer", "Final answer"},
 		{"answer after duplicate thinking closes", "reasoning</think></think>Final answer", "Final answer"},
 		{"answer after mixed thinking closes", "reasoning</think><channel|>Final answer", "Final answer"},
