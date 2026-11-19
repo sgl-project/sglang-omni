@@ -10,7 +10,7 @@ import (
 
 // mtdEnglishCeiling is the most error the English clips may have as a
 // group before the eval fails. The last good runtime measured 14.0% on
-// them, the one with #4211's fix 18.6% (voxt-sync studio/mtd-bisect.md);
+// them, the one with #4211's fix 18.6%;
 // #4188 measured 69.8% and #4189 123.3% while the eval, which had no
 // limit, still passed.
 const mtdEnglishCeiling = 0.25
@@ -84,7 +84,7 @@ func hanShare(text string) float64 {
 
 // TestMTDWrongScript: the floor's script check takes the good runtimes'
 // transcripts and rejects the Vietnamese #4188 answered an English clip
-// in (voxt-sync studio/mtd-bisect.md); the other wrong-language cases
+// in; the other wrong-language cases
 // (Spanish, Russian, Chinese, Japanese, a full translation) are
 // synthetic boundaries, not observed outputs.
 func TestMTDWrongScript(t *testing.T) {
