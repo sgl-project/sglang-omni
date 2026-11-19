@@ -9,6 +9,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 - **Long dictations are cleaned up while you speak**: once a recording passes a minute, the speech model finishes stretch after stretch while you keep talking, and Voxt can send each finished stretch to the language model right away. When you stop, only the remaining text is left, so the cleaned text arrives sooner. Voxt waits until Stop instead when the short-input thinking threshold has not been reached, or glossary prompting is on and your dictionary has more than 30 enabled terms. The original recognised text stays in History.
 
+### Changed
+
+- **The personal dictionary no longer points to where each feature shows its whole request**: the caption under the Markdown notes is removed; the feature pages still show the request itself.
+
 ### 中文
 
 #### 新增
@@ -36,6 +40,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **“设置 → 隐私”和 README 说明本机与 API 两条数据路径**（#4159）：列出语言模型请求可能包含的文字和可选图片，区分留在本机的请求和发给外部服务商的请求，并说明翻译使用备用模型时的数据去向。README 也分别说明了语音识别在本机和通过 API 运行时的数据路径。
+#### 变更
+
+- **个人词典不再说明各功能在哪里显示完整请求**：Markdown 笔记下方的说明文字已删除，各功能页面仍会显示完整请求。
 
 ## [2.1.1] - 2026-11-17
 
