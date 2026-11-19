@@ -2921,6 +2921,57 @@ def test_preprocessing_video_shares_the_stage_cpus_with_the_videos_running(
     assert shares["text"][0] is None
 
 
+def test_preprocessing_video_answers_a_failure_outside_its_preprocessing_and_frees_its_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shares: dict[str, preprocessor_mod.VideoCpuShare | None] = {}
+    decode_calls: list[int] = []
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
+        ) -> str:
+            shares[payload.request_id] = video_share
+            return payload.request_id
+
+    def decode_threads(running: int) -> int:
+        decode_calls.append(running)
+        if len(decode_calls) == 1:
+            raise RuntimeError("share failed")
+        else:
+            pass
+        return 10 * running
+
+    monkeypatch.setattr(qwen_stages, "automatic_video_decode_threads", decode_threads)
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_threads=2,
+        stage_threads=8,
+        stage_cpus=6,
+        video_decode_threads=None,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("broken"))
+        error = scheduler.outbox.get(timeout=5)
+        scheduler.inbox.put(video_request("after"))
+        result = scheduler.outbox.get(timeout=5)
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert (error.request_id, error.type) == ("broken", "error")
+    assert isinstance(error.data, RuntimeError)
+    assert (result.request_id, result.data) == ("after", "after")
+    assert shares == {
+        "after": preprocessor_mod.VideoCpuShare(intraop_threads=6, decode_threads=10)
+    }
+
+
 def test_preprocessing_video_threads_see_the_stage_bound_to_the_scheduler_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

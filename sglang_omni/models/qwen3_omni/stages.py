@@ -12,8 +12,9 @@ import asyncio
 import logging
 import os
 import threading
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass
 from functools import partial
@@ -1064,21 +1065,38 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
     def run_video_request(
         self, msg: IncomingMessage, request_inputs: ChatRequestInputs
     ) -> None:
+        try:
+            with self.video_slot() as running:
+                # note (ratish): a video takes the stage's CPUs split over the videos running as it starts, at most the stage's own team, so a lone video runs as on the serial stage and every video thread at once on one share each.
+                video_share = VideoCpuShare(
+                    intraop_threads=min(
+                        self.stage_threads, max(self.stage_cpus // running, 1)
+                    ),
+                    decode_threads=(
+                        automatic_video_decode_threads(running)
+                        if self.video_decode_threads is None
+                        else self.video_decode_threads
+                    ),
+                )
+                with intraop_team(video_share.intraop_threads):
+                    self.run_request(msg, request_inputs, asyncio.run, video_share)
+        except Exception as exc:
+            # note (ratish): nothing reads a video thread's future, so a failure outside the request's own preprocessing is answered here or never.
+            logger.exception(f"Video request {msg.request_id} failed on its thread")
+            if self.consume_if_aborted(msg.request_id):
+                return
+            else:
+                pass
+            self.emit_error(msg.request_id, exc, self.outbox)
+
+    @contextmanager
+    def video_slot(self) -> Iterator[int]:
+        """Count this video among the videos running while the block runs, yielding that count."""
         with self.videos_lock:
             self.videos_running += 1
             running = self.videos_running
-        # note (ratish): a video takes the stage's CPUs split over the videos running as it starts, at most the stage's own team, so a lone video runs as on the serial stage and every video thread at once on one share each.
-        video_share = VideoCpuShare(
-            intraop_threads=min(self.stage_threads, max(self.stage_cpus // running, 1)),
-            decode_threads=(
-                automatic_video_decode_threads(running)
-                if self.video_decode_threads is None
-                else self.video_decode_threads
-            ),
-        )
         try:
-            with intraop_team(video_share.intraop_threads):
-                self.run_request(msg, request_inputs, asyncio.run, video_share)
+            yield running
         finally:
             with self.videos_lock:
                 self.videos_running -= 1
