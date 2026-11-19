@@ -86,16 +86,94 @@ var controlTokens = []string{
 	"<|channel>", "<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "</think>",
 }
 
+func partialControlToken(s, input string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for _, token := range controlTokens {
+		if len(s) < len(token) && strings.HasPrefix(token, s) && !strings.Contains(input, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func preservedControlToken(token, input string) bool {
+	for _, tag := range thinkingTags {
+		if (token == tag[0] || token == tag[1]) && (strings.Contains(input, tag[0]) || strings.Contains(input, tag[1])) {
+			return true
+		}
+	}
+	return strings.Contains(input, token)
+}
+
+func nextControlToken(s, input string) (int, string) {
+	start := -1
+	var found string
+	for _, token := range controlTokens {
+		if preservedControlToken(token, input) {
+			continue
+		}
+		if i := strings.Index(s, token); i >= 0 && (start < 0 || i < start) {
+			start, found = i, token
+		}
+	}
+	return start, found
+}
+
+func literalEndToken(s string, i int, token, input string, checkFollowing bool) bool {
+	if i == 0 || i+len(token) >= len(s) || strings.TrimSpace(s[i+len(token):]) == "" {
+		return false
+	}
+	suffix := s[i+len(token):]
+	if checkFollowing {
+		for {
+			next, nextToken := nextControlToken(suffix, input)
+			if next < 0 || strings.TrimSpace(suffix[:next]) != "" {
+				break
+			}
+			if !literalEndToken(suffix, next, nextToken, input, false) {
+				return false
+			}
+			suffix = suffix[next+len(nextToken):]
+		}
+	}
+	if partialControlToken(suffix, input) {
+		return false
+	}
+	if !strings.ContainsRune(" \t\r\n", rune(s[i-1])) || !strings.ContainsRune(" \t\r\n", rune(s[i+len(token)])) {
+		return false
+	}
+	switch token {
+	case "<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "<channel|>":
+		return true
+	}
+	return false
+}
+
 // controlTokenStart is the start of the first model control token in s
 // that did not occur in the user's input; -1 when s has only answer text.
 func controlTokenStart(s, input string) int {
 	start := -1
 	for _, token := range controlTokens {
-		if strings.Contains(input, token) {
+		if preservedControlToken(token, input) {
 			continue
 		}
-		if i := strings.Index(s, token); i >= 0 && (start < 0 || i < start) {
-			start = i
+		for offset := 0; offset < len(s); {
+			i := strings.Index(s[offset:], token)
+			if i < 0 {
+				break
+			}
+			i += offset
+			if literalEndToken(s, i, token, input, true) {
+				offset = i + len(token)
+				continue
+			}
+			if start < 0 || i < start {
+				start = i
+			}
+			break
 		}
 	}
 	return start
@@ -126,6 +204,19 @@ func stripControlMarkup(s string, inputs ...string) string {
 				break
 			}
 			s = s[:i] + rest[j+len(tag[1]):]
+		}
+	}
+	if !strings.Contains(input, "<think>") && !strings.Contains(input, "</think>") {
+		if i := strings.Index(s, "</think>"); i >= 0 {
+			rest := s[i+len("</think>"):]
+			next := controlTokenStart(rest, input)
+			if strings.TrimSpace(rest) != "" && !partialControlToken(rest, input) && (next < 0 || strings.TrimSpace(rest[:next]) != "") {
+				// The model omitted the opening tag: the close marks the
+				// reasoning's end, not the visible answer's end.
+				s = rest
+			} else {
+				s = s[:i]
+			}
 		}
 	}
 	if i := controlTokenStart(s, input); i >= 0 {
