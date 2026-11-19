@@ -281,7 +281,6 @@ func (a *app) boxAttach(jpeg []byte, source ...string) {
 	a.box.images = append(a.box.images, jpeg)
 	a.box.thumbs = append(a.box.thumbs, bmp)
 	a.box.imageInfo = append(a.box.imageInfo, boxImageCaption(bmp, name))
-	a.box.limit = false
 	a.boxSync()
 }
 
@@ -409,7 +408,8 @@ func (a *app) boxDrop(files []string) {
 // without the turn the box and the request would follow the finish
 // order, not the drop order. A send that waited for it goes now.
 func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...string) {
-	a.boxPending--
+	// An out-of-order landing stays pending until its turn, so later drops
+	// cannot use its slot before it reaches the box.
 	var conversionErr error
 	if gen == a.boxGen && errText != "" {
 		conversionErr = errors.New(errText)
@@ -428,6 +428,7 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...
 			break
 		}
 		delete(a.boxHeld, a.boxNext)
+		a.boxPending--
 		a.boxNext++
 		if land.gen != a.boxGen {
 			continue
