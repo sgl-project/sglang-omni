@@ -1,28 +1,25 @@
 # Fish Audio S2-Pro
 
-[Fish Audio S2-Pro](https://huggingface.co/fishaudio/s2-pro) is a text-to-speech model served through `/v1/audio/speech`. It supports plain TTS, voice cloning with a reference clip, and streaming audio chunks.
+[Fish Audio S2-Pro](https://huggingface.co/fishaudio/s2-pro) is a text-to-speech model that generates **44.1 kHz** speech through the OpenAI-compatible `/v1/audio/speech` API. It accepts text alone or clones a voice from a reference clip and its transcript, and it can stream audio while generation is still running.
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md).
-
-Fish Audio uses the Descript DAC codec, which is not included in the base
-`sglang-omni` package. From the SGLang-Omni repository root, install its
-model-specific dependencies:
+Install `sglang-omni` by following the [CUDA installation guide](../get_started/installation.md). S2-Pro needs the Descript DAC extra, which is not in the base package. From a repository checkout:
 
 ```bash
-uv pip install \
-  "descript-audiotools==0.7.2" \
-  "descript-audio-codec==1.0.0"
+uv pip install --prerelease=allow -e ".[fishaudio]"
 ```
 
-Then download the model:
+If the wheel is already installed, use `uv pip install --prerelease=allow "sglang-omni[fishaudio]"` instead. Then download the checkpoint:
 
 ```bash
 hf download fishaudio/s2-pro
 ```
 
-## Server Configuration
+<a id="server-configuration"></a>
+<a id="launch-the-server"></a>
+
+## Start the server
 
 ```bash
 sgl-omni serve \
@@ -31,15 +28,21 @@ sgl-omni serve \
   --port 8000
 ```
 
-Reference audio encoding runs on GPU 0 in the preprocessing process by default,
-using the checkpoint's FP32 codec. Tokenization and audio loading remain on CPU.
-The preprocessing process has a 6 GiB PyTorch allocator limit; this is a memory
-budget, not a reference-duration limit or a reservation of all GPU allocations.
-Long references can exceed it and fail encoding.
+In another terminal, wait until `/health` returns HTTP 200:
 
-Set `--preprocessing.total_reserve_bytes 8GiB` to increase the budget, while
-leaving enough GPU memory for the autoregressive engine and vocoder. To encode
-references on CPU instead, clear both the GPU placement and its budget:
+```bash
+curl -fS http://localhost:8000/health
+```
+
+Continue when this returns HTTP 200 with `"status": "healthy"`. During startup it may return HTTP 503 or refuse the connection; check the server logs and retry once initialization finishes.
+
+For stage placement, see [TTS Process Topology](../basic_usage/tts_process_topology.md).
+
+### Reference encoding placement
+
+Reference audio encoding runs on GPU 0 in the preprocessing process by default, using the checkpoint's FP32 codec. Tokenization and audio loading remain on CPU. The preprocessing process has a 6 GiB PyTorch allocator limit. That value is a memory budget, not a reference-duration limit or a reservation of every GPU allocation. Long references can exceed it and fail encoding.
+
+Set `--preprocessing.total_reserve_bytes 8GiB` to increase the budget, and leave enough GPU memory for the autoregressive engine and vocoder. To encode references on CPU instead, clear both the GPU placement and its budget:
 
 ```bash
 sgl-omni serve \
@@ -50,7 +53,9 @@ sgl-omni serve \
   --port 8000
 ```
 
-### Async Decode
+<a id="async-decode"></a>
+
+### Async decode
 
 On CUDA, enable one-step async decode to overlap CPU result collection with the next GPU decode step:
 
@@ -62,16 +67,16 @@ sgl-omni serve \
   --port 8000
 ```
 
-This is opt-in. A decode batch enters the lookahead path only after its request rows stabilize; prefill and batch changes use synchronous decoding. Before selecting an expected prefill batch, the scheduler resolves any pending decode so selection uses the updated request state. The GPU updates the previous codebooks, semantic repetition history, and sampling step before the next forward starts. The existing overlap scheduler remains disabled.
+This is opt-in. A decode batch enters the lookahead path only after its request rows stabilize; prefill and batch changes use synchronous decoding. One decode step may already be in flight when the host observes a request completion, so the effective CUDA Graph batch size can shrink one step later than in synchronous decoding. Different batch sizes can produce different floating-point results and generated codes, even with the same seed.
 
-One decode step may already be in flight when the host observes a request completion. The effective CUDA Graph batch size can therefore shrink one step later than in synchronous decoding. Different batch sizes can produce different floating-point results and generated codes, even with the same seed.
+<a id="synthesize-speech"></a>
 
-## Synthesize Speech
+## Synthesize speech
 
-Plain TTS:
+No reference audio is required. Send text to the running server:
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl --fail-with-body -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "fishaudio/s2-pro",
@@ -81,10 +86,14 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-Voice cloning:
+The response is a complete WAV file containing 44.1 kHz mono speech. Open `output.wav` in an audio player. For Python or the OpenAI SDK, use the [TTS client examples](../basic_usage/tts.md#python) with `model` set to `fishaudio/s2-pro`. Omit the Qwen-specific `language` field, and keep `voice` as `"default"` for text-only requests.
+
+## Voice cloning
+
+Add `references` to clone a voice. Include the clip's transcript in `text`. The clip below is from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini).
 
 ```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
+curl --fail-with-body -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "fishaudio/s2-pro",
@@ -98,29 +107,43 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-Streaming: add `"stream": true` to a speech request. Shared raw WAV, PCM, and SSE clients are in [TTS Model Usage](../basic_usage/tts.md#streaming).
+`ref_audio` and `ref_text` are shorthand for the first reference. Reference quality strongly affects cloned voice quality. For reference formats and server-visible local paths or remote URLs, see [Voice Cloning](../basic_usage/tts.md#voice-cloning) and [media access rules](../basic_usage/tts.md#start-a-tts-server). S2-Pro also accepts [uploaded voices](../basic_usage/tts.md#uploaded-voices) reused by name.
 
-## Request Parameters
+## Streaming
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `model` | string | served model | Served model identifier |
-| `input` | string | required | Text to synthesize |
-| `voice` | string | `default` | Voice identifier for non-reference requests |
-| `response_format` | string | `wav` | Output audio format |
-| `speed` | float | `1.0` | Playback speed multiplier |
-| `stream` | bool | `false` | Stream raw PCM audio chunks |
-| `references` | list | `null` | Reference clip for voice cloning. Each item has `audio_path` and `text` |
-| `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` and `references[0].text` |
-| `max_new_tokens` | int | `1024` | Maximum generated semantic tokens, capped at 2048 |
-| `temperature` | float | `0.8` | Sampling temperature |
-| `top_p` | float | `0.8` | Top-p sampling |
-| `top_k` | int | `30` | Top-k sampling. It must be `-1` or between `1` and `30` |
-| `repetition_penalty` | float | `1.1` | Repetition penalty |
+Add `"stream": true` and `"response_format": "pcm"` to either request above to receive audio while generation is still running.
 
-## Apple Silicon (Native MLX)
+Use the shared [streaming examples](../basic_usage/tts.md#raw-wav-and-pcm) or [Python streaming client](../basic_usage/tts.md#python-streaming-client) with the S2-Pro fields above. S2-Pro outputs **44.1 kHz, signed 16-bit little-endian mono PCM**. The Python client reads the sample rate from the response headers.
 
-`fish_s2_pro_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/speech` API on an Apple Silicon Mac, from the 8-bit [`mlx-community/fish-audio-s2-pro-8bit`](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) checkpoint, as one C++ process without CUDA, PyTorch or Python. It needs about 10 GB of memory, so a Mac with 16 GB or more.
+A streamed request decodes in 40-frame windows, then every 45 frames, with 20 frames of overlap and a 512-sample crossfade. Streaming PCM can differ from non-streaming WAV even with the same seed. For interactive playback, the [S2-Pro playground](../basic_usage/tts.md#interactive-playground) consumes the same raw PCM stream.
+
+<a id="request-parameters"></a>
+
+## Common options
+
+Add these fields to the JSON request as needed. Shared speech fields are documented in [Request Parameters](../basic_usage/tts.md#request-parameters).
+
+| Parameter | Default | Usage |
+|---|---|---|
+| `max_new_tokens` | `1024` | Maximum generated semantic tokens. The engine caps the value at 2048. Reaching the limit can truncate speech. |
+| `temperature` | `0.8` | Sampling temperature. |
+| `top_p` | `0.8` | Top-p sampling. |
+| `top_k` | `30` | Must be `-1` or an integer from `1` to `30`. Values outside that range fail the S2-Pro pipeline. |
+| `repetition_penalty` | `1.1` | Semantic-history repetition penalty. |
+| `seed` | unset | Integer sampling seed. Omitted requests stay unseeded. A fixed seed does not guarantee byte-identical audio across batch sizes, especially with [async decode](#async-decode). |
+
+<a id="known-limitations"></a>
+
+### Known limitations
+
+- Keep `top_k` inside `-1` or `1..30`. Invalid values currently fail the pipeline instead of returning a clean parameter error.
+- Long reference clips can exceed the preprocessing GPU allocator budget and fail encoding. Raise `--preprocessing.total_reserve_bytes` or encode on CPU as shown above.
+
+<a id="apple-silicon-native-mlx"></a>
+
+## Apple Silicon
+
+`fish_s2_pro_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/speech` API on an Apple Silicon Mac, from the 8-bit [`mlx-community/fish-audio-s2-pro-8bit`](https://huggingface.co/mlx-community/fish-audio-s2-pro-8bit) checkpoint, as one C++ process without CUDA, PyTorch, or Python. It needs about 10 GB of memory, so use a Mac with 16 GB or more. See the [Apple Silicon installation guide](../other_platforms/installation_apple_silicon.md) and [Native MLX](../developer_reference/mlx/index.md).
 
 ```bash
 sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
@@ -132,21 +155,23 @@ hf download mlx-community/fish-audio-s2-pro-8bit \
   --model-name fishaudio/s2-pro --port 8000
 ```
 
-Plain TTS works unchanged. The prompt, the semantic sampler (repetition penalty, the hotter resampling when the last four semantic codes repeat one, `top_k` of at most 30) and the defaults (`temperature` 0.8, `top_p` 0.8, `top_k` 30, `repetition_penalty` 1.1, `max_new_tokens` 1024, capped at 2048) follow the CUDA server. A `seed` draws as the CUDA server's seeded sampler does, and the same seed repeats the same speech. The native server differs from the CUDA server in that:
+The text-only request above works unchanged. Sampling defaults (`temperature` 0.8, `top_p` 0.8, `top_k` 30, `repetition_penalty` 1.1, `max_new_tokens` 1024, capped at 2048) and the `top_k` range match the CUDA server. A `seed` repeats the same speech on that native server. The native server differs from the CUDA server in that:
 
-- The voice to clone comes in the request body: `ref_audio` is a WAV file as base64 or a `data:audio/wav;base64,...` URL, with `ref_text` its transcript; `references` items take the WAV as `data` or `audio`, or the codes as `vq_codes`. Paths and URLs, and `audio_path`, return 400. A WAV may be 8, 16, 24 or 32-bit PCM or float, at a common sample rate (8 to 192 kHz), with up to 254 channels. A request may hold 4 references, with 60 s of audio and 2048 transcript characters in all.
-- `voice` must be `default` (or empty); there are no uploaded voices.
-- `response_format` is `wav` or `pcm`; `speed` must be `1.0`; `stream_format` must be `audio`. A streamed request decodes in the CUDA server's windows (40 frames, then every 45, with 20 frames of overlap and a 512-sample crossfade).
+- The voice to clone comes in the request body. `ref_audio` is a WAV file as base64 or a `data:audio/wav;base64,...` URL, with `ref_text` its transcript. `references` items take the WAV as `data` or `audio`, or the codes as `vq_codes`. Paths, HTTP URLs, and `audio_path` return 400. A WAV may be 8, 16, 24, or 32-bit PCM or float, at a common sample rate (8 to 192 kHz), with up to 254 channels. A request may hold 4 references, with 60 s of audio and 2048 transcript characters in all.
+- `voice` must be `default` (or empty). There are no uploaded voices.
+- `response_format` is `wav` or `pcm`; `speed` must be `1.0`; `stream_format` must be `audio`. A streamed request uses the CUDA server's windows (40 frames, then every 45, with 20 frames of overlap and a 512-sample crossfade).
 - Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model` is ignored, as on CUDA.
 - Errors are `{"detail": "..."}`, and every invalid field, including `top_k` outside `-1` or `1..30`, returns 400.
 - Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get 503, and `/health` shows the queue.
 - A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in the queue included, is cancelled: it returns 504, or its stream ends early. A client that disconnects cancels its request.
 - A request body over 16 MiB returns 413; that fits 60 s of 48 kHz stereo 16-bit WAV as base64.
 
-Measured on an Apple M5 (24 GB), MLX 0.32.3, 15 utterances: 1.0 s load, real-time factor 1.99 (it generates about 11 of the 21.5 frames in a second of audio, so streamed speech arrives slower than it plays), and 9.8 GB peak memory footprint: 10.1 GB for an 80 s utterance, 8.4 GB with a 60 s reference, which takes 4.4 s to encode. Its positions rotate through MLX's `fast::rope` rather than the reference's bfloat16 phase table, so seeded speech differs from mlx-audio's Fish Speech port on the same checkpoint. Transcribed back with Qwen3-ASR-1.7B, 10 English sentences give 0.0% WER and 5 Chinese sentences give 0.0% CER. `sglang_omni_mlx/native/ci/check_model_golden.py` checks five seeded requests' audio codes and PCM (English, Chinese, Japanese, a cloned voice, and a `max_new_tokens` cap) against `sglang_omni_mlx/native/ci/model_golden/fish-s2-pro-8bit.json`. Mac CI runs no model, so this check is run by hand.
+Validated on an Apple M5 (24 GB), MLX 0.32.3, 15 utterances: 1.0 s load, real-time factor 1.99, and 9.8 GB peak memory (10.1 GB for an 80 s utterance, 8.4 GB with a 60 s reference, which takes 4.4 s to encode). Transcribed back with Qwen3-ASR-1.7B, 10 English sentences give 0.0% WER and 5 Chinese sentences give 0.0% CER. Seeded speech differs from mlx-audio's Fish Speech port on the same checkpoint. `sglang_omni_mlx/native/ci/check_model_golden.py` checks five seeded requests against `sglang_omni_mlx/native/ci/model_golden/fish-s2-pro-8bit.json`.
 
-## Known Limitations
+## Ascend NPU
 
-- `top_k` is constrained to `-1` or `1..30`; keep requests inside this range because invalid values currently fail the S2-Pro pipeline instead of returning a clean parameter error.
-- Reference quality strongly affects cloned voice quality.
-- Use streaming for interactive playback; CLI inspection of raw audio responses is awkward.
+The same `sgl-omni serve` command works on Ascend NPU after following the [NPU installation guide](../other_platforms/installation_npu.md). Device strings are resolved by the platform layer. Validated: SeedTTS English, 1088 samples, concurrency 16, on Ascend 910 (64 GiB).
+
+## Next steps
+
+Use the shared [Python requests](../basic_usage/tts.md#python), [OpenAI Python SDK](../basic_usage/tts.md#openai-python-sdk), [streaming](../basic_usage/tts.md#raw-wav-and-pcm), [SSE](../basic_usage/tts.md#sse-event-framing), [WebSocket](../basic_usage/tts.md#websocket-speech-streaming), and [S2-Pro playground](../basic_usage/tts.md#interactive-playground) examples with `fishaudio/s2-pro`. Omit `language`. Keep `voice` as `"default"` unless you are using an uploaded voice on the CUDA server.
