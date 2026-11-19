@@ -5,6 +5,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal, TypedDict
+
+RequestClass = Literal["non_streaming", "streaming"]
 
 
 class FinishReason(str, Enum):
@@ -54,3 +57,23 @@ class RequestResult:
     # note (luojiaxuan): open-loop runs only; how long after its planned
     # arrival the request was actually sent.
     dispatch_lateness_s: float | None = None
+    # note (db-ol): fixed duration runs only. Both times are seconds from the start of the measured window, so settle requests have negative times.
+    request_class: RequestClass | None = None
+    sent_at_s: float | None = None
+    finished_at_s: float | None = None
+
+
+class MixtureWindow(TypedDict):
+    """The mixture block of a fixed duration run's speed results."""
+
+    load: str
+    non_streaming_clients: int
+    streaming_clients: int
+    settle_s: float
+    duration_s: float
+    pool_size: int
+    issued_requests: dict[RequestClass, int]
+    pool_cycles: dict[RequestClass, float]
+    outside_window_requests: dict[RequestClass, int]
+    outside_window_failed_requests: dict[RequestClass, int]
+    drain_s: float
