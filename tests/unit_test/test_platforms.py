@@ -180,14 +180,6 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
     assert seen == [expected_index]
 
 
-def test_xpu_joint_rope_declines_a_rotary_dimension_its_kernel_cannot_compile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", None)
-
-    assert XPUOmniPlatform().get_joint_rope_inplace_kernel(rotary_dimension=72) is None
-
-
 def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_rotary_dimension(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

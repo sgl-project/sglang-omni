@@ -2,6 +2,7 @@
 """Contracts for Qwen3-Omni vision encoding."""
 
 import copy
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -283,23 +284,24 @@ def test_image_encoder_preserves_outputs_with_platform_rotary(
         provider.assert_not_called()
 
 
-def test_xpu_platform_is_asked_for_the_vision_head_dimension(
+def test_xpu_builds_the_72_wide_vision_tower_without_the_joint_kernel(
     monkeypatch: pytest.MonkeyPatch,
     vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
 ) -> None:
-    platform = Mock(spec=XPUOmniPlatform)
-    platform.device_type = "cpu"
-    platform.get_joint_rope_inplace_kernel.return_value = None
-    monkeypatch.setattr(vision_runtime, "current_platform", platform)
+    monkeypatch.setattr(vision_runtime, "current_platform", XPUOmniPlatform())
+    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", None)
 
-    vision_runtime.instantiate_visual(
-        vision_encoder.config,
-        device="cpu",
-        dtype=torch.bfloat16,
-        native_visual_class=vision_compat.Qwen3OmniMoeVisionEncoderCompat,
-    )
+    with torch.device("cpu"):
+        visual = vision_runtime.instantiate_visual(
+            vision_encoder.config,
+            device="xpu",
+            dtype=torch.bfloat16,
+            native_visual_class=vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+        )
 
-    platform.get_joint_rope_inplace_kernel.assert_called_once_with(rotary_dimension=72)
+    assert isinstance(visual, Qwen3OmniVisionEncoder)
+    assert visual.joint_rope_kernel is None
+    assert all(block.attn.joint_rope_kernel is None for block in visual.blocks)
 
 
 @pytest.mark.parametrize(
