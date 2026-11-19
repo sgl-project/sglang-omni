@@ -14,6 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Preview Rewrite inputs**: pasted text over three lines collapses into a removable block with its character and line counts and a Show all view. Images show their source and pixel size, and clicking one opens a full-size preview in the same card. Clipboard images and window screenshots appear too and can be removed before sending, and the answer card lists inputs as chips that open their originals when the request had more than one input kind.
 - **Explain the Rewrite input card**: a live subtitle and recording level say whether to speak changes to selected text or what to write. The card uses the answer card's surface, shows selected text in a two-line expandable block, and keeps one Enter/Esc/images footer with a shorter editor placeholder. A dismissible tip appears on the first three opens and persists across restarts, and onboarding explains the same flow. Answer cards show input chips only when at least two input kinds were sent.
 - **Add files to the Rewrite box**: the Add menu chooses images, a text, Markdown or PDF file, or pastes the clipboard. Text PDFs import their text layer. A scanned PDF adds its first pages as images within the existing four-image cap and says how many pages were skipped.
+- **Hide Notes and Meetings** (#4224): Settings → General → Shown features now lists Notes and Meetings. Unchecked, their pages leave the sidebar and the command palette, and Notes' shortcut stops; their settings, notes and meetings are kept.
 
 ### Fixed
 
@@ -35,6 +36,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **模型出错时自动换一个**：语言模型页新增一个开关，默认关闭。打开后，如果某个功能所用的语言模型出错或打不开，转录、翻译和改写会改问你在这台 Mac 上设置的下一个语言模型服务，只换一次，即使它是给别的功能选的，这次会话和它的历史记录都改用新模型。翻译自己设的备用模型优先。这个开关不会换到你没给这个功能选的外部 API。套餐额度用完时不换，免得 Voxt 不经你同意就花另一家付费服务的钱。
+- **可以隐藏笔记和会议**（#4224）：设置 → 通用 → 显示的功能里新增了笔记和会议。取消勾选后，它们的页面会从侧边栏和命令面板中移除，笔记的快捷键也会停用；相关设置、笔记和会议记录都会保留。
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 - **会议转录稿可以自定义校对风格**（#4134）：会议设置新增可编辑的校对风格。你的风格会替换内置校对规则；Voxt 仍逐行校对，使用词典和识别上下文，总结提示词保持独立。点“恢复默认提示词”或保存空白风格，即可恢复原来的行为。
 - **改写同时打开麦克风和一个带输入框的卡片**（#4085）：按改写快捷键会立刻开始录音并打开改写卡片，不再有开关，也不再有单独的录音窗口。按下快捷键时选中的文字会自动进入卡片作为原文；说话的同时可以补充输入文字，粘贴或拖入最多 4 张图片（缩略图带删除按钮）。再按一次快捷键（或按 Enter）结束录音并发送；Shift+Enter 换行，Esc 关闭不发送。发给语言模型的内容顺序固定：先是选中的文字，然后是输入的文字和图片，最后是说出的指令；改写 prompt 和快捷键都不变。没有选中、没有输入、没有图片时，改写和以前一样只用语音。放进卡片的图片是你主动放的，不需要隐私开关；模型不收图片时会报错，卡片里的文字和图片都保留，再次发送时图片的字节和位置完全相同，服务器的前缀缓存可以复用。一次请求可以带多张图片，顺序统一为：卡片的图片 > 复制的图片 > 窗口截图；卡片上写明这次发的是哪一种（“截图”/“复制的图片”/缩略图），不会被发送的截图不再截取。设置 → 隐私的两个开关下面写明：两个都打开时，发送复制的图片，不发送截图。模型没有收到图片时，回答里不再出现它的内部工具或思考标记。

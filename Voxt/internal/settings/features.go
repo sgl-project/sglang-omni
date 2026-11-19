@@ -30,8 +30,9 @@ type Features struct {
 	EndWord string `json:"endWord,omitempty"`
 	// Hidden are the features left out of the sidebar, Home and the
 	// command palette (Settings → General, as Voxt 1.x's home could):
-	// HideTranslate, HideRewrite, HideAppEnhancement. A hidden feature's
-	// shortcuts and scene rules are off; its settings stay.
+	// HideTranslate, HideRewrite, HideAppEnhancement, HideNotes,
+	// HideMeetings. A hidden feature's shortcuts and scene rules are off;
+	// its settings and saved data stay.
 	Hidden []string `json:"hidden,omitempty"`
 	// CardSizes are the answer card's sizes by feature (store.Kind:
 	// "transcribe", "translate", "rewrite"): 0 small (the default), 1
@@ -39,12 +40,14 @@ type Features struct {
 	CardSizes map[string]int `json:"cardSizes,omitempty"`
 }
 
-// The features Features.Hidden can hold: Translate's and Rewrite's are
-// internal/hotkey's ids.
+// The features Features.Hidden can hold, each its page's path without the
+// slash: Translate's and Rewrite's are also internal/hotkey's ids.
 const (
 	HideTranslate      = "translate"
 	HideRewrite        = "rewrite"
 	HideAppEnhancement = "app-enhancement"
+	HideNotes          = "notes"
+	HideMeetings       = "meetings"
 )
 
 // IsHidden reports whether feature id is hidden (Features.Hidden).

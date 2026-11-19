@@ -91,7 +91,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `general.hideDock` | bool | `false` | `true` hides Voxt from the Dock | Show in the Dock (inverted) |
 | `general.closeToTray` | bool | `true` | | Keep running when the window closes |
 | `general.launchAtLogin` | bool | `false` | | Open at login |
-| `features.hidden` | array of strings | `[]` | `translate`, `rewrite`, `app-enhancement` | Shown features (inverted). A hidden feature's shortcuts are off |
+| `features.hidden` | array of strings | `[]` | `translate`, `rewrite`, `app-enhancement`, `notes`, `meetings` | Shown features (inverted). A hidden feature's shortcuts are off |
 
 ### Appearance (Settings → Appearance)
 
