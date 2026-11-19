@@ -370,7 +370,7 @@ def test_prefix_estimate_covers_allocated_caches(
     model.to(dtype=dtype)
     caches = []
     position_tensors = []
-    for _ in range(2):
+    for _ in range(3):
         cache = DynamicCache(config=model.config.llm_config)
         cache.update(
             torch.zeros(1, 2, 64, 8, dtype=dtype),
@@ -395,7 +395,7 @@ def test_prefix_estimate_covers_allocated_caches(
         )
     )
     assert estimate_it2i_prefix_memory_bytes(
-        model, [64, 64], (2048, 2048), [(32, 32)]
+        model, [64, 64, 64], (2048, 2048), [(32, 32)]
     ) >= allocated_cache_bytes + sum(tensor.nbytes for tensor in position_tensors)
 
 
