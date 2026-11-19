@@ -48,6 +48,7 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -572,17 +573,16 @@ func CleanOutput(out, input string) string {
 // Clean tidies a model's answer to input: without the <input> tags a
 // model echoed (nor Rewrite's <instruction> and <selected_text> around
 // it), or the quotes it wrapped the whole answer in (unless
-// the input was quoted so itself).
-func Clean(out, input string) string {
+// an input was quoted so itself). Input is every text the request sent.
+func Clean(out string, input ...string) string {
 	s := strings.TrimSpace(out)
-	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(stripInputTags(s, input), "<input>"), "</input>"))
-	in := strings.TrimSpace(input)
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(stripInputTags(s, input...), "<input>"), "</input>"))
 	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}} {
 		wrapped := func(t string) bool {
 			return len(t) > len(q[0])+len(q[1]) && strings.HasPrefix(t, q[0]) && strings.HasSuffix(t, q[1]) &&
 				!strings.Contains(t[len(q[0]):len(t)-len(q[1])], q[0])
 		}
-		if wrapped(s) && !wrapped(in) {
+		if wrapped(s) && !slices.ContainsFunc(input, func(in string) bool { return wrapped(strings.TrimSpace(in)) }) {
 			s = strings.TrimSpace(s[len(q[0]) : len(s)-len(q[1])])
 		}
 	}

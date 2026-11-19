@@ -37,9 +37,6 @@ func TestAnswerKeepsRequestedTags(t *testing.T) {
 
 func checkAnswer(t *testing.T, out, want, selection, instruction string) {
 	t.Helper()
-	if got := Clean(out, selection+"\n"+instruction); got != want {
-		t.Errorf("Clean(%q) = %q, want %q", out, got, want)
-	}
 	b, _ := json.Marshal(Answer{Title: "T", Content: out})
 	if got, ok := ParseAnswer(string(b), selection, instruction); !ok || got.Content != want {
 		t.Errorf("ParseAnswer(%s) = %q, want %q", b, got.Content, want)
