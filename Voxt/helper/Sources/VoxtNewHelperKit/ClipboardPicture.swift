@@ -48,6 +48,19 @@ public enum ClipboardPicture {
         text?.contains("[Image]") == true
     }
 
+    /// The image representations read for a copied selection, through the
+    /// caller's pasteboard access: none unless the text opts in with an
+    /// [Image] placeholder, so a plain-text copy never touches the
+    /// pasteboard's image bytes.
+    public static func copiedSelectionImageData(types: [String], text: String?, dataForType: (String) -> Data?) -> [String: Data] {
+        guard copiedSelectionHasImagePlaceholder(text) else { return [:] }
+        var data: [String: Data] = [:]
+        for type in imageTypes where types.contains(type) {
+            data[type] = dataForType(type)
+        }
+        return data
+    }
+
     /// The image a copy fallback captured from the copied selection.
     /// An [Image] placeholder opts in only when image bytes or a file exist;
     /// literal placeholder text without one remains text-only.

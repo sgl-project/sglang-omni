@@ -56,13 +56,20 @@ final class ClipboardPictureTests: XCTestCase {
     }
 
     func testPlainTextSelectionSkipsTheImageRead() {
-        XCTAssertFalse(ClipboardPicture.copiedSelectionHasImagePlaceholder("caption"))
-        XCTAssertFalse(ClipboardPicture.copiedSelectionHasImagePlaceholder(nil))
-        XCTAssertTrue(ClipboardPicture.copiedSelectionHasImagePlaceholder("[Image]"))
-        XCTAssertTrue(ClipboardPicture.copiedSelectionHasImagePlaceholder("caption [Image]"))
         let tiff = UTType.tiff.identifier
-        XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text, tiff], data: [tiff: imageData(12, 8, type: .tiff)], file: nil, maxSide: 1600, text: "caption"),
-                     "plain text with a TIFF on the pasteboard stays text-only, its image bytes unread")
+        var read: [String] = []
+        let collect = { (text: String?) in
+            ClipboardPicture.copiedSelectionImageData(types: [self.text, tiff], text: text) { type in
+                read.append(type)
+                return self.imageData(12, 8, type: .tiff)
+            }
+        }
+        XCTAssertTrue(collect("caption").isEmpty)
+        XCTAssertTrue(collect(nil).isEmpty)
+        XCTAssertTrue(read.isEmpty, "plain text never reads the pasteboard's image bytes")
+        let optedIn = collect("caption [Image]")
+        XCTAssertEqual(read, [tiff], "an [Image] placeholder reads its image representation")
+        XCTAssertNotNil(optedIn[tiff])
     }
 
     func testImageSelectionFallsBackFromUnreadablePNGToTIFF() {

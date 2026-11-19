@@ -115,8 +115,8 @@ type Privacy struct {
 	// default.
 	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
 	// SendClipboardImageWithSelection deliberately includes that picture
-	// with selected text too; fresh installs default it off, while older
-	// documents keep their original text-plus-image behavior.
+	// with selected text too; off unless the user turns it on, in fresh
+	// installs and in documents migrated from before version 5 alike.
 	SendClipboardImageWithSelection bool `json:"sendClipboardImageWithSelection,omitempty"`
 }
 

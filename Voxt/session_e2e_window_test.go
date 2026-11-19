@@ -63,7 +63,7 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 		want              []byte
 	}{
 		{name: "a copied image, no selection", opts: ",clipboard-image", on: true, want: helpertest.ClipImage},
-		{name: "existing settings send text and copied image", opts: ",clipboard-image", sel: selection, on: true, legacy: true, want: helpertest.ClipImage},
+		{name: "upgraded settings stay text-only", opts: ",clipboard-image", sel: selection, on: true, legacy: true},
 		{name: "a fresh selection stays out", opts: ",clipboard-image", sel: selection, on: true},
 		{name: "a copied image placeholder returns the new image", opts: ",clipboard-image,copy-selection-image", sel: "[Image]", viaCopy: true, on: true, want: helpertest.Shot(812)},
 		{name: "literal placeholder text through copy stays text", opts: ",clipboard-image", sel: "[Image]", viaCopy: true, on: true},

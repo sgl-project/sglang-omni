@@ -100,7 +100,7 @@ func TestClipboardImage(t *testing.T) {
 		want          []byte
 		wantReadClip  bool
 	}{
-		{name: "existing settings send selected text and copied image", kind: store.KindRewrite, on: true, legacy: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "upgraded settings stay text-only", kind: store.KindRewrite, on: true, legacy: true, pic: clip, wantReadClip: true},
 		{name: "a fresh selection sends no picture", kind: store.KindRewrite, on: true, pic: clip, wantReadClip: true},
 		{name: "the same selection on a follow-up sends no picture", kind: store.KindRewrite, on: true, previous: []compose.Turn{{Selection: "ship friday?"}}, pic: clip, wantReadClip: true},
 		{name: "a copied image placeholder sends the newly copied image", kind: store.KindRewrite, on: true, copyText: "[Image]", copiedImage: selected, pic: clip, want: selected, wantReadClip: true},
