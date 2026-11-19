@@ -17,6 +17,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/profile"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/resident"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -48,6 +49,7 @@ func TestMeetingProfile(t *testing.T) {
 	dependencies, runErr := realProfileDependencies(config, nativeLog, recorder)
 	var report profile.Report
 	if runErr == nil {
+		config.DeferEvaluation = true
 		report, runErr = runMeetingProfile(context.Background(), config, dependencies, recorder, nativeLog, stopArtifacts)
 	} else {
 		runErr = recorder.CleanError(errors.Join(runErr, stopArtifacts(), nativeLog.Close()))
@@ -56,6 +58,16 @@ func TestMeetingProfile(t *testing.T) {
 	resultPath := filepath.Join(config.OutputDir, "result.json")
 	if err := profile.WriteReport(resultPath, report); err != nil {
 		t.Fatal(recorder.CleanError(err))
+	}
+	if config.Reference != "" {
+		reference, err := os.ReadFile(config.Reference)
+		if err != nil {
+			t.Fatal(recorder.CleanError(err))
+		}
+		report.Evaluation = profile.Evaluate(string(reference), report.ASRTranscript.Text, report.Transcript.Text)
+		if err := profile.WriteReport(resultPath, report); err != nil {
+			t.Fatal(recorder.CleanError(err))
+		}
 	}
 	t.Logf("profiling result: %s", recorder.Clean(resultPath))
 	if runErr != nil {
@@ -76,7 +88,18 @@ func realProfileDependencies(config profile.Config, nativeLog *profile.NativeLog
 	if err != nil {
 		return dependencies, err
 	}
-	runtime := omni.NewRuntime(omni.Config{Binary: binary, IdleTimeout: time.Duration(config.IdleTimeoutMS) * time.Millisecond, Log: nativeLog.Write})
+	asrUnloaded := make(chan struct{}, 1)
+	runtime := omni.NewRuntime(omni.Config{
+		Binary: binary, IdleTimeout: time.Duration(config.IdleTimeoutMS) * time.Millisecond, Log: nativeLog.Write,
+		OnModel: func(event resident.Event) {
+			if event.Kind == resident.Unloaded && event.ID == config.Model.ID {
+				select {
+				case asrUnloaded <- struct{}{}:
+				default:
+				}
+			}
+		},
+	})
 	dependencies.nativePIDs = func() []int {
 		processes := runtime.Processes()
 		pids := make([]int, 0, len(processes))
@@ -84,6 +107,19 @@ func realProfileDependencies(config profile.Config, nativeLog *profile.NativeLog
 			pids = append(pids, process.PID)
 		}
 		return pids
+	}
+	dependencies.unloadASR = func(ctx context.Context) error {
+		runtime.Unload(config.Model.ID)
+		timer := time.NewTimer(10 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-asrUnloaded:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return fmt.Errorf("profile: ASR did not unload within 10s")
+		}
 	}
 	dependencies.closeRuntime = func() error {
 		runtime.Close()
@@ -116,6 +152,9 @@ func realProfileDependencies(config profile.Config, nativeLog *profile.NativeLog
 		return omni.NewVAD(runtime, config.VAD.ModelDir)
 	}
 	dependencies.newLLM = func(_ context.Context, config profile.LLMConfig) (meeting.SummaryChat, error) {
+		if config.Provider == "fake" {
+			return fakeProfileChat{}, nil
+		}
 		return openProfileLLM(config, recorder)
 	}
 	return dependencies, nil

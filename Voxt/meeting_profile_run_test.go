@@ -35,8 +35,64 @@ type profileDependencies struct {
 	newASR       func(profile.Config) (profileASR, error)
 	newVAD       func(profile.Config) (profileVAD, error)
 	newLLM       func(context.Context, profile.LLMConfig) (meeting.SummaryChat, error)
+	unloadASR    func(context.Context) error
 	nativePIDs   func() []int
 	closeRuntime func() error
+}
+
+type perTrackVAD struct {
+	model     vad.Model
+	speech    profileASR
+	monitor   *profile.ResourceMonitor
+	release   *func()
+	unloadASR func(context.Context) error
+	vadCalls  int
+}
+
+func (v *perTrackVAD) Open(ctx context.Context) (vad.ModelStream, error) {
+	return v.model.Open(ctx)
+}
+
+func (v *perTrackVAD) Speech(ctx context.Context, pcm []byte, rate int) ([]vad.Segment, error) {
+	v.vadCalls++
+	switch v.vadCalls {
+	case 1:
+		v.monitor.Snapshot("before_mic_vad")
+		segments, err := v.model.Speech(ctx, pcm, rate)
+		v.monitor.Snapshot("after_mic_vad")
+		if err != nil {
+			return nil, err
+		}
+		release, err := v.speech.Hold(ctx)
+		if err != nil {
+			return nil, err
+		}
+		*v.release = release
+		return segments, nil
+	case 2:
+		v.monitor.Snapshot("before_system_vad")
+		if *v.release != nil {
+			(*v.release)()
+			*v.release = nil
+		}
+		if err := v.unloadASR(ctx); err != nil {
+			return nil, err
+		}
+		v.monitor.Snapshot("after_asr_unload")
+		segments, err := v.model.Speech(ctx, pcm, rate)
+		v.monitor.Snapshot("after_system_vad")
+		if err != nil {
+			return nil, err
+		}
+		release, err := v.speech.Hold(ctx)
+		if err != nil {
+			return nil, err
+		}
+		*v.release = release
+		return segments, nil
+	default:
+		return v.model.Speech(ctx, pcm, rate)
+	}
 }
 
 func defaultProfileDependencies() profileDependencies {
@@ -147,19 +203,11 @@ func runMeetingProfile(
 	}
 
 	var meetingRow store.Meeting
-	var reference string
 	runErr = recorder.Measure("setup", 0, func() error {
 		var err error
 		database, err = dependencies.openStore(ctx, filepath.Join(temporaryDir, "db"))
 		if err != nil {
 			return err
-		}
-		if config.Reference != "" {
-			raw, err := os.ReadFile(config.Reference)
-			if err != nil {
-				return err
-			}
-			reference = string(raw)
 		}
 		meetingDir := filepath.Join(temporaryDir, "meetings", "profile")
 		if err := os.MkdirAll(meetingDir, 0o700); err != nil {
@@ -214,9 +262,11 @@ func runMeetingProfile(
 		if err != nil {
 			return err
 		}
-		asrRelease, err = speech.Hold(ctx)
-		if err != nil {
-			return err
+		if config.LeaseStrategy != "per-track" {
+			asrRelease, err = speech.Hold(ctx)
+			if err != nil {
+				return err
+			}
 		}
 		if config.VAD.Enabled {
 			detector, err = dependencies.newVAD(config)
@@ -272,6 +322,12 @@ func runMeetingProfile(
 	}
 	if config.VAD.Enabled {
 		meetingConfig.VAD = recorder.WrapVAD(detector)
+		if config.LeaseStrategy == "per-track" {
+			meetingConfig.VAD = &perTrackVAD{
+				model: meetingConfig.VAD, speech: speech, monitor: monitor,
+				release: &asrRelease, unloadASR: dependencies.unloadASR,
+			}
+		}
 	}
 	if config.SegmentLengthSeconds > 0 {
 		chunks := meeting.DefaultChunkParams()
@@ -281,6 +337,10 @@ func runMeetingProfile(
 	if vadRelease != nil {
 		vadRelease()
 		vadRelease = nil
+	}
+	if config.LeaseStrategy == "per-track" && dependencies.unloadASR == nil {
+		runErr = errors.New("profile: per-track lease requires ASR unload support")
+		return
 	}
 	manager := meeting.NewManager(meetingConfig)
 	stopToSummaryStart := time.Now()
@@ -358,8 +418,13 @@ func runMeetingProfile(
 		summaryText = storedMeeting.Summary
 	}
 	recorder.SetTranscripts(rawText, finalText, summaryText)
-	if config.Reference != "" {
-		recorder.SetEvaluation(reference, rawText, finalText)
+	if config.Reference != "" && !config.DeferEvaluation {
+		reference, err := os.ReadFile(config.Reference)
+		if err != nil {
+			runErr = errors.Join(runErr, err)
+			return
+		}
+		recorder.SetEvaluation(string(reference), rawText, finalText)
 	}
 	return
 }

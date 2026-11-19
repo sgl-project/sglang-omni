@@ -395,6 +395,13 @@ func (r *Recorder) SetEvaluation(reference, asrText, finalText string) {
 	r.mu.Unlock()
 }
 
+// Evaluate scores a completed transcript after the timed profiling stages have finished.
+func Evaluate(reference, asrText, finalText string) Optional[Evaluation] {
+	return Available(Evaluation{
+		ASR: scoreOf(reference, asrText), Final: scoreOf(reference, finalText),
+	})
+}
+
 func (r *Recorder) SetAudioDuration(audio time.Duration) {
 	r.mu.Lock()
 	r.report.AudioDurationMS = audio.Milliseconds()

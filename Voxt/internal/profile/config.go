@@ -30,6 +30,8 @@ type Config struct {
 	CacheLimitMB         *int        `json:"cache_limit_mb,omitempty"`
 	IdleTimeoutMS        int         `json:"idle_timeout_ms,omitempty"`
 	VADStrategy          string      `json:"vad_strategy,omitempty"`
+	LeaseStrategy        string      `json:"lease_strategy,omitempty"`
+	DeferEvaluation      bool        `json:"-"`
 	VAD                  VADConfig   `json:"vad"`
 	Language             string      `json:"language,omitempty"`
 	Cleanup              bool        `json:"cleanup"`
@@ -130,6 +132,9 @@ func (c *Config) Validate() error {
 	}
 	if c.VADStrategy != "" && c.VADStrategy != "whole" && c.VADStrategy != "batched" {
 		return fmt.Errorf("profile: vad_strategy must be whole or batched")
+	}
+	if c.LeaseStrategy != "" && c.LeaseStrategy != "per-track" {
+		return fmt.Errorf("profile: lease_strategy must be per-track")
 	}
 	if c.VAD.Enabled && c.VAD.ModelDir == "" {
 		return fmt.Errorf("profile: enabled VAD needs vad.model_dir")
