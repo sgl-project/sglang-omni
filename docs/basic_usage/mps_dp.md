@@ -190,6 +190,36 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 
 The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
+## Measured replica counts on a B200
+
+`examples/mps_dp/b200/` holds one config per model and replica count, measured on one 183 GB NVIDIA B200. Each config runs its replicas as one pipeline under native MPS:
+
+```bash
+sgl-omni serve --config examples/mps_dp/b200/qwen3_asr_1_7b_b200_dp5.yaml --mps on
+```
+
+For each latency target, the table gives the replica count that delivered the most audio within it; the config for N replicas is `<config name>_b200_dp<N>.yaml`. Goodput is audio seconds per second: generated audio for TTS, transcribed input audio for ASR. For TTS the latency is the p99 stall-free start, the time from a request's arrival to its first audio packet plus the smallest client buffer that plays the rest without a stall. For ASR it is the p99 request latency from arrival. The last column is one replica on the same GPU.
+
+| Model | Config name | Replicas at 0.5 / 1 / 3 s | Goodput at 0.5 / 1 / 3 s | One replica at 0.5 / 1 / 3 s |
+|---|---|---:|---:|---:|
+| Qwen3-TTS 1.7B Base | `qwen3_tts_1_7b` | 9 / 9 / 9 | 459 / 459 / 459 | 54 / 86 / 86 |
+| Qwen3-TTS 1.7B CustomVoice | `qwen3_tts_1_7b_customvoice` | 7 / 8 / 8 | 444 / 461 / 461 | 131 / 131 / 131 |
+| MOSS-TTS Local Transformer v1.5 | `moss_tts_local` | 5 / 5 / 5 | 163 / 163 / 163 | 46 / 73 / 73 |
+| MOSS-TTS v1.5 | `moss_tts` | 2 / 3 / 2 | 77 / 100 / 111 | 33 / 50 / 67 |
+| Ming-3.0-tts 0.5B | `ming3_tts` | 2 / 3 / 6 | 83 / 100 / 113 | 33 / 50 / 55 |
+| Fish Audio Drama 3 | `drama3_tts` | 2 / 2 / 2 | 45 / 53 / 57 | 26 / 34 / 34 |
+| Whisper large-v3 | `whisper_large_v3` | 6 / 12 / 12 | 1110 / 1117 / 1117 | 268 / 268 / 268 |
+| Qwen3-ASR 1.7B | `qwen3_asr_1_7b` | 5 / 5 / 5 | 2008 / 2008 / 2008 | 923 / 923 / 923 |
+| MOSS-Transcribe-Diarize | `moss_td` | 7 / 7 / 7 | 1854 / 1993 / 1993 | 510 / 510 / 510 |
+| Nemotron 3.5 ASR Streaming 0.6B | `nemotron3_5_asr` | 8 / 14 / 14 | 1224 / 1373 / 1373 | 205 / 205 / 227 |
+
+Every count from 1 to the most that fit on the GPU was served at eight or more open-loop Poisson arrival rates, 1,024 requests per rate, once for each of three arrival seeds. The requests come from the SeedTTS evaluation set, and the ASR models transcribe its reference clips. Each replica admits up to 16 running requests. A rate counts when at most 1% of its requests fail and the backlog does not grow: the median latency of the last quarter of requests is at most 1.15 times that of the second quarter. A count's goodput is the most audio among its counted rates whose p99 latency meets the target. The table gives the count with the most goodput averaged over the three seeds, ties going to fewer replicas; on every seed that count is within 90% of the seed's best count. Near the top the curves are flat, so a neighboring count usually costs a few percent.
+
+Nemotron 3.5 ASR was served with `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `OPENBLAS_NUM_THREADS` set to 4. By default every replica process sizes these pools to the host's cores: in a closed-loop pass at 16 requests in flight per replica, 12 default replicas served 31 requests/s against 228 for 11, and 239 with the cap. The cap is not a general setting; at its listed count it slowed MOSS-TTS Local Transformer by 36%.
+
+CosyVoice3 is not listed: its speech tokenizer runs on onnxruntime-gpu, whose 1.32.0 build has no sm_100 kernels, so it did not serve on the B200 without a local change that moves the tokenizer to the CPU.
+
+The measurements used sglang-omni 8848e500, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 590.48.01. The host had 288 CPU cores, its other seven GPUs ran other measurements at the same time, and replicas were not pinned to cores. Re-measure before applying a count to another version, GPU or workload.
 
 ## Shared weights across replicas (opt-in, default off)
 

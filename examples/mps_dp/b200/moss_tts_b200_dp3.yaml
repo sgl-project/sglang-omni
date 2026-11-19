@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+# MOSS-TTS v1.5, 3 replicas on one 183 GB B200 under native MPS: the most audio within a p99 stall-free start of 1 s, measured with sglang-omni 8848e500 (see docs/basic_usage/mps_dp.md).
+
+config_cls: MossTTSPipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-v1.5
+stages:
+  preprocessing:
+    gpu: 0
+    gpu_memory_fraction: 0.0222
+  tts_engine:
+    gpu: 0
+    gpu_memory_fraction: 0.1201
+    engine:
+      mem_fraction_static: 0.1112
+      max_running_requests: 16
+      max_queued_requests: 16
+      cuda_graph_max_bs: 32
+      max_total_tokens: 16384
+  vocoder:
+    gpu: 0
+    gpu_memory_fraction: 0.0534
+    process: vocoder
+processes:
+  pipeline:
+    num_replicas: 3
+    replica_devices: [0, 0, 0]
+  vocoder:
+    num_replicas: 3
+    replica_devices: [0, 0, 0]

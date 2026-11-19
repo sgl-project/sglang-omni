@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# Ming-3.0-tts 0.5B, 3 replicas on one 183 GB B200 under native MPS: the most audio within a p99 stall-free start of 1 s, measured with sglang-omni 8848e500 (see docs/basic_usage/mps_dp.md).
+
+config_cls: Ming3TTSPipelineConfig
+model_path: inclusionAI/Ming-3.0-tts-0.5B
+stages:
+  preprocessing:
+    gpu: 0
+    gpu_memory_fraction: 0.0133
+    process: preprocessing
+    factory:
+      max_concurrency: 4
+      reference_cache_entries: 256
+      reference_cache_bytes: 67108864
+      max_reference_seconds: 120.0
+  tts_engine:
+    gpu: 0
+    gpu_memory_fraction: 0.0311
+    process: tts_engine
+    engine:
+      mem_fraction_static: 0.911
+      max_running_requests: 16
+      max_queued_requests: 16
+      cuda_graph_max_bs: 32
+      max_total_tokens: 32768
+      disable_cuda_graph: false
+      enable_torch_compile: false
+    factory:
+      max_seq_len: 4096
+      enable_acoustic_graph: true
+      enable_fused_flow_head: true
+      enable_dense_streaming: true
+      prefill_graph_token_counts: [64, 96, 128, 160, 192, 224, 256, 288, 320, 384, 448, 512]
+      prefill_graph_max_requests: 32
+      enable_async_decode: true
+  vocoder:
+    gpu: 0
+    gpu_memory_fraction: 0.0178
+    process: vocoder
+    factory:
+      graph_latent_steps: 384
+      stream_chunk_steps: 8
+processes:
+  preprocessing:
+    num_replicas: 3
+    replica_devices: [0, 0, 0]
+  tts_engine:
+    num_replicas: 3
+    replica_devices: [0, 0, 0]
+  vocoder:
+    num_replicas: 3
+    replica_devices: [0, 0, 0]
