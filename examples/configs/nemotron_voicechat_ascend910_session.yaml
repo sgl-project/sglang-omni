@@ -1,0 +1,18 @@
+config_cls: NemotronVoiceChatDuplexPipelineConfig
+model_path: nvidia/NVIDIA-NemotronLabs-VoiceChat-11B
+
+stages:
+  thinker:
+    engine:
+      mem_fraction_static: 0.78
+      max_total_tokens: 8192
+      attention_backend: ascend
+      page_size: 128
+      disable_cuda_graph: true
+  talker:
+    engine:
+      mem_fraction_static: 0.18
+      max_total_tokens: 8192
+      attention_backend: ascend
+      page_size: 128
+      disable_cuda_graph: false

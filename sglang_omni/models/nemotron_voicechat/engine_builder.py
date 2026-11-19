@@ -254,6 +254,15 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
         (shim / "config.json").write_text(json.dumps(talker_config(source)))
         return str(shim)
 
+    def setup_model(self, *, model_worker, checkpoint_dir, device, gpu_id, server_args):
+        del checkpoint_dir, device, gpu_id, server_args
+        if current_platform.is_npu():
+            # The 72-wide Talker heads use SDPA for Ascend prefill. The
+            # Ascend backend still runs its existing paged decode path.
+            model_worker.model_runner.attn_backend.use_native_sdpa = True
+        else:
+            pass
+
     def make_model_runner(self, model_worker, output_proc):
         return NemotronVoiceChatTalkerModelRunner(model_worker, output_proc)
 

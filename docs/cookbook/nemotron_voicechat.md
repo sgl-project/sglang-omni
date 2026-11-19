@@ -46,6 +46,17 @@ The reply text is the thinker's spoken tokens only; frames where the model is li
 
 For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../other_platforms/installation_xpu.md#nemotron-voicechat-speech-to-speech-two-xpus).
 
+For one 64 GiB Ascend910_9362, use the Mamba2 runtime described in the [Ascend 910 setup](#ascend-910). With `MODEL_DIR` pointing to the local VoiceChat checkpoint, the following settings select the tested offline memory budgets and Talker decode graph.
+
+```bash
+python examples/run_nemotron_voicechat.py \
+  --model-path "$MODEL_DIR" --audio "$MODEL_DIR/turn_taking.wav" --out reply.wav \
+  --startup-timeout 600 \
+  --thinker.engine.mem_fraction_static 0.78 --talker.engine.mem_fraction_static 0.18 \
+  --thinker.engine.max_total_tokens 8192 --talker.engine.max_total_tokens 8192 \
+  --talker.engine.disable_cuda_graph false
+```
+
 ### Streaming codec chunk sizes
 
 The offline pipeline enables the `(1, 1, 1, 1, 2, 2, 4)` chunk ramp by default to reduce decoder calls and audio transfers. To disable the ramp and decode one codec frame at a time, set the code2wav factory's `chunk_frames`:
@@ -86,6 +97,22 @@ Larger chunks trade playback arrival frequency for fewer decoder calls. Measure 
 ## Realtime conversation
 
 VoiceChat also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-nemotron-voicechat).
+
+### Ascend 910
+
+The Ascend session configuration runs one conversation on one 64 GiB Ascend910_9362. The tested runtime uses CANN 9.1, PyTorch 2.10.0 and torch_npu 2.10.0.post6. Use the [tested runtime snapshot](https://github.com/celestial-micha/sglang/tree/ca96dfcbca52f722653b8abb89cb8676c4639d6c), based on SGLang revision `297e54fd105e974cdf401e5b4d20253a22c16f90`. Its two patches enable the Thinker's Mamba2 backend and convolution state view, and let both stage sessions append one position to a privately owned partial KV page.
+
+Run this command from the repository root with one NPU visible to the service. For a local checkpoint, pass its directory with `--model-path`.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/nemotron_voicechat_ascend910_session.yaml \
+  --enable-realtime --host 127.0.0.1 --port 8000
+```
+
+This configuration selects Ascend attention with 128-token pages, eager Thinker decode and Talker graph replay. Stage-specific CLI flags take precedence over the file. Wait for `/health` before opening a WebSocket session. In single-session tests on the two checkpoint recordings, all audio frames returned, with average completion intervals of 101–106 ms against the 80 ms input cadence. Long conversations can accumulate playback delay.
+
+To warm the first page crossing before a caller connects, send 96 silent 80 ms units (7.68 seconds of 16 kHz mono PCM16) through one disposable WebSocket session after the health check. End its input, wait for completion and close it before opening the caller's session. On the tested device the interval from unit 72 to 73 was 2.07 seconds on the first caller recording and 0.10 seconds after this warmup. Subsequent completion intervals averaged about 0.10 seconds.
 
 ## Offline request parameters
 

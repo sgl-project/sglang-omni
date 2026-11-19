@@ -18,7 +18,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
-from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
+from sglang_omni.models.nemotron_voicechat.device_graph import capture_voicechat_graph
 from sglang_omni.models.nemotron_voicechat.model_runner import VoiceChatModelRunner
 from sglang_omni.models.nemotron_voicechat.payload_types import TOOL_CALLS
 from sglang_omni.models.nemotron_voicechat.request_builders import (
@@ -35,6 +35,7 @@ from sglang_omni.models.nemotron_voicechat.tools import (
     format_tool_response,
     parse_tool_calls,
 )
+from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import TOOL_RESPONSE
@@ -145,12 +146,12 @@ class DuplexTalkerRunner(UnitDecodeRunner, VoiceChatTalkerModelRunner):
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
     ) -> None:
         super().__init__(tp_worker, output_processor)
-        self.sampler_graph: torch.cuda.CUDAGraph | None = None
+        self.sampler_graph: ReplayableGraph | None = None
         self.sampler_hidden: torch.Tensor | None = None
         self.sampler_output: torch.Tensor | None = None
 
     def generate_codes(self, index: int) -> torch.Tensor:
-        if self.model.hidden_out.device.type != "cuda":
+        if self.model.hidden_out.device.type not in ("cuda", "npu"):
             return super().generate_codes(index)
         else:
             pass
@@ -166,7 +167,7 @@ class DuplexTalkerRunner(UnitDecodeRunner, VoiceChatTalkerModelRunner):
                     noise_scale=self.noise_scale,
                 )
 
-            self.sampler_graph, self.sampler_output = capture_cuda_graph(
+            self.sampler_graph, self.sampler_output = capture_voicechat_graph(
                 sample, sampler_hidden.device
             )
             self.sampler_hidden = sampler_hidden

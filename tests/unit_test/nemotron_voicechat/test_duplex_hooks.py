@@ -16,6 +16,7 @@ from sglang_omni.models.nemotron_voicechat.duplex_hooks import (
 )
 from sglang_omni.models.tools.runner import ToolRunner
 from sglang_omni.models.tools.session import ToolHooks
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import TOOL, TOOL_CALL, TOOL_RESPONSE
@@ -361,15 +362,32 @@ def test_codec_sessions_keep_history_and_completion_independent() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires GPU")
+@pytest.mark.parametrize(
+    "device",
+    [
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="requires CUDA"
+            ),
+        ),
+        pytest.param(
+            "npu:0",
+            marks=pytest.mark.skipif(
+                not current_platform.is_npu(), reason="requires NPU"
+            ),
+        ),
+    ],
+)
 @torch.inference_mode()
-def test_codec_replay_matches_eager_for_changing_codes() -> None:
+def test_codec_replay_matches_eager_for_changing_codes(device: str) -> None:
     def decode_codes(codes: torch.Tensor) -> torch.Tensor:
         return codes.float().sin().sum(-1).repeat_interleave(4)
 
-    hooks = CodecHooks(decode_codes, "cuda")
+    hooks = CodecHooks(decode_codes, device)
     for frame_count in [1, 15, 16, 16, 16]:
-        codes = torch.randint(0, 100, (frame_count, 8), device="cuda")
+        codes = torch.randint(0, 100, (frame_count, 8), device=device)
         torch.testing.assert_close(
             hooks.decode(codes), decode_codes(codes), rtol=0, atol=0
         )
+    assert hooks.decode_graph is not None

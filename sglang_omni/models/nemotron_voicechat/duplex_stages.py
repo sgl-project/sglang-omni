@@ -216,7 +216,7 @@ def create_codec(
     )
     hooks = CodecHooks(codec_executor.decoder, codec_executor.device)
     # Capture before serving to keep its startup cost off live audio processing.
-    if torch.device(codec_executor.device).type == "cuda":
+    if torch.device(codec_executor.device).type in ("cuda", "npu"):
         hooks.decode(
             torch.zeros(
                 DECODE_WINDOW_FRAMES,

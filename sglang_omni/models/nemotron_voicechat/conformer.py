@@ -11,6 +11,8 @@ from sglang_omni.models.nemotron_voicechat.preprocess import (
     DEFAULT_PREEMPHASIS,
     LogMelFeatures,
 )
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 
 SAMPLES_PER_FRAME = 1_280
 SUBSAMPLING_KERNEL_SIZE = 3
@@ -523,14 +525,19 @@ class StreamingPerception:
 class GraphPerception(StreamingPerception):
     def __init__(self, perception: AudioPerception, *, batch_size: int) -> None:
         super().__init__(perception, batch_size=batch_size)
-        self.graph: torch.cuda.CUDAGraph | None = None
+        self.graph_backend = (
+            current_platform.get_device_graph_backend(self.device)
+            if self.device.type in ("cuda", "npu")
+            else None
+        )
+        self.graph: ReplayableGraph | None = None
         self.graph_input: torch.Tensor | None = None
         self.graph_output: torch.Tensor | None = None
 
     @torch.inference_mode()
     def push(self, samples: torch.Tensor) -> torch.Tensor:
         assert samples.shape == (self.batch_size, SAMPLES_PER_FRAME)
-        if self.device.type != "cuda":
+        if self.graph_backend is None:
             return super().push(samples)
         else:
             pass
@@ -538,21 +545,22 @@ class GraphPerception(StreamingPerception):
             buffers = self.state_buffers()
             saved_values = [buffer.clone() for buffer in buffers]
             self.graph_input = samples.to(device=self.device, dtype=self.dtype).clone()
-            capture_stream = torch.cuda.Stream(device=self.device)
-            current_stream = torch.cuda.current_stream(self.device)
+            device_module = torch.get_device_module(self.device)
+            capture_stream = device_module.Stream(device=self.device)
+            current_stream = device_module.current_stream(self.device)
             capture_stream.wait_stream(current_stream)
-            with torch.cuda.stream(capture_stream):
+            with device_module.stream(capture_stream):
                 for iteration in range(GRAPH_WARMUP_STEPS):
                     super().push(self.graph_input)
             current_stream.wait_stream(capture_stream)
             for buffer, saved_value in zip(buffers, saved_values, strict=True):
                 buffer.copy_(saved_value)
-            self.graph = torch.cuda.CUDAGraph()
             # note (Xinhao Tan): other threads of the stage process may use CUDA while a bucket captures.
-            with torch.cuda.graph(
-                self.graph, stream=capture_stream, capture_error_mode="thread_local"
-            ):
+            with self.graph_backend.capture(
+                stream=capture_stream, thread_local_errors=True
+            ) as graph:
                 self.graph_output = super().push(self.graph_input)
+            self.graph = graph
         else:
             pass
         assert self.graph_input is not None and self.graph_output is not None

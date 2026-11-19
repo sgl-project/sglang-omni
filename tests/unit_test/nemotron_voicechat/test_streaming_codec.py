@@ -19,6 +19,7 @@ from sglang_omni.models.nemotron_voicechat.codec_cuda_graph import (
     CodecDecodeGraphRunner,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
@@ -157,28 +158,52 @@ def make_small_decoder(device: str) -> RVQVAEDecoder:
     return decoder.to(device).eval()
 
 
-def make_graph_runner() -> tuple[RVQVAEDecoder, CodecDecodeGraphRunner]:
-    device = torch.device("cuda")
-    decoder = make_small_decoder("cuda")
-    runner = CodecDecodeGraphRunner(
-        decoder, CudaDeviceGraphBackend(), device, DECODE_WINDOW_FRAMES
+def make_graph_runner(
+    device_name: str = "cuda",
+) -> tuple[RVQVAEDecoder, CodecDecodeGraphRunner]:
+    device = torch.device(device_name)
+    decoder = make_small_decoder(device_name)
+    backend = (
+        CudaDeviceGraphBackend()
+        if device.type == "cuda"
+        else current_platform.get_device_graph_backend(device)
     )
+    assert backend is not None
+    runner = CodecDecodeGraphRunner(decoder, backend, device, DECODE_WINDOW_FRAMES)
     return decoder, runner
 
 
-def make_random_codes(window_frames: int) -> torch.Tensor:
+def make_random_codes(window_frames: int, device_name: str = "cuda") -> torch.Tensor:
     return torch.randint(
-        0, CODEBOOK_SIZE + 3, (window_frames, NUM_QUANTIZERS), device="cuda"
+        0, CODEBOOK_SIZE + 3, (window_frames, NUM_QUANTIZERS), device=device_name
     )
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires a GPU")
-def test_graph_replay_matches_eager_decode_for_every_window_size():
-    decoder, runner = make_graph_runner()
+@pytest.mark.parametrize(
+    "device_name",
+    [
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="requires CUDA"
+            ),
+        ),
+        pytest.param(
+            "npu:0",
+            marks=pytest.mark.skipif(
+                not current_platform.is_npu(), reason="requires NPU"
+            ),
+        ),
+    ],
+)
+def test_graph_replay_matches_eager_decode_for_every_window_size(
+    device_name: str,
+) -> None:
+    decoder, runner = make_graph_runner(device_name)
     with torch.inference_mode():
         for window_frames in range(1, DECODE_WINDOW_FRAMES + 1):
-            codes_TQ = make_random_codes(window_frames)
+            codes_TQ = make_random_codes(window_frames, device_name)
             torch.testing.assert_close(
                 runner(codes_TQ), decoder(codes_TQ), rtol=0, atol=0
             )
