@@ -1,18 +1,23 @@
 report	fix	symptom	level	check
 #3180	#3769	Dictated text is not inserted into a panel that does not become the active app (Raycast)	L	testTargetReached
+#3387	#3768	Meeting live and final speech requests omit dictation's main-language hint	L	TestMeetingTrackASRUsesDictationLanguage
 #3431	#3767	The live meeting bubble repeats a sentence after a pause	L	TestCommitterPauseRevisedTail
 #3776	#3777	A settings dialog needs two presses of Escape to close	L	TestOneEscapeClosesDialogs
 #3778	#3779	A Logs filter with no match says there are no log lines yet	L	TestLogsFilterNoMatch
 #3781	#3783	The Try prompts dialog cannot be closed	L	TestLLMDebugCloses
 #3785	#3787	The overlay preview's pill leaves the chosen side at some edge distances	L	TestOverlayPreviewKeepsItsSide
 #3788	#3792	Show in the Dock loses the choice made in 1.x	L	TestLegacyDockAtStart
+#3788	#3792	Find in settings misses Show in the Dock for Dock searches in English and Simplified Chinese	L	TestSettingsSearchFindsRows
 #3790	#3792	Settings search misses rows that are on the page	L	TestSettingsSearchFindsRows
 #3798	#3799	Test connection without a key shows the raw message key llm.no_key	L	TestDialogTestWithoutKey
+#3801	#3803	The release command palette's Meetings command opens a Not found page	L	TestMeetingsPaletteDestinationExists
 #3835	#3841	Rewrite gets no selected text from a PDF view or a web page that reports an empty range	L	testEndsAtCaret
 #3838	#3843	Translating a selection opens a speech model it does not use	L	TestTranslateOpensNoSpeechModelItDoesNotUse
 #3840	#3844	A long dictation over the speech service's upload limit gets no transcript	L	TestLongRecordingInPieces
 #3854	#3855	Single-model cards on Speech models do not line up with family cards	L	TestModelCardsLineUp
+#3895	#4028	The History settings dialog repeats Privacy's Keep recordings switch	L	TestHistorySettingsDialog
 #3917	#3934	The setup guide's Set up a language model button does not open Language models	L	TestOnboardingTryStepLeaves
+#3918	#3928	With Show in the Dock off, Voxt can enter the Dock before the launch-time setting is applied	L	TestMainAppliesDockBeforeReady
 #3950	#3952	A local server's Model menu does not list the models the server has	L	TestOllamaModelMenuListsServer
 #3981	#3992	The live meeting transcript repeats a phrase in a loop	L	TestCollapseLoops
 #3982	#3994	A meeting's microphone track repeats speech from the system track in the saved transcript	L	TestFinalizeDropsMicEcho
@@ -29,4 +34,6 @@ report	fix	symptom	level	check
 #4019	#4021	A meeting's details sit in a narrow panel with a scroll box inside	L	TestMeetingDetailIsWideAndScrollsOnce
 #4022	#4023	Meetings are missing from release builds	L	TestMeetingsInReleaseBuild
 #4024	#4025	Translate does not switch back to the main language for languages that share a script	L	TestTranslateBack
+#4086	#4088	Transcribe inserts commentary outside <output> tags along with the tagged cleaned text	L	TestOnlyTheCleanedText
 #4120	#4129	Dictation hangs on Starting the microphone after a microphone is added in Settings	L	testSecondSilentEngineGoesToTheDefaultInputThirdEnds
+#4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
