@@ -177,6 +177,10 @@ func StripControl(s string) string {
 			switch {
 			case strings.HasSuffix(name, "_begin"):
 				close = "<|" + strings.TrimSuffix(name, "_begin") + "_end|>"
+			case strings.HasSuffix(name, "_end"):
+				s = s[:i] + rest
+				at = i
+				continue
 			case name == "channel":
 				close = "<channel|>"
 			}

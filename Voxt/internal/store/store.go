@@ -84,9 +84,10 @@ type Entry struct {
 	// (appctx.Source); "" for none.
 	RuleSource string
 
-	// RawText is the recognised speech; SourceText the selected text
-	// (translate, rewrite); PromptText the spoken instruction (rewrite);
-	// Result what was delivered; TargetLang the translation's target.
+	// RawText is the recognised speech, or Rewrite's typed input;
+	// SourceText the selected text (translate, rewrite); PromptText the
+	// spoken instruction (rewrite); Result what was delivered; TargetLang
+	// the translation's target.
 	RawText    string
 	SourceText string
 	PromptText string

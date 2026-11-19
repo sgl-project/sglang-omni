@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first.
 - **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
+- **Rewrite keeps typed input and handles conversion failures safely**: typed text survives closing or restarting the card for redo and follow-ups, and History shows it separately. Tap-stop and hold-release now wait for image conversion like Enter. A failed conversion leaves the box open with its error instead of sending without the image. Standalone tool-call end markers no longer appear in answers.
 
 ### 中文
 
@@ -21,6 +22,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **改写同时打开麦克风和一个带输入框的卡片**（#4085）：按改写快捷键会立刻开始录音并打开改写卡片，不再有开关，也不再有单独的录音窗口。按下快捷键时选中的文字会自动进入卡片作为原文；说话的同时可以补充输入文字，粘贴或拖入最多 4 张图片（缩略图带删除按钮）。再按一次快捷键（或按 Enter）结束录音并发送；Shift+Enter 换行，Esc 关闭不发送。发给语言模型的内容顺序固定：先是选中的文字，然后是输入的文字和图片，最后是说出的指令；改写 prompt 和快捷键都不变。没有选中、没有输入、没有图片时，改写和以前一样只用语音。放进卡片的图片是你主动放的，不需要隐私开关；模型不收图片时会报错，卡片里的文字和图片都保留，再次发送时图片的字节和位置完全相同，服务器的前缀缓存可以复用。一次请求可以带多张图片，顺序统一为：卡片的图片 > 复制的图片 > 窗口截图；卡片上写明这次发的是哪一种（“截图”/“复制的图片”/缩略图），不会被发送的截图不再截取。设置 → 隐私的两个开关下面写明：两个都打开时，发送复制的图片，不发送截图。模型没有收到图片时，回答里不再出现它的内部工具或思考标记。
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
+
+#### 修复
+
+- **改写保留输入文字并安全处理图片转换失败**：关闭或重启卡片后，输入的文字仍用于重做和追问，历史详情也单独显示。点按停止和长按松开现在都和 Enter 一样等待图片转换完成。转换失败时卡片保留并显示错误，不会在缺少图片的情况下自动发送。独立的工具调用结束标记不再出现在回答里。
 
 ### 中文
 

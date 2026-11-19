@@ -173,9 +173,9 @@ func (a *app) dropBox() {
 	a.boxSendQueued = false
 }
 
-// boxSend is Enter in the box: while it records, it finishes the
-// recording and the session sends; after a send failed, it sends the
-// kept instruction, text and pictures again.
+// boxSend is Enter or the shortcut's stop in the box: while it records,
+// it finishes the recording and the session sends; after a send failed,
+// it sends the kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
 		return
@@ -315,10 +315,12 @@ func (a *app) boxPaste(svc uiServices) bool {
 		gen := a.boxGen
 		seq := a.boxReserve()
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
+			errText := ""
 			if err != nil {
 				res.JPEG = nil
+				errText = i18n.T("This image could not be read.")
 			}
-			a.boxConverted(gen, seq, res.JPEG, "")
+			a.boxConverted(gen, seq, res.JPEG, errText)
 		})
 		return true
 	}
@@ -375,6 +377,7 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 		}
 		if land.errText != "" {
 			a.box.err = land.errText
+			a.boxSendQueued = false
 		} else {
 			a.boxAttach(land.jpeg)
 		}

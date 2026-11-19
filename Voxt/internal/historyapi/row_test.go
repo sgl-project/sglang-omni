@@ -58,6 +58,24 @@ func TestRowFields(t *testing.T) {
 	}
 }
 
+func TestRowRewriteTypedFollowsSelection(t *testing.T) {
+	entry := store.Entry{ID: "rewrite", Kind: store.KindRewrite, CreatedAt: testStart, RawText: "typed-secret", SourceText: "selected-secret", PromptText: "polish", Result: "Polished"}
+	row := FromEntry(entry, false)
+	if row.Heard != "" || row.Typed != "" || row.Selection != "" {
+		t.Errorf("selection-off row leaks typed input: %+v", row)
+	}
+	row = FromEntry(entry, true)
+	if row.Heard != "" || row.Typed != "typed-secret" || row.Selection != "selected-secret" {
+		t.Errorf("selection-on row lost typed input: %+v", row)
+	}
+	legacy := entry
+	legacy.PromptText = ""
+	row = FromEntry(legacy, true)
+	if row.Heard != "typed-secret" || row.Typed != "" {
+		t.Errorf("legacy answer was relabeled as typed input: %+v", row)
+	}
+}
+
 // TestRowOmitsEmpty: app, instruction, target_lang and selection leave
 // the line when empty; the text fields a consumer relies on stay.
 func TestRowOmitsEmpty(t *testing.T) {

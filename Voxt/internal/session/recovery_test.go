@@ -201,6 +201,25 @@ func TestRetry(t *testing.T) {
 			t.Errorf("requests %+v", reqs)
 		}
 	})
+	t.Run("rewrite keeps typed input", func(t *testing.T) {
+		for _, tc := range []struct{ name, selection, want string }{
+			{name: "typed only", want: "<selected_text>\ntyped context\n</selected_text>\n\n<instruction>\ndecline politely\n</instruction>"},
+			{name: "selection and typed", selection: "draft", want: "<selected_text>\ndraft\n</selected_text>\n\n<typed_text>\ntyped context\n</typed_text>\n\n<instruction>\ndecline politely\n</instruction>"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				model := &fakeLLM{text: `{"title":"Polite","content":"Polished"}`}
+				h, e := retryHarness(t, &fakeFile{text: "decline politely"}, model, false)
+				e.Kind, e.RawText, e.PromptText, e.SourceText = store.KindRewrite, "typed context", "make it polite", tc.selection
+				if _, err := h.m.Retry(context.Background(), RetryRequest{Entry: e}); err != nil {
+					t.Fatal(err)
+				}
+				reqs := model.requests()
+				if len(reqs) != 1 || reqs[0].Messages[len(reqs[0].Messages)-1].Content != tc.want {
+					t.Errorf("request %+v, want %q", reqs, tc.want)
+				}
+			})
+		}
+	})
 	t.Run("the new answer's title replaces the old one", func(t *testing.T) {
 		model := &fakeLLM{text: `{"title": "Polite decline", "content": "Thanks, but no."}`}
 		h, e := retryHarness(t, &fakeFile{text: "decline politely"}, model, false)

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -531,6 +533,100 @@ func TestRewriteBoxSendWaitsForConversion(t *testing.T) {
 	}
 	if imgs, _ := reqs[0]["images"].([][]byte); len(imgs) != 1 {
 		t.Errorf("%d images sent", len(imgs))
+	}
+}
+
+func TestRewriteBoxHotkeyStopWaitsForConversion(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		start, stop string
+		long        bool
+	}{
+		{name: "tap", start: proto.PhaseTrigger, stop: proto.PhaseTrigger},
+		{name: "hold release", start: proto.PhaseDown, stop: proto.PhaseUp, long: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fakeChat{text: "A shorter text."}
+			set, keys, _ := fileSetup(t, "make it shorter", chat)
+			ev := script(t, hotkeyLine(0, "rewrite/0", tc.start))
+			a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
+				set(s)
+				if tc.long {
+					s.Features.Rewrite.Hotkeys = []settings.Hotkey{{Keys: settings.DefaultRewrite, Trigger: settings.TriggerLong}}
+				}
+			}, keys)
+			a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording && len(a.sess.Levels) >= 5 })
+			a.postQueue(func() {
+				gen := a.boxGen
+				seq := a.boxReserve()
+				front := helpertest.Apps["com.tinyspeck.slackmacgap"]
+				a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: tc.stop, Behavior: proto.BehaviorTap, Front: &front})
+				if !a.boxSendQueued || a.sess.State != session.Recording {
+					t.Errorf("queued %v, session %s", a.boxSendQueued, a.sess.State)
+				}
+				a.boxConverted(gen, seq, boxJPEG(t), "")
+			})
+			a.pump("the answer", func() bool { return a.answer.open })
+			reqs := chat.requests()
+			if len(reqs) != 1 {
+				t.Fatalf("%d chats", len(reqs))
+			}
+			if imgs, _ := reqs[0]["images"].([][]byte); len(imgs) != 1 {
+				t.Errorf("%d images sent", len(imgs))
+			}
+		})
+	}
+}
+
+func TestRewriteBoxFailedConversionCancelsQueuedSend(t *testing.T) {
+	chat := &fakeChat{text: "A shorter text."}
+	a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording && len(a.sess.Levels) >= 5 })
+	const conversionError = "This image could not be read."
+	a.postQueue(func() {
+		gen := a.boxGen
+		seq := a.boxReserve()
+		a.boxSend()
+		a.boxConverted(gen, seq, nil, conversionError)
+		if !a.box.open || !a.box.shown || a.box.err != conversionError || a.sess.State != session.Recording || a.boxSendQueued {
+			t.Fatalf("box %+v, session %s, queued %v", a.box, a.sess.State, a.boxSendQueued)
+		}
+	})
+	a.drain(500 * time.Millisecond)
+	if len(chat.requests()) != 0 || len(a.box.images) != 0 {
+		t.Fatalf("%d chats and %d images after the failed conversion", len(chat.requests()), len(a.box.images))
+	}
+	a.postQueue(a.boxSend)
+	a.pump("the intentional send", func() bool { return a.answer.open })
+	if len(chat.requests()) != 1 {
+		t.Fatalf("%d chats after the user confirmed", len(chat.requests()))
+	}
+}
+
+func TestRewriteBoxHelperFailureCancelsQueuedSend(t *testing.T) {
+	chat := &fakeChat{text: "A shorter text."}
+	a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording && len(a.sess.Levels) >= 5 })
+	fs := newFakeSupervisor(a.lib.bus)
+	fs.Start(context.Background())
+	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+		return nil, proto.Errorf(proto.CodeInternal, "clipboard failed")
+	}
+	a.host.sup = fs
+	var svc ui.Services
+	tt := hudTester(func(c *ui.Context) { svc = c.Services(); a.boxView(c) }, boxWinW, boxWinH)
+	tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.FileList, []byte("/tmp/picture.heic")))))
+	a.postQueue(func() {
+		if !a.boxActions().paste(svc) {
+			t.Fatal("the Finder image paste was not taken")
+		}
+		a.boxSend()
+	})
+	a.pump("the failed clipboard read", func() bool {
+		return a.boxPending == 0 && (a.box.err != "" || a.sess.State != session.Recording || len(chat.requests()) > 0)
+	})
+	if a.box.err == "" || !a.box.open || !a.box.shown || a.sess.State != session.Recording || a.boxSendQueued || len(chat.requests()) != 0 {
+		t.Fatalf("box %+v, session %s, queued %v, chats %d", a.box, a.sess.State, a.boxSendQueued, len(chat.requests()))
 	}
 }
 

@@ -411,6 +411,7 @@ func TestParseAnswer(t *testing.T) {
 		ok   bool
 	}{
 		{`{"title":"Update","content":"Ships Friday."}`, Answer{"Update", "Ships Friday."}, true},
+		{`{"title":"T","content":"Ships Friday.<|tool_call_end|>"}`, Answer{"T", "Ships Friday."}, true},
 		{"```json\n{\"title\": \" **Update** \", \"content\": \"Line 1\\nLine 2\"}\n```", Answer{"Update", "Line 1\nLine 2"}, true},
 		{`Sure! {"title":"T","content":"x {y} z"} hope it helps`, Answer{"T", "x {y} z"}, true},
 		{`{"title":"T","content":"  "}`, Answer{Title: "T"}, true},
@@ -445,6 +446,7 @@ func TestPartialAnswer(t *testing.T) {
 	for text, want := range map[string]Answer{
 		"":                               {},
 		"Plain text answer":              {Content: "Plain text answer"},
+		"Ships Friday.<|tool_call_end|>": {Content: "Ships Friday."},
 		"```":                            {},
 		"```json\n{\"title\":\"T\",\"co": {Title: "T"},
 		`{"content":"a\`:                 {Content: "a"},
@@ -553,6 +555,7 @@ func TestClean(t *testing.T) {
 		{"", "x", ""},
 		// A model's internal control blocks never reach the user (#4085).
 		{"Hello.<|tool_call_begin|>call vision<|tool_call_end|>", "x", "Hello."},
+		{"a<|tool_call_end|>b", "x", "ab"},
 		{"<|channel|>thought<channel|>你好。", "x", "你好。"},
 		{"cut off at the stream's end <|tool_call_be", "x", "cut off at the stream's end"},
 		// Only the control markers are markup; other <| stays (F#'s
@@ -576,6 +579,9 @@ func TestClean(t *testing.T) {
 // internal control blocks too (#4085), a partial one's unfinished tail
 // included.
 func TestStripControlAnswer(t *testing.T) {
+	if got := StripControl("a<|tool_call_end|>b"); got != "ab" {
+		t.Errorf("StripControl %q", got)
+	}
 	if got := StripControl("a<|x|>b<|tool_call_be"); got != "a<|x|>b" {
 		t.Errorf("StripControl %q", got)
 	}
