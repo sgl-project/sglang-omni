@@ -1,6 +1,9 @@
 package compose
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func assertAnswerCleanup(t *testing.T, text, input, want string) {
 	t.Helper()
@@ -199,6 +202,47 @@ func TestAnswerControlTokenVariants(t *testing.T) {
 			}
 			if got := PartialAnswer(structured); got != want {
 				t.Errorf("PartialAnswer(%q) = %+v, want %+v", structured, got, want)
+			}
+		})
+	}
+}
+
+func TestAnswerCleanupThinkingClose(t *testing.T) {
+	for _, tc := range []struct{ name, text, want string }{
+		{"answer after thinking close", "reasoning here</think>Final answer", "Final answer"},
+		{"answer after channel close", "reasoning here<channel|>Final answer", "Final answer"},
+		{"answer after duplicate thinking closes", "reasoning</think></think>Final answer", "Final answer"},
+		{"answer after mixed thinking closes", "reasoning</think><channel|>Final answer", "Final answer"},
+		{"answer after reversed thinking closes", "reasoning<channel|></think>Final answer", "Final answer"},
+		{"answer after mixed thinking block", "reasoning</think><|channel>private<channel|>Final answer", "Final answer"},
+		{"trailing thinking close", "Visible</think>", "Visible"},
+		{"thinking close before control ending", "Visible</think><|im_end|>", "Visible"},
+		{"thinking close before tool call", `Visible</think><|tool_call|>{"name":"view_image"}`, "Visible"},
+		{"end marker before tool call", `Visible<|endoftext|><|tool_call|>{"name":"view_image"}`, "Visible"},
+		{"end marker before role marker", "Visible<|eot_id|><|im_start|>user", "Visible"},
+		{"stacked control endings", "Visible<|channel|><|im_end|>", "Visible"},
+		{"control token mentioned in prose", "Answer: use <|channel|> tokens", "Answer: use <|channel|> tokens"},
+		{"channel close mentioned in prose", "Answer: use <channel|> tokens", "Answer: use <channel|> tokens"},
+		{"literal channel close before thinking block", "Use <channel|> literally. <|channel>private<channel|>Visible", "Use <channel|> literally. Visible"},
+		{"end token mentioned in prose", "把 <|im_end|> 放在句尾", "把 <|im_end|> 放在句尾"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Clean(tc.text, "x"); got != tc.want {
+				t.Errorf("Clean(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			if got := PartialClean(tc.text, "x"); got != tc.want {
+				t.Errorf("PartialClean(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			structured := `{"title":"T","content":` + strconv.Quote(tc.text) + `}`
+			want := Answer{Title: "T", Content: tc.want}
+			if got, ok := ParseAnswer(structured); !ok || got != want {
+				t.Errorf("ParseAnswer(%q) = %+v, %v, want %+v", structured, got, ok, want)
+			}
+			if got := PartialAnswer(structured); got != want {
+				t.Errorf("PartialAnswer(%q) = %+v, want %+v", structured, got, want)
+			}
+			if got := PartialAnswer(tc.text); got.Content != tc.want {
+				t.Errorf("PartialAnswer(%q) = %+v, want content %q", tc.text, got, tc.want)
 			}
 		})
 	}
