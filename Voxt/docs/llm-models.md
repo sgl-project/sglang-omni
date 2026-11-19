@@ -2,7 +2,7 @@
 
 *History: Voxt's own language models retired in 2.1 (its language models are the remote services the user sets up), and their process `voxtnew-llm` (`llm/`, `internal/llmrt`, the llm protocol) was removed after. This page keeps what was measured on them; the links into `llm/` and the protocol point at the code as it was (git history).*
 
-VoxtNew runs three curated language models in `voxtnew-llm`, and two of the ActNow family's that other apps install ([below](#borrowed-models-family-f1)) ([llm/](../llm/README.md), [llm-protocol.md](llm-protocol.md)). Their catalogue entries (repository, revision, files) are `internal/models/catalog.go`; how they run is one table, `internal/llmrt/models.go`, sent with every chat (the process keeps no settings).
+VoxtNew runs three curated language models in `voxtnew-llm`, and two of the ActNow family's that other apps install ([below](#borrowed-models-family-f1)) (`llm/README.md`, `docs/llm-protocol.md`). Their catalogue entries (repository, revision, files) are `internal/models/catalog.go`; how they run is one table, `internal/llmrt/models.go`, sent with every chat (the process keeps no settings).
 
 | id | model | runtime | what it does |
 |---|---|---|---|
@@ -53,7 +53,7 @@ Translation and rewriting come out right with both Qwen3.5 models, and the JSON 
 
 ## Prompt cache (M2b)
 
-`voxtnew-llm` keeps an MLX model's caches (attention KV and Qwen3.5's linear-attention state) after the **shared prefix** of a prompt: everything before the last message's text, which for compose's prompts is the system prompt and, since M3, the clean-up's example turn (≈ 520–550 tokens for clean-up and spoken translation, ≈ 220 for translating a selection). A chat whose prompt starts with a kept prefix evaluates only the rest. How it works is in [llm-protocol.md](llm-protocol.md#the-prompt-cache); in short:
+`voxtnew-llm` keeps an MLX model's caches (attention KV and Qwen3.5's linear-attention state) after the **shared prefix** of a prompt: everything before the last message's text, which for compose's prompts is the system prompt and, since M3, the clean-up's example turn (≈ 520–550 tokens for clean-up and spoken translation, ≈ 220 for translating a selection). A chat whose prompt starts with a kept prefix evaluates only the rest. How it works is in `docs/llm-protocol.md` ("The prompt cache"); in short:
 
 - Snapshots are reused whole, never trimmed (linear-attention state cannot be rewound). Up to 6 are kept (512 MB at most), the least recently used dropped first; they go with the model.
 - The shared prefix is evaluated in chunks ending at multiples of 256 tokens and at its end, whatever the cache holds; snapshots are kept and reused only at those points. A greedy answer is then the same token for token with the cache on, off (`VOXTNEW_LLM_PROMPT_CACHE=0`), on a miss or on a hit: `TestLLMRealPromptCache` checks it on both models (5 prompt kinds × miss, hit with another input, hit with the same input), and the eval's answers with and without the cache are identical.
