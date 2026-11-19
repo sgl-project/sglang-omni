@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -120,7 +121,7 @@ func legacyChordFromBinding(b legacyHotkeyBinding) (string, error) {
 	addSided(sideLeftCommand, "LeftCommand", "RightCommand")
 
 	mods := int(b.Modifiers)
-	if mods&nsModFn != 0 && !slicesContains(parts, "Fn") {
+	if mods&nsModFn != 0 && !slices.Contains(parts, "Fn") {
 		parts = append(parts, "Fn")
 	}
 	if mods&nsModControl != 0 && !hasFamily(parts, "Control") {
@@ -153,15 +154,6 @@ func legacyChordFromBinding(b legacyHotkeyBinding) (string, error) {
 		return "", fmt.Errorf("empty chord")
 	}
 	return strings.Join(parts, "+"), nil
-}
-
-func slicesContains(parts []string, want string) bool {
-	for _, p := range parts {
-		if p == want {
-			return true
-		}
-	}
-	return false
 }
 
 func hasFamily(parts []string, family string) bool {
