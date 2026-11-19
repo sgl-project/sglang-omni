@@ -340,6 +340,8 @@ func (a *app) overlayRestyle() {
 	a.ov.w, a.ov.h, a.ov.frame = width, height, frame
 	a.syncLangMenu()
 	a.syncPassThrough()
+	// The card moved: the pill window moves with it (overlaySync's).
+	defer a.pillOverlaySync(a.ov.mode)
 	if a.ov.win == nil {
 		return
 	}

@@ -8,6 +8,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -38,7 +39,10 @@ func pillBesideCard(t *testing.T, a *sessionApp, when string) {
 // ends, the card is as it was, and the cancel shortcut stops the
 // still-streaming answer (#3886's, now in the background).
 func TestTranscribeWhileRewriteStreams(t *testing.T) {
-	chat := &fakeChat{text: `{"title":"Plan","content":"先订会议室 then email Ann。"}`, stall: true}
+	// chunkDelay over draftEvery: every piece publishes, so the whole
+	// draft is there deterministically, under any load.
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
 	set, keys, tr := fileSetup(t, "plan the offsite", chat)
 	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, func(s *settings.Settings) {
@@ -47,7 +51,7 @@ func TestTranscribeWhileRewriteStreams(t *testing.T) {
 		s.Features.Transcribe.Enhance = false // no second, stalled, model request
 	}, keys)
 	a.pump("the whole answer in the card", func() bool {
-		return a.sess.CanStop() && a.ov.mode == ovAnswer && a.sess.Draft == "先订会议室 then email Ann。"
+		return a.sess.CanStop() && a.ov.mode == ovAnswer && a.sess.Draft == full
 	})
 	if a.pill.mode != ovHidden || a.pill.shown {
 		t.Fatalf("the streaming answer's own session in the pill window: %s", a.pill.mode)
@@ -61,7 +65,7 @@ func TestTranscribeWhileRewriteStreams(t *testing.T) {
 	})
 	if a.bgID == "" || !a.bgSess.State.Live() || a.answer.open || a.under.open ||
 		a.ov.mode != ovAnswer || a.pill.mode != ovRecording || a.ov.frame != frame ||
-		cardTextForTest(a.cachedCard()) != "先订会议室 then email Ann。" {
+		cardTextForTest(a.cachedCard()) != full {
 		t.Fatalf("recording: bg=%q card open=%v under=%v mode=%s pill=%s frame=%v (was %v), card %q",
 			a.bgID, a.answer.open, a.under.open, a.ov.mode, a.pill.mode, a.ov.frame, frame, cardTextForTest(a.cachedCard()))
 	}
@@ -80,13 +84,13 @@ func TestTranscribeWhileRewriteStreams(t *testing.T) {
 	// card finishes as any stopped answer's (#3886).
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the answer's end", func() bool { return a.bgID == "" })
-	if !a.answer.open || a.answer.text != "先订会议室 then email Ann。" || a.answer.title != "Plan" || a.ov.mode != ovAnswer {
+	if !a.answer.open || a.answer.text != full || a.answer.title != "Plan" || a.ov.mode != ovAnswer {
 		t.Fatalf("the finished card %+v, mode=%s", a.answer, a.ov.mode)
 	}
 	a.pump("the history", func() bool { return len(a.history()) == 2 })
 	es := a.history()
 	if es[0].Kind != store.KindTranscribe || es[0].Result != "dictated words" ||
-		es[1].Kind != store.KindRewrite || es[1].Status != store.StatusDone || es[1].Result != "先订会议室 then email Ann。" {
+		es[1].Kind != store.KindRewrite || es[1].Status != store.StatusDone || es[1].Result != full {
 		t.Fatalf("history %+v", es)
 	}
 }
@@ -114,8 +118,10 @@ func TestRewriteAnswerFinishesBesideTranscribe(t *testing.T) {
 	if a.bgID == "" || a.ov.mode != ovAnswer || a.pill.mode != ovRecording {
 		t.Fatalf("recording: bg=%q mode=%s pill=%s", a.bgID, a.ov.mode, a.pill.mode)
 	}
+	pillBesideCard(t, a, "recording beside the streaming long card")
 	// The answer ends while the transcription still records.
 	a.pump("the answer done in the background", func() bool { return a.bgID == "" })
+	pillBesideCard(t, a, "the long answer done")
 	if !a.answer.open || a.answer.title != "Letter" || a.ov.mode != ovAnswer || a.pill.mode != ovRecording {
 		t.Fatalf("the done answer: card=%+v mode=%s pill=%s", a.answer, a.ov.mode, a.pill.mode)
 	}
@@ -243,6 +249,38 @@ func TestPillWindowBesideTheCardTop(t *testing.T) {
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	if !a.answer.open || a.answer.text != "one" || a.ov.frame != frame || a.pill.shown {
 		t.Fatalf("after the transcription: card %+v frame %v (was %v), pill %s", a.answer, a.ov.frame, frame, a.pill.mode)
+	}
+}
+
+// TestPillWindowBesideALongCardTop: the same tall card with the overlay
+// anchored to the top: the pill goes below it, and never covers it even
+// when the card fills the work area.
+func TestPillWindowBesideALongCardTop(t *testing.T) {
+	body := "Dear team, the release moves to Thursday next week. "
+	for len([]rune(body)) < 2400 {
+		body += body
+	}
+	chat := &fakeChat{text: `{"title":"Letter","content":"` + body + `"}`}
+	set, keys, tr := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+		s.Overlay.Position = "top"
+	}, keys)
+	a.pump("the answer streaming", func() bool { return a.sess.CanStop() && a.ov.mode == ovAnswer })
+	tr.setText("dictated words")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("recording beside the card", func() bool {
+		return a.sess.Kind == store.KindTranscribe && a.sess.State == session.Recording && len(a.sess.Levels) >= 5
+	})
+	pillBesideCard(t, a, "recording beside the long card (top)")
+	a.pump("the answer done in the background", func() bool { return a.bgID == "" })
+	pillBesideCard(t, a, "the long card done (top)")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the transcription's end", func() bool { return a.sess.State.Ended() })
+	if !a.answer.open || a.answer.title != "Letter" || a.pill.shown {
+		t.Fatalf("after the transcription: card=%+v pill=%s", a.answer, a.pill.mode)
 	}
 }
 

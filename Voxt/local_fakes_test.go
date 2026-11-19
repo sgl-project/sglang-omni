@@ -88,8 +88,12 @@ type fakeChat struct {
 	status int
 	delay  time.Duration
 	// stall: after the text, the stream waits for the request's end.
-	stall  bool
-	bodies []map[string]any
+	stall bool
+	// chunkDelay: between streamed pieces, instead of 5 ms; above
+	// draftEvery, every piece publishes, so the card's draft is
+	// deterministic under any load.
+	chunkDelay time.Duration
+	bodies     []map[string]any
 	// onRequest runs as each request comes (mute_e2e_test.go: is the
 	// output back by then?).
 	onRequest func()
@@ -109,7 +113,7 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 	}
 	f.mu.Lock()
 	f.bodies = append(f.bodies, requestBody(req))
-	text, status, delay, stall := f.text, f.status, f.delay, f.stall
+	text, status, delay, stall, chunkDelay := f.text, f.status, f.delay, f.stall, f.chunkDelay
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.bodies), len(f.texts))-1]
 	}
@@ -125,10 +129,13 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 		return llm.Response{}, llm.HTTPError(fakeLLMModel.ID, req.Model, status, "overloaded", 0)
 	}
 	if req.OnDelta != nil {
+		if chunkDelay <= 0 {
+			chunkDelay = 5 * time.Millisecond
+		}
 		rs := []rune(text)
 		for i := 0; i < len(rs); i += 6 {
 			req.OnDelta(string(rs[i:min(i+6, len(rs))]))
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(chunkDelay)
 		}
 	}
 	if stall {

@@ -179,10 +179,10 @@ func (a *app) pillOverlaySize(mode overlayMode) (width, height int, exact bool) 
 	return model.Width, model.Height, model.Exact
 }
 
-// pillAnchor is the pill window's frame before the user's drag: beside
-// the card's current frame — above a bottom-anchored card, below a
-// top-anchored one — so the two windows never cover each other. The
-// default anchor when the card is not showing.
+// pillAnchor is the pill window's frame before clamping and the user's
+// drag: beside the card's current frame — above a bottom-anchored card,
+// below a top-anchored one (adjacent never intersects it). The default
+// anchor when the card is not showing.
 func (a *app) pillAnchor(width, height int) mygo.Rectangle {
 	frame := layout.Frame(a.pill.area, a.prefs.Overlay, width, height)
 	if a.ov.shown && a.ov.mode == ovAnswer {
@@ -198,8 +198,45 @@ func (a *app) pillAnchor(width, height int) mygo.Rectangle {
 func (a *app) pillFrame(width, height int) mygo.Rectangle {
 	frame, area := a.pillAnchor(width, height), a.pill.area
 	frame.X = min(max(frame.X+a.pill.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
-	frame.Y = min(max(frame.Y+a.pill.dragged.y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
+	frame.Y = a.pillFrameY(frame, frame.Y+a.pill.dragged.y)
 	return frame
+}
+
+// pillFrameY clamps y to the work area — unless that puts the pill over
+// the card: then the card's other side, and when a tall card leaves no
+// room on either, the roomier side adjacent to the card without the
+// clamp. The work area's far edge may be crossed; the card is never
+// covered.
+func (a *app) pillFrameY(frame mygo.Rectangle, y int) int {
+	area := a.pill.area
+	clamp := func(v int) int {
+		return min(max(v, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
+	}
+	if cy := clamp(y); !a.pillCoversCard(frame.X, cy, frame.Width, frame.Height) {
+		return cy
+	}
+	card := a.ov.frame
+	other := card.Y + card.Height
+	if a.prefs.Overlay.Position == "top" {
+		other = card.Y - frame.Height
+	}
+	if cy := clamp(other); !a.pillCoversCard(frame.X, cy, frame.Width, frame.Height) {
+		return cy
+	}
+	if card.Y-area.Y >= area.Y+area.Height-(card.Y+card.Height) {
+		return card.Y - frame.Height
+	}
+	return card.Y + card.Height
+}
+
+// pillCoversCard reports whether a pill frame at (x, y) intersects the
+// answer card's frame.
+func (a *app) pillCoversCard(x, y, w, h int) bool {
+	if !a.ov.shown || a.ov.mode != ovAnswer {
+		return false
+	}
+	c := a.ov.frame
+	return x < c.X+c.Width && c.X < x+w && y < c.Y+c.Height && c.Y < y+h
 }
 
 // pillDragged keeps the offset the pill window was dragged by.
