@@ -47,7 +47,7 @@ type live struct {
 	mu        sync.Mutex
 	audio     []byte        // everything sent, for the Final
 	queued    int           // bytes of audio in out
-	previewed int           // bytes of audio written to the socket (the batch preview: in its last text)
+	previewed int           // bytes of audio the preview covers: written to the socket, or dropped by the cut (the batch preview: in its last text)
 	preview   bool          // the socket still takes audio
 	cut       *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
@@ -212,7 +212,10 @@ func (s *live) Send(pcm []byte) error {
 		return nil
 	}
 	if s.cut != nil {
-		if pcm = s.cut.push(pcm); len(pcm) == 0 {
+		var dropped int
+		pcm, dropped = s.cut.push(pcm)
+		s.previewed += dropped
+		if len(pcm) == 0 {
 			return nil
 		}
 	}
@@ -262,7 +265,8 @@ func (s *live) write() {
 	}
 }
 
-// audioBytes is the PCM an append message carries.
+// audioBytes is the PCM an append message carries. DecodedLen counts
+// the base64 padding as data, so it goes.
 func audioBytes(msg []byte) int {
 	var m struct {
 		Audio string `json:"audio"`
@@ -270,7 +274,11 @@ func audioBytes(msg []byte) int {
 	if json.Unmarshal(msg, &m) != nil {
 		return 0
 	}
-	return base64.StdEncoding.DecodedLen(len(m.Audio))
+	pad := 0
+	for i := len(m.Audio) - 1; i >= 0 && m.Audio[i] == '='; i-- {
+		pad++
+	}
+	return base64.StdEncoding.DecodedLen(len(m.Audio)) - pad
 }
 
 // read turns the socket's segments into partials, and passes the whole

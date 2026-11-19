@@ -257,8 +257,9 @@ func joinParts(parts []string) string {
 }
 
 // mossTag is a timestamp ([12.34]) or speaker label ([S01]): MOSS writes
-// them even when its instruction asks for plain text.
-var mossTag = regexp.MustCompile(`\[(?:\d+(?:[.,]\d+)?|S\d+)\]`)
+// them even when its instruction asks for plain text. A bare integer
+// ([1]) stays: a reference, not a timestamp.
+var mossTag = regexp.MustCompile(`\[(?:\d+[.,]\d+|S\d+)\]`)
 
 // plainText is MOSS's text without those tags when it was asked for
 // plain text; other models', and MOSS's other tasks', as it is.

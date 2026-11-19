@@ -2,6 +2,7 @@ package omni
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,8 +39,9 @@ func TestMossSpeechOnly(t *testing.T) {
 	}
 }
 
-// TestMossLivePauses: MOSS's realtime socket does not get a long pause;
-// the Final still gets all the audio to look at.
+// TestMossLivePauses: MOSS's realtime socket does not get a long pause,
+// though the preview's coverage is the whole recording; the Final still
+// gets all the audio to look at.
 func TestMossLivePauses(t *testing.T) {
 	f, a := mossWithVAD(t, omnitest.Opts{})
 	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
@@ -58,15 +60,73 @@ func TestMossLivePauses(t *testing.T) {
 	for queued, _ := written(); queued > 0 && time.Now().Before(deadline); queued, _ = written() {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, previewed := written(); previewed >= 4*sampleRate*2 || previewed < 2*sampleRate*2 {
-		t.Errorf("the socket got %d bytes of %d", previewed, len(pcm))
-	}
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
 	drain(t, st)
+	var got int
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if live := f.records("live"); len(live) == 1 {
+			got = live[0].Samples
+			break
+		} else if len(live) > 1 || time.Now().After(deadline) {
+			t.Fatalf("live records %+v", live)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got >= 4*sampleRate || got < 2*sampleRate {
+		t.Errorf("the socket got %d samples of %d", got, len(pcm)/2)
+	}
+	if _, previewed := written(); previewed < len(pcm)-sampleRate*2 {
+		t.Errorf("the preview covers %d bytes of %d", previewed, len(pcm))
+	}
 	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples < 2*sampleRate || finals[0].Samples >= 4*sampleRate {
 		t.Errorf("finals %+v", finals)
+	}
+}
+
+// TestSalvageAfterPauseCut: the socket never hears the pauses the cut
+// drops, but Salvage still weighs the pieces' coverage against the whole
+// recording: speech, a long pause and more speech, with the Final
+// failing, salvages the preview's text (it carries every stretch), not
+// only the early pieces'.
+func TestSalvageAfterPauseCut(t *testing.T) {
+	f, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}", FailFrom: 2})
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 2*time.Second, time.Second, 1500*time.Millisecond, 3*time.Second
+	a.spec.ASR.PauseMin = 150 * time.Millisecond
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm := append(append(tone(500*time.Millisecond, 0.3), silence(10*time.Second)...), tone(500*time.Millisecond, 0.3)...)
+	sendAll(t, st, pcm)
+	select { // the preview heard the speech
+	case ev := <-st.Events():
+		if ev.Kind != asr.EventPartial {
+			t.Fatalf("before Finish: %+v", ev)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no live partial")
+	}
+	f.waitLogged(t, "piece 1 of the recording")
+	s := st.(*live)
+	previewed := func() int {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.previewed
+	}
+	for deadline := time.Now().Add(10 * time.Second); previewed() < sampleRate*2*12/10 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond) // the second stretch reached the socket
+	}
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+	if got := st.(asr.Salvager).Salvage(); !strings.HasPrefix(got, "partial") {
+		t.Errorf("salvaged %q, want the preview's text, which carries every stretch of speech", got)
 	}
 }
 
@@ -100,7 +160,8 @@ func TestPauseCut(t *testing.T) {
 	sent := 0
 	push := func(pcm []byte) {
 		for _, fr := range asr.Frames(pcm, 100*time.Millisecond, sampleRate) {
-			sent += len(c.push(fr))
+			out, _ := c.push(fr)
+			sent += len(out)
 		}
 	}
 	push(silence(2 * time.Second))
