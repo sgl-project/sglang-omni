@@ -1148,6 +1148,7 @@ def create_preprocessing_executor(
     return PreprocessingScheduler(
         preprocessor,
         video_threads=max_concurrency,
+        # note (ratish): read while the stage is built, before an engine stage built after it in the same process sets torch's threads to 1 to load its model.
         stage_threads=torch.get_num_threads(),
         stage_cpus=effective_cpu_count(),
         video_decode_threads=video_decode_threads,
