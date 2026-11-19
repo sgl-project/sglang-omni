@@ -109,6 +109,10 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 			return "", nil
 		}
 	}
+	// A start the Manager will refuse must not set aside the visible card.
+	if a.bgID != "" && a.bgSess.State.Live() && req.Kind != store.KindTranscribe {
+		return "", nil
+	}
 	// A Transcribe leaves the answer card alone: it stays where it is
 	// (wall 116); any other new session sets it aside (#4013), and a try
 	// on a settings page clears it, as before.
