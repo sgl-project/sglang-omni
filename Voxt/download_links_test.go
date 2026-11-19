@@ -8,6 +8,27 @@ import (
 	"testing"
 )
 
+func TestStableBehaviorTestsRunBeforeVersionRewrite(t *testing.T) {
+	b, err := os.ReadFile("../.github/workflows/voxt-release.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(b)
+	resolveStep := strings.Index(workflow, "      - name: Resolve the version\n")
+	behaviorStep := strings.Index(workflow, "      - name: Stable behavior regression tests\n")
+	if resolveStep < 0 || behaviorStep < 0 {
+		t.Fatal("stable release workflow must keep its version and behavior test steps")
+	}
+	if behaviorStep > resolveStep {
+		t.Error("stable behavior tests must run before Resolve the version rewrites mygo.json")
+	}
+	behavior := workflow[behaviorStep:]
+	behavior = behavior[:strings.Index(behavior[1:], "      - name: ")+1]
+	if !strings.Contains(behavior, "TMPDIR: ${{ runner.temp }}") {
+		t.Error("stable behavior tests must run with a short TMPDIR: the runner's leaves the socket tests' paths a few bytes under macOS's limit")
+	}
+}
+
 // TestDownloadLinks: every Voxt 2 download link in the docs downloads the
 // disk image of the version in mygo.json in one click, not a release page or
 // a release search (GitHub's search did not list the newest releases). The
