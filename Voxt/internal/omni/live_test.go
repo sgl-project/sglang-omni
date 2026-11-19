@@ -274,10 +274,11 @@ func TestLiveFinalFailsWhenTheSocketStalls(t *testing.T) {
 
 // TestLiveFinalFailsWhenTheDrainTimesOut: the stall of
 // TestLiveFinalWhenTheSocketStalls, but the Final fails: the writer is
-// provably blocked (800 KB queued, small buffers, a server that never
-// reads), the drain gives up after previewDrain (the log says so) and
-// closes the socket, the wrap-up is skipped, and the error ends the
-// stream within the bound.
+// provably blocked (800 KB queued, a held writer, a server that never
+// reads — kernel buffer sizes differ per platform, the gate does not),
+// the drain gives up after previewDrain (the log says so) and closes
+// the socket, the wrap-up is skipped, and the error ends the stream
+// within the bound.
 func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 	old := loopback
 	loopback = &http.Client{Transport: &http.Transport{
@@ -300,6 +301,11 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// Hold the writer: the whole recording stays queued whatever the
+	// kernels' buffers; released once the drain has given up.
+	gate := make(chan struct{})
+	st.(*live).writeGate = gate
+	defer close(gate)
 	sendAll(t, st, tone(25*time.Second, 0.3))
 	stopped := time.Now()
 	if err := st.Finish(); err != nil {
