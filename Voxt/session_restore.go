@@ -66,6 +66,7 @@ func cardFromHistory(entries []store.Entry, conversation string) (answerCard, bo
 		card.id, card.text, card.title, card.llmID = entry.ID, entry.Result, entry.Title, entry.LLMProvider
 		card.target = proto.App{BundleID: entry.AppBundle, Name: entry.AppName}
 		card.input = session.TextInput{Raw: entry.RawText, Selection: entry.SourceText, Typed: entry.TypedText}
+		card.previews = answerInputPreviews(session.Snapshot{Kind: entry.Kind, Selection: entry.SourceText, Typed: entry.TypedText}, nil)
 		if !hasRewrite {
 			card.lang = entry.TargetLang
 			continue

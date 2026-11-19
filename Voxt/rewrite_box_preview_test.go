@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/transfer"
@@ -351,6 +352,67 @@ func TestFollowUpChipsKeepNewTextAndOriginalImages(t *testing.T) {
 	if len(a.answer.previews) != 2 || a.answer.previews[0].Text != "new source" || a.answer.previews[1].Label != "draft.png" {
 		t.Fatalf("follow-up previews %+v, labels %q", a.answer.previews, labels)
 	}
+}
+
+func TestShortAutomaticTextCanBeRemoved(t *testing.T) {
+	for _, selection := range []string{"hello", "first\nsecond\nthird"} {
+		t.Run(selection, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true, session: "v1"}
+			snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: selection})
+			tt := hudTester(a.boxView, boxWinW, boxWinH)
+			frames(tt)
+			click(t, tt, "Remove pasted text")
+			frames(tt)
+			if a.boxViewState().Selection != "" {
+				t.Fatal("the automatic text survived removal")
+			}
+			selectionSuppressed, _ := a.boxShare.automaticSuppressed()
+			if !selectionSuppressed {
+				t.Fatal("removal did not reach the session")
+			}
+		})
+	}
+}
+
+func TestRedoAutomaticImageChipsFollowTheResentInput(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	jpeg := boxJPEGOf(t, 20, 10)
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Done, Card: true,
+		Raw: "describe it", Result: "A rectangle.", ImageHint: "clipboard", ImagePreviewKind: "clipboard", ImagePreview: jpeg})
+	if a.answer.attach != "clipboard" || len(a.answer.previews) != 1 {
+		t.Fatalf("initial automatic input %+v", a.answer.previews)
+	}
+	a.endRedo(session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true,
+		Raw: "describe it", Result: "A different rectangle."})
+	if a.answer.attach != "" || len(a.answer.previews) != 0 {
+		t.Fatalf("the redo kept an image it did not send: attach %q, previews %+v", a.answer.attach, a.answer.previews)
+	}
+}
+
+func TestRedoAutomaticImageChipsClearWhileStreaming(t *testing.T) {
+	chat := &fakeChat{texts: []string{"First answer", "Second answer"}, delay: 200 * time.Millisecond}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the first answer", func() bool { return a.answer.open })
+	bitmap, _ := ui.DecodeBitmap(boxJPEGOf(t, 20, 10))
+	a.answer.attach = "clipboard"
+	a.answer.previews = append(a.answer.previews, answerInputPreview{Label: "Copied image", Image: bitmap})
+	input := a.answer.input
+	a.postQueue(func() {
+		a.redoAnswer(session.StartRequest{Kind: a.answer.kind, Target: a.answer.target, Text: &input})
+	})
+	a.pump("the redo streaming", func() bool {
+		return len(chat.requests()) == 2 && a.sess.ID == a.answer.redo && a.sess.State == session.Composing && a.sess.Draft != ""
+	})
+	if attachment := a.cachedCard().Attachment; attachment != "" {
+		t.Fatalf("the streaming redo kept %q", attachment)
+	}
+	for _, preview := range a.ov.ui.cardPreviews {
+		if preview.Image != nil {
+			t.Fatalf("the streaming redo kept an unsent image: %+v", a.answer.previews)
+		}
+	}
+	a.pump("the redo answer", func() bool { return a.answer.redo == "" })
 }
 
 func TestAutomaticInputsCanBeRemoved(t *testing.T) {

@@ -111,6 +111,31 @@ func TestCardFromHistoryTyped(t *testing.T) {
 	}
 }
 
+func TestCardFromHistoryRestoresTextPreviews(t *testing.T) {
+	for _, tc := range []struct {
+		name, selection, typed string
+		wantLabels             []string
+	}{
+		{name: "selection and typed", selection: "selected source", typed: "typed source", wantLabels: []string{"Selected text", "Text"}},
+		{name: "typed only", typed: "typed source", wantLabels: []string{"Text"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := reopenEntry("rewrite", "polish", "Polished", time.Now())
+			entry.SourceText, entry.TypedText = tc.selection, tc.typed
+			card, ok := cardFromHistory([]store.Entry{entry}, "rewrite")
+			if !ok || len(card.previews) != len(tc.wantLabels) {
+				t.Fatalf("restored previews %+v", card.previews)
+			}
+			for index, label := range tc.wantLabels {
+				preview := card.previews[index]
+				if preview.Label != label || (index == 0 && tc.selection != "" && preview.Text != tc.selection) || (label == "Text" && preview.Text != tc.typed) {
+					t.Errorf("preview %d %+v, want label %q", index, preview, label)
+				}
+			}
+		})
+	}
+}
+
 // A translation that became a Rewrite conversation is restored as its first turn.
 func TestCardFromHistoryTranslation(t *testing.T) {
 	now := time.Now()

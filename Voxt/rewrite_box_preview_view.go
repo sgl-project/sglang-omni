@@ -10,7 +10,16 @@ import (
 
 func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
 	if !segment.Pasted || segment.Lines <= boxTextCollapseLines {
-		ui.Text(context, segment.Text).FontSize(12).TextColor(ovText2).MaxLines(3).Shrink(0)
+		if segment.Pasted && remove != nil {
+			ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(context, segment.Text).FontSize(12).TextColor(ovText2).MaxLines(3).Shrink(0).Grow(1).MinWidth(0)
+				if cardIconButton(context.Key("remove-text"), i18n.T("Remove pasted text"), "", icons.Close, true) {
+					remove()
+				}
+			})
+		} else {
+			ui.Text(context, segment.Text).FontSize(12).TextColor(ovText2).MaxLines(3).Shrink(0)
+		}
 		return
 	}
 	expanded := local.expandedText[key]

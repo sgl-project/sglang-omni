@@ -14,17 +14,20 @@ const windowTimeout = 3 * time.Second
 
 // shootWindow starts taking a picture of the target app's window, when
 // the settings send one to the language model (Privacy.SendWindow): at
-// the start, while the window the user speaks into is still in front
-// (the input box's session defers it to the answer's request, so that
-// pictures pasted into the box win). Not for a try, nor in Voxt itself,
-// nor for Transcribe without its clean-up (no language model), nor when
-// the picture would not be sent: the box's own pictures, and the
-// clipboard's, win over it.
+// the start, while the window the user speaks into is still in front and
+// the input box can show the preview before it sends. Not for a try, nor
+// in Voxt itself, nor for Transcribe without its clean-up (no language
+// model), nor when the picture would not be sent: the box's own pictures,
+// and the clipboard's, win over it.
 func (r *run) shootWindow() {
 	cfg := r.m.cfg
 	t := r.req.Target
 	noLLM := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.Enhance
-	if r.shot != nil || !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self ||
+	suppressed := false
+	if r.req.Box && cfg.BoxAutoSuppressed != nil {
+		_, suppressed = cfg.BoxAutoSuppressed()
+	}
+	if suppressed || r.shot != nil || !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self ||
 		len(r.req.Images) > 0 || r.clip != nil {
 		return
 	}
@@ -36,6 +39,13 @@ func (r *run) shootWindow() {
 		if err != nil {
 			r.logf("warning", "no picture of the window: %v", err)
 		}
+		if err == nil && r.req.Kind == store.KindRewrite && r.req.Box {
+			r.previewMu.Lock()
+			if !r.automaticPreviewStopped && r.ctx.Err() == nil {
+				r.previewImage("window", jpeg)
+			}
+			r.previewMu.Unlock()
+		}
 		done <- jpeg
 	}()
 	r.shot = sync.OnceValue(func() []byte { return <-done })
@@ -46,6 +56,12 @@ func (r *run) shootWindow() {
 // (Privacy.SendClipboardImage).
 func (r *run) readClipboardImage() {
 	cfg := r.m.cfg
+	if r.req.Box && cfg.BoxAutoSuppressed != nil {
+		_, suppressed := cfg.BoxAutoSuppressed()
+		if suppressed {
+			return
+		}
+	}
 	if !r.settings.Privacy.SendClipboardImage || cfg.ClipboardImage == nil {
 		return
 	}
@@ -63,6 +79,15 @@ func (r *run) readClipboardImage() {
 	if jpeg != nil {
 		r.previewImage("clipboard", jpeg)
 	}
+}
+
+// stopAutomaticPreview clears the display once box images or a removal
+// wins, and keeps a capture still in flight from publishing it again.
+func (r *run) stopAutomaticPreview() {
+	r.previewMu.Lock()
+	defer r.previewMu.Unlock()
+	r.automaticPreviewStopped = true
+	r.previewImage("", nil)
 }
 
 // previewImage publishes display-only bytes without changing which image

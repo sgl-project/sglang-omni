@@ -107,6 +107,7 @@ func (r *run) write(raw, selection string) {
 			automaticImageSuppressed = imageSuppressed
 			if imageSuppressed {
 				r.clip, r.shot = nil, nil
+				r.stopAutomaticPreview()
 			}
 		}
 		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil && !automaticImageSuppressed {

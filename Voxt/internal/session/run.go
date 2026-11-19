@@ -89,6 +89,10 @@ type run struct {
 	// clip is the picture on the clipboard for Rewrite's language model
 	// (window.go), read before the selection; nil: none.
 	clip []byte
+	// automaticPreviewStopped stops a slow window capture from replacing
+	// the box images or a removal that already won (guarded by previewMu).
+	previewMu               sync.Mutex
+	automaticPreviewStopped bool
 	// typed is Rewrite's typed text: StartRequest.Text's, or the input
 	// box's (Config.BoxInput) when the answer is asked for.
 	typed string
@@ -211,12 +215,7 @@ func (r *run) main() {
 		selDone = make(chan string, 1)
 		go func() {
 			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
-			if !r.req.Box {
-				// The box's session shoots when the answer is asked for:
-				// pictures pasted into it while it records win, and a
-				// picture that will not be sent is never taken.
-				r.shootWindow()
-			}
+			r.shootWindow()
 			selDone <- r.readSelection()
 		}()
 	}
