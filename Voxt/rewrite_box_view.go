@@ -144,10 +144,11 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					}
 				})
 			}
-			if state.Limit {
-				ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
-			}
 		})
+
+		if state.Limit {
+			ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
+		}
 
 		// The trailing text box stays visible while earlier inputs scroll.
 		boxTextEditor(context, -1, &local.text, state, actions, local)

@@ -98,6 +98,23 @@ func TestBoxTwoPastedBlocksKeepTrailingEditorVisible(t *testing.T) {
 	}
 }
 
+func TestBoxLimitStaysVisibleWithEarlierInputs(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1", limit: true}
+	a.boxPasteText("first\nsecond\nthird\nfourth")
+	a.boxPasteText("fifth\nsixth\nseventh\neighth")
+	a.box.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t), shotBitmap(t), shotBitmap(t)}
+	a.box.images = [][]byte{{1}, {2}, {3}, {4}}
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "selected first\nselected second\nselected third\nselected fourth"})
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	editor, editorOK := tt.Find("More text for the rewrite")
+	limit, limitOK := tt.Find("At most 4 images")
+	if !editorOK || !limitOK || limit.Y < 0 || limit.Y+limit.H > editor.Y {
+		t.Fatalf("the image limit is clipped: limit %+v (present %v), editor %+v (present %v)", limit, limitOK, editor, editorOK)
+	}
+}
+
 func TestAnswerCardInputChipsOpenOriginals(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	jpeg := boxJPEGOf(t, 20, 10)
