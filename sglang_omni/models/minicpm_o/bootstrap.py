@@ -16,6 +16,7 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.minicpm_o.components.sglang_thinker import (
     SPECULATIVE_HIDDEN_ROWS,
 )
+from sglang_omni.models.minicpm_o.dspark_worker import MiniCPMDSparkWorker
 from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import (
     get_decode_cuda_graph_bs,
@@ -231,6 +232,9 @@ def create_thinker_scheduler(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             supports_speculative_decoding=True,
+            speculative_worker_class=(
+                MiniCPMDSparkWorker if speculative_algorithm.is_dspark() else None
+            ),
             enable_async_decode=enable_async_decode,
             before_memory_pool=configure_talker_capture,
         )
@@ -296,6 +300,12 @@ def create_thinker_scheduler(
     ) and current_platform.is_cuda():
         # note (wilsonzheng0327): SGLang's DFlash and DSpark verify never apply repetition_penalty; each request verifies one linear block, so the shared verify rows apply it exactly.
         model_runner.speculative_repetition_penalty_owner = "verify_logits"
+    else:
+        pass
+    if speculative_algorithm.is_dspark():
+        model_runner.speculative_ignores_request_seed = (
+            not model_worker.speculative_worker.supports_request_seed
+        )
     else:
         pass
 
