@@ -95,7 +95,8 @@ func TestBoxWindowReviewDoesNotBlockMissingLanguageModel(t *testing.T) {
 			return nil
 		}
 	})
-	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack}); err != nil {
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?"}}); err != nil {
 		t.Fatal(err)
 	}
 	end := h.rec.wait(t)
