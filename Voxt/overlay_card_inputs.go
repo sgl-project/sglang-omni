@@ -1,10 +1,30 @@
 package main
 
 import (
+	"image"
+	"image/color"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
+
+func answerInputFixturePreviews(inputs []sessionCardInput) []answerInputPreview {
+	if len(inputs) == 0 {
+		return nil
+	}
+	previews := make([]answerInputPreview, 0, len(inputs))
+	for _, input := range inputs {
+		preview := answerInputPreview{Label: input.Label, Text: input.Text, Chars: input.Chars, Lines: input.Lines, Width: input.Width, Height: input.Height}
+		if input.Image {
+			placeholder := image.NewRGBA(image.Rect(0, 0, 1, 1))
+			placeholder.Set(0, 0, color.RGBA{R: 70, G: 110, B: 150, A: 255})
+			preview.Image = ui.NewBitmap(placeholder)
+		}
+		previews = append(previews, preview)
+	}
+	return previews
+}
 
 func cardInputChips(context *ui.Context, local sessionOverlayLocal) {
 	ui.ScrollHorizontal(context.Key("answer-inputs")).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Label(i18n.T("Inputs sent with the instruction")).Children(func() {

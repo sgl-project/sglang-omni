@@ -149,6 +149,87 @@ func TestBoxLongPasteThroughEditorDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+func TestBoxTypingImmediatelyAfterPaste(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("before\n")
+	frames(tt)
+	long := "first\nsecond\nthird\nfourth"
+	tt.SetClipboardData(transfer.TextData(long))
+	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Type("X")
+	frames(tt)
+	if got, want := a.boxTextContent(), "before\n"+long+"X"; got != want {
+		t.Fatalf("request text after fast typing %q, want %q", got, want)
+	}
+}
+
+func TestBoxCaretMovesAfterPastedBlock(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("hello world")
+	frames(tt)
+	for range 6 {
+		tt.Key(0, ui.KeyLeft)
+	}
+	frames(tt)
+	long := "one\ntwo\nthree\nfour"
+	tt.SetClipboardData(transfer.TextData(long))
+	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Type("X")
+	frames(tt)
+	if got, want := a.boxTextContent(), "hello"+long+"X world"; got != want {
+		t.Fatalf("request text after typing at the suffix caret %q, want %q", got, want)
+	}
+}
+
+func TestBoxSelectedReplacementFollowedByTyping(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("abc")
+	frames(tt)
+	tt.Key(ui.Cmd, ui.KeyA)
+	frames(tt)
+	long := "one\ntwo\nthree\nfour"
+	tt.SetClipboardData(transfer.TextData(long))
+	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Type("X")
+	frames(tt)
+	if got, want := a.boxTextContent(), long+"X"; got != want {
+		t.Fatalf("request text after selected replacement and typing %q, want %q", got, want)
+	}
+}
+
+func TestBoxBackToBackPastesKeepTheirOrder(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("hello world")
+	frames(tt)
+	for range 6 {
+		tt.Key(0, ui.KeyLeft)
+	}
+	frames(tt)
+	first := "one\ntwo\nthree\nfour"
+	second := "five\nsix\nseven\neight"
+	tt.SetClipboardData(transfer.TextData(first))
+	tt.Key(ui.Cmd, ui.KeyV)
+	tt.SetClipboardData(transfer.TextData(second))
+	tt.Key(ui.Cmd, ui.KeyV)
+	tt.Type("X")
+	frames(tt)
+	if got, want := a.boxTextContent(), "hello"+first+second+"X world"; got != want {
+		t.Fatalf("request text after back-to-back pastes %q, want %q", got, want)
+	}
+}
+
 func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true}

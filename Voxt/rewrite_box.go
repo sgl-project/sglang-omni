@@ -104,6 +104,7 @@ type rewriteBoxViewState struct {
 
 // rewriteBoxActions are the input box's user intents.
 type rewriteBoxActions struct {
+	viewState      func() rewriteBoxViewState
 	close          func()
 	send           func()
 	drop           func([]string)
@@ -496,7 +497,8 @@ func (a *app) boxViewState() rewriteBoxViewState {
 
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
-		close: a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteTextAt,
+		viewState: a.boxViewState,
+		close:     a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteTextAt,
 		remove: a.boxRemoveImage, removeText: a.boxRemoveText, segmentChanged: a.boxSegmentChanged,
 		textChanged: func(text string) {
 			if !a.box.open {

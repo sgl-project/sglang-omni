@@ -71,10 +71,7 @@ func (a *app) boxPasteTextAt(index int, text string, start, end int) bool {
 		typed := a.newBoxTextSegment(prefix, "", false)
 		typed.ID = a.box.textSegments[index].ID
 		a.box.textSegments[index] = typed
-		insert := []boxTextSegment{pasted}
-		if suffix != "" {
-			insert = append(insert, a.newBoxTextSegment(suffix, "", false))
-		}
+		insert := []boxTextSegment{pasted, a.newBoxTextSegment(suffix, "", false)}
 		a.box.textSegments = slices.Insert(a.box.textSegments, index+1, insert...)
 	}
 	a.box.textSegmentsDirty = true

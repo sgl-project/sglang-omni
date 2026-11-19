@@ -71,15 +71,3 @@ func sessionCardInputs(previews []answerInputPreview) []sessionCardInput {
 	}
 	return inputs
 }
-
-func answerInputPreviewsFromDTO(inputs []sessionCardInput) []answerInputPreview {
-	if len(inputs) == 0 {
-		return nil
-	}
-	previews := make([]answerInputPreview, 0, len(inputs))
-	for _, input := range inputs {
-		previews = append(previews, answerInputPreview{Label: input.Label, Text: input.Text, Chars: input.Chars, Lines: input.Lines,
-			Width: input.Width, Height: input.Height})
-	}
-	return previews
-}

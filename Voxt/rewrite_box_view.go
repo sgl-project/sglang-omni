@@ -7,6 +7,8 @@ package main
 
 import (
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -21,11 +23,23 @@ type boxBitmap = ui.Bitmap
 type rewriteBoxLocalUI struct {
 	text          string
 	segmentText   map[int]*string
-	pasteAccepted map[int]bool
+	paste         *boxPasteUI
+	pasteFocusID  int
+	pasteCaret    int
 	expandedText  map[string]bool
 	previewImage  int
 	textScroll    ui.ScrollState
 	previewScroll ui.ScrollState
+}
+
+type boxPasteUI struct {
+	index    int
+	original string
+	prefix   string
+	suffix   string
+	suffixID int
+	start    int
+	end      int
 }
 
 var decodeBoxBitmap = ui.DecodeBitmap
@@ -45,12 +59,12 @@ func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, l
 
 // rewriteBoxView draws the input box from its state, actions and local text.
 func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) {
-	if local.text != state.Text {
+	hadPaste := local.paste != nil
+	applyBoxPaste(local, state)
+	if !hadPaste && local.text != state.Text {
 		local.text = state.Text
 	}
 	root := ui.Column(context).Fill().Padding(12, 14, 12, 14).Gap(8)
-	skipTrailingSync := local.pasteAccepted[-1]
-	delete(local.pasteAccepted, -1)
 	if context.Shortcut(0, ui.KeyEscape) {
 		actions.close()
 	}
@@ -97,17 +111,16 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			if text == nil {
 				text = new(string)
 				local.segmentText[segment.ID] = text
-			}
-			if *text != segment.Text {
 				*text = segment.Text
 			}
-			skipSync := local.pasteAccepted[index]
-			delete(local.pasteAccepted, index)
-			boxTextEditor(context, index, text, state, actions, local, skipSync)
+			if !hadPaste && *text != segment.Text {
+				*text = segment.Text
+			}
+			boxTextEditor(context, index, text, state, actions, local)
 		}
 
 		// The trailing text box.
-		boxTextEditor(context, -1, &local.text, state, actions, local, skipTrailingSync)
+		boxTextEditor(context, -1, &local.text, state, actions, local)
 
 		// The pictures.
 		if len(state.Thumbnails) > 0 {
@@ -143,12 +156,43 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			})
 		}
 	})
-	if !skipTrailingSync {
-		actions.textChanged(local.text)
+	actions.textChanged(local.text)
+}
+
+func applyBoxPaste(local *rewriteBoxLocalUI, state rewriteBoxViewState) {
+	paste := local.paste
+	if paste == nil {
+		return
+	}
+	local.paste = nil
+	before, after := paste.prefix, paste.suffix
+	current := local.text
+	if paste.index >= 0 {
+		current = *local.segmentText[state.TextSegments[paste.index].ID]
+	}
+	inserted := ""
+	if current != paste.original && strings.HasPrefix(current, before) && strings.HasSuffix(current, after) {
+		inserted = current[len(before) : len(current)-len(after)]
+	}
+	local.pasteCaret = utf8.RuneCountInString(inserted)
+	if paste.index == -1 {
+		local.text = inserted + paste.suffix
+		local.pasteFocusID = -1
+		return
+	}
+	originalID := state.TextSegments[paste.index].ID
+	*local.segmentText[originalID] = paste.prefix
+	local.pasteFocusID = originalID
+	if paste.suffixID == -2 {
+		local.pasteFocusID = state.TextSegments[paste.index+2].ID
+		local.segmentText[local.pasteFocusID] = new(string)
+		*local.segmentText[local.pasteFocusID] = inserted + paste.suffix
+	} else {
+		*local.segmentText[originalID] = paste.prefix + inserted
 	}
 }
 
-func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI, skipSync bool) {
+func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) {
 	key := "box-text-" + strconv.Itoa(index)
 	textArea := ui.TextAreaBase(context.Key(key), text).
 		Label(i18n.T("More text for the rewrite")).
@@ -177,28 +221,46 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 	})
 	start, end := textArea.TextSelection()
 	textArea.OnPaste(func(paste string) bool {
+		original := *text
+		if local.paste != nil {
+			applyBoxPaste(local, actions.viewState())
+			state = actions.viewState()
+			focusID := local.pasteFocusID
+			if focusID == -1 {
+				index, original = -1, local.text
+			} else {
+				for segmentIndex, segment := range state.TextSegments {
+					if segment.ID == focusID {
+						index, original = segmentIndex, *local.segmentText[focusID]
+						break
+					}
+				}
+			}
+			start, end = local.pasteCaret, local.pasteCaret
+		}
 		if !actions.pasteText(index, paste, start, end) {
 			return false
 		}
-		runes := []rune(*text)
-		if index == -1 {
-			*text = string(runes[end:])
-		} else {
-			*text = string(runes[:start])
+		suffixID := -1
+		if index >= 0 {
+			suffixID = -2 // every earlier-segment paste creates a typed suffix
 		}
-		if local.pasteAccepted == nil {
-			local.pasteAccepted = map[int]bool{}
-		}
-		local.pasteAccepted[index] = true
+		local.paste = &boxPasteUI{index: index, original: original, prefix: string([]rune(original)[:start]), suffix: string([]rune(original)[end:]), suffixID: suffixID, start: start, end: end}
 		return true
 	})
-	if index == -1 && state.FocusText {
+	editorID := index
+	if index >= 0 {
+		editorID = state.TextSegments[index].ID
+	}
+	if local.pasteFocusID == editorID {
+		textArea.Focus()
+		textArea.SetTextSelection(local.pasteCaret, local.pasteCaret)
+		local.pasteFocusID, local.pasteCaret = 0, 0
+	} else if index == -1 && state.FocusText {
 		textArea.Focus()
 		actions.focused()
 	}
-	if !skipSync {
-		changed()
-	}
+	changed()
 }
 
 // boxThumbView is one picture's thumbnail, source and pixel size, with
