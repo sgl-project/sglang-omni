@@ -293,6 +293,7 @@ def build_stage_groups(
                     ],
                     stage_specs=[spec],
                     log_level=log_level,
+                    python_thread_switch_interval_seconds=config.python_thread_switch_interval_seconds,
                 )
                 for spec in specs
             ]
@@ -311,6 +312,7 @@ def build_stage_groups(
                             for stage_name in group.stage_names
                         ],
                         log_level=log_level,
+                        python_thread_switch_interval_seconds=config.python_thread_switch_interval_seconds,
                     )
                 ],
             )

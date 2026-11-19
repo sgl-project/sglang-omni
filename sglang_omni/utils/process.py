@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Process exit and thread naming helpers."""
+"""Process startup, exit and thread naming helpers."""
 
 from __future__ import annotations
 
 import atexit
 import ctypes
+import logging
 import os
 import sys
 import threading
@@ -15,6 +16,17 @@ from typing import NoReturn
 _PR_SET_NAME = 15
 # note (db-ol): ref counter files of prewarm CUDA IPC shares, which no consumer releases.
 _prewarm_cuda_ipc_handles: list[bytes] = []
+
+
+def configure_python_thread_switch_interval(interval_seconds: float | None) -> None:
+    """Apply the serving process's interpreter scheduling interval."""
+    if interval_seconds is not None:
+        sys.setswitchinterval(interval_seconds)
+    else:
+        pass
+    logging.getLogger(__name__).info(
+        f"Python thread switch interval: {sys.getswitchinterval()} seconds"
+    )
 
 
 def register_prewarm_cuda_ipc_handle(handle: bytes) -> None:

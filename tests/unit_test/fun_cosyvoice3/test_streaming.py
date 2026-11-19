@@ -5,14 +5,16 @@ from __future__ import annotations
 import dataclasses
 from queue import Empty, Queue
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 
-from sglang_omni.models.fun_cosyvoice3 import stages
+from sglang_omni.models.fun_cosyvoice3 import stages, streaming_vocoder
 from sglang_omni.models.fun_cosyvoice3.model_runner import FunCosyVoice3ModelRunner
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.prefix_cache import PrefixCacheRow
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
 )
@@ -140,6 +142,7 @@ def waveform(data: dict) -> np.ndarray:
 def make_scheduler(
     *,
     token_mel_ratio: int = TOKEN_MEL_RATIO,
+    should_complete_first_chunk_immediately: bool = False,
     **scheduler_kwargs,
 ) -> tuple[FakeFlow, FunCosyVoice3StreamingVocoderScheduler]:
     flow = FakeFlow(token_mel_ratio=token_mel_ratio)
@@ -148,6 +151,7 @@ def make_scheduler(
             stages.FunCosyVoice3Flow(flow, packed_estimator=flow.packed_estimator),
             FakeHiFT(),
         ),
+        should_complete_first_chunk_immediately=should_complete_first_chunk_immediately,
         **scheduler_kwargs,
     )
 
@@ -465,7 +469,15 @@ def test_ar_to_vocoder_grows_hops_then_finalizes_remainder() -> None:
 
 
 @pytest.mark.parametrize("codes", [None, []])
-def test_streaming_vocoder_fallback_errors_on_empty_audio_codes(codes) -> None:
+def test_streaming_vocoder_fallback_errors_on_empty_audio_codes(
+    codes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        streaming_vocoder,
+        "record_vocoder_batch_event",
+        lambda event_name, participants: events.append(event_name),
+    )
     _, scheduler = make_scheduler()
     scheduler.handle_streaming_new_request("req-empty", stream_payload(codes=codes))
     scheduler.handle_stream_done("req-empty")
@@ -475,6 +487,7 @@ def test_streaming_vocoder_fallback_errors_on_empty_audio_codes(codes) -> None:
     assert "no usable speech tokens" in str(messages[0].data)
     assert scheduler.is_aborted("req-empty")
     assert "req-empty" not in scheduler.stream_states
+    assert events == []
 
 
 def test_equal_first_hops_share_one_causal_flow_batch() -> None:
@@ -644,6 +657,104 @@ def test_a_final_launched_behind_its_hop_leaves_after_it_with_its_result_last(
     assert log == ["launch 1", "launch 2", "read 1", "read 2"]
     assert estimator_calls(flow)[-1]["streaming"] is False
     assert "req-a" not in scheduler.stream_states
+
+
+@pytest.mark.parametrize("final_step", [False, True])
+def test_audio_ready_retains_launch_metadata_after_next_step(
+    monkeypatch: pytest.MonkeyPatch, final_step: bool
+) -> None:
+    """Overlap previously attributed completed audio to the advanced stream state."""
+    _, scheduler = make_scheduler()
+    log = pending_copies(scheduler, monkeypatch)
+    recorded = Mock()
+    monkeypatch.setattr(streaming_vocoder, "emit", recorded)
+    monkeypatch.setattr(
+        streaming_vocoder,
+        "get_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
+    scheduler.clock = lambda: 1.0
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(30 if final_step else 78))))
+    if final_step:
+        scheduler.handle_stream_done("req-a")
+    else:
+        pass
+    scheduler.clock = lambda: 2.0
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        scheduler.clock = lambda: 3.0
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() == []
+    assert log == ["launch 1", "launch 2", "read 1", "read 2"]
+    for event_name in (
+        "vocoder_launch_start",
+        "vocoder_flow_submitted",
+        "vocoder_hift_submitted",
+        "vocoder_audio_ready",
+    ):
+        events = [
+            call.kwargs
+            for call in recorded.call_args_list
+            if call.kwargs["event_name"] == event_name
+        ]
+        assert len(events) == 2
+        for event, offset, first_audio_count, ready_seconds in zip(
+            events, (0, TOKEN_HOP_LEN), (1, 0), (1.0, 2.0), strict=True
+        ):
+            assert event["request_id"] == "req-a"
+            assert event["metadata"]["token_offset"] == offset
+            assert event["metadata"]["first_audio_count"] == first_audio_count
+            assert event["metadata"]["ready_since_seconds"] == ready_seconds
+
+
+@pytest.mark.parametrize(
+    "maximum_frames,expected_ids",
+    [(200, ["req-a", "req-b"]), (199, ["req-a"]), (99, ["req-a"])],
+)
+def test_first_hop_batches_respect_graph_coverage_without_starving_a_row(
+    maximum_frames: int, expected_ids: list[str]
+) -> None:
+    """Uncached prompt frames can push a first-hop batch onto the eager path."""
+    _, scheduler = make_scheduler(max_batch_size=8)
+    scheduler.vocoder.flow.prefix_cuda_graph_runner = SimpleNamespace(
+        tier_frames=[maximum_frames]
+    )
+    for request_id in ("req-a", "req-b", "req-c"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+        scheduler.ingest_stream_item(request_id, item(list(range(28))))
+    selected = scheduler.select_step_participants()
+    assert [request_id for request_id, _ in selected] == expected_ids
+    assert set(scheduler.stream_states) == {"req-a", "req-b", "req-c"}
+
+
+@pytest.mark.parametrize(
+    "maximum_frames,expected_ids",
+    [(150, ["req-followup", "req-first"]), (149, ["req-followup"])],
+)
+def test_graph_coverage_counts_only_new_frames_and_preserves_playback_priority(
+    maximum_frames: int, expected_ids: list[str]
+) -> None:
+    """First audio shares the remaining budget or stays queued until the next step."""
+    _, scheduler = make_scheduler(max_batch_size=8)
+    scheduler.vocoder.flow.prefix_cuda_graph_runner = SimpleNamespace(
+        tier_frames=[maximum_frames]
+    )
+    for request_id in ("req-first", "req-followup"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+        scheduler.ingest_stream_item(request_id, item(list(range(53))))
+    state = scheduler.stream_states["req-followup"]
+    state.token_offset = 25
+    state.first_emit_at = scheduler.clock()
+    state.flow_cache = (
+        PrefixCacheRow(committed_frames=100),
+        PrefixCacheRow(committed_frames=100),
+    )
+    selected = scheduler.select_step_participants()
+    assert [request_id for request_id, _ in selected] == expected_ids
+    state.token_offset += state.hop_len
+    selected = scheduler.select_step_participants()
+    assert [request_id for request_id, _ in selected] == ["req-first"]
 
 
 def test_a_stream_whose_first_hop_is_in_flight_ranks_started(
@@ -1154,3 +1265,106 @@ def test_token_max_hop_len_caps_growth() -> None:
     }
     state = scheduler.stream_states["req-a"]
     assert state.hop_len == 50
+
+
+def test_immediate_first_audio_preserves_follow_up_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First audio is sent before another launch; follow-ups retain overlap."""
+    _, scheduler = make_scheduler(
+        max_batch_size=1, should_complete_first_chunk_immediately=True
+    )
+    log = pending_copies(scheduler, monkeypatch)
+    for request_id in ("req-a", "req-b"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+        scheduler.ingest_stream_item(request_id, item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert stream_ids(drain(scheduler)) == ["req-a"]
+    assert log == ["launch 1", "read 1"]
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert stream_ids(drain(scheduler)) == ["req-b"]
+    assert log == ["launch 1", "read 1", "launch 2", "read 2"]
+    log.clear()
+    for request_id in ("req-a", "req-b"):
+        scheduler.ingest_stream_item(request_id, item(list(range(28, 78))))
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert drain(scheduler) == []
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    assert stream_ids(drain(scheduler)) == ["req-a"]
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() is None
+    assert stream_ids(drain(scheduler)) == ["req-b"]
+    assert log == ["launch 1", "launch 2", "read 1", "read 2"]
+
+
+@pytest.mark.parametrize("complete_first_audio", [False, True])
+def test_first_audio_in_mixed_batch_controls_completion(
+    monkeypatch: pytest.MonkeyPatch, complete_first_audio: bool
+) -> None:
+    """One new stream makes the whole mixed batch complete when opted in."""
+    _, scheduler = make_scheduler(
+        max_batch_size=2,
+        should_complete_first_chunk_immediately=complete_first_audio,
+    )
+    scheduler.handle_streaming_new_request("existing", stream_payload("existing"))
+    scheduler.ingest_stream_item("existing", item(list(range(28))))
+    with scheduler.state_lock:
+        assert scheduler.pump_streams() == []
+    assert stream_ids(drain(scheduler)) == ["existing"]
+    scheduler.ingest_stream_item("existing", item(list(range(28, 78))))
+    scheduler.handle_streaming_new_request("new", stream_payload("new"))
+    scheduler.ingest_stream_item("new", item(list(range(28))))
+    events: list[dict[str, object]] = []
+
+    def capture_event(**event: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(
+        streaming_vocoder,
+        "get_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
+    monkeypatch.setattr(streaming_vocoder, "emit", capture_event)
+    log = pending_copies(scheduler, monkeypatch)
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+    launches = [
+        event for event in events if event["event_name"] == "vocoder_launch_start"
+    ]
+    assert len(launches) == 2
+    assert launches[0]["timestamp_ns"] == launches[1]["timestamp_ns"]
+    for event in launches:
+        metadata = event["metadata"]
+        assert isinstance(metadata, dict)
+        assert metadata["batch_size"] == 2
+        assert metadata["first_audio_count"] == 1
+    if complete_first_audio:
+        assert set(stream_ids(drain(scheduler))) == {"existing", "new"}
+        assert log == ["launch 1", "read 1"]
+
+        assert scheduler.launched_step is None
+    else:
+        assert drain(scheduler) == []
+        assert log == ["launch 1"]
+        with scheduler.state_lock:
+            assert scheduler.pump_one_step() == []
+        assert set(stream_ids(drain(scheduler))) == {"existing", "new"}
+        assert log == ["launch 1", "read 1"]
+
+    for request_id in ("existing", "new"):
+        request_events = [
+            event for event in events if event["request_id"] == request_id
+        ]
+        assert len(request_events) == 4
+        for event in request_events:
+            metadata = event["metadata"]
+            assert isinstance(metadata, dict)
+            assert metadata["first_audio_count"] == 1
+            assert metadata["token_offset"] == (
+                TOKEN_HOP_LEN if request_id == "existing" else 0
+            )

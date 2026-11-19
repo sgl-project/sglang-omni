@@ -2473,6 +2473,7 @@ def create_vocoder_executor(
     token_max_hop_len: int = TOKEN_MAX_HOP_LEN,
     disable_hop_growth: bool = False,
     flow_prefix_cache_gb: float | None,
+    should_complete_first_chunk_immediately: bool,
     total_gpu_memory_fraction: float | None = None,
 ) -> FunCosyVoice3StreamingVocoderScheduler:
     from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
@@ -2614,6 +2615,7 @@ def create_vocoder_executor(
 
     scheduler = FunCosyVoice3StreamingVocoderScheduler(
         vocoder,
+        should_complete_first_chunk_immediately=should_complete_first_chunk_immediately,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         request_cost_fn=vocoder.flow_scheduler_cost,

@@ -1006,10 +1006,13 @@ def test_stage_process_exits_when_its_parent_died_before_it_started(
     assert not (tmp_path / "built").exists()
 
 
+@pytest.mark.parametrize("interval_seconds", [None, 0.001, 0.005])
 def test_stage_process_waits_for_recorder_before_normal_exit(
     monkeypatch: pytest.MonkeyPatch,
+    interval_seconds: float | None,
 ) -> None:
     calls: list[str] = []
+    original_interval_seconds = sys.getswitchinterval()
 
     class ActiveRecorder:
         active: bool = True
@@ -1033,6 +1036,11 @@ def test_stage_process_waits_for_recorder_before_normal_exit(
         startup_error_channel: object | None = None,
     ) -> None:
         del process_spec, ready_event, log, startup_error_channel
+        assert sys.getswitchinterval() == pytest.approx(
+            interval_seconds
+            if interval_seconds is not None
+            else original_interval_seconds
+        )
         calls.append("stages_stopped")
 
     def exit_without_teardown(exit_code: int) -> None:
@@ -1056,9 +1064,13 @@ def test_stage_process_waits_for_recorder_before_normal_exit(
 
     process_spec = StageWorkerProcessSpec(
         process_name="worker",
+        python_thread_switch_interval_seconds=interval_seconds,
         stage_specs=[StageLaunchConfig(stage_name="worker")],
     )
-    stage_workers.stage_process_main(process_spec, None)
+    try:
+        stage_workers.stage_process_main(process_spec, None)
+    finally:
+        sys.setswitchinterval(original_interval_seconds)
 
     assert calls == ["stages_stopped", "deactivate", "wait", "exit"]
 
@@ -1067,7 +1079,6 @@ def test_stage_process_waits_for_recorder_before_normal_exit(
 # interrupted. The object in the script's globals reports interpreter teardown.
 STAGE_PROCESS_THAT_STOPS = """
 import atexit, sys, threading, time
-from types import SimpleNamespace
 from sglang_omni.pipeline import stage_workers
 
 marker, interrupted = sys.argv[1], sys.argv[2] == "1"
@@ -1092,8 +1103,8 @@ def run_process(spec, ready_event, log, startup_error_channel=None):
 teardown = Teardown()
 stage_workers.prepare_accelerator_environment = lambda stage_spec, log: None
 stage_workers.run_process = run_process
-stage = SimpleNamespace(gpu_id=None, allow_child_processes=False)
-spec = SimpleNamespace(log_level=20, stage_specs=[stage], process_name="p")
+stage = stage_workers.StageLaunchConfig(stage_name="p")
+spec = stage_workers.StageWorkerProcessSpec(log_level=20, stage_specs=[stage], process_name="p")
 stage_workers.stage_process_main(spec, None)
 """
 
