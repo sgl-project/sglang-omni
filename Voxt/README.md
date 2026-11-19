@@ -129,8 +129,14 @@ Without a language model, Transcribe types the text as recognised; Translate and
 
 ## Privacy
 
-- **Speech stays on your Mac**, unless you set up a cloud speech API for a feature: that feature's recordings then go to that service, and nowhere else.
-- **Text goes only to the language model you set up.** With a server on your Mac, it stays here. Audio is never sent to a language model. Images go to it only when you turn on sending the window or a copied image in Settings → Privacy (both off by default).
+A model on your Mac and an external API are two paths for your data. You choose a speech model and a language model for each feature. Your recordings, text and images stay on your Mac only when the services that handle them run there:
+
+| | With a model on your Mac | With an external API |
+|---|---|---|
+| **Speech recognition** | Your recordings are recognised on your Mac and stay there. This is the default. | The feature sends its recordings to that speech service. When the feature and model support them, Voxt can also send your speech context and recognition prompt. With Speech hints on, supported services can get enabled dictionary terms, not aliases. |
+| **Language model** (clean-up, Translate, Rewrite, meeting correction and summaries) | Requests to a server on your Mac (Ollama, LM Studio, oMLX, SGLang MLX) stay on your Mac. | The provider handling each request gets its contents. Depending on the feature and your settings, a request can include recognised, selected or typed text, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content, and the app name from a matching app enhancement rule. Transcribe, Translate and Rewrite can include the target window's screenshot when Send a screenshot is on. Rewrite can include a copied image instead when Send a copied image is on. Both switches are off by default. If Translate uses your fallback model, that provider gets the same request too. |
+
+- **Audio is never sent to a language model.** It gets text, and images only with the two switches above.
 - **API keys stay in the macOS Keychain**, never in Voxt's settings or logs.
 - **No account and no analytics.** Voxt has no server that receives your audio or your text. Otherwise it goes online only to download the models you choose, to read Voxt's announcements and to ask GitHub for the newest version, requests that send nothing about you but Voxt's version.
 - **Your data is in two folders**: the history, its optional recordings, the dictionary and the settings in `~/Library/Application Support/VoxtNew/`, and the models in `~/Library/Application Support/SGLang Omni/models`.

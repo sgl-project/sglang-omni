@@ -20,6 +20,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Paused toasts no longer wake Voxt while it is in the background**: a toast's fade-out now starts only after its paused display lifetime resumes and ends. Plain toasts and toasts with an action stay visible in the background and expire after you return.
+### Changed
+
+- **Settings → Privacy and the README explain local and API data paths** (#4159): they list the text and optional images a language-model request can contain, distinguish requests that stay on this Mac from those sent to an external provider, and cover Translate's fallback. The README gives the same local-versus-API breakdown for speech recognition.
 
 ### 中文
 
@@ -30,6 +33,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **暂停的提示不再让后台的 Voxt 反复唤醒**：提示只会在暂停的显示计时恢复并结束后淡出。普通提示和带按钮的提示在后台保留，回到前台后继续计时并消失。
+#### 变更
+
+- **“设置 → 隐私”和 README 说明本机与 API 两条数据路径**（#4159）：列出语言模型请求可能包含的文字和可选图片，区分留在本机的请求和发给外部服务商的请求，并说明翻译使用备用模型时的数据去向。README 也分别说明了语音识别在本机和通过 API 运行时的数据路径。
 
 ## [2.1.1] - 2026-11-17
 
