@@ -14,7 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first.
 - **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
-- **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut or a hold release waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and full model close markers no longer leak into answers.
+- **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut or a hold release waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and History details and the typed history export now read that stored value. Full model close markers no longer leak into answers.
 
 ### 中文
 
@@ -33,7 +33,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **改写保留补充输入的文字，并等待图片转换**：按快捷键或松开按住停止输入框时，和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文；完整的模型结束标记也不再漏进回答。
+- **改写保留补充输入的文字，并等待图片转换**：按快捷键或松开按住停止输入框时，和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文，历史详情和 typed 导出也读取这份保存的内容；完整的模型结束标记也不再漏进回答。
 
 ## [2.1.1] - 2026-11-17
 

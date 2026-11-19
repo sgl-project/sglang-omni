@@ -190,9 +190,9 @@ func (a *app) dropBox() {
 	a.boxSendQueued = false
 }
 
-// boxSend is Enter in the box: while it records, it finishes the
-// recording and the session sends; after a send failed, it sends the
-// kept instruction, text and pictures again.
+// boxSend is Enter or the shortcut's stop in the box: while it records,
+// it finishes the recording and the session sends; after a send failed,
+// it sends the kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
 		return
