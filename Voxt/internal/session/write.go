@@ -76,18 +76,21 @@ func (r *run) write(raw, selection string) {
 		// clipboard's picture and the window's, which an empty box
 		// leaves to today's rule — the window's is shot only now, so
 		// that one that will not be sent is never taken.
-		if r.req.Box && cfg.BoxInput != nil {
+		readBox := func() bool {
+			if !r.req.Box || cfg.BoxInput == nil {
+				return true
+			}
 			typed, images, err := cfg.BoxInput(r.ctx)
 			if err != nil {
 				if r.ctx.Err() != nil {
 					r.endCancelled(nil)
-					return
+					return false
 				}
 				// The box keeps this error and the recognised instruction
 				// for the user's confirmation before another send.
 				r.m.update(r, func(s *Snapshot) { s.Spoken, s.Selection = raw, selection })
 				r.endWriteFailed(ProblemOf(err), false)
-				return
+				return false
 			}
 			// "": the box is closed or holds no text — a retry from the
 			// card keeps the typed text it carries.
@@ -97,6 +100,10 @@ func (r *run) write(raw, selection string) {
 			if len(images) > 0 {
 				r.req.Images = images
 			}
+			return true
+		}
+		if !readBox() {
+			return
 		}
 		automaticImageSuppressed := false
 		if r.req.Box && cfg.BoxAutoSuppressed != nil {
@@ -122,6 +129,14 @@ func (r *run) write(raw, selection string) {
 					if err := cfg.BoxReview(r.ctx); err != nil {
 						r.endCancelled(nil)
 						return
+					}
+					// The user may have typed or pasted while reviewing; the
+					// box's pictures then win over the window's.
+					if !readBox() {
+						return
+					}
+					if len(r.req.Images) > 0 {
+						r.previewImage("", nil)
 					}
 					if cfg.BoxAutoSuppressed != nil {
 						selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
