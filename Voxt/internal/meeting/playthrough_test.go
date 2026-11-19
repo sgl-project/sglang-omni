@@ -14,6 +14,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
 
@@ -141,6 +142,7 @@ func TestMeetingPlaythrough(t *testing.T) {
 		Store:     s.Meetings(),
 		Dir:       filepath.Join(dir, "meetings"),
 		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		Settings:  func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
 		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
 		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
 			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
@@ -174,9 +176,12 @@ func TestMeetingPlaythrough(t *testing.T) {
 	if err := m.Finish(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	_, stored, err := s.Meetings().Meeting(ctx, id)
+	mt, stored, err := s.Meetings().Meeting(ctx, id)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if mt.Status != store.MeetingDone {
+		t.Fatalf("meeting status = %s, want %s", mt.Status, store.MeetingDone)
 	}
 	var saved []string
 	for _, g := range stored {
