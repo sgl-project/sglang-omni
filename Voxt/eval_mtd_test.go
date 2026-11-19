@@ -151,7 +151,9 @@ func TestEvalMTD(t *testing.T) {
 			}
 		}
 		stop()
-		mtdFloor(t, cfg.name, runs)
+		for _, failure := range mtdFloor(cfg.name, runs) {
+			t.Error(failure)
+		}
 		texts[cfg.name] = map[string][]string{}
 		for _, r := range runs {
 			texts[cfg.name][r.clip.ID] = r.texts
@@ -653,17 +655,16 @@ func TestSpeakerAccuracy(t *testing.T) {
 // limit, still passed.
 const mtdEnglishCeiling = 0.25
 
-// mtdFloor fails a config that answers in the wrong language or whose
-// English clips' group error rate passes mtdEnglishCeiling: #4188
-// returned Vietnamese for an English clip and the unchecked eval still
-// passed.
-func mtdFloor(t *testing.T, config string, runs []*mtdRun) {
-	t.Helper()
+// mtdFloor is why a config fails: a transcript in the wrong language, or
+// English clips whose group error rate passes mtdEnglishCeiling (#4188
+// returned Vietnamese for an English clip and the eval still passed).
+func mtdFloor(config string, runs []*mtdRun) []string {
+	var failures []string
 	var english eval.Score
 	for _, r := range runs {
 		for _, text := range r.texts {
 			if wrong := mtdWrongScript(r.clip, text); wrong != "" {
-				t.Errorf("%s %s: %s: %q", config, r.clip.ID, wrong, mdText(text))
+				failures = append(failures, fmt.Sprintf("%s %s: %s: %q", config, r.clip.ID, wrong, mdText(text)))
 			}
 		}
 		if r.clip.Set == "en" {
@@ -673,28 +674,47 @@ func mtdFloor(t *testing.T, config string, runs []*mtdRun) {
 		}
 	}
 	if english.N > 0 && english.Rate() > mtdEnglishCeiling {
-		t.Errorf("%s: the English clips' error rate %s passes the %s ceiling (the last good runtime's 14.0%% with headroom)", config, pct(english.Rate()), pct(mtdEnglishCeiling))
+		failures = append(failures, fmt.Sprintf("%s: the English clips' error rate %s passes the %s ceiling (the last good runtime's 14.0%% with headroom)", config, pct(english.Rate()), pct(mtdEnglishCeiling)))
 	}
+	return failures
 }
 
+// mtdAccentedCeiling is the most of an English transcript's letters that
+// may carry diacritics: names and loanwords ("Zoë at the café") stay
+// near 10%, Vietnamese is about 30%.
+const mtdAccentedCeiling = 0.2
+
 // mtdWrongScript is how a transcript's script differs from the clip's
-// language, "" when it matches. An English transcript's letters are all
-// ASCII (Vietnamese, Spanish and Russian are not); a Chinese one's are
-// Han or ASCII Latin, and not far less Han than the clip's own text (the
-// 30 points CheckClean allows a clean-up, clean.go).
+// language, "" when it matches. An English transcript's letters are
+// Latin, few of them accented (a Spanish translation passes here and
+// fails the error ceiling); a Chinese one's are Han or ASCII Latin, and
+// not far less Han than the clip's own text (the 30 points CheckClean
+// allows a clean-up, clean.go).
 func mtdWrongScript(clip eval.Clip, text string) string {
+	var letters, accented int
 	for _, r := range text {
-		if !unicode.IsLetter(r) || r < 0x80 {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		if r < 0x80 {
 			continue
 		}
 		if clip.Lang == "en" {
-			return fmt.Sprintf("not English script (%c)", r)
+			if !unicode.Is(unicode.Latin, r) {
+				return fmt.Sprintf("not English script (%c)", r)
+			}
+			accented++
+			continue
 		}
 		if !unicode.Is(unicode.Han, r) {
 			return fmt.Sprintf("not Chinese or English script (%c)", r)
 		}
 	}
 	if clip.Lang == "en" {
+		if share := float64(accented) / float64(max(letters, 1)); share > mtdAccentedCeiling {
+			return fmt.Sprintf("accented letters are %.0f%% of the letters", share*100)
+		}
 		return ""
 	}
 	if share, ref := hanShare(text), hanShare(clip.Text); share < ref-0.3 {
@@ -721,10 +741,9 @@ func hanShare(text string) float64 {
 }
 
 // TestMTDWrongScript: the floor's script check takes the good runtimes'
-// transcripts and rejects the Vietnamese #4188 answered an English clip
-// in; the other wrong-language cases
-// (Spanish, Russian, Chinese, Japanese, a full translation) are
-// synthetic boundaries, not observed outputs.
+// transcripts and accented English names, and rejects the Vietnamese
+// #4188 answered an English clip in; the other cases are synthetic
+// boundaries, not observed outputs.
 func TestMTDWrongScript(t *testing.T) {
 	en := eval.Clip{Lang: "en", Text: "So um, the first thing is we need to update the docs, and uh, then we should fix the login bug."}
 	zh := eval.Clip{Lang: "zh", Text: "今天的天气很好，我们下午去公园散步，晚上一起吃饭吧。"}
@@ -737,7 +756,8 @@ func TestMTDWrongScript(t *testing.T) {
 		{en, "[S01] So,[S01] um,[S01] the first thing is we need to update the docs and uh then we should fix the login bug.", false},
 		{en, "[2.62]Please remind me to call the dentist tomorrow at 9:00 in the morning.[6.62]", false},
 		{en, "[0.26]Điều đầu tiên là chúng ta cần cập nhật các tài liệu[5.46]và chúng ta nên sửa lỗi đăng nhập.", true},
-		{en, "[2.62]Por favor me recuerde llamar al dentista mañana a las nueve de la mañana.[6.62]", true},
+		{en, "Zoë met me at the café near the naïve résumé desk.", false},
+		{en, "[2.62]Por favor me recuerde llamar al dentista mañana a las nueve de la mañana.[6.62]", false},
 		{en, "Пожалуйста, напомни мне позвонить дантисту завтра утром.", true},
 		{en, "请提醒我明天早上给牙医打电话。", true},
 		{zh, "今天的天气很好，我们下午去公园散步，晚上一起吃饭吧。", false},
@@ -748,6 +768,32 @@ func TestMTDWrongScript(t *testing.T) {
 	for _, c := range cases {
 		if got := mtdWrongScript(c.clip, c.text); (got != "") != c.want {
 			t.Errorf("mtdWrongScript(%q) = %q, want wrong=%v", c.text, got, c.want)
+		}
+	}
+}
+
+// TestMTDFloor: over the English ceiling or in another script fails;
+// accented English under it passes.
+func TestMTDFloor(t *testing.T) {
+	en := eval.Clip{ID: "en-1", Set: "en", Lang: "en", Text: "Ask Zoe to book the cafe for Friday."}
+	zh := eval.Clip{ID: "zh-1", Set: "zh", Lang: "zh", Text: "今天的天气很好。"}
+	run := func(clip eval.Clip, text string, edits int) *mtdRun {
+		return &mtdRun{clip: clip, texts: []string{text}, scores: []eval.Score{{N: 100, Sub: edits}}}
+	}
+	cases := []struct {
+		name string
+		runs []*mtdRun
+		want int // failures
+	}{
+		{"under the ceiling", []*mtdRun{run(en, "Ask Zoë to book the café for Friday.", 20)}, 0},
+		{"over the ceiling", []*mtdRun{run(en, "Ask Zoe to look at the cafe on Friday.", 30)}, 1},
+		{"Chinese errors do not count", []*mtdRun{run(en, "Ask Zoe to book the cafe for Friday.", 20), run(zh, "今天的天气很好。", 90)}, 0},
+		{"English in another script", []*mtdRun{run(en, "请让佐伊周五订咖啡馆。", 20)}, 1},
+		{"Spanish fails on the ceiling", []*mtdRun{run(en, "Pídale a Zoe que reserve el café para el viernes.", 100)}, 1},
+	}
+	for _, c := range cases {
+		if got := mtdFloor("mtd", c.runs); len(got) != c.want {
+			t.Errorf("%s: mtdFloor = %q, want %d failures", c.name, got, c.want)
 		}
 	}
 }
