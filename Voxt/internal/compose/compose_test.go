@@ -413,6 +413,12 @@ func TestParseAnswer(t *testing.T) {
 		{`{"title":"Update","content":"Ships Friday."}`, Answer{"Update", "Ships Friday."}, true},
 		{"```json\n{\"title\": \" **Update** \", \"content\": \"Line 1\\nLine 2\"}\n```", Answer{"Update", "Line 1\nLine 2"}, true},
 		{`Sure! {"title":"T","content":"x {y} z"} hope it helps`, Answer{"T", "x {y} z"}, true},
+		{`{"title":"T","content":"No image was provided.<|tool_call|>internal"}`, Answer{"T", "No image was provided."}, true},
+		{`{"title":"T","content":"<|im_start|>assistant\nVisible answer<|im_end|>"}`, Answer{"T", "Visible answer"}, true},
+		{`{"title":"T","content":"Visible<|endoftext|>"}`, Answer{"T", "Visible"}, true},
+		{`{"title":"T","content":"Visible</think>"}`, Answer{"T", "Visible"}, true},
+		{`{"title":"T","content":"Visible<channel|>"}`, Answer{"T", "Visible"}, true},
+		{`{"title":"T","content":"a <"}`, Answer{"T", "a <"}, true},
 		{`{"title":"T","content":"  "}`, Answer{Title: "T"}, true},
 		{`{"title":"T","text":"x"}`, Answer{}, false},
 		{`{"title":"T"`, Answer{}, false},
@@ -443,8 +449,22 @@ func TestPartialAnswer(t *testing.T) {
 		t.Errorf("final %+v", last)
 	}
 	for text, want := range map[string]Answer{
-		"":                               {},
-		"Plain text answer":              {Content: "Plain text answer"},
+		"":                            {},
+		"Plain text answer":           {Content: "Plain text answer"},
+		"Answer<|tool_call|>internal": {Content: "Answer"},
+		"Answer<|tool_":               {Content: "Answer"},
+		"Answer<th":                   {Content: "Answer"},
+		"a <|x":                       {Content: "a <|x"},
+		`{"title":"T","content":"A\u003cthink\u003eprivate\u003c/think\u003e"}`:             {Title: "T", Content: "A"},
+		`{"title":"T<|tool_call|>x","content":"Visible"}`:                                   {Title: "T", Content: "Visible"},
+		`<think>private</think>{"title":"T","content":"Visible"}`:                           {Title: "T", Content: "Visible"},
+		`<|channel>private<channel|>{"title":"T","content":"Visible"}`:                      {Title: "T", Content: "Visible"},
+		"<|im_start|>assistant\nVisible answer<|im_end|>":                                   {Content: "Visible answer"},
+		"<|im_start|>assistant\n{\"title\":\"T\",\"content\":\"Visible answer\"}<|im_end|>": {Title: "T", Content: "Visible answer"},
+		"Visible<|endoftext|>":           {Content: "Visible"},
+		"Visible</think>":                {Content: "Visible"},
+		"Visible<channel|>":              {Content: "Visible"},
+		"Use <b>bold</b>":                {Content: "Use <b>bold</b>"},
 		"```":                            {},
 		"```json\n{\"title\":\"T\",\"co": {Title: "T"},
 		`{"content":"a\`:                 {Content: "a"},
@@ -453,6 +473,19 @@ func TestPartialAnswer(t *testing.T) {
 		if got := PartialAnswer(text); got != want {
 			t.Errorf("PartialAnswer(%q) = %+v", text, got)
 		}
+	}
+}
+
+func TestPartialAnswerControlMarkupPrefixes(t *testing.T) {
+	full := "Answer<think>private</think>Visible"
+	for i := 1; i <= len(full); i++ {
+		got := PartialAnswer(full[:i]).Content
+		if strings.Contains(got, "<") || strings.Contains(got, "private") {
+			t.Fatalf("at %d: control markup in %q", i, got)
+		}
+	}
+	if got := PartialAnswer(full).Content; got != "AnswerVisible" {
+		t.Fatalf("final %q", got)
 	}
 }
 
@@ -551,6 +584,16 @@ func TestClean(t *testing.T) {
 		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
 		{`"Quoted."`, `"quoted"`, `"Quoted."`},
 		{"", "x", ""},
+		{"No image was provided.<|tool_call|>{\"name\":\"view_image\"}<|im_end|>", "help me explain this picture", "No image was provided."},
+		{"Answer<think>private</think>", "x", "Answer"},
+		{"<|im_start|>assistant\nVisible answer<|im_end|>", "x", "Visible answer"},
+		{"Visible<|endoftext|>", "x", "Visible"},
+		{"Visible</think>", "x", "Visible"},
+		{"Visible<channel|>", "x", "Visible"},
+		{"Answer<|tool_", "x", "Answer"},
+		{"a <|x", "x", "a <|x"},
+		{"a <", "x", "a <"},
+		{"Use <b>bold</b> and 2 < 3.", "format this as HTML", "Use <b>bold</b> and 2 < 3."},
 		// Only Transcribe's clean-up asks for <output> tags: a Rewrite
 		// or Translate answer whose text itself has them (HTML it was
 		// asked for) keeps them.
@@ -558,6 +601,27 @@ func TestClean(t *testing.T) {
 	} {
 		if got := Clean(tc.out, tc.in); got != tc.want {
 			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+	}
+}
+
+func TestPartialClean(t *testing.T) {
+	for _, tc := range []struct{ out, in, want string }{
+		{"Answer<th", "x", "Answer"},
+		{"<|im_start|>assistant\nVisible answer<|im_end|>", "x", "Visible answer"},
+		{"<|im_start|>assistant", "x", ""},
+		{"Visible<|endoftext|>", "x", "Visible"},
+		{"Visible<|endo", "x", "Visible"},
+		{"Visible</think>", "x", "Visible"},
+		{"Visible</th", "x", "Visible"},
+		{"Visible<channel|>", "x", "Visible"},
+		{"Visible<channel", "x", "Visible"},
+		{"Answer<|tool_", "x", "Answer"},
+		{"a <|x", "x", "a <|x"},
+		{"Use <b>bold</b>", "format this as HTML", "Use <b>bold</b>"},
+	} {
+		if got := PartialClean(tc.out, tc.in); got != tc.want {
+			t.Errorf("PartialClean(%q) = %q, want %q", tc.out, got, tc.want)
 		}
 	}
 }
@@ -614,6 +678,10 @@ func TestPartialOutput(t *testing.T) {
 		"<outpu":                      "",
 		"<output>":                    "",
 		"plain text":                  "plain text",
+		"Answer<|tool_call|>internal": "Answer",
+		"Answer<|tool_":               "Answer",
+		"Answer<th":                   "Answer",
+		"a <|x":                       "a <|x",
 		"<output>\nHello.":            "Hello.",
 		"<output>Hello.</output>\n":   "Hello.",
 		"Here you go: <output>Hello.": "Hello.",

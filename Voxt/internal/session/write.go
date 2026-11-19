@@ -230,7 +230,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		if in.Answer {
 			a = compose.PartialAnswer(buf.String())
 		} else {
-			a.Content = strings.TrimSpace(buf.String())
+			a.Content = compose.PartialClean(buf.String(), in.Text)
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
