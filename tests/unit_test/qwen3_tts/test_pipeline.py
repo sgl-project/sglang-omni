@@ -11788,7 +11788,7 @@ def test_qwen3_tts_uncapped_server_builds_rows_only_for_the_async_workers(
 def test_qwen3_tts_uncapped_async_vocoder_needs_a_slot_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with pytest.raises(ValueError, match="admits without one"):
+    with pytest.raises(ValueError, match="no Codec state slot count"):
         uncapped_vocoder(monkeypatch, {"async_decode": True}, False)
 
 

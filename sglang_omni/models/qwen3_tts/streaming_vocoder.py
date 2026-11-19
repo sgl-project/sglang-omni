@@ -1121,8 +1121,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             return None
         elif num_slots is None:
             raise ValueError(
-                "Qwen3-TTS sizes its Codec state arena from the in-flight cap, and this server admits without one; "
-                "set --tts_engine.engine.max_queued_requests or --vocoder.factory.codec_state_slots"
+                "Qwen3-TTS has no Codec state slot count for asynchronous decode; bound "
+                "--tts_engine.engine.max_queued_requests so the in-flight cap sets it, or set "
+                "--vocoder.factory.codec_state_slots to a positive integer"
             )
         elif (
             isinstance(num_slots, bool)
