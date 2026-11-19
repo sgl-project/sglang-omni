@@ -49,6 +49,22 @@ func TestMigrate(t *testing.T) {
 	}
 }
 
+func TestMeetingCorrectionStyleDocument(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"meeting":{"prompt":"Summary style"}}}`))
+	if err != nil || s.Features.Meeting.CorrectionStyle != "" || s.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("older document: %+v %v", s.Features.Meeting, err)
+	}
+	s.Features.Meeting.CorrectionStyle = "保持原语气。Keep English product names. " + strings.Repeat("Be concise. ", 100)
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || back.Features.Meeting.CorrectionStyle != s.Features.Meeting.CorrectionStyle || back.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("round trip: %+v %v", back.Features.Meeting, err)
+	}
+}
+
 // docs is a Documents in memory that can fail.
 type docs struct {
 	memDocs

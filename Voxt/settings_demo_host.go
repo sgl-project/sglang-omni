@@ -63,6 +63,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		host.pageUI.setOpen = true
 		host.settingsMeetingUI = meetingSettingsUI{
 			mode: settingsLanguageCode(state.CaptureModeSelected, state.CaptureModeOptions), hide: state.HideFromSharing,
+			correction: speechContextState{text: state.CorrectionStyle},
 		}
 	}
 	host.settingsDialogUI = settingsDialogLocalUI{
@@ -213,6 +214,21 @@ func (host *meetingDemoHost) setMeetingLanguage(languageCode string) {
 }
 func (host *meetingDemoHost) setMeetingLLM(languageModelID string) {
 	host.record("setMeetingLLM %s", languageModelID)
+}
+func (host *meetingDemoHost) autosaveMeetingCorrectionStyle(changed, focused bool) {
+	correction := &host.settingsMeetingUI.correction
+	if changed {
+		correction.dirty = true
+		correction.seq++
+		host.record("autosaveMeetingCorrectionStyle %t %t", changed, focused)
+	} else if correction.dirty && !focused {
+		correction.dirty = false
+		host.record("saveMeetingCorrectionStyle")
+	}
+}
+func (host *meetingDemoHost) resetMeetingCorrectionStyle() {
+	host.settingsMeetingUI.correction.dirty = false
+	host.record("resetMeetingCorrectionStyle")
 }
 
 func (host *meetingDemoHost) answerShortcutPrompt() { host.record("answerShortcutPrompt") }

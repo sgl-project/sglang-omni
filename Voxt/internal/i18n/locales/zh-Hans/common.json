@@ -422,5 +422,6 @@
   "Copy: %s": "复制：%s",
   "Thinking level": "思考强度",
   "Edit %s": "编辑 %s",
-  "Could not save the settings: %v": "无法保存设置：%v"
+  "Could not save the settings: %v": "无法保存设置：%v",
+  "Reset to default prompt": "恢复默认提示词"
 }

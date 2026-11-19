@@ -34,7 +34,6 @@
   "Remove shortcut %d": "删除快捷键 %d",
   "Removes fillers and false starts, fixes punctuation, and turns spoken punctuation (\"comma\") into marks.": "去掉口头语和说了一半的话，整理标点，把口述的标点（“逗号”）变成符号。",
   "Reset to default": "恢复默认",
-  "Reset to default prompt": "恢复默认提示词",
   "Rewriting": "改写",
   "Say a sentence or two. The result shows here and is not typed anywhere.": "说一两句话。结果显示在这里，不会输入到任何地方。",
   "Say a sentence or two. The translation shows here and is not typed anywhere.": "说一两句话。译文显示在这里，不会输入到任何地方。",

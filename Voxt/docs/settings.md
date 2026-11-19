@@ -228,6 +228,7 @@ And their own fields:
 |---|---|---|---|---|
 | `features.meeting.mode` | string | `""` | `""` (meeting), `subtitles`, `recording` | Capture mode |
 | `features.meeting.lang` | string | `""` | a language code; `""` = the main language | Spoken language |
+| `features.meeting.correctionStyle` | string | `""` | correction rules for the language model; `""` = the built-in rules | Transcript correction |
 | `features.meeting.hideFromSharing` | bool | `false` | | Hide from screen sharing |
 | `features.meeting.collapsed` | bool | `false` | | The overlay's compact layout |
 | `features.meeting.translateTarget` | string | `""` (= `en`) | a language code | (no settings row) |
