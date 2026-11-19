@@ -57,6 +57,7 @@ package helpertest
 //	press=ID         once the tap is installed, binding ID fires (a trigger, with Front)
 //	front=BUNDLE     the app in front (default com.tinyspeck.slackmacgap, Slack, pid 812)
 //	selection=TEXT   textio.selection reads TEXT through Accessibility
+//	                 (a TEXT of only whitespace is not read, as in the helper)
 //	copy-selection=TEXT  textio.selection reads TEXT only with allowCopy (via copy)
 //	selection-file=PATH  textio.selection reads PATH's text at each call ("" or no
 //	                 file: nothing selected): the user selects something else
