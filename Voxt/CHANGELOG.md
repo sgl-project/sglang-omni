@@ -24,6 +24,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Recording shortcuts keep their roles**: Paste last on a key other than Return no longer stops dictation. A timed-out hotkey configuration is retried, and with Return finishes dictation on, binding Cancel to Return no longer cancels the recording instead.
 - **The answer card lets go of a formula preview it no longer shows**: hiding or closing the card closes its previews; an answer that ends up as plain text drops the preview and the height it had measured, so the card no longer keeps a gap or a stale formula, and a finished stream measures its final height instead of keeping the half-rendered one.
 
+### Fixed
+
+- **Rewrite answers no longer show echoed input tags** (#4313): when the language model repeats `<selected_text>` or `<instruction>` around your selection or instruction, the answer card removes those tags and keeps the text inside them. Only a pair that wraps the whole answer or exactly your selection or instruction goes; tags that belong in the answer, such as a prompt template you asked for, stay.
+
 ### 中文
 
 #### 新增
@@ -45,6 +49,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。设置或会话类型变化后，排队中的旧回车事件同样不再停止录音；上一段听写结束后来送到的旧配置回车事件，无论回车绑定在哪个快捷键上，都不会停止下一段听写。
 - **录音快捷键不再串用动作**：“粘贴最近结果”绑定回车以外的键时，不再停止转录录音；快捷键配置超时后会重试；打开“按回车完成转录”时，即使取消快捷键也设为回车，按回车仍会完成录音而不会取消。
 - **回答卡片释放不再显示的公式预览**：隐藏或关闭卡片时关闭预览；回答最终是纯文本时丢掉预览和它量出的高度，卡片不再留空白或显示过时的公式；流式输出结束后按最终渲染重新测量高度。
+
+#### 修复
+
+- **改写回答不再显示重复的输入标签**（#4313）：语言模型重复输出 `<selected_text>` 或 `<instruction>` 标签时，答案卡片会去掉标签，保留标签内的文字。只去掉包住整段回答、或正好包住你的选中文字或指令的那一对；回答本身需要的标签（比如你要的提示词模板）保留。
 
 ## [2.1.1] - 2026-11-17
 
