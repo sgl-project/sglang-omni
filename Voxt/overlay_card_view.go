@@ -57,26 +57,34 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	if card.Conversation {
 		icon = icons.VoxtTranscribe
 	}
-	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
+	kind := func() {
+		ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
+	}
 	if card.Conversation {
+		kind()
 		cardWave(context, card, animation.Motion, animation.Phase)
 		ui.Spacer(context)
 	} else {
-		if !sessionCardLanguageCapsule(card) {
-			ui.Text(context, card.Title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
-		}
-		if card.Busy {
-			busy := i18n.T("Translating…")
-			switch {
-			case card.Writing && card.Kind == "transcribe":
-				busy = i18n.T("Cleaning up…")
-			case card.Writing && card.Kind == "rewrite":
-				busy = i18n.T("Writing…")
+		// The icon, title and spinner share one growing item, which pushes
+		// the actions right: a spacer of its own cost the header a gap the
+		// size button needs on a small Translate card.
+		ui.Row(context.Key("ov-card-lead")).Grow(1).MinWidth(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
+			kind()
+			if !sessionCardLanguageCapsule(card) {
+				ui.Text(context, card.Title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 			}
-			ui.Icon(context, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
-				Rotate(float32(math.Mod(animation.Phase*400, 360))).Label(busy)
-		}
-		ui.Box(context).Grow(1).MinWidth(0)
+			if card.Busy {
+				busy := i18n.T("Translating…")
+				switch {
+				case card.Writing && card.Kind == "transcribe":
+					busy = i18n.T("Cleaning up…")
+				case card.Writing && card.Kind == "rewrite":
+					busy = i18n.T("Writing…")
+				}
+				ui.Icon(context, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
+					Rotate(float32(math.Mod(animation.Phase*400, 360))).Label(busy)
+			}
+		})
 	}
 	if sessionCardLanguageCapsule(card) {
 		cardLanguage(context, card, actions, local, top)

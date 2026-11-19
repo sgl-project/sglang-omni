@@ -194,7 +194,7 @@ const (
 	CardTextSize   = 14
 	CardTextWeight = 500
 	CardBtn        = 24
-	CardBtnGap     = 8 // between the header's icon buttons (CardTools)
+	CardBtnGap     = 6 // between the header's icon buttons (CardTools)
 	CardBtnIcon    = 15
 	// The meeting card's size button sits in its corner, in the padding
 	// under the text (CardPadY), CardSizeBtnInset from the edges.
