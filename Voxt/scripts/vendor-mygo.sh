@@ -43,7 +43,8 @@ for p in "$PATCHES"/*.patch; do
 done
 # Run the patch regressions before tests leave the tree.
 (cd "$out" && CGO_ENABLED=0 go test ./internal/scene/)
-if [[ "$(go env GOOS)" == darwin ]]; then
+# Native file-drop regressions need AppKit; Linux CI has no display.
+if [[ "$(go env GOOS)" == darwin && -d "$out/internal/e2e" ]]; then
   (cd "$out" && MYGO_E2E_NO_WARMUP=1 MYGO_E2E=1 CGO_ENABLED=0 go test -run '^(TestContentWindowGenericFileDrop|TestContentWindowFileURLDrop)$' ./internal/e2e)
 fi
 # Tests and their data stay upstream (some hold sample credentials that
