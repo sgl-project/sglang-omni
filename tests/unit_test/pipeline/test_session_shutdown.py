@@ -95,6 +95,30 @@ def test_stop_hands_cleanup_to_active_hook_completion():
     assert len(hooks.closed) == 1
 
 
+def test_abort_during_shutdown_keeps_active_state_until_hook_finishes() -> None:
+    hooks = Hooks(block="append")
+    scheduler = SessionScheduler(hooks)
+    compute_registered(scheduler, operation_payload("open"))
+    thread, errors = run_operation(scheduler, "append")
+    try:
+        assert hooks.entered.wait(5)
+        scheduler.abort("append")
+        scheduler.abort("append")
+        scheduler.stop()
+        assert not hooks.closed
+    finally:
+        hooks.release.set()
+        thread.join(5)
+    assert not thread.is_alive() and not errors
+    assert scheduler.consume_if_aborted("append")
+    scheduler.abort("append")
+    assert scheduler.consume_if_aborted("append")
+    assert len(hooks.closed) == 1
+    assert not scheduler.open_sessions
+    assert not scheduler.append_operation_states
+    assert not scheduler.arrivals_by_request_id and not scheduler.cursors_by_session
+
+
 def test_stop_during_open_rejects_the_session():
     hooks = Hooks(block="open")
     scheduler = SessionScheduler(hooks)
