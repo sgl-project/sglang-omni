@@ -1353,8 +1353,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.codec_stats_last_log_s = now
         logger.info("Qwen3-TTS incremental Codec state: %s", self.codec_state_stats())
 
-    def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
-        """Log the decode graphs startup captured; warn when the vocoder can hold more streams than slots."""
+    def log_cuda_graph_coverage(self, max_in_flight: int | None) -> None:
+        """Log the decode graphs startup captured; warn when the server admits more requests than slots."""
         codec_stats = self.codec_state_stats()
         if not codec_stats["enabled"]:
             logger.info(
@@ -1386,13 +1386,18 @@ class Qwen3TTSStreamingVocoderScheduler(
             f"Qwen3-TTS vocoder CUDA graphs: {coverage}; "
             f"Codec slots {codec_stats['slots']}"
         )
-        if stream_capacity is not None and codec_stats["slots"] < stream_capacity:
+        if max_in_flight is None:
+            logger.warning(
+                f"Qwen3-TTS admission has no in-flight cap, so streams past the "
+                f"{codec_stats['slots']} Codec slots decode eagerly on the "
+                "left-context path."
+            )
+        elif codec_stats["slots"] < max_in_flight:
             logger.warning(
                 f"Qwen3-TTS vocoder has {codec_stats['slots']} Codec slots, fewer "
-                f"than the {stream_capacity} admitted requests it can hold at "
-                "once; streams past the slots decode eagerly on the left-context "
-                "path. Set --vocoder.factory.codec_state_slots to at least "
-                f"{stream_capacity}."
+                f"than the {max_in_flight} requests the server admits at once; "
+                "streams past the slots decode eagerly on the left-context path. "
+                f"Set --vocoder.factory.codec_state_slots to at least {max_in_flight}."
             )
         else:
             pass

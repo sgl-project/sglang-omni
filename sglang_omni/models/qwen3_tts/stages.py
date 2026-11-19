@@ -33,7 +33,6 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     qwen3_tts_reference_encoder_stats,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
-    DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
@@ -465,7 +464,7 @@ def create_vocoder_executor(
     async_decode: bool | None = None,
     fused_snake_activation: bool = True,
     enable_stateful_codec_decoder: bool = True,
-    codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
+    codec_state_slots: int | None,
     incremental_codec_cuda_graph: bool | None = None,
     incremental_codec_compile: bool | None = None,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
@@ -473,9 +472,16 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
-    stream_capacity: int | None = None,
+    max_in_flight: int | None,
     shares_engine_speech_tokenizer: bool,
 ) -> Qwen3TTSStreamingVocoderScheduler:
+    if codec_state_slots is None:
+        raise ValueError(
+            "Qwen3-TTS sizes its Codec state arena from the in-flight cap, and this server admits without one; "
+            "set --tts_engine.engine.max_queued_requests or --vocoder.factory.codec_state_slots"
+        )
+    else:
+        pass
     device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
     # they belong to unless set explicitly, so turning the stateful decoder
@@ -574,5 +580,5 @@ def create_vocoder_executor(
             torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
     else:
         scheduler.warmup_now()
-    scheduler.log_cuda_graph_coverage(stream_capacity)
+    scheduler.log_cuda_graph_coverage(max_in_flight)
     return scheduler

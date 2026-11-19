@@ -14,7 +14,6 @@ from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
-    ProcessConfig,
     StageConfig,
 )
 from sglang_omni.config.runtime import (
@@ -22,6 +21,8 @@ from sglang_omni.config.runtime import (
     resolve_stage_typed_kwargs,
 )
 from sglang_omni.config.schema import stage_process_name
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
 from sglang_omni.platforms import current_platform
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes
@@ -46,8 +47,8 @@ class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
     initial_cuda_graph: bool
     followup_cuda_graph: bool
     async_decode: bool
-    stream_capacity: int
-    codec_state_slots: int
+    max_in_flight: int | None
+    codec_state_slots: int | None
     shares_engine_speech_tokenizer: bool
 
 
@@ -124,25 +125,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             pass
         if stage_name == "vocoder":
             engine_stage = self.stage_named("tts_engine")
-            # note (Haoling Pu): the overrides the engine factory receives, where
-            # engine.* and factory.server_args_overrides both land.
-            server_args_overrides = {
-                **resolve_stage_factory_kwargs(engine_stage, self).get(
-                    "server_args_overrides", {}
-                ),
-                **resolve_stage_typed_kwargs(engine_stage).get(
-                    "server_args_overrides", {}
-                ),
-            }
-            admission_defaults = type(self).generation_admission_defaults()
-            # note (ratish): a stream keeps its Codec slot until its last decode, after its engine slot frees, so a vocoder holds every request admitted, queued ones included, and the arena is sized to that.
-            admitted_request_count = sum(
-                (
-                    int(server_args_overrides[name])
-                    if server_args_overrides.get(name) is not None
-                    else admission_defaults[name]
-                )
-                for name in ("max_running_requests", "max_queued_requests")
+            logical_process_plan, _ = compile_logical_processes(self)
+            # note (ratish): a stream keeps its Codec slot from its first decode to its last, after its engine slot frees, and no replica has a cap of its own, so one vocoder replica may hold every request the coordinator admits.
+            max_in_flight = resolve_coordinator_max_in_flight(
+                self, logical_process_plan=logical_process_plan
             )
             engine_process = stage_process_name(engine_stage)
             vocoder_stage = self.stage_named(stage_name)
@@ -157,20 +143,8 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
                     for name in ("model_path", "device", "dtype", "attn_implementation")
                 )
             )
-            if vocoder_process == engine_process:
-                # note (Haoling Pu): each replica of a shared process decodes the
-                # streams its own engine runs.
-                stream_capacity = admitted_request_count
-            else:
-                # note (Haoling Pu): requests bind to vocoder replicas round-robin
-                # with no per-replica cap, so one replica may hold every stream
-                # the engine replicas run together.
-                stream_capacity = (
-                    admitted_request_count
-                    * self.processes.get(engine_process, ProcessConfig()).num_replicas
-                )
-            kwargs["stream_capacity"] = stream_capacity
-            kwargs["codec_state_slots"] = stream_capacity
+            kwargs["max_in_flight"] = max_in_flight
+            kwargs["codec_state_slots"] = max_in_flight
         else:
             pass
         # The vocoder captures its decode graphs during the asynchronous decode

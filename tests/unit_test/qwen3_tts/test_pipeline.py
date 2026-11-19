@@ -531,7 +531,7 @@ def test_qwen3_tts_engine_attaches_its_process_speech_tokenizer_before_the_pool(
         def warmup_now(self) -> None:
             pass
 
-        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
+        def log_cuda_graph_coverage(self, max_in_flight: int | None) -> None:
             pass
 
     class FakeTalker:
@@ -587,6 +587,8 @@ def test_qwen3_tts_engine_attaches_its_process_speech_tokenizer_before_the_pool(
         "/ckpt",
         device="cpu",
         attn_implementation=vocoder_attn_implementation,
+        codec_state_slots=128,
+        max_in_flight=128,
         shares_engine_speech_tokenizer=shares_engine_speech_tokenizer,
     )
     talker = FakeTalker()
@@ -3045,6 +3047,8 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         max_batch_size=2,
         max_batch_wait_ms=3,
         enable_stateful_codec_decoder=False,
+        codec_state_slots=128,
+        max_in_flight=128,
         shares_engine_speech_tokenizer=False,
     )
     assert warmed_schedulers == [scheduler]
@@ -3095,8 +3099,8 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
-        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
-            captured["stream_capacity"] = stream_capacity
+        def log_cuda_graph_coverage(self, max_in_flight: int | None) -> None:
+            captured["max_in_flight"] = max_in_flight
 
     monkeypatch.setattr(
         qwen3_stages,
@@ -3123,6 +3127,7 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
         incremental_codec_cuda_graph_cold_frames=(24, 32),
         incremental_codec_cuda_graph_window_frames=(8, 16),
         incremental_codec_cuda_graph_min_free_gb=1.5,
+        max_in_flight=128,
         shares_engine_speech_tokenizer=False,
     )
 
@@ -3142,6 +3147,8 @@ def vocoder_factory_capture(
     tts_model_type: str = "base",
     tts_model_size: str | None = None,
     device: str = "cpu",
+    codec_state_slots: int | None = 128,
+    max_in_flight: int | None = 128,
     **factory_kwargs,
 ) -> dict[str, object]:
     """Build the vocoder stage against a stand-in scheduler and return its kwargs."""
@@ -3156,8 +3163,8 @@ def vocoder_factory_capture(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
-        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
-            captured["stream_capacity"] = stream_capacity
+        def log_cuda_graph_coverage(self, max_in_flight: int | None) -> None:
+            captured["max_in_flight"] = max_in_flight
 
     monkeypatch.setattr(
         qwen3_stages,
@@ -3176,7 +3183,12 @@ def vocoder_factory_capture(
         },
     )
     qwen3_stages.create_vocoder_executor(
-        "model", device=device, shares_engine_speech_tokenizer=False, **factory_kwargs
+        "model",
+        device=device,
+        codec_state_slots=codec_state_slots,
+        max_in_flight=max_in_flight,
+        shares_engine_speech_tokenizer=False,
+        **factory_kwargs,
     )
     return captured
 
@@ -3230,7 +3242,7 @@ def test_vocoder_factory_scopes_npu_internal_format_to_capture(
             else:
                 pass
 
-        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
+        def log_cuda_graph_coverage(self, max_in_flight: int | None) -> None:
             pass
 
     def set_option(options: dict[str, str]) -> None:
@@ -3281,6 +3293,8 @@ def test_vocoder_factory_scopes_npu_internal_format_to_capture(
             async_decode=async_decode,
             incremental_codec_cuda_graph=codec_graph,
             enable_deterministic_inference=deterministic,
+            codec_state_slots=128,
+            max_in_flight=128,
             shares_engine_speech_tokenizer=False,
         )
 
@@ -3306,11 +3320,11 @@ def test_qwen3_tts_config_starts_a_declining_platform_decoding_synchronously(
         raising=False,
     )
 
-    admitted = sum(config.generation_admission_defaults().values())
+    max_in_flight = sum(config.generation_admission_defaults().values())
     assert config.stage_factory_kwargs("vocoder") == {
         "async_decode": False,
-        "stream_capacity": admitted,
-        "codec_state_slots": admitted,
+        "max_in_flight": max_in_flight,
+        "codec_state_slots": max_in_flight,
         "shares_engine_speech_tokenizer": True,
     }
     assert config.stage_factory_kwargs("tts_engine") == {}
@@ -3327,10 +3341,10 @@ def test_qwen3_tts_config_leaves_a_measured_platform_alone(
         raising=False,
     )
 
-    admitted = sum(config.generation_admission_defaults().values())
+    max_in_flight = sum(config.generation_admission_defaults().values())
     assert config.stage_factory_kwargs("vocoder") == {
-        "stream_capacity": admitted,
-        "codec_state_slots": admitted,
+        "max_in_flight": max_in_flight,
+        "codec_state_slots": max_in_flight,
         "shares_engine_speech_tokenizer": True,
     }
     assert config.stage_factory_kwargs("tts_engine") == {}
@@ -6822,6 +6836,8 @@ def test_qwen3_tts_vocoder_factory_forwards_chunk_ramp(
         device="cpu",
         stream_chunk_ramp=[2, 4, 8],
         enable_stateful_codec_decoder=False,
+        codec_state_slots=128,
+        max_in_flight=128,
         shares_engine_speech_tokenizer=False,
     )
     payload = make_payload(inputs="target", params={"stream": True})
@@ -11564,19 +11580,38 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
 
 
 @pytest.mark.parametrize(
-    ("stream_capacity", "warning_count"), [(None, 0), (64, 0), (65, 1)]
+    ("max_in_flight", "warnings"),
+    [
+        (
+            None,
+            [
+                "Qwen3-TTS admission has no in-flight cap, so streams past the 64 "
+                "Codec slots decode eagerly on the left-context path."
+            ],
+        ),
+        (64, []),
+        (
+            65,
+            [
+                "Qwen3-TTS vocoder has 64 Codec slots, fewer than the 65 requests "
+                "the server admits at once; streams past the slots decode eagerly "
+                "on the left-context path. Set --vocoder.factory.codec_state_slots "
+                "to at least 65."
+            ],
+        ),
+    ],
 )
 def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    stream_capacity: int | None,
-    warning_count: int,
+    max_in_flight: int | None,
+    warnings: list[str],
 ) -> None:
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
-        scheduler.log_cuda_graph_coverage(stream_capacity)
+        scheduler.log_cuda_graph_coverage(max_in_flight)
 
     info_messages = [
         record.getMessage()
@@ -11593,11 +11628,7 @@ def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
         and message.endswith("; Codec slots 64")
         for message in info_messages
     )
-    assert len(warning_messages) == warning_count
-    assert all(
-        message.endswith(f"to at least {stream_capacity}.")
-        for message in warning_messages
-    )
+    assert warning_messages == warnings
 
 
 def test_qwen3_tts_vocoder_lists_every_decode_graph_runner(
@@ -11665,14 +11696,17 @@ def test_qwen3_tts_vocoder_without_stateful_decoder_logs_the_left_context_path(
     ]
 
 
-def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_stream_capacity(
+def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_in_flight_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A server with no in-flight cap got a 128-row arena and no warning, so past 128 live streams the left-context decoder came back unannounced."""
+    assert vocoder_factory_capture(monkeypatch, max_in_flight=96)["max_in_flight"] == 96
     assert (
-        vocoder_factory_capture(monkeypatch, stream_capacity=96)["stream_capacity"]
-        == 96
+        vocoder_factory_capture(monkeypatch, max_in_flight=None)["max_in_flight"]
+        is None
     )
-    assert vocoder_factory_capture(monkeypatch)["stream_capacity"] is None
+    with pytest.raises(ValueError, match="admits without one"):
+        vocoder_factory_capture(monkeypatch, codec_state_slots=None, max_in_flight=None)
 
 
 def test_qwen3_tts_vocoder_codec_state_reaches_model_info(
@@ -11857,6 +11891,7 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
         codec_state_slots=2,
         followup_worker_count=1,
         incremental_codec_compile=False,
+        max_in_flight=2,
         shares_engine_speech_tokenizer=False,
     )
     assert scheduler.decodes_whole_requests

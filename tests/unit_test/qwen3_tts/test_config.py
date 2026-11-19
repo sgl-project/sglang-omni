@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import EngineArgs, FactoryArgs, ProcessConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
@@ -27,20 +28,60 @@ def test_vocoder_platform_default_keeps_npu_opt_in(
     config = Qwen3TTSPipelineConfig(model_path="model")
 
     expected = {"async_decode": False} if use_npu else {}
-    expected["stream_capacity"] = 128
+    expected["max_in_flight"] = 128
     expected["codec_state_slots"] = 128
     expected["shares_engine_speech_tokenizer"] = True
     assert config.stage_factory_kwargs("vocoder") == expected
 
 
-def test_codec_arena_holds_every_request_the_coordinator_admits() -> None:
+@pytest.mark.parametrize(
+    ("engine_args", "factory_overrides", "vocoder_process", "processes"),
+    [
+        (EngineArgs(), {}, "pipeline", {}),
+        (EngineArgs(max_running_requests=96), {}, "pipeline", {}),
+        (EngineArgs(max_queued_requests=32), {}, "pipeline", {}),
+        (EngineArgs(max_queued_requests=None), {}, "pipeline", {}),
+        (EngineArgs(), {"max_running_requests": 96}, "pipeline", {}),
+        (EngineArgs(), {}, "pipeline", {"pipeline": ProcessConfig(num_replicas=2)}),
+        (EngineArgs(), {}, "vocoder", {"pipeline": ProcessConfig(num_replicas=2)}),
+        (EngineArgs(), {}, "vocoder", {"vocoder": ProcessConfig(num_replicas=3)}),
+    ],
+    ids=[
+        "default",
+        "running_override",
+        "queued_override",
+        "unbounded_queue",
+        "factory_override",
+        "two_pipeline_replicas",
+        "two_engine_replicas",
+        "three_vocoder_replicas",
+    ],
+)
+def test_codec_arena_holds_every_request_the_coordinator_admits(
+    engine_args, factory_overrides, vocoder_process, processes
+) -> None:
     """The Codec arena held 64 streams while the coordinator admits 128, so past the engine's running bound the streams still decoding their tails took the costlier left-context decoder and the vocoder fell behind."""
-    config = Qwen3TTSPipelineConfig(model_path="model")
-    plan, _ = compile_logical_processes(config)
+    config = Qwen3TTSPipelineConfig(model_path="org/model")
+    config.stage_named("tts_engine").engine = engine_args
+    if factory_overrides:
+        config.stage_named("tts_engine").factory = FactoryArgs(
+            dtype="bfloat16", server_args_overrides=factory_overrides
+        )
+    else:
+        pass
+    config.stage_named("vocoder").process = vocoder_process
+    config.processes = processes
+    logical_process_plan, _ = compile_logical_processes(config)
+    max_in_flight = resolve_coordinator_max_in_flight(
+        config, logical_process_plan=logical_process_plan
+    )
 
-    assert config.stage_factory_kwargs("vocoder")[
-        "codec_state_slots"
-    ] == resolve_coordinator_max_in_flight(config, logical_process_plan=plan)
+    factory_args = resolve_stage_factory_args(
+        config.stage_named("vocoder"), config, gpu_id=0
+    )
+
+    assert factory_args["codec_state_slots"] == max_in_flight
+    assert factory_args["max_in_flight"] == max_in_flight
 
 
 def test_admission_defaults_load_without_the_engine() -> None:
@@ -231,79 +272,6 @@ def test_speech_route_accepts_the_warmup_stream_of_each_checkpoint(
         prepared.request.task_type,
         [reference["text"] for reference in prepared.reference_descriptors],
     ) == (voice, task_type, reference_texts)
-
-
-@pytest.mark.parametrize(
-    (
-        "engine_args",
-        "factory_overrides",
-        "vocoder_process",
-        "processes",
-        "stream_capacity",
-    ),
-    [
-        (EngineArgs(), {}, "pipeline", {}, 128),
-        (EngineArgs(max_running_requests=96), {}, "pipeline", {}, 160),
-        (EngineArgs(max_queued_requests=32), {}, "pipeline", {}, 96),
-        (EngineArgs(), {"max_running_requests": 96}, "pipeline", {}, 160),
-        (
-            EngineArgs(max_running_requests=80),
-            {"max_running_requests": 96},
-            "pipeline",
-            {},
-            144,
-        ),
-        (
-            EngineArgs(),
-            {},
-            "pipeline",
-            {"pipeline": ProcessConfig(num_replicas=2)},
-            128,
-        ),
-        (
-            EngineArgs(),
-            {},
-            "vocoder",
-            {"pipeline": ProcessConfig(num_replicas=2)},
-            256,
-        ),
-        (
-            EngineArgs(),
-            {},
-            "vocoder",
-            {"vocoder": ProcessConfig(num_replicas=3)},
-            128,
-        ),
-    ],
-    ids=[
-        "default",
-        "engine_override",
-        "queued_override",
-        "factory_override",
-        "engine_over_factory",
-        "two_pipeline_replicas",
-        "two_engine_replicas",
-        "three_vocoder_replicas",
-    ],
-)
-def test_vocoder_receives_the_streams_one_replica_may_hold(
-    engine_args, factory_overrides, vocoder_process, processes, stream_capacity
-) -> None:
-    config = Qwen3TTSPipelineConfig(model_path="org/model")
-    config.stage_named("tts_engine").engine = engine_args
-    if factory_overrides:
-        config.stage_named("tts_engine").factory = FactoryArgs(
-            dtype="bfloat16", server_args_overrides=factory_overrides
-        )
-    else:
-        pass
-    config.stage_named("vocoder").process = vocoder_process
-    config.processes = processes
-
-    factory_kwargs = config.stage_factory_kwargs("vocoder")
-
-    assert factory_kwargs["stream_capacity"] == stream_capacity
-    assert factory_kwargs["codec_state_slots"] == stream_capacity
 
 
 @pytest.mark.parametrize(
