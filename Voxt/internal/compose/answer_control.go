@@ -35,7 +35,7 @@ func proseTagMention(rest string) bool {
 }
 
 func proseTokenMention(s string, start int, token string) bool {
-	if start > 0 && !strings.ContainsRune(" \t", rune(s[start-1])) {
+	if start > 0 && !strings.ContainsRune(" \t\r\n", rune(s[start-1])) {
 		return false
 	}
 	return proseTagMention(s[start+len(token):])
