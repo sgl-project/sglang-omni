@@ -376,6 +376,61 @@ class IsolationTests(unittest.TestCase):
             valid, _ = loop.valid_result(path, 0)
             self.assertFalse(valid)
 
+    def test_result_invalid_reasons_name_the_failing_fields(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            reasons, report = loop.result_invalid_reasons(path, 1)
+            self.assertEqual(reasons, ["returncode=1", "result_json_missing"])
+            self.assertIsNone(report)
+
+            report = raw_report(100)
+            report["resources"]["peak_memory_pressure"] = {"value": "critical"}
+            path.write_text(json.dumps(report), encoding="utf-8")
+            reasons, loaded = loop.result_invalid_reasons(path, 0)
+            self.assertEqual(reasons, ["peak_memory_pressure=critical"])
+            self.assertEqual(loaded["status"], "success")
+
+            report["warnings"] = ["not clean"]
+            report["errors"] = ["failed once"]
+            path.write_text(json.dumps(report), encoding="utf-8")
+            reasons, _ = loop.result_invalid_reasons(path, 0)
+            self.assertEqual(
+                reasons,
+                ["warnings=1", "errors=1", "peak_memory_pressure=critical"],
+            )
+
+            failed = raw_report(100, status="failed")
+            path.write_text(json.dumps(failed), encoding="utf-8")
+            reasons, _ = loop.result_invalid_reasons(path, 0)
+            self.assertEqual(reasons, ["status=failed"])
+
+            path.write_text(json.dumps(raw_report(100)), encoding="utf-8")
+            reasons, loaded = loop.result_invalid_reasons(path, 0)
+            self.assertEqual(reasons, [])
+            self.assertIsNotNone(loaded)
+
+    def test_environment_invalid_reasons_keep_midrun_violations(self):
+        normal = {"power_source": "AC Power", "idle_seconds": 1000, "contenders": []}
+        during = [
+            {"environment": normal, "violations": []},
+            {"environment": normal, "violations": ["user input during profiling"]},
+            {"environment": normal, "violations": ["user input during profiling"]},
+        ]
+        self.assertEqual(
+            loop.environment_invalid_reasons(during, normal, 300),
+            ["user input during profiling"],
+        )
+        self.assertEqual(loop.environment_invalid_reasons([], normal, 300), [])
+        after = {
+            "power_source": "Battery Power",
+            "idle_seconds": 1000,
+            "contenders": ["10 qwen3_asr_server"],
+        }
+        self.assertEqual(
+            loop.environment_invalid_reasons([], after, 300),
+            ["left AC power", "contending native servers after the run"],
+        )
+
     def test_valid_result_and_summary_reject_midrun_warning_or_missing_pressure(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "result.json"

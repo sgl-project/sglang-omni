@@ -446,22 +446,58 @@ def write_json(path: Path, value: object) -> None:
     )
 
 
-def valid_result(path: Path, returncode: int) -> tuple[bool, dict[str, object] | None]:
-    if returncode != 0 or not path.is_file():
-        return False, None
+def result_invalid_reasons(
+    path: Path, returncode: int
+) -> tuple[list[str], dict[str, object] | None]:
+    """Concrete, machine-readable reasons a run's result.json is invalid.
+
+    Every reason names the failing field and its actual value, so an invalid
+    run is never recorded as a bare "result_invalid" next to a success report.
+    """
+    reasons = []
+    if returncode != 0:
+        reasons.append(f"returncode={returncode}")
+    if not path.is_file():
+        reasons.append("result_json_missing")
+        return reasons, None
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False, None
-    if (
-        not isinstance(report, dict)
-        or report.get("status") != "success"
-        or report.get("warnings")
-        or report.get("errors")
-        or not report_memory_pressure_valid(report)
-    ):
-        return False, report if isinstance(report, dict) else None
+        reasons.append("result_json_unreadable")
+        return reasons, None
+    if not isinstance(report, dict):
+        reasons.append("result_json_not_an_object")
+        return reasons, None
+    if report.get("status") != "success":
+        reasons.append(f"status={report.get('status')}")
+    if report.get("warnings"):
+        reasons.append(f"warnings={len(report['warnings'])}")
+    if report.get("errors"):
+        reasons.append(f"errors={len(report['errors'])}")
+    pressure = report_peak_memory_pressure(report)
+    if pressure != "normal":
+        reasons.append(f"peak_memory_pressure={pressure or 'missing'}")
+    return reasons, report
+
+
+def valid_result(path: Path, returncode: int) -> tuple[bool, dict[str, object] | None]:
+    reasons, report = result_invalid_reasons(path, returncode)
+    if reasons:
+        return False, report
     return True, report
+
+
+def environment_invalid_reasons(
+    during: list[dict[str, object]], after: dict[str, object], idle_seconds: float
+) -> list[str]:
+    reasons = environment_violations(after, idle_seconds)
+    if after.get("contenders"):
+        reasons.append("contending native servers after the run")
+    for sample in during:
+        for violation in sample.get("violations") or []:
+            if violation not in reasons:
+                reasons.append(violation)
+    return reasons
 
 
 def environment_violations(
@@ -584,6 +620,7 @@ def run_matrix(
             prepare_dir = resolve_child(temporary_path, name)
             reports = []
             raw_paths = []
+            attempts = []
             valid_count = 0
             config_error = ""
             try:
@@ -623,12 +660,22 @@ def run_matrix(
                         attempt_dir / "environment.json",
                         {"before": before, "during": during, "after": after},
                     )
-                    valid, report = valid_result(
+                    invalid_reasons, report = result_invalid_reasons(
                         attempt_dir / "result.json", returncode
                     )
-                    if not environment_attempt_valid(during, after, idle_seconds):
-                        valid = False
-                    if valid and report is not None:
+                    environment_reasons = environment_invalid_reasons(
+                        during, after, idle_seconds
+                    )
+                    attempts.append(
+                        {
+                            "attempt": attempt,
+                            "returncode": returncode,
+                            "result_invalid_reason": invalid_reasons,
+                            "environment_invalid_reason": environment_reasons,
+                            "valid": not invalid_reasons and not environment_reasons,
+                        }
+                    )
+                    if not invalid_reasons and not environment_reasons and report is not None:
                         valid_count += 1
                         reports.append(report)
                         raw_paths.append(str(attempt_dir / "result.json"))
@@ -650,6 +697,7 @@ def run_matrix(
                     "error": config_error or "fewer than three valid runs",
                 }
             summary["raw_results"] = raw_paths
+            summary["attempts"] = attempts
             write_json(config_dir / "summary.json", summary)
             summaries.append({"name": name, **summary})
             if summary["status"] != "success":
