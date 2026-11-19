@@ -39,7 +39,7 @@ jobs:
   # here. The build below does not wait for it.
   vulnerabilities:
     if: github.event_name != 'schedule' || github.repository == 'sgl-project/sglang-omni'
-    runs-on: ubuntu-24.04
+    runs-on: macos-26
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
