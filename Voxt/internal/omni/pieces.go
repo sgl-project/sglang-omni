@@ -83,6 +83,9 @@ func (s *live) recognisePieces(language string, b bias) {
 		pc.language = language
 		pc.busy += took
 		n := len(pc.texts)
+		// The text so far is final: the session can start its clean-up of
+		// it instead of waiting for Stop (the Final repeats it as its prefix).
+		s.emit(asr.Event{Kind: asr.EventPiece, Text: joinParts(pc.texts)})
 		s.mu.Unlock()
 		looked = 0
 		select { // the rest may hold another piece already

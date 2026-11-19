@@ -192,6 +192,8 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 					text := ev.Text
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
 					r.hearPartial(text)
+				case asr.EventPiece:
+					r.hearPiece(ev.Text)
 				case asr.EventFinal:
 					res := ev.Result
 					res.Text = ev.Text
