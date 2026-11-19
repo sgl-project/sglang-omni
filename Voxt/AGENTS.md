@@ -27,6 +27,7 @@ These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its codi
 Run from `Voxt/`; Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it).
 
 ```sh
+scripts/check.sh                                             # the fast checks CI runs: gofmt, MyGo vet, archtest
 CGO_ENABLED=0 go test ./...                                  # all tests (Linux and Mac)
 go tool mygo vet .                                           # vet + MyGo's UI checks
 CGO_ENABLED=1 go test -race ./...                            # needs cgo
