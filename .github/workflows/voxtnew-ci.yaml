@@ -119,15 +119,9 @@ jobs:
           fc-cache -f
           fc-list :lang=zh family | sort
 
-      - name: gofmt
-        run: |
-          bad="$(git ls-files -z '*.go' ':!:third_party/**' | xargs -0 gofmt -l)"
-          if [ -n "$bad" ]; then
-            echo "::error::not gofmt-ed (run gofmt -w): $bad"
-            exit 1
-          else
-            echo "gofmt: clean"
-          fi
+      # gofmt, MyGo's vet and internal/archtest: what developers run locally.
+      - name: Fast checks
+        run: scripts/check.sh
 
       # -count=1: setup-go's cache keeps the last run's test results too,
       # and a result does not change with what a test does not see (the
@@ -152,9 +146,6 @@ jobs:
           set -o pipefail
           CGO_ENABLED=0 go test -count=1 -v -run '^TestPageSanitizesTranscriptInBrowser$' ./internal/transcriptpreview | tee "$RUNNER_TEMP/browser.txt"
           grep -q -- '--- PASS: TestPageSanitizesTranscriptInBrowser' "$RUNNER_TEMP/browser.txt"
-
-      - name: MyGo vet
-        run: go tool mygo vet .
 
       - name: Vet the update-check build
         run: go vet -tags updatecheck .
