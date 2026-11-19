@@ -110,6 +110,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				// The app draws these over Settings (shell_controller.go).
 				modelDeleteDialogs(c, &state.Delete, host, &host.modelsUI)
 				networkDialog(c, &state.Network, host, &host.modelsUI)
+				modelAssignmentDialog(c, state.Assignment, host, &host.modelsUI.assign)
 			case "feature":
 				state := host.featureViewState(fixture.state.Feature)
 				featurePage(c, &state, host, &host.feature.local, host)
