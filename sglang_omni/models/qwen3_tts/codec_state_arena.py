@@ -45,7 +45,6 @@ class CodecStateStats(TypedDict, total=False):
     exhausted: int
     enabled: bool
     left_context_fallbacks: int
-    slot_waits: int
     cuda_graphs: CodecCudaGraphStats
 
 
@@ -152,13 +151,6 @@ class Qwen3TTSCodecStateArena:
                 - sum(slot < self._num_slots for slot in self.retired)
             )  # noqa: leading-underscore
 
-    def usable_slots(self) -> int:
-        """Stream slots not retired, free or held; it never grows, so 0 means no slot will ever be handed out."""
-        with self.lock:
-            return self._num_slots - sum(
-                slot < self._num_slots for slot in self.retired
-            )  # noqa: leading-underscore
-
     def acquire(self) -> int | None:
         """Take a zeroed slot, or ``None`` when the arena is full."""
         with self.lock:
@@ -169,16 +161,11 @@ class Qwen3TTSCodecStateArena:
                 pass
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
-        try:
-            if released is not None:
-                self.device_module.current_stream(self.device).wait_event(released)
-            else:
-                pass
-            self.zero_slot(slot)
-        except BaseException:
-            # note (ratish): a fault before the slot is zeroed leaves its memory unproven, so it is withdrawn, not lost from the count.
-            self.retire(slot)
-            raise
+        if released is not None:
+            self.device_module.current_stream(self.device).wait_event(released)
+        else:
+            pass
+        self.zero_slot(slot)
         return slot
 
     def release(self, slot: int) -> None:

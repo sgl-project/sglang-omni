@@ -1687,40 +1687,6 @@ def test_arena_slot_reuse_starts_from_a_cold_state() -> None:
     torch.testing.assert_close(again, cold)
 
 
-def test_arena_withdraws_a_slot_whose_zeroing_faults() -> None:
-    _, arena = make_arena(Decoder(), slots=2)
-    zero_slot = arena.zero_slot
-    faulted: list[int] = []
-    faulting: set[int] = set()
-
-    def fail_first_zero_and_faulting_slots(slot: int) -> None:
-        if not faulted or slot in faulting:
-            faulted.append(slot)
-            raise RuntimeError("device fault")
-        else:
-            zero_slot(slot)
-
-    arena.zero_slot = fail_first_zero_and_faulting_slots
-
-    with pytest.raises(RuntimeError, match="device fault"):
-        arena.acquire()
-    healthy = arena.acquire()
-
-    assert arena.retired == set(faulted)
-    assert healthy is not None and healthy not in faulted
-    assert arena.acquire() is None
-    assert arena.usable_slots() == 1
-
-    arena.release(healthy)
-    faulting.add(healthy)
-    with pytest.raises(RuntimeError, match="device fault"):
-        arena.acquire()
-
-    assert arena.retired == set(faulted)
-    assert arena.usable_slots() == 0
-    assert arena.acquire() is None
-
-
 def test_arena_acquire_zeroes_only_the_acquired_slot() -> None:
     torch.manual_seed(16)
     _, arena = make_arena(Decoder(), slots=2)
