@@ -193,7 +193,6 @@ func stripControlMarkup(s string, inputs ...string) string {
 		if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
 			continue
 		}
-		previousTag := previousControlToken(tag[0], previous)
 		openSearchFrom, closeSearchFrom := 0, 0
 		literalOpen := -1
 		for {
@@ -206,7 +205,7 @@ func stripControlMarkup(s string, inputs ...string) string {
 				j += closeSearchFrom
 			}
 			if j >= 0 && (i < 0 || j < i) {
-				if previousTag && proseTokenMention(s, j, tag[1]) {
+				if proseTokenMention(s, j, tag[1]) {
 					literalOpen = -1
 					closeSearchFrom = j + len(tag[1])
 					continue
@@ -234,7 +233,7 @@ func stripControlMarkup(s string, inputs ...string) string {
 				break
 			}
 			rest := s[i+len(tag[0]):]
-			if previousTag && proseTokenMention(s, i, tag[0]) {
+			if proseTokenMention(s, i, tag[0]) {
 				literalOpen = i
 				openSearchFrom = i + len(tag[0])
 				closeSearchFrom = openSearchFrom

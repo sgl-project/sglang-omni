@@ -24,6 +24,9 @@ func inlineLiteral(s string, start int, token string) bool {
 }
 
 func proseTagMention(rest string) bool {
+	if strings.HasPrefix(rest, " to ") || strings.HasPrefix(rest, " before ") {
+		return true
+	}
 	if !strings.HasPrefix(rest, " tag") && !strings.HasPrefix(rest, "\ttag") {
 		return false
 	}
@@ -35,10 +38,27 @@ func proseTagMention(rest string) bool {
 }
 
 func proseTokenMention(s string, start int, token string) bool {
+	if quotedControlToken(s, start, token) {
+		return true
+	}
 	if start > 0 && !strings.ContainsRune(" \t\r\n", rune(s[start-1])) {
 		return false
 	}
 	return proseTagMention(s[start+len(token):])
+}
+
+func quotedControlToken(s string, start int, token string) bool {
+	if start == 0 || start+len(token) >= len(s) {
+		return false
+	}
+	before, _ := utf8.DecodeLastRuneInString(s[:start])
+	after, _ := utf8.DecodeRuneInString(s[start+len(token):])
+	for _, quotes := range [][2]rune{{'`', '`'}, {'"', '"'}, {'“', '”'}, {'「', '」'}, {'‘', '’'}} {
+		if before == quotes[0] && after == quotes[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // controlTokenStart is the start of the first model control token in s
@@ -64,7 +84,7 @@ func controlTokenStart(s string, inputs ...string) int {
 				offset = i + len(token)
 				continue
 			}
-			if previousPreserved && proseTokenMention(s, i, token) {
+			if proseTokenMention(s, i, token) {
 				offset = i + len(token)
 				continue
 			}

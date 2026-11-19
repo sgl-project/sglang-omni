@@ -275,6 +275,25 @@ func TestAnswerControlTokenVariants(t *testing.T) {
 	}
 }
 
+func TestAnswerCleanupKeepsProseControlTokens(t *testing.T) {
+	for _, tc := range []struct{ name, text string }{
+		{name: "ChatML markers in an explanation", text: "ChatML uses <|im_start|> to begin a turn and <|im_end|> to end it."},
+		{name: "thinking marker before a description", text: "The model emits <think> before it reasons."},
+		{name: "backtick quoted closing marker", text: "Reasoning ends with `</think>`. Then the answer follows."},
+		{name: "full width quoted closing marker", text: "中文用“</think>”表示结束。然后显示回答。"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertAnswerCleanup(t, tc.text, "x", tc.text)
+			if got := CleanOutput(tc.text, "x"); got != tc.text {
+				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.text)
+			}
+			if got := PartialOutput(tc.text, "x"); got != tc.text {
+				t.Errorf("PartialOutput(%q) = %q, want %q", tc.text, got, tc.text)
+			}
+		})
+	}
+}
+
 func TestAnswerCleanupThinkingClose(t *testing.T) {
 	for _, tc := range []struct{ name, text, want string }{
 		{"answer after thinking close", "reasoning here</think>Final answer", "Final answer"},
