@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -41,6 +42,12 @@ func TestBackgroundComposesBesideANewSession(t *testing.T) {
 	}
 	if h.m.Background(id) || h.m.Background("nobody") {
 		t.Fatal("backgrounded twice or a stranger")
+	}
+	for _, kind := range []store.Kind{store.KindRewrite, store.KindTranslate} {
+		if extra, err := h.m.Start(StartRequest{Kind: kind, Target: slack}); !errors.Is(err, ErrBusy) {
+			h.m.Cancel(extra)
+			t.Errorf("%s started beside the backgrounded answer: %v", kind, err)
+		}
 	}
 	other, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
 	if err != nil || other == id {

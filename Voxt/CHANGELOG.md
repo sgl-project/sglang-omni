@@ -11,6 +11,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Transcribe works while a Rewrite answer streams, and the card stays put**: pressing the Transcribe shortcut while a Rewrite or Translate answer was still streaming into its card did nothing, and a transcription after it finished closed the card and reopened it at the screen's center when done. The answer now keeps streaming into the unmoved card, the recording window shows beside it in its own window, and the card is never closed or recreated by a transcription. The answer's Stop and the cancel shortcut still work on it while it finishes.
+- **No invisible recording behind a streaming answer**: after Transcribe ends while a Rewrite or Translate answer is still streaming, another Rewrite or Translate is refused until the answer ends instead of starting with no visible session. Transcribe can still start beside the answer.
 
 ### 中文
 
@@ -21,6 +22,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **改写的回答还在写时也能转录，卡片不再被关掉**：改写或翻译的回答还在流进卡片时按转录快捷键以前没有反应，回答写完后再转录又会把卡片关掉、转录完在屏幕中央重新打开。现在回答在原地不动的卡片里继续写完，录音浮窗显示在它旁边自己的窗口里，转录不再关闭或重建卡片；回答写完前，它的“停止”和取消快捷键照旧可用。
+- **后台回答还在写时不会再出现无界面录音**：转录结束后，改写或翻译的回答仍在流式输出时，再次开始改写或翻译会被拒绝，直到回答结束，不会开始没有可见会话的录音；转录仍可与回答同时进行。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### 中文
