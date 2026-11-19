@@ -41,8 +41,11 @@ for p in "$PATCHES"/*.patch; do
   # Hunks of the parts left out (a patch's docs) stay upstream with them.
   (cd "$out" && git apply --whitespace=nowarn --exclude='website/*' --exclude='docs/*' --exclude='examples/*' --exclude='.github/*' "$p") || { echo "patch $(basename "$p") does not apply to mygo $version" >&2; exit 1; }
 done
-# Patch 0015 carries the atlas regression test; run it before tests leave the tree.
+# Run the patch regressions before tests leave the tree.
 (cd "$out" && CGO_ENABLED=0 go test ./internal/scene/)
+if [[ "$(go env GOOS)" == darwin ]]; then
+  (cd "$out" && MYGO_E2E_NO_WARMUP=1 MYGO_E2E=1 CGO_ENABLED=0 go test -run '^(TestContentWindowGenericFileDrop|TestContentWindowFileURLDrop)$' ./internal/e2e)
+fi
 # Tests and their data stay upstream (some hold sample credentials that
 # look real to secret scanners); so do git's settings for the module.
 find "$out" -name '*_test.go' -delete
