@@ -271,6 +271,14 @@ func TestRetry(t *testing.T) {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 	})
+	t.Run("transcribe falls back", func(t *testing.T) {
+		h, e := retryHarness(t, &fakeFile{text: "hello aura link"}, &fakeLLM{err: errors.New("boom")}, false)
+		h.fallback = &fakeLLM{text: "Hello, VoxtNew."}
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+		if err != nil || out.Status != store.StatusDone || out.Result != "Hello, VoxtNew." || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
+			t.Fatalf("entry %+v, %v", out, err)
+		}
+	})
 	t.Run("no recording", func(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "x"}, nil, false)
 		e.Audio = ""

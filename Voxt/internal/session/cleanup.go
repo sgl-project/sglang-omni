@@ -40,7 +40,17 @@ func (r *run) transcribe(text string) {
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUp(text, nil)
-		for r.askAgain() {
+		for {
+			if r.askAgain() {
+				cleaned, profile, err = r.cleanUp(text, r.thinking())
+				continue
+			}
+			if !r.useFallback(err) {
+				break
+			}
+			// The fallback joins the re-ask loop: it keeps the level
+			// chosen, and a Rethink while it streams asks it again.
+			r.swapFallback(err)
 			cleaned, profile, err = r.cleanUp(text, r.thinking())
 		}
 		llmTime := r.now().Sub(llmStart)

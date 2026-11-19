@@ -82,14 +82,15 @@ func (s *systemProxy) proxy(request *http.Request) (*url.URL, error) {
 	return &url.URL{Scheme: "http", Host: hostPort}, nil
 }
 
-// bypassProxy reports whether host goes direct: the loopback, plain names
-// when ExcludeSimple or "<local>" is an exception, and the exceptions
-// (hosts, globs, address ranges whose missing octets are 0, as macOS
-// writes "169.254/16").
+// bypassProxy reports whether host goes direct: this Mac (localhost,
+// *.localhost, the loopback: core.IsLoopback, which a leaf cannot import;
+// TestBypassProxyThisMac keeps them equal), plain names when ExcludeSimple or "<local>"
+// is an exception, and the exceptions (hosts, globs, address ranges whose
+// missing octets are 0, as macOS writes "169.254/16").
 func bypassProxy(host string, proxies SystemProxies) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	ip := net.ParseIP(host)
-	if host == "localhost" || ip != nil && ip.IsLoopback() {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || ip != nil && ip.IsLoopback() {
 		return true
 	}
 	simple := ip == nil && !strings.Contains(host, ".")

@@ -9,7 +9,7 @@ import (
 // this Mac: localhost, a *.localhost name or a loopback address. A key
 // goes over plain http or ws only to such a host.
 func IsLoopback(host string) bool {
-	host = strings.Trim(strings.ToLower(host), "[]")
+	host = strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return true
 	}
