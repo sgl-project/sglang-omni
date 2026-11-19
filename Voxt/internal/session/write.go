@@ -206,11 +206,12 @@ func (r *run) useFallback(err error) bool {
 }
 
 // swapFallback makes the fallback the session's model: later requests,
-// the snapshot and the history entry use it.
+// the snapshot and the history entry use it. The answer starts over, as
+// when asked again: nothing of the failed model's draft or title stays.
 func (r *run) swapFallback(err error) {
 	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
 	r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, r.svc.FallbackInfo, nil
-	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft = r.svc.LLMInfo, "" })
+	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft, s.Title = r.svc.LLMInfo, "", "" })
 }
 
 // ask sends one request and streams its answer into the snapshot. It

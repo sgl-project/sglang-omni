@@ -526,6 +526,38 @@ func TestTranslateFallback(t *testing.T) {
 	}
 }
 
+// TestRewriteFallbackDropsTheFirstModelsTitle: the first model streamed
+// a title before it failed. Once the fallback takes over, no snapshot
+// and no history entry shows that title next to the fallback's name:
+// the swap starts the answer over, as asking again does.
+func TestRewriteFallbackDropsTheFirstModelsTitle(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	main, fallback := &fakeLLM{hang: true, hangOn: 1, hangDelta: `{"title":"First model's title","content":"Half`}, &fakeLLM{err: boom}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, main, func(c *Config, _ *settings.Settings) {
+		c.Select = &fakeSelector{}
+		c.WriteTimeout = time.Second
+	})
+	h.fallback = fallback
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 3)
+	h.rec.waitFor(t, "the first model's title", func(s Snapshot) bool { return s.State == Composing && s.Title == "First model's title" })
+	end := h.rec.wait(t)
+	if end.State != Failed || end.Problem == nil || end.Problem.Code != ProblemLLM || end.LLM.ID != "ollama" {
+		t.Errorf("end %+v", end)
+	}
+	for _, s := range h.rec.all() {
+		if s.LLM.ID == "ollama" && s.Title == "First model's title" {
+			t.Errorf("the fallback's snapshot keeps the first model's title: %+v", s)
+		}
+	}
+	if es := h.hist.all(); len(es) != 1 || es[0].LLMProvider != "ollama" || es[0].Title != "" {
+		t.Errorf("entries %+v", es)
+	}
+}
+
 func TestTranslateTarget(t *testing.T) {
 	s := settings.Defaults()
 	for _, tc := range []struct {

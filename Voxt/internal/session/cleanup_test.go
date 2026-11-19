@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -216,4 +217,51 @@ func TestTranscribeFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTranscribeFallbackRethink: the fallback joins Transcribe's re-ask
+// loop. A level chosen in the preview (Rethink) still holds for the
+// fallback's request, and a Rethink while the fallback streams asks it
+// again, as it would the first model: only the new answer goes in.
+func TestTranscribeFallbackRethink(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	off := &llm.Thinking{Mode: llm.ThinkOff}
+	t.Run("the fallback keeps the level chosen", func(t *testing.T) {
+		model, fallback := &fakeLLM{text: "unused", hang: true, hangOn: 1, err: boom, failOn: 2}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.Rethink(id, off)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "Hello, VoxtNew." || end.LLM.ID != "ollama" {
+			t.Errorf("end %s %q by %q (problem %+v)", end.State, end.Result, end.LLM.ID, end.Problem)
+		}
+		if r := model.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+			t.Errorf("requests to the model %+v", r)
+		}
+		if r := fallback.requests(); len(r) != 1 || r[0].Thinking == nil || *r[0].Thinking != *off {
+			t.Errorf("requests to the fallback %+v", r)
+		}
+	})
+	t.Run("rethink during the fallback asks it again", func(t *testing.T) {
+		model, fallback := &fakeLLM{err: boom}, &fakeLLM{text: "Again, VoxtNew.", hang: true, hangOn: 1}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the fallback's answer", func(s Snapshot) bool { return s.State == Composing && s.LLM.ID == "ollama" && s.Draft != "" })
+		h.m.Rethink(id, off)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "Again, VoxtNew." || end.LLM.ID != "ollama" || end.Thinking == nil || *end.Thinking != *off {
+			t.Errorf("end %s %q by %q %+v (problem %+v)", end.State, end.Result, end.LLM.ID, end.Thinking, end.Problem)
+		}
+		if r := fallback.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+			t.Errorf("requests to the fallback %+v", r)
+		}
+		if p := h.text.pastes(); len(p) != 1 || p[0] != "Again, VoxtNew." {
+			t.Errorf("pasted %q", p)
+		}
+	})
 }
