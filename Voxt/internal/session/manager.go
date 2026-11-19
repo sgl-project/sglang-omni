@@ -134,7 +134,8 @@ func (m *Manager) SetLast(text string) {
 }
 
 // Start begins a session: it records at once, and resolves the services
-// meanwhile. It fails with ErrBusy while a session is live.
+// meanwhile. It fails with ErrBusy while the current session is live, or
+// while a background answer is live and the new one is not Transcribe.
 func (m *Manager) Start(req StartRequest) (string, error) {
 	m.mu.Lock()
 	if m.bg != nil && m.bg.own.State.Live() && (req.Kind != store.KindTranscribe || req.Try) {

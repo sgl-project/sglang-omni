@@ -385,6 +385,13 @@ func TestReviewTranscribeCardSurvivesInitialBackgroundAnswer(t *testing.T) {
 		t.Fatalf("the transcription did not open its card: %+v", a.answer)
 	}
 	transcribeID := a.answer.id
+	foregroundID := a.sess.ID
+	for _, binding := range []string{"rewrite/0", "translate/0"} {
+		tap(a, binding, textEditApp)
+		if !a.answer.open || a.answer.id != transcribeID || a.under.open || a.sess.ID != foregroundID {
+			t.Fatalf("%s changed the cards or session while the answer was busy: answer=%+v under=%+v sess=%+v", binding, a.answer, a.under, a.sess)
+		}
+	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the background answer's end", func() bool { return a.bgID == "" })
 	if !a.answer.open || a.answer.kind != store.KindRewrite || a.answer.text != "先订会议室 then email Ann。" ||
