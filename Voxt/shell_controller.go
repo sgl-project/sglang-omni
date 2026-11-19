@@ -300,8 +300,9 @@ func (a *app) view(c *uiContext) {
 		}
 		// The Speech and Language models sections' dialogs, over Settings.
 		models := a.modelsPageModel()
-		modelDeleteDialogs(c, &models.Delete, a, &a.modelsLocalUI) // models_delete.go
-		networkDialog(c, &models.Network, a, &a.modelsLocalUI)     // models_network.go
+		modelDeleteDialogs(c, &models.Delete, a, &a.modelsLocalUI)              // models_delete.go
+		networkDialog(c, &models.Network, a, &a.modelsLocalUI)                  // models_network.go
+		modelAssignmentDialog(c, models.Assignment, a, &a.modelsLocalUI.assign) // models_assignment_dialog.go
 		if dialog := a.remoteDialogModel(); dialog != nil {
 			remoteProviderDialogView(c, dialog, a, &a.provDlg.providerDialogLocalUI) // remote_dialog.go
 		}

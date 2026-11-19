@@ -4,6 +4,7 @@ package main
 type remoteCardsActions interface {
 	openRemoteProvider(kind, id string)
 	testRemoteProvider(kind, id string)
+	openModelAssignment(kind, id string)
 }
 
 type remoteWaitActions interface {
