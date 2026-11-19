@@ -18,6 +18,20 @@ func TestPartialAnswerControlMarkupPrefixes(t *testing.T) {
 	}
 }
 
+func TestPartialAnswerControlPrefixBeforeFence(t *testing.T) {
+	text := "<|im_start|>assistant\n```json\n{\"title\":\"T\",\"content\":\"Visible answer\"}\n```<|im_end|>"
+	want := Answer{Title: "T", Content: "Visible answer"}
+	for i := 1; i <= len(text); i++ {
+		got := PartialAnswer(text[:i])
+		if strings.Contains(got.Content, "```") || strings.Contains(got.Content, `"title"`) {
+			t.Fatalf("at %d: raw fenced answer in %q", i, got.Content)
+		}
+	}
+	if got := PartialAnswer(text); got != want {
+		t.Fatalf("PartialAnswer(%q) = %+v, want %+v", text, got, want)
+	}
+}
+
 func TestPartialClean(t *testing.T) {
 	for _, tc := range []struct{ out, in, want string }{
 		{"Answer<th", "x", "Answer"},

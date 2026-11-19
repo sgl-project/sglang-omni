@@ -316,6 +316,13 @@ func PartialAnswer(text string) Answer {
 	}
 	if !strings.HasPrefix(t, "{") {
 		t = strings.TrimSpace(stripPartialControlMarkup(t))
+		if strings.HasPrefix(t, "```") {
+			if nl := strings.IndexByte(t, '\n'); nl >= 0 {
+				t = strings.TrimSpace(t[nl+1:])
+			} else {
+				return Answer{} // the fence's first line, still coming
+			}
+		}
 		if !strings.HasPrefix(t, "{") {
 			return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
 		}
