@@ -77,40 +77,43 @@ func unwrappedOutput(s string) string {
 
 var thinkingTags = [][2]string{{"<think>", "</think>"}, {"<|channel>", "<channel|>"}}
 
-const assistantAnswerPrefix = "<|im_start|>assistant\n"
+const assistantAnswerPrefix = "<|im_start|>assistant"
 
 var controlTokens = []string{
 	"<|tool_call|>", "<|/tool_call|>", "<|tool_call_begin|>", "<|tool_call_end|>",
 	"<|tool_calls_section_begin|>", "<|tool_calls_section_end|>",
 	"<|im_end|>", "<|im_start|>", "<|start|>", "<|end|>", "<|message|>",
-	"<|channel>", "<|channel|>", "<channel|>", "<|endoftext|>", "</think>",
+	"<|channel>", "<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "</think>",
 }
 
-// controlTokenStart is the start of the first control token in s, or of
-// a suffix that may still become one; -1 when s has only ordinary text.
-func controlTokenStart(s string) int {
+// controlTokenStart is the start of the first model control token in s
+// that did not occur in the user's input; -1 when s has only answer text.
+func controlTokenStart(s, input string) int {
 	start := -1
 	for _, token := range controlTokens {
+		if strings.Contains(input, token) {
+			continue
+		}
 		if i := strings.Index(s, token); i >= 0 && (start < 0 || i < start) {
 			start = i
-		}
-		if n := partialTagSuffix(s, token); n > 1 {
-			if i := len(s) - n; start < 0 || i < start {
-				start = i
-			}
 		}
 	}
 	return start
 }
 
 // stripControlMarkup removes model control blocks, including an opening
-// marker whose block has not closed. Ordinary angle-bracket text stays.
-func stripControlMarkup(s string) string {
+// marker whose block has not closed. Ordinary angle-bracket text and
+// control markup that occurred in the user's input stay.
+func stripControlMarkup(s string, inputs ...string) string {
+	input := strings.Join(inputs, "\n")
 	trimmed := strings.TrimLeft(s, " \t\r\n")
-	if strings.HasPrefix(trimmed, assistantAnswerPrefix) {
-		s = trimmed[len(assistantAnswerPrefix):]
+	if !strings.Contains(input, "<|im_start|>") && strings.HasPrefix(trimmed, assistantAnswerPrefix) {
+		s = strings.TrimLeft(trimmed[len(assistantAnswerPrefix):], " \t\r\n")
 	}
 	for _, tag := range thinkingTags {
+		if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
+			continue
+		}
 		for {
 			i := strings.Index(s, tag[0])
 			if i < 0 {
@@ -125,20 +128,40 @@ func stripControlMarkup(s string) string {
 			s = s[:i] + rest[j+len(tag[1]):]
 		}
 	}
-	if i := controlTokenStart(s); i >= 0 {
+	if i := controlTokenStart(s, input); i >= 0 {
 		s = s[:i]
 	}
 	return s
 }
 
 // stripPartialControlMarkup also holds back a suffix that may still
-// become a thinking marker, so no marker fragment shows while streaming.
-func stripPartialControlMarkup(s string) string {
-	s = stripControlMarkup(s)
-	for _, tag := range thinkingTags {
-		if n := partialTagSuffix(s, tag[0]); n > 0 {
-			s = s[:len(s)-n]
+// become a control marker, so no marker fragment shows while streaming.
+func stripPartialControlMarkup(s string, inputs ...string) string {
+	s = stripControlMarkup(s, inputs...)
+	input := strings.Join(inputs, "\n")
+	start := -1
+	for _, token := range controlTokens {
+		if strings.Contains(input, token) {
+			continue
 		}
+		if n := partialTagSuffix(s, token); n > 1 {
+			if i := len(s) - n; start < 0 || i < start {
+				start = i
+			}
+		}
+	}
+	for _, tag := range thinkingTags {
+		if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
+			continue
+		}
+		if n := partialTagSuffix(s, tag[0]); n > 0 {
+			if i := len(s) - n; start < 0 || i < start {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		s = s[:start]
 	}
 	return s
 }
@@ -151,7 +174,7 @@ func stripPartialControlMarkup(s string) string {
 // input itself has the tags, one outermost wrapper pair goes, as in
 // CleanOutput.
 func PartialOutput(s, input string) string {
-	t := strings.TrimLeft(stripPartialControlMarkup(s), " \t\r\n")
+	t := strings.TrimLeft(stripPartialControlMarkup(s, input), " \t\r\n")
 	if strings.Contains(input, outputOpen) {
 		return unwrappedOutput(t)
 	}
@@ -225,9 +248,9 @@ func clean(out, input string, partial bool) string {
 		}
 	}
 	if partial {
-		return strings.TrimSpace(stripPartialControlMarkup(s))
+		return strings.TrimSpace(stripPartialControlMarkup(s, input))
 	}
-	return strings.TrimSpace(stripControlMarkup(s))
+	return strings.TrimSpace(stripControlMarkup(s, input))
 }
 
 // partialTagSuffix is the length of s's suffix that is a proper prefix
@@ -246,7 +269,8 @@ func partialTagSuffix(s, tag string) int {
 // may sit in a code fence or among other text. ok is false when there is
 // no such object; the caller then takes the text as it is (Clean),
 // without a title. An object whose content is empty is an empty answer.
-func ParseAnswer(text string) (Answer, bool) {
+// Input is the user's source text and instruction, whose own markers stay.
+func ParseAnswer(text string, input ...string) (Answer, bool) {
 	raw := extractObject(text)
 	if raw == "" {
 		return Answer{}, false
@@ -259,8 +283,8 @@ func ParseAnswer(text string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripControlMarkup(a.Title)), `"“”#*`))
-	a.Content = strings.TrimSpace(stripControlMarkup(a.Content))
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripControlMarkup(a.Title, input...)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripControlMarkup(a.Content, input...))
 	return a, true
 }
 
@@ -301,8 +325,9 @@ func extractObject(text string) string {
 
 // PartialAnswer reads what a streaming answer holds so far: the title and
 // the content of a JSON answer as far as they came, or, when the model
-// writes plain text instead, the text itself as content.
-func PartialAnswer(text string) Answer {
+// writes plain text instead, the text itself as content. Input is the
+// user's source text and instruction, whose own markers stay.
+func PartialAnswer(text string, input ...string) Answer {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return Answer{}
@@ -315,13 +340,13 @@ func PartialAnswer(text string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		t = strings.TrimSpace(stripPartialControlMarkup(t))
+		t = strings.TrimSpace(stripPartialControlMarkup(t, input...))
 		if !strings.HasPrefix(t, "{") {
 			return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
 		}
 	}
-	title := strings.TrimSpace(stripPartialControlMarkup(partialField(t, "title")))
-	content := strings.TrimLeft(stripPartialControlMarkup(partialField(t, "content")), " \n")
+	title := strings.TrimSpace(stripPartialControlMarkup(partialField(t, "title"), input...))
+	content := strings.TrimLeft(stripPartialControlMarkup(partialField(t, "content"), input...), " \n")
 	return Answer{Title: title, Content: content}
 }
 
