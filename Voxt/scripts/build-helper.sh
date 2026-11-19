@@ -30,10 +30,7 @@ if [[ "${1:-}" == "--out" ]]; then
   OUT="$(mkdir -p "$2" && cd "$2" && pwd)"
 fi
 IDENTITY="${VOXTNEW_SIGN_IDENTITY:--}"
-swift_sandbox_flag=""
-if [[ "${VOXTNEW_SWIFT_DISABLE_SANDBOX:-0}" == "1" ]]; then
-  swift_sandbox_flag="--disable-sandbox"
-fi
+swift_sandbox_flag="$("$ROOT/scripts/swift-sandbox-flag.sh")"
 
 # The helper reports the app's version (helper.hello): keep them in step.
 # Read the plist with grep/sed, not PlistBuddy: the tests run on Linux too.
