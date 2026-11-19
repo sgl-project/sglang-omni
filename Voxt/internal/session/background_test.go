@@ -70,6 +70,120 @@ func TestBackgroundComposesBesideANewSession(t *testing.T) {
 	}
 }
 
+func TestBackgroundStartRules(t *testing.T) {
+	for _, req := range []StartRequest{
+		{Kind: store.KindRewrite, Target: slack},
+		{Kind: store.KindTranslate, Target: slack},
+		{Kind: store.KindTranscribe, Target: slack, Try: true},
+	} {
+		h := newHarness(t, &fakeFile{text: "dictated"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+			c.Select = &fakeSelector{text: "Dear Ann"}
+		})
+		id, _ := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the answer streaming", func(s Snapshot) bool { return s.ID == id && s.CanStop() })
+		if !h.m.Background(id) {
+			t.Fatal("a composing session would not background")
+		}
+		if _, err := h.m.Start(req); err != ErrBusy {
+			t.Errorf("%s with a background answer: err=%v, want ErrBusy", req.Kind, err)
+		}
+	}
+	h := newHarness(t, &fakeFile{text: "dictated"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+		c.Select = &fakeSelector{text: "Dear Ann"}
+	})
+	id, _ := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+	h.speak(id, 3)
+	h.rec.waitFor(t, "the answer streaming", func(s Snapshot) bool { return s.ID == id && s.CanStop() })
+	if !h.m.Background(id) {
+		t.Fatal("a composing session would not background")
+	}
+	other, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+	if err != nil || other == id {
+		t.Fatalf("ordinary Transcribe was refused beside the background answer: %v", err)
+	}
+	h.m.Cancel(other)
+}
+
+func TestBackgroundPersistenceDoesNotBlockForeground(t *testing.T) {
+	h := newHarness(t, &fakeFile{text: "dictated"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+		c.Select = &fakeSelector{text: "Dear Ann"}
+	})
+	id, _ := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+	h.speak(id, 3)
+	h.rec.waitFor(t, "the answer streaming", func(s Snapshot) bool { return s.ID == id && s.CanStop() })
+	if !h.m.Background(id) {
+		t.Fatal("a composing session would not background")
+	}
+	other, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.hist.putStarted = make(chan struct{})
+	h.hist.putRelease = make(chan struct{})
+	defer func() {
+		select {
+		case <-h.hist.putRelease:
+		default:
+			close(h.hist.putRelease)
+		}
+	}()
+	h.m.StopLLM(id)
+	select {
+	case <-h.hist.putStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the background history write did not start")
+	}
+	updateDone := make(chan struct{})
+	go func() {
+		h.m.update(h.m.cur, func(s *Snapshot) { s.Levels = []float64{0.5} })
+		close(updateDone)
+	}()
+	select {
+	case <-updateDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a foreground update waited for background history")
+	}
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		startDone <- err
+	}()
+	select {
+	case err := <-startDone:
+		if err != ErrBusy {
+			t.Fatalf("Start during foreground recording: %v, want ErrBusy", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start waited for background history")
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		h.m.Stop(other)
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop waited for background history")
+	}
+	cancelDone := make(chan struct{})
+	go func() {
+		h.m.Cancel(other)
+		close(cancelDone)
+	}()
+	select {
+	case <-cancelDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Cancel waited for background history")
+	}
+	close(h.hist.putRelease)
+	end := h.rec.waitFor(t, "the backgrounded answer's end", func(s Snapshot) bool { return s.ID == id && s.State.Ended() })
+	if end.State != Done || len(h.hist.all()) == 0 {
+		t.Fatalf("the end snapshot arrived before its history: end=%+v entries=%d", end, len(h.hist.all()))
+	}
+}
+
 // TestBackgroundCancel: cancelling the backgrounded answer ends it where
 // it is and keeps no result, while the new session runs on.
 func TestBackgroundCancel(t *testing.T) {

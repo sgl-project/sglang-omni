@@ -195,6 +195,17 @@ func TestContinueElsewhereFollowsUp(t *testing.T) {
 	}
 }
 
+func TestResurfaceWaitsForBackground(t *testing.T) {
+	a := &app{under: answerCard{open: true}, bgID: "bg", bgSess: session.Snapshot{State: session.Composing}}
+	if a.resurface() {
+		t.Fatal("the old card returned while the background answer still streamed")
+	}
+	a.bgSess.State = session.Done
+	if !a.resurface() {
+		t.Fatal("the old card did not return after the background answer ended")
+	}
+}
+
 // History keeps each entry's conversation: a follow-up has its first
 // session's ID, a new conversation its own.
 func TestHistoryConversation(t *testing.T) {

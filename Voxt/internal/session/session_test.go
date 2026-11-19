@@ -83,6 +83,7 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 	}
 	cfg.Settings = func() settings.Settings { return s }
 	h.m = New(cfg)
+	t.Cleanup(h.m.Close)
 	return h
 }
 

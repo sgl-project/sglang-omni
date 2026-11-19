@@ -7,11 +7,13 @@ package main
 // closed the card and reopened it at the default place.
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -92,6 +94,76 @@ func TestTranscribeWhileRewriteStreams(t *testing.T) {
 	if es[0].Kind != store.KindTranscribe || es[0].Result != "dictated words" ||
 		es[1].Kind != store.KindRewrite || es[1].Status != store.StatusDone || es[1].Result != full {
 		t.Fatalf("history %+v", es)
+	}
+}
+
+func TestBackgroundLiveAfterTranscribeBlocksOtherFeatures(t *testing.T) {
+	chat := &fakeChat{text: strings.Repeat("x", 100000), stall: true}
+	set, keys, tr := fileSetup(t, "plan", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+		s.Features.Transcribe.Enhance = false
+	}, keys)
+	a.pump("the answer streaming", func() bool { return a.sess.CanStop() })
+	tr.setText("dictated")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("recording", func() bool { return a.sess.State == session.Recording })
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the transcription's end", func() bool { return a.sess.State.Ended() })
+	if a.bgID == "" || !a.bgSess.State.Live() || a.hotkeyPhase() != hotkey.Composing {
+		t.Fatalf("unexpected background state: bg=%q bgSess=%+v sess=%+v phase=%v", a.bgID, a.bgSess, a.sess, a.hotkeyPhase())
+	}
+	current := a.sess.ID
+	for _, binding := range []string{"rewrite/0", "translate/0", "note/0"} {
+		tap(a, binding, textEditApp)
+		if a.sess.ID != current || a.mgr.Current().ID != current {
+			t.Errorf("%s started another session after the foreground ended: current=%q new=%q", binding, current, a.sess.ID)
+		}
+	}
+	if id, _ := a.startTry(store.KindRewrite); id != "" {
+		t.Errorf("a Try started beside the background answer: %q", id)
+	}
+}
+
+func TestBackgroundBeforeFirstTokenCanBeCancelled(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cancel func(*sessionApp)
+	}{
+		{name: "close", cancel: func(a *sessionApp) { a.closeAnswer() }},
+		{name: "escape after foreground end", cancel: func(a *sessionApp) {
+			a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fakeChat{text: `{"title":"Plan","content":"too late"}`, delay: 30 * time.Second}
+			set, keys, tr := fileSetup(t, "plan", chat)
+			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+			a := newSessionApp(t, ev, func(s *settings.Settings) {
+				set(s)
+				s.Features.Rewrite.ShowCard = true
+				s.Features.Transcribe.Enhance = false
+			}, keys)
+			a.pump("composing before the first token", func() bool {
+				return a.sess.State == session.Composing && a.sess.Card && a.sess.Draft == ""
+			})
+			tr.setText("dictated")
+			tap(a, "transcribe/0", textEditApp)
+			a.pump("the pre-token background answer", func() bool {
+				return a.bgID != "" && a.bgSess.State.Live() && a.bgSess.Draft == "" && a.sess.State == session.Recording
+			})
+			if tc.name == "escape after foreground end" {
+				tap(a, "transcribe/0", textEditApp)
+				a.pump("the foreground's end", func() bool { return a.sess.State.Ended() })
+			}
+			tc.cancel(a)
+			a.pump("the pre-token background cancellation", func() bool { return a.bgID == "" })
+			if a.bgID != "" {
+				t.Fatalf("the pre-token background request was not cancelled: bg=%q state=%s", a.bgID, a.bgSess.State)
+			}
+		})
 	}
 }
 

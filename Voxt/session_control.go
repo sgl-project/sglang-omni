@@ -90,6 +90,9 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 	if a.mgr == nil {
 		return "", nil
 	}
+	if a.bgID != "" && a.bgSess.State.Live() && (req.Kind != store.KindTranscribe || req.Try) {
+		return "", nil // only an ordinary Transcribe may run beside the background answer
+	}
 	if n := a.sessionBlocker(req.Kind); n != nil {
 		if !req.Try {
 			a.showNotice(*n)

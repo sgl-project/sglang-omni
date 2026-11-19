@@ -482,12 +482,19 @@ func (f *fakeText) pastes() []string {
 
 // memHistory keeps entries in memory.
 type memHistory struct {
-	dir     string
-	mu      sync.Mutex
-	entries []store.Entry
+	dir        string
+	mu         sync.Mutex
+	entries    []store.Entry
+	putStarted chan struct{}
+	putRelease chan struct{}
+	putOnce    sync.Once
 }
 
 func (h *memHistory) Put(_ context.Context, e store.Entry) error {
+	if h.putStarted != nil {
+		h.putOnce.Do(func() { close(h.putStarted) })
+		<-h.putRelease
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.entries = append(h.entries, e)

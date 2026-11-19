@@ -191,7 +191,7 @@ func (a *app) canFollowUp() bool {
 // closeAnswer closes the answer card (and cancels a follow-up, another
 // language, or the backgrounded answer, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() || a.writingAnswer() {
+	if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
 		a.cancelCardSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""
@@ -218,7 +218,7 @@ func (a *app) setAside(try bool) {
 // resurface brings the card under back once no card shows and no session
 // runs, and says whether it did.
 func (a *app) resurface() bool {
-	if !a.under.open || a.answer.open || a.sess.State.Live() {
+	if !a.under.open || a.answer.open || a.sess.State.Live() || a.bgID != "" && a.bgSess.State.Live() {
 		return false
 	}
 	a.answer, a.under = a.under, answerCard{}
