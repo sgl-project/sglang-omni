@@ -1117,12 +1117,21 @@ class Qwen3TTSStreamingVocoderScheduler(
     ) -> Qwen3TTSCodecStateArena | None:
         """The stream rows, and as many for whole requests, that the asynchronous workers decode against."""
         if self.incremental_decoder is None or (not self.async_decode):
-            # note (ratish): a synchronous decode keeps each stream's state on the stream, so only the asynchronous workers take rows.
+            # note (ratish): the left-context decoder keeps no Codec state and a synchronous decode keeps it on each stream, so only the asynchronous stateful workers take rows.
             return None
         elif num_slots is None:
             raise ValueError(
                 "Qwen3-TTS sizes its Codec state arena from the in-flight cap, and this server admits without one; "
                 "set --tts_engine.engine.max_queued_requests or --vocoder.factory.codec_state_slots"
+            )
+        elif (
+            isinstance(num_slots, bool)
+            or not isinstance(num_slots, int)
+            or num_slots <= 0
+        ):
+            # note (ratish): the slot count arrives untyped from factory config, and a fraction would pass the arena's own check and size it to zero rows.
+            raise ValueError(
+                f"--vocoder.factory.codec_state_slots must be a positive integer, got {num_slots!r}"
             )
         else:
             pass
@@ -1182,9 +1191,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             return (None, None, None, ())
         else:
             pass
-        graph_enabled = bool(
-            enabled and self.async_decode and (not self.deterministic_inference)
-        )
         graph_batch_sizes = self.resolve_incremental_warm_graph_batch_sizes(
             max_batch_size=min(self.followup_max_batch_size, self.codec_arena.num_slots)
         )
@@ -1203,7 +1209,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             fresh_frames=cold_widths,
             batch_sizes=graph_batch_sizes,
             min_free_gb=min_free_gb,
-            enabled=graph_enabled,
+            enabled=enabled,
             compile_fresh_frames=cold_widths if compile_kernels else (),
             arena=self.codec_arena,
             graph_pool=initial_graph_pool,
@@ -1218,7 +1224,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 fresh_frames=tuple(window_frames),
                 batch_sizes=graph_batch_sizes,
                 min_free_gb=min_free_gb,
-                enabled=graph_enabled,
+                enabled=enabled,
                 # note (ratish): the size classes share a program across widths, so each width that
                 # attends in place compiles; a wider one takes the gathered step and stays eager.
                 compile_fresh_frames=(
@@ -1253,7 +1259,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 ),
                 batch_sizes=graph_batch_sizes,
                 min_free_gb=min_free_gb,
-                enabled=graph_enabled,
+                enabled=enabled,
                 arena=self.codec_arena,
                 graph_pool=initial_graph_pool,
                 emit_frames=tail_emit_frames,
@@ -1288,7 +1294,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     fresh_frames=warm_fresh_frames,
                     batch_sizes=graph_batch_sizes,
                     min_free_gb=min_free_gb,
-                    enabled=graph_enabled,
+                    enabled=enabled,
                     compile_fresh_frames=warm_fresh_frames if compile_kernels else (),
                     arena=self.codec_arena,
                     graph_pool=IncrementalCodecGraphPool(

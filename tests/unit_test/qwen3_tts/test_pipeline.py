@@ -11727,7 +11727,7 @@ def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_in_flight_cap(
 
 def uncapped_vocoder(
     monkeypatch: pytest.MonkeyPatch,
-    vocoder_overrides: dict[str, bool | int],
+    vocoder_overrides: dict[str, bool | int | float],
     is_deterministic: bool,
 ) -> Qwen3TTSStreamingVocoderScheduler:
     """Build the vocoder of a server whose engine queue is unbounded, through the config, factory and real scheduler."""
@@ -11764,7 +11764,7 @@ def uncapped_vocoder(
 @pytest.mark.parametrize(
     ("vocoder_overrides", "is_deterministic", "slots"),
     [
-        ({"enable_stateful_codec_decoder": False}, False, None),
+        ({"enable_stateful_codec_decoder": False, "async_decode": True}, False, None),
         ({"async_decode": False}, False, None),
         ({"async_decode": True}, True, None),
         ({"async_decode": True, "codec_state_slots": 8}, False, 8),
@@ -11790,6 +11790,19 @@ def test_qwen3_tts_uncapped_async_vocoder_needs_a_slot_count(
 ) -> None:
     with pytest.raises(ValueError, match="admits without one"):
         uncapped_vocoder(monkeypatch, {"async_decode": True}, False)
+
+
+@pytest.mark.parametrize("codec_state_slots", [0.5, 0, True])
+def test_qwen3_tts_async_vocoder_refuses_a_slot_count_that_is_not_a_positive_integer(
+    monkeypatch: pytest.MonkeyPatch, codec_state_slots: float | int | bool
+) -> None:
+    """A fractional codec_state_slots passed the arena's own check and sized it to zero rows: streams took the left-context decoder and whole requests waited forever for a reserved row."""
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        uncapped_vocoder(
+            monkeypatch,
+            {"async_decode": True, "codec_state_slots": codec_state_slots},
+            False,
+        )
 
 
 def test_qwen3_tts_vocoder_codec_state_reaches_model_info(
