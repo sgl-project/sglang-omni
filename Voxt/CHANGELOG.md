@@ -15,11 +15,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
+### Fixed
+
+- **Deleting a speech model's draft no longer leaves an old provider using its missing path**: Qwen3-ASR, MOSS-Transcribe-Diarize and Whisper Large v3 continue without the draft.
+
 ### 中文
 
 #### 新增
 
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+
+#### 修复
+
+- **删除语音识别模型的草稿模型后，旧提供方不再使用已删除的路径**：Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 会不使用草稿模型继续转录。
 
 ## [2.1.1] - 2026-11-17
 
