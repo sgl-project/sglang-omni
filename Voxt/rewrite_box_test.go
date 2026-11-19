@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -381,7 +382,10 @@ func TestReopenBoxTypedAfterRestart(t *testing.T) {
 // selection, typing, Enter (taken; Shift+Enter is a new line), the
 // pictures and their limit, the voice line, Esc.
 func TestRewriteBoxView(t *testing.T) {
-	a, _, _ := newTestApp(t)
+	a, fs, _ := newTestApp(t)
+	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+		return proto.ClipboardImageResult{JPEG: boxJPEG(t)}, nil
+	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
 	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "the selected text"})

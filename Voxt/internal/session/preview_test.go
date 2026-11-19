@@ -181,6 +181,49 @@ func TestBoxInputClearedDuringWindowReviewIsNotSent(t *testing.T) {
 	}
 }
 
+func TestBoxResendInputClearedDuringWindowReviewIsNotSent(t *testing.T) {
+	model := &fakeLLM{text: `{"title":"Friday","content":"We ship on Friday."}`}
+	approve := make(chan struct{})
+	var approved atomic.Bool
+	h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
+		s.Privacy.SendWindow = true
+		c.Window = func(context.Context, int) ([]byte, error) { return []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, nil }
+		c.BoxInput = func(context.Context) (string, [][]byte, error) {
+			if approved.Load() {
+				return "", nil, nil
+			}
+			return "delete me", nil, nil
+		}
+		c.BoxReview = func(ctx context.Context) error {
+			select {
+			case <-approve:
+				approved.Store(true)
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	})
+	_, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Typed: "delete me"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.rec.waitFor(t, "the resend window preview", func(s Snapshot) bool { return s.ImagePreviewKind == "window" })
+	close(approve)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Typed != "" {
+		t.Fatalf("cleared resend text survived: end %s, typed %q", end.State, end.Typed)
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; strings.Contains(user, "delete me") {
+		t.Errorf("cleared resend text in the user message:\n%s", user)
+	}
+}
+
 func TestBoxWindowReviewDoesNotBlockMissingLanguageModel(t *testing.T) {
 	review := make(chan struct{}, 1)
 	h := newHarness(t, &fakeFile{text: "make it polite"}, nil, func(c *Config, s *settings.Settings) {

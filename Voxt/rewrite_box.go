@@ -339,32 +339,12 @@ func (a *app) boxPaste(svc uiServices) bool {
 		a.box.limit = true
 		a.boxSync()
 		return true
-	case has(transfer.PNG):
-		raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
-		if err != nil {
-			a.box.err = i18n.T("This image could not be read.")
-			a.boxSync()
-			return true
-		}
-		gen := a.boxGen
-		seq := a.boxReserve()
-		a.async(func() {
-			jpeg, err := imgconv.JPEG(raw)
-			a.post(func() {
-				errText := ""
-				if err != nil {
-					errText, jpeg = i18n.T("This image could not be read."), nil
-				}
-				a.boxConverted(gen, seq, jpeg, errText, i18n.T("Clipboard"))
-			})
-		})
-		return true
-	case has(transfer.FileList):
+	case has(transfer.PNG), has(transfer.FileList):
 		gen := a.boxGen
 		seq := a.boxReserve()
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
 			errText := ""
-			if err != nil {
+			if err != nil || len(res.JPEG) > imgconv.MaxFileBytes {
 				res.JPEG, errText = nil, i18n.T("This image could not be read.")
 			}
 			a.boxConverted(gen, seq, res.JPEG, errText, i18n.T("Clipboard"))

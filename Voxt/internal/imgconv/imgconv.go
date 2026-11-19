@@ -23,7 +23,8 @@ const MaxSide = 1600
 const quality = 70
 
 const (
-	maxFileBytes = 32 << 20
+	// MaxFileBytes is the largest encoded picture accepted for conversion.
+	MaxFileBytes = 32 << 20
 	maxPixels    = 40_000_000
 )
 
@@ -33,7 +34,7 @@ var errImageTooLarge = errors.New("image is too large")
 // whose longer side is at most MaxSide. A JPEG already within the bound
 // goes through unchanged.
 func JPEG(data []byte) ([]byte, error) {
-	if len(data) > maxFileBytes {
+	if len(data) > MaxFileBytes {
 		return nil, errImageTooLarge
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
@@ -60,11 +61,11 @@ func JPEGFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxFileBytes {
+	if len(data) > MaxFileBytes {
 		return nil, errImageTooLarge
 	}
 	return JPEG(data)
