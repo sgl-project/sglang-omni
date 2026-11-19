@@ -263,9 +263,14 @@ public struct HotkeyConfigureParams: Codable, Sendable {
     /// behavior a tap). Absent: nothing cancels. Never judged while
     /// inactive, so its keys reach the app in front.
     public var cancel: HotkeyBinding?
+    /// The configuration's number: the app counts up per hotkey.configure.
+    /// The helper applies a configuration only above the one in effect
+    /// (requests can land out of order) and reports it on every
+    /// hotkey.event. Nil: no generation (an old app).
+    public var generation: Int?
 
     public init(sequence: UInt64? = nil, bindings: [HotkeyBinding], doubleTapMs: Double? = nil, longPressMs: Double? = nil, tapMaxMs: Double? = nil,
-                swallowFn: Bool? = nil, active: Bool? = nil, cancel: HotkeyBinding? = nil) {
+                swallowFn: Bool? = nil, active: Bool? = nil, cancel: HotkeyBinding? = nil, generation: Int? = nil) {
         self.sequence = sequence
         self.bindings = bindings
         self.doubleTapMs = doubleTapMs
@@ -274,6 +279,7 @@ public struct HotkeyConfigureParams: Codable, Sendable {
         self.swallowFn = swallowFn
         self.active = active
         self.cancel = cancel
+        self.generation = generation
     }
 }
 
@@ -317,15 +323,20 @@ public struct HotkeyEventParams: Codable, Sendable {
     public var heldMs: Double?
     public var t: Double
     public var front: App?
+    /// The configuration (HotkeyConfigureParams.generation) the event was
+    /// decided under; the app drops events of a configuration it has
+    /// since replaced. Nil: no generation (an old helper).
+    public var generation: Int?
 
     /// The recognizer's event, with heldMs to 0.1 ms and t to 1 µs.
-    public init(_ e: HotkeyEvent, front: App?) {
+    public init(_ e: HotkeyEvent, front: App?, generation: Int? = nil) {
         binding = e.binding
         phase = e.phase
         behavior = e.behavior
         heldMs = e.heldMs.map { ($0 * 10).rounded() / 10 }
         t = (e.t * 1000).rounded() / 1000
         self.front = front
+        self.generation = generation
     }
 }
 
