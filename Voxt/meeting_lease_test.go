@@ -24,6 +24,15 @@ func (f *leaseTestASR) Hold(ctx context.Context) (func(), error) {
 	return f.fakeProfileASR.Hold(ctx)
 }
 
+func TestFastProfileDoesNotArchiveOnCritical(t *testing.T) {
+	if !shouldArchiveOnCritical(profile.Config{}) {
+		t.Fatal("production profiling must still archive on critical pressure")
+	}
+	if shouldArchiveOnCritical(profile.Config{FastProfile: true}) {
+		t.Fatal("fast profiling must record critical pressure without aborting")
+	}
+}
+
 func TestPerTrackLeaseOrder(t *testing.T) {
 	events := []string{}
 	releases := 0

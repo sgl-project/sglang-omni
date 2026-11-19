@@ -40,6 +40,10 @@ type profileDependencies struct {
 	closeRuntime func() error
 }
 
+func shouldArchiveOnCritical(config profile.Config) bool {
+	return !config.FastProfile
+}
+
 type perTrackVAD struct {
 	model     vad.Model
 	speech    profileASR
@@ -248,7 +252,7 @@ func runMeetingProfile(
 	var firstRequestCritical bool
 	monitor.Snapshot("pre_load")
 	recorder.SetFirstASRHook(func() {
-		if sample := monitor.Snapshot("first_request"); sample.Pressure == "critical" {
+		if sample := monitor.Snapshot("first_request"); sample.Pressure == "critical" && shouldArchiveOnCritical(config) {
 			// Same early-archive gate as ready: the first request already
 			// hit critical memory pressure, so stop the final pass instead
 			// of spending the whole input on a rejected sample.
@@ -283,7 +287,7 @@ func runMeetingProfile(
 	if runErr != nil {
 		return
 	}
-	if ready := monitor.Snapshot("ready"); ready.Pressure == "critical" || monitor.PeakPressure() == "critical" {
+	if ready := monitor.Snapshot("ready"); shouldArchiveOnCritical(config) && (ready.Pressure == "critical" || monitor.PeakPressure() == "critical") {
 		// Loading already pushed the machine to critical memory pressure:
 		// archive the run instead of spending the whole input on a sample
 		// the validator would reject anyway.
@@ -347,7 +351,7 @@ func runMeetingProfile(
 	runErr = recorder.Measure("final_pass", audioDuration, func() error {
 		return meeting.FinalizePass(finalCtx, meetingConfig, meetingRow, nil)
 	})
-	if firstRequestCritical {
+	if firstRequestCritical && shouldArchiveOnCritical(config) {
 		runErr = errors.New("memory pressure critical at the first request; archiving the run")
 		return
 	}

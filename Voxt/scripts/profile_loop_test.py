@@ -510,6 +510,42 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_vad_strategy_is_an_allowed_profiling_field(self):
         loop.validate_config_schema({"vad_strategy": "batched"})
 
+    def test_lease_strategy_is_an_allowed_profiling_field(self):
+        loop.validate_config_schema({"lease_strategy": "per-track"})
+
+    def test_fast_profile_is_an_allowed_profiling_field(self):
+        loop.validate_config_schema({"fast_profile": True})
+
+
+class FastProfileTests(unittest.TestCase):
+    def test_fast_profile_records_critical_without_rejecting_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = raw_report(100)
+            report["config"] = {"fast_profile": True}
+            report["resources"]["peak_memory_pressure"] = {"value": "critical"}
+            path = Path(temporary) / "result.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            reasons, _ = loop.result_invalid_reasons(path, 0)
+            self.assertNotIn("peak_memory_pressure=critical", reasons)
+            valid, _ = loop.valid_result(path, 0)
+            self.assertTrue(valid)
+            summary = loop.summarize_reports([report, report, report])
+            self.assertEqual(summary["status"], "success")
+            report["config"]["fast_profile"] = False
+            path.write_text(json.dumps(report), encoding="utf-8")
+            reasons, _ = loop.result_invalid_reasons(path, 0)
+            self.assertIn("peak_memory_pressure=critical", reasons)
+            with self.assertRaises(ValueError):
+                loop.summarize_reports([report, report, report])
+
+    def test_fast_profile_detects_input_with_zero_second_gate(self):
+        environment = {"power_source": "AC Power", "idle_seconds": 0}
+        self.assertEqual(
+            loop.environment_violations(environment, 0, True),
+            ["user input during profiling"],
+        )
+        self.assertEqual(loop.environment_violations(environment, 0), [])
+
 
 class AttemptsTests(unittest.TestCase):
     def test_single_attempt_diagnostic_succeeds_without_median(self):

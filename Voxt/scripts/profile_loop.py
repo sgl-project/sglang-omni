@@ -44,6 +44,8 @@ CONFIG_FIELDS = {
     "cache_limit_mb",
     "idle_timeout_ms",
     "vad_strategy",
+    "lease_strategy",
+    "fast_profile",
     "vad",
     "language",
     "cleanup",
@@ -222,7 +224,10 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
         report.get("status") != "success"
         or report.get("warnings")
         or report.get("errors")
-        or not report_memory_pressure_valid(report)
+        or (
+            not report_memory_pressure_valid(report)
+            and not report.get("config", {}).get("fast_profile")
+        )
         for report in reports
     ):
         raise ValueError(
@@ -480,7 +485,7 @@ def result_invalid_reasons(
     if report.get("errors"):
         reasons.append(f"errors={len(report['errors'])}")
     pressure = report_peak_memory_pressure(report)
-    if pressure != "normal":
+    if pressure != "normal" and not report.get("config", {}).get("fast_profile"):
         reasons.append(f"peak_memory_pressure={pressure or 'missing'}")
     return reasons, report
 
@@ -493,9 +498,12 @@ def valid_result(path: Path, returncode: int) -> tuple[bool, dict[str, object] |
 
 
 def environment_invalid_reasons(
-    during: list[dict[str, object]], after: dict[str, object], idle_seconds: float
+    during: list[dict[str, object]],
+    after: dict[str, object],
+    idle_seconds: float,
+    fast_profile: bool = False,
 ) -> list[str]:
-    reasons = environment_violations(after, idle_seconds)
+    reasons = environment_violations(after, idle_seconds, fast_profile)
     if after.get("contenders"):
         reasons.append("contending native servers after the run")
     for sample in during:
@@ -506,20 +514,26 @@ def environment_invalid_reasons(
 
 
 def environment_violations(
-    environment: dict[str, object], idle_seconds: float
+    environment: dict[str, object], idle_seconds: float, fast_profile: bool = False
 ) -> list[str]:
     violations = []
     if environment.get("power_source") != "AC Power":
         violations.append("left AC power")
-    if environment.get("idle_seconds", 0) < idle_seconds:
+    input_threshold = 30 if fast_profile else idle_seconds
+    if environment.get("idle_seconds", 0) < input_threshold:
         violations.append("user input during profiling")
     return violations
 
 
 def environment_attempt_valid(
-    during: list[dict[str, object]], after: dict[str, object], idle_seconds: float
+    during: list[dict[str, object]],
+    after: dict[str, object],
+    idle_seconds: float,
+    fast_profile: bool = False,
 ) -> bool:
-    if environment_violations(after, idle_seconds) or after.get("contenders"):
+    if environment_violations(after, idle_seconds, fast_profile) or after.get(
+        "contenders"
+    ):
         return False
     return not any(sample.get("violations") for sample in during)
 
@@ -552,6 +566,7 @@ def run_profile_process(
     sample_seconds: float,
     secrets: list[str],
     environment_sampler=None,
+    fast_profile: bool = False,
 ) -> tuple[int, list[dict[str, object]]]:
     sampler = environment_sampler or host_environment
     descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -662,6 +677,7 @@ def run_matrix(
                         idle_seconds,
                         environment_sample_seconds,
                         redaction_values(run_config),
+                        run_config.get("fast_profile") is True,
                     )
                     after = host_environment()
                     write_json(
@@ -672,7 +688,10 @@ def run_matrix(
                         attempt_dir / "result.json", returncode
                     )
                     environment_reasons = environment_invalid_reasons(
-                        during, after, idle_seconds
+                        during,
+                        after,
+                        idle_seconds,
+                        run_config.get("fast_profile") is True,
                     )
                     attempts.append(
                         {

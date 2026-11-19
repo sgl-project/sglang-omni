@@ -31,6 +31,7 @@ type Config struct {
 	IdleTimeoutMS        int         `json:"idle_timeout_ms,omitempty"`
 	VADStrategy          string      `json:"vad_strategy,omitempty"`
 	LeaseStrategy        string      `json:"lease_strategy,omitempty"`
+	FastProfile          bool        `json:"fast_profile,omitempty"`
 	DeferEvaluation      bool        `json:"-"`
 	VAD                  VADConfig   `json:"vad"`
 	Language             string      `json:"language,omitempty"`
