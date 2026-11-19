@@ -66,10 +66,15 @@ func (f *fakeProfileVAD) Hold(context.Context) (func(), error) {
 }
 
 type fakeProfileChat struct {
-	correctionError bool
+	correctionError   bool
+	releases          *int
+	firstCallReleases *int
 }
 
 func (f fakeProfileChat) Chat(_ context.Context, request llm.Request) (llm.Response, error) {
+	if f.releases != nil && f.firstCallReleases != nil && *f.firstCallReleases < 0 {
+		*f.firstCallReleases = *f.releases
+	}
 	if len(request.Messages) > 0 && request.Messages[0].Role == llm.System {
 		if f.correctionError {
 			return llm.Response{}, errors.New("correction timeout")
@@ -137,7 +142,9 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	config.Reference = reference
 	config.Cleanup = true
 	config.Summary = true
+	config.IdleTimeoutMS = 1
 	releases := 0
+	llmFirstReleases := -1
 	speech := &fakeProfileASR{segments: 65, releases: &releases}
 	detector := &fakeProfileVAD{releases: &releases}
 	dependencies := defaultProfileDependencies()
@@ -147,7 +154,7 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
 	dependencies.newVAD = func(profile.Config) (profileVAD, error) { return detector, nil }
 	dependencies.newLLM = func(context.Context, profile.LLMConfig) (meeting.SummaryChat, error) {
-		return fakeProfileChat{}, nil
+		return fakeProfileChat{releases: &releases, firstCallReleases: &llmFirstReleases}, nil
 	}
 	databaseDir := ""
 	dependencies.openStore = func(ctx context.Context, dir string) (store.Store, error) {
@@ -163,14 +170,14 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	}
 	// MTD diarizes in pieces planned from speech regions, so the import
 	// runs VAD once before the single diarization request.
-	if report.Status != "success" || speech.diarizeCalls != 1 || speech.transcribeCalls != 0 || detector.calls != 1 || releases != 2 || !closed {
-		t.Fatalf("status %s, ASR %+v, VAD %+v, releases %d, closed %v", report.Status, speech, detector, releases, closed)
+	if report.Status != "success" || speech.diarizeCalls != 1 || speech.transcribeCalls != 0 || detector.calls != 1 || releases != 2 || llmFirstReleases != 2 || !closed {
+		t.Fatalf("status %s, ASR %+v, VAD %+v, releases %d, first LLM releases %d, closed %v", report.Status, speech, detector, releases, llmFirstReleases, closed)
 	}
 	counts := map[string]int{}
 	for _, stage := range report.Stages {
 		counts[stage.Name]++
 	}
-	if counts["correction"] != 5 || counts["summary"] != 3 || counts["diarization"] != 1 || counts["teardown"] != 1 || counts["vad"] != 1 {
+	if counts["correction"] != 5 || counts["summary"] != 3 || counts["diarization"] != 1 || counts["idle_unload"] != 1 || counts["teardown"] != 1 || counts["vad"] != 1 {
 		t.Errorf("stage counts %+v", counts)
 	}
 	if report.Evaluation.Value == nil || report.ASRTranscript.SHA256 == report.Transcript.SHA256 || !strings.Contains(report.Transcript.Text, "yyy") {

@@ -281,6 +281,20 @@ func runMeetingProfile(
 	if runErr != nil {
 		return
 	}
+	for _, release := range releases {
+		release()
+	}
+	releases = nil
+	if config.IdleTimeoutMS > 0 {
+		runErr = recorder.Measure("idle_unload", 0, func() error {
+			time.Sleep(time.Duration(config.IdleTimeoutMS)*time.Millisecond + 100*time.Millisecond)
+			return nil
+		})
+		if runErr != nil {
+			return
+		}
+	}
+	monitor.Snapshot("after_final_pass")
 	_, rawSegments, err := database.Meetings().Meeting(ctx, meetingRow.ID)
 	if err != nil {
 		runErr = err
