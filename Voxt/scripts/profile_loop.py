@@ -317,7 +317,9 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
                 [
                     sum(
                         1
-                        for event in report.get("resources", {}).get("memory_pressure_warnings", [])
+                        for event in report.get("resources", {}).get(
+                            "memory_pressure_warnings", []
+                        )
                         if event.get("pressure") == "critical"
                     )
                     for report in reports

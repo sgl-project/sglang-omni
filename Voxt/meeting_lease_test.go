@@ -94,6 +94,20 @@ func TestMeetingProfileDefersEvaluation(t *testing.T) {
 	}
 }
 
+func TestFakeCorrectionPreservesTranscript(t *testing.T) {
+	const input = `[{"i":0,"text":"original text"}]`
+	chat := fakeProfileChat{}
+	response, err := chat.Chat(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.System, Content: input}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Text != input {
+		t.Fatalf("correction changed the transcript: %q", response.Text)
+	}
+}
+
 func TestProfileFakeLLMIsDeterministic(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {

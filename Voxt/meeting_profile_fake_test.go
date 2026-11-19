@@ -110,7 +110,8 @@ func (f fakeProfileChat) Chat(_ context.Context, request llm.Request) (llm.Respo
 			return llm.Response{}, errors.New("correction timeout")
 		}
 		var lines []struct {
-			Index int `json:"i"`
+			Index int    `json:"i"`
+			Text  string `json:"text"`
 		}
 		if err := json.Unmarshal([]byte(request.Messages[len(request.Messages)-1].Content), &lines); err != nil {
 			return llm.Response{}, err
@@ -121,7 +122,7 @@ func (f fakeProfileChat) Chat(_ context.Context, request llm.Request) (llm.Respo
 			if index > 0 {
 				response.WriteByte(',')
 			}
-			encoded, _ := json.Marshal(map[string]any{"i": line.Index, "text": strings.Repeat("y", 200)})
+			encoded, _ := json.Marshal(map[string]any{"i": line.Index, "text": line.Text})
 			response.Write(encoded)
 		}
 		response.WriteByte(']')
@@ -210,7 +211,7 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	if counts["correction"] != 5 || counts["summary"] != 3 || counts["diarization"] != 1 || counts["idle_unload"] != 0 || counts["teardown"] != 1 || counts["vad"] != 1 {
 		t.Errorf("stage counts %+v", counts)
 	}
-	if report.Evaluation.Value == nil || report.ASRTranscript.SHA256 == report.Transcript.SHA256 || !strings.Contains(report.Transcript.Text, "yyy") {
+	if report.Evaluation.Value == nil || report.ASRTranscript.SHA256 != report.Transcript.SHA256 || !strings.Contains(report.Transcript.Text, "xxx") {
 		t.Errorf("evaluation or corrected text missing: %+v", report)
 	}
 	if _, err := os.Stat(databaseDir); !os.IsNotExist(err) {

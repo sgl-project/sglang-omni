@@ -565,6 +565,7 @@ class FastProfileTests(unittest.TestCase):
 
     def test_fast_profile_real_process_samples_input_without_bool_error(self):
         with tempfile.TemporaryDirectory() as temporary:
+
             def environment_sampler():
                 return {"power_source": "AC Power", "idle_seconds": 0, "contenders": []}
 
@@ -579,7 +580,12 @@ class FastProfileTests(unittest.TestCase):
                 fast_profile=True,
             )
             self.assertEqual(returncode, 0)
-            self.assertTrue(any("user input during profiling" in sample.get("violations", []) for sample in during))
+            self.assertTrue(
+                any(
+                    "user input during profiling" in sample.get("violations", [])
+                    for sample in during
+                )
+            )
 
 
 class AttemptsTests(unittest.TestCase):
