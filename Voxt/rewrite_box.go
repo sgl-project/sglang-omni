@@ -338,9 +338,9 @@ func (a *app) boxPaste(svc uiServices) bool {
 		a.boxSync()
 		return true
 	case has(transfer.PNG):
-		raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
-		if err != nil {
-			a.box.err = i18n.T("This image could not be read.")
+		raw, errText := boxClipboardPNG(svc)
+		if errText != "" {
+			a.box.err = errText
 			a.boxSync()
 			return true
 		}

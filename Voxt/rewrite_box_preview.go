@@ -5,7 +5,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 )
 
 const (
@@ -154,4 +156,17 @@ func boxImageCaption(bitmap *boxBitmap, source string) boxImageInfo {
 		info.Width, info.Height = bitmap.Size()
 	}
 	return info
+}
+
+// boxClipboardPNG reads the clipboard's picture for the box, or says why
+// it cannot: one past the converter's limit is refused before converting.
+func boxClipboardPNG(svc uiServices) ([]byte, string) {
+	raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
+	if err != nil {
+		return nil, i18n.T("This image could not be read.")
+	}
+	if len(raw) > imgconv.MaxFileBytes {
+		return nil, i18n.T("This image is too large.")
+	}
+	return raw, ""
 }
