@@ -41,7 +41,7 @@ func TestBuildHelperCopiesFromSwiftBinPath(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			root := t.TempDir()
-			for _, name := range []string{"scripts/build-helper.sh", "mygo.json", "helper/Support/Info.plist", "helper/Support/helper.entitlements"} {
+			for _, name := range []string{"scripts/build-helper.sh", "scripts/swift-sandbox-flag.sh", "mygo.json", "helper/Support/Info.plist", "helper/Support/helper.entitlements"} {
 				content, err := os.ReadFile(name)
 				if err != nil {
 					t.Fatal(err)
@@ -126,5 +126,50 @@ printf '<key>CFBundleShortVersionString</key>\n<string>%s</string>\n' "$version"
 				t.Fatalf("--disable-sandbox count=%d, want %d; swift args:\n%s", got, wantSandboxFlags, swiftLog)
 			}
 		})
+	}
+}
+
+// TestSwiftSandboxFlagShared: the opt-in lives in one script; it prints the
+// flag only when asked, and both build-helper.sh and mac-e2e.sh's direct
+// swift test call go through it (the direct call kept failing in isolated
+// environments with "Invalid manifest" when only build-helper.sh had it).
+func TestSwiftSandboxFlagShared(t *testing.T) {
+	script := "scripts/swift-sandbox-flag.sh"
+	for _, tc := range []struct {
+		name string
+		env  string
+		want string
+	}{
+		{"opt-in prints the flag once", "1", "--disable-sandbox\n"},
+		{"default prints nothing", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := exec.Command("bash", script)
+			command.Env = append(os.Environ(), "VOXTNEW_SWIFT_DISABLE_SANDBOX="+tc.env)
+			out, err := command.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(out) != tc.want {
+				t.Fatalf("output %q, want %q", out, tc.want)
+			}
+		})
+	}
+	read := func(path string) string {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if !strings.Contains(read("scripts/build-helper.sh"), "swift-sandbox-flag.sh") {
+		t.Error("build-helper.sh must take the flag from swift-sandbox-flag.sh, not its own check")
+	}
+	macE2E := read("scripts/mac-e2e.sh")
+	if !strings.Contains(macE2E, `swift test $("$ROOT/scripts/swift-sandbox-flag.sh")`) {
+		t.Error("mac-e2e.sh's direct swift test must use swift-sandbox-flag.sh")
+	}
+	if strings.Count(macE2E, "VOXTNEW_SWIFT_DISABLE_SANDBOX") != 0 {
+		t.Error("the environment check belongs to swift-sandbox-flag.sh only")
 	}
 }
