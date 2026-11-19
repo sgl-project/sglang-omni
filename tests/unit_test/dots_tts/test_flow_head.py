@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
+from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 from tests.unit_test.fixtures.accelerator import require_device_streams
 
 LLM_HIDDEN = 48
@@ -507,6 +508,21 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
     assert flow.resolve_batched_eos() == [False, False]
     assert not flow.has_pending_batched_eos
     assert flow.resolve_batched_eos() == []
+
+
+@pytest.mark.accelerator
+def test_batched_eos_staging_uses_native_device_event() -> None:
+    device = require_device_streams()
+    flow = DotsTTSFlowHead.__new__(DotsTTSFlowHead)
+    flow.batched_eos_pending = 0
+    flow.batched_eos_host = None
+    flow.batched_eos_transfer_slot = PinnedTransferSlot(
+        device, torch.bool, initial_capacity=2
+    )
+
+    flow.stage_batched_eos(torch.tensor([True, False], device=device))
+
+    assert flow.resolve_batched_eos() == [True, False]
 
 
 def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
