@@ -4,11 +4,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
+
 ### Fixed
 
 - **A shortcut pressed on Home after your first result keeps its result** (#4199): with Voxt's window in front on Home, a Transcribe, Translate or Rewrite shortcut still ran as a Try after Home had stopped offering its Try area. The result showed nowhere and History kept no entry, so History could list fewer sessions than you ran. Once Home has no Try area, the shortcut now runs a normal session, as on History or Settings: the result shows, and History keeps it. Before your first result, Home's Try area works as before, and so do the Try areas on the Transcribe, Translate and Rewrite pages.
 
 ### 中文
+
+#### 新增
+
+- **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
 #### 修复
 
