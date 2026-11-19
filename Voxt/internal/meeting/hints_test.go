@@ -16,17 +16,23 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
 
-// heardHints is a speech model that keeps the hot words of every request.
+// heardHints is a speech model that keeps the hot words of every request
+// and signals heard, when set, on each one.
 type heardHints struct {
 	meetTestStreamer
 	mu    sync.Mutex
 	hints [][]string
+	heard chan struct{}
 }
 
 func (h *heardHints) keep(hints []string) {
 	h.mu.Lock()
 	h.hints = append(h.hints, hints)
 	h.mu.Unlock()
+	select {
+	case h.heard <- struct{}{}:
+	default:
+	}
 }
 
 func (h *heardHints) got() [][]string {
@@ -65,6 +71,7 @@ func TestMeetingSendsHotWords(t *testing.T) {
 		}
 	}
 	live := func(t *testing.T, h *heardHints, ta meeting.TrackASR) {
+		h.heard = make(chan struct{}, 1)
 		dir := t.TempDir()
 		s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
 		if err != nil {
@@ -84,10 +91,9 @@ func TestMeetingSendsHotWords(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for deadline := time.Now().Add(10 * time.Second); len(h.got()) == 0 && time.Now().Before(deadline); {
-			time.Sleep(5 * time.Millisecond)
-		}
-		if len(h.got()) == 0 {
+		select {
+		case <-h.heard:
+		case <-time.After(10 * time.Second):
 			t.Fatal("the speech model got no live request before Finish")
 		}
 		if err := m.Finish(ctx, id); err != nil {
