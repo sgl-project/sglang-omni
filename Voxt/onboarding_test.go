@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"math"
 	"reflect"
 	"slices"
@@ -615,6 +616,9 @@ func TestOnboardingWalk(t *testing.T) {
 	}
 	if a.ob.step != obMore {
 		t.Fatalf("the walk ended at step %d", a.ob.step)
+	}
+	if err := a.lib.settings.Update(context.Background(), func(s *settings.Settings) { s.Setup.Done = false }); err != nil {
+		t.Fatal(err)
 	}
 	click(t, tt, "Start using Voxt")
 	if a.ob.open || a.router.Path() != "/home" || !a.lib.settings.Get().Setup.Done {
