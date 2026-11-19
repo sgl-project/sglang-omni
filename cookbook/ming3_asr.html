@@ -606,6 +606,7 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dspark-decoding">DSpark decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#language">Language</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt">Prompt</a></li>
@@ -634,6 +635,17 @@ For Intel GPUs, follow the <a class="reference internal" href="../other_platform
 </pre></div>
 </div>
 <p>Send one audio file to <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/transcriptions</span></code>. The examples below use <code class="docutils literal notranslate"><span class="pre">tests/data/query_to_cars.wav</span></code> and return <code class="docutils literal notranslate"><span class="pre">how</span> <span class="pre">many</span> <span class="pre">cars</span> <span class="pre">are</span> <span class="pre">there</span> <span class="pre">in</span> <span class="pre">the</span> <span class="pre">picture</span></code>.</p>
+</section>
+<section id="dspark-decoding">
+<h2>DSpark decoding<a class="headerlink" href="#dspark-decoding" title="Link to this heading">#</a></h2>
+<p>To enable <a class="reference external" href="https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark">DSpark</a>, set <code class="docutils literal notranslate"><span class="pre">speculative_algorithm</span></code> to <code class="docutils literal notranslate"><span class="pre">DSPARK</span></code> and use <code class="docutils literal notranslate"><span class="pre">temperature=0</span></code>. The registry pins the draft revision automatically:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-asr-tiny<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>DSPARK<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_draft_model_path<span class="w"> </span>wirybeaver/Ming-3.0-asr-tiny-dspark<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dspark-use-greedy-draft<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ragged-verify-mode<span class="w"> </span>static
+</pre></div>
+</div>
 </section>
 <section id="transcription">
 <h2>Transcription<a class="headerlink" href="#transcription" title="Link to this heading">#</a></h2>
@@ -793,6 +805,7 @@ data: [DONE]
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dspark-decoding">DSpark decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcription">Transcription</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#language">Language</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt">Prompt</a></li>
