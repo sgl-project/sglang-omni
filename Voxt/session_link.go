@@ -255,7 +255,9 @@ func resolver(lm local.Services) session.Resolver {
 
 // fallbackCandidates are the models a session may fall back to, in order:
 // Translate's fallback model, then, with Models.LLMSwitch, every other
-// ready model in the Language models page's order.
+// ready model on this Mac in the Language models page's order. The switch
+// never picks an external API: the text would go to a provider the user
+// did not choose for the feature.
 func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Model, chosen string) []string {
 	var ids []string
 	if fb := s.Features.Translate.Fallback; kind == store.KindTranslate && fb != "" && fb != chosen && slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
@@ -265,7 +267,9 @@ func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Mo
 		return ids
 	}
 	for _, x := range ready {
-		if x.ID != chosen && !slices.Contains(ids, x.ID) {
+		setup, _ := providers.Setup(s, x.ID)
+		preset, err := providers.Config(setup).Resolve()
+		if x.ID != chosen && !slices.Contains(ids, x.ID) && err == nil && onThisMac(preset.BaseURL) {
 			ids = append(ids, x.ID)
 		}
 	}
