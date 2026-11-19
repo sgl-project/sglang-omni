@@ -185,7 +185,7 @@ func TestBoxWindowPreviewStaysVisibleUntilConfirmed(t *testing.T) {
 }
 
 func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
-	chat := &fakeChat{status: 400}
+	chat := &fakeChat{status: 400, delay: 100 * time.Millisecond}
 	set, keys, _ := fileSetup(t, "make it shorter", chat)
 	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
 	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
@@ -223,6 +223,15 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 		a.boxSend()
 		if a.box.shown {
 			t.Error("the confirmed resend stayed visible")
+		}
+	})
+	a.postQueue(func() {
+		next := a.sess
+		next.Rev++
+		next.Draft = "streaming"
+		a.sessionChanged(next)
+		if a.box.shown {
+			t.Error("a later draft reopened the confirmed resend")
 		}
 	})
 	a.pump("the resend's answer", func() bool { return a.answer.open })

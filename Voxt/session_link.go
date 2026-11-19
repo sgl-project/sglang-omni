@@ -302,7 +302,8 @@ func (a *app) sessionChanged(s session.Snapshot) {
 				a.box.shown = false // sent: the pill and the card take over
 			}
 		}
-		if s.ID == a.box.sending && s.ImagePreviewKind == "window" && len(s.ImagePreview) > 0 {
+		if s.ID == a.box.sending && s.ImagePreviewKind == "window" && len(s.ImagePreview) > 0 &&
+			(was.ID != s.ID || was.ImagePreviewKind != "window" || len(was.ImagePreview) == 0) {
 			a.box.shown = true
 		}
 		a.boxSync() // the box's lines follow its session
