@@ -312,17 +312,6 @@ func (a *app) saveSpeechContext() {
 	}
 }
 
-type autosaveField interface {
-	Changed() bool
-	Focused() bool
-}
-
-// autosave runs save promptSaveDelay after the last change to field in,
-// whose typing st tracks, or when it loses the focus.
-func (a *app) autosave(in autosaveField, st *speechContextState, save func()) {
-	a.autosaveState(in.Changed(), in.Focused(), st, save)
-}
-
 func (a *app) autosaveState(changed, focused bool, st *speechContextState, save func()) {
 	if changed {
 		st.dirty = true
