@@ -60,6 +60,10 @@ type sessionOverlayLayout struct {
 	LiveID        string
 	LiveWidth     int
 	StreamHeight  float32
+	// CardScrolls is whether the answer card's body is as high as the
+	// screen's room lets it be: below that the card grows to its text,
+	// and the body does not scroll.
+	CardScrolls bool
 }
 
 type sessionOverlayAnimation struct {
