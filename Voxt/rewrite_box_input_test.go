@@ -41,6 +41,22 @@ func TestRewriteBoxWindowAcceptsFileDrops(t *testing.T) {
 	}
 }
 
+func TestRewriteBoxHTMLAndPNGClipboardPastesImage(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.SetClipboardData(transfer.New(transfer.NewItem(
+		transfer.Bytes(transfer.HTML, []byte("<img src=\"picture.png\">")),
+		transfer.Bytes(transfer.PNG, boxPNG(t)),
+	)))
+	tt.Command("paste")
+	frames(tt)
+	if len(a.box.images) != 1 {
+		t.Fatalf("%d images after an HTML+PNG paste, want 1", len(a.box.images))
+	}
+}
+
 func TestRewriteBoxClipboardImageFailureShowsError(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, focusText: true}

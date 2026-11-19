@@ -247,6 +247,33 @@ func TestBoxBackToBackPastesKeepTheirOrder(t *testing.T) {
 	}
 }
 
+func TestBoxMixedPasteLengthsWithoutAFrame(t *testing.T) {
+	long := "one\ntwo\nthree\nfour"
+	for _, tc := range []struct {
+		name   string
+		pastes []string
+		want   string
+	}{
+		{name: "long then short", pastes: []string{long, "x"}, want: long + "x"},
+		{name: "short then long", pastes: []string{"x", long}, want: "x" + long},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true, focusText: true}
+			tt := hudTester(a.boxView, boxWinW, boxWinH)
+			frames(tt)
+			for _, pasted := range tc.pastes {
+				tt.SetClipboardData(transfer.TextData(pasted))
+				tt.Command("paste")
+			}
+			frames(tt)
+			if got := a.boxTextContent(); got != tc.want {
+				t.Fatalf("request text %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true}

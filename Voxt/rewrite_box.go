@@ -317,7 +317,7 @@ func (a *app) boxPaste(svc uiServices) bool {
 	formats := svc.ClipboardFormats()
 	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
 	switch {
-	case has(transfer.Text) || has(transfer.HTML):
+	case has(transfer.Text):
 		return false
 	case has(transfer.PNG):
 		raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
