@@ -40,8 +40,10 @@ danger-circle           # error
 copy
 copy-check              # copied (the answer card)
 pen                     # insert (the answer card)
-maximize-square-minimalistic # a larger answer card (the card)
-minimize-square-minimalistic # the answer card back to small (the card)
+maximize-square-minimalistic # expand or enlarge the meeting card
+minimize-square-minimalistic # collapse or shrink the meeting card
+maximize                # a larger card (the card's header)
+minimize                # the card back to small (the card's header)
 folder-open             # show in Finder
 trash-bin-minimalistic  # delete (a history entry, a shortcut)
 refresh                 # check again

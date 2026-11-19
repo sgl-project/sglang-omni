@@ -26,8 +26,7 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
-		cardBody(context, state.SessionID, card, bodyHeight, layoutState.CardScrolls, actions, local, onMeasured)
-		cardSizeButton(context, card, actions)
+		cardBody(context, state.SessionID, card, bodyHeight, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
 		if card.Message != "" {
 			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(card.Message).Children(func() {
 				icon, color := icons.InfoCircle, ovText2
@@ -41,26 +40,16 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 	})
 }
 
-func cardSizeButton(context *ui.Context, card *sessionCardViewState, actions sessionOverlayActions) {
-	if sizeStepButton(context.Key("ov-card-size"), card.SizeStep) {
-		actions.cycleOverlayCardSize()
+// cardSizeStep is a card's size button, in its header beside the card's
+// other buttons (#3644 FB41): it steps the card through its widths, from
+// the largest back to the first. It returns the step a click chose. It
+// sat in the card's bottom corner, 16 pt and faint, hard to see and hit.
+func cardSizeStep(context *ui.Context, step, steps int) (next int, clicked bool) {
+	label, icon, next := i18n.T("Make the card larger"), icons.Maximize, step+1
+	if next >= steps {
+		label, icon, next = i18n.T("Make the card smaller"), icons.Minimize, 0
 	}
-}
-
-func sizeStepButton(context *ui.Context, step int) bool {
-	label, icon := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic
-	if step+1 == len(layout.CardSizes) {
-		label, icon = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic
-	}
-	button := ui.ButtonBase(context).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
-		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
-	alpha := float32(0.42)
-	if button.Hovered() {
-		alpha = 0.92
-	}
-	return button.Children(func() {
-		ui.Icon(context, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
-	}).Clicked()
+	return next, cardIconButton(context, label, label, icon, true)
 }
 
 func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actions sessionOverlayActions, local sessionOverlayLocal, animation sessionOverlayAnimation) {
@@ -114,24 +103,32 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 			actions.retryAnswer("")
 		}
 	}
-	if card.ShowThinking && cardIconButton(context.Key("ov-card-think"), i18n.T("Thinking level"), card.ThinkingLabel, icons.Tuning2, card.CanThink) {
-		actions.toggleThinkMenu()
-	}
-	if !card.Failed {
-		if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
-			actions.insertAnswer()
+	// The icon buttons sit closer together than the header's items, as a
+	// toolbar's: the size button joined them and a small Translate card
+	// with the widest language name still fits.
+	ui.Row(context.Key("ov-card-tools")).Gap(layout.CardBtnGap).AlignItems(ui.Center).Shrink(0).Children(func() {
+		if card.ShowThinking && cardIconButton(context.Key("ov-card-think"), i18n.T("Thinking level"), card.ThinkingLabel, icons.Tuning2, card.CanThink) {
+			actions.toggleThinkMenu()
 		}
-		copyIcon, copyLabel := icons.Copy, i18n.T("Copy")
-		if card.Copied {
-			copyIcon, copyLabel = icons.CopyCheck, i18n.T("Copied")
+		if !card.Failed {
+			if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
+				actions.insertAnswer()
+			}
+			copyIcon, copyLabel := icons.Copy, i18n.T("Copy")
+			if card.Copied {
+				copyIcon, copyLabel = icons.CopyCheck, i18n.T("Copied")
+			}
+			if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyLabel, copyIcon, card.CanCopy) {
+				actions.copyAnswer()
+			}
 		}
-		if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyLabel, copyIcon, card.CanCopy) {
-			actions.copyAnswer()
+		if _, ok := cardSizeStep(context.Key("ov-card-size"), card.SizeStep, len(layout.CardSizes)); ok {
+			actions.cycleOverlayCardSize()
 		}
-	}
-	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
-		actions.closeAnswer()
-	}
+		if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
+			actions.closeAnswer()
+		}
+	})
 }
 
 func sessionCardKindLabel(kind string) string {
@@ -246,10 +243,13 @@ func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phas
 	})
 }
 
-func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, scrolls bool, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, scrolls bool, faceAlpha float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
 		block := sessionCardBlockAt(card, 0)
 		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight)
+		// The page is as translucent as the card's face, over the same
+		// material: an opaque page drew a darker box (#3836 feedback).
+		request.background = tok(context.Theme()).OverlayFace.Alpha(faceAlpha)
 		if actions.overlayTranscriptResult(context.Key("ov-transcript"), request) {
 			return
 		}
@@ -273,6 +273,7 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 		scroll.Y = math.MaxFloat32
 	}
 	blocks := func() {
+		// The scroller's room is in the card's padding, right of the text.
 		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
 			for index := 0; index < sessionCardBlockCount(card); index++ {
 				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, actions, local, onMeasured)
@@ -287,10 +288,10 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 		// following the end, moved the text a line up and back each time
 		// the card grew (#3836 feedback).
 		scroll.X, scroll.Y, scroll.MaxX, scroll.MaxY = 0, 0, 0, 0
-		ui.Column(context.Key("ov-card-clip")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).ClipY().Children(blocks)
+		ui.Column(context.Key("ov-card-clip")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0).ClipY().Children(blocks)
 		return
 	}
-	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(scroll).Children(blocks)
+	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0).TrackScroll(scroll).Children(blocks)
 }
 
 func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {

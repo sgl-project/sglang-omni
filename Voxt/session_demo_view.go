@@ -28,7 +28,7 @@ func (host *meetingDemoHost) sessionDemoPlacement() sessionDemoPlacement {
 		menu = thinkMenuFrame(menu, model.Top, len(host.sessionState.Menu.Options))
 	default:
 		if host.sessionState.Card != nil && host.sessionState.Card.ShowThinking {
-			menu.X -= layout.CardBtn + layout.CardHeadGap
+			menu.X -= layout.CardBtn + layout.CardBtnGap
 		}
 	}
 	left, top := min(0, menu.X), min(0, menu.Y)

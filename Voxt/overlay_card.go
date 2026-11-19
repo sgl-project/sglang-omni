@@ -47,9 +47,6 @@ func sessionCardPreviewKey(sessionID string, card *sessionCardViewState, blockIn
 func newSessionOverlayPreviewRequest(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, blockIndex int, textColor uiColor, bodyHeight float32) sessionOverlayPreviewRequest {
 	text, _, _ := sessionCardBlockText(card, block)
 	background := ui.RGB(36, 36, 40)
-	if blockIndex < 0 {
-		background = ui.RGB(22, 22, 26)
-	}
 	return sessionOverlayPreviewRequest{
 		key: sessionCardPreviewKey(sessionID, card, blockIndex), text: text,
 		textColor: textColor, link: context.Theme().Accent, background: background,

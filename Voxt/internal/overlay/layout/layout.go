@@ -176,8 +176,11 @@ const (
 	// CardBodyMax is the least text a card shows before it scrolls, on a
 	// work area too short to hold more (Voxt's).
 	CardBodyMax = 220
-	CardInset   = 10 // the text's right inset: the scroller's room
-	CardBodyW   = AnswerW - 2*CardPadX - CardInset
+	// CardInset is the scroller's room right of the card's text, in the
+	// card's padding: the text keeps CardPadX on both sides (it had
+	// CardInset more on its right, which looked off centre).
+	CardInset = 10
+	CardBodyW = AnswerW - 2*CardPadX
 	// CardChrome is the card's height without its text.
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
 	CardMsgGap = 8
@@ -191,9 +194,10 @@ const (
 	CardTextSize   = 14
 	CardTextWeight = 500
 	CardBtn        = 24
+	CardBtnGap     = 8 // between the header's icon buttons (CardTools)
 	CardBtnIcon    = 15
-	// The size button sits in the card's corner, in the padding under
-	// the text (CardPadY), CardSizeBtnInset from the edges.
+	// The meeting card's size button sits in its corner, in the padding
+	// under the text (CardPadY), CardSizeBtnInset from the edges.
 	CardSizeBtn      = 16
 	CardSizeBtnIcon  = 12
 	CardSizeBtnInset = 1
@@ -224,7 +228,7 @@ type CardSize struct{ W int }
 var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}}
 
 // BodyW is the text's width in a card of size s.
-func (s CardSize) BodyW() int { return s.W - 2*CardPadX - CardInset }
+func (s CardSize) BodyW() int { return s.W - 2*CardPadX }
 
 // BubbleW is a conversation's bubble width in a card of size s: the small
 // card's room beside a bubble, kept.
@@ -351,3 +355,7 @@ const (
 func FaceAlpha(o settings.Overlay) float32 {
 	return float32(min(max(o.Opacity, 0.5), 1))
 }
+
+// CardTools is how wide n of a card header's icon buttons are, side by
+// side.
+func CardTools(n int) int { return n*CardBtn + (n-1)*CardBtnGap }

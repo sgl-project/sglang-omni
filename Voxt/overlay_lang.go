@@ -25,7 +25,8 @@ func sessionLanguageMenuHeight(rows int) int {
 
 func sessionLanguageMenuFrame(card mygo.Rectangle, top bool, rows int) mygo.Rectangle {
 	faceX, faceY := card.X+layout.Pad, card.Y+layout.Pad
-	capsuleRight := faceX + card.Width - 2*layout.Pad - layout.CardPadX - 3*layout.CardBtn - 3*layout.CardHeadGap
+	// Insert, Copy, the size and Close right of the capsule.
+	capsuleRight := faceX + card.Width - 2*layout.Pad - layout.CardPadX - layout.CardTools(4) - layout.CardHeadGap
 	height := sessionLanguageMenuHeight(rows)
 	x := capsuleRight - ovLangW
 	y := faceY - ovLangGap - height
