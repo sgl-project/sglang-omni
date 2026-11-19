@@ -25,9 +25,17 @@ from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
 from sglang.srt.utils.common import async_d2h, is_pin_memory_available
-from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 from x_transformers.x_transformers import apply_rotary_pos_emb
+
+# The libdevice pinning in `set_dit_compile_config` needs a private inductor
+# helper that only exists in torch builds linked against CUDA's libdevice.
+try:
+    from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
+
+    _LIBDEVICE_PINNING_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the torch build
+    _LIBDEVICE_PINNING_AVAILABLE = False
 
 if TYPE_CHECKING:
     from cosyvoice.flow.flow import CausalMaskedDiffWithDiT
@@ -150,8 +158,8 @@ class HiFTDecode(Protocol):
     ) -> torch.Tensor: ...
 
 
-class MpsHiFTAdapter:
-    """Keep HiFT's float64 F0 branch on CPU while decoding on MPS."""
+class CpuF0HiFTAdapter:
+    """Keep HiFT's float64 F0 branch on CPU when the device lacks float64."""
 
     upsample_rates: list[int]
     istft_params: dict[str, int]
@@ -164,8 +172,8 @@ class MpsHiFTAdapter:
         self.hift = hift
         self.device = torch.device(device)
         self.f0_predictor = hift.f0_predictor
-        # Note (yexiaodong): MPS rejects float64 transfers; keep the F0 branch
-        # on CPU while the remaining vocoder runs on MPS.
+        # Note (yexiaodong): devices without float64 reject the F0 branch's
+        # casts; keep it on CPU while the remaining vocoder runs on device.
         self.f0_predictor.to(device="cpu")
         self.f0_predictor.to(dtype=torch.float64)
 
@@ -1189,7 +1197,7 @@ def load_cosyvoice3_flow_hift(
     *,
     autocast_dtype: torch.dtype | None,
     enable_flow_estimator_trt: bool = False,
-) -> "tuple[FunCosyVoice3Flow, CausalHiFTGenerator | MpsHiFTAdapter]":
+) -> "tuple[FunCosyVoice3Flow, CausalHiFTGenerator | CpuF0HiFTAdapter]":
     if torch.device(device).type == "mps":
         return load_cosyvoice3_flow_hift_lightweight(checkpoint_dir, device=device)
     else:
@@ -1241,6 +1249,12 @@ def load_cosyvoice3_flow_hift(
         "parametrizations)",
         folded,
     )
+    if not current_platform.is_float64_supported():
+        # The F0 branch is cast to float64 on purpose; devices without float64
+        # support would keep float32 weights and reject the double input.
+        hift = CpuF0HiFTAdapter(hift, device)
+    else:
+        pass
     del cv.model.llm
     if autocast_dtype is not None and torch.device(device).type == "cuda":
         # note(ratish): autocast caches no weight cast under inference mode, so
@@ -1356,8 +1370,13 @@ def keep_hift_constants_on_device(hift: "CausalHiFTGenerator", device: str) -> N
     sine_gen.rand_ini = sine_gen.rand_ini.to(device)
     sine_gen.sine_waves = sine_gen.sine_waves.to(device)
     # note(ratish): HiFT.inference casts the f0 predictor to float64 on every
-    # call; done once here the per-call cast finds nothing to convert.
-    hift.f0_predictor.to(torch.float64)
+    # call; done once here the per-call cast finds nothing to convert. Devices
+    # without float64 keep it on the host instead, and the CPU adapter casts
+    # there after moving F0 off the device.
+    if current_platform.is_float64_supported():
+        hift.f0_predictor.to(torch.float64)
+    else:
+        pass
 
 
 def patch_sine_harmonics(hift: "CausalHiFTGenerator", device: str) -> None:
@@ -1390,7 +1409,7 @@ def load_cosyvoice3_flow_hift_lightweight(
     checkpoint_dir: str,
     *,
     device: str,
-) -> "tuple[FunCosyVoice3Flow, CausalHiFTGenerator | MpsHiFTAdapter]":
+) -> "tuple[FunCosyVoice3Flow, CausalHiFTGenerator | CpuF0HiFTAdapter]":
     """Load only Flow and HiFT for CPU/MPS without constructing a second LLM."""
     try:
         from hyperpyyaml import load_hyperpyyaml
@@ -1433,7 +1452,7 @@ def load_cosyvoice3_flow_hift_lightweight(
         torch.device(device).type == "mps"
         and not current_platform.is_float64_supported()
     ):
-        hift = MpsHiFTAdapter(hift, device)
+        hift = CpuF0HiFTAdapter(hift, device)
     else:
         pass
     del configs
@@ -1450,6 +1469,12 @@ def set_dit_compile_config() -> None:
     inductor_config.fx_graph_cache = True
     dynamo.config.cache_size_limit = 1024
     dynamo.config.accumulated_cache_size_limit = 1024
+    # The libdevice helper only exists in builds that compile against CUDA's
+    # libdevice, so keep the pinning optional.
+    if not _LIBDEVICE_PINNING_AVAILABLE:
+        return
+    else:
+        pass
     # note(ratish): Inductor picks CUDA's libdevice on its first kernel build;
     # cache entries record the file, so a warm boot's first lookups would miss.
     with inductor_config.patch({"eager_numerics.use_pytorch_libdevice": True}):
@@ -1830,7 +1855,7 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
     def __init__(
         self,
         flow: FunCosyVoice3Flow | CausalMaskedDiffWithDiT,
-        hift: "CausalHiFTGenerator | MpsHiFTAdapter",
+        hift: "CausalHiFTGenerator | CpuF0HiFTAdapter",
         autocast_dtype: torch.dtype | None = None,
         hift_dtype: str = "float32",
         hift_max_padding_waste: float = 1.5,
@@ -2579,6 +2604,19 @@ def create_vocoder_executor(
 
     patch_chunk_mask()
 
+    dit_compile_requested = enable_dit_torch_compile
+    if dit_compile_requested and device_obj.type == "npu":
+        # The model that compiles on NPU lets dynamo infer its dynamic dims.
+        # This backbone marks batch and length itself, where inductor's
+        # value-range analysis folds inf * 0 into nan and raises
+        # `Invalid NaN comparison`.
+        enable_dit_torch_compile = False
+        logger.info(
+            f"Fun-CosyVoice3 DiT stays eager on {device_obj}: the compiled "
+            "backbone is not usable on this platform"
+        )
+    else:
+        pass
     # note (ratish): the packed route leaves the padded DiT only the fallback decode,
     # which runs it eagerly, so its compile and graphs would serve no request.
     if enable_dit_torch_compile and flow.is_buffered_packed:
