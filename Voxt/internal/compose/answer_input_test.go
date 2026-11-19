@@ -2,6 +2,7 @@ package compose
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,61 @@ func assertAnswerCleanup(t *testing.T, text, input, want string) {
 	}
 	if got := PartialAnswer(structured, input); got != wantAnswer {
 		t.Errorf("PartialAnswer(%q, %q) = %+v, want %+v", structured, input, got, wantAnswer)
+	}
+}
+
+func assertAnswerCleanupWithPrevious(t *testing.T, text, previous, want string) {
+	t.Helper()
+	inputs := []string{"x", previous}
+	if got := CleanWithInputs(text, inputs); got != want {
+		t.Errorf("CleanWithInputs(%q, %q) = %q, want %q", text, previous, got, want)
+	}
+	if got := PartialCleanWithInputs(text, inputs); got != want {
+		t.Errorf("PartialCleanWithInputs(%q, %q) = %q, want %q", text, previous, got, want)
+	}
+	structured := `{"title":"T","content":` + strconv.Quote(text) + `}`
+	wantAnswer := Answer{Title: "T", Content: want}
+	if got, ok := ParseAnswer(structured, inputs...); !ok || got != wantAnswer {
+		t.Errorf("ParseAnswer(%q, %q) = %+v, %v, want %+v", structured, previous, got, ok, wantAnswer)
+	}
+	if got := PartialAnswer(structured, inputs...); got.Title != wantAnswer.Title || strings.TrimSpace(got.Content) != wantAnswer.Content {
+		t.Errorf("PartialAnswer(%q, %q) = %+v, want %+v", structured, previous, got, wantAnswer)
+	}
+}
+
+func TestAnswerCleanupWithPreviousInput(t *testing.T) {
+	for _, tc := range []struct{ name, text, previous, want string }{
+		{name: "real tool call", text: `Visible<|tool_call|>{"name":"view_image"}`, previous: "explain <|tool_call|>", want: "Visible"},
+		{name: "real role marker", text: "Visible<|im_start|>user", previous: "explain <|im_start|>", want: "Visible"},
+		{name: "spaced tool call", text: `Visible <|tool_call|> {"name":"view_image"}`, previous: "explain <|tool_call|>", want: "Visible"},
+		{name: "spaced role marker", text: "Visible <|im_start|> user", previous: "explain <|im_start|>", want: "Visible"},
+		{name: "padded trailing token", text: "Visible <|im_end|> ", previous: "<|im_end|>", want: "Visible"},
+		{name: "unclosed real thinking block", text: "Shorter. <think>private", previous: "<think>", want: "Shorter."},
+		{name: "literal opener before real block", text: "The <think> tag <think>private</think>", previous: "<think>", want: "The <think> tag"},
+		{name: "two inline literals", text: "Use <|im_end|> <think> tag", previous: "explain <|im_end|> and <think>", want: "Use <|im_end|> <think> tag"},
+		{name: "literal trailing token only", text: "<|im_end|>", previous: "<|im_end|>", want: "<|im_end|>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertAnswerCleanupWithPrevious(t, tc.text, tc.previous, tc.want)
+		})
+	}
+}
+
+func TestPartialAnswerWithPreviousInput(t *testing.T) {
+	inputs := []string{"x", "<think>"}
+	text := "The <think> tag <think>private</think>"
+	for index := 1; index <= len(text); index++ {
+		if got := PartialCleanWithInputs(text[:index], inputs); strings.Contains(got, "private") {
+			t.Fatalf("at %d: reasoning leaked in %q", index, got)
+		}
+	}
+	for _, tc := range []struct{ text, previous, want string }{
+		{text: "Shorter.<|im_end", previous: "<|im_end|>", want: "Shorter."},
+		{text: "The <thi", previous: "<think>", want: "The"},
+	} {
+		if got := PartialCleanWithInputs(tc.text, []string{"x", tc.previous}); got != tc.want {
+			t.Errorf("PartialCleanWithInputs(%q, %q) = %q, want %q", tc.text, tc.previous, got, tc.want)
+		}
 	}
 }
 
@@ -210,6 +266,8 @@ func TestAnswerControlTokenVariants(t *testing.T) {
 func TestAnswerCleanupThinkingClose(t *testing.T) {
 	for _, tc := range []struct{ name, text, want string }{
 		{"answer after thinking close", "reasoning here</think>Final answer", "Final answer"},
+		{"orphan thinking close between newlines", "reasoning\n</think>\n\nFinal answer", "Final answer"},
+		{"orphan thinking close before a newline", "reasoning </think>\nFinal answer", "Final answer"},
 		{"answer after channel close", "reasoning here<channel|>Final answer", "Final answer"},
 		{"answer after duplicate thinking closes", "reasoning</think></think>Final answer", "Final answer"},
 		{"answer after mixed thinking closes", "reasoning</think><channel|>Final answer", "Final answer"},

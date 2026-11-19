@@ -3,7 +3,6 @@ package compose
 import (
 	"encoding/json"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -109,33 +108,6 @@ func partialControlToken(s, input string) bool {
 	return false
 }
 
-// controlTokenStart is the start of the first model control token in s
-// that did not occur in the user's input; -1 when s has only answer text.
-func controlTokenStart(s, input string) int {
-	start := -1
-	for _, token := range controlTokens {
-		if preservedControlToken(token, input) {
-			continue
-		}
-		for offset := 0; offset < len(s); {
-			i := strings.Index(s[offset:], token)
-			if i < 0 {
-				break
-			}
-			i += offset
-			if trailingControlToken(token) && !onlyControlMarkup(s[i+len(token):], input) {
-				offset = i + len(token)
-				continue
-			}
-			if start < 0 || i < start {
-				start = i
-			}
-			break
-		}
-	}
-	return start
-}
-
 func trailingControlToken(token string) bool {
 	switch token {
 	case "<|/tool_call|>", "<|tool_call_end|>", "<|tool_calls_section_end|>", "<|im_end|>", "<|end|>",
@@ -202,7 +174,11 @@ func onlyControlMarkup(s, input string) bool {
 // marker whose block has not closed. Ordinary angle-bracket text and
 // control markup that occurred in the user's input stay.
 func stripControlMarkup(s string, inputs ...string) string {
-	input := strings.Join(inputs, "\n")
+	input := ""
+	var previous []string
+	if len(inputs) > 0 {
+		input, previous = inputs[0], inputs[1:]
+	}
 	trimmed := strings.TrimLeft(s, " \t\r\n")
 	if !strings.Contains(input, "<|im_start|>") && strings.HasPrefix(trimmed, assistantAnswerPrefix) {
 		s = strings.TrimLeft(trimmed[len(assistantAnswerPrefix):], " \t\r\n")
@@ -211,17 +187,25 @@ func stripControlMarkup(s string, inputs ...string) string {
 		if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
 			continue
 		}
-		closeSearchFrom := 0
+		previousTag := previousControlToken(tag[0], previous)
+		openSearchFrom, closeSearchFrom := 0, 0
+		literalOpen := -1
 		for {
-			i := strings.Index(s, tag[0])
+			i := strings.Index(s[openSearchFrom:], tag[0])
+			if i >= 0 {
+				i += openSearchFrom
+			}
 			j := strings.Index(s[closeSearchFrom:], tag[1])
 			if j >= 0 {
 				j += closeSearchFrom
 			}
 			if j >= 0 && (i < 0 || j < i) {
-				next, _ := utf8.DecodeRuneInString(s[j+len(tag[1]):])
-				if j > 0 && j+len(tag[1]) < len(s) && strings.ContainsRune(" \t\r\n", rune(s[j-1])) &&
-					(strings.ContainsRune(" \t\r\n", next) || unicode.IsPunct(next)) {
+				if literalOpen >= 0 {
+					literalOpen = -1
+					closeSearchFrom = j + len(tag[1])
+					continue
+				}
+				if inlineLiteral(s, j, tag[1]) {
 					closeSearchFrom = j + len(tag[1])
 					continue
 				}
@@ -231,11 +215,17 @@ func stripControlMarkup(s string, inputs ...string) string {
 				} else {
 					s = s[after:]
 				}
-				closeSearchFrom = 0
+				openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 				continue
 			}
 			if i < 0 {
 				break
+			}
+			if previousTag && inlineLiteral(s, i, tag[0]) {
+				literalOpen = i
+				openSearchFrom = i + len(tag[0])
+				closeSearchFrom = openSearchFrom
+				continue
 			}
 			rest := s[i+len(tag[0]):]
 			j = strings.Index(rest, tag[1])
@@ -244,10 +234,10 @@ func stripControlMarkup(s string, inputs ...string) string {
 				break
 			}
 			s = s[:i] + rest[j+len(tag[1]):]
-			closeSearchFrom = 0
+			openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 		}
 	}
-	if i := controlTokenStart(s, input); i >= 0 {
+	if i := controlTokenStart(s, inputs...); i >= 0 {
 		s = s[:i]
 	}
 	return s
@@ -257,7 +247,10 @@ func stripControlMarkup(s string, inputs ...string) string {
 // become a control marker, so no marker fragment shows while streaming.
 func stripPartialControlMarkup(s string, inputs ...string) string {
 	s = stripControlMarkup(s, inputs...)
-	input := strings.Join(inputs, "\n")
+	input := ""
+	if len(inputs) > 0 {
+		input = inputs[0]
+	}
 	start := -1
 	for _, token := range controlTokens {
 		if preservedControlToken(token, input) {
@@ -345,19 +338,32 @@ func CleanOutput(out, input string) string {
 // the input was quoted so itself). quoteSource can select the unmerged
 // source when input also carries an instruction for control-markup context.
 func Clean(out, input string, quoteSource ...string) string {
-	return clean(out, input, false, quoteSource...)
+	return clean(out, []string{input}, false, quoteSource...)
+}
+
+// CleanWithInputs is Clean with the current input first and earlier turns after it.
+func CleanWithInputs(out string, inputs []string, quoteSource ...string) string {
+	return clean(out, inputs, false, quoteSource...)
 }
 
 // PartialClean is Clean for a streaming answer: possible control-marker
 // fragments stay hidden until more text arrives.
 func PartialClean(out, input string, quoteSource ...string) string {
-	return clean(out, input, true, quoteSource...)
+	return clean(out, []string{input}, true, quoteSource...)
 }
 
-func clean(out, input string, partial bool, quoteSource ...string) string {
+// PartialCleanWithInputs is PartialClean with the current input first and earlier turns after it.
+func PartialCleanWithInputs(out string, inputs []string, quoteSource ...string) string {
+	return clean(out, inputs, true, quoteSource...)
+}
+
+func clean(out string, inputs []string, partial bool, quoteSource ...string) string {
 	s := strings.TrimSpace(out)
 	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
-	quoteInput := strings.TrimSpace(input)
+	quoteInput := ""
+	if len(inputs) > 0 {
+		quoteInput = strings.TrimSpace(inputs[0])
+	}
 	if len(quoteSource) > 0 {
 		quoteInput = strings.TrimSpace(quoteSource[0])
 	}
@@ -371,9 +377,9 @@ func clean(out, input string, partial bool, quoteSource ...string) string {
 		}
 	}
 	if partial {
-		return strings.TrimSpace(stripPartialControlMarkup(s, input))
+		return strings.TrimSpace(stripPartialControlMarkup(s, inputs...))
 	}
-	return strings.TrimSpace(stripControlMarkup(s, input))
+	return strings.TrimSpace(stripControlMarkup(s, inputs...))
 }
 
 // partialTagSuffix is the length of s's suffix that is a proper prefix
