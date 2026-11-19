@@ -57,8 +57,8 @@ type live struct {
 	// lastRecv is when the server last said anything (s.mu): the
 	// wrap-up calls a quiet server unresponsive.
 	lastRecv time.Time
-	// finalOnly: Finish went straight to the Final, not finishLive.
-	// Only then may the wrap-up close s.out.
+	// finalOnly: finalPass owns s.out, including after a LiveResult
+	// fallback. Only then may the wrap-up close s.out.
 	finalOnly bool
 	// writeGate, set by a test only, holds the writer before each write.
 	writeGate <-chan struct{}

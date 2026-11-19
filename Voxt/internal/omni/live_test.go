@@ -180,17 +180,25 @@ func TestLiveResultFullQueueSalvagesAfterFinalFails(t *testing.T) {
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
 	s.writeGate = gate
-	for range cap(s.out) + 1 {
+	if err := st.Send(tone(10*time.Millisecond, 0.3)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the writer holding the first message", func() bool { return len(s.out) == 0 })
+	for range cap(s.out) {
 		if err := st.Send(tone(10*time.Millisecond, 0.3)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(s.out) != cap(s.out) {
-		t.Fatalf("preview queue has %d of %d messages", len(s.out), cap(s.out))
+	s.mu.Lock()
+	queued, preview := len(s.out), s.preview
+	s.mu.Unlock()
+	if queued != cap(s.out) || !preview {
+		t.Fatalf("preview queue has %d of %d messages, preview %v", queued, cap(s.out), preview)
 	}
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
+	f.waitLogged(t, "the socket's queue is full")
 	f.waitLogged(t, "failed after")
 	s.mu.Lock()
 	finalOnly := s.finalOnly

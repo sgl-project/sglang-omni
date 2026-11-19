@@ -30,8 +30,8 @@ const previewQuiet = previewDrain
 // matters only when the stream's own text is the fallback, so it runs
 // once, and only the fallback paths call it: a Final that failed, and a
 // Salvage asked while the Final is still running (it took too long).
-// A successful Final never waits for it. A LiveResult stream skips it:
-// finishLive owns s.out until it ends the stream.
+// A successful Final never waits for it. A LiveResult stream skips it only
+// while finishLive owns s.out; its Final fallback runs the wrap-up too.
 func (s *live) wrapUpPreview() {
 	s.mu.Lock()
 	ok := s.finalOnly
