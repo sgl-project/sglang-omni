@@ -36,7 +36,8 @@ func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
 	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
-		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip = Composing, true })
+		card := f.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
+		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUp(text, nil)
 		for r.askAgain() {
@@ -102,7 +103,7 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 			}
 			answers = append(answers, p.Text)
 		default:
-			answers = append(answers, compose.Clean(resp.Text, p.Text))
+			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
 		}
 		draft.done(answers)
 	}
@@ -140,9 +141,12 @@ func (d *drafter) add(delta string) {
 	}
 }
 
-// publish puts the draft so far in the snapshot.
+// publish puts the draft so far in the snapshot, without the contract's
+// <output> tags (PartialOutput, with the part's own text as CleanOutput
+// gets it).
 func (d *drafter) publish() {
-	draft := compose.JoinParts(d.parts, append(d.answers, d.buf.String()))
+	part := d.parts[len(d.parts)-1]
+	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 

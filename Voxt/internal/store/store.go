@@ -91,6 +91,7 @@ type Entry struct {
 	SourceText string
 	PromptText string
 	Result     string
+	Title      string // Rewrite's answer title; "" for other kinds and older entries
 	TargetLang string
 	// Delivery: "insert" (pasted where the cursor was), "copy" or "card"
 	// (shown in the answer card).
@@ -114,8 +115,9 @@ type Entry struct {
 
 	// Conversation is the ID of the first session of the answer card's
 	// conversation this one belongs to (its own ID when it began one);
-	// "" for older entries.
-	Conversation string
+	// "" for older entries. Replaces is the answer a redo superseded;
+	// "" for a new turn and older entries.
+	Conversation, Replaces string
 
 	// DSP is the sound processing the speech model's copy of the
 	// recording went through (internal/dsp): "highpass", "level" or
@@ -138,10 +140,11 @@ type Entry struct {
 // HistoryQuery selects history entries: the zero value is every entry,
 // newest first.
 type HistoryQuery struct {
-	Kind   Kind   // "" = every kind
-	Search string // full text over the texts; under 3 characters a substring match
-	Limit  int    // 0 = no limit
-	Offset int
+	Kind         Kind   // "" = every kind
+	Conversation string // "" = every conversation
+	Search       string // full text over the texts; under 3 characters a substring match
+	Limit        int    // 0 = no limit
+	Offset       int
 	// WithAudio selects only the entries with a recording kept.
 	WithAudio bool
 	// After (inclusive) and Before (exclusive) bound CreatedAt; zero means
@@ -221,17 +224,38 @@ type Term struct {
 	Enabled   bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ProfileID binds a write to the profile the term was opened from
+	// ("": the active one, as sessions, imports and learning use).
+	ProfileID string
 }
 
-// Dictionary stores the user's terms.
+// DictionaryProfile is a named set of dictionary terms. Active is true
+// for the one profile Transcribe, Translate and Rewrite use.
+type DictionaryProfile struct {
+	ID     string
+	Name   string
+	Active bool
+}
+
+// Dictionary stores the active profile's terms.
 type Dictionary interface {
-	// Put inserts or replaces a term (by ID); another term with the same
-	// spelling (ignoring case) is core.ErrExists.
+	// Put inserts or replaces a term (by ID); another term in this profile
+	// with the same spelling (ignoring case) is core.ErrExists.
 	Put(ctx context.Context, t Term) error
 	Get(ctx context.Context, id string) (Term, error)
-	// List returns the terms matching search ("" = all), A to Z.
+	// List returns the active profile's terms matching search ("" = all), A to Z.
 	List(ctx context.Context, search string) ([]Term, error)
-	Delete(ctx context.Context, id string) error
+	// Delete removes the term from profileID ("" = the active profile).
+	Delete(ctx context.Context, id, profileID string) error
+	// Profiles lists every profile, A to Z.
+	Profiles(ctx context.Context) ([]DictionaryProfile, error)
+	// CreateProfile adds an inactive profile with a unique, non-empty name.
+	CreateProfile(ctx context.Context, profile DictionaryProfile) error
+	RenameProfile(ctx context.Context, id, name string) error
+	// DeleteProfile removes a profile and its terms, choosing another active
+	// profile when needed. Removing the last profile is core.ErrInvalid.
+	DeleteProfile(ctx context.Context, id string) error
+	ActivateProfile(ctx context.Context, id string) error
 }
 
 // Note is what the user said after the note shortcut (Voxt 1.x's notes):
@@ -327,7 +351,7 @@ type Meetings interface {
 	UpdateMeeting(ctx context.Context, m Meeting) error
 	AppendSegments(ctx context.Context, seq int64, segs []MeetingSegment) error
 	UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error
-	UpdateSegmentText(ctx context.Context, seq int64, idx int, text string) error
+	UpdateSegmentTexts(ctx context.Context, seq int64, texts map[int]string) error
 	ReplaceSegments(ctx context.Context, seq int64, src SegmentSource, segs []MeetingSegment) error
 	Meeting(ctx context.Context, id string) (Meeting, []MeetingSegment, error)
 	ListMeetings(ctx context.Context, q MeetingQuery) ([]Meeting, error)

@@ -45,6 +45,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -191,14 +192,21 @@ type Snapshot struct {
 	// recognised text (Rewrite's spoken instruction); Result what is
 	// delivered.
 	Partial, Raw, Result string
+	// Highlights are dictionary term and alias byte ranges in a
+	// Transcribe Result.
+	Highlights []dict.Span
+	// Spoken is the recognised text as the language model gets it (the
+	// dictionary's aliases replaced), from Composing on; "" when nothing
+	// was said (a selection to translate).
+	Spoken string
 	// Selection is the selected text read when the shortcut fired
 	// (Translate, Rewrite; "" for none), SelectionVia how ("ax", "copy").
 	Selection, SelectionVia string
 	// TargetLanguage is Translate's (a code: "en", "zh-Hans").
 	TargetLanguage string
 	// Draft is the answer so far while the language model writes
-	// (Translate, Rewrite); Title the answer's title (Rewrite writing
-	// from scratch).
+	// (Transcribe's clean-up, Translate, Rewrite); Title the answer's
+	// title (Rewrite writing from scratch).
 	Draft, Title string
 	// Retried: Translate asked again, strictly (the first answer looked
 	// untranslated).
@@ -239,8 +247,10 @@ type Snapshot struct {
 
 // CanStop says whether StopLLM can end the answer streaming into the
 // answer card where it is, keeping what the model wrote so far (#3886).
+// Not Transcribe's clean-up: the rest of what was said would be lost
+// (SkipLLM keeps all of it, as recognised).
 func (s Snapshot) CanStop() bool {
-	return s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return s.Kind != store.KindTranscribe && s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // Elapsed is how long the recording has run (from the first audio), at
@@ -470,6 +480,9 @@ type StartRequest struct {
 	// Conversation is the first session of the card's conversation this
 	// one continues (store.Entry.Conversation); "": it begins one.
 	Conversation string
+	// Replaces is the card answer this session replaces with a redo;
+	// "": it adds a turn instead.
+	Replaces string
 	// SpeechWait, when set, ends the session with these words instead of
 	// recording: the speech model it should use is still downloading.
 	// Translating a selection needs none and goes on.
@@ -487,6 +500,9 @@ type TextInput struct {
 func (s Snapshot) clone() Snapshot {
 	if s.Levels != nil {
 		s.Levels = append([]float64(nil), s.Levels...)
+	}
+	if s.Highlights != nil {
+		s.Highlights = append([]dict.Span(nil), s.Highlights...)
 	}
 	if s.Problem != nil {
 		p := *s.Problem

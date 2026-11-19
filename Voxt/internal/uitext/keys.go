@@ -20,6 +20,10 @@ import (
 // HotkeyText shows keys as macOS writes them: "fn ⇧", "Right ⌘",
 // "⌃⌥Space", "⌃⌘V". Keys that do not parse show as written.
 func HotkeyText(keys string) string {
+	return HotkeyTextFor(i18n.CurrentTranslator(), keys)
+}
+
+func HotkeyTextFor(translator *i18n.Translator, keys string) string {
 	c, err := hotkey.Parse(keys)
 	if err != nil {
 		return strings.TrimSpace(keys)
@@ -36,15 +40,15 @@ func HotkeyText(keys string) string {
 		}
 		switch side {
 		case proto.SideLeft:
-			parts = append(parts, i18n.T("Left %s", glyph[f]))
+			parts = append(parts, translator.T("Left %s", glyph[f]))
 		case proto.SideRight:
-			parts = append(parts, i18n.T("Right %s", glyph[f]))
+			parts = append(parts, translator.T("Right %s", glyph[f]))
 		default:
 			parts = append(parts, glyph[f])
 		}
 	}
 	if c.Key != "" {
-		parts = append(parts, keyGlyph(c.Key))
+		parts = append(parts, keyGlyphFor(translator, c.Key))
 	}
 	// Glyphs run together, and a key's name follows them (⌃⌥⇧⌘V,
 	// ⌥Space, as macOS writes them); other words keep a space around them
@@ -60,20 +64,20 @@ func HotkeyText(keys string) string {
 	return b.String()
 }
 
-// keyGlyph is a key as macOS shows it; the keys whose glyphs few people
+// keyGlyphFor is a key as macOS shows it; the keys whose glyphs few people
 // know (⎋ ↩ ⌫ ⇥) by their names, as Voxt 1.x does.
-func keyGlyph(k string) string {
+func keyGlyphFor(translator *i18n.Translator, k string) string {
 	switch k {
 	case "Space":
-		return i18n.T("Space")
+		return translator.T("Space")
 	case "Return":
-		return i18n.T("Return")
+		return translator.T("Return")
 	case "Tab":
-		return i18n.T("Tab")
+		return translator.T("Tab")
 	case "Escape":
-		return i18n.T("Esc")
+		return translator.T("Esc")
 	case "Delete":
-		return i18n.T("Delete")
+		return translator.T("Delete")
 	case "ForwardDelete":
 		return "⌦"
 	case "Left":
@@ -93,59 +97,67 @@ func keyGlyph(k string) string {
 	case "End":
 		return "↘"
 	case "Mouse3":
-		return i18n.T("Middle mouse button")
+		return translator.T("Middle mouse button")
 	}
 	if n, ok := strings.CutPrefix(k, "Mouse"); ok {
-		return i18n.T("Mouse button %s", n)
+		return translator.T("Mouse button %s", n)
 	}
 	return k
 }
 
 // ParseErrorText says why typed keys do not parse.
 func ParseErrorText(err error) string {
+	return ParseErrorTextFor(i18n.CurrentTranslator(), err)
+}
+
+func ParseErrorTextFor(translator *i18n.Translator, err error) string {
 	switch {
 	case err == nil:
 		return ""
 	case errors.Is(err, hotkey.ErrEmpty), errors.Is(err, hotkey.ErrNoModifier):
-		return i18n.T("Type the keys, as in Control+Option+Space.")
+		return translator.T("Type the keys, as in Control+Option+Space.")
 	case errors.Is(err, hotkey.ErrTwoKeys):
-		return i18n.T("Only one key besides the modifiers.")
+		return translator.T("Only one key besides the modifiers.")
 	case errors.Is(err, hotkey.ErrFnSide):
-		return i18n.T("fn has no left or right side.")
+		return translator.T("fn has no left or right side.")
 	}
-	return i18n.T("Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.")
+	return translator.T("Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.")
 }
 
-// systemShortcutName names what macOS uses keys for.
-func systemShortcutName(sys string) string {
+// systemShortcutNameFor names what macOS uses keys for.
+func systemShortcutNameFor(translator *i18n.Translator, sys string) string {
 	switch sys {
 	case hotkey.SystemSpotlight:
-		return i18n.T("Spotlight")
+		return translator.T("Spotlight")
 	case hotkey.SystemFinderSearch:
-		return i18n.T("Finder search")
+		return translator.T("Finder search")
 	case hotkey.SystemInputSource:
-		return i18n.T("switching input sources")
+		return translator.T("switching input sources")
 	case hotkey.SystemAppSwitcher:
-		return i18n.T("the app switcher")
+		return translator.T("the app switcher")
 	case hotkey.SystemWindows:
-		return i18n.T("switching windows")
+		return translator.T("switching windows")
 	}
-	return i18n.T("copy, paste and other editing commands")
+	return translator.T("copy, paste and other editing commands")
 }
 
 // HotkeyProblemText says what is wrong with a binding.
 func HotkeyProblemText(p hotkey.Problem) string {
+	return HotkeyProblemTextFor(i18n.CurrentTranslator(), p)
+}
+
+func HotkeyProblemTextFor(translator *i18n.Translator, p hotkey.Problem) string {
 	switch p.Code {
 	case hotkey.ProblemInvalid:
-		return ParseErrorText(p.Err)
+		return ParseErrorTextFor(translator, p.Err)
 	case hotkey.ProblemDuplicate:
-		return i18n.T("The same keys as shortcut %d.", p.OtherIndex+1)
+		return translator.T("The same keys as shortcut %d.", p.OtherIndex+1)
 	case hotkey.ProblemConflict:
-		return i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Other))
+		return translator.T("%s has the same keys and trigger, so only one of them works.", FeatureTitleFor(translator, p.Other))
 	case hotkey.ProblemSystem:
-		return i18n.T("macOS uses these keys for %s.", systemShortcutName(p.System))
+		return translator.T("macOS uses these keys for %s.", systemShortcutNameFor(translator, p.System))
 	case hotkey.ProblemBareKey:
-		return i18n.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.")
+		return translator.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.")
 	}
 	return ""
 }
@@ -154,14 +166,18 @@ func HotkeyProblemText(p hotkey.Problem) string {
 // index: its own, and the conflicts reported on another feature's
 // binding that clash with it.
 func HotkeyProblems(f settings.Features, feature string) map[int][]string {
+	return HotkeyProblemsFor(i18n.CurrentTranslator(), f, feature)
+}
+
+func HotkeyProblemsFor(translator *i18n.Translator, f settings.Features, feature string) map[int][]string {
 	out := map[int][]string{}
 	for _, p := range hotkey.Check(f) {
 		switch {
 		case p.Feature == feature:
-			out[p.Index] = append(out[p.Index], HotkeyProblemText(p))
+			out[p.Index] = append(out[p.Index], HotkeyProblemTextFor(translator, p))
 		case p.Code == hotkey.ProblemConflict && p.Other == feature:
 			out[p.OtherIndex] = append(out[p.OtherIndex],
-				i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Feature)))
+				translator.T("%s has the same keys and trigger, so only one of them works.", FeatureTitleFor(translator, p.Feature)))
 		}
 	}
 	return out
@@ -179,13 +195,17 @@ func HotkeyGlyphs(keys string) string {
 
 // TriggerText names a trigger.
 func TriggerText(trigger string) string {
+	return TriggerTextFor(i18n.CurrentTranslator(), trigger)
+}
+
+func TriggerTextFor(translator *i18n.Translator, trigger string) string {
 	switch trigger {
 	case settings.TriggerDouble:
-		return i18n.T("Double tap")
+		return translator.T("Double tap")
 	case settings.TriggerLong:
-		return i18n.T("Long press")
+		return translator.T("Long press")
 	}
-	return i18n.T("Tap")
+	return translator.T("Tap")
 }
 
 // TriggerHowText says how a shortcut's trigger is used.
@@ -214,19 +234,23 @@ func FeaturePrefix(feature string) string {
 
 // FeatureTitle names a feature (or paste-last) in a problem.
 func FeatureTitle(feature string) string {
+	return FeatureTitleFor(i18n.CurrentTranslator(), feature)
+}
+
+func FeatureTitleFor(translator *i18n.Translator, feature string) string {
 	switch feature {
 	case hotkey.Translate:
-		return i18n.T("Translate")
+		return translator.T("Translate")
 	case hotkey.Rewrite:
-		return i18n.T("Rewrite")
+		return translator.T("Rewrite")
 	case hotkey.PasteLast:
-		return i18n.T("Paste the last result")
+		return translator.T("Paste the last result")
 	case hotkey.CancelID:
-		return i18n.T("Cancel recording")
+		return translator.T("Cancel recording")
 	case hotkey.Note:
-		return i18n.T("Notes")
+		return translator.T("Notes")
 	case hotkey.Meeting:
-		return i18n.T("Meetings")
+		return translator.T("Meetings")
 	}
-	return i18n.T("Transcribe")
+	return translator.T("Transcribe")
 }

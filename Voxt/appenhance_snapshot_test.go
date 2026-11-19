@@ -30,7 +30,7 @@ func snapshotsAppEnhance(t *testing.T, out string) {
 			if run.lang != "en" {
 				a.updateSettings(func(s *settings.Settings) { s.General.Language = run.lang })
 			}
-			tt.SetDark(run.dark)
+			setSnapshotMode(a, tt, run.dark)
 			tt.SetScale(2)
 			a.version = "0.1.0"
 			readyModels(a)
@@ -68,7 +68,7 @@ func snapshotsAppEnhance(t *testing.T, out string) {
 			a.urlReads["com.google.Chrome"] = urlRead{ok: true}
 			a.urlReads["com.apple.Safari"] = urlRead{err: "no web area"}
 			a.helperNotified(appActivated(slackApp))
-			a.aePage.sel = "g-chat"
+			a.aeUI.sel = "g-chat"
 			a.navigate("/app-enhancement")
 			save("ae-page")
 			scrollTo("Group prompt")
@@ -77,13 +77,13 @@ func snapshotsAppEnhance(t *testing.T, out string) {
 			save("ae-apps")
 			a.navigate("/home")
 			a.navigate("/app-enhancement")
-			a.aePage.appsOpen = true
+			a.aeUI.appsOpen = true
 			a.loadApps()
 			save("ae-apps-dialog")
-			a.aePage.appsOpen = false
-			a.aePage.browsersOpen = true
+			a.aeUI.appsOpen = false
+			a.aeUI.browsersOpen = true
 			save("ae-browsers-dialog")
-			a.aePage.browsersOpen = false
+			a.aeUI.browsersOpen = false
 		}
 	}
 }

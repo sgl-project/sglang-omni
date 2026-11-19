@@ -193,3 +193,50 @@ func notesShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	save("page-notes-edit")
 	click(t, tt, i18n.T("Cancel"))
 }
+
+func TestNotesPageModelAppliesCompletedRead(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	repo := a.lib.store.Notes()
+	if err := repo.Put(context.Background(), store.Note{ID: "note-1", Text: "first", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	posts := make(chan func(), 8)
+	a.postQueue = func(fn func()) { posts <- fn }
+	a.navigate("/notes")
+	model := a.notesPageModel(time.Now())
+	if !model.Loading || len(model.Rows) != 0 {
+		t.Fatalf("initial model: loading %t, rows %d", model.Loading, len(model.Rows))
+	}
+	drainPosts(posts)
+	model = a.notesPageModel(time.Now())
+	if model.Loading || len(model.Rows) != 1 {
+		t.Fatalf("completed model: loading %t, rows %d", model.Loading, len(model.Rows))
+	}
+	if err := repo.Put(context.Background(), store.Note{ID: "note-2", Text: "second", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	a.loadNotes()
+	drainPosts(posts)
+	if model := a.notesPageModel(time.Now()); len(model.Rows) != 2 {
+		t.Fatalf("reloaded model has %d rows", len(model.Rows))
+	}
+}
+
+func TestNotesPageModelTracksShortcutConflicts(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	if problems := a.notesPageModel(time.Now()).Shortcut.Problems; len(problems) != 0 {
+		t.Fatalf("initial problems %q", problems)
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: settings.DefaultNote, Trigger: settings.TriggerTap}}
+	})
+	if problems := a.notesPageModel(time.Now()).Shortcut.Problems; len(problems) == 0 {
+		t.Fatal("new Transcribe conflict is missing")
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: settings.DefaultTranscribe, Trigger: settings.TriggerTap}}
+	})
+	if problems := a.notesPageModel(time.Now()).Shortcut.Problems; len(problems) != 0 {
+		t.Fatalf("removed conflict remains %q", problems)
+	}
+}

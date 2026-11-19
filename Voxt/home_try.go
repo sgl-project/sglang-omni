@@ -59,7 +59,7 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 func (a *app) tryStarted(place tryPlace, kind store.Kind, id string, n *sessionNotice) {
 	switch place {
 	case placeHome:
-		a.hm.block = n
+		a.homeUI.block = n
 	case placeFeature:
 		a.fui(string(kind)).block = n
 	case placeOnboarding:
@@ -73,12 +73,11 @@ func (a *app) tryStarted(place tryPlace, kind store.Kind, id string, n *sessionN
 // Home while its try runs or shows a result, or says why it did not
 // start, so a finished try does not take its result away.
 func (a *app) homeShowsTry(mine bool) bool {
-	hm := &a.hm
-	if !a.prefs.Setup.Tried && len(hm.recent) == 0 {
-		hm.tryOn = true
+	if !a.prefs.Setup.Tried && len(a.hm.recent) == 0 {
+		a.homeUI.tryOn = true
 		return true
 	}
-	return hm.tryOn && (mine || hm.block != nil)
+	return a.homeUI.tryOn && (mine || a.homeUI.block != nil)
 }
 
 // markTried records that VoxtNew has given a result (Home's Try area
