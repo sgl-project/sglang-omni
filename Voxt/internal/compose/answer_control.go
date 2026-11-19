@@ -125,6 +125,17 @@ func controlTokenStart(s string, inputs ...string) int {
 				offset = i + len(token)
 				continue
 			}
+			literalPair := false
+			for _, tag := range thinkingTags {
+				if preserved && token == tag[1] && strings.TrimSpace(after) == "" &&
+					strings.LastIndex(s[:i], tag[0]) > strings.LastIndex(s[:i], tag[1]) {
+					literalPair = true
+				}
+			}
+			if literalPair {
+				offset = i + len(token)
+				continue
+			}
 			if preserved && !structuralControlToken(token, after) {
 				offset = i + len(token)
 				continue

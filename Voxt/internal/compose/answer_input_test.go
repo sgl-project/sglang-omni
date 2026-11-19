@@ -227,6 +227,9 @@ func TestAnswerCleanupLiteralMarkerBeforeRealMarker(t *testing.T) {
 
 func TestAnswerCleanupPreservesLiteralThinkingPair(t *testing.T) {
 	assertAnswerCleanup(t, "Keep <think>this</think> whole", "Explain <think> literally", "Keep <think>this</think> whole")
+	assertAnswerCleanup(t, "Keep <think>this</think>", "Explain <think> and </think> literally", "Keep <think>this</think>")
+	assertAnswerCleanup(t, "The <think> tag and </think> tag are markers.</think>", "Explain <think> and </think> literally", "The <think> tag and </think> tag are markers.")
+	assertAnswerCleanup(t, "Keep <|channel>this<channel|>", "Explain <|channel> and <channel|> literally", "Keep <|channel>this<channel|>")
 }
 
 func TestAnswerCleanupOrphanThinkCloseWithControlSuffix(t *testing.T) {
