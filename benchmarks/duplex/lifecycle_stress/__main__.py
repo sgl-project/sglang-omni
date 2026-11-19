@@ -39,6 +39,7 @@ def mock(arguments: argparse.Namespace) -> None:
         reply_chunks=arguments.reply_chunks,
         chunk_delay_ms=arguments.chunk_delay_ms,
         close_delay_ms=arguments.close_delay_ms,
+        unit_ms=arguments.unit_ms,
     )
     asyncio.run(serve_mock(settings, arguments.host, arguments.port))
 
@@ -159,6 +160,12 @@ def main() -> None:
         type=float,
         default=mock_defaults.close_delay_ms,
         help="how long the stand-in model takes to close a session",
+    )
+    mock_parser.add_argument(
+        "--unit-ms",
+        type=int,
+        default=mock_defaults.unit_ms,
+        help="input the stand-in model takes per step, as the model it imitates publishes: 80, 1000, 200 or 20",
     )
     mock_parser.set_defaults(handle=mock)
 

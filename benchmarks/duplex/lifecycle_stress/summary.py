@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections import Counter
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from benchmarks.duplex.lifecycle_stress.records import (
 # note (Yi Zhao): the server's resident memory still climbs over its first cycles on a healthy run, so growth is measured after them.
 WARMUP_CYCLES = 5
 MAX_REPORTED_ERRORS = 5
+MIN_GROWTH_POINTS = 2
 
 
 class Distribution(BaseModel):
@@ -33,6 +35,7 @@ class StressSummary(BaseModel):
     scenario: Scenario
     protocol: Protocol
     server: dict[str, JsonValue]
+    server_unit_ms: int | None
     concurrency: int
     cycles: int
     session_outcomes: dict[str, int]
@@ -81,43 +84,44 @@ def summarize(samples: StressSamples) -> StressSummary:
         for cycle in samples.cycles
         if cycle.snapshot_after is not None
     ]
-    last_snapshot = snapshots[-1] if snapshots else None
-    sessions_left = None if last_snapshot is None else last_snapshot.active_sessions
+    sessions_left = None if samples.closing is None else samples.closing.active_sessions
 
     rss_series = [
         snapshot.rss_megabytes
         for snapshot in snapshots
         if snapshot.rss_megabytes is not None
     ]
-    rss_growth_megabytes_per_cycle: float | None = None
+    measured_snapshots = snapshots[WARMUP_CYCLES:]
+    measured_rss = [
+        snapshot.rss_megabytes
+        for snapshot in measured_snapshots
+        if snapshot.rss_megabytes is not None
+    ]
+    rss_growth_megabytes_per_cycle: float | None
+    if len(measured_rss) >= MIN_GROWTH_POINTS:
+        # note (Yi Zhao): a fitted line, because the difference of two readings moves with either one of them.
+        rss_growth_megabytes_per_cycle = statistics.linear_regression(
+            range(len(measured_rss)), measured_rss
+        ).slope
+    else:
+        rss_growth_megabytes_per_cycle = None
     task_count_growth: int | None = None
     thread_count_growth: int | None = None
-    if len(snapshots) > WARMUP_CYCLES:
-        warm_snapshot = snapshots[WARMUP_CYCLES - 1]
-        assert last_snapshot is not None, "snapshots without a last one"
-        measured_cycles = len(snapshots) - WARMUP_CYCLES
+    if len(measured_snapshots) >= MIN_GROWTH_POINTS:
+        first_measured, last_measured = measured_snapshots[0], measured_snapshots[-1]
         if (
-            warm_snapshot.rss_megabytes is not None
-            and last_snapshot.rss_megabytes is not None
+            first_measured.task_count is not None
+            and last_measured.task_count is not None
         ):
-            rss_growth_megabytes_per_cycle = (
-                last_snapshot.rss_megabytes - warm_snapshot.rss_megabytes
-            ) / measured_cycles
+            task_count_growth = last_measured.task_count - first_measured.task_count
         else:
             pass
         if (
-            warm_snapshot.task_count is not None
-            and last_snapshot.task_count is not None
-        ):
-            task_count_growth = last_snapshot.task_count - warm_snapshot.task_count
-        else:
-            pass
-        if (
-            warm_snapshot.thread_count is not None
-            and last_snapshot.thread_count is not None
+            first_measured.thread_count is not None
+            and last_measured.thread_count is not None
         ):
             thread_count_growth = (
-                last_snapshot.thread_count - warm_snapshot.thread_count
+                last_measured.thread_count - first_measured.thread_count
             )
         else:
             pass
@@ -134,7 +138,9 @@ def summarize(samples: StressSamples) -> StressSummary:
         capacity_unrecovered_cycles = None
     else:
         capacity_unrecovered_cycles = sum(
-            cycle.capacity_recovery_ms is None for cycle in samples.cycles
+            cycle.capacity_probe is None
+            or cycle.capacity_probe.admitted != samples.max_connections
+            for cycle in samples.cycles
         )
 
     expire_overshoots_ms: list[float] = []
@@ -170,6 +176,7 @@ def summarize(samples: StressSamples) -> StressSummary:
         scenario=samples.scenario,
         protocol=samples.protocol,
         server=samples.server,
+        server_unit_ms=samples.server_unit_ms,
         concurrency=samples.concurrency,
         cycles=len(samples.cycles),
         session_outcomes=dict(Counter(session.outcome for session in sessions)),

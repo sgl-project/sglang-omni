@@ -55,6 +55,8 @@ class SessionPlan:
     protocol: Protocol
     pcm: bytes
     packets: int
+    # note (Yi Zhao): the packet that completes the server's first unit; a reply cannot start before the server has it.
+    reply_packet_index: int
     leave_point: LeavePoint
     leave_style: LeaveStyle
     idle_point: IdlePoint
@@ -211,7 +213,7 @@ async def drive_session(
             )
         )
         # note (Yi Zhao): acting on the first response.created read live keeps the reply in progress; one read from a backlog may already be over.
-        if packet_index == 0 and plan.should_cancel_reply:
+        if packet_index == plan.reply_packet_index and plan.should_cancel_reply:
             created = await receive_response(connection, "response.created")
             cancel_sent_s = time.perf_counter()
             await connection.send(client_event("response.cancel", {}))
@@ -226,7 +228,7 @@ async def drive_session(
                     else:
                         pass
                 cancel_ms = (time.perf_counter() - cancel_sent_s) * MS_PER_SECOND
-        elif packet_index == 0 and plan.leave_point == "reply":
+        elif packet_index == plan.reply_packet_index and plan.leave_point == "reply":
             await receive_until(connection, "response.created")
             break
         else:

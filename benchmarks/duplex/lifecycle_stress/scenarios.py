@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import platform
 import time
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ import httpx
 from pydantic import BaseModel, JsonValue
 
 from benchmarks.duplex.artifacts import source_fingerprint
-from benchmarks.duplex.client import PACKET_BYTES, SAMPLE_RATE
+from benchmarks.duplex.client import PACKET_BYTES, PACKET_MS, SAMPLE_RATE
 from benchmarks.duplex.lifecycle_stress.host_metrics import read_rss_megabytes
 from benchmarks.duplex.lifecycle_stress.records import (
     DEBUG_ROUTE_PATH,
@@ -79,6 +80,9 @@ class PublishedLimits(BaseModel):
 
 
 class PublishedCapabilities(BaseModel):
+    """What this client reads of the capabilities a shared deployment publishes."""
+
+    native_unit_ms: int
     limits: PublishedLimits
 
 
@@ -177,22 +181,35 @@ async def run_cycle(
         )
     )
     outcomes = [outcome for client in client_outcomes for outcome in client]
-    last_ended_s = max(outcome.ended_s for outcome in outcomes)
+    # note (Yi Zhao): a run without clients is the control that shows what the capacity probe alone leaves behind.
+    last_ended_s = max(
+        (outcome.ended_s for outcome in outcomes), default=time.perf_counter()
+    )
     deadline_s = last_ended_s + settings.cleanup_wait_s
     cleanup_latency_ms, is_cleanup_timed_out = await observer.await_no_sessions(
         last_ended_s, deadline_s
     )
+    # note (Yi Zhao): read before the probe, so the probe's own connections are not in this cycle's resources.
+    snapshot_after = await observer.snapshot()
     probe: CapacityProbe | None = None
     capacity_recovery_ms: float | None = None
     if settings.max_connections is not None:
-        while capacity_recovery_ms is None:
+        is_recovered = False
+        while not is_recovered:
             probe_started_s = time.perf_counter()
             probe = await probe_capacity(
                 settings.url, settings.max_connections, settings.cleanup_wait_s
             )
             # note (Yi Zhao): a probe whose connects failed on the client host admitted fewer than the cap without one denial; that is not a recovered server.
             if probe.admitted == settings.max_connections:
-                capacity_recovery_ms = (probe_started_s - last_ended_s) * MS_PER_SECOND
+                is_recovered = True
+                # note (Yi Zhao): the server frees a slot by removing the session from its table, so with a session count to read this time would repeat the cleanup latency; it is recorded only where the probe is the one view of the server.
+                if observer.has_debug_route:
+                    pass
+                else:
+                    capacity_recovery_ms = (
+                        probe_started_s - last_ended_s
+                    ) * MS_PER_SECOND
             elif time.perf_counter() >= deadline_s:
                 break
             else:
@@ -213,7 +230,7 @@ async def run_cycle(
         is_cleanup_timed_out=is_cleanup_timed_out,
         capacity_probe=probe,
         capacity_recovery_ms=capacity_recovery_ms,
-        snapshot_after=await observer.snapshot(),
+        snapshot_after=snapshot_after,
     )
 
 
@@ -230,26 +247,44 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             server_pid=settings.server_pid,
             has_debug_route=settings.has_debug_route,
         )
+        server_unit_ms: int | None = None
         server_timeout_s: float | None = None
-        if settings.idle_point != "none":
-            # note (Yi Zhao): the client can only tell an early close from a late one against the limit the server itself publishes.
+        reply_packet_index = 0
+        session_timeout_s = SESSION_TIMEOUT_S + input_seconds
+        if settings.protocol == "native":
+            # note (Yi Zhao): the unit and the idle limits belong to the deployment; the client reads them where the server publishes them.
             response = await http.get(observer.http_url(CAPABILITIES_ROUTE_PATH))
             response.raise_for_status()
-            limits = PublishedCapabilities.model_validate_json(response.text).limits
-            server_timeout_s = limits.model_dump()[
-                f"{EXPIRY_LIMITS[settings.idle_point]}_s"
-            ]
-            session_timeout_s = SESSION_TIMEOUT_S + server_timeout_s
+            published = PublishedCapabilities.model_validate_json(response.text)
+            server_unit_ms = published.native_unit_ms
+            reply_packet_index = math.ceil(server_unit_ms / PACKET_MS) - 1
+            if settings.idle_point != "none":
+                server_timeout_s = published.limits.model_dump()[
+                    f"{EXPIRY_LIMITS[settings.idle_point]}_s"
+                ]
+                session_timeout_s = SESSION_TIMEOUT_S + server_timeout_s
+            else:
+                pass
         else:
-            session_timeout_s = SESSION_TIMEOUT_S + input_seconds
+            pass
+        should_cancel_reply = settings.scenario == "cancel"
+        if (
+            should_cancel_reply or settings.leave_point == "reply"
+        ) and reply_packet_index >= settings.packets_per_session:
+            raise ValueError(
+                f"a reply needs one whole unit of {server_unit_ms} ms; send at least {reply_packet_index + 1} packets per session"
+            )
+        else:
+            pass
         plan = SessionPlan(
             protocol=settings.protocol,
             pcm=settings.pcm,
             packets=settings.packets_per_session,
+            reply_packet_index=reply_packet_index,
             leave_point=settings.leave_point,
             leave_style=settings.leave_style,
             idle_point=settings.idle_point,
-            should_cancel_reply=settings.scenario == "cancel",
+            should_cancel_reply=should_cancel_reply,
             timeout_s=session_timeout_s,
         )
         baseline = await observer.snapshot()
@@ -271,6 +306,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                     protocol=settings.protocol,
                     pcm=settings.pcm,
                     packets=settings.packets_per_session,
+                    reply_packet_index=reply_packet_index,
                     leave_point="end",
                     leave_style="close_frame",
                     idle_point="none",
@@ -278,6 +314,11 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                     timeout_s=session_timeout_s,
                 ),
             )
+        # note (Yi Zhao): the last reading of the run, after the last probe and the final session have had their time to leave.
+        await observer.await_no_sessions(
+            final_session.ended_s, final_session.ended_s + settings.cleanup_wait_s
+        )
+        closing = await observer.snapshot()
     samples = StressSamples(
         scenario=settings.scenario,
         protocol=settings.protocol,
@@ -295,6 +336,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
         idle_point=settings.idle_point,
         should_cancel_reply=plan.should_cancel_reply,
         reconnects=settings.reconnects,
+        server_unit_ms=server_unit_ms,
         server_timeout_s=server_timeout_s,
         max_connections=settings.max_connections,
         cleanup_wait_s=settings.cleanup_wait_s,
@@ -304,6 +346,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
         baseline=baseline,
         cycles=cycles,
         final_session=final_session,
+        closing=closing,
     )
     settings.output.mkdir(parents=True, exist_ok=True)
     (settings.output / SAMPLES_FILE).write_text(

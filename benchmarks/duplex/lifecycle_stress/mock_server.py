@@ -224,6 +224,10 @@ class MockSettings:
     reply_chunks: int = 1
     chunk_delay_ms: float = 0.0
     close_delay_ms: float = 0.0
+    # note (Yi Zhao): a deployment publishes its own unit and a client cannot change it; the default is the 80 ms of the frame-locked full-duplex models, and 1000, 200 and 20 imitate the others.
+    unit_ms: int = PACKET_MS
+    # note (Yi Zhao): this many sessions stay in the session table after their teardown, as when a teardown raises; a run against such a server has to fail its checks.
+    leaked_sessions: int = 0
     # note (Yi Zhao): these two let a test force an interleaving with an event where a delay would only make it likely; held replies are counted so the final session is not held.
     held_first_replies: int = 0
     should_close_after_denial: bool = False
@@ -243,7 +247,7 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
         deployment = RealtimeDeployment(
             capabilities=Capabilities(
                 output_modalities=RECORDER_OUTPUT_MODALITIES,
-                native_unit_ms=PACKET_MS,
+                native_unit_ms=settings.unit_ms,
             ),
             adapter_factory=lambda: EchoAdapter(
                 reply_text=settings.reply_text,
@@ -274,12 +278,25 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
         app.add_middleware(DenialWatcher, denied=first_denial)
     else:
         pass
+    manager = app.state.realtime_manager
+    release_session = manager.close
+    leaks_remaining = settings.leaked_sessions
+
+    async def close_or_leak(session_id: str) -> None:
+        nonlocal leaks_remaining
+        if leaks_remaining > 0:
+            leaks_remaining -= 1
+            await manager.sessions[session_id].teardown()
+        else:
+            await release_session(session_id)
+
+    manager.close = close_or_leak
 
     @app.get(DEBUG_ROUTE_PATH, response_model=ServerSnapshot)
     async def lifecycle_snapshot() -> ServerSnapshot:
         return ServerSnapshot(
             protocol=settings.protocol,
-            active_sessions=len(app.state.realtime_manager.sessions),
+            active_sessions=len(manager.sessions),
             rss_megabytes=read_rss_megabytes(os.getpid()),
             peak_rss_megabytes=peak_rss_megabytes(),
             task_count=len(asyncio.all_tasks()),

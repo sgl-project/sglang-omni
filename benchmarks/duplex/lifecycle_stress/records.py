@@ -80,6 +80,7 @@ class StressSamples(BaseModel):
     idle_point: IdlePoint
     should_cancel_reply: bool
     reconnects: int
+    server_unit_ms: int | None
     server_timeout_s: float | None
     max_connections: int | None
     cleanup_wait_s: float
@@ -89,3 +90,4 @@ class StressSamples(BaseModel):
     baseline: ServerSnapshot | None
     cycles: list[CycleSample]
     final_session: SessionOutcome
+    closing: ServerSnapshot | None
