@@ -83,6 +83,10 @@ type Opts struct {
 	// LiveSegDelay slows the realtime partials after the first: the
 	// server's recognition of the later audio lags behind the socket.
 	LiveSegDelay time.Duration
+	// LiveStall: the realtime socket answers the session update, then
+	// never reads again (a hung server). Accepted sockets get a small
+	// receive buffer, so the client's writer blocks on the socket.
+	LiveStall bool
 	// NoDraft is a server from before --draft-model-path: it refuses the
 	// flag as an unknown argument.
 	NoDraft bool
@@ -110,6 +114,7 @@ func Env(o Opts) []string {
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
 	v.Set("livesegdelay", o.LiveSegDelay.String())
+	v.Set("livestall", strconv.FormatBool(o.LiveStall))
 	return []string{EnvFake + "=" + v.Encode()}
 }
 
@@ -130,6 +135,7 @@ func opts() Opts {
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
 	o.LiveSegDelay, _ = time.ParseDuration(v.Get("livesegdelay"))
+	o.LiveStall, _ = strconv.ParseBool(v.Get("livestall"))
 	if o.Text == "" {
 		o.Text = "fake transcript"
 	}

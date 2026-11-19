@@ -69,6 +69,9 @@ func Main() {
 		emit(map[string]any{"event": "failed", "reason": err.Error()})
 		os.Exit(1)
 	}
+	if o.LiveStall {
+		ln = &smallRecvListener{ln}
+	}
 	kind := arg(args, "--model-kind")
 	// A shutdown ends the open live sessions and waits for their records
 	// before it exits; mu keeps a new session from starting meanwhile.
@@ -191,6 +194,19 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	flush()
 }
 
+// smallRecvListener gives accepted sockets a small receive buffer, so a
+// client whose server stopped reading (Opts.LiveStall) blocks on its
+// socket writes quickly and for certain.
+type smallRecvListener struct{ net.Listener }
+
+func (l *smallRecvListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); err == nil && ok {
+		_ = tc.SetReadBuffer(16 << 10)
+	}
+	return c, err
+}
+
 // realtime is a manual-turn session: a partial after the first 100 ms of
 // audio and then each second, the final segment on commit.
 func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
@@ -212,10 +228,15 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 	}
 	samples, next, language, prompt := 0, 1600, "", ""
 	segs := 0
+	stalled := false
 	defer func() {
 		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
 	}()
 	for {
+		if stalled {
+			<-ctx.Done() // a hung server: it never reads again
+			return
+		}
 		_, b, err := c.Read(ctx)
 		if err != nil {
 			return
@@ -231,6 +252,7 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			language, _ = ev.Session["language"].(string)
 			prompt, _ = ev.Session["prompt"].(string)
 			send(map[string]any{"type": "transcription_session.updated"})
+			stalled = o.LiveStall
 		case "input_audio_buffer.append":
 			pcm, err := base64.StdEncoding.DecodeString(ev.Audio)
 			if err != nil {

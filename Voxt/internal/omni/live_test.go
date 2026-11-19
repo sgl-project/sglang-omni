@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"syscall"
@@ -168,6 +170,55 @@ func TestLiveLargeFirstSend(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("no partial: the preview did not take the first second of audio")
 	}
+}
+
+// TestLiveFinalWhenTheSocketStalls: the server takes the live session,
+// then hangs (it never reads the socket again), so the preview's writer
+// blocks on the socket with audio still queued. Stop must still run the
+// Final: the drain gives up after previewDrain and closes the socket,
+// and the wrap-up's own write is bounded, so the stream ends with the
+// Final's result instead of waiting on the stuck writer forever.
+func TestLiveFinalWhenTheSocketStalls(t *testing.T) {
+	// A small send buffer on this end too (the fake caps its receive
+	// buffer): the kernels' autotuning would otherwise take the whole
+	// recording without the writer ever blocking.
+	old := loopback
+	loopback = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := new(net.Dialer).DialContext(ctx, network, addr)
+			if tc, ok := c.(*net.TCPConn); err == nil && ok {
+				_ = tc.SetWriteBuffer(16 << 10)
+			}
+			return c, err
+		},
+	}}
+	defer func() { loopback = old }()
+	f := newFake(t, omnitest.Opts{Text: "最终文本", LiveStall: true}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 800 KB of PCM (over 1 MB on the socket): past the most a loopback
+	// socket buffers even with the small buffers above, so the writer
+	// blocks on it. The queue still takes it (maxQueued is 30 s).
+	pcm := tone(25*time.Second, 0.3)
+	sendAll(t, st, pcm)
+	stopped := time.Now()
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if took := time.Since(stopped); took > previewDrain+5*time.Second {
+		t.Errorf("the stream ended %v after Stop, over the %v drain bound", took, previewDrain)
+	}
+	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != "最终文本" {
+		t.Fatalf("final %+v", last)
+	}
+	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples != 25*sampleRate {
+		t.Errorf("finals %+v: the whole recording goes to the Final", finals)
+	}
+	st.Close()
 }
 
 func TestLiveClose(t *testing.T) {
