@@ -42,6 +42,7 @@ CONFIG_FIELDS = {
     "decode_interval_ms",
     "segment_length_seconds",
     "cache_limit_mb",
+    "idle_timeout_ms",
     "vad",
     "language",
     "cleanup",
@@ -678,7 +679,11 @@ def run_matrix(
                             "valid": not invalid_reasons and not environment_reasons,
                         }
                     )
-                    if not invalid_reasons and not environment_reasons and report is not None:
+                    if (
+                        not invalid_reasons
+                        and not environment_reasons
+                        and report is not None
+                    ):
                         valid_count += 1
                         reports.append(report)
                         raw_paths.append(str(attempt_dir / "result.json"))
@@ -704,8 +709,7 @@ def run_matrix(
                 summary = {
                     "status": "failed",
                     "valid_runs": valid_count,
-                    "error": config_error
-                    or f"fewer than {max_attempts} valid runs",
+                    "error": config_error or f"fewer than {max_attempts} valid runs",
                 }
             summary["raw_results"] = raw_paths
             summary["attempts"] = attempts
@@ -716,8 +720,9 @@ def run_matrix(
     batch_summary = {
         "batch": batch_id,
         "status": (
-            "diagnostic" if max_attempts == 1 and all_valid else
-            "success" if all_valid else "failed"
+            "diagnostic"
+            if max_attempts == 1 and all_valid
+            else "success" if all_valid else "failed"
         ),
         "configurations": summaries,
     }
@@ -753,7 +758,9 @@ def main() -> int:
         or arguments.poll_seconds <= 0
         or arguments.environment_sample_seconds <= 0
     ):
-        parser.error("idle seconds must be nonnegative and poll/sample seconds positive")
+        parser.error(
+            "idle seconds must be nonnegative and poll/sample seconds positive"
+        )
     if arguments.attempts not in {1, 3}:
         parser.error("attempts must be 1 (diagnostic) or 3 (median)")
     try:

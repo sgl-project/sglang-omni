@@ -487,6 +487,11 @@ class IsolationTests(unittest.TestCase):
                 )
 
 
+class ConfigSchemaTests(unittest.TestCase):
+    def test_idle_timeout_is_an_allowed_profiling_field(self):
+        loop.validate_config_schema({"idle_timeout_ms": 1000})
+
+
 class AttemptsTests(unittest.TestCase):
     def test_single_attempt_diagnostic_succeeds_without_median(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -517,7 +522,9 @@ class AttemptsTests(unittest.TestCase):
                 "contenders": [],
             }
 
-            def fake_process(arguments, env, log_path, idle, sample, secrets, sampler=None):
+            def fake_process(
+                arguments, env, log_path, idle, sample, secrets, sampler=None
+            ):
                 attempt_dir = Path(env["VOXTNEW_PROFILE_CONFIG"]).parent
                 report = raw_report(100)
                 attempt_dir.joinpath("result.json").write_text(
@@ -526,19 +533,17 @@ class AttemptsTests(unittest.TestCase):
                 return 0, []
 
             with (
-                mock.patch.object(
-                    loop, "wait_for_gate", return_value=environment
-                ),
+                mock.patch.object(loop, "wait_for_gate", return_value=environment),
                 mock.patch.object(
                     loop, "run_profile_process", side_effect=fake_process
                 ),
-                mock.patch.object(
-                    loop, "host_environment", return_value=environment
-                ),
+                mock.patch.object(loop, "host_environment", return_value=environment),
             ):
                 results = root / "results"
                 self.assertEqual(
-                    loop.run_matrix(matrix, results, 0, 0.01, None, "1s", max_attempts=1),
+                    loop.run_matrix(
+                        matrix, results, 0, 0.01, None, "1s", max_attempts=1
+                    ),
                     0,
                 )
             batches = [path for path in results.iterdir() if path.is_dir()]
