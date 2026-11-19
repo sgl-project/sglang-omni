@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -301,10 +302,40 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// DIAG (temporary, for the Linux CI flake): dump everything on failure.
+	s := st.(*live)
+	defer func() {
+		s.mu.Lock()
+		q, p, fin, end, fo := s.queued, s.previewed, s.finished, s.ended, s.finalOnly
+		s.mu.Unlock()
+		var wd, rd bool
+		select {
+		case <-s.writeDone:
+			wd = true
+		default:
+		}
+		select {
+		case <-s.readDone:
+			rd = true
+		default:
+		}
+		t.Logf("DIAG state: queued=%d previewed=%d finished=%v ended=%v finalOnly=%v writeDone=%v readDone=%v ctx=%v events=%d",
+			q, p, fin, end, fo, wd, rd, s.ctx.Err(), len(s.events))
+		f.mu.Lock()
+		out := slices.Clone(f.out)
+		f.mu.Unlock()
+		if len(out) > 30 {
+			out = out[len(out)-30:]
+		}
+		t.Logf("DIAG runtime log tail:\n%s", strings.Join(out, "\n"))
+		t.Logf("DIAG final records: %+v", f.records("final"))
+		buf := make([]byte, 4<<20)
+		t.Logf("DIAG stacks:\n%s", buf[:runtime.Stack(buf, true)])
+	}()
 	// Hold the writer: the whole recording stays queued whatever the
 	// kernels' buffers; released once the drain has given up.
 	gate := make(chan struct{})
-	st.(*live).writeGate = gate
+	s.writeGate = gate
 	defer close(gate)
 	sendAll(t, st, tone(25*time.Second, 0.3))
 	stopped := time.Now()
