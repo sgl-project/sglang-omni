@@ -356,6 +356,10 @@ func (a *app) boxPaste(svc uiServices) bool {
 	switch {
 	case has(transfer.Text) || has(transfer.HTML):
 		return false
+	case (has(transfer.PNG) || has(transfer.FileList)) && len(a.box.images)+a.boxPending >= boxMaxImages:
+		a.box.limit = true
+		a.boxSync()
+		return true
 	case has(transfer.PNG):
 		raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
 		if err != nil {
@@ -396,6 +400,16 @@ func (a *app) boxDrop(files []string) {
 	if !a.box.open {
 		return
 	}
+	remaining := max(0, boxMaxImages-len(a.box.images)-a.boxPending)
+	rejected := len(files) > remaining
+	files = files[:min(len(files), remaining)]
+	if len(files) == 0 {
+		if rejected {
+			a.box.limit = true
+			a.boxSync()
+		}
+		return
+	}
 	gen := a.boxGen
 	seqs := make([]int, len(files))
 	for i := range files {
@@ -411,6 +425,14 @@ func (a *app) boxDrop(files []string) {
 					errText, jpeg = i18n.T("This image could not be read; paste it (⌘V) instead."), nil
 				}
 				a.boxConverted(gen, seq, jpeg, errText)
+			})
+		}
+		if rejected {
+			a.post(func() {
+				if gen == a.boxGen {
+					a.box.limit = true
+					a.boxSync()
+				}
 			})
 		}
 	})

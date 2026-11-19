@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -38,6 +40,38 @@ func TestRewriteBoxWindowAcceptsFileDrops(t *testing.T) {
 	native.onDrop(&mygo.FileDropEvent{Paths: want})
 	if !slices.Equal(dropped, want) {
 		t.Fatalf("dropped %v, want %v", dropped, want)
+	}
+}
+
+func TestRewriteBoxDropRejectsExcessBeforeConversion(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, images: [][]byte{boxJPEG(t), boxJPEG(t), boxJPEG(t)}}
+	dir := t.TempDir()
+	valid := filepath.Join(dir, "valid.png")
+	if err := os.WriteFile(valid, boxPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a.boxDrop([]string{valid, filepath.Join(dir, "missing.png")})
+	if len(a.box.images) != boxMaxImages {
+		t.Fatalf("%d images after the drop", len(a.box.images))
+	}
+	if !a.box.limit || a.box.err != "" {
+		t.Fatalf("the excess file was converted: limit %v, error %q", a.box.limit, a.box.err)
+	}
+}
+
+func TestRewriteBoxPasteRejectsExcessBeforeConversion(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true, images: [][]byte{boxJPEG(t), boxJPEG(t), boxJPEG(t), boxJPEG(t)}}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Lazy(transfer.PNG, func() ([]byte, error) {
+		return nil, errors.New("the excess image was read")
+	}))))
+	tt.Command("paste")
+	frames(tt)
+	if !a.box.limit || a.box.err != "" || a.boxPending != 0 {
+		t.Fatalf("the excess image was converted: limit %v, error %q, pending %d", a.box.limit, a.box.err, a.boxPending)
 	}
 }
 
