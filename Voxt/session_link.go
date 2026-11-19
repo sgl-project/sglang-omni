@@ -313,7 +313,17 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		switch {
 		case s.ID == a.bgID:
 			// The backgrounded answer's own end: its card opens (and its
-			// conversation merges) as the foreground path's would.
+			// conversation merges) as the foreground path's would. A card
+			// that is not its own waits under it: setAside holds only
+			// Rewrite and Translate cards, so a Transcribe card is held
+			// directly.
+			if a.answer.open && a.followUp == "" {
+				if c := a.answer; c.kind == store.KindTranscribe && c.problem == nil && !c.inserting {
+					a.under, a.answer = c, answerCard{}
+				} else {
+					a.setAside(false)
+				}
+			}
 			a.openAnswer(s)
 		case a.answer.open && a.answer.id != s.ID && a.bgID != "" &&
 			(a.followUp != "" && a.followUp == a.answer.id || a.answer.redo == a.bgID):

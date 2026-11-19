@@ -178,11 +178,14 @@ func (a *app) followUpAnswer(hold string) bool {
 }
 
 // canFollowUp says whether the card takes a follow-up now: a Rewrite
-// answer written from an instruction, or a translation, nothing running.
+// answer written from an instruction, or a translation, nothing running
+// — the current session's and the backgrounded answer's too (the card's
+// own follow-up may still be streaming there).
 func (a *app) canFollowUp() bool {
 	card := a.answer
 	ok := card.kind == store.KindRewrite && len(card.turns) > 0 || card.kind == store.KindTranslate && card.text != ""
-	return card.open && ok && card.problem == nil && !a.sess.State.Live()
+	bgLive := a.bgID != "" && a.bgSess.State.Live()
+	return card.open && ok && card.problem == nil && !a.sess.State.Live() && !bgLive
 }
 
 // closeAnswer closes the answer card (and cancels a follow-up, another

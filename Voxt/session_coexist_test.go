@@ -202,3 +202,91 @@ func TestConversationSurvivesATranscribeCard(t *testing.T) {
 		t.Fatalf("card=%+v under=%+v", a.answer, a.under)
 	}
 }
+
+// TestReviewTranscribeCardSurvivesInitialBackgroundAnswer: the
+// transcription finishes first and opens its card (Transcribe's answer
+// card on), then the backgrounded Rewrite ends: its card opens over it,
+// and the transcription's card waits under and comes back on close. It
+// used to vanish: setAside holds only Rewrite and Translate cards.
+func TestReviewTranscribeCardSurvivesInitialBackgroundAnswer(t *testing.T) {
+	chat := &fakeChat{text: `{"title":"Plan","content":"先订会议室 then email Ann。"}`, stall: true}
+	set, keys, tr := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+		s.Features.Transcribe.ShowCard = true
+		s.Features.Transcribe.Enhance = false
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.ov.mode == ovAnswer && a.sess.Draft == "先订会议室 then email Ann。"
+	})
+	tr.setText("dictated words")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("recording beside the card", func() bool {
+		return a.sess.Kind == store.KindTranscribe && a.sess.State == session.Recording && len(a.sess.Levels) >= 5
+	})
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the transcription's end", func() bool { return a.sess.State.Ended() })
+	if !a.answer.open || a.answer.kind != store.KindTranscribe || a.answer.text != "dictated words" {
+		t.Fatalf("the transcription did not open its card: %+v", a.answer)
+	}
+	transcribeID := a.answer.id
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+	a.pump("the background answer's end", func() bool { return a.bgID == "" })
+	if !a.answer.open || a.answer.kind != store.KindRewrite || a.answer.text != "先订会议室 then email Ann。" ||
+		!a.under.open || a.under.id != transcribeID {
+		t.Fatalf("answer=%+v under=%+v", a.answer, a.under)
+	}
+	a.closeAnswer()
+	if !a.answer.open || a.answer.id != transcribeID || a.under.open {
+		t.Fatalf("the transcription's card did not come back: answer=%+v under=%+v", a.answer, a.under)
+	}
+}
+
+// TestReviewBackgroundFollowUpDoesNotAllowAnotherFollowUp: while the
+// card's own follow-up still streams in the background, Continue is off:
+// two follow-ups cannot run together.
+func TestReviewBackgroundFollowUpDoesNotAllowAnotherFollowUp(t *testing.T) {
+	chat := &fakeChat{texts: []string{`{"title":"Plan","content":"one"}`, "two, and more to come", "three"}}
+	set, keys, tr := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+		s.Features.Transcribe.ShowCard = true
+		s.Features.Transcribe.Enhance = false
+	}, keys)
+	a.pump("the first answer's card", func() bool { return a.sess.State.Ended() && a.answer.open })
+	chat.mu.Lock()
+	chat.stall = true
+	chat.mu.Unlock()
+	tr.setText("longer")
+	first := a.sess.ID
+	if !a.followUpAnswer("") {
+		t.Fatalf("Continue did nothing: %+v", a.answer)
+	}
+	a.pump("the follow-up's audio", func() bool {
+		return a.sess.ID != first && a.sess.State == session.Recording && len(a.sess.Levels) >= 5
+	})
+	a.stopSession()
+	a.pump("the follow-up's answer", func() bool { return a.sess.CanStop() })
+	tr.setText("dictated words")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("recording beside the card", func() bool {
+		return a.sess.Kind == store.KindTranscribe && a.sess.State == session.Recording && len(a.sess.Levels) >= 5
+	})
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the transcription's end", func() bool { return a.sess.State.Ended() })
+	if a.bgID == "" || a.sess.State.Live() || !a.answer.open {
+		t.Fatalf("unexpected setup: bg=%q session=%+v answer=%+v", a.bgID, a.sess, a.answer)
+	}
+	if a.canFollowUp() {
+		t.Fatalf("a second follow-up is enabled while the first still streams in the background: bg=%q", a.bgID)
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+	a.pump("the follow-up's end", func() bool { return a.bgID == "" })
+	if !a.canFollowUp() {
+		t.Fatal("Continue stayed off after the follow-up ended")
+	}
+}
