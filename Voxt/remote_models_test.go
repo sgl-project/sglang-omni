@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -136,10 +135,8 @@ func TestSavedOllamaSetupMenuIsTheServersModels(t *testing.T) {
 	a.navigate(remotePath)
 	frames(tt)
 	a.openProviderDialog(local.LLM, "ollama")
+	frames(tt)
 	d := &a.provDlg
-	for end := time.Now().Add(5 * time.Second); d.served == nil && time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
-		frames(tt)
-	}
 	if got := d.modelOptions(lookupService(local.LLM, "ollama").models); !slices.Equal(got, []string{"qwen3:8b", "llama3.2:3b", otherModel()}) {
 		t.Fatalf("menu %q, served %q", got, d.served)
 	}
