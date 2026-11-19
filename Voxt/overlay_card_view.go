@@ -26,7 +26,7 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
-		cardAttachView(context, card, local.Overlay.cardThumbs)
+		cardAttachView(context, card, local)
 		cardBody(context, state.SessionID, card, bodyHeight, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)
 		if card.Message != "" {
@@ -49,7 +49,12 @@ func cardSizeButton(context *ui.Context, card *sessionCardViewState, actions ses
 }
 
 // cardAttachView says which picture went to the language model.
-func cardAttachView(context *ui.Context, card *sessionCardViewState, thumbnails []*ui.Bitmap) {
+func cardAttachView(context *ui.Context, card *sessionCardViewState, local sessionOverlayLocal) {
+	if card.InputCount > 0 && len(local.Overlay.cardPreviews) > 0 {
+		cardInputChips(context, card, local)
+		return
+	}
+	thumbnails := local.Overlay.cardThumbs
 	if len(thumbnails) > 0 {
 		ui.Row(context).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(i18n.T("Images sent with the instruction")).Children(func() {
 			for index, bitmap := range thumbnails {
@@ -277,6 +282,9 @@ func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phas
 }
 
 func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+	if cardInputOriginal(context, card, local, bodyHeight) {
+		return
+	}
 	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
 		block := sessionCardBlockAt(card, 0)
 		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight)

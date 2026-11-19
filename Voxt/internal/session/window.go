@@ -60,4 +60,15 @@ func (r *run) readClipboardImage() {
 		r.logf("info", "the clipboard's picture goes to the language model (%d bytes)", len(jpeg))
 	}
 	r.clip = jpeg
+	if jpeg != nil {
+		r.previewImage("clipboard", jpeg)
+	}
+}
+
+// previewImage publishes display-only bytes without changing which image
+// the language model receives; llmChat's ImageHint remains that record.
+func (r *run) previewImage(kind string, jpeg []byte) {
+	r.m.update(r, func(s *Snapshot) {
+		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
+	})
 }

@@ -51,13 +51,16 @@ func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 	case len(r.req.Images) > 0:
 		req.Images, req.ImagesRequired = r.req.Images, true
 		hint = "box"
+		r.previewImage("", nil)
 	case r.clip != nil: // the picture the user copied wins over the window's
 		req.Images = [][]byte{r.clip}
 		hint = "clipboard"
+		r.previewImage("clipboard", r.clip)
 	case r.shot != nil:
 		if jpeg := r.shot(); jpeg != nil {
 			req.Images = [][]byte{jpeg}
 			hint = "window"
+			r.previewImage("window", jpeg)
 		}
 	}
 	if hint != "" {

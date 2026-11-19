@@ -22,5 +22,6 @@
   "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音",
   "Reopen card": "重新打开卡片",
   "Thinking level: %s (default)": "思考强度：%s（默认）",
-  "Thinking level: %s": "思考强度：%s"
+  "Thinking level: %s": "思考强度：%s",
+  "Text": "文字"
 }

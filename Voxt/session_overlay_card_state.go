@@ -40,6 +40,7 @@ type sessionCardViewState struct {
 	InsertTooltip  string                `json:"insert_tooltip,omitempty"`
 	Attachment     string                `json:"attachment,omitempty"`
 	ThumbnailCount int                   `json:"thumbnail_count,omitempty"`
+	InputCount     int                   `json:"input_count,omitempty"`
 	ProblemCode    string                `json:"problem_code,omitempty"`
 	SizeStep       int                   `json:"size_step"`
 	Levels         [session.Bars]float64 `json:"levels"`
@@ -159,6 +160,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		FollowTooltip: continueTipFor(translator, input.FollowKeys),
 	}
 	state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
+	state.InputCount = len(card.previews)
 	if sessionCardRedoWriting(input) {
 		// The answer asked again streams in over the card's; a failure or a
 		// cancel brings the card's back (endRedo).
@@ -388,7 +390,7 @@ type sessionCardProjectionKey struct {
 	canFollowUp, copied, conversation     bool
 	redoWriting                           bool
 	problemCode, attachment               string
-	thumbnailCount                        int
+	thumbnailCount, inputCount            int
 	// highlights is the card's dictionary spans by identity: they are
 	// set with the text, or after it (openAnswer).
 	highlights *dict.Span
@@ -424,7 +426,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		turnCount: len(card.turns), followKeys: input.FollowKeys,
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
-		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, highlights: highlights,
+		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews), highlights: highlights,
 	}
 }
 
@@ -459,6 +461,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 
 func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection, next *sessionOverlayViewState) {
 	a.ov.ui.cardThumbs = a.answer.ui.thumbs
+	a.ov.ui.cardPreviews = a.answer.previews
 	if !a.answer.open && a.sess.ID == a.boxSessionID() {
 		a.ov.ui.cardThumbs = a.box.thumbs
 	}

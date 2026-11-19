@@ -433,5 +433,20 @@
   "This image could not be read; paste it (⌘V) instead.": "这张图片读不出来，请改用粘贴（⌘V）。",
   "Remove this image": "移除这张图片",
   "More text for the rewrite": "为改写补充的文字",
-  "Type or paste more text, or drop images": "输入或粘贴更多文字，或拖入图片"
+  "Type or paste more text, or drop images": "输入或粘贴更多文字，或拖入图片",
+  "Pasted text": "粘贴的文字",
+  "Selected text": "选中的文字",
+  "Copied text": "复制的文字",
+  "Pasted image": "粘贴的图片",
+  "Clipboard": "剪贴板",
+  "Image": "图片",
+  "Preview %s": "预览 %s",
+  "%s · %d chars · %d lines": "%s · %d 个字符 · %d 行",
+  "%d × %d": "%d × %d",
+  "Back to input": "返回输入框",
+  "Remove pasted text": "删除粘贴的文字",
+  "Show all": "展开",
+  "Show less": "收起",
+  "Copied image": "复制的图片",
+  "Screenshot": "截图"
 }

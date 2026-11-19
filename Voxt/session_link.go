@@ -120,8 +120,9 @@ type answerCard struct {
 	conversation bool
 	// attach says which picture went to the language model
 	// (Snapshot.ImageHint); images are the input box's pictures.
-	attach string
-	images [][]byte
+	attach   string
+	images   [][]byte
+	previews []answerInputPreview
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).

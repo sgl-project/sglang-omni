@@ -31,6 +31,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 	if s.ID == a.box.session || s.ID == a.box.sending {
 		card.images, card.ui.thumbs = a.box.images, a.box.thumbs
 	}
+	card.previews = answerInputPreviews(s, &a.box)
 	if s.State == session.Failed {
 		card.problem = s.Problem
 	}
@@ -52,6 +53,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
 			if card.attach == "box" {
 				card.images, card.ui.thumbs = a.answer.images, a.answer.ui.thumbs
+				card.previews = a.answer.previews
 			}
 			if card.why == "" {
 				card.why = a.answer.why

@@ -201,7 +201,7 @@ func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBloc
 }
 
 func sessionCardAttachmentHeight(card *sessionCardViewState) int {
-	if card != nil && (card.Attachment != "" || card.ThumbnailCount > 0) {
+	if card != nil && (card.Attachment != "" || card.ThumbnailCount > 0 || card.InputCount > 0) {
 		return layout.CardAttachH
 	}
 	return 0

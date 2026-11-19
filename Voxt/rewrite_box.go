@@ -23,6 +23,8 @@ package main
 // with the same instruction (StartRequest.Text).
 
 import (
+	"bytes"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -50,13 +52,19 @@ type rewriteBox struct {
 	session, sending string
 	// selection is the text selected when the shortcut fired (the
 	// session reads it; the box shows it).
-	selection string
-	text      string
+	selection    string
+	text         string
+	textSegments []boxTextSegment
 	// images are the box's pictures (JPEGs), thumbs their decoded
 	// bitmaps; limit: one over boxMaxImages was refused.
-	images [][]byte
-	thumbs []*boxBitmap
-	limit  bool
+	images    [][]byte
+	thumbs    []*boxBitmap
+	imageInfo []boxImageInfo
+	limit     bool
+	// autoImage caches the clipboard/window preview's decoded bitmap.
+	autoImage []byte
+	autoThumb *boxBitmap
+	autoInfo  boxImageInfo
 	// instruction is the recognised spoken instruction, kept so a send
 	// that failed can go again with Enter.
 	instruction string
@@ -73,14 +81,17 @@ type rewriteBox struct {
 
 // rewriteBoxViewState is the input box's display state.
 type rewriteBoxViewState struct {
-	Selection  string
-	Text       string
-	Thumbnails []*boxBitmap
-	VoiceLine  string
-	Error      string
-	CanSend    bool
-	Limit      bool
-	FocusText  bool
+	Selection      string
+	SelectionBlock boxTextSegment
+	Text           string
+	TextSegments   []boxTextSegment
+	Thumbnails     []*boxBitmap
+	ImageInfo      []boxImageInfo
+	VoiceLine      string
+	Error          string
+	CanSend        bool
+	Limit          bool
+	FocusText      bool
 }
 
 // rewriteBoxActions are the input box's user intents.
@@ -89,14 +100,11 @@ type rewriteBoxActions struct {
 	send        func()
 	drop        func([]string)
 	paste       func(uiServices) bool
+	pasteText   func(string) bool
 	remove      func(int)
+	removeText  func(int)
 	textChanged func(string)
 	focused     func()
-}
-
-// rewriteBoxLocalUI owns the editor's text between frames.
-type rewriteBoxLocalUI struct {
-	text string
 }
 
 // boxWindow is the box's panel as boxSync and closeBoxWindow use it
@@ -240,6 +248,7 @@ type boxLanding struct {
 	gen     int
 	jpeg    []byte
 	errText string
+	source  string
 }
 
 // boxReserve takes a dropped or pasted picture's number: the send
@@ -256,7 +265,7 @@ func (a *app) boxReserve() int {
 // boxMaxImages. The JPEG is encoded once, here, and kept: a send again
 // (a retry, another thinking level, a follow-up) has the same bytes in
 // the same position, which the server's prefix cache reuses.
-func (a *app) boxAttach(jpeg []byte) {
+func (a *app) boxAttach(jpeg []byte, source ...string) {
 	if len(jpeg) == 0 || !a.box.open {
 		return
 	}
@@ -265,9 +274,14 @@ func (a *app) boxAttach(jpeg []byte) {
 		a.boxSync()
 		return
 	}
+	name := i18n.T("Pasted image")
+	if len(source) > 0 && source[0] != "" {
+		name = source[0]
+	}
 	bmp, _ := decodeBoxBitmap(jpeg)
 	a.box.images = append(a.box.images, jpeg)
 	a.box.thumbs = append(a.box.thumbs, bmp)
+	a.box.imageInfo = append(a.box.imageInfo, boxImageCaption(bmp, name))
 	a.box.limit = false
 	a.boxSync()
 }
@@ -279,6 +293,9 @@ func (a *app) boxRemoveImage(i int) {
 	}
 	a.box.images = slices.Delete(a.box.images, i, i+1)
 	a.box.thumbs = slices.Delete(a.box.thumbs, i, i+1)
+	if i < len(a.box.imageInfo) {
+		a.box.imageInfo = slices.Delete(a.box.imageInfo, i, i+1)
+	}
 	a.box.limit = false
 	a.boxSync()
 }
@@ -307,7 +324,7 @@ func (a *app) boxPaste(svc uiServices) bool {
 				if err != nil {
 					errText, jpeg = i18n.T("This image could not be read."), nil
 				}
-				a.boxConverted(gen, seq, jpeg, errText)
+				a.boxConverted(gen, seq, jpeg, errText, i18n.T("Clipboard"))
 			})
 		})
 		return true
@@ -319,7 +336,7 @@ func (a *app) boxPaste(svc uiServices) bool {
 			if err != nil {
 				res.JPEG, errText = nil, i18n.T("This image could not be read.")
 			}
-			a.boxConverted(gen, seq, res.JPEG, errText)
+			a.boxConverted(gen, seq, res.JPEG, errText, i18n.T("Clipboard"))
 		})
 		return true
 	}
@@ -345,7 +362,7 @@ func (a *app) boxDrop(files []string) {
 				if err != nil {
 					errText, jpeg = i18n.T("This image could not be read; paste it (⌘V) instead."), nil
 				}
-				a.boxConverted(gen, seq, jpeg, errText)
+				a.boxConverted(gen, seq, jpeg, errText, filepath.Base(f))
 			})
 		}
 	})
@@ -358,12 +375,16 @@ func (a *app) boxDrop(files []string) {
 // picture of an earlier batch can finish after a later batch's, and
 // without the turn the box and the request would follow the finish
 // order, not the drop order. A send that waited for it goes now.
-func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
+func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...string) {
 	a.boxPending--
 	if a.boxHeld == nil {
 		a.boxHeld = map[int]boxLanding{}
 	}
-	a.boxHeld[seq] = boxLanding{gen, jpeg, errText}
+	name := ""
+	if len(source) > 0 {
+		name = source[0]
+	}
+	a.boxHeld[seq] = boxLanding{gen: gen, jpeg: jpeg, errText: errText, source: name}
 	for {
 		land, ok := a.boxHeld[a.boxNext]
 		if !ok {
@@ -378,7 +399,7 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 			a.box.err = land.errText
 			a.boxSendQueued = false
 		} else {
-			a.boxAttach(land.jpeg)
+			a.boxAttach(land.jpeg, land.source)
 		}
 		a.boxSync()
 	}
@@ -430,8 +451,29 @@ func (a *app) boxVoiceLine() string {
 
 func (a *app) boxViewState() rewriteBoxViewState {
 	box := &a.box
+	selectionSource := i18n.T("Selected text")
+	if box.session != "" && a.sess.ID == box.session && a.sess.SelectionVia == "copy" {
+		selectionSource = i18n.T("Copied text")
+	}
+	thumbnails := slices.Clone(box.thumbs)
+	imageInfo := slices.Clone(box.imageInfo)
+	if len(thumbnails) == 0 && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && len(a.sess.ImagePreview) > 0 {
+		if !bytes.Equal(box.autoImage, a.sess.ImagePreview) {
+			box.autoImage = bytes.Clone(a.sess.ImagePreview)
+			box.autoThumb, _ = decodeBoxBitmap(a.sess.ImagePreview)
+			label := i18n.T("Copied image")
+			if a.sess.ImagePreviewKind == "window" {
+				label = i18n.T("Screenshot")
+			}
+			box.autoInfo = boxImageCaption(box.autoThumb, label)
+		}
+		thumbnails = append(thumbnails, box.autoThumb)
+		imageInfo = append(imageInfo, box.autoInfo)
+	}
+	selection := a.boxSelection()
 	return rewriteBoxViewState{
-		Selection: a.boxSelection(), Text: box.text, Thumbnails: box.thumbs, VoiceLine: a.boxVoiceLine(), Error: box.err,
+		Selection: selection, SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
+		Thumbnails: thumbnails, ImageInfo: imageInfo, VoiceLine: a.boxVoiceLine(), Error: box.err,
 		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording || box.session == "" && box.instruction != ""),
 		Limit:   box.limit, FocusText: box.focusText,
 	}
@@ -439,13 +481,14 @@ func (a *app) boxViewState() rewriteBoxViewState {
 
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
-		close: a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, remove: a.boxRemoveImage,
+		close: a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteText,
+		remove: a.boxRemoveImage, removeText: a.boxRemoveText,
 		textChanged: func(text string) {
 			if !a.box.open {
 				return
 			}
 			a.box.text = text
-			a.boxShare.store(a.box.text, a.box.images)
+			a.boxShare.store(a.boxTextContent(), a.box.images)
 		},
 		focused: func() { a.box.focusText = false },
 	}
@@ -453,7 +496,7 @@ func (a *app) boxActions() rewriteBoxActions {
 
 // boxSync shows, hides or refreshes the box's window. Main thread.
 func (a *app) boxSync() {
-	a.boxShare.store(a.box.text, a.box.images)
+	a.boxShare.store(a.boxTextContent(), a.box.images)
 	show := a.box.open && a.box.shown
 	if !show {
 		if a.box.win != nil && a.box.winShown {

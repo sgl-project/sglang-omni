@@ -6,6 +6,8 @@ package main
 // instruction, and a line for an error.
 
 import (
+	"strconv"
+
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -15,10 +17,19 @@ import (
 
 type boxBitmap = ui.Bitmap
 
+// rewriteBoxLocalUI owns widget state that is not part of the box's content.
+type rewriteBoxLocalUI struct {
+	text          string
+	expandedText  map[string]bool
+	previewImage  int
+	textScroll    ui.ScrollState
+	previewScroll ui.ScrollState
+}
+
 var decodeBoxBitmap = ui.DecodeBitmap
 
 // boxThumb is a thumbnail's size in the box.
-const boxThumb = 40
+const boxThumb = 72
 
 // newBoxWindow creates the input box's native panel.
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) boxWindow {
@@ -62,10 +73,21 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 		})
 		ui.Box(context).Height(1).Shrink(0).Background(ovCardRule)
 
+		if boxFullImagePreview(context, state, local) {
+			return
+		}
+
 		// The text selected when the shortcut fired: the input, as the
 		// model gets it first.
 		if state.Selection != "" {
-			ui.Text(context, state.Selection).FontSize(12).TextColor(ovText2).MaxLines(3).Shrink(0)
+			boxTextBlockView(context, "selection", state.SelectionBlock, local, nil)
+		}
+		for index, segment := range state.TextSegments {
+			var remove func()
+			if segment.Pasted {
+				remove = func() { actions.removeText(index) }
+			}
+			boxTextBlockView(context, "segment-"+strconv.Itoa(index), segment, local, remove)
 		}
 
 		// The text box.
@@ -84,6 +106,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			}
 			return false
 		})
+		textArea.OnPaste(actions.pasteText)
 		if state.FocusText {
 			textArea.Focus()
 			actions.focused()
@@ -91,9 +114,13 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 
 		// The pictures.
 		if len(state.Thumbnails) > 0 {
-			ui.Row(context).Shrink(0).Gap(8).Children(func() {
+			ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Start).Children(func() {
 				for index, bitmap := range state.Thumbnails {
-					boxThumbView(context.Key(index), index, bitmap, actions.remove)
+					info := boxImageInfo{Source: i18n.T("Image")}
+					if index < len(state.ImageInfo) {
+						info = state.ImageInfo[index]
+					}
+					boxThumbView(context.Key(index), index, bitmap, info, actions.remove, func() { local.previewImage = index + 1 })
 				}
 			})
 		}
@@ -118,22 +145,31 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 	actions.textChanged(local.text)
 }
 
-// boxThumbView is one picture's thumbnail, its remove button over the
-// corner.
-func boxThumbView(context *ui.Context, index int, bitmap *ui.Bitmap, remove func(int)) {
+// boxThumbView is one picture's thumbnail, source and pixel size, with
+// a full-size preview on click and a remove button over the corner.
+func boxThumbView(context *ui.Context, index int, bitmap *ui.Bitmap, info boxImageInfo, remove func(int), preview func()) {
 	label := i18n.T("Remove this image")
-	ui.Box(context).Width(boxThumb).Height(boxThumb).Shrink(0).Children(func() {
-		if bitmap != nil {
-			ui.Image(context, bitmap).Width(boxThumb).Height(boxThumb).Fit(ui.Cover).Radius(6)
-		} else {
-			ui.Box(context).Width(boxThumb).Height(boxThumb).Radius(6).Background(ui.RGBA(255, 255, 255, 0.1))
-		}
-		if ui.ButtonBase(context.Key("rm")).Absolute().Top(-4).Right(-4).Size(16, 16).Radius(8).Center().
-			Background(ui.RGBA(0, 0, 0, 0.85)).Border(1, ui.RGBA(255, 255, 255, 0.24)).Label(label).Tooltip(label).
-			Children(func() {
-				ui.Icon(context, icons.Close.Linear).Size(9, 9).TextColor(ui.RGBA(255, 255, 255, 0.94))
+	ui.Column(context).Width(boxThumb + 12).Shrink(0).Gap(3).Children(func() {
+		ui.Box(context).Width(boxThumb).Height(boxThumb).Shrink(0).Children(func() {
+			previewLabel := i18n.T("Preview %s", info.Source)
+			if ui.ButtonBase(context.Key("preview")).Width(boxThumb).Height(boxThumb).Radius(6).Label(previewLabel).Tooltip(previewLabel).Children(func() {
+				if bitmap != nil {
+					ui.Image(context, bitmap).Width(boxThumb).Height(boxThumb).Fit(ui.Cover).Radius(6)
+				} else {
+					ui.Box(context).Width(boxThumb).Height(boxThumb).Radius(6).Background(ui.RGBA(255, 255, 255, 0.1))
+				}
 			}).Clicked() {
-			remove(index)
-		}
+				preview()
+			}
+			if ui.ButtonBase(context.Key("rm")).Absolute().Top(-4).Right(-4).Size(16, 16).Radius(8).Center().
+				Background(ui.RGBA(0, 0, 0, 0.85)).Border(1, ui.RGBA(255, 255, 255, 0.24)).Label(label).Tooltip(label).
+				Children(func() {
+					ui.Icon(context, icons.Close.Linear).Size(9, 9).TextColor(ui.RGBA(255, 255, 255, 0.94))
+				}).Clicked() {
+				remove(index)
+			}
+		})
+		ui.Text(context, info.Source).FontSize(10).TextColor(ovText2).SingleLine().Ellipsis("…").Shrink(0)
+		ui.Text(context, i18n.T("%d × %d", info.Width, info.Height)).FontSize(10).TextColor(ovText2).SingleLine().Shrink(0)
 	})
 }
