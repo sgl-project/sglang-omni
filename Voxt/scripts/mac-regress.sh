@@ -28,7 +28,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "run it on a Mac: MAC_DIR=code/VoxtNew-m3 scripts/mac.sh scripts/mac-regress.sh" >&2
   exit 1
 fi
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 cd "$ROOT" || exit 1
 FULL=0 KEEP=0
 for a in "$@"; do
