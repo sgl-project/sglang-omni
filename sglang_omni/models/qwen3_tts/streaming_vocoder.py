@@ -83,7 +83,6 @@ DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE = 8
 DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
-DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS = 64
 DEFAULT_QWEN3_TTS_INCREMENTAL_WINDOW_FRAMES = (1, 2, 4, 8, 16, 32, 64)
 QWEN3_TTS_FULL_DECODE_GRAPH_MAX_FRAMES = 256
 QWEN3_TTS_FULL_DECODE_GRAPH_MAX_REQUESTS = 4
@@ -683,7 +682,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         followup_cuda_graph: bool = True,
         fused_snake_activation: bool = False,
         enable_stateful_codec_decoder: bool = False,
-        codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
+        codec_state_slots: int | None = None,
         incremental_codec_cuda_graph: bool = False,
         incremental_codec_compile: bool = False,
         incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
@@ -786,10 +785,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
         if initial_batch_wait_ms < 0 or followup_batch_wait_ms < 0:
             raise ValueError("async batch waits must be >= 0")
-        else:
-            pass
-        if codec_state_slots <= 0:
-            raise ValueError("codec_state_slots must be > 0")
         else:
             pass
         if incremental_codec_cuda_graph and (not enable_stateful_codec_decoder):
@@ -1020,10 +1015,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             (self.stream_followup_stride, *self.followup_stride_ramp, *cold_frames)
         )
         self.codec_arena = self.build_codec_arena(
-            int(codec_state_slots),
-            # note (ratish): as many whole requests as streams hold state at once, and neither
-            # takes the other's slots, so stream load never changes a whole request's audio.
-            reserved_slots=int(codec_state_slots) if self.decodes_whole_requests else 0,
+            codec_state_slots,
             dtype=codec_state_dtype,
             # note (ratish): the widest cold and follow-up decodes, which graphs may compile, so
             # each attends in place; compiled, the gathered step would copy every ring a decode.
@@ -1038,7 +1030,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             worker_count=worker_count,
             dtype=codec_state_dtype,
             num_quantizers=num_quantizers,
-            codec_state_slots=int(codec_state_slots),
             enabled=incremental_codec_cuda_graph,
             compile_kernels=bool(incremental_codec_compile)
             and self.device.type != "npu",
@@ -1119,14 +1110,22 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     def build_codec_arena(
         self,
-        num_slots: int,
+        num_slots: int | None,
         *,
-        reserved_slots: int,
         dtype: torch.dtype,
         in_place_frames: int,
     ) -> Qwen3TTSCodecStateArena | None:
-        if self.incremental_decoder is None:
+        """The stream rows, and as many for whole requests, that the asynchronous workers decode against."""
+        if self.incremental_decoder is None or (not self.async_decode):
+            # note (ratish): a synchronous decode keeps each stream's state on the stream, so only the asynchronous workers take rows.
             return None
+        elif num_slots is None:
+            raise ValueError(
+                "Qwen3-TTS sizes its Codec state arena from the in-flight cap, and this server admits without one; "
+                "set --tts_engine.engine.max_queued_requests or --vocoder.factory.codec_state_slots"
+            )
+        elif num_slots <= 0:
+            raise ValueError("codec_state_slots must be > 0")
         else:
             pass
         arena_type = (
@@ -1137,7 +1136,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         arena = arena_type(
             self.incremental_decoder,
             num_slots=num_slots,
-            reserved_slots=reserved_slots,
+            # note (ratish): as many whole requests as streams hold state at once, and neither
+            # takes the other's slots, so stream load never changes a whole request's audio.
+            reserved_slots=num_slots if self.decodes_whole_requests else 0,
             device=self.device,
             dtype=dtype,
             in_place_frames=in_place_frames,
@@ -1166,7 +1167,6 @@ class Qwen3TTSStreamingVocoderScheduler(
         worker_count: int,
         dtype: torch.dtype,
         num_quantizers: int,
-        codec_state_slots: int,
         enabled: bool,
         compile_kernels: bool,
         cold_frames: Sequence[int],
@@ -1180,7 +1180,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         Qwen3TTSIncrementalCodecCudaGraphRunner | None,
         tuple[Qwen3TTSIncrementalCodecCudaGraphRunner, ...],
     ]:
-        if self.incremental_decoder is None:
+        if self.codec_arena is None:
             return (None, None, None, ())
         else:
             pass
@@ -1188,7 +1188,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             enabled and self.async_decode and (not self.deterministic_inference)
         )
         graph_batch_sizes = self.resolve_incremental_warm_graph_batch_sizes(
-            max_batch_size=min(self.followup_max_batch_size, codec_state_slots)
+            max_batch_size=min(self.followup_max_batch_size, self.codec_arena.num_slots)
         )
         # note (ratish): the initial worker replays its cold, window and tail graphs one at a
         # time on its stream and copies each output out before the next, so they share a pool.
@@ -1356,10 +1356,16 @@ class Qwen3TTSStreamingVocoderScheduler(
     def log_cuda_graph_coverage(self, max_in_flight: int | None) -> None:
         """Log the decode graphs startup captured; warn when the server admits more requests than slots."""
         codec_stats = self.codec_state_stats()
-        if not codec_stats["enabled"]:
+        if self.incremental_decoder is None:
             logger.info(
                 "Qwen3-TTS vocoder: stateful Codec decoder off, so every stream "
                 "decodes on the left-context path"
+            )
+            return
+        elif not codec_stats["enabled"]:
+            logger.info(
+                "Qwen3-TTS vocoder decodes synchronously, each stream on its own "
+                "Codec state, so it holds no Codec slots"
             )
             return
         else:

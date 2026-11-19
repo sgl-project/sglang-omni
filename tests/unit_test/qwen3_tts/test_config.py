@@ -76,7 +76,10 @@ def test_vocoder_platform_default_keeps_npu_opt_in(
     ],
 )
 def test_codec_arena_holds_every_request_the_coordinator_admits(
-    engine_args, factory_overrides, vocoder_process, processes
+    engine_args: EngineArgs,
+    factory_overrides: dict[str, int],
+    vocoder_process: str,
+    processes: dict[str, ProcessConfig],
 ) -> None:
     """The Codec arena held 64 streams while the coordinator admits 128, so past the engine's running bound the streams still decoding their tails took the costlier left-context decoder and the vocoder fell behind."""
     config = Qwen3TTSPipelineConfig(model_path="org/model")
@@ -107,6 +110,24 @@ def test_codec_arena_holds_every_request_the_coordinator_admits(
         == max_in_flight
     )
     assert factory_args["max_in_flight"] == max_in_flight
+
+
+def test_operator_codec_slots_replace_the_cap_but_not_the_check() -> None:
+    config = Qwen3TTSPipelineConfig(model_path="org/model")
+    config.stage_named("vocoder").factory = FactoryArgs(
+        dtype="bfloat16", codec_state_slots=96
+    )
+
+    logical_process_plan, _ = compile_logical_processes(config)
+
+    factory_args = resolve_stage_factory_args(
+        config.stage_named("vocoder"), config, gpu_id=0
+    )
+
+    assert factory_args["codec_state_slots"] == 96
+    assert factory_args["max_in_flight"] == resolve_coordinator_max_in_flight(
+        config, logical_process_plan=logical_process_plan
+    )
 
 
 def test_admission_defaults_load_without_the_engine() -> None:

@@ -475,13 +475,6 @@ def create_vocoder_executor(
     max_in_flight: int | None,
     shares_engine_speech_tokenizer: bool,
 ) -> Qwen3TTSStreamingVocoderScheduler:
-    if codec_state_slots is None:
-        raise ValueError(
-            "Qwen3-TTS sizes its Codec state arena from the in-flight cap, and this server admits without one; "
-            "set --tts_engine.engine.max_queued_requests or --vocoder.factory.codec_state_slots"
-        )
-    else:
-        pass
     device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
     # they belong to unless set explicitly, so turning the stateful decoder

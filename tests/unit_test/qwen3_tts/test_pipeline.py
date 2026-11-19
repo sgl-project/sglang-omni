@@ -46,7 +46,11 @@ from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.comm import stage_io
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.runtime import resolve_stage_factory_kwargs
+from sglang_omni.config.runtime import (
+    resolve_stage_factory_args,
+    resolve_stage_factory_kwargs,
+)
+from sglang_omni.config.schema import EngineArgs, FactoryArgs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
@@ -3547,6 +3551,7 @@ def stateful_qwen3_tts_scheduler(
         stream_followup_stride=stream_followup_stride,
         stream_chunk_ramp=stream_chunk_ramp,
         enable_stateful_codec_decoder=True,
+        codec_state_slots=64,
     )
     return scheduler, created[0]
 
@@ -3591,6 +3596,7 @@ def test_qwen3_tts_window_frames_build_the_window_runner(
         device="cpu",
         async_decode=True,
         enable_stateful_codec_decoder=True,
+        codec_state_slots=64,
         incremental_codec_cuda_graph_window_frames=(12, 3),
     )
 
@@ -3611,6 +3617,7 @@ def test_qwen3_tts_window_frames_build_the_window_runner(
         device="cpu",
         async_decode=True,
         enable_stateful_codec_decoder=True,
+        codec_state_slots=64,
         incremental_codec_compile=True,
         incremental_codec_cuda_graph_window_frames=(1, 2, 4, 8, 16, 32),
     )
@@ -3642,6 +3649,7 @@ def test_qwen3_tts_empty_window_frames_disable_the_window_runner(
         device="cpu",
         async_decode=True,
         enable_stateful_codec_decoder=True,
+        codec_state_slots=64,
         incremental_codec_cuda_graph_window_frames=(),
     )
 
@@ -3662,6 +3670,7 @@ def test_qwen3_tts_initial_worker_graph_runners_share_one_pool(
         device="cpu",
         async_decode=True,
         enable_stateful_codec_decoder=True,
+        codec_state_slots=64,
         has_reference_prefixed_first_chunks=True,
     )
 
@@ -3689,6 +3698,7 @@ def test_qwen3_tts_tail_graphs_need_reference_prefixed_first_chunks(
         device="cpu",
         async_decode=True,
         enable_stateful_codec_decoder=True,
+        codec_state_slots=64,
         has_reference_prefixed_first_chunks=False,
     )
 
@@ -7566,6 +7576,7 @@ def test_qwen3_tts_async_decode_records_request_events(
         stream_left_context_frames=2,
         async_decode=True,
         enable_stateful_codec_decoder=stateful,
+        codec_state_slots=64,
     )
     scheduler.state_lock = state_lock
     all_codes = torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.long)
@@ -11580,32 +11591,18 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
 
 
 @pytest.mark.parametrize(
-    ("max_in_flight", "warnings"),
+    ("max_in_flight", "warning_parts"),
     [
-        (
-            None,
-            [
-                "Qwen3-TTS admission has no in-flight cap, so streams past the 64 "
-                "Codec slots decode eagerly on the left-context path."
-            ],
-        ),
-        (64, []),
-        (
-            65,
-            [
-                "Qwen3-TTS vocoder has 64 Codec slots, fewer than the 65 requests "
-                "the server admits at once; streams past the slots decode eagerly "
-                "on the left-context path. Set --vocoder.factory.codec_state_slots "
-                "to at least 65."
-            ],
-        ),
+        (None, ("no in-flight cap", "64 Codec slots")),
+        (64, ()),
+        (65, ("64 Codec slots", "65 requests", "codec_state_slots to at least 65")),
     ],
 )
 def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     max_in_flight: int | None,
-    warnings: list[str],
+    warning_parts: tuple[str, ...],
 ) -> None:
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
 
@@ -11628,7 +11625,8 @@ def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
         and message.endswith("; Codec slots 64")
         for message in info_messages
     )
-    assert warning_messages == warnings
+    assert len(warning_messages) == (1 if warning_parts else 0)
+    assert all(part in warning_messages[0] for part in warning_parts)
 
 
 def test_qwen3_tts_vocoder_lists_every_decode_graph_runner(
@@ -11677,23 +11675,43 @@ def test_qwen3_tts_vocoder_lists_every_decode_graph_runner(
     ]
 
 
-def test_qwen3_tts_vocoder_without_stateful_decoder_logs_the_left_context_path(
+@pytest.mark.parametrize(
+    ("is_stateful", "message"),
+    [
+        (
+            False,
+            "Qwen3-TTS vocoder: stateful Codec decoder off, so every stream decodes on "
+            "the left-context path",
+        ),
+        (
+            True,
+            "Qwen3-TTS vocoder decodes synchronously, each stream on its own Codec "
+            "state, so it holds no Codec slots",
+        ),
+    ],
+)
+def test_qwen3_tts_vocoder_without_an_arena_names_its_decode_path(
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    is_stateful: bool,
+    message: str,
 ) -> None:
+    monkeypatch.setattr(
+        qwen3_streaming_vocoder,
+        "Qwen3TTSIncrementalDecoder",
+        FakeIncrementalQwen3TTSDecoder,
+    )
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(),
         device="cpu",
-        enable_stateful_codec_decoder=False,
+        enable_stateful_codec_decoder=is_stateful,
     )
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
-        scheduler.log_cuda_graph_coverage(128)
+        scheduler.log_cuda_graph_coverage(None)
 
-    assert [record.getMessage() for record in caplog.records] == [
-        "Qwen3-TTS vocoder: stateful Codec decoder off, so every stream decodes on "
-        "the left-context path"
-    ]
+    assert [record.getMessage() for record in caplog.records] == [message]
 
 
 def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_in_flight_cap(
@@ -11705,8 +11723,73 @@ def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_in_flight_cap(
         vocoder_factory_capture(monkeypatch, max_in_flight=None)["max_in_flight"]
         is None
     )
+
+
+def uncapped_vocoder(
+    monkeypatch: pytest.MonkeyPatch,
+    vocoder_overrides: dict[str, bool | int],
+    is_deterministic: bool,
+) -> Qwen3TTSStreamingVocoderScheduler:
+    """Build the vocoder of a server whose engine queue is unbounded, through the config, factory and real scheduler."""
+    config = Qwen3TTSPipelineConfig(model_path="model")
+    config.enable_deterministic_inference = is_deterministic
+    config.stage_named("tts_engine").engine = EngineArgs(max_queued_requests=None)
+    config.stage_named("vocoder").factory = FactoryArgs(
+        dtype="bfloat16", **vocoder_overrides
+    )
+    factory_args = resolve_stage_factory_args(
+        config.stage_named("vocoder"), config, gpu_id=0
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "load_qwen3_tts_tokenizer",
+        lambda *args, **kwargs: FakeQwen3TTSSpeechTokenizer(),
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "load_qwen3_tts_checkpoint_config",
+        lambda model_path: {"tts_model_type": "custom_voice"},
+    )
+    monkeypatch.setattr(
+        qwen3_streaming_vocoder,
+        "Qwen3TTSIncrementalDecoder",
+        FakeIncrementalQwen3TTSDecoder,
+    )
+    monkeypatch.setattr(
+        Qwen3TTSStreamingVocoderScheduler, "warmup_now", lambda scheduler: None
+    )
+    return qwen3_stages.create_vocoder_executor(**{**factory_args, "device": "cpu"})
+
+
+@pytest.mark.parametrize(
+    ("vocoder_overrides", "is_deterministic", "slots"),
+    [
+        ({"enable_stateful_codec_decoder": False}, False, None),
+        ({}, False, None),
+        ({"async_decode": True}, True, None),
+        ({"async_decode": True, "codec_state_slots": 8}, False, 8),
+    ],
+    ids=["stateful_decoder_off", "synchronous", "deterministic", "explicit_slots"],
+)
+def test_qwen3_tts_uncapped_server_builds_rows_only_for_the_async_workers(
+    monkeypatch: pytest.MonkeyPatch,
+    vocoder_overrides: dict[str, bool | int],
+    is_deterministic: bool,
+    slots: int | None,
+) -> None:
+    """A server with an unbounded engine queue refused to start even when its vocoder takes no Codec rows: the stateful decoder off, or decoding synchronously."""
+    scheduler = uncapped_vocoder(monkeypatch, vocoder_overrides, is_deterministic)
+
+    assert (
+        scheduler.codec_arena.num_slots if scheduler.codec_arena is not None else None
+    ) == slots
+
+
+def test_qwen3_tts_uncapped_async_vocoder_needs_a_slot_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(ValueError, match="admits without one"):
-        vocoder_factory_capture(monkeypatch, codec_state_slots=None, max_in_flight=None)
+        uncapped_vocoder(monkeypatch, {"async_decode": True}, False)
 
 
 def test_qwen3_tts_vocoder_codec_state_reaches_model_info(
