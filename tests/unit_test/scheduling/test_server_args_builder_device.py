@@ -57,8 +57,6 @@ def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
     """Omni's bootstrap never calls finalize_startup_weight_load, so the
     overlap mode would serve the staged sentinel weights.
     """
-    import pytest
-
     with pytest.raises(ValueError, match="startup_weight_load_mode"):
         build(monkeypatch, startup_weight_load_mode="overlap")
 
@@ -67,8 +65,6 @@ def test_ipc_weight_cache_modes_are_rejected(monkeypatch) -> None:
     """The bootstrap sizes the KV pool from a free-memory baseline that never
     has the bytes a weight cache daemon already holds added back.
     """
-    import pytest
-
     for mode in ("client", "daemon"):
         with pytest.raises(ValueError, match="weight_cache_mode"):
             build(monkeypatch, weight_cache_mode=mode)
@@ -77,8 +73,6 @@ def test_ipc_weight_cache_modes_are_rejected(monkeypatch) -> None:
 
 
 def test_nvls_and_symmetric_memory_engine_flags_are_rejected(monkeypatch) -> None:
-    import pytest
-
     with pytest.raises(ValueError, match="enable_nccl_nvls"):
         build(monkeypatch, enable_nccl_nvls=True)
     with pytest.raises(ValueError, match="enable_symm_mem"):
@@ -89,8 +83,6 @@ def drive_build(monkeypatch, *, overrides, gpu_id=0):
     """Run SGLangGenerationEngineBuilder.build() far enough to reach the device
     reconciliation, then stop. Returns the device handed to SGLang.
     """
-    import pytest
-
     from sglang_omni.scheduling import engine_factory
 
     captured: dict[str, Any] = {}
@@ -143,8 +135,6 @@ def test_an_operator_device_that_contradicts_placement_is_rejected(monkeypatch) 
     """setdefault() used to leave the override in place, so SGLang could run on a
     different device than the one this stage was placed on.
     """
-    import pytest
-
     resolved = platforms.current_platform.device_type
     other = "cuda" if resolved != "cuda" else "xpu"
 
@@ -241,7 +231,7 @@ def test_an_engine_that_asked_for_eager_decode_keeps_it(monkeypatch) -> None:
         ),
         pytest.param(
             CUDAOmniPlatform,
-            {"enable_deterministic_inference": True},
+            {"enable_deterministic_inference": True, "device": "xpu"},
             None,
             id="deterministic-cuda",
         ),

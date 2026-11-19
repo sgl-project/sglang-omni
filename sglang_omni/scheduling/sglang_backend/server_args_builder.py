@@ -113,7 +113,8 @@ def build_sglang_server_args(
         kwargs.pop("mem_fraction_static", None)
     else:
         pass
-    kwargs.setdefault("device", platform_device_type())
+    host_device_type = platform_device_type()
+    kwargs.setdefault("device", host_device_type)
     if kwargs.get("enable_torch_compile") is None:
         # note (zhaochenyang20): CI sets 0 to keep the eager baseline its speed thresholds use.
         kwargs["enable_torch_compile"] = (
@@ -126,8 +127,8 @@ def build_sglang_server_args(
     if (
         kwargs.get("enable_deterministic_inference")
         and kwargs.get("attention_backend") is None
+        and host_device_type == "xpu"
         and str(kwargs.get("device") or "").split(":")[0] == "xpu"
-        and platform_device_type() == "xpu"
     ):
         kwargs["attention_backend"] = "triton"
     else:
