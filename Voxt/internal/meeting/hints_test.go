@@ -76,6 +76,7 @@ func TestMeetingSendsHotWords(t *testing.T) {
 			Store:     s.Meetings(),
 			Dir:       filepath.Join(dir, "meetings"),
 			Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+			Settings:  func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
 			FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
 			ASR:       func(context.Context, meeting.Source) (meeting.TrackASR, error) { return ta, nil },
 		})
@@ -86,8 +87,18 @@ func TestMeetingSendsHotWords(t *testing.T) {
 		for deadline := time.Now().Add(10 * time.Second); len(h.got()) == 0 && time.Now().Before(deadline); {
 			time.Sleep(5 * time.Millisecond)
 		}
+		if len(h.got()) == 0 {
+			t.Fatal("the speech model got no live request before Finish")
+		}
 		if err := m.Finish(ctx, id); err != nil {
 			t.Fatal(err)
+		}
+		mt, _, err := s.Meetings().Meeting(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mt.Status != store.MeetingDone {
+			t.Fatalf("meeting status = %s, want %s", mt.Status, store.MeetingDone)
 		}
 		check(t, h)
 	}
