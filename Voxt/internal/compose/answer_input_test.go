@@ -223,6 +223,10 @@ func TestAnswerCleanupThinkingClose(t *testing.T) {
 		{"stacked control endings", "Visible<|channel|><|im_end|>", "Visible"},
 		{"control token mentioned in prose", "Answer: use <|channel|> tokens", "Answer: use <|channel|> tokens"},
 		{"channel close mentioned in prose", "Answer: use <channel|> tokens", "Answer: use <channel|> tokens"},
+		{"channel close before full stop", "Answer: use <channel|>.", "Answer: use <channel|>."},
+		{"channel close before comma", "Answer: use <channel|>, then stop", "Answer: use <channel|>, then stop"},
+		{"channel close before parenthesis", "Answer: (use <channel|>).", "Answer: (use <channel|>)."},
+		{"thinking close mentioned in prose", "使用 </think> 标记结尾", "使用 </think> 标记结尾"},
 		{"literal channel close before thinking block", "Use <channel|> literally. <|channel>private<channel|>Visible", "Use <channel|> literally. Visible"},
 		{"end token mentioned in prose", "把 <|im_end|> 放在句尾", "把 <|im_end|> 放在句尾"},
 	} {

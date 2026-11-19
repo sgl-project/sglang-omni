@@ -220,6 +220,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	}
 	var buf strings.Builder
 	answerInput := in.Text + "\n" + in.Instruction
+	quoteSource := cmp.Or(in.Text, in.Instruction)
 	var last time.Time
 	publish := func(force bool) {
 		now := time.Now()
@@ -231,7 +232,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		if in.Answer {
 			a = compose.PartialAnswer(buf.String(), answerInput)
 		} else {
-			a.Content = compose.PartialClean(buf.String(), answerInput)
+			a.Content = compose.PartialClean(buf.String(), answerInput, quoteSource)
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
@@ -263,9 +264,9 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInput)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInput, quoteSource)}, out.Profile(), truncated, nil
 	}
-	return compose.Answer{Content: compose.Clean(resp.Text, answerInput)}, out.Profile(), truncated, nil
+	return compose.Answer{Content: compose.Clean(resp.Text, answerInput, quoteSource)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,

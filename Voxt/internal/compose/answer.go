@@ -3,6 +3,7 @@ package compose
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -138,7 +139,7 @@ func controlTokenStart(s, input string) int {
 func trailingControlToken(token string) bool {
 	switch token {
 	case "<|/tool_call|>", "<|tool_call_end|>", "<|tool_calls_section_end|>", "<|im_end|>", "<|end|>",
-		"<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>":
+		"<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "</think>":
 		return true
 	default:
 		return false
@@ -218,8 +219,9 @@ func stripControlMarkup(s string, inputs ...string) string {
 				j += closeSearchFrom
 			}
 			if j >= 0 && (i < 0 || j < i) {
-				if tag[1] == "<channel|>" && j > 0 && j+len(tag[1]) < len(s) &&
-					strings.ContainsRune(" \t\r\n", rune(s[j-1])) && strings.ContainsRune(" \t\r\n", rune(s[j+len(tag[1])])) {
+				next, _ := utf8.DecodeRuneInString(s[j+len(tag[1]):])
+				if j > 0 && j+len(tag[1]) < len(s) && strings.ContainsRune(" \t\r\n", rune(s[j-1])) &&
+					(strings.ContainsRune(" \t\r\n", next) || unicode.IsPunct(next)) {
 					closeSearchFrom = j + len(tag[1])
 					continue
 				}
@@ -340,27 +342,31 @@ func CleanOutput(out, input string) string {
 
 // Clean tidies a model's answer to input: without the <input> tags a
 // model echoed, or the quotes it wrapped the whole answer in (unless
-// the input was quoted so itself).
-func Clean(out, input string) string {
-	return clean(out, input, false)
+// the input was quoted so itself). quoteSource can select the unmerged
+// source when input also carries an instruction for control-markup context.
+func Clean(out, input string, quoteSource ...string) string {
+	return clean(out, input, false, quoteSource...)
 }
 
 // PartialClean is Clean for a streaming answer: possible control-marker
 // fragments stay hidden until more text arrives.
-func PartialClean(out, input string) string {
-	return clean(out, input, true)
+func PartialClean(out, input string, quoteSource ...string) string {
+	return clean(out, input, true, quoteSource...)
 }
 
-func clean(out, input string, partial bool) string {
+func clean(out, input string, partial bool, quoteSource ...string) string {
 	s := strings.TrimSpace(out)
 	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
-	in := strings.TrimSpace(input)
+	quoteInput := strings.TrimSpace(input)
+	if len(quoteSource) > 0 {
+		quoteInput = strings.TrimSpace(quoteSource[0])
+	}
 	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}} {
 		wrapped := func(t string) bool {
 			return len(t) > len(q[0])+len(q[1]) && strings.HasPrefix(t, q[0]) && strings.HasSuffix(t, q[1]) &&
 				!strings.Contains(t[len(q[0]):len(t)-len(q[1])], q[0])
 		}
-		if wrapped(s) && !wrapped(in) {
+		if wrapped(s) && !wrapped(quoteInput) {
 			s = strings.TrimSpace(s[len(q[0]) : len(s)-len(q[1])])
 		}
 	}

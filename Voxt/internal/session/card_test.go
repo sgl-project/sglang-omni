@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -9,6 +10,21 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+func TestWritePreservesSelectionQuotes(t *testing.T) {
+	h := newHarness(t, &fakeFile{}, &fakeLLM{text: `"Improved."`, chunk: 3}, nil)
+	_, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack, Text: &TextInput{Raw: "improve it", Selection: `"Quoted."`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != `"Improved."` {
+		t.Fatalf("end %s %q (problem %+v)", end.State, end.Result, end.Problem)
+	}
+	if !slices.ContainsFunc(h.rec.all(), func(s Snapshot) bool { return s.State == Composing && s.Draft == `"Improved."` }) {
+		t.Error("the streamed draft lost the selection's quotes")
+	}
+}
 
 // TestShowCard: each feature's own card switch sends its result to the
 // card or inserts it (over the selection when there is one); the other
