@@ -151,33 +151,31 @@ func (a *app) usedBy(kind local.Kind, id string) string {
 	return modelsUsedBy(i18n.CurrentTranslator(), a.prefs, a.installed(local.ASR), a.installed(local.LLM), kind, id)
 }
 
-// featureOf is a feature's part of the settings (hotkey.Transcribe…).
-func featureOf(s settings.Settings, feature string) settings.Feature {
+// featurePart is a feature's part of the settings (hotkey.Transcribe…),
+// the one place that maps a feature to it.
+func featurePart(s *settings.Settings, feature string) *settings.Feature {
 	switch feature {
 	case hotkey.Translate:
-		return s.Features.Translate.Feature
+		return &s.Features.Translate.Feature
 	case hotkey.Rewrite:
-		return s.Features.Rewrite.Feature
+		return &s.Features.Rewrite.Feature
 	case hotkey.Meeting:
-		return s.Features.Meeting.Feature
+		return &s.Features.Meeting.Feature
 	}
-	return s.Features.Transcribe.Feature
+	return &s.Features.Transcribe.Feature
+}
+
+func featureOf(s settings.Settings, feature string) settings.Feature {
+	return *featurePart(&s, feature)
 }
 
 // setFeatureModel sets the model of kind a feature uses ("": the first
 // installed).
 func setFeatureModel(s *settings.Settings, kind local.Kind, feature, id string) {
-	f := &s.Features.Transcribe.Feature
-	switch feature {
-	case hotkey.Translate:
-		f = &s.Features.Translate.Feature
-	case hotkey.Rewrite:
-		f = &s.Features.Rewrite.Feature
-	}
 	if kind == local.ASR {
-		f.ASR = id
+		featurePart(s, feature).ASR = id
 	} else {
-		f.LLM = id
+		featurePart(s, feature).LLM = id
 	}
 }
 
