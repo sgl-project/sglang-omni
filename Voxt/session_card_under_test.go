@@ -62,6 +62,7 @@ func TestCardStaysDuringTranscribe(t *testing.T) {
 		t.Fatalf("recording: card open=%v under=%v mode=%s pill=%s frame=%v (was %v)",
 			a.answer.open, a.under.open, a.ov.mode, a.pill.mode, a.ov.frame, frame)
 	}
+	pillBesideCard(t, a, "recording beside the open card")
 	tap(a, "transcribe/0", textEditApp)
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	slackCardBack(t, a, "after the transcription")

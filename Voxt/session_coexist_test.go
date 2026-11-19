@@ -9,11 +9,28 @@ package main
 import (
 	"testing"
 
+	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+// framesOverlap reports whether two window frames intersect. The pill
+// window must never cover the answer card (wall 116: both stay
+// readable); placing it on the card's anchor hid the card's body.
+func framesOverlap(a, b mygo.Rectangle) bool {
+	return a.X < b.X+b.Width && b.X < a.X+a.Width && a.Y < b.Y+b.Height && b.Y < a.Y+a.Height
+}
+
+// pillBesideCard asserts the pill window shows and does not touch the
+// card's frame.
+func pillBesideCard(t *testing.T, a *sessionApp, when string) {
+	t.Helper()
+	if !a.pill.shown || a.ov.mode != ovAnswer || framesOverlap(a.ov.frame, a.pill.frame) {
+		t.Fatalf("%s: card %v, pill %v (shown %v, main %s)", when, a.ov.frame, a.pill.frame, a.pill.shown, a.ov.mode)
+	}
+}
 
 // TestTranscribeWhileRewriteStreams: Option+Space mid-stream. The answer
 // keeps streaming in the background, the streaming card never leaves,
@@ -48,6 +65,7 @@ func TestTranscribeWhileRewriteStreams(t *testing.T) {
 		t.Fatalf("recording: bg=%q card open=%v under=%v mode=%s pill=%s frame=%v (was %v), card %q",
 			a.bgID, a.answer.open, a.under.open, a.ov.mode, a.pill.mode, a.ov.frame, frame, cardTextForTest(a.cachedCard()))
 	}
+	pillBesideCard(t, a, "recording beside the streaming card")
 	tap(a, "transcribe/0", textEditApp)
 	a.pump("the transcription's end", func() bool { return a.sess.State.Ended() })
 	if p := a.pasted(); len(p) != 1 || p[0].Text != "dictated words" {
@@ -200,6 +218,31 @@ func TestConversationSurvivesATranscribeCard(t *testing.T) {
 	a.closeAnswer()
 	if !a.answer.open || a.answer.kind != store.KindTranscribe || a.answer.text != "dictated words" || a.under.open {
 		t.Fatalf("card=%+v under=%+v", a.answer, a.under)
+	}
+}
+
+// TestPillWindowBesideTheCardTop: with the overlay anchored to the top,
+// the pill window goes below the card instead of covering it.
+func TestPillWindowBesideTheCardTop(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	set, keys, tr := fileSetup(t, "summarize", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+		s.Overlay.Position = "top"
+	}, keys)
+	a.pump("the first answer's card", func() bool { return a.sess.State.Ended() && a.answer.open })
+	frame := a.ov.frame
+	startSaying(a, tr, "transcribe/0", textEditApp, "dictated")
+	pillBesideCard(t, a, "recording beside the open card (top)")
+	if a.pill.frame.Y < a.ov.frame.Y+a.ov.frame.Height {
+		t.Fatalf("the pill is not below the card: card %v, pill %v", a.ov.frame, a.pill.frame)
+	}
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if !a.answer.open || a.answer.text != "one" || a.ov.frame != frame || a.pill.shown {
+		t.Fatalf("after the transcription: card %+v frame %v (was %v), pill %s", a.answer, a.ov.frame, frame, a.pill.mode)
 	}
 }
 

@@ -179,8 +179,24 @@ func (a *app) pillOverlaySize(mode overlayMode) (width, height int, exact bool) 
 	return model.Width, model.Height, model.Exact
 }
 
+// pillAnchor is the pill window's frame before the user's drag: beside
+// the card's current frame — above a bottom-anchored card, below a
+// top-anchored one — so the two windows never cover each other. The
+// default anchor when the card is not showing.
+func (a *app) pillAnchor(width, height int) mygo.Rectangle {
+	frame := layout.Frame(a.pill.area, a.prefs.Overlay, width, height)
+	if a.ov.shown && a.ov.mode == ovAnswer {
+		if a.prefs.Overlay.Position == "top" {
+			frame.Y = a.ov.frame.Y + a.ov.frame.Height
+		} else {
+			frame.Y = a.ov.frame.Y - frame.Height
+		}
+	}
+	return frame
+}
+
 func (a *app) pillFrame(width, height int) mygo.Rectangle {
-	frame, area := layout.Frame(a.pill.area, a.prefs.Overlay, width, height), a.pill.area
+	frame, area := a.pillAnchor(width, height), a.pill.area
 	frame.X = min(max(frame.X+a.pill.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
 	frame.Y = min(max(frame.Y+a.pill.dragged.y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
 	return frame
@@ -192,8 +208,8 @@ func (a *app) pillDragged() {
 	if !a.pill.shown || bounds.X == a.pill.frame.X && bounds.Y == a.pill.frame.Y {
 		return
 	}
-	frame := layout.Frame(a.pill.area, a.prefs.Overlay, a.pill.w, a.pill.h)
-	a.pill.dragged.x, a.pill.dragged.y = bounds.X-frame.X, bounds.Y-frame.Y
+	anchor := a.pillAnchor(a.pill.w, a.pill.h)
+	a.pill.dragged.x, a.pill.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
 	a.pill.frame.X, a.pill.frame.Y = bounds.X, bounds.Y
 }
 
