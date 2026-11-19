@@ -197,7 +197,7 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
-		BoxInput: func() (string, [][]byte) { return a.boxShare.load() },
+		BoxInput: a.boxShare.load,
 		Resolve:  resolver(lm),
 		History:  lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {

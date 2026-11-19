@@ -23,6 +23,8 @@ package main
 // with the same instruction (StartRequest.Text).
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -112,11 +114,15 @@ type boxWindow interface {
 
 // boxShare is the box's content as the sending session reads it
 // (Config.BoxInput, on the session's goroutine): stored on every box
-// change and every frame the card shows (a keystroke is one).
+// change and every frame the card shows (a keystroke is one). Its
+// conversion count covers automatic recording stops as well as Enter.
 type boxShare struct {
-	mu     sync.Mutex
-	text   string
-	images [][]byte
+	mu      sync.Mutex
+	text    string
+	images  [][]byte
+	pending int
+	err     error
+	changed chan struct{}
 }
 
 func (b *boxShare) store(text string, images [][]byte) {
@@ -125,10 +131,63 @@ func (b *boxShare) store(text string, images [][]byte) {
 	b.text, b.images = text, slices.Clone(images)
 }
 
-func (b *boxShare) load() (string, [][]byte) {
+func (b *boxShare) start() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.text, b.images
+	b.pending++
+	if b.changed == nil {
+		b.changed = make(chan struct{})
+	}
+}
+
+func (b *boxShare) done(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pending--
+	if err != nil {
+		b.err = err
+	}
+	if b.pending == 0 || err != nil {
+		b.signalLocked()
+	}
+}
+
+func (b *boxShare) signalLocked() {
+	if b.changed != nil {
+		close(b.changed)
+	}
+	b.changed = make(chan struct{})
+}
+
+func (b *boxShare) clearError() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.err = nil
+}
+
+func (b *boxShare) reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.text, b.images, b.err = "", nil, nil
+	b.signalLocked()
+}
+
+func (b *boxShare) load(ctx context.Context) (string, [][]byte, error) {
+	for {
+		b.mu.Lock()
+		if b.pending == 0 || b.err != nil {
+			text, images, err := b.text, b.images, b.err
+			b.mu.Unlock()
+			return text, images, err
+		}
+		changed := b.changed
+		b.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		}
+	}
 }
 
 // openBox opens the input box and starts the microphone with it (the
@@ -166,7 +225,7 @@ func (a *app) closeBox() {
 func (a *app) dropBox() {
 	a.closeBoxWindow()
 	a.box = rewriteBox{}
-	a.boxShare.store("", nil)
+	a.boxShare.reset()
 	a.boxGen++
 	// A send queued behind a picture's conversion dies with the box: an
 	// old life's conversion landing later must not send the new life.
@@ -186,6 +245,7 @@ func (a *app) boxSend() {
 		a.boxSendQueued = true
 		return
 	}
+	a.boxShare.clearError() // a failed conversion is confirmed by this send
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		if a.sess.State == session.Recording {
 			a.stopSession()
@@ -220,8 +280,10 @@ func (a *app) boxEnded(s session.Snapshot) {
 	case session.Failed:
 		// Nothing of the box's is dropped: it comes back with the
 		// error, the text and the pictures kept, the instruction ready
-		// for Enter.
-		a.box.err, _, _ = sessionProblemText(s.Problem)
+		// for Enter. A conversion error already says what happened.
+		if a.box.err == "" {
+			a.box.err, _, _ = sessionProblemText(s.Problem)
+		}
 		if s.Spoken != "" {
 			a.box.instruction = s.Spoken
 		}
@@ -247,6 +309,7 @@ type boxLanding struct {
 // so batches keep the drop order whatever converts first.
 func (a *app) boxReserve() int {
 	a.boxPending++
+	a.boxShare.start()
 	seq := a.boxSeq
 	a.boxSeq++
 	return seq
@@ -360,6 +423,10 @@ func (a *app) boxDrop(files []string) {
 // order, not the drop order. A send that waited for it goes now.
 func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 	a.boxPending--
+	var conversionErr error
+	if gen == a.boxGen && errText != "" {
+		conversionErr = errors.New(errText)
+	}
 	if a.boxHeld == nil {
 		a.boxHeld = map[int]boxLanding{}
 	}
@@ -382,6 +449,8 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 		}
 		a.boxSync()
 	}
+	// Wake the session only after boxSync has stored every landed image.
+	a.boxShare.done(conversionErr)
 	if a.boxPending == 0 && a.boxSendQueued {
 		a.boxSendQueued = false
 		a.boxSend()
