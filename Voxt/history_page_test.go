@@ -127,7 +127,7 @@ func seedWriteHistory(t *testing.T, a *app) {
 }
 
 func TestHistoryRewriteTypedText(t *testing.T) {
-	entry := store.Entry{Kind: store.KindRewrite, RawText: "typed context", PromptText: "spoken instruction", Result: "Polished"}
+	entry := store.Entry{Kind: store.KindRewrite, TypedText: "typed context", PromptText: "spoken instruction", Result: "Polished"}
 	if got := historyEntryRawCopy(entry); got != "spoken instruction" {
 		t.Errorf("raw copy %q, want the spoken instruction", got)
 	}

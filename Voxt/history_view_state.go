@@ -328,7 +328,7 @@ func buildHistoryDetailViewState(translator *i18n.Translator, input historyDetai
 		addTextBlock("hist-source", translator.T("Selected text"), translator.T("Copy selected text"), entry.SourceText)
 	}
 	if entry.Kind == store.KindRewrite && entry.PromptText != "" {
-		addTextBlock("hist-typed", translator.T("Typed text"), translator.T("Copy typed text"), entry.RawText)
+		addTextBlock("hist-typed", translator.T("Typed text"), translator.T("Copy typed text"), entry.TypedText)
 	} else {
 		addTextBlock("hist-raw", translator.T("Recognised text"), translator.T("Copy recognised text"), entry.RawText)
 	}

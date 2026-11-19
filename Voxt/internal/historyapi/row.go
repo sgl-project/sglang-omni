@@ -44,7 +44,7 @@ func FromEntry(e store.Entry, selection bool) Row {
 	if selection {
 		r.Selection = e.SourceText
 		if e.Kind == store.KindRewrite && e.PromptText != "" {
-			r.Typed = e.RawText
+			r.Typed = e.TypedText
 		}
 	}
 	return r

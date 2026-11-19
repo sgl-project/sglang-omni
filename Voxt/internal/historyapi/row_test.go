@@ -59,7 +59,7 @@ func TestRowFields(t *testing.T) {
 }
 
 func TestRowRewriteTypedFollowsSelection(t *testing.T) {
-	entry := store.Entry{ID: "rewrite", Kind: store.KindRewrite, CreatedAt: testStart, RawText: "typed-secret", SourceText: "selected-secret", PromptText: "polish", Result: "Polished"}
+	entry := store.Entry{ID: "rewrite", Kind: store.KindRewrite, CreatedAt: testStart, TypedText: "typed-secret", SourceText: "selected-secret", PromptText: "polish", Result: "Polished"}
 	row := FromEntry(entry, false)
 	if row.Heard != "" || row.Typed != "" || row.Selection != "" {
 		t.Errorf("selection-off row leaks typed input: %+v", row)
@@ -70,8 +70,9 @@ func TestRowRewriteTypedFollowsSelection(t *testing.T) {
 	}
 	legacy := entry
 	legacy.PromptText = ""
+	legacy.RawText = "legacy answer"
 	row = FromEntry(legacy, true)
-	if row.Heard != "typed-secret" || row.Typed != "" {
+	if row.Heard != "legacy answer" || row.Typed != "" {
 		t.Errorf("legacy answer was relabeled as typed input: %+v", row)
 	}
 }
