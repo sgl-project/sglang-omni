@@ -10,6 +10,7 @@
   "App ID": "App ID",
   "A service gets your recordings only for the features you choose it for.": "只有选用这个服务的功能才会把录音发给它。",
   "Choose a model, or type its ID.": "请选择一个模型，或输入模型 ID。",
+  "Choose the features that use this service": "选择使用此服务的功能",
   "Connection OK · %d ms": "连接正常 · %d 毫秒",
   "Could not remove the key from the Keychain.": "无法从钥匙串移除密钥。",
   "Could not save the key in the Keychain.": "无法把密钥保存到钥匙串。",
