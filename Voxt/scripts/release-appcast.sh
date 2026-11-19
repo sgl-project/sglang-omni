@@ -148,9 +148,15 @@ case "${1:-}" in
     (($# == 3)) || usage
     [[ "$2" =~ ^[0-9]+$ ]] || fail "'$2' is not a build number"
     # Only the appcast proves what Voxt 1.x will read: an API reply that kept
-    # the field does not prove the service renders it.
-    if items | grep -xF "$2 $hardware" >/dev/null; then
+    # the field does not prove the service renders it. The build is not in the
+    # appcast until it is made the latest, so before that an ok reply that kept
+    # the field counts when the appcast already renders it for another item.
+    rendered="$(items)"
+    if grep -xF "$2 $hardware" <<< "$rendered" >/dev/null; then
       echo "The appcast's item of build $2 has sparkle:hardwareRequirements $hardware"
+    elif jq -e --arg hw "$hardware" '.ok == true and .data.hardwareRequirements == $hw' <<< "$3" >/dev/null 2>&1 \
+      && grep -E " $hardware\$" <<< "$rendered" >/dev/null; then
+      echo "The update service kept hardwareRequirements $hardware and its appcast renders it"
     else
       echo "release-appcast.sh: the update service does not output hardwareRequirements yet, so Voxt 1.x on an Intel Mac would get a version it cannot open: add it on the server (/api/pkg/update, and <sparkle:hardwareRequirements>$hardware</sparkle:hardwareRequirements> in the appcast)" >&2
       exit 1
