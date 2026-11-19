@@ -8,6 +8,7 @@ name: Voxt Nightly
 # run-mac-ci label and fails without a CI label, and the build is ad hoc and
 # unsigned. Run by hand from any branch, the build is signed the same way as
 # from main, which needs the voxt-release environment to let that branch in.
+# It also runs govulncheck over Voxt, which fails the run but not the build.
 
 on:
   pull_request:
@@ -32,6 +33,22 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+
+  # Fails when Voxt's code can reach a known vulnerability in the Go standard
+  # library or a module. Nightly because the database changes without a commit
+  # here. The build below does not wait for it.
+  vulnerabilities:
+    if: github.event_name != 'schedule' || github.repository == 'sgl-project/sglang-omni'
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+        working-directory: Voxt
 
   nightly:
     needs: [go-tests, mac-tests]
