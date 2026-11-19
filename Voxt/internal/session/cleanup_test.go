@@ -217,6 +217,55 @@ func TestTranscribeFallback(t *testing.T) {
 			}
 		})
 	}
+
+	// The guard's exits hold in Transcribe's loop too: a used-up plan is
+	// the user's to manage, and a cancel or Skip ends the step — in each
+	// the fallback is never asked.
+	t.Run("a used-up plan is not fallen back from", func(t *testing.T) {
+		main, fallback := &fakeLLM{err: &llm.Error{Code: llm.CodeUsageLimit}}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, main, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 5)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Result != "hello VoxtNew" || end.Problem == nil || llm.Code(end.Problem.Err) != llm.CodeUsageLimit {
+			t.Errorf("end %s %q (problem %+v)", end.State, end.Result, end.Problem)
+		}
+		if n := len(fallback.requests()); n != 0 {
+			t.Errorf("%d requests to the fallback", n)
+		}
+	})
+	t.Run("a cancel is not fallen back from", func(t *testing.T) {
+		main, fallback := &fakeLLM{hang: true}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, main, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing })
+		h.m.Cancel(id)
+		if end := h.rec.wait(t); end.State != Cancelled || len(h.text.pastes()) != 0 {
+			t.Errorf("end %+v, pasted %q", end, h.text.pastes())
+		}
+		if n := len(fallback.requests()); n != 0 {
+			t.Errorf("%d requests to the fallback", n)
+		}
+	})
+	t.Run("a skip is not fallen back from", func(t *testing.T) {
+		main, fallback := &fakeLLM{hang: true}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, main, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.CanSkip })
+		h.m.SkipLLM(id)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "hello VoxtNew" {
+			t.Errorf("end %s %+v %q", end.State, end.Problem, end.Result)
+		}
+		if n := len(fallback.requests()); n != 0 {
+			t.Errorf("%d requests to the fallback", n)
+		}
+	})
 }
 
 // TestTranscribeFallbackRethink: the fallback joins Transcribe's re-ask
