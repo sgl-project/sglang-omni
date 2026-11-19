@@ -8,6 +8,7 @@
 //	       + [Cleanup]       basic clean-up of speech recognition
 //	       + [Structure]     lists and paragraphs (Transcribe only), or Form: keep it as said
 //	       + Task            the feature's rules, then the user's addition to them
+//	       + [Dictionary]    the user's personal dictionary (Markdown notes), the same for every request
 //	       + [Scene]         app enhancement: the app and the group's rules (M5)
 //	       + [Glossary]      the dictionary's terms (a dictionary of up to GlossaryAllUpTo), or the rule for a <glossary> block
 //	       + Output contract only the final text
@@ -100,8 +101,15 @@ type Input struct {
 	// TaskPrompt is the user's addition to the task's rules
 	// (settings.Feature.Prompt); "" for none.
 	TaskPrompt string
+	// KeepTarget leaves {{TARGET_LANGUAGE}} as written, for the built-in
+	// prompt the feature page lets the user edit.
+	KeepTarget bool
 	// Scene is the matched app enhancement group; nil for none.
 	Scene *Scene
+	// Dictionary is the user's personal dictionary, Markdown notes
+	// (settings.Dictionary.Notes) that follow the task's rules, before
+	// anything that changes per request; "" for none.
+	Dictionary string
 	// Glossary are the dictionary's enabled terms (Build keeps the ones
 	// that fit: all of a small dictionary, of a large one those found in
 	// Text).
@@ -112,6 +120,10 @@ type Input struct {
 	MainLanguage   string
 	OtherLanguages []string
 	TargetLanguage string
+	// BackLanguage is what Translate writes in instead when all of Text is
+	// already in TargetLanguage (the main language, #4024): the model can
+	// tell languages apart that share a script. "" for none.
+	BackLanguage string
 	// Text is the input: the recognised speech (Transcribe, Translate),
 	// the selection (Translate with Selected, Rewrite; "" when Rewrite
 	// writes from scratch).
@@ -154,6 +166,9 @@ type Output struct {
 	// GlossaryAllUpTo terms (the terms the text mentions), which opens
 	// User; "" for none (a smaller dictionary's is in System).
 	Glossary string
+	// Dictionary is the personal dictionary's layer of System (the notes
+	// as written), "" for none: for the Dictionary page's example.
+	Dictionary string
 	// Language is the template set used (English, Chinese).
 	Language string
 	// Layers names the layers in the system prompt, in order; Profile
@@ -170,7 +185,7 @@ func (o Output) Profile() string {
 	var caps []string
 	for _, l := range rest {
 		switch l {
-		case "selection", "cleanup", "structure", "strict", "custom", "scene", "glossary", "answer", "followup":
+		case "selection", "cleanup", "structure", "strict", "custom", "dictionary", "scene", "glossary", "answer", "followup":
 			caps = append(caps, l)
 		}
 	}
@@ -232,6 +247,9 @@ func Build(in Input) (Output, error) {
 	}
 	set := TemplateSet(in.MainLanguage)
 	vars := Variables(in, set)
+	if in.KeepTarget {
+		vars["TARGET_LANGUAGE"] = "{{TARGET_LANGUAGE}}"
+	}
 	var parts, layers []string
 	add := func(layer, text string) {
 		text = strings.TrimSpace(text)
@@ -281,7 +299,11 @@ func Build(in Input) (Output, error) {
 			add("input", render("input-speech", nil))
 			add("form", render("form", nil))
 		}
-		add("task", render("task-translate", nil))
+		back := ""
+		if b := strings.TrimSpace(in.BackLanguage); b != "" && lang.Canonical(b) != lang.Canonical(in.TargetLanguage) {
+			back = LanguageName(b, set)
+		}
+		add("task", render("task-translate", map[string]string{"BACK_LANGUAGE": back}))
 		if in.Strict {
 			add("strict", render("strict", nil))
 		}
@@ -300,6 +322,7 @@ func Build(in Input) (Output, error) {
 			add("followup", render("followup", nil))
 		}
 	}
+	dictionary := addDictionary(in, add)
 	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
 	}
@@ -325,7 +348,7 @@ func Build(in Input) (Output, error) {
 	default:
 		add("output", render("output-"+string(in.Task), nil))
 	}
-	out.System, out.Layers = strings.Join(parts, "\n\n"), layers
+	out.System, out.Layers, out.Dictionary = strings.Join(parts, "\n\n"), layers, dictionary
 	if in.Task == Rewrite {
 		for _, t := range in.Previous {
 			out.History = append(out.History,
@@ -336,56 +359,11 @@ func Build(in Input) (Output, error) {
 	} else {
 		out.User = out.withGlossary(UserMessage(in.Text))
 		if input, answer, ok := Example(in); ok {
-			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
-		}
-	}
-	return out, nil
-}
-
-// buildFullPrompt sends the user's template as the system prompt, with
-// scene and glossary layers when they apply (FB3).
-func buildFullPrompt(in Input, set string, vars, flags map[string]string, full string) (Output, error) {
-	render := func(name string, extra map[string]string) string {
-		x := maps.Clone(flags)
-		maps.Copy(x, extra)
-		return Render(template(set, name), vars, x)
-	}
-	var parts, layers []string
-	add := func(layer, text string) {
-		text = strings.TrimSpace(text)
-		if text == "" {
-			return
-		}
-		parts = append(parts, text)
-		layers = append(layers, layer)
-	}
-	add("custom", strings.TrimSpace(Render(full, vars, flags)))
-	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
-		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
-	}
-	out := Output{Language: set}
-	g := Glossary(in.Glossary, in.Instruction+"\n"+in.Text, set)
-	if len(distinctTerms(in.Glossary)) <= GlossaryAllUpTo {
-		if g != "" {
-			add("glossary", render("glossary", map[string]string{"GLOSSARY": g}))
-		}
-	} else {
-		add("glossary", render("glossary-user", nil))
-		if g != "" {
-			out.Glossary = wrap("glossary", g)
-		}
-	}
-	out.System, out.Layers = strings.Join(parts, "\n\n"), layers
-	if in.Task == Rewrite {
-		for _, t := range in.Previous {
-			out.History = append(out.History,
-				Message{Role: "user", Content: RewriteMessage(t.Instruction, t.Selection)},
-				Message{Role: "assistant", Content: t.Answer.reply(in.Answer)})
-		}
-		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text))
-	} else {
-		out.User = out.withGlossary(UserMessage(in.Text))
-		if input, answer, ok := Example(in); ok {
+			if in.Task == Transcribe {
+				// The example answers in the form the output contract
+				// asks for: the final text between <output> tags.
+				answer = outputOpen + "\n" + answer + "\n" + outputClose
+			}
 			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
 		}
 	}
@@ -573,9 +551,27 @@ func distinctTerms(terms []Term) []Term {
 	return out
 }
 
+// CleanOutput tidies a Transcribe clean-up's answer to input: the
+// content of the <output> tags the clean-up's contract asks for when
+// they are there and the input did not have them (never the model's
+// commentary outside them, #4086); when the input itself has the tags,
+// one outermost pair the model wrapped its whole answer in goes and the
+// text keeps its own tags. Then Clean's tidy. Only the Transcribe
+// clean-up asks for the tags: Rewrite's and Translate's answers go to
+// Clean, so tags their text itself has (HTML they were asked for) stay.
+func CleanOutput(out, input string) string {
+	s := strings.TrimSpace(out)
+	if strings.Contains(input, outputOpen) {
+		s = unwrappedOutput(s)
+	} else if content, ok := taggedOutput(s); ok {
+		s = strings.TrimSpace(content)
+	}
+	return Clean(s, input)
+}
+
 // Clean tidies a model's answer to input: without the <input> tags a
-// model echoed, or the quotes it wrapped the whole answer in (unless the
-// input was quoted so itself).
+// model echoed, or the quotes it wrapped the whole answer in (unless
+// the input was quoted so itself).
 func Clean(out, input string) string {
 	s := strings.TrimSpace(out)
 	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))

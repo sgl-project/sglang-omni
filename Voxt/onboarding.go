@@ -29,10 +29,13 @@ package main
 // way back on that page (obBackBar).
 
 import (
+	"context"
 	"strings"
 
-	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -75,11 +78,17 @@ type onboardingState struct {
 		// elsewhere.
 		legacy     legacyReport
 		legacyOpen bool
-		// legacyDone: that import brought the dictionary over.
-		legacyDone bool
+		// legacyAvailable says the welcome survey found a previous Voxt;
+		// legacyDone records that an import brought the dictionary over.
+		legacyAvailable bool
+		legacyDone      bool
 		// awayTo is the page one of the guide's links left it for: that
 		// page offers the way back ("" none).
 		awayTo string
+		// view caches the welcome step while its inputs stay unchanged.
+		view       onboardingViewState
+		viewKey    onboardingWelcomeCacheKey
+		viewCached bool
 	}
 }
 
@@ -96,12 +105,6 @@ func obStepKind(step int) (store.Kind, bool) {
 	return "", false
 }
 
-// obStepTitles are the steps' short names, for the breadcrumbs.
-func obStepTitles() []string {
-	return []string{i18n.T("Welcome"), i18n.T("Permissions"), i18n.T("Models"), i18n.T("Transcribe"),
-		i18n.T("Translate"), i18n.T("Rewrite"), i18n.T("More")}
-}
-
 // openOnboarding opens the guide at the step it was left on this run,
 // with its tries; at its first step when it never opened or was finished.
 func (a *app) openOnboarding() {
@@ -112,6 +115,7 @@ func (a *app) openOnboarding() {
 	}
 	a.ob.block, a.ob.hint = nil, ""
 	a.ob.found = nil
+	a.ob.legacyAvailable = legacyLibrary() != ""
 	a.recheckPermissions()
 	if a.ob.step == obModels {
 		a.obSurvey() // onboarding_models.go
@@ -119,10 +123,11 @@ func (a *app) openOnboarding() {
 }
 
 // finishOnboarding closes the guide at its end: it opens again from the
-// start.
-func (a *app) finishOnboarding() {
+// start, then opens the page the user chose.
+func (a *app) finishOnboarding(path string) {
 	a.closeOnboarding()
 	a.ob.tries, a.ob.passed = nil, nil
+	a.navigate(path)
 }
 
 // obLeave closes the guide for the page at path, which offers the way
@@ -133,18 +138,7 @@ func (a *app) obLeave(path string) {
 	a.navigate(path)
 }
 
-// obBackBar is the way back to the guide, on the page one of its links
-// opened; × hides it (the guide still opens at that step).
-func (a *app) obBackBar(c *ui.Context, path string) {
-	if a.ob.awayTo != path || a.ob.open {
-		return
-	}
-	notice(c, "ob-back", noticeInfo, i18n.T("The setup guide is paused at the %s step.", obStepTitles()[a.ob.step]), "", func() {
-		if ui.Button(c.Key("ob-back-open"), i18n.T("Back to the setup guide")).Clicked() {
-			a.openOnboarding()
-		}
-	}, func() { a.ob.awayTo = "" })
-}
+func (a *app) dismissOnboardingBack() { a.ob.awayTo = "" }
 
 // maybeOnboard opens the guide on the first start (openWindow).
 func (a *app) maybeOnboard() {
@@ -242,6 +236,8 @@ func (a *app) obGo(step int) {
 	a.ob.step = min(max(step, 0), obSteps-1)
 	a.ob.block, a.ob.hint = nil, ""
 	switch a.ob.step {
+	case obWelcome:
+		a.ob.legacyAvailable = legacyLibrary() != ""
 	case obPermissions:
 		a.recheckPermissions()
 	case obModels:
@@ -249,11 +245,101 @@ func (a *app) obGo(step int) {
 	}
 }
 
-// onboardingRow is Settings → General's way back to the guide.
-func (a *app) onboardingRow(c *ui.Context) {
-	settingRow(c, "setup-guide", i18n.T("Setup guide"), i18n.T("Permissions, speech models and a test of each feature, as on first launch."), func() {
-		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open the setup guide")).Clicked() {
-			a.openOnboarding()
+// obSpeech is the pack's speech model, the same on every Mac: 1.7B (8bit)
+// runs well with 8 GB of memory too.
+func (a *app) obSpeech() string { return models.ASRAccurate }
+
+// obPack is the recommended pack: what the guide downloads.
+func (a *app) obPack() []string { return []string{a.obSpeech(), models.VADSilero} }
+
+// downloadPercent is how much of a download has come, in percent.
+func downloadPercent(st models.Status) int {
+	if st.Total <= 0 {
+		return 0
+	}
+	return int(100 * float64(st.Done) / float64(st.Total))
+}
+
+// obDownloadLeft is what the recommended speech model still has to
+// download, for the buttons that start it.
+func (a *app) obDownloadLeft() string {
+	id := a.obSpeech()
+	m, _ := models.Lookup(id)
+	return uitext.HumanBytes(m.Size() - a.modelStatus[id].Done)
+}
+
+// obSurvey looks for the pack's models and their alternatives in the
+// family's library, off the main thread (when the models step shows).
+func (a *app) obSurvey() {
+	if a.models == nil {
+		return
+	}
+	var ids []string
+	for _, id := range a.obPack() {
+		ids = append(ids, id)
+		if m, ok := models.Lookup(id); ok {
+			ids = append(ids, m.Alternatives...)
 		}
+	}
+	m := a.models
+	a.async(func() {
+		found := m.Survey(ids...)
+		a.post(func() { a.ob.found = found })
 	})
+}
+
+// obUse claims the models ids for VoxtNew ("Use them", "Use … for now"),
+// off the main thread, then downloads what they need that is missing
+// (the voice detection of a speech model).
+func (a *app) obUse(ids ...string) {
+	m := a.models
+	a.async(func() {
+		err := m.Use(context.Background(), ids...)
+		a.post(func() {
+			if err != nil {
+				a.toast(i18n.T("Could not use the models: %v", err))
+			}
+			a.modelsChanged()
+			for _, id := range ids {
+				mod, _ := models.Lookup(id)
+				for _, need := range mod.Needs {
+					if st := a.modelStatus[need]; !st.Installed && !st.Downloading {
+						a.downloadModel(need)
+					}
+				}
+			}
+		})
+	})
+}
+
+func (a *app) clearOnboardingBlock() { a.ob.block = nil }
+
+func (a *app) onboardingNoticeAction(action string) {
+	a.clearOnboardingBlock()
+	a.noticeAction(action)
+}
+
+func (a *app) onboardingTryLanguage() {
+	a.showMainWindow()
+	a.obLeave(remotePath)
+}
+
+func (a *app) onboardingDownloadAndContinue() {
+	a.downloadModel(a.obSpeech())
+	a.obGo(a.ob.step + 1)
+}
+
+func (a *app) copyOnboardingResult(text string) {
+	if a.copyText != nil {
+		_ = a.copyText(text)
+	} else {
+		_ = mygo.Clipboard.Write(transfer.TextData(text))
+	}
+	a.toast(i18n.T("Copied"))
+}
+
+func (a *app) onboardingOpenPrivacy(url string) { openExternal(url) }
+
+func (a *app) completeOnboardingLegacyTodo(kind, id string) {
+	a.completeLegacyTodo(legacyTodo{kind: local.Kind(kind), id: id})
 }

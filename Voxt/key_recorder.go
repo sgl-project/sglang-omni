@@ -12,9 +12,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // uiKeyNames are the window's keys in internal/hotkey's grammar.
@@ -57,45 +55,66 @@ func pressedKeys(ev ui.InputEvent) (string, bool) {
 			parts = append(parts, m.name)
 		}
 	}
-	ch, err := hotkey.Parse(strings.Join(append(parts, name), "+"))
-	if err != nil {
-		return "", false
-	}
-	return ch.String(), true
+	return strings.Join(append(parts, name), "+"), true
 }
 
 // keysField is a shortcut's Custom… field: the recorder, or the typed
 // keys once the user asked to type them.
-func (a *app) keysField(c *ui.Context, r *keyRow, label string, save func(keys string)) {
+func keysField(c *ui.Context, r *keyRow, label string, save func(keys string), state keyRecorderViewState, actions keyRecorderActions) {
 	if r.typing {
-		a.customKeys(c, r, label, save)
+		customKeys(c, r, label, save, state.Typed, actions)
 		if ghostButton(c.Key("record-keys"), i18n.T("Press the keys instead")).Clicked() {
 			r.typing, r.edited = false, false
 		}
 		return
 	}
-	a.keyRecorder(c, r, label, save)
+	keyRecorder(c, r, label, save, state, actions)
+}
+
+// customKeys is the field for typed keys: they are saved (in canonical
+// spelling) on Return or when the field loses the focus, if they parse.
+func customKeys(c *ui.Context, r *keyRow, label string, save func(keys string), state customKeysViewState, actions keyRecorderActions) {
+	t := c.Theme()
+	in := ui.TextInput(c.Key("custom"), &r.text).Placeholder("Control+Option+Space").Label(label).Font("monospace").MaxWidth(px(t, 360))
+	if in.Changed() {
+		state = actions.typeShortcutKeys(r)
+	}
+	if r.edited && state.Valid && (in.Submitted() || !in.Focused()) {
+		state = actions.saveTypedShortcutKeys(r, save)
+	}
+	switch {
+	case !state.Valid:
+		warnLine(c, state.ErrorText)
+	case r.edited:
+		caption(c, i18n.T("Press Return to use %s.", state.FormattedKeys))
+		return
+	default:
+		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
+	}
+	// Also under an error: Mouse1 is refused, mouse buttons are not.
+	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
 }
 
 // keyRecorder takes the keys as they are pressed and saves them at once.
 // Tab and ⇧Tab without other modifiers move the focus on, as in any
 // field.
-func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys string)) {
+func keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys string), state keyRecorderViewState, actions keyRecorderActions) {
 	t := c.Theme()
 	k := tok(t)
 	box := ui.Box(c.Key("record")).Focusable().AutoFocus().Role(ui.RoleTextField).Label(label).
 		Padding(px(t, 5), px(t, sp2)).Radius(px(t, radiusControl)).MaxWidth(px(t, 360)).Cursor(ui.CursorPointer)
+	shown := state.DisplayedKeys
 	focused := box.Focused()
 	if focused && !r.recFocused {
 		r.recordDenied = false
-		a.beginHotkeyRecord(r, save)
+		shown = actions.beginHotkeyRecord(r, save)
 	}
 	if r.recFocused && !focused {
-		a.cancelHotkeyRecord()
+		actions.cancelHotkeyRecord()
 	}
 	r.recFocused = focused
 	if focused {
-		a.keysHeard = true
+		actions.markShortcutRecorderFocused()
 		box.Border(1, k.Accent)
 	} else {
 		box.Border(1, k.Line)
@@ -103,7 +122,7 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 	if box.Clicked() {
 		box.Focus()
 	}
-	useWindow := !a.helperRecordsKeys()
+	useWindow := !state.HelperRecordsKeys
 	box.HandleInput(func(ev ui.InputEvent) bool {
 		if !useWindow {
 			if ev.Kind == ui.InputKeyDown && ev.Key == ui.KeyTab && ev.Mods&^ui.Shift == 0 {
@@ -127,12 +146,10 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 		keys, ok := pressedKeys(ev)
 		r.unknown = !ok
 		if ok {
-			r.text, r.edited = keys, false
-			save(keys)
+			shown = actions.saveShortcutRecorderKeys(keys, r, save)
 		}
 		return true
 	})
-	shown := uitext.HotkeyText(r.text)
 	box.Value(shown).Children(func() {
 		switch {
 		case r.text != "":
@@ -145,25 +162,25 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 	})
 	switch {
 	case r.recordDenied:
-		warnLine(c, i18n.T("Recording a shortcut needs Accessibility permission."))
+		warnLine(c, i18n.T("Recording a shortcut needs Accessibility access."))
 		ui.Row(c).Children(func() {
 			if ghostButton(c.Key("record-open-perms"), i18n.T("Open Permissions")).Clicked() {
-				a.navigate("/settings/permissions")
+				actions.openShortcutPermissions()
 			}
 		})
 	case r.unknown:
 		warnLine(c, i18n.T("Voxt cannot use that key. Press another, or type the keys instead."))
 	case focused:
-		if a.helperRecordsKeys() {
+		if state.HelperRecordsKeys {
 			caption(c, i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last."))
 		} else {
-			caption(c, i18n.T("Press the keys you want, as ⌥Space. Each press replaces the last."))
+			caption(c, i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last."))
 		}
 	default:
-		if a.helperRecordsKeys() {
+		if state.HelperRecordsKeys {
 			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
 		} else {
-			caption(c, i18n.T("Click the field and press the keys, as ⌥Space. fn, a left or right modifier and mouse buttons need Accessibility: open Permissions."))
+			caption(c, i18n.T("Click the field and press the keys, such as ⌥Space. To use fn, a left or right modifier or a mouse button, allow Accessibility in Permissions."))
 		}
 	}
 	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {

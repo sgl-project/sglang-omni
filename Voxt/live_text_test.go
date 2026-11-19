@@ -23,7 +23,7 @@ func TestLiveTextSwitch(t *testing.T) {
 	if text, _ := pillLine(a.pillSession()); text != "so the meeting moves" {
 		t.Fatalf("on: %q", text)
 	}
-	for _, label := range []string{"Show live text", "Show the recording time"} {
+	for _, label := range []string{"Show live text", "Show recording time"} {
 		if err := tt.ClickControl(label); err != nil {
 			t.Fatal(err)
 		}
@@ -44,24 +44,30 @@ func TestLiveTextSwitch(t *testing.T) {
 // TestLiveTextCard: with Show live text off, a follow-up in the answer
 // card shows neither the words being said nor the answer being written,
 // as the pill does not.
-// TestLiveTextNoLLMDraft: after stop, the pill keeps the live ASR text,
-// while the speech model finishes and while the language model works, and
-// never replays the language model's draft (FB6). It went blank while the
-// language model worked (#3644).
+// TestLiveTextNoLLMDraft: after stop, the pill keeps the live ASR text
+// while the speech model finishes; while the language model works the
+// stream's words become the text the model got, and never the model's
+// draft (FB6). It went blank while the language model worked (#3644),
+// then kept the stream's last partial, which can differ from what the
+// model got. A file model's text never shows there (FB6).
 func TestLiveTextNoLLMDraft(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	stream := "meet at three tomorrow"
+	stream, spoken := "meet at three tomorrow", "Meet at three tomorrow with VoxtNew"
 	a.sess = session.Snapshot{State: session.Recording, Partial: stream}
 	if text, _ := pillLine(a.pillSession()); text != stream {
 		t.Fatalf("recording: %q", text)
 	}
-	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Draft: "Meet at three."}
-	if text, _ := pillLine(a.pillSession()); text != stream {
-		t.Fatalf("composing: %q", text)
-	}
 	a.sess = session.Snapshot{State: session.Recognizing, Partial: stream}
 	if text, _ := pillLine(a.pillSession()); text != stream {
 		t.Fatalf("recognizing: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Spoken: spoken, Draft: "Meet at three."}
+	if text, _ := pillLine(a.pillSession()); text != spoken {
+		t.Fatalf("composing: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Composing, Spoken: spoken, Draft: "Meet at three."}
+	if text, _ := pillLine(a.pillSession()); text != "" {
+		t.Errorf("composing, a file model: %q", text)
 	}
 }
 
@@ -70,7 +76,7 @@ func TestLiveTextCard(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Overlay.HideLiveText = true })
 	steps := cardSteps()
 	words := func() (all []string) {
-		for _, b := range a.cardNow().bubbles {
+		for _, b := range cardBubblesForTest(a.cachedCard()) {
 			all = append(all, b.text)
 		}
 		return all
@@ -104,6 +110,7 @@ func TestLiveLines(t *testing.T) {
 	a.navigate("/settings/overlay")
 	frames(tt)
 	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "Meet at three"}
+	a.refreshSessionOverlay(time.Now())
 	if w, h, _ := a.overlaySize(ovRecording); w >= layout.LinesW || h != layout.LiveH {
 		t.Fatalf("one line: %d×%d", w, h)
 	}
@@ -114,13 +121,16 @@ func TestLiveLines(t *testing.T) {
 	if !a.settings.Get().Overlay.LiveLines {
 		t.Fatal("not saved")
 	}
+	a.refreshSessionOverlay(time.Now())
 	_, one, _ := a.overlaySize(ovRecording)
 	if w, _, _ := a.overlaySize(ovRecording); w != layout.LinesW {
 		t.Errorf("lines: %d wide", w)
 	}
 	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 12)
+	a.refreshSessionOverlay(time.Now())
 	_, some, _ := a.overlaySize(ovRecording)
 	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 200)
+	a.refreshSessionOverlay(time.Now())
 	_, most, _ := a.overlaySize(ovRecording)
 	if !(one < some && some < most) || most != layout.LinesHeight(layout.LinesMax*layout.LineH) {
 		t.Errorf("heights: one line %d, a few %d, many %d (most %d)", one, some, most, layout.LinesHeight(layout.LinesMax*layout.LineH))
@@ -145,9 +155,10 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 	if m := a.overlayModeNow(); m != ovAnswer {
 		t.Fatalf("writing: mode %v", m)
 	}
+	a.refreshSessionOverlay(time.Now())
 	w, h, _ := a.cardSize()
-	if v := a.cardNow(); v.text != "Short." || !v.busy || w != layout.CardSizes[0].W || h <= layout.CardChrome || h >= layout.CardChrome+layout.CardBodyMax {
-		t.Errorf("the writing card: %q busy %v, %d×%d", v.text, v.busy, w, h)
+	if v := a.cachedCard(); cardTextForTest(v) != "Short." || !v.Busy || w != layout.CardSizes[0].W || h <= layout.CardChrome || h >= layout.CardChrome+layout.CardBodyMax {
+		t.Errorf("the writing card: %q busy %v, %d×%d", cardTextForTest(v), v.Busy, w, h)
 	}
 	a.prefs.Overlay.HideLiveText = true
 	if m := a.overlayModeNow(); m != ovWorking {
@@ -175,13 +186,57 @@ func TestRewriteWritingFollows(t *testing.T) {
 	s.Draft = long
 	snap(a, s)
 	frames(tt)
-	if st := a.ov.cardScroll; st.MaxY <= 0 || st.Y < st.MaxY-2 {
+	if st := a.ov.ui.cardScroll; st.MaxY <= 0 || st.Y < st.MaxY-2 {
 		t.Errorf("the writing card shows %v of %v: not the newest words", st.Y, st.MaxY)
 	}
 }
 
+// TestLiveLinesFromStart: with Lines the face is the wide one from the
+// moment the recording starts, before any text and while it waits for
+// the microphone, so the first word does not make it jump from the small
+// pill (the user, 11-09); it does not let the pointer through, and where
+// it is dragged it stays as its text grows, as the card does. With One
+// line the pill stays small and lets the pointer through.
+func TestLiveLinesFromStart(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Waiting: session.WaitMic}
+	a.overlaySync()
+	start := a.ov.frame
+	if a.ov.w != layout.LinesW || a.ov.h != layout.LiveH || a.ov.passThrough {
+		t.Fatalf("waiting for the microphone: %d×%d, pass %v", a.ov.w, a.ov.h, a.ov.passThrough)
+	}
+	frames(hudTester(a.overlayView, start.Width, start.Height)) // the hint draws in the wide face
+	a.sess.Waiting = session.WaitNone
+	a.overlaySync()
+	frames(hudTester(a.overlayView, start.Width, start.Height)) // and the empty line
+	a.sess.Partial = "Meet at three"
+	a.overlaySync()
+	if a.ov.frame != start {
+		t.Errorf("the first words moved the face: %+v, was %+v", a.ov.frame, start)
+	}
+	a.ov.dragged.x, a.ov.dragged.y = -200, -100
+	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 12)
+	a.overlaySync()
+	anchored := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+	if f := a.ov.frame; f.X != anchored.X-200 || f.Y != anchored.Y-100 || f.Height <= start.Height {
+		t.Errorf("dragged, then grown: %+v; anchored %+v", f, anchored)
+	}
+	a.sess = session.Snapshot{ID: "s2", State: session.Recognizing}
+	a.overlaySync()
+	if a.ov.mode != ovWorking || a.ov.w != layout.LinesW || a.ov.h != layout.LiveH {
+		t.Errorf("working, no text: %s %d×%d", a.ov.mode, a.ov.w, a.ov.h)
+	}
+
+	a.prefs.Overlay.LiveLines = false
+	a.sess = session.Snapshot{ID: "s3", State: session.Recording}
+	a.overlaySync()
+	if a.ov.w >= layout.LinesW || a.ov.h != layout.PillH || !a.ov.passThrough {
+		t.Errorf("one line: %d×%d, pass %v", a.ov.w, a.ov.h, a.ov.passThrough)
+	}
+}
+
 // TestLiveLinesScroll: live text in lines longer than the face takes the
-// wheel: the overlay stops letting the pointer through, the wheel scrolls
+// wheel: the overlay does not let the pointer through, the wheel scrolls
 // up to what came before and new words leave it there; back at the end,
 // it follows the newest words again. The lines before the last ten were
 // out of reach (#3644).
@@ -189,19 +244,14 @@ func TestLiveLinesScroll(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.prefs.Overlay.LiveLines = true
 	words := strings.Repeat("and then the meeting moves to Thursday ", 40)
-	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "short"}
-	a.overlaySync()
-	if !a.ov.passThrough {
-		t.Fatal("a short text keeps the pointer from passing through")
-	}
-	a.sess.Partial = words
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: words}
 	a.overlaySync()
 	if a.ov.passThrough {
 		t.Fatal("the overflowing text lets the pointer through: the wheel cannot reach it")
 	}
 	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 	frames(tt)
-	l := &a.ov.lines
+	l := &a.ov.ui.lines
 	if !l.follow || l.st.MaxY <= 0 || l.st.Y != l.st.MaxY {
 		t.Fatalf("at the start: %+v", *l)
 	}
@@ -225,30 +275,5 @@ func TestLiveLinesScroll(t *testing.T) {
 	frames(tt)
 	if !l.follow || l.st.Y != l.st.MaxY {
 		t.Errorf("back at the end: %+v", *l)
-	}
-}
-
-// TestLiveLinesOverflowMeasured: the live text guessed to fit ten lines
-// lets the pointer through; when its measured height says it does not,
-// the window takes the pointer again, so that the wheel scrolls it rather
-// than the app under the overlay.
-func TestLiveLinesOverflowMeasured(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	a.measureHook = nil // the guesses until the view measured, then the measures
-	a.prefs.Overlay.LiveLines = true
-	text := strings.Repeat("meet at three ", 20)
-	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: text}
-	a.overlaySync()
-	if !a.ov.passThrough {
-		t.Fatal("a text guessed to fit keeps the pointer from passing through")
-	}
-	line, _ := pillLine(a.pillSession())
-	if a.ov.textW == nil {
-		a.ov.textW = map[ovSized]ovMeasured{}
-	}
-	a.ov.textW[liveLinesKey(line)] = ovMeasured{w: layout.LinesTextW, h: (layout.LinesMax + 2) * layout.LineH}
-	a.overlayRestyle()
-	if a.ov.passThrough {
-		t.Error("the text measured past ten lines still lets the pointer through")
 	}
 }

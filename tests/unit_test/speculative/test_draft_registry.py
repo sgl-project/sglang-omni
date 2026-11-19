@@ -9,12 +9,20 @@ import shlex
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 import pytest
+import yaml
+from typer.testing import CliRunner
 
+from sglang_omni.cli import app
+from sglang_omni.cli.config import config_app
+from sglang_omni.cli.serve import apply_default_draft_engine_overrides
 from sglang_omni.config.manager import ConfigManager, normalize_flag_key
 from sglang_omni.config.schema import EngineArgs
+from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.registry import resolve_variant
+from sglang_omni.platforms import current_platform
 from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY, PinnedDraft
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -39,10 +47,14 @@ def engine_draft_keys(engine: EngineArgs | None) -> dict[str, str]:
         return {}
     else:
         overrides = engine.overrides()
+        # Compare draft identity independently of device-specific attention backends.
         return {
             key: str(value)
             for key, value in overrides.items()
-            if key.startswith("speculative_")
+            if (
+                key.startswith("speculative_")
+                and key != "speculative_draft_attention_backend"
+            )
             or (key == "revision" and overrides.get("speculative_algorithm"))
         }
 
@@ -113,13 +125,26 @@ DOC_DRAFTS, UNREADABLE_DOC_DRAFT_FLAGS = drafts_in_docs()
 SERVED_DRAFTS = DOC_DRAFTS + drafts_in_example_configs()
 
 
+def served_draft_identity(
+    served: ServedDraft,
+) -> tuple[str | None, str, str | None, str | None]:
+    """The model, stage, algorithm and draft repo a served draft names; a bundled draft's repo is its model."""
+    return (
+        served.model_path,
+        served.stage,
+        served.engine_keys.get("speculative_algorithm"),
+        served.engine_keys.get("speculative_draft_model_path", served.model_path),
+    )
+
+
+def registry_draft_identity(draft: PinnedDraft) -> tuple[str, str, str, str]:
+    return (draft.model_path, draft.stage, draft.algorithm, draft.draft_model_path)
+
+
 def test_registry_pins_each_draft_and_turns_on_at_most_one_per_stage() -> None:
     for draft in DRAFT_REGISTRY:
         assert re.fullmatch(r"[0-9a-f]{40}", draft.draft_model_revision), draft
         assert all(key.startswith("speculative_") for key in draft.engine_settings)
-    assert len(
-        {(draft.model_path, draft.stage, draft.algorithm) for draft in DRAFT_REGISTRY}
-    ) == len(DRAFT_REGISTRY)
     draft_repos = Counter(draft.draft_model_path for draft in DRAFT_REGISTRY)
     assert all(count == 1 for count in draft_repos.values()), draft_repos
     default_on = Counter(
@@ -188,20 +213,13 @@ def test_disabling_a_bundled_draft_preserves_the_target_revision() -> None:
 @pytest.mark.parametrize(
     "served",
     SERVED_DRAFTS,
-    ids=lambda served: f"{served.source}:{served.stage}:{served.engine_keys.get('speculative_algorithm')}",
+    ids=lambda served: ":".join(
+        str(part) for part in (served.source, *served_draft_identity(served)[1:])
+    ),
 )
 def test_served_draft_gives_its_registry_entry_keys(served: ServedDraft) -> None:
-    registered = {
-        (draft.model_path, draft.stage, draft.algorithm): draft
-        for draft in DRAFT_REGISTRY
-    }
-    draft = registered.get(
-        (
-            served.model_path,
-            served.stage,
-            served.engine_keys.get("speculative_algorithm"),
-        )
-    )
+    registered = {registry_draft_identity(draft): draft for draft in DRAFT_REGISTRY}
+    draft = registered.get(served_draft_identity(served))
     assert draft is not None, (
         f"{served.source} serves a draft for {served.model_path} {served.stage} that "
         "sglang_omni/speculative/draft_registry.py does not pin"
@@ -210,27 +228,28 @@ def test_served_draft_gives_its_registry_entry_keys(served: ServedDraft) -> None
 
 
 def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> None:
-    served_drafts = {
-        (
-            served.model_path,
-            served.stage,
-            served.engine_keys.get("speculative_algorithm"),
-        )
-        for served in SERVED_DRAFTS
-    }
+    served_drafts = {served_draft_identity(served) for served in SERVED_DRAFTS}
     assert {
-        (draft.model_path, draft.stage, draft.algorithm)
+        registry_draft_identity(draft)
         for draft in DRAFT_REGISTRY
         if not draft.is_default_on
     } <= served_drafts
 
 
-def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
+@pytest.mark.parametrize("is_cuda", [True, False])
+def test_each_model_launches_exactly_its_default_on_drafts_and_only_on_cuda(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_cuda: bool
+) -> None:
+    """Check CUDA draft defaults without fetching checkpoint metadata."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
     registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
     # note (Haoling Pu): a near-miss path stands for a sibling checkpoint without an entry, such as Qwen3-ASR 0.6B next to 1.7B.
     model_paths = registry_paths + [
         f"{path}-without-a-draft" for path in registry_paths
     ]
+    monkeypatch.chdir(tmp_path)
+    for model_path in model_paths:
+        (tmp_path / model_path).mkdir(parents=True)
     default_drafts = set()
     for config_module_path in sorted(
         (REPO_ROOT / "sglang_omni" / "models").glob("*/config.py")
@@ -245,7 +264,10 @@ def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
                 pass
             else:
                 for model_path in model_paths:
-                    for stage in config_cls(model_path=model_path).stages:
+                    launched = apply_default_draft_engine_overrides(
+                        config_cls(model_path=model_path)
+                    )
+                    for stage in launched.stages:
                         engine_keys = engine_draft_keys(stage.engine)
                         if engine_keys:
                             default_drafts.add(
@@ -256,5 +278,159 @@ def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
     assert default_drafts == {
         (draft.model_path, draft.stage, frozenset(registered_keys(draft).items()))
         for draft in DRAFT_REGISTRY
-        if draft.is_default_on
+        if draft.is_default_on and is_cuda
     }
+
+
+@pytest.mark.parametrize(
+    ("model_path", "serves_draft"),
+    [
+        ("Qwen/Qwen3-ASR-1.7B@7278e1e70fe206f11671096ffdd38061171dd6e5", True),
+        (
+            "/root/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5",
+            True,
+        ),
+        (
+            "/root/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B-without-a-draft/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5",
+            False,
+        ),
+        ("/checkpoints/Qwen/Qwen3-ASR-1.7B", False),
+    ],
+)
+def test_a_pinned_revision_or_cache_snapshot_serves_the_default_draft(
+    monkeypatch: pytest.MonkeyPatch, model_path: str, serves_draft: bool
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    (draft,) = [
+        draft
+        for draft in DRAFT_REGISTRY
+        if draft.model_path == "Qwen/Qwen3-ASR-1.7B" and draft.is_default_on
+    ]
+    launched = apply_default_draft_engine_overrides(
+        Qwen3ASRPipelineConfig(model_path=model_path)
+    )
+    engine_keys = engine_draft_keys(launched.stage_named("asr").engine)
+    if serves_draft:
+        assert engine_keys == registered_keys(draft)
+    else:
+        assert engine_keys == {}
+
+
+def test_a_draft_swapped_on_the_command_line_outlasts_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B"))
+    config = apply_default_draft_engine_overrides(
+        manager.merge_config(
+            manager.parse_extra_args(
+                ["--asr.engine.speculative_draft_model_path", "/drafts/another-draft"]
+            )
+        )
+    )
+    overrides = config.stage_named("asr").engine.overrides()
+    assert overrides["speculative_draft_model_path"] == "/drafts/another-draft"
+    assert "speculative_draft_model_revision" not in overrides
+
+
+@pytest.mark.parametrize(
+    ("file_model_path", "flag_model_path", "extra_args", "serves_draft"),
+    [
+        ("Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B", [], False),
+        ("Qwen/Qwen3-ASR-0.6B", "Qwen/Qwen3-ASR-1.7B", [], True),
+        (
+            "Qwen/Qwen3-ASR-1.7B",
+            "Qwen/Qwen3-ASR-1.7B",
+            ["--asr.tp_size", "2", "--asr.gpu", "[0,1]"],
+            False,
+        ),
+    ],
+)
+def test_serve_gives_the_default_draft_by_the_launched_model_path_and_tp_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    file_model_path: str,
+    flag_model_path: str,
+    extra_args: list[str],
+    serves_draft: bool,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    config_path = tmp_path / "qwen3_asr.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {"config_cls": "Qwen3ASRPipelineConfig", "model_path": file_model_path}
+        )
+    )
+    with mock.patch("sglang_omni.cli.serve.launch_server") as launch_server:
+        result = CliRunner().invoke(
+            app,
+            [
+                "serve",
+                "--config",
+                str(config_path),
+                "--model-path",
+                flag_model_path,
+                *extra_args,
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    (launched,) = launch_server.call_args.args
+    (draft,) = [
+        draft
+        for draft in DRAFT_REGISTRY
+        if draft.model_path == "Qwen/Qwen3-ASR-1.7B" and draft.is_default_on
+    ]
+    engine_keys = engine_draft_keys(launched.stage_named("asr").engine)
+    if serves_draft:
+        assert engine_keys == registered_keys(draft)
+    else:
+        assert engine_keys == {}
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "names_the_draft"),
+    [([], True), (["--asr.engine.disable_speculative_decoding", "true"], False)],
+)
+def test_config_explain_names_the_default_draft_added_at_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra_args: list[str],
+    names_the_draft: bool,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    config_path = tmp_path / "qwen3_asr.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "Qwen3ASRPipelineConfig",
+                "model_path": "Qwen/Qwen3-ASR-1.7B",
+            }
+        )
+    )
+    result = CliRunner().invoke(
+        config_app,
+        [
+            "explain",
+            "stages.asr.engine.speculative_draft_model_path",
+            "--config",
+            str(config_path),
+            *extra_args,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert ("the model's default draft, added at launch" in result.stdout) is (
+        names_the_draft
+    )
+
+
+def test_ci_prefetches_each_default_on_draft_at_its_pinned_revision() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "omni-ci.yaml").read_text(
+        encoding="utf-8"
+    )
+    for draft in DRAFT_REGISTRY:
+        if draft.is_default_on:
+            assert (
+                f"{draft.draft_model_path}@{draft.draft_model_revision}" in workflow
+            ), draft
+        else:
+            pass

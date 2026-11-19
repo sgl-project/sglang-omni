@@ -7,10 +7,11 @@ import (
 
 // Problem keys shown in the meeting overlay (i18n message ids in package main).
 const (
-	ProblemKeySystemSilent = "meeting.system.silent"
-	ProblemKeyLiveBacklog  = "meeting.live.backlog"
-	ProblemKeyDiskLow      = "meeting.disk.low"
-	ProblemKeyHelperOld    = "meeting.helper.old"
+	ProblemKeySystemSilent  = "meeting.system.silent"
+	ProblemKeyLiveBacklog   = "meeting.live.backlog"
+	ProblemKeyDiskLow       = "meeting.disk.low"
+	ProblemKeyHelperOld     = "meeting.helper.old"
+	ProblemKeyTrackDegraded = "meeting.track.degraded."
 )
 
 const (
@@ -100,12 +101,4 @@ func (p *problemState) pick(mode Mode, track *Problem) *Problem {
 	}
 	p.systemSilentWarned = true
 	return &Problem{Key: ProblemKeySystemSilent}
-}
-
-// systemSilenceForTest returns accumulated quiet time on the system track (tests only).
-func (p *problemState) systemSilenceForTest(now time.Time) time.Duration {
-	if p.systemQuietSince.IsZero() {
-		return 0
-	}
-	return now.Sub(p.systemQuietSince)
 }

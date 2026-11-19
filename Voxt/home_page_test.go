@@ -51,8 +51,8 @@ func allowAll(a *app) {
 func TestHomeReadiness(t *testing.T) {
 	a, tt := homeTester(t)
 	for _, s := range []string{
-		"No speech model is installed: install one to transcribe, translate and rewrite by voice.",
-		"No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.",
+		"No speech model is installed. Install one to transcribe, translate and rewrite by voice.",
+		"No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.",
 		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
 		"Right ⌥ (once Accessibility is allowed)",
 		"Try it", "Today", "Recent results", "Results appear here after you use a shortcut.",
@@ -77,7 +77,7 @@ func TestHomeReadiness(t *testing.T) {
 
 	// A speech model only: the language model is missing.
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
-	if !has(tt, "No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
+	if !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
 		t.Errorf("no language model: %q", tt.Texts())
 	}
 
@@ -130,7 +130,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// The language model removed.
 	a.local.(*fakeLocal).Chat = nil
-	if !has(tt, "1 step to go") || !has(tt, "No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised.") {
+	if !has(tt, "1 step to go") || !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") {
 		t.Errorf("model deleted: %q", tt.Texts())
 	}
 	readyModels(a)
@@ -224,7 +224,7 @@ func TestHomeTryHistoryBeforeTheFlag(t *testing.T) {
 
 func TestSloganHint(t *testing.T) {
 	join := func(h *settings.Hotkey) string {
-		b, k, a := sloganHint(h)
+		b, k, a := sloganHintFor(i18n.CurrentTranslator(), h)
 		return b + "[" + k + "]" + a
 	}
 	for _, tc := range []struct {
@@ -331,14 +331,50 @@ func TestHomeRecent(t *testing.T) {
 	}
 	title, _ := uitext.EntryTitle(e)
 	click(t, tt, title)
-	if a.router.Path() != "/history" || a.hist.sel != e.ID || a.hist.kind() != e.Kind {
-		t.Errorf("opened %s sel %q tab %s", a.router.Path(), a.hist.sel, a.hist.kind())
+	if a.router.Path() != "/history" || a.histUI.sel != e.ID || a.histUI.kind() != e.Kind {
+		t.Errorf("opened %s sel %q tab %s", a.router.Path(), a.histUI.sel, a.histUI.kind())
 	}
 	// History off: nothing is counted.
 	a.navigate("/home")
 	a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepHistory = false })
 	if !has(tt, "History is off, so nothing is counted.") {
 		t.Errorf("history off: %q", tt.Texts())
+	}
+}
+
+func TestHomeRecentActionsUseVisibleEntry(t *testing.T) {
+	a, tt := homeTester(t)
+	fresh := store.Entry{
+		ID: "same", Kind: store.KindTranscribe, Status: store.StatusDone,
+		CreatedAt: time.Now(), Result: "  fresh text  \n", RawText: "fresh raw",
+	}
+	stale := fresh
+	stale.Kind, stale.Result, stale.RawText = store.KindRewrite, "stale text", "stale raw"
+	if err := a.lib.store.History().Put(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	a.hist.stale = true
+	a.hist.list = []store.Entry{stale}
+	a.hm.recent = []store.Entry{fresh}
+	frames(tt)
+
+	click(t, tt, "Copy: fresh text")
+	if got := tt.Clipboard(); got != fresh.Result {
+		t.Fatalf("inline Copy = %q, want original result %q", got, fresh.Result)
+	}
+	openMenu(t, tt, "fresh text")
+	choose(t, tt, "Copy")
+	if got := tt.Clipboard(); got != "fresh text" {
+		t.Fatalf("menu Copy = %q, want trimmed result", got)
+	}
+
+	click(t, tt, "fresh text")
+	frames(tt)
+	if a.router.Path() != "/history" || a.histUI.sel != fresh.ID || a.histUI.kind() != fresh.Kind {
+		t.Fatalf("opened %s selection %q kind %q", a.router.Path(), a.histUI.sel, a.histUI.kind())
+	}
+	if !has(tt, "fresh text") || hasExact(tt, "stale text") {
+		t.Fatalf("opened the stale entry: %q", tt.Texts())
 	}
 }
 
@@ -392,8 +428,8 @@ func TestHomeTryByShortcut(t *testing.T) {
 	drain := queuePosts(a)
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
 	frames(tt)
-	if a.sess.State.Live() || a.hm.block == nil || !has(tt, "No speech model is installed.") {
-		t.Fatalf("blocked try: %+v %v %q", a.sess, a.hm.block, tt.Texts())
+	if a.sess.State.Live() || a.homeUI.block == nil || !has(tt, "No speech model is installed.") {
+		t.Fatalf("blocked try: %+v %v %q", a.sess, a.homeUI.block, tt.Texts())
 	}
 	if a.notice != nil {
 		t.Error("a try's problem went to the overlay")
@@ -440,8 +476,8 @@ func TestShortcutInOwnField(t *testing.T) {
 	a.cancelSession()
 	drain()
 	frames(tt)
-	click(t, tt, "Example user message")
-	if !tt.Focused("Example user message") {
+	click(t, tt, "What the language model receives")
+	if !tt.Focused("What the language model receives") {
 		t.Fatal("the button did not take the focus")
 	}
 	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeFeature {
@@ -507,7 +543,7 @@ func TestWidePageCentered(t *testing.T) {
 	// up with it too.
 	a.navigate("/dictionary")
 	frames(tt)
-	search, ok1 := tt.Find("Search the dictionary")
+	search, ok1 := tt.Find("Search dictionary")
 	add, ok2 := tt.Find("Add term")
 	if !ok1 || !ok2 {
 		t.Fatalf("Dictionary: found search %v, Add term %v", ok1, ok2)

@@ -75,6 +75,10 @@ func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process,
 	args = append(args, spec.launchArgs(cacheLimit)...)
 	if draft != "" {
 		args = append(args, "--draft-model-path", draft)
+		if spec.Kind == kindQwen3ASR {
+			// Qwen3-ASR's 8-bit drafts matched bf16 on the eval set (#3874).
+			args = append(args, "--draft-bits", "8")
+		}
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(serverEnv(os.Environ()), cfg.Env...)

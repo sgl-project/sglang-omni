@@ -15,9 +15,13 @@
 #   scripts/release-appcast.sh info-plist 2.0.1    # {"CFBundleVersion":"200000199","SUPublicEDKey":"…"}
 #   scripts/release-appcast.sh assets 2.0.1        # Voxt-2.0.1-macOS.zip Voxt-2.0.1-arm64.dmg
 #   scripts/release-appcast.sh entry beta 2.0.1    # the update service's entry (beta or stable), JSON
-#   scripts/release-appcast.sh notes < NOTES.md    # the release notes as the update window's HTML
+#   scripts/release-appcast.sh notes < NOTES.md    # the English release notes as HTML
+#   scripts/release-appcast.sh notes-by-locale < NOTES.md   # the release notes as HTML by locale, JSON
 #   scripts/release-appcast.sh items < appcast.xml # each item's sparkle:version and hardware requirement
 #   scripts/release-appcast.sh hardware-kept BUILD REPLY < APPCASTS   # fails unless the update service kept arm64
+#   scripts/release-appcast.sh feed-base        # Voxt 2's MyGo update feed base URL
+#   scripts/release-appcast.sh feed-url beta    # the channel's MyGo manifest URL (beta or stable)
+#   scripts/release-appcast.sh github-manifest 2.0.1 OWNER/REPO < update-darwin-arm64.json
 #   scripts/release-appcast.sh cask 2.0.1 SHA256 OWNER/REPO   # Homebrew's Casks/voxt.rb
 set -euo pipefail
 
@@ -25,6 +29,8 @@ set -euo pipefail
 public_key="iMt1voRdgfUUpKxdY7DliGLaOl17gJFB8Jhlo5ox2eE="
 # Voxt 2 runs on Apple silicon only.
 hardware=arm64
+# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads.
+voxt2_feed="https://voxt.actnow.dev/updates/voxt2"
 
 usage() {
   sed -n 's/^#   //p' "$0" >&2
@@ -82,6 +88,37 @@ items() {
   '
 }
 
+notes_html() {
+  awk -v locale="$1" '
+    function inline_html(text,    html) {
+      gsub(/&/, "\\&amp;", text); gsub(/</, "\\&lt;", text); gsub(/>/, "\\&gt;", text); gsub(/"/, "\\&quot;", text)
+      while (match(text, /\*\*[^*]+\*\*/)) {
+        html = html substr(text, 1, RSTART - 1) "<strong>" substr(text, RSTART + 2, RLENGTH - 4) "</strong>"
+        text = substr(text, RSTART + RLENGTH)
+      }
+      return html text
+    }
+    function end_list() { if (in_list) print "</ul>"; in_list = 0 }
+    BEGIN { section_locale = "en" }
+    { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, "") }
+    /^## / { exit }
+    $0 == "### 中文" { end_list(); section_locale = "zh-Hans"; next }
+    /^### / { end_list(); section_locale = "en" }
+    section_locale != locale { next }
+    $0 == "" { end_list(); next }
+    /^### / { print "<h3>" inline_html(substr($0, 5)) "</h3>"; next }
+    /^#### / {
+      end_list()
+      heading = locale == "zh-Hans" ? "h3" : "h4"
+      print "<" heading ">" inline_html(substr($0, 6)) "</" heading ">"
+      next
+    }
+    /^[-*] / { if (!in_list) print "<ul>"; in_list = 1; print "<li>" inline_html(substr($0, 3)) "</li>"; next }
+    { end_list(); print "<p>" inline_html($0) "</p>" }
+    END { end_list() }
+  '
+}
+
 case "${1:-}" in
   info-plist)
     (($# == 2)) || usage
@@ -110,34 +147,49 @@ case "${1:-}" in
   hardware-kept)
     (($# == 3)) || usage
     [[ "$2" =~ ^[0-9]+$ ]] || fail "'$2' is not a build number"
-    # The update service's reply to the entry: ok, with the requirement in the entry it kept (data),
-    # so that a reply that echoes the request fails. Or the item of the build in the appcasts on stdin.
-    if jq -e --arg hw "$hardware" '.ok == true and .data.hardwareRequirements == $hw' <<< "$3" >/dev/null 2>&1; then
-      echo "The update service keeps hardwareRequirements $hardware"
-    elif items | grep -xF "$2 $hardware" >/dev/null; then
+    # Only the appcast proves what Voxt 1.x will read: an API reply that kept
+    # the field does not prove the service renders it.
+    if items | grep -xF "$2 $hardware" >/dev/null; then
       echo "The appcast's item of build $2 has sparkle:hardwareRequirements $hardware"
     else
       echo "release-appcast.sh: the update service does not output hardwareRequirements yet, so Voxt 1.x on an Intel Mac would get a version it cannot open: add it on the server (/api/pkg/update, and <sparkle:hardwareRequirements>$hardware</sparkle:hardwareRequirements> in the appcast)" >&2
       exit 1
     fi
     ;;
+  feed-base)
+    (($# == 1)) || usage
+    echo "$voxt2_feed"
+    ;;
+  feed-url)
+    (($# == 2)) || usage
+    case "$2" in
+      beta) echo "$voxt2_feed/beta/update-darwin-arm64.json" ;;
+      stable) echo "$voxt2_feed/update-darwin-arm64.json" ;;
+      *) fail "the Voxt 2 feed channel is beta or stable, got '$2'" ;;
+    esac
+    ;;
+  github-manifest)
+    (($# == 3)) || usage
+    build_number "$2" >/dev/null
+    [[ "$3" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$3' is not OWNER/REPO"
+    jq --arg version "$2" --arg base "https://github.com/$3/releases/download/voxt-v$2/" \
+      'if .version != $version or .url == "" or .signature == "" or .size <= 0
+       then error("not a signed update manifest of " + $version) else . end
+       | .url = ($base + (.url | split("/") | last))
+       | if .deltas then .deltas |= map(.url = ($base + (.url | split("/") | last))) else . end'
+    ;;
   notes)
     (($# == 1)) || usage
-    # As Voxt 1.x's notes: headings, lists and paragraphs, the text escaped.
-    awk '
-      function esc(s) {
-        gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s)
-        return s
-      }
-      function end_list() { if (in_list) print "</ul>"; in_list = 0 }
-      { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, "") }
-      $0 == "" { end_list(); next }
-      /^### / { end_list(); print "<h3>" esc(substr($0, 5)) "</h3>"; next }
-      /^#### / { end_list(); print "<h4>" esc(substr($0, 6)) "</h4>"; next }
-      /^- / { if (!in_list) print "<ul>"; in_list = 1; print "<li>" esc(substr($0, 3)) "</li>"; next }
-      { end_list(); print "<p>" esc($0) "</p>" }
-      END { end_list() }
-    '
+    notes_html en
+    ;;
+  notes-by-locale)
+    (($# == 1)) || usage
+    release_body="$(cat)"
+    english_notes="$(notes_html en <<< "$release_body")"
+    [[ -n "$english_notes" ]] || fail "release notes must include English content before the first level-two heading"
+    chinese_notes="$(notes_html zh-Hans <<< "$release_body")"
+    jq -cn --arg en "$english_notes" --arg zh "$chinese_notes" \
+      '{en: $en} + (if $zh == "" then {} else {"zh-Hans": $zh} end)'
     ;;
   cask)
     (($# == 4)) || usage
@@ -145,7 +197,10 @@ case "${1:-}" in
     build_number "$version" >/dev/null
     [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || fail "'$sha256' is not a SHA-256"
     [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$repo' is not OWNER/REPO"
-    # No auto_updates: Voxt 2 does not update itself, so brew upgrade updates it.
+    # No auto_updates yet: brew-installed 2.0.x/2.1.0 cannot update
+    # themselves, and auto_updates would exclude the cask from brew
+    # upgrade. It returns once self-updating releases are widely
+    # installed (the app then takes over from brew).
     cat <<CASK
 cask "voxt" do
   version "$version"

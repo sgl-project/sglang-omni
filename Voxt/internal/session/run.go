@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,7 +15,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -30,7 +33,19 @@ type run struct {
 	ctx       context.Context // the session's: cancelled by Cancel and at the end
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
-	stop      chan struct{}
+	// llmCtx is the language model's requests': SkipLLM, StopLLM and
+	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
+	// again), and skipped, stopped or rethink says which; the session goes
+	// on.
+	llmCtx  context.Context
+	llmStop context.CancelFunc
+	skipped atomic.Bool
+	stopped atomic.Bool
+	rethink atomic.Bool
+	// think is the level the requests ask with: StartRequest.Thinking,
+	// then Rethink's (guarded by m.mu).
+	think *llm.Thinking
+	stop  chan struct{}
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
@@ -38,6 +53,11 @@ type run struct {
 	stopOnce sync.Once
 	pcm      *pcmBuffer
 	ended    bool // guarded by m.mu
+	// onDraft is a history retry's (RetryRequest.OnDraft): it has no
+	// session, so update applies its changes to own (guarded by m.mu) and
+	// passes the draft on.
+	onDraft func(string)
+	own     Snapshot
 
 	svc   Services
 	terms []store.Term
@@ -63,6 +83,12 @@ type run struct {
 	// retry's entry.
 	dsp    string
 	gainDB float64
+	// shot is the picture of the target's window for the language model
+	// (window.go); nil: none.
+	shot func() []byte
+	// clip is the picture on the clipboard for Rewrite's language model
+	// (window.go), read before the selection; nil: none.
+	clip []byte
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
@@ -121,12 +147,13 @@ func (r *run) firstState() State {
 }
 
 // canSelect says whether the session reads the selection: Translate and
-// Rewrite with a selector, not a try, not a follow-up, in an app that is
-// not VoxtNew.
+// Rewrite with a selector (a Rewrite follow-up too: the user may have
+// selected more text since, #3816), not a try, in an app that is not
+// VoxtNew.
 func (r *run) canSelect() bool {
 	cfg := r.m.cfg
 	t := r.req.Target
-	return cfg.Select != nil && !r.req.Try && len(r.req.Previous) == 0 && t.PID != 0 && (cfg.Self == 0 || t.PID != cfg.Self) &&
+	return cfg.Select != nil && !r.req.Try && t.PID != 0 && (cfg.Self == 0 || t.PID != cfg.Self) &&
 		(r.req.Kind == store.KindTranslate || r.req.Kind == store.KindRewrite)
 }
 
@@ -134,7 +161,6 @@ func (r *run) canSelect() bool {
 // recognition, composition, delivery, history.
 func (r *run) main() {
 	defer r.cancel()
-	cfg := r.m.cfg
 	kind := r.req.Kind
 	switch kind {
 	case store.KindTranscribe, store.KindTranslate, store.KindRewrite:
@@ -143,17 +169,12 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
+	r.shootWindow()
 
-	// The services and the dictionary, meanwhile.
-	r.svcDone = make(chan svcResult, 1)
-	go func() {
-		svc, err := cfg.Resolve(r.ctx, kind, r.settings)
-		var terms []store.Term
-		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
-			terms, _ = cfg.Glossary(r.ctx)
-		}
-		r.svcDone <- svcResult{svc, terms, err}
-	}()
+	// The services and the dictionary, meanwhile. A typed text or a
+	// selection to translate is not heard: no speech model (#3838).
+	selTranslate := kind == store.KindTranslate && r.canSelect()
+	r.resolve(r.req.Text == nil && !selTranslate)
 
 	if t := r.req.Text; t != nil {
 		if r.awaitServices() {
@@ -163,7 +184,7 @@ func (r *run) main() {
 	}
 	var selDone chan string
 	switch {
-	case kind == store.KindTranslate && r.canSelect():
+	case selTranslate:
 		sel := r.readSelection()
 		if r.ctx.Err() != nil {
 			r.endCancelled(nil)
@@ -175,10 +196,15 @@ func (r *run) main() {
 			}
 			return
 		}
+		// No selection: Translate hears the text, with a speech model.
+		r.resolve(true)
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
 		selDone = make(chan string, 1)
-		go func() { selDone <- r.readSelection() }()
+		go func() {
+			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
+			selDone <- r.readSelection()
+		}()
 	}
 
 	raw, ok := r.listen()
@@ -203,6 +229,23 @@ func (r *run) main() {
 		}
 		r.write(text, sel)
 	}
+}
+
+// resolve opens the session's services and reads the dictionary,
+// meanwhile, into a new svcDone (an earlier resolve's result is
+// dropped); speech: as Resolver's.
+func (r *run) resolve(speech bool) {
+	cfg := r.m.cfg
+	done := make(chan svcResult, 1)
+	r.svcDone = done
+	go func() {
+		svc, err := cfg.Resolve(r.ctx, r.req.Kind, r.settings, speech)
+		var terms []store.Term
+		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
+			terms, _ = cfg.Glossary(r.ctx)
+		}
+		done <- svcResult{svc, terms, err}
+	}()
 }
 
 // finishOpts say how a result is delivered: card, when set, sends it to
@@ -264,14 +307,23 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	}
 	snap := r.m.Current()
 	total := r.now().Sub(snap.StartedAt)
+	var highlights []dict.Span
+	if r.req.Kind == store.KindTranscribe && r.settings.Dictionary.Enabled {
+		highlights = dict.HighlightSpans(result, r.terms)
+	}
 	r.m.end(r, st, func(s *Snapshot) {
 		s.Result, s.Problem = result, problem
+		s.Highlights = highlights
 		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
 		if l, ok := dres.Landing(); ok {
 			s.Landing = &l
 		}
-		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted
+		// A text that did not go in shows in the card only when it must (a
+		// forced card, an unsaved note, Rewrite's follow-ups) or the
+		// feature's card is on; else the app copies it and says so.
+		s.Card = result != "" && !r.req.Try && !dres.Inserted && !noted &&
+			(o.card != "" || r.req.Note || r.req.Kind == store.KindRewrite || r.settings.Features.ShowsCard(string(r.req.Kind)))
 		s.Delivery = dres.Reason
 		s.Timings.Deliver, s.Timings.Total = dres.Elapsed, total
 	}, func(s Snapshot) { r.keep(s, store.StatusDone) })
@@ -354,7 +406,7 @@ func (r *run) saveNote(text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt})
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt, AppName: r.req.Target.Name})
 }
 
 // keep writes the history entry of an ended session (and its recording),
@@ -365,9 +417,9 @@ func (r *run) keep(s Snapshot, status store.Status) {
 		return
 	}
 	e := store.Entry{
-		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status,
+		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status, Conversation: cmp.Or(r.req.Conversation, r.id), Replaces: r.req.Replaces,
 		AppBundle: s.Target.BundleID, AppName: s.Target.Name,
-		RawText: s.Raw, Result: s.Result, SourceText: s.Selection, TargetLang: s.TargetLanguage,
+		RawText: s.Raw, Result: s.Result, Title: s.Title, SourceText: s.Selection, TargetLang: s.TargetLanguage,
 		ASRProvider: s.ASR.ID, ASRModel: s.ASR.Model, LLMProvider: s.LLM.ID, LLMModel: s.LLM.Model,
 		AudioMS: s.Timings.Audio.Milliseconds(), SentMS: s.Timings.Sent.Milliseconds(), ASRMS: s.Timings.ASR.Milliseconds(), LLMMS: s.Timings.LLM.Milliseconds(),
 		TotalMS: s.Timings.Total.Milliseconds(), DSP: s.DSP, GainDB: s.GainDB,

@@ -29,6 +29,10 @@ type Want struct {
 	// text: a line of text under the row; scrolled: it was wider than
 	// the line, so it ends at the right padding and is cut at the left.
 	Text, Scrolled bool
+	// lines: the wide face of live text in lines (Overlay.LiveLines): the
+	// row sits in the text's padding, with or without text under it; the
+	// lines themselves, left-aligned and wrapped, are not measured.
+	Lines bool
 	// card: the answer card: its ink starts at its left padding and
 	// ends above its bottom one, at most gap DIPs above it (no empty
 	// space under a short text; a long one scrolls to the padding).
@@ -71,8 +75,9 @@ const (
 )
 
 // measureOverlayInk measures img, a picture of the overlay's window at
-// scale pixels a DIP, the face's row padY DIPs from its top.
-func measureOverlayInk(img image.Image, scale float64, padY float64, row, text bool) (Ink, error) {
+// scale pixels a DIP, the face's row padY DIPs from its top; under is
+// whether something may show under the row that is not its ink.
+func measureOverlayInk(img image.Image, scale float64, padY float64, row, text, under bool) (Ink, error) {
 	b := img.Bounds()
 	alpha := func(x, y int) uint32 { _, _, _, a := img.At(x, y).RGBA(); return a >> 8 }
 	bright := func(x, y int) bool {
@@ -120,7 +125,7 @@ func measureOverlayInk(img image.Image, scale float64, padY float64, row, text b
 	// first gap wider than 6 DIPs (the icon's slot, the gap, the bars'
 	// air: 12 or more; a glyph's own gaps are narrower).
 	rowTop, rowBottom := y0+int(math.Round(padY*scale)), y0+int(math.Round((padY+layout.RowH)*scale))
-	if !text {
+	if !text && !under {
 		rowBottom = y1 + 1 - inset
 	}
 	var cols []int
@@ -235,10 +240,10 @@ func measureCardHead(img image.Image, scale float64, x0, y0, x1, y1 int, bright 
 // face's size, the row's sides, its middle, the text's sides.
 func Check(img image.Image, scale float64, want Want) (Ink, []string) {
 	padY := float64(layout.PillPadY)
-	if want.Text {
+	if want.Text || want.Lines {
 		padY = layout.LivePadY
 	}
-	k, err := measureOverlayInk(img, scale, padY, want.Row, want.Text)
+	k, err := measureOverlayInk(img, scale, padY, want.Row, want.Text, want.Lines)
 	if err != nil {
 		return k, []string{err.Error()}
 	}

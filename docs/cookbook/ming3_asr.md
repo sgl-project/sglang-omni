@@ -5,6 +5,7 @@
 ## Installation and Startup
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
+For Intel GPUs, follow the [Ming-3.0-ASR-Tiny XPU recipe](../other_platforms/installation_xpu.md#ming-30-asr-tiny-speech-to-text-single-xpu).
 
 Startup uses one GPU. Preprocessing runs on the CPU. The audio encoder and the language model share that GPU. The pipeline is preprocessing, then thinker.
 
@@ -13,6 +14,18 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny
 ```
 
 Send one audio file to `POST /v1/audio/transcriptions`. The examples below use `tests/data/query_to_cars.wav` and return `how many cars are there in the picture`.
+
+## DSpark decoding
+
+To enable [DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark), set `speculative_algorithm` to `DSPARK` and use `temperature=0`. The registry pins the draft revision automatically:
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.engine.speculative_algorithm DSPARK \
+  --thinker.engine.speculative_draft_model_path wirybeaver/Ming-3.0-asr-tiny-dspark \
+  --dspark-use-greedy-draft true \
+  --ragged-verify-mode static
+```
 
 ## Transcription
 

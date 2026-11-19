@@ -12,10 +12,23 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+func TestDictionarySuggestionCaseChangeRebuildsLabel(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.suggestions = []learn.Suggestion{{Term: "Ghostty", Source: learn.FromHistory}}
+	first := a.dictionaryPageModel()
+	a.suggestions[0].Term = "ghostty"
+	second := a.dictionaryPageModel()
+	if len(first.Suggestions) != 1 || len(second.Suggestions) != 1 || first.Suggestions[0].Term != "Ghostty" || second.Suggestions[0].Term != "ghostty" {
+		t.Fatalf("case-only suggestion change kept stale labels %+v and %+v", first.Suggestions, second.Suggestions)
+	}
+}
 
 // seedTerms puts sample terms in the dictionary.
 func seedTerms(t *testing.T, a *app) {
@@ -60,7 +73,7 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	}
 	click(t, tt, "Add term")
 	click(t, tt, "Save")
-	if !has(tt, "Type the term as it must be written.") {
+	if !has(tt, "Type the term as it should be written.") {
 		t.Errorf("empty term saved: %q", firstTexts(tt))
 	}
 	click(t, tt, "Term as written")
@@ -69,7 +82,7 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	tt.Type("aura link，奥拉林克, aura link")
 	click(t, tt, "Save")
 	ts := terms(t, a)
-	if len(ts) != 1 || ts[0].Term != "VoxtNew" || strings.Join(ts[0].Aliases, "|") != "aura link|奥拉林克" || !ts[0].Enabled || a.dv.editOpen {
+	if len(ts) != 1 || ts[0].Term != "VoxtNew" || strings.Join(ts[0].Aliases, "|") != "aura link|奥拉林克" || !ts[0].Enabled || a.dictUI.editOpen {
 		t.Fatalf("terms %+v", ts)
 	}
 	if !has(tt, "VoxtNew") || !tt.HasText("heard as aura link, 奥拉林克") || !has(tt, "1 term") {
@@ -115,11 +128,11 @@ func TestDictionaryGuide(t *testing.T) {
 	}
 	click(t, tt, title)
 	for _, want := range []string{
-		"takes effect the next time you use Voxt",
-		"as a word to expect, if that model takes hints. Aliases are not sent",
-		fmt.Sprintf("With up to %d enabled terms, it gets them all", compose.GlossaryAllUpTo),
-		fmt.Sprintf("It stops at %d terms", compose.MaxGlossaryTerms),
-		"before the language model and also without one",
+		"is used in three places",
+		"as words to expect. Aliases are not sent",
+		fmt.Sprintf("With more than %d terms", compose.GlossaryAllUpTo),
+		fmt.Sprintf("are sent, up to %d.", compose.MaxGlossaryTerms),
+		"even without a language model",
 	} {
 		if !has(tt, want) {
 			t.Errorf("no %q in %q", want, firstTexts(tt))
@@ -128,10 +141,10 @@ func TestDictionaryGuide(t *testing.T) {
 	i18n.SetLocale("zh-Hans")
 	for _, want := range []string{
 		"词典的用法",
-		"下次使用 Voxt 时",
+		"启用的词条用在三个地方",
 		"别名不发送",
-		fmt.Sprintf("词条不超过 %d 个时全部发给模型", compose.GlossaryAllUpTo),
-		fmt.Sprintf("最多发送 %d 个", compose.MaxGlossaryTerms),
+		fmt.Sprintf("超过 %d 个时，只发送文本里出现的词条", compose.GlossaryAllUpTo),
+		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms),
 		"没有语言模型也有效",
 	} {
 		if !has(tt, want) {
@@ -148,13 +161,13 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	if !has(tt, "5 terms") || !has(tt, "豆包") {
 		t.Fatalf("list %q", firstTexts(tt))
 	}
-	click(t, tt, "Search the dictionary")
+	click(t, tt, "Search dictionary")
 	tt.Type("k8s")
 	frames(tt)
 	if len(a.dv.list) != 1 || a.dv.list[0].Term != "Kubernetes" {
 		t.Errorf("search %+v", a.dv.list)
 	}
-	a.dv.query = "nothing"
+	a.dictUI.query = "nothing"
 	a.loadDict()
 	if !has(tt, "No term matches “nothing”") {
 		t.Errorf("no empty search state %q", firstTexts(tt))
@@ -165,7 +178,7 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 		t.Errorf("settings %+v", d)
 	}
 	click(t, tt, "Use the dictionary")
-	if a.lib.settings.Get().Dictionary.Enabled || !has(tt, "The dictionary is off: its terms go nowhere.") {
+	if a.lib.settings.Get().Dictionary.Enabled || !has(tt, "The dictionary is off, so its terms are not used.") {
 		t.Error("dictionary still on")
 	}
 }
@@ -223,10 +236,19 @@ func TestDictionaryImportExport(t *testing.T) {
 
 // dictShots renders the Dictionary page with terms and its dialog
 // (TestSnapshots).
-func dictShots(t *testing.T, a *app, save func(string)) {
+func dictShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	seedTerms(t, a)
 	a.navigate("/dictionary")
 	a.loadDict()
+	if err := a.lib.store.Dictionary().CreateProfile(context.Background(), store.DictionaryProfile{ID: "work", Name: "Work"}); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDictionaryProfiles()
+	save("page-dictionary-profiles")
+	if err := a.lib.store.Dictionary().DeleteProfile(context.Background(), "work"); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDictionaryProfiles()
 	save("page-dictionary-terms")
 	a.suggestions = []learn.Suggestion{
 		{Term: "Claude Code", Heard: []string{"Cloud Code"}, Source: learn.FromEdit},
@@ -234,12 +256,134 @@ func dictShots(t *testing.T, a *app, save func(string)) {
 	}
 	save("page-dictionary-suggestions")
 	a.suggestions = nil
-	a.dv.scan = scanState{open: true, model: fakeLLMModel, counted: true, count: 24}
+	a.dv.scan = scanState{model: fakeLLMModel, counted: true, count: 24}
+	a.dictUI.scanOpen = true
 	save("dictionary-scan")
-	a.dv.scan = scanState{open: true, running: true, read: 12, total: 24, found: 3, model: fakeLLMModel}
+	a.dv.scan = scanState{running: true, read: 12, total: 24, found: 3, model: fakeLLMModel}
 	save("dictionary-scan-running")
 	a.dv.scan = scanState{}
+	a.dictUI.scanOpen = false
 	a.openTerm(a.dv.list[0])
 	save("dictionary-edit")
-	a.dv.editOpen = false
+	a.dictUI.editOpen = false
+	// The Personal dictionary view: empty, the reporter's table.
+	a.dictUI.tab = dictNotesTab
+	save("page-dictionary-notes-empty")
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = reporterNotes(t) })
+	save("page-dictionary-notes")
+	a.dictUI.notesQuery, a.dictUI.notesFind = "401", finder{cur: 2}
+	save("page-dictionary-notes-find")
+	a.dictUI.notesQuery, a.dictUI.notesFind = "", finder{}
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = longNotes(200) })
+	frames(tt)
+	scrollToText(tt, "| Term199 |")
+	save("page-dictionary-notes-long")
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = "" })
+	a.dictUI.tab = dictTermsTab
+}
+
+// reporterNotes is issue #3815's personal dictionary.
+func reporterNotes(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("testdata/dictionary.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// longNotes is a table of n rows.
+func longNotes(n int) string {
+	var b strings.Builder
+	b.WriteString("| Standard | Heard as | When |\n|---|---|---|\n")
+	for i := range n {
+		fmt.Fprintf(&b, "| Term%03d | term %d | row %d |\n", i, i, i)
+	}
+	return b.String()
+}
+
+// TestDictionaryNotes: the Personal dictionary view saves the Markdown
+// as typed, its switch keeps it out of the prompt a session sends, in
+// both languages; a 200 row table stays whole. The view has no example
+// of its own: the feature pages show the whole prompt (issue #4032).
+func TestDictionaryNotes(t *testing.T) {
+	a, tt := dictTester(t)
+	seedTerms(t, a)
+	a.loadDict()
+	frames(tt)
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	if !has(tt, "Add to the language model prompt") || has(tt, "Search dictionary") {
+		t.Fatalf("not the notes view: %q", firstTexts(tt))
+	}
+	if has(tt, "How it is used") || has(tt, "Example for") || !has(tt, "Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives.") {
+		t.Errorf("the view still has its own example: %q", firstTexts(tt))
+	}
+	notes := reporterNotes(t)
+	click(t, tt, "Personal dictionary in Markdown")
+	tt.Type(notes)
+	frames(tt)
+	click(t, tt, "Search personal dictionary") // the field loses the focus: saved
+	d := a.lib.settings.Get().Dictionary
+	if d.Notes != notes || d.NotesOff {
+		t.Fatalf("saved %+v", d)
+	}
+	// The request is the one a session builds (session.PromptDictionary).
+	out, err := a.composedPreview(hotkey.Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sys := out.Messages()[0].Content; !strings.Contains(sys, "`罗斯` → Roth") || strings.Contains(sys, "dictionary>") {
+		t.Errorf("the system prompt:\n%s", sys)
+	}
+	// Off: kept, not sent.
+	clickControl(t, tt, "Add to the language model prompt")
+	if d := a.lib.settings.Get().Dictionary; !d.NotesOff || d.Notes != notes {
+		t.Errorf("switched off: %+v", d)
+	}
+	if out, _ := a.composedPreview(hotkey.Rewrite); strings.Contains(out.System, "罗斯") {
+		t.Errorf("sent while off")
+	}
+	clickControl(t, tt, "Add to the language model prompt")
+	// Shown again from the settings, as after a restart.
+	a.dictUI.notes = speechContextState{}
+	frames(tt)
+	if a.dictUI.notes.text != notes {
+		t.Errorf("not read back: %q", a.dictUI.notes.text)
+	}
+	// 200 rows: whole in the prompt, and the page still draws quickly.
+	long := longNotes(200)
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = long })
+	start := time.Now()
+	for range 10 {
+		tt.Frame()
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("10 frames took %v", took)
+	}
+	if out, _ := a.composedPreview(hotkey.Translate); !strings.Contains(out.System, "| Term199 | term 199 | row 199 |") {
+		t.Errorf("the long table is cut")
+	}
+	i18n.SetLocale("zh-Hans")
+	for _, want := range []string{"个人词典", "加到语言模型的提示词里"} {
+		if !has(tt, want) {
+			t.Errorf("no %q in %q", want, firstTexts(tt))
+		}
+	}
+}
+
+func TestDictionaryPageModelAppliesCompletedRead(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	seedTerms(t, a)
+	posts := make(chan func(), 8)
+	a.postQueue = func(fn func()) { posts <- fn }
+	a.navigate("/dictionary")
+	model := a.dictionaryPageModel()
+	if !model.Loading || len(model.Terms) != 0 {
+		t.Fatalf("initial model: loading %t, rows %d", model.Loading, len(model.Terms))
+	}
+	drainPosts(posts)
+	model = a.dictionaryPageModel()
+	if model.Loading || len(model.Terms) != 5 {
+		t.Fatalf("completed model: loading %t, rows %d", model.Loading, len(model.Terms))
+	}
 }

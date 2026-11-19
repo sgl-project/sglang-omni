@@ -274,7 +274,7 @@ func (a *app) importLegacy() {
 	}
 	go func() {
 		files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import from Voxt 1.x"),
-			Message:     i18n.T("This is the previous Voxt's data. Click Import to bring its dictionary, history and settings over; the previous Voxt keeps everything as it is."),
+			Message:     i18n.T("Click Import to bring over its dictionary, history and settings. The previous Voxt keeps all its data."),
 			ButtonLabel: i18n.T("Import"), DefaultPath: lib, Directory: true})
 		if err != nil || len(files) == 0 {
 			return
@@ -307,9 +307,9 @@ func (a *app) importLegacyFrom(picked string) {
 			if err != nil {
 				log.Printf("legacy import: %s: %v", path, err)
 				if strings.Contains(err.Error(), "no such table") {
-					return legacyReport{failed: i18n.T("This folder is not the previous Voxt's. Nothing was imported.")}
+					return legacyReport{failed: i18n.T("This is not the previous Voxt's data folder. Nothing was imported.")}
 				}
-				return legacyReport{failed: i18n.T("The previous Voxt's dictionary could not be read; it may be damaged. Nothing was imported.")}
+				return legacyReport{failed: i18n.T("The previous Voxt's dictionary could not be read and may be damaged. Nothing was imported.")}
 			}
 			added, updated, err := mergeImported(ctx, repo, terms)
 			if err != nil {
@@ -394,9 +394,15 @@ func (a *app) importLegacyFrom(picked string) {
 			}); err != nil {
 				log.Printf("legacy import: settings: %v", err)
 				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
-			} else if features != "" {
-				if err := docs.Put(ctx, legacyEnhanceSettled, []byte("true")); err != nil {
-					log.Printf("legacy import: %v", err)
+			} else {
+				settled := []string{legacyDockSettled}
+				if features != "" {
+					settled = append(settled, legacyEnhanceSettled)
+				}
+				for _, id := range settled {
+					if err := docs.Put(ctx, id, []byte("true")); err != nil {
+						log.Printf("legacy import: %v", err)
+					}
 				}
 			}
 			if n := len(llmServices); n > 0 {

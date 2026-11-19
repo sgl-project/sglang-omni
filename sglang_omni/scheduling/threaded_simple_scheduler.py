@@ -13,6 +13,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Generic, Protocol, TypeVar
 
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.utils.process import name_native_thread
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.requires_tp_work_fanout: bool = True
         self.fn = compute_fn
         self.dispatch_fn = dispatch_fn
+        self.thread_initializer = thread_initializer
         if dispatch_fn is None:
             if compute_fn is None:
                 raise ValueError(
@@ -135,7 +137,9 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
             None
             if dispatch_fn is not None
             else ThreadPoolExecutor(
-                max_workers=self.max_concurrency, initializer=thread_initializer
+                max_workers=self.max_concurrency,
+                initializer=self.initialize_worker,
+                thread_name_prefix="compute-pool",
             )
         )
         self.pending: dict[str, Future] = {}
@@ -144,6 +148,13 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.aborted_futures: set[Future] = set()
         self.running = False
         self.abort_callback = abort_callback
+
+    def initialize_worker(self) -> None:
+        name_native_thread()
+        if self.thread_initializer is not None:
+            self.thread_initializer()
+        else:
+            pass
 
     def warm_up_serving_thread(self) -> None:
         pass

@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 )
 
 func TestResponsesOnlyText(t *testing.T) {
@@ -14,10 +16,18 @@ func TestResponsesOnlyText(t *testing.T) {
 	}
 }
 
+func TestModelErrorTextForTranslator(t *testing.T) {
+	translator := i18n.NewTranslator("zh-Hans")
+	msg, more := ModelErrorTextFor(translator, local.ErrNotInstalled)
+	if msg != translator.T("The model is not installed.") || more != local.ErrNotInstalled.Error() {
+		t.Fatalf("translator error text: %q, %q", msg, more)
+	}
+}
+
 func TestPlanErrorTexts(t *testing.T) {
 	for code, want := range map[string]string{
-		llm.CodeSignIn:      "sign in again",
-		llm.CodeUsageLimit:  "used up",
+		llm.CodeSignIn:      "Sign in again",
+		llm.CodeUsageLimit:  "usage limit",
 		llm.CodeNotEligible: "cannot use Codex",
 	} {
 		if msg, _ := ModelErrorText(&llm.Error{Code: code}); !strings.Contains(msg, want) {

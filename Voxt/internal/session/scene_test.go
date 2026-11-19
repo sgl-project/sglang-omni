@@ -246,6 +246,7 @@ func TestSceneLLMOff(t *testing.T) {
 func TestSceneAnswerCard(t *testing.T) {
 	h := newHarness(t, &fakeStreamer{final: "hello"}, &fakeLLM{text: "Hello."}, func(c *Config, s *settings.Settings) {
 		c.Scene = &SceneConfig{Rules: func() (appctx.Rules, bool) { return sceneRules(), true }}
+		s.Features.Transcribe.ShowCard = true
 	})
 	h.text.focus = proto.FocusResult{PID: slack.PID, Role: "AXButton"}
 	id := h.start()

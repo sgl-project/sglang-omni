@@ -51,7 +51,7 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 	a.pump("the follow-up's recording", func() bool {
 		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
 	})
-	if v := a.cardNow(); a.ov.mode != ovAnswer || !v.conversation || !v.recording || !v.canStop || v.canFollowUp {
+	if v := a.cachedCard(); a.ov.mode != ovAnswer || !v.Conversation || !v.Recording || !v.CanStop || v.CanFollowUp {
 		t.Errorf("recording the follow-up: %s %+v", a.ov.mode, v)
 	}
 	// At least 400 ms recorded, over the shortest recording kept: the
@@ -68,11 +68,11 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 func TestRewriteShortAnswerInCard(t *testing.T) {
 	chat := &fakeChat{text: `{"title":"Help","content":"Sure: tell me the problem."}`}
 	a, _ := rewriteOnce(t, "", chat, "help me with a problem")
-	v := a.cardNow()
+	v := a.cachedCard()
 	if a.sess.State != session.Done || a.sess.Inserted || !a.answer.open || a.ov.mode != ovAnswer || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v.title != "Help" || v.text != "Sure: tell me the problem." || !v.canFollowUp || !v.canInsert || !v.canCopy || v.conversation {
+	if v.Title != "Help" || cardTextForTest(v) != "Sure: tell me the problem." || !v.CanFollowUp || !v.CanInsert || !v.CanCopy || v.Conversation {
 		t.Errorf("card %+v", v)
 	}
 	a.insertAnswer()
@@ -92,7 +92,7 @@ func TestRewriteSelectionInCard(t *testing.T) {
 	if a.sess.Inserted || !a.answer.open || a.answer.input.Selection != "hey all, ship friday" || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v := a.cardNow(); v.title != "AI Answer" || !v.canFollowUp || !v.canInsert {
+	if v := a.cachedCard(); v.Title != "AI answer" || !v.CanFollowUp || !v.CanInsert {
 		t.Errorf("card %+v", v)
 	}
 	msgs := chatMessages(chat.requests()[0])
@@ -127,9 +127,9 @@ func TestRewriteConversation(t *testing.T) {
 		t.Fatalf("card %+v", a.answer)
 	}
 	a.recordFollowUp(t, tr, "shorter")
-	v := a.cardNow()
-	if !v.conversation || len(v.bubbles) != 4 || v.bubbles[0].text != "write that I am late" || v.bubbles[1].title != "Late" ||
-		v.bubbles[2].text != "shorter" || v.bubbles[3].text != "Running late." || !v.canFollowUp || v.recording {
+	v := a.cachedCard()
+	if !v.Conversation || len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[0].text != "write that I am late" || cardBubblesForTest(v)[1].title != "Late" ||
+		cardBubblesForTest(v)[2].text != "shorter" || cardBubblesForTest(v)[3].text != "Running late." || !v.CanFollowUp || v.Recording {
 		t.Errorf("conversation %+v", v)
 	}
 	// A second follow-up, cancelled while it records.
@@ -144,7 +144,7 @@ func TestRewriteConversation(t *testing.T) {
 	if !a.answer.open || a.ov.mode != ovAnswer || a.answer.text != "Running late." || a.followUp != "" || len(chat.requests()) != 2 {
 		t.Errorf("after Escape: %s %+v", a.ov.mode, a.answer)
 	}
-	if v := a.cardNow(); !v.conversation || len(v.bubbles) != 4 || !v.canFollowUp {
+	if v := a.cachedCard(); !v.Conversation || len(cardBubblesForTest(v)) != 4 || !v.CanFollowUp {
 		t.Errorf("the conversation after Escape %+v", v)
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
@@ -196,7 +196,7 @@ func TestRewriteNoCard(t *testing.T) {
 	t.Run("nothing takes text", func(t *testing.T) {
 		chat := &fakeChat{text: `{"title":"Note","content":"A note."}`}
 		a, _ := rewriteWith(t, "readonly,", chat, "write a note", false)
-		if v := a.cardNow(); a.sess.Inserted || !a.answer.open || len(a.pasted()) != 0 || v.text != "A note." || !v.canFollowUp {
+		if v := a.cachedCard(); a.sess.Inserted || !a.answer.open || len(a.pasted()) != 0 || cardTextForTest(v) != "A note." || !v.CanFollowUp {
 			t.Fatalf("end %+v card %+v", a.sess, v)
 		}
 	})

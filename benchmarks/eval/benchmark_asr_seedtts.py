@@ -709,7 +709,7 @@ def parse_args() -> argparse.Namespace:
         "--fallback-percentage",
         type=int,
         default=0,
-        help="Percentage of clips sent with repetition_penalty=1.2 to exercise plain fallback.",
+        help="Percentage of clips sent with repetition_penalty=1.2. Whether they decode plainly depends on the server: a draft that applies the penalty keeps them.",
     )
     parser.add_argument(
         "--unique-audio",
@@ -891,6 +891,7 @@ def main() -> None:
             "server": collect_server_identity(f"http://{args.host}:{args.port}"),
         }
     output_path = os.path.abspath(args.output)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as handle:
         json.dump(payload, handle, indent=2)
     print(f"\nWrote results to {output_path}")

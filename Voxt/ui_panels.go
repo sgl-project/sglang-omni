@@ -15,18 +15,11 @@ import (
 func (a *app) pageWidth(c *ui.Context) float32 {
 	t := c.Theme()
 	w, _ := c.Size()
-	side := a.sideW
+	side := a.navUI.sideW
 	if a.railMode() {
 		side = px(t, railWidth)
 	}
 	return w - side
-}
-
-// panelFits says whether a side panel w wide fits beside the page while
-// the page's main column keeps 480 DIPs; when it does not, the panel
-// shows as a drawer over the page (sidePanel).
-func (a *app) panelFits(c *ui.Context, w float32) bool {
-	return a.pageWidth(c)-w >= px(c.Theme(), 480)
 }
 
 // sidePanel shows fn in a side panel w wide, at the right of the page:
@@ -75,8 +68,8 @@ type panelState struct {
 
 // layout says whether the panel, width wide, fits beside a main column
 // of at least minMain (inline), and whether it shows.
-func (sp *panelState) layout(a *app, c *ui.Context, width, minMain float32) (inline, shown bool) {
-	inline = a.pageWidth(c)-width >= minMain
+func (sp *panelState) layout(pageWidth, width, minMain float32) (inline, shown bool) {
+	inline = pageWidth-width >= minMain
 	shown = inline
 	if sp.set {
 		shown = sp.open

@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 #include "qwen3_asr/realtime.h"
 #include "silero_vad/vad_service.h"
 #include "sortformer/sortformer_service.h"
@@ -23,8 +23,10 @@ public:
   Qwen3ASRModel(const std::filesystem::path &model_directory,
                 qwen3_asr::RealtimeSettings realtime,
                 const std::filesystem::path &draft_directory,
-                int draft_quantization_bits)
-      : transcriber_(model_directory, draft_directory, draft_quantization_bits),
+                int draft_quantization_bits,
+                omni_common::DraftPolicy draft_policy)
+      : transcriber_(model_directory, draft_directory, draft_quantization_bits,
+                     draft_policy),
         realtime_(realtime) {
     mlx::core::set_cache_limit(asr_service::kDecodeBufferCacheLimitBytes);
   }
@@ -81,7 +83,7 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     realtime_sessions_ = [this,
                           &worker](qwen3_asr::RealtimeSession::Sender sender) {
       return std::make_shared<qwen3_asr::RealtimeSession>(
@@ -111,11 +113,11 @@ public:
   }
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+  RequestStates(const omni_server::TranscriptionWorker &) const override {
     return service_.RequestStates();
   }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     service_.Register(context);
   }
 
@@ -136,11 +138,11 @@ public:
   }
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+  RequestStates(const omni_server::TranscriptionWorker &) const override {
     return service_.RequestStates();
   }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     service_.Register(context);
   }
 
@@ -158,6 +160,7 @@ int main(int argc, char **argv) {
   int max_batch = 1;
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   asr_service::ServedKind qwen3_asr;
   qwen3_asr.model_kind = "qwen3_asr";
   qwen3_asr.flags = {
@@ -177,6 +180,10 @@ int main(int argc, char **argv) {
        [&](const std::string &value) { max_batch = std::stoi(value); }},
       {"--draft-model-path",
        [&](const std::string &value) { draft_directory = value; }},
+      {"--draft-policy",
+       [&](const std::string &value) {
+         draft_policy = omni_common::ParseDraftPolicy(value);
+       }},
       {"--draft-bits",
        [&](const std::string &value) {
          draft_quantization_bits = std::stoi(value);
@@ -207,12 +214,13 @@ int main(int argc, char **argv) {
     }
   };
   qwen3_asr.max_batch = [&]() { return max_batch; };
+  qwen3_asr.batch_runner = qwen3_asr::BatchableTranscriptionRunner();
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
     auto model = std::make_unique<Qwen3ASRModel>(
         model_directory,
         qwen3_asr::MakeRealtimeSettings(decode_interval_ms, first_decode_ms,
                                         max_segment_seconds),
-        draft_directory, draft_quantization_bits);
+        draft_directory, draft_quantization_bits, draft_policy);
     // Note (hehehai): within one long Final MLX keeps every freed buffer
     // for reuse (the growing KV cache, the encoder's activations), several
     // GB beside the weights; a client can bound it. Decoding reuses buffers

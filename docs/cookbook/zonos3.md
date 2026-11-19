@@ -1,6 +1,6 @@
 # Zonos3
 
-[Zonos3-Mini](https://huggingface.co/Zyphra-staging/Zonos3-Mini-Staging-Release) is Zyphra's text-to-speech model. Generate **44.1 kHz** speech with a default voice or clone a voice from reference audio through the OpenAI-compatible `/v1/audio/speech` API.
+[Zonos3-Mini](https://huggingface.co/Zyphra/ZONOS3-Mini) is Zyphra's text-to-speech model. Generate **44.1 kHz** speech with a default voice or clone a voice from reference audio through the OpenAI-compatible `/v1/audio/speech` API.
 
 ## Quick start
 

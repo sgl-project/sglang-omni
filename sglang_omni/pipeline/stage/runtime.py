@@ -73,6 +73,7 @@ from sglang_omni.scheduling.message import (
     StageScheduler,
 )
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
+from sglang_omni.utils.process import name_native_thread
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -286,6 +287,7 @@ class Stage:
 
             def _run_scheduler() -> None:
                 nonlocal warmup_error
+                name_native_thread()
                 try:
                     try:
                         # Active-stage binding so ``emit(stage=None)`` from

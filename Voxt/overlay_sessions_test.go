@@ -74,6 +74,23 @@ func anchored(t *testing.T, what string, o settings.Overlay, f mygo.Rectangle) {
 // session starts as the pill again, whatever the last showed (10-15: the
 // second session's pill showed in the first's grown, empty window).
 // Escape, a notice, and two sessions in quick succession too.
+func TestOverlayFadeClearsSessionText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	snap(a, session.Snapshot{ID: "fade-text", State: session.Recording, StartedAt: time.Now(), HeardAt: time.Now(), Partial: "stale live words", Levels: wave()})
+	snap(a, session.Snapshot{ID: "fade-text", State: session.Done, Inserted: true, Result: "inserted"})
+	if a.ov.shown || !a.ov.visible {
+		t.Fatalf("the overlay is not fading: shown %t visible %t", a.ov.shown, a.ov.visible)
+	}
+	if text := a.ov.projection.view.Pill.LiveText; text != "" {
+		t.Fatalf("hidden projection kept live text %q", text)
+	}
+	tester := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
+	frames(tester)
+	if tester.HasText("stale live words") {
+		t.Fatal("the fading overlay kept the previous session's live text")
+	}
+}
+
 func TestOverlaySessionsStartSmall(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {
@@ -210,6 +227,8 @@ func TestOverlayTwoSessionsEndToEnd(t *testing.T) {
 	)
 	a := newSessionApp(t, ev, set, keys)
 	ft := new(fakeTimers).install(a.app)
+	// One line: the small pill, whose sizes these are (Lines: TestLiveLinesFromStart).
+	a.updateSettings(func(s *settings.Settings) { s.Overlay.LiveLines = false })
 	o := a.prefs.Overlay
 	var first string
 	a.pump("the first recording", func() bool { return a.sess.State == session.Recording })
@@ -248,7 +267,6 @@ func TestOverlayCheckSteps(t *testing.T) {
 		if st.name != "card-gone" {
 			want[st.name] = ovAnswer
 		}
-		want["draft"] = ovWorking
 	}
 	var first mygo.Rectangle
 	for _, lang := range []string{"en", "zh-Hans"} {
@@ -266,10 +284,9 @@ func TestOverlayCheckSteps(t *testing.T) {
 				anchored(t, lang+"/"+st.name, a.prefs.Overlay, a.ov.frame)
 			}
 			switch st.name {
-			case "pill", "pill-again":
-				want := pillFrame(a.prefs.Overlay, recordingPillFaceW(a.sess, false))
-				if a.ov.frame != want {
-					t.Errorf("%s/%s: %+v, want %+v", lang, st.name, a.ov.frame, want)
+			case "pill", "pill-again": // Lines, the default: wide before any text
+				if a.ov.w != layout.LinesW || a.ov.h != layout.LiveH {
+					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
 			case "live-long": // Lines, the default: wide, a second line
 				if a.ov.w != layout.LinesW || a.ov.h <= layout.LiveH {
@@ -280,7 +297,7 @@ func TestOverlayCheckSteps(t *testing.T) {
 					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
 			case "card-long": // note (luojiaxuan): grown past a short screen's card, within the work area
-				if a.ov.h <= layout.CardChrome+layout.CardBodyMax || a.ov.h > layout.CardChrome+a.cardBodyMax(a.cardNow()) {
+				if a.ov.h <= layout.CardChrome+layout.CardBodyMax || a.ov.h > layout.CardChrome+a.cardBodyMax(a.cachedCardRef()) {
 					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
 			}

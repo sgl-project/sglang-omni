@@ -55,6 +55,16 @@ func TestSuggestionsCountShowsBeforeThePageOpens(t *testing.T) {
 	}
 }
 
+// #4027: the section says where suggestions come from and how to stop them.
+func TestSuggestionsSayWhy(t *testing.T) {
+	a, tt := suggestTester(t, twoSuggestions...)
+	a.navigate("/dictionary")
+	frames(tt)
+	if !has(tt, "点“添加”之前不会放进词典") || !has(tt, "从我的改正中学习") {
+		t.Fatalf("no explanation: %q", firstTexts(tt))
+	}
+}
+
 func TestSuggestionsAddThenRowGoes(t *testing.T) {
 	a, tt := suggestTester(t, twoSuggestions...)
 	a.navigate("/dictionary")
@@ -102,15 +112,15 @@ func TestSuggestionEditOpensDialogAndSaveAccepts(t *testing.T) {
 	a, tt := suggestTester(t, twoSuggestions...)
 	a.navigate("/dictionary")
 	clickControl(t, tt, "先编辑 Claude Code 再加入")
-	if !a.dv.editOpen || a.dv.edit.term != "Claude Code" || a.dv.edit.aliases != "" || a.dv.edit.id != "" {
-		t.Fatalf("dialog %+v", a.dv.edit)
+	if !a.dictUI.editOpen || a.dictUI.edit.term != "Claude Code" || a.dictUI.edit.aliases != "" || a.dictUI.edit.id != "" {
+		t.Fatalf("dialog %+v", a.dictUI.edit)
 	}
 	click(t, tt, "词条的别名")
 	tt.Type("Cloud Code")
 	click(t, tt, "保存")
 	ts := terms(t, a)
-	if len(ts) != 1 || ts[0].Term != "Claude Code" || !slices.Equal(ts[0].Aliases, []string{"Cloud Code"}) || a.dv.editOpen {
-		t.Fatalf("terms %+v open %v", ts, a.dv.editOpen)
+	if len(ts) != 1 || ts[0].Term != "Claude Code" || !slices.Equal(ts[0].Aliases, []string{"Cloud Code"}) || a.dictUI.editOpen {
+		t.Fatalf("terms %+v open %v", ts, a.dictUI.editOpen)
 	}
 	if !hasExact(tt, "1") || slices.Contains(tt.AccessLabels(), "忽略 Claude Code") {
 		t.Errorf("the suggestion stayed: %q", firstTexts(tt))

@@ -50,8 +50,8 @@ float MelToHertz(float mel, float linear_step_hz, float min_log_hz,
   }
 }
 
-std::vector<float> BuildMelFilterBank(int mel_bin_count) {
-  constexpr int frequency_bin_count = kFftSize / 2 + 1;
+std::vector<float> BuildMelFilterBank(int mel_bin_count, int fft_size) {
+  const int frequency_bin_count = fft_size / 2 + 1;
   const float linear_step_hz = 200.0f / 3.0f;
   const float min_log_hz = 1000.0f;
   const float min_log_mel = min_log_hz / linear_step_hz;
@@ -61,7 +61,7 @@ std::vector<float> BuildMelFilterBank(int mel_bin_count) {
   for (int i = 0; i < frequency_bin_count; ++i) {
     bin_frequencies_hz[i] = static_cast<float>(i) *
                             static_cast<float>(kSampleRate) /
-                            static_cast<float>(kFftSize);
+                            static_cast<float>(fft_size);
   }
   const float mel_max =
       HertzToMel(static_cast<float>(kSampleRate) / 2.0f, linear_step_hz,
@@ -188,7 +188,8 @@ std::string Pcm16Bytes(const std::vector<float> &samples) {
   return bytes;
 }
 
-std::string WavBytes(const std::string &pcm, int sample_rate) {
+std::string WavBytes(const std::string &pcm, int sample_rate,
+                     int channel_count) {
   std::string bytes;
   const auto append = [&](uint32_t value, int size) {
     for (int index = 0; index < size; ++index) {
@@ -199,26 +200,27 @@ std::string WavBytes(const std::string &pcm, int sample_rate) {
   bytes += "RIFF";
   append(36 + data_size, 4);
   bytes += "WAVEfmt ";
-  append(16, 4);              // fmt chunk size
-  append(1, 2);               // PCM
-  append(1, 2);               // mono
-  append(sample_rate, 4);     // samples per second
-  append(sample_rate * 2, 4); // bytes per second
-  append(2, 2);               // bytes per sample frame
-  append(16, 2);              // bits per sample
+  append(16, 4);                              // fmt chunk size
+  append(1, 2);                               // PCM
+  append(channel_count, 2);                   // channels
+  append(sample_rate, 4);                     // frames per second
+  append(sample_rate * 2 * channel_count, 4); // bytes per second
+  append(2 * channel_count, 2);               // bytes per frame
+  append(16, 2);                              // bits per sample
   bytes += "data";
   append(data_size, 4);
   return bytes + pcm;
 }
 
-const std::vector<float> &MelFilterBank(int mel_bin_count) {
+const std::vector<float> &MelFilterBank(int mel_bin_count, int fft_size) {
   static std::mutex mutex;
-  static std::map<int, std::vector<float>> filters_by_mel_bin_count;
+  static std::map<std::pair<int, int>, std::vector<float>> filters_by_shape;
   const std::lock_guard<std::mutex> lock(mutex);
-  auto found = filters_by_mel_bin_count.find(mel_bin_count);
-  if (found == filters_by_mel_bin_count.end()) {
-    found = filters_by_mel_bin_count
-                .emplace(mel_bin_count, BuildMelFilterBank(mel_bin_count))
+  const std::pair<int, int> shape = {mel_bin_count, fft_size};
+  auto found = filters_by_shape.find(shape);
+  if (found == filters_by_shape.end()) {
+    found = filters_by_shape
+                .emplace(shape, BuildMelFilterBank(mel_bin_count, fft_size))
                 .first;
   } else {
   }
@@ -228,6 +230,43 @@ const std::vector<float> &MelFilterBank(int mel_bin_count) {
 const std::vector<float> &PeriodicHannWindow() {
   static const std::vector<float> window = BuildPeriodicHannWindow();
   return window;
+}
+
+mx::array LogMel(const std::vector<float> &samples,
+                 FinalStftFrame final_frame) {
+  std::vector<float> padded_samples = samples;
+  if (padded_samples.size() < static_cast<size_t>(kFftSize)) {
+    // Note (Jiaxin Deng): reflect padding needs more than half a window, so a
+    // tail this short (a realtime cut) is zero-filled to one window.
+    padded_samples.resize(kFftSize, 0.0f);
+  } else {
+  }
+  const int sample_count = static_cast<int>(padded_samples.size());
+  const mx::array audio(padded_samples.data(), {sample_count}, mx::float32);
+  constexpr int padding = kFftSize / 2;
+  const mx::array head = mx::slice(audio, {padding}, {0}, {-1});
+  const mx::array tail =
+      mx::slice(audio, {sample_count - 2}, {sample_count - padding - 2}, {-1});
+  const mx::array padded = mx::concatenate({head, audio, tail});
+  const int frame_count = 1 + (padded.shape(0) - kFftSize) / kHopLength;
+  const mx::array frames =
+      mx::as_strided(padded, {frame_count, kFftSize}, {kHopLength, 1}, 0);
+  const mx::array window(PeriodicHannWindow().data(), {kFftSize}, mx::float32);
+  mx::array power =
+      mx::square(mx::abs(mx::fft::rfft(mx::multiply(frames, window), 1)));
+  if (final_frame == FinalStftFrame::kDropped) {
+    power = mx::slice(power, {0, 0}, {power.shape(0) - 1, power.shape(1)});
+  } else {
+  }
+  const mx::array filters(MelFilterBank().data(),
+                          {kFftSize / 2 + 1, kMelBinCount}, mx::float32);
+  mx::array log_spectrum = mx::log10(
+      mx::maximum(mx::matmul(power, filters), mx::array(kLogMelFloor)));
+  log_spectrum =
+      mx::maximum(log_spectrum, mx::subtract(mx::max(log_spectrum),
+                                             mx::array(kLogMelDynamicRange)));
+  return mx::transpose(
+      mx::divide(mx::add(log_spectrum, mx::array(4.0f)), mx::array(4.0f)));
 }
 
 mx::array WhisperWindowFeatures(const float *samples, int sample_count,

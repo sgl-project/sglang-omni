@@ -4,11 +4,15 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
 	silenceFinalizeLive = 750 * time.Millisecond
-	maximumLiveSegment  = 8 * time.Second
+	// A phrase this long ends at a breath-length pause, so the 8 s cap rarely cuts mid-sentence (#3987).
+	longPhraseLive     = 4 * time.Second
+	shortPauseLive     = 300 * time.Millisecond
+	maximumLiveSegment = 8 * time.Second
 )
 
 // Committer turns streaming partial ASR text into sentence commits (Voxt 1.x live rules).
@@ -33,15 +37,20 @@ func (c *Committer) BeginPhrase(at time.Duration) {
 	c.phraseStart = at
 }
 
-// Tick commits when silence reaches 0.75 s or the phrase hits 8 s without a boundary.
+// Tick commits at a pause (0.75 s, or 0.3 s once the phrase passes 4 s) or when the phrase hits 8 s.
 func (c *Committer) Tick(now, silence time.Duration) (Segment, bool) {
 	tail := uncommittedSuffix(c.cumulative, c.committed)
 	if tail == "" {
 		return Segment{}, false
 	}
 	phrase := now - c.phraseStart
-	if silence < silenceFinalizeLive && phrase < maximumLiveSegment {
+	paused := silence >= silenceFinalizeLive || (phrase >= longPhraseLive && silence >= shortPauseLive)
+	if !paused && phrase < maximumLiveSegment {
 		return Segment{}, false
+	}
+	if !paused {
+		// The speaker is mid-sentence: drop the full stop the model puts on every partial (#3987).
+		tail = strings.TrimRight(tail, "。．.")
 	}
 	seg := Segment{
 		Text:  tail,
@@ -56,7 +65,11 @@ func (c *Committer) Tick(now, silence time.Duration) (Segment, bool) {
 
 // Final commits any tail left at EventFinal.
 func (c *Committer) Final(text string, now time.Duration) (Segment, bool) {
-	c.cumulative = text
+	// The Final recognises the stream's audio again; worded differently, it
+	// would repeat what the preview committed, so the preview's tail is left (#3983).
+	if c.committed == "" || strings.HasPrefix(strings.TrimSpace(text), strings.TrimSpace(c.committed)) {
+		c.cumulative = text
+	}
 	tail := uncommittedSuffix(c.cumulative, c.committed)
 	if tail == "" {
 		return Segment{}, false
@@ -72,7 +85,7 @@ func (c *Committer) Final(text string, now time.Duration) (Segment, bool) {
 	return seg, true
 }
 
-// uncommittedSuffix is the tail of cumulative that was not committed yet (Voxt 1.x).
+// uncommittedSuffix is the tail of cumulative that was not committed yet.
 func uncommittedSuffix(cumulative, committed string) string {
 	cumulative = strings.TrimSpace(cumulative)
 	if cumulative == "" {
@@ -81,19 +94,16 @@ func uncommittedSuffix(cumulative, committed string) string {
 	if committed == "" {
 		return cumulative
 	}
-	if strings.HasPrefix(cumulative, committed) {
-		return trimLeadPunct(cumulative[len(committed):])
-	}
-	// Model revised earlier text: only emit text after the longest shared prefix.
+	// The model may revise the committed tail after a pause (#3431): emit only
+	// what follows the longest shared prefix, so the sentence is not repeated.
 	i := 0
 	for i < len(committed) && i < len(cumulative) && committed[i] == cumulative[i] {
 		i++
 	}
-	if i == len(committed) {
-		return trimLeadPunct(cumulative[i:])
+	for i > 0 && i < len(cumulative) && !utf8.RuneStart(cumulative[i]) {
+		i--
 	}
-	// Diverged inside committed: treat the whole hypothesis as new (no duplicate committed chars).
-	return cumulative
+	return trimLeadPunct(cumulative[i:])
 }
 
 func trimLeadPunct(s string) string {

@@ -1,0 +1,17 @@
+{
+  "name": "updates-about-normal",
+  "kind": "updates-settings",
+  "updates_settings": {
+    "available": true,
+    "known": true,
+    "enabled": true,
+    "check_only": false,
+    "bundle_updated": false,
+    "auto_check": true,
+    "auto_install": false,
+    "beta": false,
+    "check_description": "上次检查：2 小时前。",
+    "automatic_description": "每天检查一次，安装前会先询问。",
+    "beta_note": "只接收正式版。"
+  }
+}

@@ -187,7 +187,8 @@ func TestRemotePage(t *testing.T) {
 	if !has(tt, "On this Mac") || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
 		t.Errorf("no where labels: %q", tt.Texts())
 	}
-	click(t, tt, "DeepSeek")
+	scrollSettingsToText(tt, "DeepSeek")
+	clickControl(t, tt, "DeepSeek")
 	frames(tt)
 	a.provDlg.key = "sk-deep-0123456789"
 	click(t, tt, "Save")
@@ -209,9 +210,9 @@ func TestRemotePage(t *testing.T) {
 	if !ok || m.ID != "deepseek" || m.Name != "DeepSeek · deepseek-flash" {
 		t.Fatalf("Rewrite's model %+v %v", m, ok)
 	}
-	click(t, tt, "DeepSeek")
+	a.openProviderDialog(local.LLM, "deepseek")
 	frames(tt)
-	click(t, tt, "Remove DeepSeek")
+	clickControl(t, tt, "Remove DeepSeek")
 	frames(tt)
 	if len(keys.m) != 0 || len(a.lib.settings.Get().Providers.LLM) != 0 || len(a.installed(local.LLM)) != 0 {
 		t.Fatalf("after Remove: keys %v, setups %+v", keys.m, a.lib.settings.Get().Providers.LLM)
@@ -230,7 +231,7 @@ func TestSetupMissingItsKey(t *testing.T) {
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}} // the speech models came over: only the language model is missing
 	a.checkModels()
 	a.navigate("/home")
-	if !has(tt, "DeepSeek needs its API key: paste it again to use it.") || !has(tt, "Complete setup") {
+	if !has(tt, "DeepSeek needs its API key. Paste it again to use it.") || !has(tt, "Complete setup") {
 		t.Fatalf("sidebar: %q", tt.Texts())
 	}
 	click(t, tt, "Complete setup")
@@ -247,5 +248,31 @@ func TestSetupMissingItsKey(t *testing.T) {
 	frames(tt)
 	if !a.provDlg.open || a.provDlg.id != "deepseek" {
 		t.Errorf("the card's Complete setup: %+v", a.provDlg.open)
+	}
+}
+
+// TestDialogTestWithoutKey: the bug was a connection test with no API key
+// whose ⓘ (and its access label) said only "llm.no_key provider=…". The
+// ⓘ tells the whole reason in words, and the reason fits the dialog the
+// key is typed in.
+func TestDialogTestWithoutKey(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	scrollSettingsToText(tt, "Anthropic")
+	clickControl(t, tt, "Anthropic")
+	click(t, tt, "Test connection")
+	const want = "Paste the service's API key above, then test again."
+	if a.provDlg.test.res.Err == nil || !has(tt, want) {
+		t.Fatalf("test %+v, texts %q", a.provDlg.test, tt.Texts())
+	}
+	var info string
+	for _, l := range tt.AccessLabels() {
+		if strings.Contains(l, "llm.no_key") {
+			info = l
+		}
+	}
+	if !strings.HasPrefix(info, want) {
+		t.Errorf("the ⓘ says %q", info)
 	}
 }
