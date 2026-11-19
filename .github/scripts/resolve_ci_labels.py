@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve the CI stages and models that pull request labels select.
 
-A stage runs only with its own stage label. Every stage label except
-run-mac-ci also runs PR Test on H100. run-lint-only satisfies the
-gate and runs no self-hosted job. A model label names a model, not a stage.
-It picks that model for every selected stage that accepts it, and never
-selects a stage. Higgs and MOSS labels are shared by TTS and MPS. A selected
-stage without a model label draws its model at random.
+A stage runs with its own stage label. ASR has two stages, the MOSS-TD
+multi-speaker job and the SeedTTS job: run-asr-ci selects both, and an ASR
+model label alone selects the one that tests its model. Every other model
+label names a model, not a stage: it picks that model for every selected stage
+that accepts it, and never selects a stage. Higgs and MOSS labels are shared
+by TTS and MPS. Every stage except Mac also runs PR Test on H100.
+run-lint-only satisfies the gate and runs no self-hosted job. A selected stage
+without a model label draws its model at random.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 RUN_LINT_ONLY_LABEL = "run-lint-only"
+ASR_STAGE_LABEL = "run-asr-ci"
 HIGGS_TTS_MODEL_LABEL = "run-higgs-tts-3-4b"
 MOSS_TTS_MODEL_LABEL = "run-moss-tts-local-transformer-v1.5"
 OMNI_CI_WORKFLOW = "Omni CI"
@@ -32,6 +35,7 @@ class CiStage:
     runs_pr_test: bool
     preset_by_model_label: dict[str, str]
     random_presets: tuple[str, ...]
+    is_selected_by_model_label: bool = False
 
 
 CI_STAGES: tuple[CiStage, ...] = (
@@ -44,8 +48,17 @@ CI_STAGES: tuple[CiStage, ...] = (
         random_presets=(),
     ),
     CiStage(
-        name="asr",
-        label="run-asr-ci",
+        name="asr_multi_speaker",
+        label=ASR_STAGE_LABEL,
+        workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
+        preset_by_model_label={"run-moss-transcribe-diarize": "moss-td"},
+        random_presets=("moss-td",),
+        is_selected_by_model_label=True,
+    ),
+    CiStage(
+        name="asr_seedtts",
+        label=ASR_STAGE_LABEL,
         workflow=OMNI_CI_WORKFLOW,
         runs_pr_test=True,
         preset_by_model_label={
@@ -54,6 +67,7 @@ CI_STAGES: tuple[CiStage, ...] = (
             "run-whisper-large-v3": "whisper",
         },
         random_presets=("fun", "qwen3", "whisper"),
+        is_selected_by_model_label=True,
     ),
     CiStage(
         name="tts",
@@ -157,7 +171,15 @@ class CiPlan:
 
 
 def select_stage_names(labels: frozenset[str]) -> frozenset[str]:
-    return frozenset(stage.name for stage in CI_STAGES if stage.label in labels)
+    return frozenset(
+        stage.name
+        for stage in CI_STAGES
+        if stage.label in labels
+        or (
+            stage.is_selected_by_model_label
+            and stage.preset_by_model_label.keys() & labels
+        )
+    )
 
 
 def should_run_pr_test(enabled_stage_names: frozenset[str]) -> bool:
@@ -182,9 +204,9 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
     """Raises ValueError without a CI label or with two model labels in a stage."""
     enabled_stage_names = select_stage_names(labels)
     if not enabled_stage_names and RUN_LINT_ONLY_LABEL not in labels:
-        stage_labels = ", ".join(stage.label for stage in CI_STAGES)
+        stage_labels = ", ".join(dict.fromkeys(stage.label for stage in CI_STAGES))
         raise ValueError(
-            f"No CI label found. Add {RUN_LINT_ONLY_LABEL} "
+            f"No CI label found. Add {RUN_LINT_ONLY_LABEL}, an ASR model label "
             f"or a stage label: {stage_labels}."
         )
     else:

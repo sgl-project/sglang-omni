@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import Mock
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.client import Client
-from sglang_omni.client.types import SpeechResult
+from sglang_omni.client.types import GenerateRequest, SpeechResult
 from sglang_omni.config import CustomVoiceConfig
+from sglang_omni.models.firered_tts3.speech_validation import (
+    FireRedTTS3SpeechRequestValidator,
+)
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
 from sglang_omni.serve.protocol import SpeechStreamSessionConfig
@@ -723,6 +729,50 @@ def test_speech_websocket_streaming_accepts_speed() -> None:
         )
         configured = websocket.receive_json()
         assert configured["type"] == "session.configured"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_streaming_audio", [True, False])
+@pytest.mark.parametrize("is_native_speed", [True, False])
+async def test_speech_websocket_encodes_native_speed_only_once(
+    monkeypatch: pytest.MonkeyPatch, is_streaming_audio: bool, is_native_speed: bool
+) -> None:
+    """Native acoustic editing must not be slowed again in either output path."""
+    client = Client(coordinator=Mock())
+    waveform = np.linspace(-0.5, 0.5, 24000, dtype=np.float32)
+
+    async def generate(
+        request: GenerateRequest, request_id: str | None = None
+    ) -> AsyncIterator[GenerateChunk]:
+        yield GenerateChunk(
+            request_id=request_id or "speech-ws",
+            modality="audio",
+            audio_data=waveform,
+            sample_rate=24000,
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(client, "generate", generate)
+    validator_type = (
+        FireRedTTS3SpeechRequestValidator if is_native_speed else SpeechRequestValidator
+    )
+    websocket = RecordingWebSocket()
+    session = SpeechWebSocketSession(
+        websocket, client=client, speech_service=validator_type(default_model="tts")
+    )
+    session.config = SpeechStreamSessionConfig(
+        model="tts", response_format="pcm", stream_audio=is_streaming_audio, speed=0.8
+    )
+    if is_streaming_audio:
+        await session.stream_sentence_audio(
+            "Hello.", request_id="speech-ws", sentence_index=0
+        )
+    else:
+        await session.send_sentence_audio(
+            "Hello.", request_id="speech-ws", sentence_index=0
+        )
+    sample_count = sum(len(chunk) for chunk in websocket.sent_bytes) // 2
+    assert sample_count == (24000 if is_native_speed else 30000)
 
 
 def test_speech_websocket_default_config_leaves_sampling_fields_unset() -> None:

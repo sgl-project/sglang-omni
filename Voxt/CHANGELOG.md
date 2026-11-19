@@ -4,11 +4,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
+
 ### Fixed
 
 - **Translate does not silently deliver an untranslated answer** (#4153): after a strict retry, Voxt rejects an answer with clear script or vocabulary evidence of no translation and shows a localized failure with Try again. Parenthesized original names, language-neutral names, numbers, same-language text, and shared vocabulary still count as valid results.
 
 ### 中文
+
+#### 新增
+
+- **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
 #### 修复
 

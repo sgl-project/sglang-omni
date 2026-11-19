@@ -121,7 +121,7 @@ jobs:
           fi
           if [[ "$IS_RELEASE" == "true" || "$IS_BETA" == "true" ]]; then
             feed_base="$(scripts/release-appcast.sh feed-base)"
-            jq -n --arg url "$feed_base" --arg publicKey "MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=" \
+            jq -n --arg url "$feed_base" --arg publicKey "PPX1glcG71+Xyk/V2veU1p0QeyX1RKRFPeAG2++lUEE=" \
               '{updates: {url: $url, publicKey: $publicKey, prereleases: true}}' > release/mygo.release.json
             echo "HAS_UPDATE_FEED=true" >> "$GITHUB_ENV"
           else
