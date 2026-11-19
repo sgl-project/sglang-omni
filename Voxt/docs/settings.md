@@ -322,6 +322,7 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `version` | integer | The document's schema version; Voxt rewrites it |
 | `setup.done` | bool | The setup guide is finished |
 | `setup.openingShown` | bool | The first-use opening was shown |
+| `setup.openingVersion` | string | The app version whose opening was last shown; a newer version plays it once |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
 | `updates.dismissed` | string | The version whose "is available" card was dismissed |
