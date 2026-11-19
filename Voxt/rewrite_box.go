@@ -176,8 +176,9 @@ func (a *app) dropBox() {
 }
 
 // boxSend is Enter or the shortcut's stop in the box: while it records,
-// it finishes the recording and the session sends; after a send failed,
-// it sends the kept instruction, text and pictures again.
+// it finishes the recording and the session sends; a newly captured window
+// preview waits for one more confirmation. After a send failed, it sends
+// the kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
 		return
@@ -192,6 +193,9 @@ func (a *app) boxSend() {
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		if a.sess.State == session.Recording {
 			a.stopSession()
+		}
+		if a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
+			a.boxShare.approveReview()
 		}
 		return
 	}
@@ -281,7 +285,6 @@ func (a *app) boxAttach(jpeg []byte, source ...string) {
 	a.box.images = append(a.box.images, jpeg)
 	a.box.thumbs = append(a.box.thumbs, bmp)
 	a.box.imageInfo = append(a.box.imageInfo, boxImageCaption(bmp, name))
-	a.box.limit = false
 	a.boxSync()
 }
 
@@ -409,7 +412,8 @@ func (a *app) boxDrop(files []string) {
 // without the turn the box and the request would follow the finish
 // order, not the drop order. A send that waited for it goes now.
 func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...string) {
-	a.boxPending--
+	// An out-of-order landing stays pending until its turn, so later drops
+	// cannot use its slot before it reaches the box.
 	var conversionErr error
 	if gen == a.boxGen && errText != "" {
 		conversionErr = errors.New(errText)
@@ -428,6 +432,7 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...
 			break
 		}
 		delete(a.boxHeld, a.boxNext)
+		a.boxPending--
 		a.boxNext++
 		if land.gen != a.boxGen {
 			continue
@@ -521,7 +526,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	return rewriteBoxViewState{
 		Selection: selection, SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
 		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), Error: box.err,
-		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording || box.session == "" && box.instruction != ""),
+		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
 		Limit:   box.limit, FocusText: box.focusText,
 	}
 }

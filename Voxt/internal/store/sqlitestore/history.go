@@ -139,8 +139,8 @@ func historyWhere(q store.HistoryQuery) (string, []any) {
 			args = append(args, ftsPhrase(s))
 		} else {
 			p := likePattern(s)
-			where = append(where, `(raw_text LIKE ? ESCAPE '\' OR source_text LIKE ? ESCAPE '\' OR prompt_text LIKE ? ESCAPE '\' OR result LIKE ? ESCAPE '\')`)
-			args = append(args, p, p, p, p)
+			where = append(where, `(raw_text LIKE ? ESCAPE '\' OR source_text LIKE ? ESCAPE '\' OR prompt_text LIKE ? ESCAPE '\' OR result LIKE ? ESCAPE '\' OR typed_text LIKE ? ESCAPE '\')`)
+			args = append(args, p, p, p, p, p)
 		}
 	}
 	if q.Kind != "" {

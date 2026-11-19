@@ -59,7 +59,8 @@ type sessionState struct {
 	boxShare boxShare
 	// boxGen numbers the box's lives: a picture conversion posted for an
 	// older life is dropped. boxPending counts the conversions not yet
-	// posted; boxSendQueued: Enter came while one converted.
+	// landed in order, including held ones; boxSendQueued: Enter came
+	// while one converted.
 	boxGen, boxPending int
 	boxSendQueued      bool
 	// boxSeq numbers the picture conversions in drop (or paste) order;
@@ -200,6 +201,7 @@ func (a *app) openSessions() {
 		},
 		BoxInput:          a.boxShare.load,
 		BoxAutoSuppressed: func() (bool, bool) { return a.boxShare.automaticSuppressed() },
+		BoxReview:         a.boxShare.waitForReview,
 		Resolve:           resolver(lm),
 		History:           lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
@@ -296,7 +298,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 			if s.Spoken != "" {
 				a.box.instruction = s.Spoken
 			}
-			if was.State == session.Recording && s.State != session.Recording {
+			if was.State != session.Composing && s.State == session.Composing {
 				a.box.shown = false // sent: the pill and the card take over
 			}
 		}

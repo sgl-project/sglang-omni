@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/transfer"
@@ -84,6 +86,21 @@ func TestBoxSelectionUsesCollapsibleTextBlock(t *testing.T) {
 	}
 }
 
+func TestBoxShortSelectionCanBeRemoved(t *testing.T) {
+	for _, selection := range []string{"hello", "first\nsecond\nthird"} {
+		a, _, _ := newTestApp(t)
+		a.box = rewriteBox{open: true, shown: true, session: "v1"}
+		snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: selection})
+		tt := hudTester(a.boxView, boxWinW, boxWinH)
+		frames(tt)
+		click(t, tt, "Remove pasted text")
+		frames(tt)
+		if !a.box.selectionSuppressed || a.boxViewState().Selection != "" {
+			t.Fatalf("short selection %q survived removal", selection)
+		}
+	}
+}
+
 func TestBoxTwoPastedBlocksKeepTrailingEditorVisible(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
@@ -143,6 +160,27 @@ func TestAnswerCardInputChipsOpenOriginals(t *testing.T) {
 	}
 }
 
+func TestBoxWindowPreviewStaysVisibleUntilConfirmed(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	jpeg := boxJPEGOf(t, 20, 10)
+	a.box = rewriteBox{open: true, shown: true, session: "v1"}
+	a.sess = session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Rev: 1}
+	a.sessionChanged(session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recognizing, Rev: 2, ImagePreviewKind: "window", ImagePreview: jpeg})
+	if !a.box.shown || !a.boxViewState().CanSend {
+		t.Fatal("the window preview cannot be reviewed before sending")
+	}
+	a.boxSend()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := a.boxShare.waitForReview(ctx); err != nil {
+		t.Fatalf("Send did not confirm the preview: %v", err)
+	}
+	a.sessionChanged(session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Composing, Rev: 3})
+	if a.box.shown {
+		t.Fatal("the confirmed box stayed over the answer")
+	}
+}
+
 func TestAutomaticImageAppearsOnAnswerCardOnlyWhenSent(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	jpeg := boxJPEGOf(t, 20, 10)
@@ -156,6 +194,23 @@ func TestAutomaticImageAppearsOnAnswerCardOnlyWhenSent(t *testing.T) {
 		Raw: "describe it", Result: "Text only.", ImagePreviewKind: "clipboard", ImagePreview: jpeg})
 	if len(a.answer.previews) != 0 {
 		t.Fatal("a refused image was listed as sent")
+	}
+}
+
+func TestRedoDropsAutomaticImagePreviewWhenItWasNotResent(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, attach: "clipboard", previews: []answerInputPreview{{Label: "Copied image", Image: shotBitmap(t)}}}
+	a.endRedo(session.Snapshot{ID: "redo", Kind: store.KindRewrite, State: session.Done, Result: "New answer.", Selection: "source", Typed: "typed"})
+	if a.answer.attach != "" {
+		t.Fatalf("redo kept the old automatic image attachment %q", a.answer.attach)
+	}
+	for _, preview := range a.answer.previews {
+		if preview.Image != nil {
+			t.Fatalf("redo kept an automatic image that was not resent: %+v", preview)
+		}
+	}
+	if len(a.answer.previews) != 2 || a.answer.previews[0].Text != "source" || a.answer.previews[1].Text != "typed" {
+		t.Fatalf("redo text previews %+v", a.answer.previews)
 	}
 }
 
