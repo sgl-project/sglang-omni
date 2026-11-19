@@ -51,7 +51,7 @@ Pull requests:
 
 ## Commands
 
-Run from `Voxt/`; Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it).
+Run from `Voxt/`; Go 1.27.4 (`GOTOOLCHAIN=auto` fetches it).
 
 ```sh
 CGO_ENABLED=0 go test ./...                                  # all tests (Linux and Mac)
