@@ -79,10 +79,6 @@ func presetOf(keys string) string {
 	return ""
 }
 
-func keyOptions(current string, off bool, first ...string) (options []string, byLabel map[string]string) {
-	return keyOptionsFor(i18n.CurrentTranslator(), current, off, first...)
-}
-
 func (a *app) setHotkeys(feature string, resync bool, change func([]settings.Hotkey) []settings.Hotkey) {
 	a.updateSettings(func(settings *settings.Settings) {
 		hotkeys := &settings.Features.Transcribe.Hotkeys
