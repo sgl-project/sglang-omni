@@ -8,7 +8,10 @@ import (
 
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -178,6 +181,46 @@ func TestBoxWindowPreviewStaysVisibleUntilConfirmed(t *testing.T) {
 	a.sessionChanged(session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Composing, Rev: 3})
 	if a.box.shown {
 		t.Fatal("the confirmed box stayed over the answer")
+	}
+}
+
+func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
+	chat := &fakeChat{status: 400}
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Privacy.SendWindow = true
+	}, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(a.boxSend)
+	a.pump("the first window review", func() bool {
+		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
+	})
+	a.postQueue(a.boxSend)
+	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
+	sent := len(chat.requests())
+	chat.set("Recovered.", 0)
+
+	a.postQueue(a.boxSend)
+	a.pump("the resend's window review", func() bool {
+		return a.box.sending != "" && a.sess.ID == a.box.sending && a.sess.State == session.Composing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
+	})
+	if !a.box.shown || !a.boxViewState().CanSend {
+		t.Fatalf("the resend's screenshot cannot be confirmed: shown %v, canSend %v", a.box.shown, a.boxViewState().CanSend)
+	}
+	a.postQueue(a.boxSend)
+	a.pump("the resend's answer", func() bool { return a.answer.open })
+	if a.sess.State != session.Done || a.sess.Result != "Recovered." {
+		t.Fatalf("resend ended %s with %q", a.sess.State, a.sess.Result)
+	}
+	reqs := chat.requests()
+	if len(reqs) <= sent {
+		t.Fatal("the resend never reached the language model")
+	}
+	images, _ := reqs[len(reqs)-1]["images"].([][]byte)
+	if len(images) != 1 {
+		t.Fatalf("the confirmed resend sent %d images, want the window screenshot", len(images))
 	}
 }
 

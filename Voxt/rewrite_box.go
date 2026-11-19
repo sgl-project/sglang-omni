@@ -199,14 +199,21 @@ func (a *app) boxSend() {
 		}
 		return
 	}
-	if a.box.instruction == "" || a.box.sending != "" || a.sess.State.Live() {
+	if a.box.sending != "" {
+		if a.sess.ID == a.box.sending && a.box.shown && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
+			a.boxShare.approveReview()
+			a.box.shown = false
+			a.boxSync()
+		}
+		return
+	}
+	if a.box.instruction == "" || a.sess.State.Live() {
 		return
 	}
 	in := session.TextInput{Raw: a.box.instruction, Selection: a.box.selection}
 	id, n := a.startSessionID(session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in})
 	if n == nil && id != "" {
 		a.box.sending, a.box.err = id, ""
-		a.box.shown = false
 		a.boxSync()
 	}
 }
@@ -523,10 +530,11 @@ func (a *app) boxViewState() rewriteBoxViewState {
 		imageInfo = append(imageInfo, box.autoInfo)
 	}
 	selection := a.boxSelection()
+	resendReview := box.sending != "" && box.shown && a.sess.ID == box.sending && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
 	return rewriteBoxViewState{
 		Selection: selection, SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
 		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), Error: box.err,
-		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
+		CanSend: resendReview || box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
 		Limit:   box.limit, FocusText: box.focusText,
 	}
 }
