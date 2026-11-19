@@ -79,7 +79,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			Label(i18n.T("More text for the rewrite")).
 			Placeholder(i18n.T("Type or paste more text, or drop images")).
 			Lines(3, 8).FontSize(layout.CardTextSize).TextColor(ovCardText).Grow(1)
-		textArea.OnPaste(func(string) bool { return actions.paste(services) })
+		textArea.OnPaste(func(text string) bool { return actions.paste(services, text) })
 		textArea.OnTextKey(func(key ui.TextKey) bool {
 			if key.Key == ui.KeyEnter && key.Mods == 0 {
 				actions.textChanged(local.text)

@@ -42,6 +42,10 @@ import (
 // sends); the wish wall asked for few, not a gallery.
 const boxMaxImages = 4
 
+const boxMaxTextBytes = 32 << 20
+
+func boxTextTooLarge(text string) bool { return len(text) > boxMaxTextBytes }
+
 // rewriteBox is the input box's state (rewrite_box_view.go draws it).
 type rewriteBox struct {
 	open   bool
@@ -90,7 +94,7 @@ type rewriteBoxActions struct {
 	close       func()
 	send        func()
 	drop        func([]string)
-	paste       func(uiServices) bool
+	paste       func(uiServices, string) bool
 	remove      func(int)
 	textChanged func(string)
 	focused     func()
@@ -349,43 +353,31 @@ func (a *app) boxRemoveImage(i int) {
 // box (text it also holds wins, as with the copied-image setting); an
 // image file copied in Finder comes through the helper (HEIC too); text
 // pastes as ever. It reports whether the key was taken.
-func (a *app) boxPaste(svc uiServices) bool {
+func (a *app) boxPaste(svc uiServices, text string) bool {
 	formats := svc.ClipboardFormats()
 	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
 	switch {
 	case has(transfer.Text):
+		if boxTextTooLarge(text) {
+			a.box.err = i18n.T("This text is too large.")
+			a.boxSync()
+			return true
+		}
 		return false
 	case (has(transfer.PNG) || has(transfer.FileList)) && len(a.box.images)+a.boxPending >= boxMaxImages:
 		a.box.limit = true
 		a.boxSync()
 		return true
-	case has(transfer.PNG):
-		raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
-		if err != nil {
-			a.box.err = i18n.T("This image could not be read.")
-			a.boxSync()
-			return true
-		}
-		gen := a.boxGen
-		seq := a.boxReserve()
-		a.async(func() {
-			jpeg, err := imgconv.JPEG(raw)
-			a.post(func() {
-				errText := ""
-				if err != nil {
-					errText, jpeg = i18n.T("This image could not be read."), nil
-				}
-				a.boxConverted(gen, seq, jpeg, errText)
-			})
-		})
-		return true
-	case has(transfer.FileList):
+	case has(transfer.PNG), has(transfer.FileList):
 		gen := a.boxGen
 		seq := a.boxReserve()
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
 			errText := ""
-			if err != nil {
+			switch {
+			case err != nil:
 				res.JPEG, errText = nil, i18n.T("This image could not be read.")
+			case len(res.JPEG) > imgconv.MaxFileBytes:
+				res.JPEG, errText = nil, i18n.T("This image is too large.")
 			}
 			a.boxConverted(gen, seq, res.JPEG, errText)
 		})

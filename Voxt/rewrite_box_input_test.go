@@ -1,14 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 )
 
 type fakeBoxDropWindow struct {
@@ -105,7 +108,10 @@ func TestRewriteBoxPasteRejectsExcessBeforeConversion(t *testing.T) {
 }
 
 func TestRewriteBoxHTMLAndPNGClipboardPastesImage(t *testing.T) {
-	a, _, _ := newTestApp(t)
+	a, fs, _ := newTestApp(t)
+	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+		return proto.ClipboardImageResult{JPEG: boxJPEG(t)}, nil
+	}
 	a.box = rewriteBox{open: true, shown: true, focusText: true}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
@@ -120,8 +126,59 @@ func TestRewriteBoxHTMLAndPNGClipboardPastesImage(t *testing.T) {
 	}
 }
 
-func TestRewriteBoxClipboardImageFailureShowsError(t *testing.T) {
+func TestRewriteBoxOversizeClipboardDoesNotReadPNG(t *testing.T) {
+	a, fs, _ := newTestApp(t)
+	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+		return proto.ClipboardImageResult{JPEG: make([]byte, (32<<20)+1)}, nil
+	}
+	a.box = rewriteBox{open: true, shown: true, focusText: true, images: [][]byte{boxJPEG(t)}}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	read := false
+	tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Lazy(transfer.PNG, func() ([]byte, error) {
+		read = true
+		return nil, errors.New("the raw PNG was read")
+	}))))
+	tt.Command("paste")
+	frames(tt)
+	if read {
+		t.Fatal("the oversized clipboard PNG was read before rejection")
+	}
+	if a.box.err == "" || a.boxPending != 0 || len(a.box.images) != 1 {
+		t.Fatalf("oversize clipboard changed the existing input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
+	}
+}
+
+func TestBoxTextTooLarge(t *testing.T) {
+	if boxTextTooLarge("small") {
+		t.Fatal("ordinary text was rejected")
+	}
+	if !boxTextTooLarge(strings.Repeat("x", (32<<20)+1)) {
+		t.Fatal("oversize text was accepted")
+	}
+}
+
+func TestRewriteBoxOversizeTextKeepsExistingInput(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true, text: "keep me", images: [][]byte{boxJPEG(t)}}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.SetClipboard(strings.Repeat("x", (32<<20)+1))
+	tt.Command("paste")
+	frames(tt)
+	if a.box.text != "keep me" || len(a.box.images) != 1 {
+		t.Fatalf("oversize text replaced the existing input: text %q, images %d", a.box.text, len(a.box.images))
+	}
+	if a.box.err != "This text is too large." {
+		t.Fatalf("oversize text error %q", a.box.err)
+	}
+}
+
+func TestRewriteBoxClipboardImageFailureShowsError(t *testing.T) {
+	a, fs, _ := newTestApp(t)
+	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+		return nil, errors.New("clipboard read failed")
+	}
 	a.box = rewriteBox{open: true, shown: true, focusText: true}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)

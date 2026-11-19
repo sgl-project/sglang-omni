@@ -5,10 +5,12 @@ package imgconv
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	_ "image/gif" // decode only
 	"image/jpeg"
 	_ "image/png" // decode only
+	"io"
 	"os"
 
 	"golang.org/x/image/draw"
@@ -20,11 +22,28 @@ const MaxSide = 1600
 // quality is the JPEG's, as the helper's.
 const quality = 70
 
+// MaxFileBytes is the largest picture file it reads.
+const MaxFileBytes = 32 << 20
+
+const maxPixels = 40_000_000
+
+var errImageTooLarge = errors.New("image is too large")
+
 // JPEG converts picture data (any format image.Decode reads) to a JPEG
 // whose longer side is at most MaxSide. A JPEG already within the bound
 // goes through unchanged.
 func JPEG(data []byte) ([]byte, error) {
-	if bytes.HasPrefix(data, []byte{0xff, 0xd8, 0xff}) && withinBound(data) {
+	if len(data) > MaxFileBytes {
+		return nil, errImageTooLarge
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Height > 0 && cfg.Width > maxPixels/cfg.Height {
+		return nil, errImageTooLarge
+	}
+	if bytes.HasPrefix(data, []byte{0xff, 0xd8, 0xff}) && max(cfg.Width, cfg.Height) <= MaxSide {
 		return data, nil
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
@@ -36,17 +55,19 @@ func JPEG(data []byte) ([]byte, error) {
 
 // JPEGFile is JPEG for the picture at path (a drop from Finder).
 func JPEGFile(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxFileBytes {
+		return nil, errImageTooLarge
+	}
 	return JPEG(data)
-}
-
-// withinBound reports whether the JPEG in data fits MaxSide already.
-func withinBound(data []byte) bool {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-	return err == nil && max(cfg.Width, cfg.Height) <= MaxSide
 }
 
 // encode scales img to MaxSide and encodes it as a JPEG.
