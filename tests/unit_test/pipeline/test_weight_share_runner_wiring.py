@@ -434,7 +434,7 @@ async def test_sharing_off_keeps_one_spawn_wave_and_one_broadcast(
 
     await runner.start(timeout=5.0)
     await runner.stop()
-    
+
     assert events.index("spawn gen@r1") < events.index("ready gen@r0")
     assert first.spawn_env is None
     assert coordinator.shutdown_calls == [None]
