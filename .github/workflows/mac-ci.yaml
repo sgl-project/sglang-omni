@@ -191,5 +191,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # -warnings-as-errors leaves Swift 6 concurrency warnings as warnings, so the log is searched instead.
+      - name: Helper builds without warnings
+        run: |
+          set -o pipefail
+          swift build --package-path Voxt/helper 2>&1 | tee helper-build.log
+          if grep -q 'warning:' helper-build.log; then
+            echo "::error::the helper build has compiler warnings"
+            exit 1
+          fi
+
       - name: Helper tests
         run: swift test --package-path Voxt/helper
