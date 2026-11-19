@@ -392,12 +392,15 @@ public enum SelectionVia {
 
 public struct SelectionResult: Codable, Sendable {
     public var text: String?
+    /// The JPEG from the image the copy fallback captured before restoring the old clipboard.
+    public var image: Data?
     public var via: String
     public var ms: Double
     public var steps: [String]?
 
-    public init(text: String?, via: String, ms: Double, steps: [String]) {
+    public init(text: String?, image: Data? = nil, via: String, ms: Double, steps: [String]) {
         self.text = text?.isEmpty == true ? nil : text
+        self.image = image
         self.via = via
         self.ms = ms
         self.steps = steps.isEmpty ? nil : steps

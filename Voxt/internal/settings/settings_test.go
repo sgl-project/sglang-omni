@@ -147,6 +147,66 @@ func TestMemory(t *testing.T) {
 	}
 }
 
+func TestMigrateClipboardImageWithSelection(t *testing.T) {
+	// Documents that predate the switch never chose the old
+	// selected-text-plus-image behavior, which was the #4152 demo
+	// configuration, so they migrate to text-only like a fresh install.
+	legacy, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Privacy.SendClipboardImageWithSelection {
+		t.Error("an older document kept the selected-text-plus-image behavior of #4152")
+	}
+	versionFour, err := Migrate([]byte(`{"version":4,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versionFour.Privacy.SendClipboardImageWithSelection {
+		t.Error("a version-4 document without the new key kept the selected-text-plus-image behavior of #4152")
+	}
+	explicitOn, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !explicitOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice was not preserved")
+	}
+	rawOn, _ := json.Marshal(explicitOn)
+	reloadedOn, err := Migrate(rawOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloadedOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice did not survive a save and reload")
+	}
+	explicit, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice was not preserved")
+	}
+	raw, _ := json.Marshal(explicit)
+	reloaded, err := Migrate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice did not survive a save and reload")
+	}
+	unrelated, err := Migrate([]byte(`{"version":1,"privacy":{"notes":"sendClipboardImageWithSelection"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrelated.Privacy.SendClipboardImageWithSelection {
+		t.Error("unrelated text was mistaken for an explicit together choice")
+	}
+	if Defaults().Privacy.SendClipboardImageWithSelection {
+		t.Error("a fresh install should default to text-only")
+	}
+}
+
 // TestSoundPreset: older documents have none (the family's default
 // cues); a Voxt preset becomes its system sounds, Soft the defaults, and
 // the preset is not written again.

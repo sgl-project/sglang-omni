@@ -66,6 +66,7 @@
       "online": "Otherwise, Voxt goes online only to check for updates, download models and read its announcements. Reading them sends nothing about you.",
       "send_window": true,
       "send_clipboard": true,
+      "send_clipboard_with_selection": false,
       "keep_history": true,
       "keep_audio": true,
       "keep_audio_enabled": true,
