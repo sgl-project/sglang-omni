@@ -106,6 +106,28 @@ func TestBoxSelectionUsesCollapsibleTextBlock(t *testing.T) {
 	}
 }
 
+func TestBoxLongSingleLineFileShowsBoundedText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	a.boxAddFileText(strings.Repeat("word ", 4000), "long.txt")
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	longest := func() int {
+		frames(tt)
+		longest := 0
+		for _, text := range tt.Texts() {
+			longest = max(longest, utf8.RuneCountInString(text))
+		}
+		return longest
+	}
+	if got := longest(); got > boxTextCollapseChars+1 || !has(tt, "Show all") {
+		t.Fatalf("collapsed file block laid out %d characters (Show all %v)", got, has(tt, "Show all"))
+	}
+	click(t, tt, "Show all")
+	if got := longest(); got > boxTextShownChars+1 {
+		t.Fatalf("expanded file block laid out %d characters", got)
+	}
+}
+
 func TestBoxShortSelectionCanBeRemoved(t *testing.T) {
 	for _, selection := range []string{"hello", "first\nsecond\nthird"} {
 		a, _, _ := newTestApp(t)

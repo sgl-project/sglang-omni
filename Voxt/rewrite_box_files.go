@@ -233,11 +233,6 @@ func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
 			a.box.err = land.errText
 			a.boxSendQueued = false
 		} else {
-			if land.text != "" || len(land.jpeg) > 0 || len(land.jpegs) > 0 {
-				conversionErr = nil
-				a.box.err = ""
-				a.boxShare.clearError()
-			}
 			if land.text != "" {
 				a.boxAddFileText(land.text, land.source)
 			}

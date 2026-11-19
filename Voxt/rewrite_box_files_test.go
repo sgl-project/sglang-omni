@@ -444,22 +444,33 @@ func TestBoxAddFileTextSeparatesExistingText(t *testing.T) {
 	}
 }
 
-func TestBoxConvertedLandingClearsErrorInReservationOrder(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	a.box = rewriteBox{open: true, shown: true}
-	gen := a.boxGen
-	first := a.boxReserve()
-	second := a.boxReserve()
-	a.boxConvertedLanding(gen, second, boxLanding{text: "good"})
-	a.boxConvertedLanding(gen, first, boxLanding{errText: "bad"})
-	if a.box.err != "" {
-		t.Fatalf("the last ordered import failed: %q", a.box.err)
-	}
-	if _, _, err := a.boxShare.load(context.Background()); err != nil {
-		t.Fatalf("completion order restored the earlier error: %v", err)
-	}
-	if got, want := a.boxTextContent(), "good"; got != want {
-		t.Fatalf("ordered text %q, want %q", got, want)
+func TestBoxConvertedLandingKeepsBatchErrorAfterLaterSuccess(t *testing.T) {
+	for _, badLandsFirst := range []bool{true, false} {
+		a, _, _ := newTestApp(t)
+		a.box = rewriteBox{open: true, shown: true, err: "an earlier failure"}
+		gen := a.boxGen
+		bad := a.boxReserve()
+		good := a.boxReserve()
+		a.boxSend()
+		if !a.boxSendQueued {
+			t.Fatal("Enter during the conversion did not queue the send")
+		}
+		if badLandsFirst {
+			a.boxConvertedLanding(gen, bad, boxLanding{errText: "bad.png could not be read"})
+			a.boxConvertedLanding(gen, good, boxLanding{jpeg: boxJPEGOf(t, 4, 4), source: "good.jpg"})
+		} else {
+			a.boxConvertedLanding(gen, good, boxLanding{jpeg: boxJPEGOf(t, 4, 4), source: "good.jpg"})
+			a.boxConvertedLanding(gen, bad, boxLanding{errText: "bad.png could not be read"})
+		}
+		if a.box.err != "bad.png could not be read" || len(a.box.images) != 1 {
+			t.Fatalf("bad first %v: error %q, %d images; want the batch error and the good image", badLandsFirst, a.box.err, len(a.box.images))
+		}
+		if _, _, err := a.boxShare.load(context.Background()); err == nil {
+			t.Fatalf("bad first %v: the session lost the batch error", badLandsFirst)
+		}
+		if a.boxSendQueued || a.box.sending != "" {
+			t.Fatalf("bad first %v: the batch error did not hold the send for confirmation", badLandsFirst)
+		}
 	}
 }
 

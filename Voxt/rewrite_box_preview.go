@@ -10,6 +10,8 @@ import (
 
 const (
 	boxTextCollapseLines = 3
+	boxTextCollapseChars = 300
+	boxTextShownChars    = 10000
 	boxMaxTextBytes      = 32 << 20
 )
 

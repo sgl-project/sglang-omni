@@ -264,6 +264,10 @@ func (a *app) boxEnded(s session.Snapshot) {
 // waits for it (boxPending), and it lands after every earlier number,
 // so batches keep the drop order whatever converts first.
 func (a *app) boxReserve() int {
+	// A new input replaces an earlier failure's hint; a failure within its
+	// own batch then stays when a later file of the batch lands.
+	a.box.err = ""
+	a.boxShare.clearError()
 	a.boxPending++
 	a.boxShare.start()
 	seq := a.boxSeq

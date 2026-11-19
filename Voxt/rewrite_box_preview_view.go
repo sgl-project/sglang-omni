@@ -8,10 +8,24 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
+// boxClipText keeps the first chars characters of text: laying out one
+// unbroken paragraph takes time that grows faster than its length.
+func boxClipText(text string, chars int) string {
+	count := 0
+	for index := range text {
+		if count == chars {
+			return text[:index] + "…"
+		}
+		count++
+	}
+	return text
+}
+
 func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
-	if !segment.Pasted || segment.Lines <= boxTextCollapseLines && !segment.File {
+	collapsible := segment.Lines > boxTextCollapseLines || segment.Chars > boxTextCollapseChars
+	if !segment.Pasted || !collapsible && !segment.File {
 		ui.Row(context.Key(key)).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(context, segment.Text).FontSize(12).TextColor(ovText2).MaxLines(3).Grow(1).MinWidth(0)
+			ui.Text(context, boxClipText(segment.Text, boxTextCollapseChars)).FontSize(12).TextColor(ovText2).MaxLines(3).Grow(1).MinWidth(0)
 			if remove != nil {
 				if cardIconButton(context.Key("remove-text"), i18n.T("Remove pasted text"), "", icons.Close, true) {
 					remove()
@@ -30,17 +44,17 @@ func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, l
 				}
 			}
 		})
-		if segment.Lines <= boxTextCollapseLines {
+		if !collapsible {
 			ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
 		} else if expanded {
 			ui.Scroll(context.Key("full-text")).MaxHeight(150).TrackScroll(&local.textScroll).Children(func() {
-				ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
+				ui.Text(context, boxClipText(segment.Text, boxTextShownChars)).FontSize(12).TextColor(ovCardText).Selectable()
 			})
 		} else {
-			lines := strings.SplitN(segment.Text, "\n", boxTextCollapseLines+1)
+			lines := strings.SplitN(boxClipText(segment.Text, boxTextCollapseChars), "\n", boxTextCollapseLines+1)
 			ui.Text(context, strings.Join(lines[:min(len(lines), boxTextCollapseLines)], "\n")).FontSize(12).TextColor(ovText2).MaxLines(boxTextCollapseLines).Shrink(0)
 		}
-		if segment.Lines > boxTextCollapseLines {
+		if collapsible {
 			label := i18n.T("Show all")
 			if expanded {
 				label = i18n.T("Show less")
