@@ -65,6 +65,12 @@ def backends(request, backend_requests):
                 reference = {"audio_path": "/tmp/ref.wav", "text": "ref"}
                 assert request["references"] == [reference]
                 received_words.append(request["input"])
+                if scenario == "speech_tool_failed_speech" and len(received_words) == 1:
+                    self.send_response(500)
+                    self.end_headers()
+                    return
+                else:
+                    pass
                 if scenario == "english_tts":
                     spoken_chinese = any(
                         "\u4e00" <= char <= "\u9fff" for char in request["input"]
@@ -117,7 +123,7 @@ def backends(request, backend_requests):
                 return
             else:
                 received_messages.append(request["messages"])
-            if scenario == "speech_tool":
+            if scenario.startswith("speech_tool"):
                 self.call_speech_tool(request["messages"])
                 return
             else:
@@ -172,7 +178,7 @@ def backends(request, backend_requests):
     base_url = f"http://127.0.0.1:{server.server_port}/v1"
     settings = (
         loopback_speech_tool_graph(base_url)
-        if scenario == "speech_tool"
+        if scenario.startswith("speech_tool")
         else loopback_graph(base_url)
     )
     try:

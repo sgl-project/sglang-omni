@@ -91,7 +91,7 @@ SPEECH_BUSY = "BUSY"
 CUT_SPEECH_NOTE = 'A tool result of {"status": "interrupted", "heard_prefix": ...} means the user cut you off and heard only heard_prefix.'
 # note (Jingwen): without this Qwen3.8-27B said the whole text again after a speech that failed part-way in 13 of 20 samples, and with it went on from heard_prefix in 20 of 20.
 FAILED_SPEECH_NOTE = 'A tool result of {"status": "failed", "heard_prefix": ...} means your speech broke off after the user heard heard_prefix; say only what comes after it.'
-# note (Jingwen): with thinking off Qwen3.8-27B called the speech tool in 12 of 24 first prompts without this and in 36 of 36 with it, and no prompt wording closed the gap. Every prompt uses it, so the model is never prompted once it has spoken for the utterance: with a `silent` tool or a `silent` action to choose instead, it repeated its answer after a completed speech in 10 of 49 and 22 of 50 samples.
+# note (Jingwen): with thinking off Qwen3.8-27B called the speech tool in 12 of 24 first prompts without this and in 36 of 36 with it, and no prompt wording closed the gap. Every prompt uses it, so the model is never prompted once it has spoken for the utterance: with a silent tool or a silent action to choose instead, it repeated its answer after a completed speech in 10 of 49 and 22 of 50 samples.
 SPEECH_TOOL_CHOICE = "required"
 
 
@@ -185,11 +185,11 @@ class Speech:
 
     text: str
     entry_index: int
-    # True while the model is still writing the call: `text` is what reached the synthesizer so far.
+    # True while the model is still writing the call: text is what reached the synthesizer so far.
     is_streaming: bool = False
 
 
-# The arguments of a call up to the opening quote of its `text` value, with any scalar arguments written before it.
+# The arguments of a call up to the opening quote of its text value, with any scalar arguments written before it.
 TEXT_VALUE_START = re.compile(
     r'\s*\{(?:\s*"(?:[^"\\]|\\.)*"\s*:\s*(?:"(?:[^"\\]|\\.)*"|[^,{}\[\]"]+)\s*,)*\s*"text"\s*:\s*"'
 )
@@ -197,7 +197,7 @@ HIGH_SURROGATE_ESCAPE = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}")
 
 
 class SpokenTextReader:
-    """Reads the `text` value out of a speech call's arguments while the model is still writing them."""
+    """Reads the text value out of a speech call's arguments while the model is still writing them."""
 
     def __init__(self) -> None:
         self.raw = ""
@@ -206,7 +206,7 @@ class SpokenTextReader:
         self.is_closed = False
 
     def feed(self, fragment: str) -> None:
-        """Add the next piece of the arguments; `text` grows by what it completes."""
+        """Add the next piece of the arguments; text grows by what it completes."""
         self.raw += fragment
         if self.read_end is None:
             match = TEXT_VALUE_START.match(self.raw)
@@ -253,7 +253,7 @@ class SpokenTextReader:
 class DialogConfig(ComponentConfig):
     """Conversation history; one messages chunk per answered utterance.
 
-    `speech_tool` names the tool the generator speaks through; without it the synthesizer reads the generator's text. `max_inferences_per_utterance` bounds how many times the model is prompted for one utterance, so calls that keep being refused or failing cannot go on forever.
+    speech_tool names the tool the generator speaks through; without it the synthesizer reads the generator's text. max_inferences_per_utterance bounds how many times the model is prompted for one utterance, so calls that keep being refused or failing cannot go on forever.
     """
 
     kind: Literal["dialog"] = "dialog"
@@ -302,12 +302,12 @@ class Dialog(StreamComponent):
     the utterance's reply begins is speech over that reply, so the reply
     ends as soon as it begins.
 
-    With a `speech_tool`, the model speaks by calling it: the dialog hands the
+    With a speech_tool, the model speaks by calling it: the dialog hands the
     one call it accepts to the synthesizer, the Session speaks one at a time
     and every other call is answered at once with an error. Each speech is a
     turn, so the turn fence, the paced turn.done, the reply's audio timeline
     and the client's truncate all apply to it as to a reply. The call's answer
-    enters the history as `{"status": "interrupted", "heard_prefix": ...}`
+    enters the history as {"status": "interrupted", "heard_prefix": ...}
     until the speech ends, and every later report of what was heard rewrites
     it, so the next prompt holds the last known position. Every prompt
     requires a tool call, so the model speaks once for an utterance and is not
@@ -519,7 +519,7 @@ class Dialog(StreamComponent):
     def end_reply(
         self, entry_index: int, text: str, style_starts: list[tuple[int, str]]
     ) -> None:
-        """The reply whose text is `text` reached the client whole; until a later reply ends, a truncate can still cut its history entry."""
+        """The reply with this text reached the client whole; until a later reply ends, a truncate can still cut its history entry."""
         self.truncatable = (self.reply_turn, entry_index)
         self.truncatable_text = text
         self.truncatable_style_starts = style_starts
@@ -753,7 +753,7 @@ class Dialog(StreamComponent):
             self.end_silent_inference()
 
     def end_silent_inference(self) -> None:
-        """The prompt led to no speech: a turn the client was told about ends empty, and the history shows the unanswered utterance as `interrupt_reply` does."""
+        """The prompt led to no speech: a turn the client was told about ends empty, and the history shows the unanswered utterance as interrupt_reply does."""
         assert self.emit is not None
         self.reply = None
         if self.messages[-1].role == "user":

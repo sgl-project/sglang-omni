@@ -26,7 +26,7 @@ def tool_call_chunk(
     is_partial: bool = False,
     is_truncated: bool = False,
 ) -> TimedChunk:
-    """The calls of a completion, or with `is_partial` one increment of a call still being written: from a generator the next piece of its arguments text, from a dialog `{"text": ...}` with the next piece of a speech. The complete chunk follows the partial ones, flagged with REPLY_TRUNCATED when the completion stopped at its token budget."""
+    """The calls of a completion, or with is_partial one increment of a call still being written: from a generator the next piece of its arguments text, from a dialog {"text": ...} with the next piece of a speech. The complete chunk follows the partial ones, flagged with REPLY_TRUNCATED when the completion stopped at its token budget."""
     payload: dict[str, object] = {"calls": [call.model_dump() for call in calls]}
     if language is not None:
         payload["language"] = language

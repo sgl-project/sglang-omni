@@ -47,8 +47,8 @@ from sglang_omni.scheduling.session import ChunkEmitter
 
 logger = logging.getLogger(__name__)
 
-# The error of a speech whose text held no words to speak.
-NOTHING_TO_SPEAK = "no audio was produced: the text has no words to speak"
+# The error of a speech that ended without audio, which a text with no words to speak leaves and so does a service that answers with none.
+NOTHING_TO_SPEAK = "no audio was produced: the text may have no words to speak"
 
 # Note (ruoyu): Qwen3-TTS reads an emoji as stray syllables or runs on for minutes and spells out a link target.
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -208,7 +208,10 @@ class TurnSpeaker(Replier):
 
         async def handle(chunk: TimedChunk, replies: Replies) -> None:
             nonlocal deltas, streamed_turn
-            if chunk.format == TOOL_CALL:
+            if chunk.format == TOOL_CALL and chunk.turn in replies.interrupted:
+                # note (Jingwen): an interrupt can overtake a piece of its turn on the way here, and a speech started from that piece would wait for text that never arrives and hold every later speech.
+                pass
+            elif chunk.format == TOOL_CALL:
                 [call] = tool_calls_of(chunk)
                 text = text_chunk(
                     call.arguments["text"], chunk.turn, chunk_language(chunk)

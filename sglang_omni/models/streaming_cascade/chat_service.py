@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch SGLang's chat server with a `qwen3_coder` tool call parser that streams string arguments.
+"""Launch SGLang's chat server with a qwen3_coder tool call parser that streams string arguments.
 
-Run it in place of `python -m sglang.launch_server`, with the same arguments.
+Run it in place of python -m sglang.launch_server, with the same arguments.
 """
 
 import json
@@ -28,12 +28,12 @@ class StreamingQwen3CoderDetector(Qwen3CoderDetector):
 
     def __init__(self) -> None:
         super().__init__()
-        # True while a string value is being released: its opening `"name": "` was sent and its closing quote was not.
+        # True while a string value is being released: its opening "name": " was sent and its closing quote was not.
         self.is_string_value_open = False
         # The text that arrived and is not parsed yet.
         self.pending = ""
         # The parameters the schema of the function being called declares.
-        self.parameters: dict = {}
+        self.parameters: dict[str, object] = {}
 
     def parse_streaming_increment(
         self, new_text: str, tools: list[Tool]

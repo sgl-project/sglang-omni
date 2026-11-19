@@ -1172,3 +1172,30 @@ async def test_pieces_of_a_streamed_speech_that_failed_start_no_other_speech():
     assert attempts == ["One."]
     done = [output for output in outputs if control_type(output) == TURN_DONE]
     assert len(done) == 1 and "refused" in done[0].payload[SPEECH_ERROR]
+
+
+@pytest.mark.asyncio
+async def test_pieces_of_a_speech_that_arrive_after_its_interrupt_are_dropped():
+    """A piece of a speech that reached the synthesizer after the interrupt of its turn started a speech of that turn, which held the next speech back."""
+    synthesizer = speech_synthesizer()
+    sentences: list[str] = []
+
+    async def speak(sentence: str, language: str | None):
+        sentences.append(sentence)
+        yield np.zeros(240, dtype="<f4")
+
+    async def interrupt():
+        await synthesizer.control(control_chunk(INTERRUPT, turn=1))
+
+    synthesizer.speak = speak
+    outputs = await drain(
+        synthesizer,
+        [
+            interrupt,
+            *spoken_pieces(["One. ", "Two."]),
+            *spoken_pieces(["Three."], turn=2),
+        ],
+    )
+    assert sentences == ["Three."]
+    done = [output.turn for output in outputs if control_type(output) == TURN_DONE]
+    assert done == [2]

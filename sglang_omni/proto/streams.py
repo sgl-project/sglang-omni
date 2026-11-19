@@ -50,9 +50,7 @@ SPEECH_STOPPED = "speech.stopped"  # {"t_ms": float}
 TURN_QUEUED = "turn.queued"  # an utterance waits for its reply
 TURN_STARTED = "turn.started"  # a reply begins
 TURN_DONE = "turn.done"  # the reply and its audio are complete
-TURN_EMPTY = (
-    "turn.empty"  # the utterance carried no words, or the model chose silence; no reply
-)
+TURN_EMPTY = "turn.empty"  # the utterance carried no words, or its prompt led to no speech; no reply
 TURN_INTERRUPTED = "turn.interrupted"  # the reply stopped before its end
 # A reply whose generation stopped at the talker's token budget: the talker flags its terminal stream item with this, and the audio owner repeats the flag on the reply's turn.done so the client can report an incomplete response.
 REPLY_TRUNCATED = "reply_truncated"

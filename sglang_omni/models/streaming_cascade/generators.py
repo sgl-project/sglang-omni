@@ -59,7 +59,7 @@ class ToolFunction(BaseModel):
 
 
 class OpenAIChatGeneratorConfig(ComponentConfig):
-    """`tools` are the functions the model may call; a completion that calls them ends in a tool_call chunk instead of turn.done."""
+    """tools are the functions the model may call; a completion that calls them ends in a tool_call chunk instead of turn.done."""
 
     kind: Literal["openai_chat"] = "openai_chat"
     base_url: str = Field(pattern=r"^https?://[^/]+")
@@ -106,7 +106,7 @@ class FunctionDelta(BaseModel):
 
 
 class ToolCallDelta(BaseModel):
-    """One fragment of a streamed tool call; `index` joins the fragments of one call, whose id and name come first and whose arguments arrive as text pieces."""
+    """One fragment of a streamed tool call; index joins the fragments of one call, whose id and name come first and whose arguments arrive as text pieces."""
 
     index: int
     id: str | None = None
