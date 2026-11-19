@@ -1117,22 +1117,34 @@ def make_arena(
     return incremental, arena
 
 
-def test_codec_state_arena_never_hands_out_reserved_slots() -> None:
-    arena = Qwen3TTSCodecStateArena(
-        Qwen3TTSIncrementalDecoder(Decoder()),
-        num_slots=2,
-        reserved_slots=3,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-    )
+def test_codec_state_arena_returns_a_slot_whose_reset_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reset that raised after acquire took the slot left it neither free nor held, so the arena lost a row for good."""
+    _, arena = make_arena(Decoder(), slots=1)
+    zero_slot = arena.zero_slot
 
-    assert [arena.acquire(), arena.acquire(), arena.acquire()] == [0, 1, None]
-    assert list(arena.reserved_slots) == [2, 3, 4]
-    assert arena.scratch_slot == 5
-    assert arena.describe()["slots"] == 2
-    arena.release(1)
-    arena.retire(3)
-    assert arena.active_slots() == 1
+    def fail_reset(slot: int) -> None:
+        raise RuntimeError("device fault")
+
+    monkeypatch.setattr(arena, "zero_slot", fail_reset)
+    with pytest.raises(RuntimeError, match="device fault"):
+        arena.acquire()
+    monkeypatch.setattr(arena, "zero_slot", zero_slot)
+
+    assert arena.active_slots() == 0
+    assert arena.acquire() == 0
+    assert arena.exhausted_count == 0
+
+
+def test_codec_state_arena_counts_only_misses_that_do_not_wait() -> None:
+    _, arena = make_arena(Decoder(), slots=1)
+
+    assert arena.acquire() == 0
+    assert arena.acquire(should_count_exhaustion=False) is None
+    assert arena.exhausted_count == 0
+    assert arena.acquire() is None
+    assert arena.exhausted_count == 1
 
 
 @pytest.mark.accelerator

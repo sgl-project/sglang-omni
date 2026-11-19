@@ -1077,14 +1077,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.initial_queue: queue.Queue[
             tuple[str, Qwen3TTSStreamState] | Qwen3TTSWholeRequest | None
         ] = queue.Queue()
-        # note (ratish): whole requests and their slots belong to the initial worker alone. An
-        # abort only marks the request, and the worker drops it at the next replay.
+        # note (ratish): whole requests belong to the initial worker alone. An abort only marks
+        # the request, and the worker drops it at the next replay.
         self.whole_requests: deque[Qwen3TTSWholeRequest] = deque()
-        self.idle_whole_request_slots: list[int] = (
-            list(self.codec_arena.reserved_slots)
-            if self.codec_arena is not None
-            else []
-        )
         self.followup_queue: queue.PriorityQueue[
             tuple[float, int, str, Qwen3TTSStreamState | None]
         ] = queue.PriorityQueue()
@@ -1115,7 +1110,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         dtype: torch.dtype,
         in_place_frames: int,
     ) -> Qwen3TTSCodecStateArena | None:
-        """The stream rows, and as many for whole requests, that the asynchronous workers decode against; a set slot count is checked in every mode."""
+        """The rows the asynchronous workers decode streams and whole requests against; a set slot count is checked in every mode."""
         if num_slots is not None and (
             isinstance(num_slots, bool)
             or not isinstance(num_slots, int)
@@ -1143,16 +1138,14 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
         arena = arena_type(
             self.incremental_decoder,
+            # note (ratish): a stream or a whole request holds one row and counts once in the in-flight cap, so one set of rows serves both.
             num_slots=num_slots,
-            # note (ratish): as many whole requests as streams hold state at once, and neither
-            # takes the other's slots, so stream load never changes a whole request's audio.
-            reserved_slots=num_slots if self.decodes_whole_requests else 0,
             device=self.device,
             dtype=dtype,
             in_place_frames=in_place_frames,
         )
         logger.info(
-            f"Qwen3-TTS incremental Codec state: {arena.num_slots} stream slots and {len(arena.reserved_slots)} for whole requests, {arena.bytes_per_slot / (1024 * 1024):.2f} MiB a slot, {arena.total_bytes / (1024 * 1024):.1f} MiB total ({self.device}, {dtype})"
+            f"Qwen3-TTS incremental Codec state: {arena.num_slots} slots, {arena.bytes_per_slot / (1024 * 1024):.2f} MiB a slot, {arena.total_bytes / (1024 * 1024):.1f} MiB total ({self.device}, {dtype})"
         )
         return arena
 
@@ -3050,7 +3043,7 @@ class Qwen3TTSStreamingVocoderScheduler(
     def plan_whole_request_replay(self) -> WholeRequestReplay | None:
         """The oldest whole request's next decode and each one that replays the same graph.
 
-        A request past the idle slots waits, and those holding slots finish and release them.
+        A request that finds every slot held waits, and those holding slots finish and release them.
         """
         if self.cuda_decode_failed:
             # note (ratish): a retired slot never frees, so a request waiting for one fails here, as its launch would.
@@ -3094,17 +3087,19 @@ class Qwen3TTSStreamingVocoderScheduler(
                 # a teardown has taken the graphs.
                 and len(replay.requests) < runner.batch_sizes[-1]
             )
-            has_slot = request.slot is not None or bool(self.idle_whole_request_slots)
-            if not (joins_replay and has_slot):
+            if not joins_replay:
                 waiting.append(request)
                 continue
-            else:
-                pass
-            if request.slot is None:
-                request.slot = self.idle_whole_request_slots.pop()
+            elif request.slot is None:
                 try:
-                    self.codec_arena.zero_slot(request.slot)
-                    if request.next_frame:
+                    # note (ratish): a whole request with no slot waits and asks again next pass, so its miss sends nothing elsewhere.
+                    request.slot = self.codec_arena.acquire(
+                        should_count_exhaustion=False
+                    )
+                    if request.slot is None:
+                        waiting.append(request)
+                        continue
+                    elif request.next_frame:
                         self.codec_arena.start_slot(request.slot, request.next_frame)
                     else:
                         pass
@@ -3124,10 +3119,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         return replay
 
     def release_whole_request_slot(self, request: Qwen3TTSWholeRequest) -> None:
-        # note (ratish): a retired slot held a decode never proven complete, so it is never reused.
-        if request.slot is not None and request.slot not in self.codec_arena.retired:
-            self.idle_whole_request_slots.append(request.slot)
+        if request.slot is not None and not self.cuda_decode_failed:
+            self.codec_arena.release(request.slot)
         else:
+            # note (ratish): once CUDA decode is disabled no decode reads a slot again, and a release would record an event on the failed device.
             pass
         request.slot = None
 

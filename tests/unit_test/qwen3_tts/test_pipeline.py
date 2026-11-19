@@ -3825,9 +3825,6 @@ def admit_reference_stream(
     return state
 
 
-WHOLE_REQUEST_SLOTS = 8
-
-
 def chunk_samples(message) -> list[float]:
     return np.frombuffer(message.data["audio_waveform"], dtype=np.float32).tolist()
 
@@ -3843,9 +3840,6 @@ def whole_request_scheduler(
         monkeypatch, widths=(1, 2, 4), fail_on_call=fail_on_call
     )
     scheduler.decodes_whole_requests = True
-    scheduler.idle_whole_request_slots = [
-        scheduler.codec_arena.acquire() for _ in range(WHOLE_REQUEST_SLOTS)
-    ]
     return scheduler, incremental, runner
 
 
@@ -3891,7 +3885,7 @@ def run_whole_requests(
     while not scheduler.outbox.empty():
         message = scheduler.outbox.get_nowait()
         messages[message.request_id] = message
-    assert len(scheduler.idle_whole_request_slots) == WHOLE_REQUEST_SLOTS
+    assert scheduler.codec_arena.active_slots() == 0
     return messages
 
 
@@ -4057,22 +4051,50 @@ def test_qwen3_tts_whole_requests_past_their_slots_wait_for_one_to_finish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, incremental, runner = whole_request_scheduler(monkeypatch)
-    held_slots = scheduler.idle_whole_request_slots[1:]
-    scheduler.idle_whole_request_slots = scheduler.idle_whole_request_slots[:1]
+    arena = scheduler.codec_arena
+    held_slots = [arena.acquire() for _ in range(arena.num_slots - 1)]
     messages = [whole_request_message("long", 8), whole_request_message("next", 8)]
 
     scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
     scheduler.run_initial_pass()
 
     assert [call[0][0] for call in runner.calls] == [1]
-    assert not scheduler.idle_whole_request_slots
+    assert arena.active_slots() == arena.num_slots
     while scheduler.whole_requests:
         scheduler.run_initial_pass()
-    scheduler.idle_whole_request_slots.extend(held_slots)
+    for slot in held_slots:
+        arena.release(slot)
     results = run_whole_requests(scheduler)
     assert [call[0][0] for call in runner.calls] == [1, 1, 1, 1]
     assert incremental.decode_positions == [[0], [4], [0], [4]]
     assert chunk_samples(results["next"].data) == expected_whole_samples(scheduler, 8)
+    assert arena.exhausted_count == 0
+
+
+def test_qwen3_tts_whole_request_waits_for_the_slot_a_stream_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    arena = scheduler.codec_arena
+    held_slots = [arena.acquire() for _ in range(arena.num_slots)]
+
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
+    )
+    scheduler.run_initial_pass()
+    scheduler.run_initial_pass()
+
+    assert runner.calls == []
+    assert scheduler.outbox.empty()
+    arena.release(held_slots.pop())
+    while scheduler.whole_requests:
+        scheduler.run_initial_pass()
+    for slot in held_slots:
+        arena.release(slot)
+    results = run_whole_requests(scheduler)
+    assert len(runner.calls) == 1
+    assert chunk_samples(results["whole"].data) == expected_whole_samples(scheduler, 4)
+    assert arena.exhausted_count == 0
 
 
 def test_qwen3_tts_whole_request_after_a_failed_capture_keeps_the_batch_path(
@@ -4228,8 +4250,9 @@ def test_qwen3_tts_whole_request_never_reuses_a_retired_slot(
     scheduler.run_initial_pass()
 
     assert scheduler.outbox.get_nowait().type == "error"
-    assert len(scheduler.idle_whole_request_slots) == WHOLE_REQUEST_SLOTS - 1
-    assert not scheduler.codec_arena.retired & set(scheduler.idle_whole_request_slots)
+    assert len(scheduler.codec_arena.retired) == 1
+    assert not scheduler.codec_arena.retired & set(scheduler.codec_arena.free)
+    assert scheduler.codec_arena.active_slots() == 0
 
 
 def test_qwen3_tts_whole_requests_waiting_for_a_slot_fail_once_cuda_decode_is_disabled(
@@ -4237,9 +4260,9 @@ def test_qwen3_tts_whole_requests_waiting_for_a_slot_fail_once_cuda_decode_is_di
 ) -> None:
     """A replay that disabled CUDA decode and retired every whole-request slot left the requests waiting for a slot unanswered."""
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
-    scheduler.idle_whole_request_slots = scheduler.idle_whole_request_slots[
-        : runner.bucket
-    ]
+    arena = scheduler.codec_arena
+    for _ in range(arena.num_slots - runner.bucket):
+        arena.acquire()
 
     def disable_and_retire(
         plans: Sequence[IncrementalDecodePlan],
@@ -4268,6 +4291,27 @@ def test_qwen3_tts_whole_requests_waiting_for_a_slot_fail_once_cuda_decode_is_di
         results[message.request_id] = message.type
     assert results == {request_id: "error" for request_id in request_ids}
     assert not scheduler.whole_requests
+
+
+def test_qwen3_tts_whole_request_fails_without_a_device_release_once_cuda_decode_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 8)], asyncio.new_event_loop()
+    )
+    scheduler.run_initial_pass()
+    scheduler.cuda_decode_failed = True
+
+    def release_on_a_failed_device(slot: int) -> None:
+        raise RuntimeError("device context failed")
+
+    monkeypatch.setattr(scheduler.codec_arena, "release", release_on_a_failed_device)
+    scheduler.run_initial_pass()
+
+    assert scheduler.outbox.get_nowait().type == "error"
+    assert not scheduler.whole_requests
+    assert len(runner.calls) == 1
 
 
 def test_qwen3_tts_whole_requests_finish_on_the_stateful_decoder_without_window_graphs(
@@ -4377,7 +4421,7 @@ def test_qwen3_tts_whole_request_aborted_between_replays_frees_its_slot(
 
     scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
     scheduler.run_initial_pass()
-    assert len(scheduler.idle_whole_request_slots) == WHOLE_REQUEST_SLOTS - 1
+    assert scheduler.codec_arena.active_slots() == 1
     scheduler.abort("whole")
 
     assert run_whole_requests(scheduler) == {}
@@ -11999,7 +12043,7 @@ def test_real_base_padded_decoder_graph_matches_padded_eager(
 @pytest.mark.benchmark
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
+def test_real_base_whole_requests_on_codec_slots_match_one_stateful_decode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkpoint = os.environ.get("QWEN3_TTS_BASE_1_7B_PATH")
@@ -12022,7 +12066,7 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
     assert scheduler.decodes_whole_requests
     assert scheduler.max_batch_wait_s == 0.0
     assert not scheduler.full_decode_graphs.graphs
-    assert sorted(scheduler.idle_whole_request_slots) == [2, 3]
+    assert scheduler.codec_arena.num_slots == 2
     generator = torch.Generator().manual_seed(42)
     lengths = {"tail": (700, 150), "padded": (0, 37), "reused": (30, 100)}
     codes = {
@@ -12057,7 +12101,7 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
     graph_stats = scheduler.codec_state_stats()["cuda_graphs"]
     assert graph_stats["tail"]["runtime"]["replays"] > 0
     assert graph_stats["window"]["runtime"]["replays"] > 0
-    assert sorted(scheduler.idle_whole_request_slots) == [2, 3]
+    assert scheduler.codec_arena.active_slots() == 0
     for name, (reference, generated) in lengths.items():
         assert results[name].type == "result"
         data = results[name].data.data

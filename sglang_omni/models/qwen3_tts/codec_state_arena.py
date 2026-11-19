@@ -71,12 +71,9 @@ class Qwen3TTSCodecStateArena:
         device: torch.device,
         dtype: torch.dtype,
         in_place_frames: int = 0,
-        reserved_slots: int = 0,
     ) -> None:
         """in_place_frames: the widest decode a fused decoder attends in place, which sizes
-        its K/V rings; 0 keeps the K/V in gathered buffers. reserved_slots: rows past
-        num_slots that acquire never hands out, for an owner that manages them itself.
-        """
+        its K/V rings; 0 keeps the K/V in gathered buffers."""
         if num_slots <= 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
         else:
@@ -86,8 +83,7 @@ class Qwen3TTSCodecStateArena:
         self.device_module = torch.get_device_module(self.device)
         self.dtype = dtype
         self._num_slots = int(num_slots)  # noqa: leading-underscore
-        self.scratch_slot = int(num_slots) + int(reserved_slots)
-        self.reserved_slots: range = range(int(num_slots), self.scratch_slot)
+        self.scratch_slot = self._num_slots  # noqa: leading-underscore
         spec = decoder.state_spec()
         if decoder.fused_transformer is not None and in_place_frames > 0:
             self.ring_frames = spec.retained_context + int(in_place_frames)
@@ -137,7 +133,7 @@ class Qwen3TTSCodecStateArena:
 
     @property
     def total_bytes(self) -> int:
-        return self._bytes_per_slot * self.scratch_slot  # noqa: leading-underscore
+        return self._bytes_per_slot * self._num_slots  # noqa: leading-underscore
 
     @property
     def exhausted_count(self) -> int:
@@ -146,16 +142,20 @@ class Qwen3TTSCodecStateArena:
     def active_slots(self) -> int:
         with self.lock:
             return (
-                self._num_slots
-                - len(self.free)
-                - sum(slot < self._num_slots for slot in self.retired)
+                self._num_slots - len(self.free) - len(self.retired)
             )  # noqa: leading-underscore
 
-    def acquire(self) -> int | None:
-        """Take a zeroed slot, or ``None`` when the arena is full."""
+    def acquire(self, *, should_count_exhaustion: bool = True) -> int | None:
+        """Take a zeroed slot, or None when the arena is full.
+
+        A caller that waits and asks again passes should_count_exhaustion=False, so only a miss that sends a stream to another path counts.
+        """
         with self.lock:
             if not self.free:
-                self._exhausted_count += 1  # noqa: leading-underscore
+                if should_count_exhaustion:
+                    self._exhausted_count += 1  # noqa: leading-underscore
+                else:
+                    pass
                 return None
             else:
                 pass
@@ -165,7 +165,12 @@ class Qwen3TTSCodecStateArena:
             self.device_module.current_stream(self.device).wait_event(released)
         else:
             pass
-        self.zero_slot(slot)
+        try:
+            self.zero_slot(slot)
+        except BaseException:
+            # note (ratish): no decode has read the slot yet, so it goes back and the next acquire zeroes it again.
+            self.release(slot)
+            raise
         return slot
 
     def release(self, slot: int) -> None:
