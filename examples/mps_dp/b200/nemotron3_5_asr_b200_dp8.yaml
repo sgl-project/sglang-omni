@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Nemotron 3.5 ASR Streaming 0.6B, 8 replicas on one 183 GB B200 under native MPS: the most audio within a p99 request latency of 0.5 s, measured with sglang-omni 8848e500 (see docs/basic_usage/mps_dp.md).
-# Run with OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4, as measured: the default pools follow the host's cores, and on a 288-core host 12 replicas served 31 requests/s against 228 for 11.
+# Run with OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4, as measured: under the runtime's default thread plan, which sets only OMP_NUM_THREADS, each replica grew to 130 to 140 threads on a 288-core host, and 12 replicas served 31 requests/s against 228 for 11.
 
 config_cls: Nemotron3_5ASRPipelineConfig
 model_path: nvidia/nemotron-3.5-asr-streaming-0.6b
