@@ -99,6 +99,7 @@ def thinker_adapter(tokenizer: Mock) -> ThinkerAdapter:
     return ThinkerAdapter(
         tokenizer,
         100,
+        random_seed=0,
         window=DEFAULT_WINDOW_SETTINGS,
         rotary_embedding=SimpleNamespace(
             head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
@@ -277,7 +278,10 @@ def test_image_audio_commit_atomically(
     request = adapter.build(IDENTITY, TimedChunk("audio", 0, 1000, 0, b""), payload)
     history = EmbeddingSpan(start=1, end=3, input_embeds=torch.ones(2, 4))
     unit = SimpleNamespace(
-        session_identity=IDENTITY, session_request=None, embedding_spans=[]
+        session_identity=IDENTITY,
+        session_request=None,
+        embedding_spans=[],
+        is_draft=False,
     )
     session = SimpleNamespace(unit=unit, embedding_spans=[history])
     native = Mock(session_id=IDENTITY.id, req_nodes={})

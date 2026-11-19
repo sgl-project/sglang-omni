@@ -30,6 +30,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     UNIT_SAMPLES,
     LogMelFilterBank,
     MiniCPMOPerceptionState,
+    PerceptionStepPlan,
     PreparedImageFeatures,
     StreamingAudioProcessor,
     audio_feature_batch,
@@ -110,6 +111,7 @@ class PerceptionHooks(BatchedSessionHooks):
         self.reference_cache_capacity = reference_cache_capacity
         self.reference_embeds_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
         self.states: dict[SessionIdentity, MiniCPMOPerceptionState] = {}
+        self.silence_unit_plan: PerceptionStepPlan | None = None
 
     def reference_embeds(self, reference_audio: bytes) -> torch.Tensor:
         """The thinker embeddings of one reference audio, encoded once per distinct reference."""
@@ -216,6 +218,10 @@ class PerceptionHooks(BatchedSessionHooks):
                 unit.payload.data = unit.state.build_step_plan(
                     audio_embeds, unit.image_embeds
                 )
+                if unit.state.audio_chunk_index == 1:
+                    unit.payload.data["silence_unit_plan"] = self.silence_unit_plan
+                else:
+                    pass
         return [append.payload for append in appends]
 
     def warm_up(self, max_batch_size: int) -> None:
@@ -247,12 +253,14 @@ class PerceptionHooks(BatchedSessionHooks):
                     state.mel_chunk(window_log_mel)
                     for state, window_log_mel in zip(states, log_mel, strict=True)
                 ]
-                for state, (_, audio_encoder_state) in zip(
+                for state, (audio_embeds, audio_encoder_state) in zip(
                     states,
                     self.audio_encoder.forward_streaming_batch(chunks),
                     strict=True,
                 ):
                     state.finish_audio(audio_encoder_state)
+                    # note (bianyutong): Every session drafts on this one unit of silence; its encoder history only moves acceptance, since the draft is verified.
+                    self.silence_unit_plan = state.build_step_plan(audio_embeds)
             # note (Junnan Li): The forward took the histories, so the same chunks now run without one.
             self.audio_encoder.forward_streaming_batch(chunks)
 

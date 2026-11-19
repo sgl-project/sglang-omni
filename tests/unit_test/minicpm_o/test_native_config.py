@@ -24,7 +24,7 @@ from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_stage_typed_kwargs,
 )
-from sglang_omni.models.minicpm_o import native_stages, stages
+from sglang_omni.models.minicpm_o import engine_builder, native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
@@ -44,6 +44,33 @@ from sglang_omni.utils.gpu_memory import GpuDeviceInfo
 
 class ConfigLoaded(Exception):
     """Stop at the configuration boundary before allocating any model or GPU."""
+
+
+@pytest.mark.parametrize(
+    ("chunked_prefill_size", "speculative_algorithm", "rejection"),
+    [(4096, "NONE", "chunked_prefill_size=-1"), (-1, "EAGLE", "speculative")],
+    ids=["chunked-prefill", "speculative-draft-worker"],
+)
+def test_duplex_thinker_rejects_chunked_prefill_before_loading_weights(
+    chunked_prefill_size: int,
+    speculative_algorithm: str,
+    rejection: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A split prefill or a speculative draft worker is refused at the configuration boundary, before any weights load."""
+    monkeypatch.setattr(
+        engine_builder,
+        "resolved_view",
+        Mock(
+            return_value=Mock(
+                chunked_prefill_size=chunked_prefill_size,
+                speculative_algorithm=speculative_algorithm,
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match=rejection):
+        MiniCPMOThinkerEngineBuilder().validate_before_infrastructure(Mock())
 
 
 @pytest.fixture

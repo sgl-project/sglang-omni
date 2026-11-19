@@ -42,6 +42,9 @@ class MiniCPMOThinkerSessionState:
     speech_detector: StatelessVAD
     drain_units_left: int = 0
     force_listen_counter: int = 0
+    noise_seed: int = 0
+    # note (bianyutong): Audio units built so far; images and controls share the chunk sequence, so the sampler noise counts units here.
+    built_unit_count: int = 0
     generated_history: list[int] = field(default_factory=list)
     reply_units: list[ReplyUnit] = field(default_factory=list)
     is_latest_reply_ended: bool = False
@@ -52,6 +55,7 @@ class MiniCPMOThinkerSessionState:
     refill_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     # note (0xtoward): Session position of each retained finished unit's <unit>; the first ends the system prompt and reference audio, which always stay.
     unit_starts: list[int] = field(default_factory=list)
+    draft_token_ids: list[int] = field(default_factory=list)
 
     def drop_units(
         self, drop_order: Iterable[int], next_unit_start: int, target_start: int
@@ -110,12 +114,18 @@ class DuplexUnitRequestData(SGLangARRequestData):
     )
     generated_unit_ids: list[int] = field(default_factory=list)
     pending_unit_token: int | None = None
+    is_draft: bool = False
     is_listen_forced: bool = False
     is_interrupted: bool = False
     hears_user: bool = False
     unit_index: int = 0
+    # note (bianyutong): The session's count of audio units up to this one, which seeds its sampler noise; unit_index follows the chunk sequence.
+    noise_unit_index: int = 0
     perception_token_ids: list[int] = field(default_factory=list)
     perception_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     is_turn_ended_at_start: bool = True
     generated_history_at_start: list[int] = field(default_factory=list)
     enforce_request_limits: bool = True
+    # note (bianyutong): Prompt ids past the unit's own; the prefill accepts the leading ones the sampler would have produced.
+    draft_token_ids: list[int] = field(default_factory=list)
+    accepted_draft_count: int = 0
