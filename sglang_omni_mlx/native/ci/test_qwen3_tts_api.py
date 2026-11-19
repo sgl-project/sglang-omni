@@ -31,7 +31,9 @@ SAMPLE_RATE = 24000
 ASR_SAMPLE_RATE = 16000
 # One audio frame is 80 ms of 16-bit samples.
 FRAME_BYTES = 1920 * 2
+STEADY_STREAM_CHUNK_FRAMES = 25
 SENTENCE = "Please remember to bring your passport and boarding pass to the airport."
+CHINESE_SENTENCE = "今天天气真好。"
 LONG_SENTENCE = " ".join([SENTENCE] * 8)
 # Minutes of speech: no Mac generates it within REQUEST_TIMEOUT_SECONDS.
 PASSAGE = " ".join([SENTENCE] * 50)
@@ -207,9 +209,8 @@ def test_qwen3_tts_wav_speaks_its_input(
         assert (reader.getnchannels(), reader.getsampwidth()) == (1, 2)
         assert reader.getframerate() == SAMPLE_RATE
         pcm = reader.readframes(reader.getnframes())
-    # A whole request keeps one frame of audio per frame whose first code is
-    # not 0, as CUDA's decode does.
-    assert 0 < len(pcm) <= frame_count * FRAME_BYTES
+    assert frame_count > 0
+    assert len(pcm) == frame_count * FRAME_BYTES
     heard = transcript_words(asr_server, pcm)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
@@ -384,8 +385,8 @@ def test_qwen3_tts_takes_null_for_its_optional_fields(
 
 @pytest.mark.parametrize(
     ("initial_codec_chunk_frames", "first_chunk_frames"),
-    # 0 starts at the steady 25-frame chunk, as on CUDA.
-    [(2, 2), (0, 25)],
+    # 0 starts at the steady chunk size, as on CUDA.
+    [(2, 2), (0, STEADY_STREAM_CHUNK_FRAMES)],
 )
 def test_qwen3_tts_first_streamed_chunk_follows_initial_codec_chunk_frames(
     qwen3_tts_server: Server, initial_codec_chunk_frames: int, first_chunk_frames: int
@@ -442,6 +443,26 @@ def test_qwen3_tts_seed_repeats_its_audio(qwen3_tts_server: Server) -> None:
     assert other[2] != first[2]
 
 
+def test_qwen3_tts_streamed_pcm_matches_whole_pcm(qwen3_tts_server: Server) -> None:
+    """A generated frame with first codec ID 0 used to shorten whole audio."""
+    body = {
+        "input": CHINESE_SENTENCE,
+        "voice": "vivian",
+        "language": "Chinese",
+        "seed": 1,
+        "response_format": "pcm",
+        # Limit both paths to the same single decoder window.
+        "max_new_tokens": STEADY_STREAM_CHUNK_FRAMES,
+        "initial_codec_chunk_frames": 0,
+    }
+    whole_status, headers, whole_pcm = speak(qwen3_tts_server, body)
+    stream_status, _, streamed_pcm = speak(qwen3_tts_server, {**body, "stream": True})
+    assert whole_status == stream_status == 200
+    assert len(whole_pcm) == len(streamed_pcm) > 0
+    assert whole_pcm == streamed_pcm
+    assert len(whole_pcm) == int(headers["X-Completion-Tokens"]) * FRAME_BYTES
+
+
 def test_qwen3_tts_speed_resamples_its_audio(qwen3_tts_server: Server) -> None:
     body = {
         "input": SENTENCE,
@@ -483,7 +504,7 @@ def test_qwen3_tts_follows_instructions_and_dialects(
         status, _, audio = speak(
             qwen3_tts_server,
             {
-                "input": "今天天气真好。",
+                "input": CHINESE_SENTENCE,
                 "response_format": "pcm",
                 "max_new_tokens": 12,
                 "seed": 11,
