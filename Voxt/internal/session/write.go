@@ -231,7 +231,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		if in.Answer {
 			a = compose.PartialAnswer(buf.String(), answerInput)
 		} else {
-			a.Content = compose.PartialClean(buf.String(), in.Text)
+			a.Content = compose.PartialClean(buf.String(), answerInput)
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
@@ -265,8 +265,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
 		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInput)}, out.Profile(), truncated, nil
 	}
-	input := in.Text
-	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), truncated, nil
+	return compose.Answer{Content: compose.Clean(resp.Text, answerInput)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,
