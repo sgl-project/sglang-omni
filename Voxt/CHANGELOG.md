@@ -8,6 +8,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 
+### Changed
+
+- **The personal dictionary no longer points to where each feature shows its whole request**: the caption under the Markdown notes is removed; the feature pages still show the request itself.
+
 ### 中文
 
 #### 新增
@@ -20,6 +24,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+
+#### 变更
+
+- **个人词典不再说明各功能在哪里显示完整请求**：Markdown 笔记下方的说明文字已删除，各功能页面仍会显示完整请求。
 
 ## [2.1.1] - 2026-11-17
 

@@ -62,7 +62,6 @@ func dictionaryNotesView(c *ui.Context, state *dictionaryNotesViewState, actions
 				input.SetTextSelection(matches[local.notesFind.cur-1][0], matches[local.notesFind.cur-1][1])
 			}
 			actions.autosaveDictionaryNotes(input.Changed(), input.Focused())
-			caption(c, i18n.T("Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives."))
 		})
 	})
 }
