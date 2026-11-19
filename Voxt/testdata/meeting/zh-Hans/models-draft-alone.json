@@ -16,7 +16,7 @@
             "default": true,
             "installed": false,
             "size_text": "需下载 2.5 GB",
-            "used_by": "用于转录 · 翻译 · 改写",
+            "used_by": "用于转录 · 翻译 · 改写 · 会议",
             "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
             "tags": [
               "本地",
@@ -417,6 +417,14 @@
               "label": "隐藏",
               "accessibility_label": "隐藏 系统听写",
               "tooltip": "不在功能页的模型菜单里列出"
+            },
+            {
+              "kind": "assign",
+              "model_id": "asr.system",
+              "model_kind": "asr",
+              "label": "应用到",
+              "accessibility_label": "将 系统听写 应用到功能",
+              "tooltip": "选择使用此模型的功能"
             }
           ]
         }
