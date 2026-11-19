@@ -72,25 +72,35 @@ func TestCloseWindowMenu(t *testing.T) {
 }
 
 // TestGoMenuLeavesOutHiddenPages: the Go menu lists a feature's page only
-// while the feature is shown, as the sidebar and ⌘K do. The settings are
-// set directly: saving them rebinds the hotkeys, which needs MyGo's main
-// loop (newMenuApp).
+// while the feature is shown, as the sidebar and ⌘K do. The settings-change
+// path rebuilds it without a restart.
 func TestGoMenuLeavesOutHiddenPages(t *testing.T) {
 	a := newMenuApp(t)
-	goMenu := func(hidden ...string) []*mygo.MenuItem {
-		a.prefs.Features.Hidden = hidden
-		a.buildMenu()
+	a.hotkeys.Installed = true // keep this test off MyGo's Carbon main loop
+	goMenu := func() []*mygo.MenuItem {
 		return findMenuItem(mygo.App.Menu().Items(), "Go").Submenu
 	}
+	a.buildMenu()
 	if findMenuItem(goMenu(), "Translate") == nil {
 		t.Fatal("Translate is shown and not in the Go menu")
 	}
-	items := goMenu(settings.HideTranslate)
+	oldPreferences := a.prefs
+	newPreferences := oldPreferences
+	newPreferences.Features.Hidden = []string{settings.HideTranslate}
+	a.settingsChanged(oldPreferences, newPreferences)
+	items := goMenu()
 	if findMenuItem(items, "Translate") != nil {
 		t.Error("the Go menu lists the hidden Translate")
 	}
 	if findMenuItem(items, "Transcribe") == nil {
 		t.Error("the Go menu lost Transcribe")
+	}
+	oldPreferences = newPreferences
+	newPreferences = oldPreferences
+	newPreferences.Features.Hidden = nil
+	a.settingsChanged(oldPreferences, newPreferences)
+	if findMenuItem(goMenu(), "Translate") == nil {
+		t.Error("the Go menu did not restore Translate")
 	}
 }
 
