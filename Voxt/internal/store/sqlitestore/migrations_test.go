@@ -4,31 +4,34 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // TestMigrationNumbering guards the numbering contract the migrator
 // enforces: the embedded files are consecutive from 1. Migrations 9 and 10
 // are the notes app name and the history reopen, shared with the notes and
-// history changes byte for byte; 11 is the dictionary profiles and 12 is
-// the Rewrite input box's typed text.
+// history changes byte for byte; 11 is the dictionary profiles, 12 is
+// the Rewrite input box's typed text and 13 indexes that text for search.
 func TestMigrationNumbering(t *testing.T) {
 	for i, m := range migrations {
 		if m.version != i+1 {
 			t.Fatalf("migration %d is missing", i+1)
 		}
 	}
-	if Version() != 12 {
-		t.Fatalf("schema version %d, want 12", Version())
+	if Version() != 13 {
+		t.Fatalf("schema version %d, want 13", Version())
 	}
 }
 
 // TestCombinedUpgrade opens a database at each schema the merged tree can
 // meet — 8 (before the notes, history and profile changes), 9 (notes app
 // name), 10 (plus history reopen), 11 (dictionary profiles) — and migrates
-// it to 12: every change's columns land and the old dictionary's terms move
-// into the active Default profile.
+// it to 13: every change's columns land and the old dictionary's terms move
+// into the active Default profile. A typed Rewrite saved at 12 joins the
+// search index.
 func TestCombinedUpgrade(t *testing.T) {
-	for _, from := range []int{8, 9, 10, 11} {
+	for _, from := range []int{8, 9, 10, 11, 12} {
 		t.Run(strconv.Itoa(from), func(t *testing.T) {
 			saved := migrations
 			t.Cleanup(func() { migrations = saved })
@@ -45,6 +48,11 @@ func TestCombinedUpgrade(t *testing.T) {
 			}
 			if _, err := s.db.Execute(ctx, insertTerm); err != nil {
 				t.Fatal(err)
+			}
+			if from == 12 {
+				if _, err := s.db.Execute(ctx, `INSERT INTO history (id, kind, created_at, typed_text) VALUES ('typed-upgrade', 'rewrite', 1, 'upgrade-only-typed')`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			s.Close()
 
@@ -84,6 +92,12 @@ func TestCombinedUpgrade(t *testing.T) {
 			}
 			if len(profiles) != 1 || profiles[0].Name != "Default" || !profiles[0].Active {
 				t.Errorf("profiles after upgrade: %+v", profiles)
+			}
+			if from == 12 {
+				entries, err := s.History().List(ctx, store.HistoryQuery{Search: "upgrade-only-typed"})
+				if err != nil || len(entries) != 1 || entries[0].ID != "typed-upgrade" {
+					t.Errorf("typed text after upgrade: entries %+v, error %v", entries, err)
+				}
 			}
 		})
 	}
