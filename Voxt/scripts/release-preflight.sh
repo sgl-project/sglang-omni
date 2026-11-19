@@ -47,6 +47,8 @@ elif ! grep -q '^### 中文$' <<<"$section"; then
   row changelog FAIL "the $version section has no \"### 中文\" part"
 elif ! sed '/^### 中文$/,$d' <<<"$section" | grep -q '^- '; then
   row changelog FAIL "the $version section has no English entry before \"### 中文\""
+elif ! sed -n '/^### 中文$/,$p' <<<"$section" | grep -q '^- '; then
+  row changelog FAIL "the $version section has no Chinese entry after \"### 中文\""
 else
   row changelog ok "English and 中文"
 fi

@@ -38,6 +38,7 @@ func TestReleasePreflight(t *testing.T) {
 		{"helper version", "Voxt/helper/Support/Info.plist", "<key>CFBundleShortVersionString</key>\n<string>9.0.0</string>\n", "version    FAIL", true},
 		{"no section", "Voxt/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n- A thing (#12)\n", "changelog  FAIL", true},
 		{"no Chinese", "Voxt/CHANGELOG.md", "## [9.1.0] - 2026-01-02\n\n- A thing (#12)\n", "changelog  FAIL", true},
+		{"empty Chinese entry", "Voxt/CHANGELOG.md", strings.Replace(good["Voxt/CHANGELOG.md"], "- 一件事（#12）\n", "", 1), "changelog  FAIL", true},
 		{"old link", "docs/get_started/voxt-tutorials/en/start.md", strings.ReplaceAll(dmg, "9.1.0", "9.0.0"), "links      FAIL", true},
 		{"unnamed pull request", "Voxt/CHANGELOG.md", strings.ReplaceAll(good["Voxt/CHANGELOG.md"], "#12", "#120"), "pulls      note  since voxt-v9.0.0, not in CHANGELOG.md: #12", false},
 	} {
