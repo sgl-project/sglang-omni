@@ -50,12 +50,20 @@ func proseTokenMention(s string, start int, token string) bool {
 	}
 	switch token {
 	case "<|im_start|>", "<|im_end|>":
-		return strings.HasPrefix(rest, " to ")
+		return strings.HasPrefix(rest, " to ") && explanatoryControlContext(s[:start])
 	case "<think>":
-		return strings.HasPrefix(rest, " before it ")
+		return strings.HasPrefix(rest, " before it ") && explanatoryControlContext(s[:start])
 	default:
 		return false
 	}
+}
+
+func explanatoryControlContext(prefix string) bool {
+	if index := strings.LastIndexAny(prefix, ".!?;,:\n，。！？；："); index >= 0 {
+		prefix = prefix[index+1:]
+	}
+	prefix = strings.ToLower(prefix)
+	return strings.Contains(prefix, "chatml") || strings.Contains(prefix, "emit")
 }
 
 func quotedControlToken(s string, start int, token string) bool {
@@ -73,6 +81,9 @@ func quotedControlToken(s string, start int, token string) bool {
 }
 
 func structuralControlToken(token, after string) bool {
+	if trailingControlToken(token) && strings.TrimSpace(after) == "" {
+		return true
+	}
 	rest := strings.TrimLeft(after, " \t\r\n")
 	switch token {
 	case "<|tool_call|>", "<|/tool_call|>", "<|tool_call_begin|>", "<|tool_call_end|>", "<|tool_calls_section_begin|>", "<|tool_calls_section_end|>":
@@ -107,6 +118,10 @@ func controlTokenStart(s string, inputs ...string) int {
 			i += offset
 			after := s[i+len(token):]
 			if proseTokenMention(s, i, token) {
+				offset = i + len(token)
+				continue
+			}
+			if preserved && trailingControlToken(token) && strings.TrimSpace(s) == token {
 				offset = i + len(token)
 				continue
 			}
