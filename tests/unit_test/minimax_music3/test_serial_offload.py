@@ -464,9 +464,10 @@ def run_sleep_with_concurrent_compute() -> None:
     torch.testing.assert_close(output.cpu(), expected.T)
 
 
-def test_scheduler_admits_only_the_owning_cfg_pair(
+def test_capacity_query_does_not_claim_or_change_ar_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Computing capacity claimed an owner before any pair entered a batch."""
     coordinator = registered_coordinator()
     monkeypatch.setattr(
         "sglang_omni.models.minimax_music3.scheduler.get_coordinator",
@@ -499,12 +500,17 @@ def test_scheduler_admits_only_the_owning_cfg_pair(
     running_batch.reqs = []
 
     with get_context().override_server_args(prefill_max_requests=None):
-        assert scheduler.pair_admission_limit(queue, running_batch) == 2
-        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
+        assert scheduler.pair_admission_limit(queue, running_batch) == 4
+        assert coordinator.owner_request_id is None
+        assert coordinator.try_acquire_ar("first")
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+        assert coordinator.owner_request_id == "first"
         coordinator.begin_dit_handoff("first")
-        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+        assert coordinator.owner_request_id == "first"
         coordinator.end_dit_handoff("first")
         assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+        assert coordinator.owner_request_id is None
 
 
 @pytest.mark.parametrize("source", ["mmap", "ram"])
