@@ -107,7 +107,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		}
 		switch action {
 		case hotkey.CardCopy: // the card's c: what its Copy does (#4127)
-			if a.answer.open && a.answer.text != "" {
+			if a.answer.open && a.answer.text != "" && !sessionCardRedoWriting(a.sessionCardProjectionInput()) {
 				a.copyAnswer()
 			}
 		case hotkey.CardInsert: // the card's r: what its Insert does

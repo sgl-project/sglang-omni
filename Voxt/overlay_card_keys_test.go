@@ -122,6 +122,21 @@ func TestAnswerCardKeysStreamingFirstDraft(t *testing.T) {
 	}
 }
 
+func TestAnswerCardCopyKeyWaitsForRedo(t *testing.T) {
+	a, fs, copied, _ := newAnswerKeyTest(t)
+	openAnswerKeyCard(a, "committed", "old answer")
+	copyID, _ := configuredCardKeys(fs)
+	a.answer.redo = "redo"
+	snap(a, session.Snapshot{ID: "redo", State: session.Composing, Card: true, Draft: "new answer"})
+	if a.cachedCard().CanCopy {
+		t.Fatal("Copy is enabled while the redo streams")
+	}
+	fireAnswerKey(a, copyID)
+	if len(*copied) != 0 {
+		t.Errorf("c copied the old answer during redo: %v", *copied)
+	}
+}
+
 func TestAnswerCardKeysOnlyWhenVisible(t *testing.T) {
 	for _, test := range []struct {
 		name   string
