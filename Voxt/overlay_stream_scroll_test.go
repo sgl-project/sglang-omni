@@ -1,10 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"image/png"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,18 +48,6 @@ func streamUnderPointer(t *testing.T, answer string) {
 		tt.SetSize(a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 		tt.Frame()
 	}
-	shots := os.Getenv("VOXTNEW_STREAM_SHOTS")
-	shot := func(i int) {
-		if shots == "" {
-			return
-		}
-		f, err := os.Create(filepath.Join(shots, fmt.Sprintf("%s-%04d.png", t.Name()[strings.LastIndex(t.Name(), "/")+1:], i)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		png.Encode(f, tt.Image())
-	}
 	frame()
 	flush()
 	tt.Move(float32(layout.Pad+layout.AnswerW/2), float32(layout.Pad+layout.CardChrome)) // the pointer rests on the card
@@ -75,10 +59,8 @@ func streamUnderPointer(t *testing.T, answer string) {
 		body := a.currentSessionOverlayLayout().Height - layout.CardChrome
 		room := body < a.cardBodyMax(&card)
 		st := a.ov.ui.cardScroll
-		shot(2 * i)
 		flush() // the view's measures come back: the card grows
 		frame()
-		shot(2*i + 1)
 		if !room {
 			continue
 		}
