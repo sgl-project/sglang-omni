@@ -29,11 +29,12 @@ def estimate_it2i_prefix_memory_bytes(
         + 9 * attention.q_proj.out_features // 2
         + 3 * attention.k_proj.out_features // 2
     ) * element_bytes
-    cache_bytes_per_token = sum(
+    layer_cache_bytes_per_token = [
         (layer.self_attn.k_proj.out_features + layer.self_attn.v_proj.out_features)
         * element_bytes
         for layer in model.language_model.model.layers
-    )
+    ]
+    cache_bytes_per_token = sum(layer_cache_bytes_per_token)
     image_patch_size_pixels = model.patch_size * int(1 / model.downsample_ratio)
     reference_pixels = sum(
         width_pixels * height_pixels
@@ -69,9 +70,16 @@ def estimate_it2i_prefix_memory_bytes(
     output_columns = output_size_pixels[0] // image_patch_size_pixels
     output_tokens = output_rows * output_columns
     # note (Wes): Expanded flash caches coexist with the original prefix caches.
-    expanded_cache_bytes = prefix_cache_bytes + (
-        len(token_lengths) * output_tokens * cache_bytes_per_token
-    )
+    expanded_cache_bytes = 0
+    for token_count in token_lengths:
+        expanded_cache_bytes += (token_count + output_tokens) * cache_bytes_per_token
+        # note (Richard Wang): Expansion holds contiguous copies of one layer's prefix keys and values.
+        peak_prefix_bytes = max(
+            peak_prefix_bytes,
+            prefix_cache_bytes
+            + expanded_cache_bytes
+            + token_count * max(layer_cache_bytes_per_token),
+        )
     # note (Richard Wang): Each prefix keeps its output position indexes and cache length until denoising ends.
     prefix_index_bytes = (
         model._build_t2i_image_indexes(
@@ -82,7 +90,4 @@ def estimate_it2i_prefix_memory_bytes(
         ).nbytes
         + torch.int64.itemsize
     )
-    return (
-        max(peak_prefix_bytes, prefix_cache_bytes + expanded_cache_bytes)
-        + len(token_lengths) * prefix_index_bytes
-    )
+    return peak_prefix_bytes + len(token_lengths) * prefix_index_bytes

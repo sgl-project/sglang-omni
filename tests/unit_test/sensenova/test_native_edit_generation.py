@@ -394,9 +394,13 @@ def test_prefix_estimate_covers_allocated_caches(
             layer.flash_v_cache,
         )
     )
+    # note (Richard Wang): Expansion holds contiguous copies of one layer's prefix keys and values.
+    copied_layer = caches[-1].layers[0]
     assert estimate_it2i_prefix_memory_bytes(
         model, [64, 64, 64], (2048, 2048), [(32, 32)]
-    ) >= allocated_cache_bytes + sum(tensor.nbytes for tensor in position_tensors)
+    ) >= allocated_cache_bytes + copied_layer.keys.nbytes + copied_layer.values.nbytes + sum(
+        tensor.nbytes for tensor in position_tensors
+    )
 
 
 def test_prefix_attention_is_budgeted_sequentially(
