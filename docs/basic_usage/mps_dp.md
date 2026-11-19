@@ -190,6 +190,27 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 
 The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
+## Measured replica counts on an RTX 4090 D
+
+`examples/mps_dp/rtx4090d/` holds one config per model, measured on one 24 GB NVIDIA GeForce RTX 4090 D. Each config runs its replicas as one pipeline under native MPS:
+
+```bash
+sgl-omni serve --config examples/mps_dp/rtx4090d/qwen3_asr_1_7b_rtx4090d_dp2.yaml --mps on
+```
+
+For each latency target, the table gives the replica count that delivered the most audio within it; the config for N replicas is `<config name>_rtx4090d_dp<N>.yaml`. Goodput is audio seconds per second of transcribed input audio, and the latency is the p99 request latency from arrival. The last column is one replica on the same GPU.
+
+| Model | Config name | Replicas at 0.5 / 1 / 3 s | Goodput at 0.5 / 1 / 3 s | One replica at 0.5 / 1 / 3 s |
+|---|---|---:|---:|---:|
+| Qwen3-ASR 1.7B | `qwen3_asr_1_7b` | 2 / 2 / 2 | 968 / 968 / 968 | 587 / 587 / 587 |
+| MOSS-Transcribe-Diarize | `moss_td` | 3 / 3 / 3 | 721 / 721 / 721 | 439 / 439 / 439 |
+
+Every count from 1 to the most that fit on the GPU (2 for Qwen3-ASR, 3 for MOSS-Transcribe-Diarize) was served at eight open-loop Poisson arrival rates, 1,024 requests per rate, once for each of three arrival seeds. The requests are the reference clips of the SeedTTS evaluation set. Each replica admits up to 16 running requests. A rate counts when at most 1% of its requests fail and the backlog does not grow: the median latency of the last quarter of requests is at most 1.15 times that of the second quarter. A count's goodput is the most audio among its counted rates whose p99 latency meets the target. The table gives the count with the most goodput averaged over the three seeds, ties going to fewer replicas; on every seed that count is within 90% of the seed's best count. On this GPU every counted rate stayed under 0.5 s at p99, so the three targets pick the same count.
+
+Qwen3-ASR runs its default DFlash draft, which adds a second KV pool to each replica; with it a replica uses about 9.5 GB, so three replicas do not fit. For MOSS-Transcribe-Diarize, 2 replicas average 688 audio s/s, 5% below 3 replicas, but fall to 83% of the best count on one seed. CosyVoice3 has not been measured on this GPU yet.
+
+The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.58.03. The host's other seven GPUs ran other measurements at the same time, other tenants' containers shared its CPUs, and replicas were not pinned to cores. Re-measure before applying a count to another version, GPU or workload.
+
 
 ## Shared weights across replicas (opt-in, default off)
 
