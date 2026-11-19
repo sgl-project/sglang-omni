@@ -647,10 +647,10 @@ func TestSpeakerAccuracy(t *testing.T) {
 }
 
 // mtdEnglishCeiling is the most error the English clips may have as a
-// group before the eval fails. The last good runtime on the Mac Studio
-// measured 14.0% on them, the runtime with #4211's fix 18.6% (voxt-sync
-// studio/mtd-bisect.md); #4188 measured 69.8% and #4189 123.3% while the
-// eval, which had no limit, still passed.
+// group before the eval fails. The last good runtime measured 14.0% on
+// them, the one with #4211's fix 18.6% (voxt-sync studio/mtd-bisect.md);
+// #4188 measured 69.8% and #4189 123.3% while the eval, which had no
+// limit, still passed.
 const mtdEnglishCeiling = 0.25
 
 // mtdFloor fails a config that answers in the wrong language or whose
