@@ -7,42 +7,34 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 - **Long dictations are cleaned up while you speak**: once a recording passes a minute, the speech model finishes stretch after stretch while you keep talking, and Voxt can send each finished stretch to the language model right away. When you stop, only the remaining text is left, so the cleaned text arrives sooner. Voxt waits until Stop instead when the short-input thinking threshold has not been reached, or glossary prompting is on and your dictionary has more than 30 enabled terms. The original recognised text stays in History.
 
 ### Changed
 
+- **Settings → Privacy and the README explain local and API data paths** (#4159): they list the text and optional images a language-model request can contain, distinguish requests that stay on this Mac from those sent to an external provider, and cover Translate's fallback. The README gives the same local-versus-API breakdown for speech recognition.
 - **The personal dictionary no longer points to where each feature shows its whole request**: the caption under the Markdown notes is removed; the feature pages still show the request itself.
+
+### Fixed
+
+- **Paused toasts no longer wake Voxt while it is in the background**: a toast's fade-out now starts only after its paused display lifetime resumes and ends. Plain toasts and toasts with an action stay visible in the background and expire after you return.
 
 ### 中文
 
 #### 新增
 
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
-- **长口述边录边整理**：录音超过一分钟后，语音识别模型每整理好一段语音，Voxt 可以立即把这一段发给语言模型整理；你停下时只剩剩余文字需要整理，整理好的文字到得更快。还没到“短输入不思考”的门槛，或语言模型使用术语表且启用词条超过 30 条时，Voxt 会等到停止后再整理全文。识别原文照常保留在历史里。
-- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
-
-### Fixed
-
-- **Paused toasts no longer wake Voxt while it is in the background**: a toast's fade-out now starts only after its paused display lifetime resumes and ends. Plain toasts and toasts with an action stay visible in the background and expire after you return.
-### Changed
-
-- **Settings → Privacy and the README explain local and API data paths** (#4159): they list the text and optional images a language-model request can contain, distinguish requests that stay on this Mac from those sent to an external provider, and cover Translate's fallback. The README gives the same local-versus-API breakdown for speech recognition.
-
-### 中文
-
-#### 新增
-
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+- **长口述边录边整理**：录音超过一分钟后，语音识别模型每整理好一段语音，Voxt 可以立即把这一段发给语言模型整理；你停下时只剩剩余文字需要整理，整理好的文字到得更快。还没到“短输入不思考”的门槛，或语言模型使用术语表且启用词条超过 30 条时，Voxt 会等到停止后再整理全文。识别原文照常保留在历史里。
+
+#### 变更
+
+- **“设置 → 隐私”和 README 说明本机与 API 两条数据路径**（#4159）：列出语言模型请求可能包含的文字和可选图片，区分留在本机的请求和发给外部服务商的请求，并说明翻译使用备用模型时的数据去向。README 也分别说明了语音识别在本机和通过 API 运行时的数据路径。
+- **个人词典不再说明各功能在哪里显示完整请求**：Markdown 笔记下方的说明文字已删除，各功能页面仍会显示完整请求。
 
 #### 修复
 
 - **暂停的提示不再让后台的 Voxt 反复唤醒**：提示只会在暂停的显示计时恢复并结束后淡出。普通提示和带按钮的提示在后台保留，回到前台后继续计时并消失。
-#### 变更
-
-- **“设置 → 隐私”和 README 说明本机与 API 两条数据路径**（#4159）：列出语言模型请求可能包含的文字和可选图片，区分留在本机的请求和发给外部服务商的请求，并说明翻译使用备用模型时的数据去向。README 也分别说明了语音识别在本机和通过 API 运行时的数据路径。
-#### 变更
-
-- **个人词典不再说明各功能在哪里显示完整请求**：Markdown 笔记下方的说明文字已删除，各功能页面仍会显示完整请求。
 
 ## [2.1.1] - 2026-11-17
 
