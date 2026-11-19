@@ -331,7 +331,6 @@ func (a *app) boxAttach(jpeg []byte) {
 	bmp, _ := decodeBoxBitmap(jpeg)
 	a.box.images = append(a.box.images, jpeg)
 	a.box.thumbs = append(a.box.thumbs, bmp)
-	a.box.limit = false
 	a.boxSync()
 }
 
@@ -354,7 +353,7 @@ func (a *app) boxPaste(svc uiServices) bool {
 	formats := svc.ClipboardFormats()
 	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
 	switch {
-	case has(transfer.Text) || has(transfer.HTML):
+	case has(transfer.Text):
 		return false
 	case (has(transfer.PNG) || has(transfer.FileList)) && len(a.box.images)+a.boxPending >= boxMaxImages:
 		a.box.limit = true
@@ -446,7 +445,8 @@ func (a *app) boxDrop(files []string) {
 // without the turn the box and the request would follow the finish
 // order, not the drop order. A send that waited for it goes now.
 func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
-	a.boxPending--
+	// An out-of-order landing stays pending until its turn, so later drops
+	// cannot use its slot before it reaches the box.
 	var conversionErr error
 	if gen == a.boxGen && errText != "" {
 		conversionErr = errors.New(errText)
@@ -461,6 +461,7 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 			break
 		}
 		delete(a.boxHeld, a.boxNext)
+		a.boxPending--
 		a.boxNext++
 		if land.gen != a.boxGen {
 			continue

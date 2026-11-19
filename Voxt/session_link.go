@@ -59,7 +59,8 @@ type sessionState struct {
 	boxShare boxShare
 	// boxGen numbers the box's lives: a picture conversion posted for an
 	// older life is dropped. boxPending counts the conversions not yet
-	// posted; boxSendQueued: Enter came while one converted.
+	// landed in order, including held ones; boxSendQueued: Enter came
+	// while one converted.
 	boxGen, boxPending int
 	boxSendQueued      bool
 	// boxSeq numbers the picture conversions in drop (or paste) order;

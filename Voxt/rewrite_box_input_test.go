@@ -43,6 +43,35 @@ func TestRewriteBoxWindowAcceptsFileDrops(t *testing.T) {
 	}
 }
 
+func TestRewriteBoxHeldImageKeepsItsCapacity(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	gen := a.boxGen
+	first := a.boxReserve()
+	second := a.boxReserve()
+	a.boxConverted(gen, second, boxJPEG(t), "")
+
+	dir := t.TempDir()
+	var files []string
+	for _, name := range []string{"first.png", "second.png"} {
+		name = filepath.Join(dir, name)
+		if err := os.WriteFile(name, boxPNG(t), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, name)
+	}
+	files = append(files, filepath.Join(dir, "unreadable-excess.png"))
+	reserved := a.boxSeq
+	a.boxDrop(files)
+	if got := a.boxSeq - reserved; got != 2 {
+		t.Fatalf("reserved %d more images while one was held, want 2", got)
+	}
+	a.boxConverted(gen, first, boxJPEG(t), "")
+	if len(a.box.images) != boxMaxImages || a.box.err != "" || !a.box.limit {
+		t.Fatalf("images %d, error %q, limit %v", len(a.box.images), a.box.err, a.box.limit)
+	}
+}
+
 func TestRewriteBoxDropRejectsExcessBeforeConversion(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, images: [][]byte{boxJPEG(t), boxJPEG(t), boxJPEG(t)}}
@@ -72,6 +101,22 @@ func TestRewriteBoxPasteRejectsExcessBeforeConversion(t *testing.T) {
 	frames(tt)
 	if !a.box.limit || a.box.err != "" || a.boxPending != 0 {
 		t.Fatalf("the excess image was converted: limit %v, error %q, pending %d", a.box.limit, a.box.err, a.boxPending)
+	}
+}
+
+func TestRewriteBoxHTMLAndPNGClipboardPastesImage(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.SetClipboardData(transfer.New(transfer.NewItem(
+		transfer.Bytes(transfer.HTML, []byte("<img src=\"picture.png\">")),
+		transfer.Bytes(transfer.PNG, boxPNG(t)),
+	)))
+	tt.Command("paste")
+	frames(tt)
+	if len(a.box.images) != 1 {
+		t.Fatalf("%d images after an HTML+PNG paste, want 1", len(a.box.images))
 	}
 }
 
