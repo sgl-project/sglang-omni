@@ -68,11 +68,11 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_APP` | The app whose Omni runtime `scripts/mac-latency.sh` uses. | `/Applications/Voxt.app` |
 | `VOXTNEW_COEXIST_OK` | `1` lets `scripts/mac-hotkey-coexist.sh` post key events on the Mac. | Unset: the script stops |
 | `VOXTNEW_DEMO_DIR` | Starts the app as the fixture demo with the fixtures in this directory (needs `-tags=meetingdemo`). | Unset: the normal app |
-| `VOXTNEW_DEMO_SHOTS` | Directory where `TestMeetingDemoScreenshots` writes every fixture as PNG. | Unset: the test skips |
+| `VOXTNEW_DEMO_SHOTS` | Directory where `TestMeetingDemoScreenshots` writes every fixture as PNG. | Unset: assertions run without writing PNGs |
 | `VOXTNEW_DSP_OUT` | Directory where `TestCompareVariants` in `internal/dsp` writes each variant as WAV. | Unset: log only |
 | `VOXTNEW_E2E_ICONS` | Directory where the Mac end-to-end test saves the app icons that the real helper returns. | Unset: icons are not saved |
 | `VOXTNEW_EVAL` | `1` runs the eval on the real models (`TestEvalASR`, [eval.md](eval.md)). | Unset: the eval skips |
-| `VOXTNEW_EVAL_ASR` | Comma-separated speech model ids for the dictionary and long-audio evals. | `asr.accurate` |
+| `VOXTNEW_EVAL_ASR` | Comma-separated speech model ids for the dictionary and long-audio evals. | Dictionary eval: `asr.accurate` and `asr.fast`; long-audio eval: `asr.accurate` |
 | `VOXTNEW_EVAL_ONLY` | Comma-separated clip ids: the eval runs only these clips. | Unset: all clips |
 | `VOXTNEW_EVAL_OUT` | Directory where the eval writes its reports. | Unset: no files |
 | `VOXTNEW_EVAL_PIECES` | Comma-separated ways that the long-audio eval cuts audio into pieces. | `model` |
@@ -100,7 +100,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_MAC_MIC_CAPTURE` | `1` lets the Mac end-to-end test record from the real microphone. | Unset: the test skips |
 | `VOXTNEW_MAC_OUTPUT` | UID of an output device that the output device test can switch to. | Unset: the test skips |
 | `VOXTNEW_MAC_OUTPUT_DEFAULT` | `1` lets the output device test change the default output device. | Unset: not allowed |
-| `VOXTNEW_MIN_FREE` | `scripts/mac-beta-e2e.sh` stops when less than this percentage of memory is free. | `40` |
+| `VOXTNEW_MIN_FREE` | `scripts/mac-beta-e2e.sh` and `scripts/mac-regress.sh` stop when less than this percentage of memory is free. | `40` in `mac-beta-e2e.sh`, `30` in `mac-regress.sh` |
 | `VOXTNEW_MODELS_REAL` | `1` runs the `internal/models` tests that use the real Hugging Face Hub. | Unset: the tests skip |
 | `VOXTNEW_MOVE_AS` | App id that claims the models that `TestRealMoveToHub` moves. | Unset: the VoxtNew id |
 | `VOXTNEW_MOVE_FROM` | Old model directory that `TestRealMoveToHub` moves into the model library. | Unset: the test skips |
