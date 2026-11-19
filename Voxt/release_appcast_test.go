@@ -250,6 +250,7 @@ func TestNightlyArtifactLookupUsesPackageResult(t *testing.T) {
 	}
 	doc := string(data)
 	for _, want := range []string{
+		"--branch main",
 		"--status completed",
 		`select(.name == "nightly / Voxt release package" and .conclusion == "success")`,
 	} {

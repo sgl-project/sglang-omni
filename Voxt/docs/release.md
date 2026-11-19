@@ -66,7 +66,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天（app 的 ZIP 只有 tag 的 Release 才有）。漏洞扫描失败不会阻止打包，所以一次运行的整体结果可能是失败，但 dmg 已经生成。先列出已完成的运行，再确认 `nightly / Voxt release package` 成功：
 
 ```bash
-gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --status completed --limit 10
+gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --branch main --status completed --limit 10
 gh run view RUN_ID --repo sgl-project/sglang-omni --json jobs --jq '.jobs[] | select(.name == "nightly / Voxt release package" and .conclusion == "success")'
 gh run download RUN_ID --repo sgl-project/sglang-omni
 ```
