@@ -25,7 +25,7 @@ func newBoxTextSegment(text, source string, pasted bool) boxTextSegment {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	lines := 0
 	if text != "" {
-		lines = strings.Count(text, "\n") + 1
+		lines = strings.Count(strings.TrimSuffix(text, "\n"), "\n") + 1
 	}
 	return boxTextSegment{Text: text, Source: source, Pasted: pasted, Chars: utf8.RuneCountInString(text), Lines: lines}
 }

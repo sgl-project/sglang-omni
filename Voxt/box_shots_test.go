@@ -77,6 +77,13 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			a.box.ui.expandedText = map[string]bool{"segment-0": true}
 			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
 		}},
+		{"box-two-pastes-selection", func() {
+			a.box.session = "shot-box"
+			a.boxPasteText("first line\nsecond line\nthird line\nfourth line")
+			a.boxPasteText("fifth line\nsixth line\nseventh line\neighth line")
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording,
+				Selection: "selected first\nselected second\nselected third\nselected fourth", Partial: "make it more formal"})
+		}},
 		{"box-image-caption", func() {
 			a.box.session = "shot-box"
 			a.boxAttach(boxJPEGOf(t, 32, 20), "clipboard")
@@ -97,6 +104,8 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			for range 3 {
 				a.boxAddFileText("first\nsecond\nthird\nfourth", "notes.txt")
 			}
+			a.box.limit = true
+			a.box.err = "This file is too large: huge.pdf"
 			a.box.ui.addOpen = true
 		}},
 		{"box-limit-error", func() {

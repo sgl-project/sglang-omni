@@ -456,6 +456,7 @@
   "Text or PDF": "文字或 PDF",
   "Could not choose files: %v": "无法选择文件：%v",
   "This file could not be read: %s": "无法读取文件：%s",
+  "This file is too large: %s": "文件过大：%s",
   "This file type is not supported: %s": "不支持这种文件类型：%s",
   "This file has no text: %s": "文件中没有文字：%s",
   "Skipped %d PDF page beyond the 4-image limit": "超过 4 张图片的上限，已跳过 %d 个 PDF 页面",

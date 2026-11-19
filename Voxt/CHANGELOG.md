@@ -13,9 +13,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first.
+- **Rewrite keeps crowded warnings visible and bounds file reads**: image-limit and error messages stay outside scrolling previews. Text, Markdown, and PDF files over 32 MB are rejected before reading or extraction, and one trailing newline no longer counts as an extra pasted line.
+- **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first. An image that finishes early still reserves its slot until it lands, so later drops cannot use that slot to exceed the limit.
 - **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
-- **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut or a hold release waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and History details and the typed history export now read that stored value. Full model close markers no longer leak into answers.
+- **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut, a hold release, the recording length limit or the end word waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and History details and the typed history export now read that stored value. History search also finds words that appear only in the typed text. Full model close markers no longer leak into answers.
+- **Rewrite accepts pasted and dropped images**: ⌘V and dragging an image onto the input box attach it instead of doing nothing, including native drops offered only as file URLs or with AppKit's generic drag operation. A clipboard with HTML and PNG but no plain text pastes the image. If the clipboard image cannot be read, the box says so instead of failing silently. Images over the four-image limit are refused before conversion.
+- **Rewrite keeps the text editor and image-limit message visible with several previews**: earlier pasted blocks and images scroll while the trailing editor and image-limit message stay in view. Immediate consecutive pastes keep their order and caret.
+- **Rewrite previews stay removable and accurate**: selections of three lines or fewer have a remove button too. A window screenshot captured after recording stays in the box for removal or confirmation before the request. Redo drops an automatic image that was not resent, and reopening a card restores its text input chips.
 
 ### 中文
 
@@ -35,7 +39,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **改写保留补充输入的文字，并等待图片转换**：按快捷键或松开按住停止输入框时，和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文，历史详情和 typed 导出也读取这份保存的内容；完整的模型结束标记也不再漏进回答。
+- **改写拥挤时仍显示提示，并限制文件读取量**：图片数量和错误提示固定在滚动预览之外；TXT/Markdown/PDF 文件超过 32 MB 时先报错，不读取或提取；末尾一个规范化换行不再多算一行粘贴文字。
+- **改写分批拖入图片时保持顺序**：先拖入的大图不会再排到后拖入的小图后面，输入框和发给语言模型的请求都按拖入顺序排列。提前完成转换但还在等待按序入箱的图片继续占用位置，后续拖入不会因此超过 4 张上限。
+- **改写保留补充输入的文字，并等待图片转换**：按快捷键、松开按住、达到录音时长上限或听到结束词而停止输入框时，都和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文，历史详情和 typed 导出也读取这份保存的内容，历史搜索也能找到只出现在补充输入里的文字；完整的模型结束标记也不再漏进回答。
+- **改写可以粘贴和拖入图片**：按 ⌘V 或把图片拖到输入框会添加图片，不再没有反应，包括只提供文件网址或仅声明通用操作的原生拖放。剪贴板只有 HTML 和 PNG、没有纯文本时也会粘贴 PNG。剪贴板图片读取失败时，输入框会显示错误，不再静默失败。超过 4 张的图片会在转换前拒绝。
+- **多个预览块不再遮住改写输入框和图片数量提示**：较早的粘贴块和图片可以滚动，末尾的文字输入框和图片数量提示保持可见；连续快速粘贴仍保持顺序和光标位置。
+- **改写预览可以移除，并与实际发送一致**：三行以内的选中文本也有删除按钮。空框结束录音后截取的窗口图片先留在输入框里，移除或再次确认后才发送请求。重做时没有重发的自动图片会从标签里去掉，从历史重新打开卡片会恢复文字标签。
 
 ## [2.1.1] - 2026-11-17
 

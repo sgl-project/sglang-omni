@@ -354,17 +354,58 @@ func TestBoxChooseTextFileKeepsExistingTextOrder(t *testing.T) {
 
 func TestRewriteBoxAddStaysReachableAfterFileBlocks(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	a.box = rewriteBox{open: true, shown: true}
+	a.box = rewriteBox{open: true, shown: true, limit: true, err: "This file is too large: huge.pdf"}
 	for range 3 {
 		a.boxAddFileText("first\nsecond\nthird\nfourth", "notes.txt")
 	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
+	for _, text := range []string{"At most 4 images", a.box.err} {
+		bounds, ok := tt.Find(text)
+		if !ok || bounds.Y < 0 || bounds.Y+bounds.H > boxWinH {
+			t.Fatalf("%q is clipped: bounds %+v, present %v", text, bounds, ok)
+		}
+	}
 	if err := tt.ClickControl("Add"); err != nil {
 		t.Fatalf("Add is not reachable after three file blocks: %v (controls %q)", err, tt.AccessLabels())
 	}
 	frames(tt)
 	if !a.box.ui.addOpen {
 		t.Fatal("Add did not open after three file blocks")
+	}
+}
+
+func TestBoxReadInputFileRejectsOversizeBeforeReading(t *testing.T) {
+	for _, extension := range []string{".txt", ".pdf"} {
+		t.Run(extension, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true}
+			drain := queuePosts(a)
+			path := filepath.Join(t.TempDir(), "huge"+extension)
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, boxMaxInputFileBytes+1); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			old := boxReadPDF
+			boxReadPDF = func(string, int) (string, [][]byte, int, error) {
+				called = true
+				return "", nil, 0, nil
+			}
+			t.Cleanup(func() { boxReadPDF = old })
+			a.boxReadInputFile(path)
+			waitFor(t, drain, func() bool { return a.boxPending == 0 && a.box.err != "" })
+			if called {
+				t.Fatal("an oversize file reached PDF extraction")
+			}
+			if want := "This file is too large: huge" + extension; a.box.err != want {
+				t.Fatalf("error %q, want %q", a.box.err, want)
+			}
+			if len(a.box.images) != 0 || len(a.box.textSegments) != 0 {
+				t.Fatalf("oversize input landed: images %d, segments %d", len(a.box.images), len(a.box.textSegments))
+			}
+		})
 	}
 }

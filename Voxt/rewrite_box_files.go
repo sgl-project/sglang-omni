@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,8 @@ import (
 
 var boxDialogOpen = mygo.Dialog.Open
 var boxReadPDF = macx.ReadPDF
+
+const boxMaxInputFileBytes int64 = 32 << 20
 
 // boxLanding is one converted input waiting for its turn in boxHeld.
 type boxLanding struct {
@@ -126,36 +129,44 @@ func (a *app) boxReadInputFile(path string) {
 	source := filepath.Base(path)
 	a.async(func() {
 		landing := boxLanding{source: source}
-		extension := strings.ToLower(filepath.Ext(path))
-		switch extension {
-		case ".txt", ".md":
-			data, err := os.ReadFile(path)
-			if err != nil || !utf8.Valid(data) {
-				landing.errText = i18n.T("This file could not be read: %s", source)
-			} else {
-				landing.text = string(data)
-			}
-		case ".pdf":
-			text, pages, totalPages, err := boxReadPDF(path, boxMaxImages)
-			if err != nil {
-				landing.errText = i18n.T("This file could not be read: %s", source)
-				break
-			}
-			landing.text = strings.TrimSpace(strings.ReplaceAll(text, "\f", "\n"))
-			if landing.text == "" {
-				landing.totalPages = totalPages
-				for _, page := range pages {
-					jpeg, err := imgconv.JPEG(page)
-					if err != nil {
-						landing.errText = i18n.T("This file could not be read: %s", source)
-						landing.jpegs = nil
-						break
-					}
-					landing.jpegs = append(landing.jpegs, jpeg)
-				}
-			}
+		info, err := os.Stat(path)
+		switch {
+		case err != nil:
+			landing.errText = i18n.T("This file could not be read: %s", source)
+		case info.Size() > boxMaxInputFileBytes:
+			landing.errText = i18n.T("This file is too large: %s", source)
 		default:
-			landing.errText = i18n.T("This file type is not supported: %s", source)
+			extension := strings.ToLower(filepath.Ext(path))
+			switch extension {
+			case ".txt", ".md":
+				data, err := os.ReadFile(path)
+				if err != nil || !utf8.Valid(data) {
+					landing.errText = i18n.T("This file could not be read: %s", source)
+				} else {
+					landing.text = string(data)
+				}
+			case ".pdf":
+				text, pages, totalPages, err := boxReadPDF(path, boxMaxImages)
+				if err != nil {
+					landing.errText = i18n.T("This file could not be read: %s", source)
+					break
+				}
+				landing.text = strings.TrimSpace(strings.ReplaceAll(text, "\f", "\n"))
+				if landing.text == "" {
+					landing.totalPages = totalPages
+					for _, page := range pages {
+						jpeg, err := imgconv.JPEG(page)
+						if err != nil {
+							landing.errText = i18n.T("This file could not be read: %s", source)
+							landing.jpegs = nil
+							break
+						}
+						landing.jpegs = append(landing.jpegs, jpeg)
+					}
+				}
+			default:
+				landing.errText = i18n.T("This file type is not supported: %s", source)
+			}
 		}
 		if landing.errText == "" && strings.TrimSpace(landing.text) == "" && landing.totalPages == 0 {
 			landing.errText = i18n.T("This file has no text: %s", source)
@@ -189,7 +200,10 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...
 // boxConvertedLanding applies a converted input only in its own box life
 // and reservation order. A send queued behind it runs after it lands.
 func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
-	a.boxPending--
+	var conversionErr error
+	if gen == a.boxGen && landing.errText != "" {
+		conversionErr = errors.New(landing.errText)
+	}
 	landing.gen = gen
 	if a.boxHeld == nil {
 		a.boxHeld = map[int]boxLanding{}
@@ -201,6 +215,7 @@ func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
 			break
 		}
 		delete(a.boxHeld, a.boxNext)
+		a.boxPending--
 		a.boxNext++
 		if land.gen != a.boxGen {
 			continue
@@ -227,6 +242,8 @@ func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
 		}
 		a.boxSync()
 	}
+	// Wake the session only after boxSync has stored every landed input.
+	a.boxShare.done(conversionErr)
 	if a.boxPending == 0 && a.boxSendQueued {
 		a.boxSendQueued = false
 		a.boxSend()

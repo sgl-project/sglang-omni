@@ -254,7 +254,9 @@ func TestBoxInput(t *testing.T) {
 		s.Privacy.SendWindow, s.Privacy.SendClipboardImage = true, true
 		c.Window = func(context.Context, int) ([]byte, error) { shots++; return shot, nil }
 		c.ClipboardImage = func(context.Context) ([]byte, error) { return nil, nil }
-		c.BoxInput = func() (string, [][]byte) { return "and cc the team", [][]byte{box1, box2} }
+		c.BoxInput = func(context.Context) (string, [][]byte, error) {
+			return "and cc the team", [][]byte{box1, box2}, nil
+		}
 	})
 	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
 	if err != nil {
@@ -327,7 +329,7 @@ func TestBoxInputTypedOnly(t *testing.T) {
 			}
 			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
 				c.Select = &fakeSelector{}
-				c.BoxInput = func() (string, [][]byte) { return tc.typed, nil }
+				c.BoxInput = func(context.Context) (string, [][]byte, error) { return tc.typed, nil, nil }
 			})
 			id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
 			if err != nil {

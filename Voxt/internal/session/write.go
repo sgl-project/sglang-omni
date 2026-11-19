@@ -77,7 +77,18 @@ func (r *run) write(raw, selection string) {
 		// leaves to today's rule — the window's is shot only now, so
 		// that one that will not be sent is never taken.
 		if r.req.Box && cfg.BoxInput != nil {
-			typed, images := cfg.BoxInput()
+			typed, images, err := cfg.BoxInput(r.ctx)
+			if err != nil {
+				if r.ctx.Err() != nil {
+					r.endCancelled(nil)
+					return
+				}
+				// The box keeps this error and the recognised instruction
+				// for the user's confirmation before another send.
+				r.m.update(r, func(s *Snapshot) { s.Spoken, s.Selection = raw, selection })
+				r.endWriteFailed(ProblemOf(err), false)
+				return
+			}
 			// "": the box is closed or holds no text — a retry from the
 			// card keeps the typed text it carries.
 			if typed != "" {
@@ -105,6 +116,24 @@ func (r *run) write(raw, selection string) {
 		}
 		if !automaticImageSuppressed {
 			r.shootWindow()
+			if r.req.Box && r.shot != nil && r.svc.LLM != nil && cfg.BoxReview != nil {
+				if jpeg := r.shot(); jpeg != nil {
+					r.previewImage("window", jpeg)
+					if err := cfg.BoxReview(r.ctx); err != nil {
+						r.endCancelled(nil)
+						return
+					}
+					if cfg.BoxAutoSuppressed != nil {
+						selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
+						if selectionSuppressed {
+							selection = ""
+						}
+						if imageSuppressed {
+							r.clip, r.shot = nil, nil
+						}
+					}
+				}
+			}
 		}
 	}
 	if r.svc.LLM == nil {

@@ -1,6 +1,6 @@
 # VoxtNew's patches to MyGo (Auralink's)
 
-0001 and 0002 are AudioSmith's patches (AudioSmith @f171c86), carried over unchanged: Auralink shares its UI kit and hits the same MyGo issues; their examples are AudioSmith's, where they were found. 0003 to 0007 are Auralink's own (VoxtNew started as Auralink, NOTICE); 0008 to 0017 are VoxtNew's.
+0001 and 0002 are AudioSmith's patches (AudioSmith @f171c86), carried over unchanged: Auralink shares its UI kit and hits the same MyGo issues; their examples are AudioSmith's, where they were found. 0003 to 0007 are Auralink's own (VoxtNew started as Auralink, NOTICE); 0008 to 0019 are VoxtNew's.
 
 VoxtNew builds against `third_party/mygo` (the `replace` in `go.mod`): MyGo at the version `go.mod` requires, with these patches, made by `scripts/vendor-mygo.sh` from the module cache. The copy leaves out MyGo's website, docs, examples, CI, tests and test data; `scripts/vendor-mygo.sh --check` tells whether it is exactly what the script makes. Never edit `third_party/mygo` by hand: change a patch and run the script. A patch's hunks in the parts the copy leaves out (its `docs/`) are skipped there and kept in the patch for upstream.
 
@@ -27,5 +27,7 @@ Keep each patch small and send it upstream (egoist/mygo); drop it when a release
 | `0015-deterministic-atlas-repack.patch` | `Atlas.Repack` sorted equal-sized rectangles by their randomized map iteration order, so repacking could move glyphs and change antialiasing at atlas-coordinate precision boundaries. Original Y then X position now breaks equal-height and equal-width ties (`TestRepackOrdersEqualSizedRectanglesByPosition`, including a repeated repack and pixel preservation). |
 | `0016-opaque-color-picker.patch` | Exposes the continuous color picker without opacity and presets, and reads a color in OKLCH so Voxt can derive light and dark palettes. |
 | `0017-disclosure-arrow.patch` | Exposes the sidebar's disclosure arrow for the Color setting's custom row. |
+| `0018-file-url-drop.patch` | A native drag can offer a local file only as `public.url`, without the file-list type Finder also provides. `OnFileDrop` now accepts that drag and reads both URI representations; remote URLs are still rejected. `TestContentWindowFileURLDrop` covers the native panel path. |
+| `0019-generic-file-drop.patch` | A file drag whose source offers only AppKit's `NSDragOperationGeneric` was refused before `OnFileDrop` ran. That effect now maps to Copy. `TestContentWindowGenericFileDrop` uses the Rewrite panel's native window options and a Generic-only source mask. |
 
 Make a patch: copy the module (`go env GOMODCACHE`/github.com/egoist/mygo@VERSION) somewhere writable, `git init` and commit it, change it, run its tests on the Mac and Linux, `git diff > third_party/mygo-patches/000N-name.patch`, then run `scripts/vendor-mygo.sh`.

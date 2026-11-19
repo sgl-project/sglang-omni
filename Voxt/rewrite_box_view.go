@@ -53,14 +53,23 @@ var decodeBoxBitmap = ui.DecodeBitmap
 // boxThumb is a thumbnail's size in the box.
 const boxThumb = 72
 
+type boxDropWindow interface {
+	boxWindow
+	OnFileDrop(func(*mygo.FileDropEvent)) func()
+}
+
+var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
+
 // newBoxWindow creates the input box's native panel.
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) boxWindow {
-	return mygo.NewWindow(mygo.WindowOptions{
+	window := newBoxNativeWindow(mygo.WindowOptions{
 		Title: i18n.T("Rewrite"), Width: boxWinW, Height: boxWinH, UseContentSize: true,
 		Hidden: true, Frameless: true, Transparent: true, Vibrancy: mygo.VibrancyHUD,
 		Panel: true, DisableResize: true, DisableClose: true,
 		Content: hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) }),
 	})
+	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
+	return window
 }
 
 // rewriteBoxView draws the input box from its state, actions and local text.
@@ -77,9 +86,6 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 		} else {
 			actions.close()
 		}
-	}
-	if files := root.DroppedFiles(); len(files) > 0 {
-		actions.drop(files)
 	}
 	root.Children(func() {
 		// The header: what it is, Send while it records or a resend
@@ -130,47 +136,47 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					}
 					boxTextEditor(context, index, text, state, actions, local)
 				}
-
-				// The trailing text box.
-				boxTextEditor(context, -1, &local.text, state, actions, local)
-
-				// The pictures.
-				if len(state.Thumbnails) > 0 {
-					ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Start).Children(func() {
-						for index, bitmap := range state.Thumbnails {
-							info := boxImageInfo{Source: i18n.T("Image")}
-							if index < len(state.ImageInfo) {
-								info = state.ImageInfo[index]
-							}
-							var remove func()
-							remove = actions.removeAutoImage
-							if index < state.ManualImages {
-								remove = func() { actions.remove(index) }
-							}
-							boxThumbView(context.Key(index), bitmap, info, remove, func() { local.previewImage = index + 1 })
-						}
-					})
-				}
-				if state.Limit {
-					ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
-				}
-
-				// The voice line: the instruction, being heard or kept.
-				ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Icon(context, icons.VoxtTranscribe.Bold).Size(14, 14).TextColor(ovText2).Shrink(0).Label(i18n.T("The spoken instruction"))
-					ui.Text(context, state.VoiceLine).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
-				})
-
-				// An error, kept with the box's content.
-				if state.Error != "" {
-					ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Icon(context, icons.DangerCircle.Linear).Size(12, 12).TextColor(tok(context.Theme()).Danger).Shrink(0)
-						ui.Text(context, state.Error).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").Tooltip(state.Error)
-					})
-				}
 			})
 		})
 
+		// The pictures stay reachable while earlier text inputs scroll.
+		if len(state.Thumbnails) > 0 {
+			ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Start).Children(func() {
+				for index, bitmap := range state.Thumbnails {
+					info := boxImageInfo{Source: i18n.T("Image")}
+					if index < len(state.ImageInfo) {
+						info = state.ImageInfo[index]
+					}
+					var remove func()
+					remove = actions.removeAutoImage
+					if index < state.ManualImages {
+						remove = func() { actions.remove(index) }
+					}
+					boxThumbView(context.Key(index), bitmap, info, remove, func() { local.previewImage = index + 1 })
+				}
+			})
+		}
+
+		if state.Limit {
+			ui.Text(context, i18n.T("At most %d images", boxMaxImages)).FontSize(12).TextColor(tok(context.Theme()).Danger).Shrink(0)
+		}
+
+		// An error, kept with the box's content.
+		if state.Error != "" {
+			ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Icon(context, icons.DangerCircle.Linear).Size(12, 12).TextColor(tok(context.Theme()).Danger).Shrink(0)
+				ui.Text(context, state.Error).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").Tooltip(state.Error)
+			})
+		}
+
+		// The trailing text box stays visible while earlier inputs scroll.
+		boxTextEditor(context, -1, &local.text, state, actions, local)
+
+		// The voice line: the instruction, being heard or kept.
+		ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Icon(context, icons.VoxtTranscribe.Bold).Size(14, 14).TextColor(ovText2).Shrink(0).Label(i18n.T("The spoken instruction"))
+			ui.Text(context, state.VoiceLine).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+		})
 		ui.Row(context).Shrink(0).Children(func() {
 			add := dropButton(context.Key("box-add"), icons.Add, i18n.T("Add"))
 			if add.Clicked() {
@@ -285,6 +291,9 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 		local.editorID, local.editorStart, local.editorEnd = editorID, start, end
 		local.editorActive = true
 	}
+	if local.pasteFocusID == editorID {
+		start, end = local.pasteCaret, local.pasteCaret
+	}
 	textArea.OnPaste(func(paste string) bool {
 		original := *text
 		if local.paste != nil {
@@ -304,7 +313,7 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 			start, end = local.pasteCaret, local.pasteCaret
 		}
 		if !actions.pasteText(index, paste, start, end) {
-			return false
+			return actions.paste(context.Services())
 		}
 		suffixID := -1
 		if index >= 0 {

@@ -190,7 +190,7 @@ func TestHistory(t *testing.T) {
 		entry("b", store.KindTranslate, t0.Add(time.Minute), "send the draft to Anna", "把草稿发给 Anna"),
 		entry("c", store.KindRewrite, t0.Add(2*time.Minute), "", "Dear team, the release moves to Friday."),
 	}
-	es[2].SourceText, es[2].TypedText, es[2].PromptText = "release friday", "and cc the team", "改正式一点"
+	es[2].SourceText, es[2].TypedText, es[2].PromptText = "release friday", "and cc the clipboard", "改正式一点"
 	es[0].Conversation, es[1].Conversation, es[2].Conversation = "first", "first", "second"
 	es[2].Title, es[2].Replaces = "Release", "b"
 	es[0].Audio = "a.wav"
@@ -216,7 +216,7 @@ func TestHistory(t *testing.T) {
 	if got != want {
 		t.Errorf("round trip:\n%+v\n%+v", got, want)
 	}
-	if got, err := h.Get(ctx, "c"); err != nil || got.Title != "Release" || got.Replaces != "b" || got.SourceText != "release friday" || got.TypedText != "and cc the team" {
+	if got, err := h.Get(ctx, "c"); err != nil || got.Title != "Release" || got.Replaces != "b" || got.SourceText != "release friday" || got.TypedText != "and cc the clipboard" {
 		t.Errorf("rewrite round trip: %+v, %v", got, err)
 	}
 	ids := func(q store.HistoryQuery) string {
@@ -238,6 +238,8 @@ func TestHistory(t *testing.T) {
 		{Search: "开会"}:                            "a", // under 3 characters: LIKE
 		{Search: "Anna"}:                          "b",
 		{Search: "改正式"}:                           "c", // the spoken instruction
+		{Search: "clipboard"}:                     "c", // only in the typed text: trigram
+		{Search: "cc"}:                            "c", // only in the typed text: LIKE
 		{Search: "release", Limit: 1}:             "c",
 		{Limit: 2, Offset: 1}:                     "b,a",
 		{Search: "nothing like this"}:             "",
@@ -252,6 +254,14 @@ func TestHistory(t *testing.T) {
 	h.Put(ctx, es[1])
 	if got := ids(store.HistoryQuery{Search: "交给 Anna"}); got != "b" {
 		t.Errorf("after update: %q", got)
+	}
+	es[2].TypedText = "and cc the notebook"
+	h.Put(ctx, es[2])
+	if got := ids(store.HistoryQuery{Search: "clipboard"}); got != "" {
+		t.Errorf("typed text kept an old index entry: %q", got)
+	}
+	if got := ids(store.HistoryQuery{Search: "notebook"}); got != "c" {
+		t.Errorf("typed text update was not indexed: %q", got)
 	}
 	if err := h.Put(ctx, store.Entry{ID: "x", Kind: "meeting"}); !errors.Is(err, core.ErrInvalid) {
 		t.Errorf("bad kind: %v", err)
