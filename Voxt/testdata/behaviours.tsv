@@ -63,5 +63,5 @@ First use: opening, setup guide, import from 1.x	L	TestLegacyImportAsksForOption
 Settings and appearance	L	TestWindowTransparencySettings	none
 Announcements and release notes	L	TestAnnouncements	none
 Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
-Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	none
+Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	Only HTTP requests through the default transport are recorded
 Privacy and where data goes	L	TestLearnNeverLogsTheEdit	none
