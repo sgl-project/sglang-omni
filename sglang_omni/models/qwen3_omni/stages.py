@@ -14,7 +14,6 @@ import os
 import threading
 from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from contextvars import copy_context
 from dataclasses import dataclass
 from functools import partial
@@ -66,7 +65,11 @@ from sglang_omni.scheduling.sglang_backend import (
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
-from sglang_omni.utils.cpu import automatic_video_decode_threads, intraop_team
+from sglang_omni.utils.cpu import (
+    automatic_video_decode_threads,
+    effective_cpu_count,
+    intraop_team,
+)
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
 from sglang_omni.utils.process import name_native_thread
@@ -1021,7 +1024,8 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         preprocessor: Qwen3OmniPreprocessor,
         *,
         video_threads: int,
-        video_cpus: int | None,
+        stage_threads: int,
+        stage_cpus: int,
         video_decode_threads: int | None,
     ) -> None:
         video_executor = ThreadPoolExecutor(
@@ -1038,7 +1042,8 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         # note (ratish): the threads share one preprocessor, since the HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
         self.preprocessor = preprocessor
         self.video_executor = video_executor
-        self.video_cpus = video_cpus
+        self.stage_threads = stage_threads
+        self.stage_cpus = stage_cpus
         self.video_decode_threads = video_decode_threads
         self.videos_lock = threading.Lock()
         self.videos_running = 0
@@ -1062,11 +1067,9 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         with self.videos_lock:
             self.videos_running += 1
             running = self.videos_running
-        # note (ratish): a video takes the CPUs split over the videos running as it starts, so a lone video runs on all of them as on the serial stage, and every video thread at once on one thread's share each.
+        # note (ratish): a video takes the stage's CPUs split over the videos running as it starts, at most the stage's own team, so a lone video runs as on the serial stage and every video thread at once on one share each.
         video_share = VideoCpuShare(
-            intraop_threads=(
-                None if self.video_cpus is None else self.video_cpus // running
-            ),
+            intraop_threads=min(self.stage_threads, max(self.stage_cpus // running, 1)),
             decode_threads=(
                 automatic_video_decode_threads(running)
                 if self.video_decode_threads is None
@@ -1074,11 +1077,7 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
             ),
         )
         try:
-            with (
-                nullcontext()
-                if video_share.intraop_threads is None
-                else intraop_team(video_share.intraop_threads)
-            ):
+            with intraop_team(video_share.intraop_threads):
                 self.run_request(msg, request_inputs, asyncio.run, video_share)
         finally:
             with self.videos_lock:
@@ -1125,7 +1124,6 @@ def create_preprocessing_executor(
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
     video_decode_threads: int | None = None,
-    video_cpus: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
@@ -1150,7 +1148,8 @@ def create_preprocessing_executor(
     return PreprocessingScheduler(
         preprocessor,
         video_threads=max_concurrency,
-        video_cpus=video_cpus,
+        stage_threads=torch.get_num_threads(),
+        stage_cpus=effective_cpu_count(),
         video_decode_threads=video_decode_threads,
     )
 

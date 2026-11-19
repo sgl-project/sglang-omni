@@ -350,9 +350,9 @@ class ChatRequestInputs:
 
 @dataclass(frozen=True, kw_only=True)
 class VideoCpuShare:
-    """The CPUs a video request preprocesses on: the OpenMP team that resizes its frames, None to keep the loading thread's, and the FFmpeg threads that decode them."""
+    """The CPUs a video request preprocesses on: the OpenMP team that resizes its frames and the FFmpeg threads that decode them."""
 
-    intraop_threads: int | None
+    intraop_threads: int
     decode_threads: int
 
 

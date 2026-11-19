@@ -389,39 +389,24 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
     )
 
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
-        """Split the CPUs over preprocessing's video threads unless OMP is configured."""
+        """Keep CPU-sensitive preprocessing parallel unless OMP is configured."""
         env_defaults = super().resolved_stage_env_defaults(stage_name)
-        if stage_name != "preprocessing" or not self.should_split_preprocessing_cpus():
-            return env_defaults
+        if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
+            env_defaults["OMP_NUM_THREADS"] = str(effective_cpu_count())
         else:
             pass
-        video_threads = self.stage_named(stage_name).factory.max_concurrency
-        env_defaults["OMP_NUM_THREADS"] = str(
-            max(effective_cpu_count() // video_threads, 1)
-        )
         return env_defaults
-
-    def should_split_preprocessing_cpus(self) -> bool:
-        """Whether preprocessing's OpenMP team is a share of its CPUs rather than a configured team."""
-        return "OMP_NUM_THREADS" not in super().resolved_stage_env_defaults(
-            "preprocessing"
-        )
 
     @classmethod
     def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
         return {THINKER_STAGE}
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool | int]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
         speech_enabled = any(stage.name == "talker_ar" for stage in self.stages)
         if stage_name in ("image_encoder", "audio_encoder"):
             # Device selection is deferred to the worker; the encoders read
             # the platform default at construction.
             return {}
-        else:
-            pass
-        if stage_name == "preprocessing" and self.should_split_preprocessing_cpus():
-            # note (ratish): videos share the CPUs their split team comes from; a configured team, as colocated workers set to leave the GPU stages' launch threads their CPUs, stays each video's team.
-            return {"video_cpus": effective_cpu_count()}
         else:
             pass
         if stage_name == "thinker" and speech_enabled:

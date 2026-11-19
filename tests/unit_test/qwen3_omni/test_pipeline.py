@@ -2845,18 +2845,25 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
 
 
 @pytest.mark.parametrize(
-    ("video_cpus", "video_decode_threads", "intraop_threads", "decode_threads"),
+    (
+        "stage_threads",
+        "stage_cpus",
+        "video_decode_threads",
+        "intraop_threads",
+        "decode_threads",
+    ),
     [
-        (6, None, (6, 3), (10, 20)),
-        (6, 5, (6, 3), (5, 5)),
-        (None, None, (None, None), (10, 20)),
+        (8, 6, None, (6, 3), (10, 20)),
+        (2, 64, 5, (2, 2), (5, 5)),
+        (8, 1, None, (1, 1), (10, 20)),
     ],
 )
-def test_preprocessing_video_shares_the_video_cpus_with_the_videos_running(
+def test_preprocessing_video_shares_the_stage_cpus_with_the_videos_running(
     monkeypatch: pytest.MonkeyPatch,
-    video_cpus: int | None,
+    stage_threads: int,
+    stage_cpus: int,
     video_decode_threads: int | None,
-    intraop_threads: tuple[int | None, int | None],
+    intraop_threads: tuple[int, int],
     decode_threads: tuple[int, int],
 ) -> None:
     first_entered, first_release = threading.Event(), threading.Event()
@@ -2883,7 +2890,8 @@ def test_preprocessing_video_shares_the_video_cpus_with_the_videos_running(
     scheduler = qwen_stages.PreprocessingScheduler(
         Preprocessor(),
         video_threads=2,
-        video_cpus=video_cpus,
+        stage_threads=stage_threads,
+        stage_cpus=stage_cpus,
         video_decode_threads=video_decode_threads,
     )
     worker = threading.Thread(target=scheduler.start, daemon=True)
@@ -2909,7 +2917,7 @@ def test_preprocessing_video_shares_the_video_cpus_with_the_videos_running(
         assert share == preprocessor_mod.VideoCpuShare(
             intraop_threads=intraop, decode_threads=decode
         )
-        assert intraop is None or team == intraop
+        assert team == intraop
     assert shares["text"][0] is None
 
 
