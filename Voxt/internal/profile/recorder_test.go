@@ -242,3 +242,23 @@ func TestReportDoesNotPersistEnvironmentSecret(t *testing.T) {
 		t.Fatal("unavailable metrics were not written as null")
 	}
 }
+
+func TestFirstASRHookRunsOnce(t *testing.T) {
+	recorder := NewRecorder(validConfig())
+	fires := 0
+	recorder.SetFirstASRHook(func() { fires++ })
+	file := fileFunc{transcribe: func(context.Context, asr.FileRequest) (asr.Result, error) {
+		return asr.Result{Text: "hello"}, nil
+	}}
+	wrapped := recorder.WrapFile("system", file)
+	request := asr.FileRequest{Audio: make([]byte, asr.SampleRate), Format: "pcm", SampleRate: asr.SampleRate}
+	if _, err := wrapped.Transcribe(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped.Transcribe(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if fires != 1 {
+		t.Fatalf("first-ASR hook fired %d times, want 1", fires)
+	}
+}

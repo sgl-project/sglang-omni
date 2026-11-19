@@ -98,6 +98,26 @@ type HostSample struct {
 	PowerSource OptionalString `json:"power_source"`
 }
 
+// ProcessPhaseMemory is one process's instantaneous memory at a labeled
+// moment, so a run's cost can be split between the harness and the native
+// servers instead of only reporting a summed peak.
+type ProcessPhaseMemory struct {
+	PID            int    `json:"pid"`
+	Role           string `json:"role"`
+	RSSBytes       int64  `json:"rss_bytes"`
+	FootprintBytes int64  `json:"footprint_bytes"`
+}
+
+// PhaseSample is an instantaneous per-process memory and system-pressure
+// snapshot at a labeled moment (for example pre_load, ready, first_request).
+type PhaseSample struct {
+	Label            string               `json:"label"`
+	AtMS             float64              `json:"at_ms"`
+	Pressure         string               `json:"pressure"`
+	AvailablePercent *int64               `json:"available_percent,omitempty"`
+	Processes        []ProcessPhaseMemory `json:"processes"`
+}
+
 type ResourceReport struct {
 	PeakRSSBytes           OptionalInt64         `json:"peak_rss_bytes"`
 	PeakPhysicalFootprint  OptionalInt64         `json:"peak_physical_footprint_bytes"`
@@ -114,6 +134,7 @@ type ResourceReport struct {
 	SwapoutsDelta          OptionalInt64         `json:"swapouts_delta"`
 	HostStart              HostSample            `json:"host_start"`
 	HostEnd                HostSample            `json:"host_end"`
+	PhaseSamples           []PhaseSample         `json:"phase_samples,omitempty"`
 }
 
 type TracingReport struct {

@@ -31,6 +31,8 @@ type Recorder struct {
 	finalStarted time.Time
 	stageIndexes map[string]int
 	signposts    *Signposts
+	firstASR     sync.Once
+	onFirstASR   func()
 }
 
 func NewRecorder(config Config) *Recorder {
@@ -71,6 +73,15 @@ func NewRecorder(config Config) *Recorder {
 
 func (r *Recorder) RegisterSecrets(values ...string) {
 	r.report.redactor.Register(values...)
+}
+
+// SetFirstASRHook registers a callback that runs exactly once, right after
+// the first ASR chunk finishes (successfully or not). The meeting profile
+// run uses it for the first_request load-gate snapshot.
+func (r *Recorder) SetFirstASRHook(hook func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onFirstASR = hook
 }
 
 func (r *Recorder) Clean(text string) string {
@@ -212,6 +223,14 @@ func (r *Recorder) finishASR(timing stageTiming, result asr.Result, err error) {
 		r.mu.Unlock()
 	}
 	r.finishStage(timing, err)
+	r.firstASR.Do(func() {
+		r.mu.Lock()
+		hook := r.onFirstASR
+		r.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
+	})
 }
 
 type timedFile struct {

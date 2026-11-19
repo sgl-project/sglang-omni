@@ -74,6 +74,7 @@ type ResourceSampler struct {
 	peakPressure     string
 	lastPressure     string
 	pressureWarnings []MemoryPressureEvent
+	phaseSamples     []PhaseSample
 }
 
 func NewResourceSampler(processes func() []int) *ResourceSampler {
@@ -174,6 +175,41 @@ func (s *ResourceSampler) Sample() {
 	}
 }
 
+// Snapshot records one labeled instantaneous sample: each watched process's
+// own RSS and footprint (harness vs native) plus the system memory pressure.
+// Unlike the running peaks, a snapshot keeps the processes apart.
+func (s *ResourceSampler) Snapshot(label string) PhaseSample {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sample := PhaseSample{Label: label, AtMS: milliseconds(s.now().Sub(s.started))}
+	self := os.Getpid()
+	for _, process := range uniquePIDs(s.processes()) {
+		memory, err := s.memory(process)
+		if err != nil {
+			continue
+		}
+		role := "native"
+		if process == self {
+			role = "harness"
+		}
+		sample.Processes = append(sample.Processes, ProcessPhaseMemory{
+			PID: process, Role: role,
+			RSSBytes: memory.Resident, FootprintBytes: memory.Footprint,
+		})
+	}
+	if s.sysmem != nil {
+		if sysmem, err := s.sysmem(); err == nil {
+			sample.Pressure = sysmem.Pressure
+			if sysmem.AvailablePercentValid {
+				avail := int64(sysmem.AvailablePercent)
+				sample.AvailablePercent = &avail
+			}
+		}
+	}
+	s.phaseSamples = append(s.phaseSamples, sample)
+	return sample
+}
+
 func (s *ResourceSampler) report(start, end MemorySample, hostStart, hostEnd HostSample) ResourceReport {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -215,6 +251,7 @@ func (s *ResourceSampler) report(start, end MemorySample, hostStart, hostEnd Hos
 	}
 	report.SwapinsDelta = counterDelta(start.Swapins, end.Swapins)
 	report.SwapoutsDelta = counterDelta(start.Swapouts, end.Swapouts)
+	report.PhaseSamples = slices.Clone(s.phaseSamples)
 	if s.pressureSamples == 0 {
 		reason := s.pressureError
 		if reason == "" {
@@ -269,6 +306,13 @@ func StartResourceMonitor(parent context.Context, processes func() []int) *Resou
 		}
 	}()
 	return monitor
+}
+
+// Snapshot takes a labeled instantaneous sample without stopping the
+// monitor. Callers use it at load gates (pre_load, ready, first_request) and
+// may abort a run early when the returned pressure is already critical.
+func (m *ResourceMonitor) Snapshot(label string) PhaseSample {
+	return m.sampler.Snapshot(label)
 }
 
 func (m *ResourceMonitor) Stop(ctx context.Context) ResourceReport {

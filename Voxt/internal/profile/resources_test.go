@@ -2,6 +2,7 @@ package profile
 
 import (
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -100,5 +101,59 @@ func TestResourceSamplerCapturesTransientMemoryPressureWarning(t *testing.T) {
 	}
 	if len(report.MemoryPressureWarnings) != 1 || report.MemoryPressureWarnings[0].Pressure != "warning" {
 		t.Fatalf("memory_pressure_warnings = %+v, want 1 warning event", report.MemoryPressureWarnings)
+	}
+}
+
+func TestResourceSamplerSnapshotSplitsProcessesAndKeepsPressure(t *testing.T) {
+	self := os.Getpid()
+	native := self + 1
+	sampler := NewResourceSampler(func() []int { return []int{self, native, native} })
+	sampler.memory = func(pid int) (macx.ProcMemory, error) {
+		return macx.ProcMemory{Resident: int64(pid), Footprint: int64(pid * 10)}, nil
+	}
+	sampler.sysmem = func() (macx.SystemMemory, error) {
+		return macx.SystemMemory{Pressure: "critical", AvailablePercent: 12, AvailablePercentValid: true}, nil
+	}
+	sample := sampler.Snapshot("ready")
+	if sample.Label != "ready" || sample.Pressure != "critical" {
+		t.Fatalf("snapshot %+v", sample)
+	}
+	if sample.AvailablePercent == nil || *sample.AvailablePercent != 12 {
+		t.Fatalf("available percent %+v", sample.AvailablePercent)
+	}
+	if len(sample.Processes) != 2 {
+		t.Fatalf("processes %+v", sample.Processes)
+	}
+	roles := map[int]ProcessPhaseMemory{}
+	for _, process := range sample.Processes {
+		roles[process.PID] = process
+	}
+	if roles[self].Role != "harness" || roles[native].Role != "native" {
+		t.Fatalf("roles %+v", sample.Processes)
+	}
+	if roles[native].FootprintBytes != int64(native*10) || roles[self].RSSBytes != int64(self) {
+		t.Fatalf("per-process memory %+v", sample.Processes)
+	}
+	report := sampler.report(MemorySample{}, MemorySample{}, HostSample{}, HostSample{})
+	if len(report.PhaseSamples) != 1 || report.PhaseSamples[0].Label != "ready" {
+		t.Fatalf("report phase samples %+v", report.PhaseSamples)
+	}
+}
+
+func TestResourceSamplerSnapshotToleratesProcessMemoryErrors(t *testing.T) {
+	sampler := NewResourceSampler(func() []int { return []int{10, 11} })
+	sampler.memory = func(pid int) (macx.ProcMemory, error) {
+		if pid == 11 {
+			return macx.ProcMemory{}, errors.New("native process exited")
+		}
+		return macx.ProcMemory{Resident: 100, Footprint: 200}, nil
+	}
+	sampler.sysmem = func() (macx.SystemMemory, error) { return macx.SystemMemory{}, errors.New("denied") }
+	sample := sampler.Snapshot("pre_load")
+	if len(sample.Processes) != 1 || sample.Processes[0].PID != 10 {
+		t.Fatalf("processes %+v", sample.Processes)
+	}
+	if sample.Pressure != "" || sample.AvailablePercent != nil {
+		t.Fatalf("pressure %+v", sample)
 	}
 }

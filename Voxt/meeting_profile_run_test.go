@@ -185,6 +185,19 @@ func runMeetingProfile(
 
 	var speech profileASR
 	var detector profileVAD
+	finalCtx, stopFinal := context.WithCancel(ctx)
+	defer stopFinal()
+	var firstRequestCritical bool
+	monitor.Snapshot("pre_load")
+	recorder.SetFirstASRHook(func() {
+		if sample := monitor.Snapshot("first_request"); sample.Pressure == "critical" {
+			// Same early-archive gate as ready: the first request already
+			// hit critical memory pressure, so stop the final pass instead
+			// of spending the whole input on a rejected sample.
+			firstRequestCritical = true
+			stopFinal()
+		}
+	})
 	runErr = recorder.Measure("load", 0, func() error {
 		var err error
 		speech, err = dependencies.newASR(config)
@@ -210,6 +223,13 @@ func runMeetingProfile(
 		return nil
 	})
 	if runErr != nil {
+		return
+	}
+	if ready := monitor.Snapshot("ready"); ready.Pressure == "critical" {
+		// Loading already pushed the machine to critical memory pressure:
+		// archive the run instead of spending the whole input on a sample
+		// the validator would reject anyway.
+		runErr = errors.New("memory pressure critical before the model was ready; archiving the run")
 		return
 	}
 
@@ -252,8 +272,12 @@ func runMeetingProfile(
 	manager := meeting.NewManager(meetingConfig)
 	stopToSummaryStart := time.Now()
 	runErr = recorder.Measure("final_pass", audioDuration, func() error {
-		return meeting.FinalizePass(ctx, meetingConfig, meetingRow, nil)
+		return meeting.FinalizePass(finalCtx, meetingConfig, meetingRow, nil)
 	})
+	if firstRequestCritical {
+		runErr = errors.New("memory pressure critical at the first request; archiving the run")
+		return
+	}
 	if runErr != nil {
 		return
 	}
