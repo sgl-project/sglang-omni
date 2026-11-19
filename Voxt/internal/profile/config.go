@@ -134,8 +134,8 @@ func (c *Config) Validate() error {
 	if c.VADStrategy != "" && c.VADStrategy != "whole" && c.VADStrategy != "batched" {
 		return fmt.Errorf("profile: vad_strategy must be whole or batched")
 	}
-	if c.LeaseStrategy != "" && c.LeaseStrategy != "per-track" {
-		return fmt.Errorf("profile: lease_strategy must be per-track")
+	if c.LeaseStrategy != "" && c.LeaseStrategy != "whole" && c.LeaseStrategy != "per-track" {
+		return fmt.Errorf("profile: lease_strategy must be whole or per-track")
 	}
 	if c.VAD.Enabled && c.VAD.ModelDir == "" {
 		return fmt.Errorf("profile: enabled VAD needs vad.model_dir")

@@ -90,6 +90,16 @@ func TestOverlapConfigIsLocalFakeOnly(t *testing.T) {
 	}
 }
 
+func TestLeaseStrategyWholeIsAllowed(t *testing.T) {
+	for _, strategy := range []string{"", "whole", "per-track"} {
+		config := validConfig()
+		config.LeaseStrategy = strategy
+		if err := config.Validate(); err != nil {
+			t.Fatalf("lease strategy %q was rejected: %v", strategy, err)
+		}
+	}
+}
+
 func TestLoadConfigRejectsUnknownFieldsAndSecrets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
