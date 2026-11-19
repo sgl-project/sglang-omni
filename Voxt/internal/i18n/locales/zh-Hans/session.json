@@ -15,6 +15,7 @@
   "Saved to Notes": "已存到笔记",
   "The language model failed, so the recognised text was saved to Notes.": "语言模型出错了，已把识别原文存到笔记。",
   "The language model did not answer in time, so the recognised text was saved to Notes.": "语言模型没有及时响应，已把识别原文存到笔记。",
+  "The language model did not translate the text. Try again.": "语言模型没有翻译这段文字，请重试。",
   "Could not save the note, so the card shows it.": "笔记没能保存，内容显示在答案卡片里。",
   "Your ChatGPT plan has no usage left, so the recognised text was saved to Notes.": "ChatGPT 套餐的额度用完了，已把识别原文存到笔记。",
   "The length limit stops the recording in %s": "%s 后到达时长上限，录音会停止",

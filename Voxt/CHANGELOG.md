@@ -18,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Deleting a speech model's draft no longer leaves an old provider using its missing path**: Qwen3-ASR, MOSS-Transcribe-Diarize and Whisper Large v3 continue without the draft.
+- **Translate does not silently deliver an untranslated answer** (#4153): after a strict retry, Voxt rejects an answer with clear script or vocabulary evidence of no translation and shows a localized failure with Try again. Parenthesized original names, language-neutral names, numbers, same-language text, and shared vocabulary still count as valid results.
 
 ### 中文
 
@@ -28,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **删除语音识别模型的草稿模型后，旧提供方不再使用已删除的路径**：Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 会不使用草稿模型继续转录。
+- **翻译不会再静默交付未翻译的回答**（#4153）：严格重试后，如果回答仍有明确的文字系统或常见词汇证据表明没有翻译，Voxt 会显示对应语言的失败提示，可以重试。括号中的原名、语言中立名称、数字、同语言文本和共享词仍算有效结果。
 
 ## [2.1.1] - 2026-11-17
 

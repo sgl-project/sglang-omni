@@ -34,7 +34,11 @@ func TestWindowPicture(t *testing.T) {
 		{"no permission", true, false, errors.New("permission_denied"), store.KindTranscribe, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := &fakeLLM{text: "Hello."}
+			answer := "Hello."
+			if tc.kind == store.KindTranslate {
+				answer = "你好"
+			}
+			model := &fakeLLM{text: answer}
 			var pids []int
 			h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
 				s.Features.Transcribe.Enhance = !tc.noClean
@@ -97,7 +101,11 @@ func TestClipboardImage(t *testing.T) {
 		{name: "translate", kind: store.KindTranslate, on: true, pic: clip},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := &fakeLLM{text: "We ship on Friday."}
+			answer := "We ship on Friday."
+			if tc.kind == store.KindTranslate {
+				answer = "我们周五发布。"
+			}
+			model := &fakeLLM{text: answer}
 			sel := &fakeSelector{text: "ship friday?"}
 			var reads, selBefore int
 			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
@@ -118,7 +126,7 @@ func TestClipboardImage(t *testing.T) {
 			if tc.kind == store.KindRewrite {
 				h.speak(id, 3)
 			}
-			if end := h.rec.wait(t); end.State != Done || end.Result != "We ship on Friday." {
+			if end := h.rec.wait(t); end.State != Done || end.Result != answer {
 				t.Fatalf("end %s %q %+v", end.State, end.Result, end.Problem)
 			}
 			reqs := model.requests()
