@@ -7,10 +7,14 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from numbers import Integral
+from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, Generic
 
 import torch
-from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
 from typing_extensions import TypedDict
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -32,6 +36,12 @@ from sglang_omni.scheduling.types import (
     StreamOutputBuilder,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+
+# note (Xuanfei): trtllm_mha builds CUDA graph metadata only for decode, target verify and draft extend, so the FlashInfer backend it subclasses, which reads the same KV layout, runs the full prefill graph.
+FULL_PREFILL_ATTENTION_SUBSTITUTES: Mapping[str, str] = MappingProxyType(
+    {"trtllm_mha": "flashinfer"}
+)
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -113,6 +123,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
     supports_full_prefill_cuda_graph: bool = False
+    # note (Xuanfei): SM versions on which this model was verified to serve with the full prefill graph on a substitute prefill attention backend; empty keeps the existing fallback, or refusal, everywhere.
+    full_prefill_substitute_sm_versions: ClassVar[frozenset[int]] = frozenset()
 
     def allowed_prefill_cuda_graph_backends(self) -> tuple[str, ...]:
         """Prefill graph backends the policy may accept for this model.
@@ -225,6 +237,43 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             return server_args
 
         server_args = resolve_server_args()
+        if (
+            self.full_prefill_substitute_sm_versions
+            and current_platform.is_cuda()
+            and get_visible_gpu_sm_version(gpu_id)
+            in self.full_prefill_substitute_sm_versions
+        ):
+            cfg = resolved_view(server_args)
+            automatic_prefill_attention_backend = attention_backends_of(cfg)[0]
+            substitute_prefill_attention_backend = (
+                FULL_PREFILL_ATTENTION_SUBSTITUTES.get(
+                    automatic_prefill_attention_backend
+                )
+            )
+            # note (Xuanfei): the substitute was measured only with automatic attention backends, the default KV cache dtype and no draft; under a draft the prefill backend also serves target verify and the draft worker.
+            if (
+                substitute_prefill_attention_backend is not None
+                and cfg.cuda_graph_config.prefill.backend == CudaGraphBackend.FULL
+                and overrides.get("attention_backend") is None
+                and overrides.get("prefill_attention_backend") is None
+                and overrides.get("decode_attention_backend") is None
+                and cfg.kv_cache_dtype in (None, "auto")
+                and cfg.speculative_algorithm is None
+            ):
+                logger.info(
+                    f"{self.model_name}: prefill attention backend "
+                    f"{automatic_prefill_attention_backend!r} cannot capture a full "
+                    f"prefill graph; using {substitute_prefill_attention_backend!r} "
+                    f"for prefill"
+                )
+                overrides["prefill_attention_backend"] = (
+                    substitute_prefill_attention_backend
+                )
+                server_args = resolve_server_args()
+            else:
+                pass
+        else:
+            pass
         if (
             not operator_selected
             and get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.FULL

@@ -4,13 +4,26 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+import torch
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.runtime_context import override_platform
+from sglang.srt.server_args import ServerArgs
 
 import sglang_omni.platforms as platforms
+from sglang_omni.scheduling import sglang_backend
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
+from tests.unit_test.fixtures.sm100_build import SM100_PLATFORM, patch_visible_gpu
 
 TEST_MAX_TOTAL_TOKENS = 82000
 
@@ -755,3 +768,142 @@ def test_builder_forwards_placement_fraction_to_bootstrap(
         )
 
     assert create_infrastructure.call_args.kwargs["total_gpu_memory_fraction"] == 0.52
+
+
+def build_full_prefill_builder(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    sm_versions: frozenset[int] | None,
+    sm_version: int | None,
+    is_cuda: bool = True,
+) -> tuple[type[TtsEngineBuilder], list[ServerArgs]]:
+    """A model that defaults to the full prefill graph and refuses the breakable one, built with real SGLang argument parsing; sm_versions None keeps the inherited opt-in, and the list collects the server args of every build that reaches model setup."""
+    real_build_sglang_server_args = sglang_backend.build_sglang_server_args
+    MinimalBuilder, _, _ = build_minimal_tts_builder_harness(monkeypatch)
+    monkeypatch.setattr(
+        sglang_backend, "build_sglang_server_args", real_build_sglang_server_args
+    )
+    patch_visible_gpu(monkeypatch, sm_version=sm_version, is_cuda=is_cuda)
+    server_args_by_build: list[ServerArgs] = []
+
+    class FullPrefillBuilder(MinimalBuilder):
+        context_length = 1024
+        supports_full_prefill_cuda_graph = True
+        supports_breakable_prefill_cuda_graph = False
+
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+            return {
+                "max_running_requests": 4,
+                "dtype": dtype,
+                "cuda_graph_backend_prefill": CudaGraphBackend.FULL,
+                "mem_fraction_static": 0.2,
+            }
+
+        def validate_after_model_setup(
+            self, model: torch.nn.Module, server_args: ServerArgs
+        ) -> None:
+            super().validate_after_model_setup(model, server_args)
+            server_args_by_build.append(server_args)
+
+    if sm_versions is not None:
+        FullPrefillBuilder.full_prefill_substitute_sm_versions = sm_versions
+    else:
+        pass
+    return FullPrefillBuilder, server_args_by_build
+
+
+@pytest.mark.parametrize(
+    ("engine_overrides", "expected"),
+    [
+        ({}, ("flashinfer", "trtllm_mha", CudaGraphBackend.FULL)),
+        (
+            {"disable_cuda_graph": True},
+            ("trtllm_mha", "trtllm_mha", CudaGraphBackend.DISABLED),
+        ),
+        (
+            {"cuda_graph_config": {"prefill": {"backend": "disabled"}}},
+            ("trtllm_mha", "trtllm_mha", CudaGraphBackend.DISABLED),
+        ),
+    ],
+    ids=[
+        "default",
+        "disabled_graph",
+        "nested_disabled_graph",
+    ],
+)
+def test_a_model_that_refuses_breakable_starts_on_sm100(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    engine_overrides: dict[str, object],
+    expected: tuple[str, str, CudaGraphBackend],
+) -> None:
+    """Issue 4316: on a listed SM version the substitute keeps the full graph, so a model that refuses the breakable graph starts; default turns red if SGLang stops picking trtllm_mha on SM100 (issue 4269)."""
+    FullPrefillBuilder, server_args_by_build = build_full_prefill_builder(
+        monkeypatch, sm_versions=frozenset({100}), sm_version=100
+    )
+
+    with override_platform(**SM100_PLATFORM):
+        FullPrefillBuilder().build(
+            write_mini_llama_checkpoint(tmp_path),
+            device="cuda",
+            gpu_id=0,
+            server_args_overrides=engine_overrides,
+        )
+
+    (server_args,) = server_args_by_build
+    cfg = resolved_view(server_args)
+    assert (
+        *attention_backends_of(cfg),
+        cfg.cuda_graph_config.prefill.backend,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("sm_versions", "sm_version", "is_cuda", "engine_overrides"),
+    [
+        (None, 100, True, {}),
+        (frozenset({100}), 90, True, {}),
+        (frozenset({100}), 103, True, {}),
+        (frozenset({100}), None, True, {}),
+        (frozenset({100}), 100, False, {}),
+        (frozenset({100}), 100, True, {"attention_backend": "trtllm_mha"}),
+        (frozenset({100}), 100, True, {"prefill_attention_backend": "trtllm_mha"}),
+        (frozenset({100}), 100, True, {"decode_attention_backend": "trtllm_mha"}),
+        (frozenset({100}), 100, True, {"kv_cache_dtype": "fp8_e4m3"}),
+    ],
+    ids=[
+        "not_opted_in",
+        "sm90",
+        "sm103",
+        "unknown_sm",
+        "not_cuda",
+        "explicit_attention_backend",
+        "explicit_prefill_backend",
+        "explicit_decode_backend",
+        "quantized_kv",
+    ],
+)
+def test_without_the_substitute_the_breakable_fallback_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sm_versions: frozenset[int] | None,
+    sm_version: int | None,
+    is_cuda: bool,
+    engine_overrides: dict[str, object],
+) -> None:
+    FullPrefillBuilder, server_args_by_build = build_full_prefill_builder(
+        monkeypatch, sm_versions=sm_versions, sm_version=sm_version, is_cuda=is_cuda
+    )
+
+    with (
+        override_platform(**SM100_PLATFORM),
+        pytest.raises(RuntimeError, match="has not adopted the breakable prefill"),
+    ):
+        FullPrefillBuilder().build(
+            write_mini_llama_checkpoint(tmp_path),
+            device="cuda",
+            gpu_id=0,
+            server_args_overrides=engine_overrides,
+        )
+
+    assert server_args_by_build == []
