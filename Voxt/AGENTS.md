@@ -22,6 +22,33 @@ These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its codi
 - **The Mac (`mac-air`) is shared and short of disk** (about 32 GB free): build in `code/VoxtNew` (`scripts/mac.sh`), delete large build trees and models you downloaded for a test, and never touch `~/code/Auralink*`. The six catalogue models are in the real `$HUB` (`~/Library/Application Support/SGLang Omni/models` once VoxtNew 2.0.1 or later has started, hard links of those in `~/Library/Application Support/ActNow/models/hub`, which the user's AudioSmith and Dicta use; claimed as `dev.hehehai.voxtnew`) and the Omni runtime in `~/voxtnew-runtime/omni/` for every thread (its README says how to refresh it): use them instead of downloading or building again, never delete or move anything in the HF cache, and test deletions with a scratch `ACTNOW_FAMILY_DIR` + `HF_HUB_CACHE`. Do not sync (`scripts/mac.sh`) into a checkout while it builds, nor before pulling back files the Mac made (`--pull`): the sync deletes what the Linux side lacks.
 - Code comments and commit messages in English. Keep the MyGo lifetime rules (`.agents/skills/mygo-maintenance`).
 
+## Quality rules
+
+For every change, by a person or an agent. A rule here comes with a number measured in this repository and names an automatic check when one exists. Otherwise, the PR's verification says how a reviewer checked it. Once a test or a CI step enforces a rule, the rule shrinks to the name of that check.
+
+Code:
+
+- **The app calls every function.** A test calls the function the app calls. Delete a wrapper that only its own test reaches and move that test to the real function; keep shared fakes and helpers. Compare `deadcode -tags=meetingdemo,updatecheck ./...` with `deadcode -test -tags=meetingdemo,updatecheck ./...` and review the functions only the first command lists.
+- **A removal is complete in one PR**: the callers, helpers, strings and translations, doc links and environment switches of what is removed go with it.
+- **An unchecked error is written down**: `_ = f()` with a one-line reason. On a path that moves or deletes the user's data, each error is handled or logged.
+- **Every `VOXTNEW_*` environment switch is documented** by the PR that adds it: what it does and who sets it (`docs/development.md`, or the doc of its area).
+- **The helper builds without compiler warnings.** Until Mac CI enforces this, check the helper build output for `warning:` and treat any match as a failure.
+
+Tests:
+
+- **A test fails when the behaviour it names breaks.** The PR of a fix names the test that fails with the fix reverted.
+- **Tests are tight**: a fake clock or an event instead of `time.Sleep`, the running test binary instead of the `go` tool, loopback instead of the network.
+- **A test restores the globals it sets** (`t.Cleanup`). New code takes the translator and the clock as parameters, as the `...For(translator, ...)` functions do.
+- **A test that fails with no change behind it is a bug**: open an issue with the log before the rerun, and fix or remove the test.
+- **A skipped test has a runner**: a test behind an environment switch says in the docs who runs it and when (nightly, before a release, by hand).
+
+Pull requests:
+
+- **One PR, one change, named in the title.** Over about 600 changed lines (fixtures, goldens and vendored files apart), the body says why it cannot be split. A bundle lists the PRs it carries.
+- **Check the open PRs first.** `scripts/overlap.py` only screens them by file category; compare the changed file names or search by file before saying in the body that none touches the same code.
+- **Fill in the PR template, with what was not run.** Report only the checks that ran.
+- **Allowlist entries and numeric ceilings are different**: `view-allowlist.txt` loses lines and never gains one. In `allowlist.txt`, add a file or raise its numeric line ceiling only for a fix that cannot wait, and say why in the commit; lower the ceiling when the file shrinks. Other numeric allowances only go down.
+
 ## Commands
 
 Run from `Voxt/`; Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it).
