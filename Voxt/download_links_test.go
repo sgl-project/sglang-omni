@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +32,14 @@ func TestDownloadLinks(t *testing.T) {
 	}{
 		{"../README.md", false}, {"README.md", false}, {"README.zh-CN.md", false}, {"../docs/get_started/voxt.md", false},
 		{"../docs/get_started/voxt-tutorials/start.md", true}, {"../docs/get_started/voxt-tutorials/en/start.md", true},
+	}
+	// A pull request that changes only a tutorial page still runs this test.
+	ci, err := os.ReadFile("../.github/workflows/voxtnew-ci.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ci), `- "docs/get_started/voxt-tutorials/**"`) {
+		t.Error("Voxt CI does not run for docs/get_started/voxt-tutorials/**")
 	}
 	for _, f := range files {
 		file := f.path
