@@ -276,6 +276,9 @@ func TestBoxInput(t *testing.T) {
 	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; user != want {
 		t.Errorf("user message:\n%s", user)
 	}
+	if wantChars := len("ship friday?" + "and cc the team" + "make it polite"); reqs[0].InputChars != wantChars {
+		t.Errorf("input chars %d, want %d", reqs[0].InputChars, wantChars)
+	}
 	if !equalBytes(reqs[0].Images, [][]byte{box1, box2}) || !reqs[0].ImagesRequired {
 		t.Errorf("images %q, required %v", reqs[0].Images, reqs[0].ImagesRequired)
 	}

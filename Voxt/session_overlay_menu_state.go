@@ -276,7 +276,6 @@ func (a *app) chooseThinking(value sessionThinkingValue) {
 	input := card.input
 	request := session.StartRequest{Kind: card.kind, Target: card.target, Text: &input, TargetLanguage: card.lang, Thinking: level}
 	if card.attach == "box" {
-		request.Box = true
 		request.Images = card.images
 	}
 	a.redoAnswer(request)

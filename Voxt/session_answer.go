@@ -50,15 +50,21 @@ func (a *app) openAnswer(s session.Snapshot) {
 		if a.followUp != "" && a.answer.id == a.followUp {
 			card.turns, card.conv = append(card.turns, a.answer.turns...), a.answer.conv
 			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
+			if card.attach == "box" {
+				card.images, card.ui.thumbs = a.answer.images, a.answer.ui.thumbs
+			}
 			if card.why == "" {
 				card.why = a.answer.why
 			}
 		}
 		if card.problem == nil {
 			// Any answer takes follow-ups, a rewritten selection's too
-			// (Voxt's): the selection and the typed text go with their
-			// turn.
-			card.turns = append(card.turns, compose.Turn{Instruction: s.Raw, Selection: s.Selection, Typed: s.Typed, Answer: compose.Answer{Title: s.Title, Content: s.Result}})
+			// (Voxt's). Typed text alone was the first turn's source.
+			selection, typed := s.Selection, s.Typed
+			if selection == "" {
+				selection, typed = typed, ""
+			}
+			card.turns = append(card.turns, compose.Turn{Instruction: s.Raw, Selection: selection, Typed: typed, Answer: compose.Answer{Title: s.Title, Content: s.Result}})
 		} else if card.problem != nil && len(card.turns) > 0 {
 			card.input.Raw, card.input.Typed = s.Raw, s.Typed // Try again asks the same follow-up
 		}
@@ -112,8 +118,8 @@ func (a *app) retryAnswer(lang string) {
 	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang, Thinking: card.think}
 	if card.kind == store.KindRewrite && card.attach == "box" {
 		// The box's pictures go with its answer again (another thinking
-		// level).
-		req.Box, req.Images = true, card.images
+		// level), not the contents of a box opened since.
+		req.Images = card.images
 	}
 	if req.TargetLanguage == "" {
 		req.TargetLanguage = card.lang

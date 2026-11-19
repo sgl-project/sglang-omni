@@ -386,6 +386,13 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 	}
 }
 
+func (a *app) boxSessionID() string {
+	if a.box.sending != "" {
+		return a.box.sending
+	}
+	return a.box.session
+}
+
 // boxSelection is the selection the box shows: the session's while it
 // runs, the kept one after a send failed.
 func (a *app) boxSelection() string {

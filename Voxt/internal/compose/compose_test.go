@@ -707,6 +707,12 @@ func TestGlossaryInUser(t *testing.T) {
 			t.Errorf("%s: glossary %q, user %q, profiles %s / %s", c.name, out.Glossary, out.User, out.Profile(), o2.Profile())
 		}
 	}
+	for _, taskPrompt := range []string{"", "Rewrite formally"} {
+		out, err := Build(Input{Task: Rewrite, MainLanguage: "en", Glossary: large, Instruction: "make it shorter", Text: "selected", Typed: "Term03", TaskPrompt: taskPrompt})
+		if err != nil || !strings.Contains(out.Glossary, "- Term03\n") {
+			t.Errorf("typed-only glossary match %q, %v", out.Glossary, err)
+		}
+	}
 	small := Input{Task: Transcribe, MainLanguage: "en", Glossary: large[:GlossaryAllUpTo], Text: "Term01"}
 	if out, _ := Build(small); out.Glossary != "" || !strings.Contains(out.System, "- Term29") || out.User != UserMessage("Term01") {
 		t.Errorf("a small glossary: %+v", out)

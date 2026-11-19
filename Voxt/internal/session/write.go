@@ -276,10 +276,10 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	if in.Answer {
 		req.Format, req.Schema = llm.FormatJSON, answerSchema
 	}
-	chars := utf8.RuneCountInString(in.Text + in.Instruction)
+	chars := utf8.RuneCountInString(in.Text + in.Typed + in.Instruction)
 	req.InputChars = chars          // this turn's: a follow-up's earlier turns do not make it long
 	for _, t := range in.Previous { // note (luojiaxuan): a follow-up sends the earlier turns again, read before the first token
-		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Answer.Title + t.Answer.Content)
+		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Typed + t.Answer.Title + t.Answer.Content)
 	}
 	resp, err := r.llmChat(cfg.llmDeadlines(req, chars, r.llmFloor(cfg.WriteTimeout)))
 	if buf.Len() > 0 {

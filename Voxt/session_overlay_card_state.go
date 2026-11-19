@@ -100,7 +100,7 @@ type sessionCardProjectionInput struct {
 	ThinkingProvider  settings.Provider
 	Generation        settings.Generation
 	SizeStep          int
-	BoxSendingID      string
+	BoxSessionID      string
 	BoxThumbnailCount int
 }
 
@@ -109,7 +109,7 @@ func sessionCardAttachment(input sessionCardProjectionInput) (string, int) {
 		return input.Answer.attach, len(input.Answer.ui.thumbs)
 	}
 	if input.Writing {
-		if input.Snapshot.ID == input.BoxSendingID {
+		if input.Snapshot.ID == input.BoxSessionID {
 			return "box", input.BoxThumbnailCount
 		}
 		return input.Snapshot.ImageHint, 0
@@ -445,7 +445,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	input := sessionCardProjectionInput{
 		Snapshot: snapshot, Answer: a.answer, Own: a.cardSessionLive(), Writing: a.writingAnswer(),
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShownDraft: a.shownDraft(snapshot),
-		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSendingID: a.box.sending, BoxThumbnailCount: len(a.box.thumbs),
+		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs),
 	}
 	if !a.answer.open {
 		return input
@@ -459,7 +459,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 
 func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection, next *sessionOverlayViewState) {
 	a.ov.ui.cardThumbs = a.answer.ui.thumbs
-	if !a.answer.open && a.sess.ID == a.box.sending {
+	if !a.answer.open && a.sess.ID == a.boxSessionID() {
 		a.ov.ui.cardThumbs = a.box.thumbs
 	}
 	input := a.sessionCardProjectionInput()

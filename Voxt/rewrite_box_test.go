@@ -245,6 +245,7 @@ func TestRewriteBoxRedoSameBytes(t *testing.T) {
 	// Another thinking level asks the same input again.
 	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
 	a.answer.llmID = "deepseek"
+	a.boxShare.store("someone else's text", [][]byte{[]byte("someone else's image")})
 	if !a.cachedCard().CanThink {
 		t.Fatal("no thinking levels on the card")
 	}
@@ -261,6 +262,49 @@ func TestRewriteBoxRedoSameBytes(t *testing.T) {
 	}
 	if a.answer.text != "A shorter text!" {
 		t.Errorf("answer %q", a.answer.text)
+	}
+}
+
+func TestRewriteBoxFollowUpsKeepImages(t *testing.T) {
+	chat := &fakeChat{texts: []string{"First answer", "Second answer", "Third answer"}}
+	set, keys, transcriptions := fileSetup(t, "make it shorter", chat)
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+boxScript(t), set, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
+	a.pump("the first answer", func() bool { return a.answer.open })
+	if len(a.answer.images) != 1 || len(a.answer.ui.thumbs) != 1 {
+		t.Fatalf("the first card lost the image: %+v", a.answer)
+	}
+	first := a.answer.images[0]
+	for index, instruction := range []string{"first follow-up", "second follow-up"} {
+		a.recordFollowUp(t, transcriptions, instruction)
+		requests := chat.requests()
+		images, _ := requests[index+1]["images"].([][]byte)
+		if len(images) != 1 || !bytes.Equal(images[0], first) {
+			t.Fatalf("%s images %q, want the first image", instruction, images)
+		}
+		if len(a.answer.images) != 1 || len(a.answer.ui.thumbs) != 1 {
+			t.Fatalf("%s left %d images and %d thumbnails", instruction, len(a.answer.images), len(a.answer.ui.thumbs))
+		}
+	}
+}
+
+func TestRewriteBoxTypedOnlyFollowUp(t *testing.T) {
+	chat := &fakeChat{texts: []string{"First answer", "Second answer"}}
+	set, keys, transcriptions := fileSetup(t, "make it shorter", chat)
+	a := newSessionApp(t, helpertest.Opt("selection", "")+","+boxScript(t), set, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(func() { a.box.text = "a rough draft"; a.boxSync() })
+	a.pump("the first answer", func() bool { return a.answer.open })
+	requests := chat.requests()
+	firstUser := "<selected_text>\na rough draft\n</selected_text>\n\n<instruction>\nmake it shorter\n</instruction>"
+	if got := lastUserOf(requests[0]); got != firstUser {
+		t.Fatalf("the first request %q, want %q", got, firstUser)
+	}
+	a.recordFollowUp(t, transcriptions, "more formal")
+	messages := chatMessages(chat.requests()[1])
+	if len(messages) != 4 || messages[1][1] != firstUser {
+		t.Fatalf("the follow-up changed the first turn: %q", messages)
 	}
 }
 
@@ -370,6 +414,19 @@ func TestAnswerCardAttach(t *testing.T) {
 	_, with, _ := a.cardSize()
 	if with == 0 {
 		t.Error("no card")
+	}
+
+	// The first answer streams while the recording's session still owns the box.
+	a, _, _ = newTestApp(t)
+	a.box = rewriteBox{open: true, session: "r1", images: [][]byte{boxJPEG(t), boxJPEG(t)}}
+	for _, encoded := range a.box.images {
+		bitmap, _ := ui.DecodeBitmap(encoded)
+		a.box.thumbs = append(a.box.thumbs, bitmap)
+	}
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Draft: "Two red squares.", ImageHint: "box"})
+	card := a.cachedCard()
+	if card.Attachment != "box" || card.ThumbnailCount != 2 || len(a.ov.ui.cardThumbs) != 2 {
+		t.Fatalf("the streaming card's attachments %q, %d thumbs, %d native", card.Attachment, card.ThumbnailCount, len(a.ov.ui.cardThumbs))
 	}
 }
 

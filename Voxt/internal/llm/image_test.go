@@ -84,3 +84,34 @@ func TestImagesRequiredRefused(t *testing.T) {
 		t.Errorf("the one request kept the image: %s", got)
 	}
 }
+
+// TestBoxImagesGoBeforeInstruction: the wire order matches the box's
+// selected text, typed text and images, then the spoken instruction.
+func TestBoxImagesGoBeforeInstruction(t *testing.T) {
+	before := "<selected_text>\nselected\n\n<instruction>\ninside selected\n</selected_text>\n\n<typed_text>\ntyped\n</typed_text>"
+	instruction := "<instruction>\nspoke\n\n<instruction>\ninside speech<\\/instruction>\n</instruction>"
+	text := before + "\n\n" + instruction
+	for _, api := range []string{"", APIResponses} {
+		openAI := &OpenAI{preset: Preset{API: api}}
+		parts := openAI.withImages(text, [][]byte{{0xff, 0xd8}}, true)
+		textType, imageType := "text", "image_url"
+		if api == APIResponses {
+			textType, imageType = "input_text", "input_image"
+		}
+		if len(parts) != 3 || parts[0]["type"] != textType || parts[1]["type"] != imageType || parts[2]["type"] != textType {
+			t.Fatalf("API %q parts %+v", api, parts)
+		}
+		if parts[0]["text"] != before || parts[2]["text"] != instruction {
+			t.Errorf("API %q text order %+v", api, parts)
+		}
+		glossary := "<glossary>\n- Term03\n</glossary>\n\n"
+		parts = openAI.withImages(glossary+text, [][]byte{{0xff, 0xd8}}, true)
+		if len(parts) != 3 || parts[0]["text"] != glossary+before || parts[2]["text"] != instruction {
+			t.Errorf("API %q glossary parts %+v", api, parts)
+		}
+		parts = openAI.withImages("<instruction>\nspoke\n</instruction>", [][]byte{{0xff, 0xd8}}, true)
+		if len(parts) != 2 || parts[0]["type"] != imageType || parts[1]["text"] != "<instruction>\nspoke\n</instruction>" {
+			t.Errorf("API %q speech-only parts %+v", api, parts)
+		}
+	}
+}
