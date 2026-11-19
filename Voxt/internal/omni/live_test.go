@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -167,6 +166,48 @@ func TestLiveResult(t *testing.T) {
 	}
 }
 
+// TestLiveResultFullQueueSalvagesAfterFinalFails: a full preview queue
+// sends LiveResult through its Final fallback. If that Final also fails,
+// the queued audio still reaches the preview before Salvage chooses it.
+func TestLiveResultFullQueueSalvagesAfterFinalFails(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}", FailFrom: 1, Delay: 100 * time.Millisecond}, nil)
+	st, err := f.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := st.(*live)
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+	s.writeGate = gate
+	for range cap(s.out) + 1 {
+		if err := st.Send(tone(10*time.Millisecond, 0.3)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s.out) != cap(s.out) {
+		t.Fatalf("preview queue has %d of %d messages", len(s.out), cap(s.out))
+	}
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	f.waitLogged(t, "failed after")
+	s.mu.Lock()
+	finalOnly := s.finalOnly
+	s.mu.Unlock()
+	release()
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+	if !finalOnly {
+		t.Error("the LiveResult fallback did not allow the preview wrap-up")
+	}
+	if got := st.(asr.Salvager).Salvage(); !strings.Contains(got, "partial ") {
+		t.Errorf("salvaged %q, want the queued audio's preview", got)
+	}
+}
+
 // TestLiveLargeFirstSend: when the model is slow to load, the audio
 // recorded meanwhile goes in the stream's first Send, a second or more of
 // it. The preview must take it and send partials. The fake server
@@ -302,38 +343,9 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	// DIAG (temporary, for the Linux CI flake): dump everything on failure.
-	s := st.(*live)
-	defer func() {
-		s.mu.Lock()
-		q, p, fin, end, fo := s.queued, s.previewed, s.finished, s.ended, s.finalOnly
-		s.mu.Unlock()
-		var wd, rd bool
-		select {
-		case <-s.writeDone:
-			wd = true
-		default:
-		}
-		select {
-		case <-s.readDone:
-			rd = true
-		default:
-		}
-		t.Logf("DIAG state: queued=%d previewed=%d finished=%v ended=%v finalOnly=%v writeDone=%v readDone=%v ctx=%v events=%d",
-			q, p, fin, end, fo, wd, rd, s.ctx.Err(), len(s.events))
-		f.mu.Lock()
-		out := slices.Clone(f.out)
-		f.mu.Unlock()
-		if len(out) > 30 {
-			out = out[len(out)-30:]
-		}
-		t.Logf("DIAG runtime log tail:\n%s", strings.Join(out, "\n"))
-		t.Logf("DIAG final records: %+v", f.records("final"))
-		buf := make([]byte, 4<<20)
-		t.Logf("DIAG stacks:\n%s", buf[:runtime.Stack(buf, true)])
-	}()
 	// Hold the writer: the whole recording stays queued whatever the
 	// kernels' buffers; released once the drain has given up.
+	s := st.(*live)
 	gate := make(chan struct{})
 	s.writeGate = gate
 	defer close(gate)

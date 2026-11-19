@@ -330,6 +330,28 @@ func TestSalvageAwaitsTailRecognitionQuiet(t *testing.T) {
 	}
 }
 
+// TestSalvageQuietWindowRestartsOnServerMessages: recognition can take
+// longer than previewQuiet in total. Each new server message restarts the
+// quiet window, so a later partial is not abandoned between messages.
+func TestSalvageQuietWindowRestartsOnServerMessages(t *testing.T) {
+	_, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}", FailFrom: 1, LiveSegDelay: 2 * time.Second})
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, tone(4*time.Second, 0.3))
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+	if got := st.(asr.Salvager).Salvage(); !strings.Contains(got, "partial 31") {
+		t.Errorf("salvaged %q, want the partial recognised after several quiet windows", got)
+	}
+}
+
 func TestMossDiarizeNoSpeech(t *testing.T) {
 	f, a := mossWithVAD(t, omnitest.Opts{Segments: true})
 	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: silence(5 * time.Second), Format: "pcm", SampleRate: sampleRate})
@@ -338,18 +360,16 @@ func TestMossDiarizeNoSpeech(t *testing.T) {
 	}
 }
 
-// TestMossDiarizeTags: a text the server did not split into segments
-// comes without its tags.
+// TestMossDiarizeTags: the overall text and every speaker segment come
+// without MOSS's timestamp and speaker tags.
 func TestMossDiarizeTags(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Text: "[0.25][S01]hello there[1.50]"}, withServers(t, "moss_transcribe_diarize_server"))
+	f := newFake(t, omnitest.Opts{Text: "[0.25][S01]hello there[1.50]", Segments: true, SegmentTags: true}, withServers(t, "moss_transcribe_diarize_server"))
 	res, err := f.asr(t, ASRMoss).Diarize(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: sampleRate})
 	if err != nil || res.Text != "hello there" {
 		t.Fatalf("%q, %v", res.Text, err)
 	}
-	for _, s := range res.Segments {
-		if s.Text != stripTags(s.Text) {
-			t.Errorf("segment %+v", s)
-		}
+	if len(res.Segments) != 2 || res.Segments[0].Text != "first" || res.Segments[1].Text != "second" {
+		t.Errorf("segments %+v", res.Segments)
 	}
 }
 
@@ -376,5 +396,16 @@ func TestPauseCut(t *testing.T) {
 	push(silence(5 * time.Second))
 	if pause := sent - before; pause == 0 || pause > sampleRate*2 {
 		t.Fatalf("pause: %d bytes", pause)
+	}
+}
+
+// TestPauseCutLargeChunk: a slow model can deliver speech and the pause
+// after it in one Send. The speech before that pause must still pass.
+func TestPauseCutLargeChunk(t *testing.T) {
+	c := newPauseCut()
+	pcm := append(tone(time.Second, 0.3), silence(6*time.Second)...)
+	out, _ := c.push(pcm)
+	if speech := len(tone(time.Second, 0.3)); len(out) < speech {
+		t.Fatalf("only %d of at least %d speech bytes passed", len(out), speech)
 	}
 }

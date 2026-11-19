@@ -2,7 +2,9 @@ package omni
 
 import (
 	"context"
+	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -52,22 +54,25 @@ func newPauseCut() *pauseCut {
 // and the bytes it dropped for good: the session counts them as
 // previewed, so Salvage compares the pieces' coverage with the whole
 // recording, not only with what the socket got.
-func (c *pauseCut) push(pcm []byte) ([]byte, int) {
-	c.d.Write(pcm)
-	if c.d.Speaking() {
-		out := append(c.held, pcm...)
-		c.held, c.after = nil, 0
-		return out, 0
+func (c *pauseCut) push(pcm []byte) (out []byte, dropped int) {
+	for _, frame := range asr.Frames(pcm, 100*time.Millisecond, sampleRate) {
+		c.d.Write(frame)
+		if c.d.Speaking() {
+			out = append(out, c.held...)
+			out = append(out, frame...)
+			c.held, c.after = nil, 0
+			continue
+		}
+		if c.after < c.keep {
+			c.after += len(frame)
+			out = append(out, frame...)
+			continue
+		}
+		c.held = append(c.held, frame...)
+		if cut := (len(c.held) - c.preRoll) &^ 1; cut > 0 {
+			c.held = c.held[:copy(c.held, c.held[cut:])]
+			dropped += cut
+		}
 	}
-	if c.after < c.keep {
-		c.after += len(pcm)
-		return pcm, 0
-	}
-	c.held = append(c.held, pcm...)
-	dropped := 0
-	if cut := (len(c.held) - c.preRoll) &^ 1; cut > 0 {
-		c.held = c.held[:copy(c.held, c.held[cut:])]
-		dropped = cut
-	}
-	return nil, dropped
+	return out, dropped
 }

@@ -184,9 +184,13 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	}
 	body := map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata}
 	if o.Segments {
+		first, second := "first", "second"
+		if o.SegmentTags {
+			first, second = "[0.25][S01]first[1.00]", "[1.25][S02]second[2.00]"
+		}
 		body["segments"] = []map[string]any{
-			{"start": 0.5, "end": 1.5, "speaker": "S01", "text": "first"},
-			{"start": 1.5, "end": 2.5, "speaker": "S02", "text": "second"},
+			{"start": 0.5, "end": 1.5, "speaker": "S01", "text": first},
+			{"start": 1.5, "end": 2.5, "speaker": "S02", "text": second},
 		}
 	}
 	done, _ := json.Marshal(body)

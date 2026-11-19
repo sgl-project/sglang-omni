@@ -92,6 +92,8 @@ type Opts struct {
 	NoDraft bool
 	// Segments adds two speaker segments to every Final answer.
 	Segments bool
+	// SegmentTags puts MOSS timestamp and speaker tags in those segments.
+	SegmentTags bool
 	// TokenLimit ends the Final at the generation budget.
 	TokenLimit bool
 }
@@ -109,6 +111,7 @@ func Env(o Opts) []string {
 	v.Set("older", strconv.FormatBool(o.Older))
 	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
 	v.Set("segments", strconv.FormatBool(o.Segments))
+	v.Set("segmenttags", strconv.FormatBool(o.SegmentTags))
 	v.Set("tokenlimit", strconv.FormatBool(o.TokenLimit))
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
@@ -130,6 +133,7 @@ func opts() Opts {
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
 	o.Segments, _ = strconv.ParseBool(v.Get("segments"))
+	o.SegmentTags, _ = strconv.ParseBool(v.Get("segmenttags"))
 	o.TokenLimit, _ = strconv.ParseBool(v.Get("tokenlimit"))
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
