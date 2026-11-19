@@ -76,7 +76,7 @@ func (r *run) write(raw, selection string) {
 		// clipboard's picture and the window's, which an empty box
 		// leaves to today's rule — the window's is shot only now, so
 		// that one that will not be sent is never taken.
-		readBox := func(postReview bool) bool {
+		readBox := func(reviewed bool) bool {
 			if !r.req.Box || cfg.BoxInput == nil {
 				return true
 			}
@@ -93,9 +93,9 @@ func (r *run) write(raw, selection string) {
 				return false
 			}
 			// A live box can be cleared; a retry from the card keeps its
-			// typed text when the closed box returns nothing. After a review,
-			// an empty live box is authoritative even for a retry.
-			if typed != "" || r.req.Text == nil || postReview {
+			// typed text when the closed box returns nothing. After the
+			// review the box was shown, so what it holds is the answer.
+			if typed != "" || r.req.Text == nil || reviewed {
 				r.typed = typed
 			}
 			if len(images) > 0 {

@@ -181,11 +181,14 @@ func TestBoxInputClearedDuringWindowReviewIsNotSent(t *testing.T) {
 	}
 }
 
-func TestBoxResendInputClearedDuringWindowReviewIsNotSent(t *testing.T) {
-	model := &fakeLLM{text: `{"title":"Friday","content":"We ship on Friday."}`}
+// TestBoxResendClearedDuringWindowReviewIsNotSent: a send again carries
+// the text typed before; the user clears the box while its window
+// screenshot waits for approval, and the old text stays out.
+func TestBoxResendClearedDuringWindowReviewIsNotSent(t *testing.T) {
+	model := &fakeLLM{text: "We ship on Friday."}
 	approve := make(chan struct{})
 	var approved atomic.Bool
-	h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
+	h := newHarness(t, &fakeFile{text: "unused"}, model, func(c *Config, s *settings.Settings) {
 		s.Privacy.SendWindow = true
 		c.Window = func(context.Context, int) ([]byte, error) { return []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, nil }
 		c.BoxInput = func(context.Context) (string, [][]byte, error) {
@@ -204,23 +207,22 @@ func TestBoxResendInputClearedDuringWindowReviewIsNotSent(t *testing.T) {
 			}
 		}
 	})
-	_, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
-		Text: &TextInput{Raw: "make it polite", Typed: "delete me"}})
-	if err != nil {
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?", Typed: "delete me"}}); err != nil {
 		t.Fatal(err)
 	}
-	h.rec.waitFor(t, "the resend window preview", func(s Snapshot) bool { return s.ImagePreviewKind == "window" })
+	h.rec.waitFor(t, "the window preview", func(s Snapshot) bool { return s.ImagePreviewKind == "window" })
 	close(approve)
 	end := h.rec.wait(t)
 	if end.State != Done || end.Typed != "" {
-		t.Fatalf("cleared resend text survived: end %s, typed %q", end.State, end.Typed)
+		t.Fatalf("cleared text survived the resend: end %s, typed %q", end.State, end.Typed)
 	}
 	reqs := model.requests()
 	if len(reqs) != 1 {
 		t.Fatalf("%d requests", len(reqs))
 	}
 	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; strings.Contains(user, "delete me") {
-		t.Errorf("cleared resend text in the user message:\n%s", user)
+		t.Errorf("cleared text in the user message:\n%s", user)
 	}
 }
 

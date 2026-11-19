@@ -344,8 +344,11 @@ func (a *app) boxPaste(svc uiServices) bool {
 		seq := a.boxReserve()
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
 			errText := ""
-			if err != nil || len(res.JPEG) > imgconv.MaxFileBytes {
+			switch {
+			case err != nil:
 				res.JPEG, errText = nil, i18n.T("This image could not be read.")
+			case len(res.JPEG) > imgconv.MaxFileBytes:
+				res.JPEG, errText = nil, i18n.T("This image is too large.")
 			}
 			a.boxConverted(gen, seq, res.JPEG, errText, i18n.T("Clipboard"))
 		})

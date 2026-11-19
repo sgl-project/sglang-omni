@@ -22,11 +22,10 @@ const MaxSide = 1600
 // quality is the JPEG's, as the helper's.
 const quality = 70
 
-const (
-	// MaxFileBytes is the largest encoded picture accepted for conversion.
-	MaxFileBytes = 32 << 20
-	maxPixels    = 40_000_000
-)
+// MaxFileBytes is the largest picture file it reads.
+const MaxFileBytes = 32 << 20
+
+const maxPixels = 40_000_000
 
 var errImageTooLarge = errors.New("image is too large")
 
