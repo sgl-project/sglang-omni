@@ -13,6 +13,7 @@ from sglang_omni.config import (
     EndpointsConfig,
     EngineArgs,
     PipelineConfig,
+    PlacementConfig,
     ProcessConfig,
     StageConfig,
 )
@@ -433,6 +434,198 @@ async def test_sharing_off_keeps_one_spawn_wave_and_one_broadcast(
 
     await runner.start(timeout=5.0)
     await runner.stop()
+
+
+def patch_real_groups(monkeypatch, events: list[str]) -> FakeCoordinator:
+    coordinator = FakeCoordinator(events)
+    real_build = mp_runner.build_stage_groups
+
+    def build_fake_groups(*args, **kwargs):
+        real_groups = real_build(*args, **kwargs)
+        fake_groups: list[FakeGroup] = []
+        for real_group in real_groups:
+            fake = FakeGroup(events, real_group.group_name)
+            fake.process_specs = real_group.process_specs
+            fake.stage_control_endpoints = {
+                spec.stage_name: f"ipc://{spec.stage_name}"
+                for process_spec in real_group.process_specs
+                for spec in process_spec.stage_specs
+                if spec.owns_external_io
+            }
+            fake_groups.append(fake)
+        return fake_groups
+
+    monkeypatch.setattr(mp_runner, "Coordinator", lambda *a, **k: coordinator)
+    monkeypatch.setattr(mp_runner, "build_stage_groups", build_fake_groups)
+    return coordinator
+
+
+class ColocatedThinkerPipelineConfig(PipelineConfig):
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "thinker": EngineStageConfig,
+        "talker_engine": EngineStageConfig,
+    }
+    placement: PlacementConfig = PlacementConfig(
+        require_memory_fraction_for_colocation=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_free_memory_kv_engine_completes_before_colocated_stages_spawn(
+    tmp_path, monkeypatch
+) -> None:
+    """A free-memory KV engine starts before colocated GPU stages while CPU stages share its wave."""
+    events: list[str] = []
+    coordinator = patch_real_groups(monkeypatch, events)
+    config = ColocatedThinkerPipelineConfig(
+        model_path="model",
+        entry_stage="preprocessing",
+        weight_share="off",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        stages=[
+            StageConfig(
+                name="preprocessing",
+                process="preprocessing",
+                factory_path=f"{__name__}.noop_factory",
+                next="audio_encoder",
+            ),
+            StageConfig(
+                name="audio_encoder",
+                process="audio_encoder",
+                gpu=0,
+                factory_path=f"{__name__}.noop_factory",
+                next="thinker",
+            ),
+            EngineStageConfig(
+                name="thinker",
+                process="thinker",
+                tp_size=2,
+                gpu=[0, 1],
+                factory_path=f"{__name__}.noop_factory",
+                next="talker",
+            ),
+            StageConfig(
+                name="talker",
+                process="talker",
+                gpu=1,
+                factory_path=f"{__name__}.noop_factory",
+                next="decode",
+            ),
+            StageConfig(
+                name="decode",
+                process="preprocessing",
+                factory_path=f"{__name__}.noop_factory",
+                terminal=True,
+            ),
+        ],
+    )
+    runner = MultiProcessPipelineRunner(config)
+
+    await runner.start(timeout=5.0)
+    await runner.stop()
+
+    assert events.index("spawn preprocessing") < events.index("ready thinker")
+    assert events.index("ready thinker") < events.index("spawn audio_encoder")
+    assert events.index("ready thinker") < events.index("spawn talker")
+    assert coordinator.shutdown_calls == [None]
+
+
+@pytest.mark.parametrize("talker_gpu", [0, 1], ids=["shared-gpu", "disjoint-gpus"])
+@pytest.mark.asyncio
+async def test_free_memory_engines_share_the_first_wave(
+    tmp_path, monkeypatch, talker_gpu: int
+) -> None:
+    """Free-memory engines start together whether or not they share a GPU; colocated non-engine stages wait for all of them."""
+    events: list[str] = []
+    patch_real_groups(monkeypatch, events)
+    thinker_gpus: int | list[int] = [0, 2] if talker_gpu == 0 else 0
+    thinker_tp = 2 if isinstance(thinker_gpus, list) else 1
+    config = ColocatedThinkerPipelineConfig(
+        model_path="model",
+        entry_stage="thinker",
+        weight_share="off",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        stages=[
+            EngineStageConfig(
+                name="thinker",
+                process="thinker",
+                tp_size=thinker_tp,
+                gpu=thinker_gpus,
+                factory_path=f"{__name__}.noop_factory",
+                next="talker_engine",
+            ),
+            EngineStageConfig(
+                name="talker_engine",
+                process="talker_engine",
+                gpu=talker_gpu,
+                factory_path=f"{__name__}.noop_factory",
+                next="codec",
+            ),
+            StageConfig(
+                name="codec",
+                process="codec",
+                gpu=talker_gpu,
+                factory_path=f"{__name__}.noop_factory",
+                terminal=True,
+            ),
+        ],
+    )
+    runner = MultiProcessPipelineRunner(config)
+
+    await runner.start(timeout=5.0)
+    await runner.stop()
+
+    assert events.index("spawn talker_engine") < events.index("ready thinker")
+    assert events.index("ready thinker") < events.index("spawn codec")
+    assert events.index("ready talker_engine") < events.index("spawn codec")
+
+
+@pytest.mark.parametrize(
+    ("gpu_memory_fraction", "kv_cache_bytes"),
+    [(0.8, None), (None, 1 << 20)],
+    ids=["fraction-budget", "byte-budget"],
+)
+@pytest.mark.asyncio
+async def test_budgeted_engine_keeps_colocated_stages_in_one_wave(
+    tmp_path,
+    monkeypatch,
+    gpu_memory_fraction: float | None,
+    kv_cache_bytes: int | None,
+) -> None:
+    """An engine with a declared memory or KV byte budget does not delay colocated stages."""
+    events: list[str] = []
+    patch_real_groups(monkeypatch, events)
+    monkeypatch.setattr(mp_runner, "validate_gpu_capacity", lambda plan: None)
+    config = ColocatedThinkerPipelineConfig(
+        model_path="model",
+        entry_stage="thinker",
+        weight_share="off",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        stages=[
+            EngineStageConfig(
+                name="thinker",
+                process="thinker",
+                gpu=0,
+                gpu_memory_fraction=gpu_memory_fraction,
+                engine=EngineArgs(kv_cache_bytes=kv_cache_bytes),
+                factory_path=f"{__name__}.noop_factory",
+                next="talker",
+            ),
+            StageConfig(
+                name="talker",
+                process="talker",
+                gpu=0,
+                factory_path=f"{__name__}.noop_factory",
+                terminal=True,
+            ),
+        ],
+    )
+    runner = MultiProcessPipelineRunner(config)
+
+    await runner.start(timeout=5.0)
+    await runner.stop()
+
+    assert events.index("spawn talker") < events.index("ready thinker")
 
     assert events.index("spawn gen@r1") < events.index("ready gen@r0")
     assert first.spawn_env is None
