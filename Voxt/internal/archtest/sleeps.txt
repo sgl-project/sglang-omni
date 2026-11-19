@@ -1,5 +1,7 @@
 # time.Sleep calls in test files today (TestSleepsInTests), a count per file.
-# A count may go down but not up; a file with none leaves the list.
+# Review keeps the ratchet: never raise a count or add a line. The test compares
+# final counts only, so it cannot prove that a PR left its allowance unchanged.
+# A file with none leaves the list.
 eval_asr_test.go 1
 eval_longasr_test.go 1
 internal/actnow/runtime_test.go 1
