@@ -45,6 +45,14 @@ class PinnedDraft:
 
 DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
     PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-asr-tiny",
+        stage="thinker",
+        algorithm="DSPARK",
+        draft_model_path="wirybeaver/Ming-3.0-asr-tiny-dspark",
+        draft_model_revision="3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
+        license="mit",
+    ),
+    PinnedDraft(
         model_path="Qwen/Qwen3-ASR-1.7B",
         stage="asr",
         algorithm="DFLASH",
