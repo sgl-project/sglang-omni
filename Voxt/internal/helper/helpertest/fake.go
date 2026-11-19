@@ -88,6 +88,8 @@ package helpertest
 //	                 "hello from system dictation"), a word more for each speech.audio
 //	                 with audio (speech.partial), in SpeechLangs only; without it
 //	                 speech.* are method_not_found, as in an older helper
+//	speech-empty     speech.recognize hears nothing: no speech.partial, and its result
+//	                 is the empty text
 //	speech-perm=STATE  Speech Recognition, as mic=
 //	no-screen        no Screen Recording until permissions.request asks for it:
 //	                 screen.window fails with permission_denied (else it answers
