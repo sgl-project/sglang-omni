@@ -110,8 +110,11 @@ type rewriteBoxActions struct {
 	close           func()
 	send            func()
 	drop            func([]string)
+	chooseImages    func()
+	chooseFile      func()
 	paste           func(uiServices) bool
 	pasteText       func(int, string, int, int) bool
+	pasteClipboard  func(uiServices, int, int, int)
 	remove          func(int)
 	removeText      func(int)
 	removeSelection func()
@@ -273,14 +276,6 @@ func (a *app) boxEnded(s session.Snapshot) {
 	a.boxSync()
 }
 
-// boxLanding is one converted picture waiting for its turn (boxHeld).
-type boxLanding struct {
-	gen     int
-	jpeg    []byte
-	errText string
-	source  string
-}
-
 // boxReserve takes a dropped or pasted picture's number: the send
 // waits for it (boxPending), and it lands after every earlier number,
 // so batches keep the drop order whatever converts first.
@@ -408,47 +403,6 @@ func (a *app) boxDrop(files []string) {
 	})
 }
 
-// boxConverted takes one converted picture on the main thread (errText
-// when it would not read, "" on success or a silent skip): it lands
-// only in the box's own life (a close started another) and in its
-// number's turn — each batch converts on its own goroutine, so a big
-// picture of an earlier batch can finish after a later batch's, and
-// without the turn the box and the request would follow the finish
-// order, not the drop order. A send that waited for it goes now.
-func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...string) {
-	a.boxPending--
-	if a.boxHeld == nil {
-		a.boxHeld = map[int]boxLanding{}
-	}
-	name := ""
-	if len(source) > 0 {
-		name = source[0]
-	}
-	a.boxHeld[seq] = boxLanding{gen: gen, jpeg: jpeg, errText: errText, source: name}
-	for {
-		land, ok := a.boxHeld[a.boxNext]
-		if !ok {
-			break
-		}
-		delete(a.boxHeld, a.boxNext)
-		a.boxNext++
-		if land.gen != a.boxGen {
-			continue
-		}
-		if land.errText != "" {
-			a.box.err = land.errText
-			a.boxSendQueued = false
-		} else {
-			a.boxAttach(land.jpeg, land.source)
-		}
-		a.boxSync()
-	}
-	if a.boxPending == 0 && a.boxSendQueued {
-		a.boxSendQueued = false
-		a.boxSend()
-	}
-}
-
 func (a *app) boxSessionID() string {
 	if a.box.sending != "" {
 		return a.box.sending
@@ -530,7 +484,8 @@ func (a *app) boxViewState() rewriteBoxViewState {
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
 		viewState: a.boxViewState,
-		close:     a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteTextAt,
+		close:     a.closeBox, send: a.boxSend, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
+		paste: a.boxPaste, pasteText: a.boxPasteTextAt, pasteClipboard: a.boxPasteClipboard,
 		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
 		textChanged: func(text string) {
 			if !a.box.open {

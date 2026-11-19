@@ -9,7 +9,7 @@ import (
 )
 
 func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
-	if !segment.Pasted || segment.Lines <= boxTextCollapseLines {
+	if !segment.Pasted || segment.Lines <= boxTextCollapseLines && !segment.File {
 		ui.Text(context, segment.Text).FontSize(12).TextColor(ovText2).MaxLines(3).Shrink(0)
 		return
 	}
@@ -23,7 +23,9 @@ func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, l
 				}
 			}
 		})
-		if expanded {
+		if segment.Lines <= boxTextCollapseLines {
+			ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
+		} else if expanded {
 			ui.Scroll(context.Key("full-text")).MaxHeight(150).TrackScroll(&local.textScroll).Children(func() {
 				ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
 			})
@@ -31,17 +33,19 @@ func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, l
 			lines := strings.SplitN(segment.Text, "\n", boxTextCollapseLines+1)
 			ui.Text(context, strings.Join(lines[:min(len(lines), boxTextCollapseLines)], "\n")).FontSize(12).TextColor(ovText2).MaxLines(boxTextCollapseLines).Shrink(0)
 		}
-		label := i18n.T("Show all")
-		if expanded {
-			label = i18n.T("Show less")
-		}
-		if ui.ButtonBase(context.Key("toggle-text")).Height(18).Label(label).Children(func() {
-			ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
-		}).Clicked() {
-			if local.expandedText == nil {
-				local.expandedText = map[string]bool{}
+		if segment.Lines > boxTextCollapseLines {
+			label := i18n.T("Show all")
+			if expanded {
+				label = i18n.T("Show less")
 			}
-			local.expandedText[key] = !expanded
+			if ui.ButtonBase(context.Key("toggle-text")).Height(18).Label(label).Children(func() {
+				ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
+			}).Clicked() {
+				if local.expandedText == nil {
+					local.expandedText = map[string]bool{}
+				}
+				local.expandedText[key] = !expanded
+			}
 		}
 	})
 }

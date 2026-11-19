@@ -88,6 +88,17 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			a.box.ui.previewImage = 1
 			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
 		}},
+		{"box-add-menu", func() {
+			a.box.session = "shot-box"
+			a.box.ui.addOpen = true
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
+		}},
+		{"box-add-menu-crowded", func() {
+			for range 3 {
+				a.boxAddFileText("first\nsecond\nthird\nfourth", "notes.txt")
+			}
+			a.box.ui.addOpen = true
+		}},
 		{"box-limit-error", func() {
 			a.box.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t), shotBitmap(t), shotBitmap(t)}
 			a.box.images = [][]byte{{1}, {2}, {3}, {4}}

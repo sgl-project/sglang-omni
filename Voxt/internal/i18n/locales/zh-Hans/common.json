@@ -448,5 +448,16 @@
   "Show all": "展开",
   "Show less": "收起",
   "Copied image": "复制的图片",
-  "Screenshot": "截图"
+  "Screenshot": "截图",
+  "Choose images…": "选择图片…",
+  "Choose file…": "选择文件…",
+  "Paste clipboard": "粘贴剪贴板内容",
+  "Images": "图片",
+  "Text or PDF": "文字或 PDF",
+  "Could not choose files: %v": "无法选择文件：%v",
+  "This file could not be read: %s": "无法读取文件：%s",
+  "This file type is not supported: %s": "不支持这种文件类型：%s",
+  "This file has no text: %s": "文件中没有文字：%s",
+  "Skipped %d PDF page beyond the 4-image limit": "超过 4 张图片的上限，已跳过 %d 个 PDF 页面",
+  "Skipped %d PDF pages beyond the 4-image limit": "超过 4 张图片的上限，已跳过 %d 个 PDF 页面"
 }

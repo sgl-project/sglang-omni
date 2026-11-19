@@ -16,6 +16,7 @@ type boxTextSegment struct {
 	Text   string
 	Source string
 	Pasted bool
+	File   bool
 	Chars  int
 	Lines  int
 }
