@@ -228,7 +228,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		last = now
 		var a compose.Answer
 		if in.Answer {
-			a = compose.PartialAnswer(buf.String())
+			a = compose.PartialAnswer(buf.String(), in.Text, in.Instruction)
 		} else {
 			a.Content = strings.TrimSpace(buf.String())
 		}
@@ -258,7 +258,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
-		if a, ok := compose.ParseAnswer(resp.Text); ok {
+		if a, ok := compose.ParseAnswer(resp.Text, in.Text, in.Instruction); ok {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
