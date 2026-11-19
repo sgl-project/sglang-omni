@@ -40,6 +40,8 @@ type sessionCardViewState struct {
 	InsertTooltip  string                `json:"insert_tooltip,omitempty"`
 	Attachment     string                `json:"attachment,omitempty"`
 	ThumbnailCount int                   `json:"thumbnail_count,omitempty"`
+	InputCount     int                   `json:"input_count,omitempty"`
+	Inputs         []sessionCardInput    `json:"inputs,omitempty"`
 	ProblemCode    string                `json:"problem_code,omitempty"`
 	SizeStep       int                   `json:"size_step"`
 	Levels         [session.Bars]float64 `json:"levels"`
@@ -64,6 +66,17 @@ type sessionCardViewState struct {
 	CanLanguage      bool `json:"can_language"`
 	ShowThinking     bool `json:"show_thinking"`
 	CanThink         bool `json:"can_think"`
+}
+
+// sessionCardInput is the JSON-safe form of one original sent with the answer.
+type sessionCardInput struct {
+	Label  string `json:"label"`
+	Text   string `json:"text,omitempty"`
+	Chars  int    `json:"chars,omitempty"`
+	Lines  int    `json:"lines,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Image  bool   `json:"image,omitempty"`
 }
 
 // sessionCardBlock is one laid-out body, failure, source, or conversation block.
@@ -109,7 +122,7 @@ func sessionCardAttachment(input sessionCardProjectionInput) (string, int) {
 		return input.Answer.attach, len(input.Answer.ui.thumbs)
 	}
 	if input.Writing {
-		if input.Snapshot.ID == input.BoxSessionID {
+		if input.Snapshot.ID == input.BoxSessionID && input.Snapshot.ImageHint == "box" {
 			return "box", input.BoxThumbnailCount
 		}
 		return input.Snapshot.ImageHint, 0
@@ -159,6 +172,20 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		FollowTooltip: continueTipFor(translator, input.FollowKeys),
 	}
 	state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
+	state.Inputs = sessionCardInputs(card.previews)
+	inputKinds := 0
+	if card.input.Selection != "" {
+		inputKinds++
+	}
+	if card.input.Typed != "" {
+		inputKinds++
+	}
+	if state.Attachment != "" {
+		inputKinds++
+	}
+	if inputKinds > 1 {
+		state.InputCount = len(state.Inputs)
+	}
 	if sessionCardRedoWriting(input) {
 		// The answer asked again streams in over the card's; a failure or a
 		// cancel brings the card's back (endRedo).
@@ -388,7 +415,7 @@ type sessionCardProjectionKey struct {
 	canFollowUp, copied, conversation     bool
 	redoWriting                           bool
 	problemCode, attachment               string
-	thumbnailCount                        int
+	thumbnailCount, inputCount            int
 	// highlights is the card's dictionary spans by identity: they are
 	// set with the text, or after it (openAnswer).
 	highlights *dict.Span
@@ -424,7 +451,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		turnCount: len(card.turns), followKeys: input.FollowKeys,
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
-		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, highlights: highlights,
+		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews), highlights: highlights,
 	}
 }
 
@@ -454,15 +481,21 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	input.CanFollowUp = a.canFollowUp()
 	input.ThinkingProvider, _ = a.llmService(a.answer.llmID)
 	input.Generation = a.llmGeneration(a.answer.llmID)
+	if sessionCardRedoWriting(input) && input.Snapshot.ImageHint != "box" {
+		input.Answer.attach = input.Snapshot.ImageHint
+		input.Answer.previews = answerInputPreviews(input.Snapshot, nil)
+		input.Answer.images, input.Answer.ui.thumbs = nil, nil
+	}
 	return input
 }
 
 func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection, next *sessionOverlayViewState) {
-	a.ov.ui.cardThumbs = a.answer.ui.thumbs
-	if !a.answer.open && a.sess.ID == a.boxSessionID() {
+	input := a.sessionCardProjectionInput()
+	a.ov.ui.cardThumbs = input.Answer.ui.thumbs
+	a.ov.ui.cardPreviews = input.Answer.previews
+	if !input.Answer.open && a.sess.ID == a.boxSessionID() {
 		a.ov.ui.cardThumbs = a.box.thumbs
 	}
-	input := a.sessionCardProjectionInput()
 	key, liveKey := sessionCardKeyFor(input), sessionCardLiveKeyFor(input)
 	if !projection.cardReady || key != projection.cardKey {
 		projection.card = buildSessionCardViewState(projection.translator, input)

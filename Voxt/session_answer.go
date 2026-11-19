@@ -28,9 +28,10 @@ func (a *app) openAnswer(s session.Snapshot) {
 		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection, Typed: s.Typed}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name), attach: s.ImageHint,
 	}
-	if s.ID == a.box.session || s.ID == a.box.sending {
+	if s.ImageHint == "box" && (s.ID == a.box.session || s.ID == a.box.sending) {
 		card.images, card.ui.thumbs = a.box.images, a.box.thumbs
 	}
+	card.previews = answerInputPreviews(s, &a.box)
 	if s.State == session.Failed {
 		card.problem = s.Problem
 	}
@@ -52,6 +53,11 @@ func (a *app) openAnswer(s session.Snapshot) {
 			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
 			if card.attach == "box" {
 				card.images, card.ui.thumbs = a.answer.images, a.answer.ui.thumbs
+				for _, preview := range a.answer.previews {
+					if preview.Image != nil {
+						card.previews = append(card.previews, preview)
+					}
+				}
 			}
 			if card.why == "" {
 				card.why = a.answer.why
@@ -88,6 +94,11 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
 		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
+		a.answer.attach = s.ImageHint
+		if a.answer.attach != "box" {
+			a.answer.previews = answerInputPreviews(s, nil)
+			a.answer.images, a.answer.ui.thumbs = nil, nil
+		}
 		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
 			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
 		}

@@ -20,6 +20,8 @@ type answerCardUI struct {
 	langOpen, thinkMenu, pillMenu bool
 	quotesOpen                    map[int]bool
 	thumbs                        []*ui.Bitmap
+	preview                       int
+	previewScroll                 ui.ScrollState
 }
 
 const quoteGap, quoteToggleH, quoteSize = layout.BubbleTitleGap, 16, 12

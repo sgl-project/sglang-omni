@@ -23,28 +23,23 @@ package main
 // with the same instruction (StartRequest.Text).
 
 import (
-	"context"
-	"errors"
+	"path/filepath"
 	"slices"
-	"sync"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // boxMaxImages is how many pictures the box holds (and one request
 // sends); the wish wall asked for few, not a gallery.
 const boxMaxImages = 4
-
-const boxMaxTextBytes = 32 << 20
-
-func boxTextTooLarge(text string) bool { return len(text) > boxMaxTextBytes }
 
 // rewriteBox is the input box's state (rewrite_box_view.go draws it).
 type rewriteBox struct {
@@ -56,13 +51,28 @@ type rewriteBox struct {
 	session, sending string
 	// selection is the text selected when the shortcut fired (the
 	// session reads it; the box shows it).
-	selection string
-	text      string
+	selection         string
+	selectionVia      string
+	text              string
+	textSegments      []boxTextSegment
+	nextTextID        int
+	textSegmentsDirty bool
+	textCache         string
+	cachedEditor      string
+	textCacheValid    bool
 	// images are the box's pictures (JPEGs), thumbs their decoded
 	// bitmaps; limit: one over boxMaxImages was refused.
-	images [][]byte
-	thumbs []*boxBitmap
-	limit  bool
+	images    [][]byte
+	thumbs    []*boxBitmap
+	imageInfo []boxImageInfo
+	limit     bool
+	// autoImage caches the clipboard/window preview's decoded bitmap.
+	autoImage                []byte
+	autoKind                 string
+	autoThumb                *boxBitmap
+	autoInfo                 boxImageInfo
+	selectionSuppressed      bool
+	automaticImageSuppressed bool
 	// instruction is the recognised spoken instruction, kept so a send
 	// that failed can go again with Enter.
 	instruction string
@@ -72,37 +82,59 @@ type rewriteBox struct {
 	// focusText: the text box takes the focus on show; winShown: the
 	// window is on screen (native only).
 	focusText bool
+	showTip   bool
 	win       boxWindow
 	winShown  bool
+	style     mygo.VibrancyStyle
 	ui        rewriteBoxLocalUI
 }
 
 // rewriteBoxViewState is the input box's display state.
 type rewriteBoxViewState struct {
-	Selection  string
-	Text       string
-	Thumbnails []*boxBitmap
-	VoiceLine  string
-	Error      string
-	CanSend    bool
-	Limit      bool
-	FocusText  bool
+	Selection         string
+	SelectionBlock    boxTextSegment
+	Text              string
+	TextSegments      []boxTextSegment
+	Thumbnails        []*boxBitmap
+	ImageInfo         []boxImageInfo
+	ManualImages      int
+	VoiceLine         string
+	EditorPlaceholder string
+	Subtitle          string
+	SubtitleError     bool
+	CanSend           bool
+	Limit             bool
+	FocusText         bool
+	ShowTip           bool
+	Recording         bool
+	Heard             bool
+	Levels            [session.Bars]float64
+	Motion            bool
+	Phase             float64
+	Radius            float32
+	Alpha             float32
+	Palette           string
 }
 
 // rewriteBoxActions are the input box's user intents.
 type rewriteBoxActions struct {
-	close       func()
-	send        func()
-	drop        func([]string)
-	paste       func(uiServices, string) bool
-	remove      func(int)
-	textChanged func(string)
-	focused     func()
-}
-
-// rewriteBoxLocalUI owns the editor's text between frames.
-type rewriteBoxLocalUI struct {
-	text string
+	viewState       func() rewriteBoxViewState
+	close           func()
+	send            func()
+	drop            func([]string)
+	chooseImages    func()
+	chooseFile      func()
+	paste           func(uiServices) bool
+	pasteText       func(int, string, int, int) bool
+	pasteClipboard  func(uiServices, int, int, int)
+	remove          func(int)
+	removeText      func(int)
+	removeSelection func()
+	removeAutoImage func()
+	textChanged     func(string)
+	segmentChanged  func(int, string)
+	dismissTip      func()
+	focused         func()
 }
 
 // boxWindow is the box's panel as boxSync and closeBoxWindow use it
@@ -114,84 +146,7 @@ type boxWindow interface {
 	Focus()
 	Hide()
 	Destroy()
-}
-
-// boxShare is the box's content as the sending session reads it
-// (Config.BoxInput, on the session's goroutine): stored on every box
-// change and every frame the card shows (a keystroke is one). Its
-// conversion count covers automatic recording stops as well as Enter.
-type boxShare struct {
-	mu      sync.Mutex
-	text    string
-	images  [][]byte
-	pending int
-	err     error
-	changed chan struct{}
-}
-
-func (b *boxShare) store(text string, images [][]byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.text, b.images = text, slices.Clone(images)
-}
-
-func (b *boxShare) start() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.pending++
-	if b.changed == nil {
-		b.changed = make(chan struct{})
-	}
-}
-
-func (b *boxShare) done(err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.pending--
-	if err != nil {
-		b.err = err
-	}
-	if b.pending == 0 || err != nil {
-		b.signalLocked()
-	}
-}
-
-func (b *boxShare) signalLocked() {
-	if b.changed != nil {
-		close(b.changed)
-	}
-	b.changed = make(chan struct{})
-}
-
-func (b *boxShare) clearError() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.err = nil
-}
-
-func (b *boxShare) reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.text, b.images, b.err = "", nil, nil
-	b.signalLocked()
-}
-
-func (b *boxShare) load(ctx context.Context) (string, [][]byte, error) {
-	for {
-		b.mu.Lock()
-		if b.pending == 0 || b.err != nil {
-			text, images, err := b.text, b.images, b.err
-			b.mu.Unlock()
-			return text, images, err
-		}
-		changed := b.changed
-		b.mu.Unlock()
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return "", nil, ctx.Err()
-		}
-	}
+	SetVibrancyStyle(mygo.VibrancyStyle)
 }
 
 // openBox opens the input box and starts the microphone with it (the
@@ -200,16 +155,27 @@ func (b *boxShare) load(ctx context.Context) (string, [][]byte, error) {
 // stopped. A box that stayed open (a send failed) keeps its content.
 func (a *app) openBox(target proto.App, req session.StartRequest) {
 	req.Box = true
+	if !a.sess.State.Live() {
+		a.boxShare.clearReview()
+	}
 	id, n := a.startSessionID(req)
 	if n != nil || id == "" {
 		return // the notice says what is missing
 	}
 	if !a.box.open {
-		a.box = rewriteBox{}
+		a.box = rewriteBox{showTip: !a.prefs.Setup.RewriteBoxTipDismissed && a.prefs.Setup.RewriteBoxOpens < 3}
+		if a.prefs.Setup.RewriteBoxOpens < 3 {
+			a.updateSettings(func(s *settings.Settings) {
+				if s.Setup.RewriteBoxOpens < 3 {
+					s.Setup.RewriteBoxOpens++
+				}
+			})
+		}
 	}
 	a.box.open, a.box.shown, a.box.err = true, true, ""
 	a.box.target, a.box.session = target, id
-	a.box.sending, a.box.instruction, a.box.selection = "", "", ""
+	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
+	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
 	a.box.focusText = true
 	a.boxSync()
 }
@@ -217,7 +183,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 // closeBox closes the box and drops its content (Esc, its Close button,
 // the window's close); the recording is cancelled.
 func (a *app) closeBox() {
-	if a.box.session != "" && a.sess.State.Live() && a.sess.ID == a.box.session {
+	if id := a.boxSessionID(); id != "" && a.sess.State.Live() && a.sess.ID == id {
 		a.cancelSession()
 	}
 	a.dropBox()
@@ -230,6 +196,7 @@ func (a *app) dropBox() {
 	a.closeBoxWindow()
 	a.box = rewriteBox{}
 	a.boxShare.reset()
+	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
 	// A send queued behind a picture's conversion dies with the box: an
 	// old life's conversion landing later must not send the new life.
@@ -237,8 +204,9 @@ func (a *app) dropBox() {
 }
 
 // boxSend is Enter or the shortcut's stop in the box: while it records,
-// it finishes the recording and the session sends; after a send failed,
-// it sends the kept instruction, text and pictures again.
+// it finishes the recording and the session sends; a newly captured window
+// preview waits for one more confirmation. After a send failed, it sends
+// the kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
 		return
@@ -254,11 +222,23 @@ func (a *app) boxSend() {
 		if a.sess.State == session.Recording {
 			a.stopSession()
 		}
+		if a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
+			a.boxShare.approveReview()
+		}
 		return
 	}
-	if a.box.instruction == "" || a.box.sending != "" || a.sess.State.Live() {
+	if a.box.sending != "" {
+		if a.sess.ID == a.box.sending && a.box.shown && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
+			a.boxShare.approveReview()
+			a.box.shown = false
+			a.boxSync()
+		}
 		return
 	}
+	if a.box.instruction == "" || a.sess.State.Live() {
+		return
+	}
+	a.boxShare.clearReview()
 	in := session.TextInput{Raw: a.box.instruction, Selection: a.box.selection}
 	id, n := a.startSessionID(session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in})
 	if n == nil && id != "" {
@@ -293,6 +273,7 @@ func (a *app) boxEnded(s session.Snapshot) {
 		}
 		if s.Selection != "" {
 			a.box.selection = s.Selection
+			a.box.selectionVia = s.SelectionVia
 		}
 		a.box.shown = true
 	default: // cancelled: as Esc always did
@@ -301,17 +282,14 @@ func (a *app) boxEnded(s session.Snapshot) {
 	a.boxSync()
 }
 
-// boxLanding is one converted picture waiting for its turn (boxHeld).
-type boxLanding struct {
-	gen     int
-	jpeg    []byte
-	errText string
-}
-
 // boxReserve takes a dropped or pasted picture's number: the send
 // waits for it (boxPending), and it lands after every earlier number,
 // so batches keep the drop order whatever converts first.
 func (a *app) boxReserve() int {
+	// A new input replaces an earlier failure's hint; a failure within its
+	// own batch then stays when a later file of the batch lands.
+	a.box.err = ""
+	a.boxShare.clearError()
 	a.boxPending++
 	a.boxShare.start()
 	seq := a.boxSeq
@@ -323,7 +301,7 @@ func (a *app) boxReserve() int {
 // boxMaxImages. The JPEG is encoded once, here, and kept: a send again
 // (a retry, another thinking level, a follow-up) has the same bytes in
 // the same position, which the server's prefix cache reuses.
-func (a *app) boxAttach(jpeg []byte) {
+func (a *app) boxAttach(jpeg []byte, source ...string) {
 	if len(jpeg) == 0 || !a.box.open {
 		return
 	}
@@ -332,9 +310,14 @@ func (a *app) boxAttach(jpeg []byte) {
 		a.boxSync()
 		return
 	}
+	name := i18n.T("Pasted image")
+	if len(source) > 0 && source[0] != "" {
+		name = source[0]
+	}
 	bmp, _ := decodeBoxBitmap(jpeg)
 	a.box.images = append(a.box.images, jpeg)
 	a.box.thumbs = append(a.box.thumbs, bmp)
+	a.box.imageInfo = append(a.box.imageInfo, boxImageCaption(bmp, name))
 	a.boxSync()
 }
 
@@ -345,7 +328,20 @@ func (a *app) boxRemoveImage(i int) {
 	}
 	a.box.images = slices.Delete(a.box.images, i, i+1)
 	a.box.thumbs = slices.Delete(a.box.thumbs, i, i+1)
+	if i < len(a.box.imageInfo) {
+		a.box.imageInfo = slices.Delete(a.box.imageInfo, i, i+1)
+	}
 	a.box.limit = false
+	a.boxSync()
+}
+
+func (a *app) boxRemoveSelection() {
+	a.box.selectionSuppressed = true
+	a.boxSync()
+}
+
+func (a *app) boxRemoveAutoImage() {
+	a.box.automaticImageSuppressed = true
 	a.boxSync()
 }
 
@@ -353,16 +349,11 @@ func (a *app) boxRemoveImage(i int) {
 // box (text it also holds wins, as with the copied-image setting); an
 // image file copied in Finder comes through the helper (HEIC too); text
 // pastes as ever. It reports whether the key was taken.
-func (a *app) boxPaste(svc uiServices, text string) bool {
+func (a *app) boxPaste(svc uiServices) bool {
 	formats := svc.ClipboardFormats()
 	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
 	switch {
 	case has(transfer.Text):
-		if boxTextTooLarge(text) {
-			a.box.err = i18n.T("This text is too large.")
-			a.boxSync()
-			return true
-		}
 		return false
 	case (has(transfer.PNG) || has(transfer.FileList)) && len(a.box.images)+a.boxPending >= boxMaxImages:
 		a.box.limit = true
@@ -379,7 +370,7 @@ func (a *app) boxPaste(svc uiServices, text string) bool {
 			case len(res.JPEG) > imgconv.MaxFileBytes:
 				res.JPEG, errText = nil, i18n.T("This image is too large.")
 			}
-			a.boxConverted(gen, seq, res.JPEG, errText)
+			a.boxConverted(gen, seq, res.JPEG, errText, i18n.T("Clipboard"))
 		})
 		return true
 	}
@@ -415,7 +406,7 @@ func (a *app) boxDrop(files []string) {
 				if err != nil {
 					errText, jpeg = i18n.T("This image could not be read; paste it (⌘V) instead."), nil
 				}
-				a.boxConverted(gen, seq, jpeg, errText)
+				a.boxConverted(gen, seq, jpeg, errText, filepath.Base(f))
 			})
 		}
 		if rejected {
@@ -428,52 +419,6 @@ func (a *app) boxDrop(files []string) {
 		}
 	})
 }
-
-// boxConverted takes one converted picture on the main thread (errText
-// when it would not read, "" on success or a silent skip): it lands
-// only in the box's own life (a close started another) and in its
-// number's turn — each batch converts on its own goroutine, so a big
-// picture of an earlier batch can finish after a later batch's, and
-// without the turn the box and the request would follow the finish
-// order, not the drop order. A send that waited for it goes now.
-func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
-	// An out-of-order landing stays pending until its turn, so later drops
-	// cannot use its slot before it reaches the box.
-	var conversionErr error
-	if gen == a.boxGen && errText != "" {
-		conversionErr = errors.New(errText)
-	}
-	if a.boxHeld == nil {
-		a.boxHeld = map[int]boxLanding{}
-	}
-	a.boxHeld[seq] = boxLanding{gen, jpeg, errText}
-	for {
-		land, ok := a.boxHeld[a.boxNext]
-		if !ok {
-			break
-		}
-		delete(a.boxHeld, a.boxNext)
-		a.boxPending--
-		a.boxNext++
-		if land.gen != a.boxGen {
-			continue
-		}
-		if land.errText != "" {
-			a.box.err = land.errText
-			a.boxSendQueued = false
-		} else {
-			a.boxAttach(land.jpeg)
-		}
-		a.boxSync()
-	}
-	// Wake the session only after boxSync has stored every landed image.
-	a.boxShare.done(conversionErr)
-	if a.boxPending == 0 && a.boxSendQueued {
-		a.boxSendQueued = false
-		a.boxSend()
-	}
-}
-
 func (a *app) boxSessionID() string {
 	if a.box.sending != "" {
 		return a.box.sending
@@ -484,92 +429,11 @@ func (a *app) boxSessionID() string {
 // boxSelection is the selection the box shows: the session's while it
 // runs, the kept one after a send failed.
 func (a *app) boxSelection() string {
+	if a.box.selectionSuppressed {
+		return ""
+	}
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		return a.sess.Selection
 	}
 	return a.box.selection
-}
-
-// boxVoiceLine is the voice line's text: the hint, the instruction
-// being heard, or the recognised one (Enter sends it again).
-func (a *app) boxVoiceLine() string {
-	b := &a.box
-	if b.session != "" && a.sess.ID == b.session && a.sess.State.Live() {
-		switch a.sess.State {
-		case session.Recording:
-			if partial := a.sess.Partial; partial != "" {
-				return partial
-			}
-			return i18n.T("Listening…")
-		default:
-			return i18n.T("Recognising…")
-		}
-	}
-	if b.instruction != "" {
-		return b.instruction
-	}
-	if keys := a.featureKeys(hotkey.Rewrite); keys != "" {
-		return i18n.T("Say the instruction (%s), then Enter sends", keys)
-	}
-	return i18n.T("Say the instruction, then Enter sends")
-}
-
-func (a *app) boxViewState() rewriteBoxViewState {
-	box := &a.box
-	return rewriteBoxViewState{
-		Selection: a.boxSelection(), Text: box.text, Thumbnails: box.thumbs, VoiceLine: a.boxVoiceLine(), Error: box.err,
-		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording || box.session == "" && box.instruction != ""),
-		Limit:   box.limit, FocusText: box.focusText,
-	}
-}
-
-func (a *app) boxActions() rewriteBoxActions {
-	return rewriteBoxActions{
-		close: a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, remove: a.boxRemoveImage,
-		textChanged: func(text string) {
-			if !a.box.open {
-				return
-			}
-			a.box.text = text
-			a.boxShare.store(a.box.text, a.box.images)
-		},
-		focused: func() { a.box.focusText = false },
-	}
-}
-
-// boxSync shows, hides or refreshes the box's window. Main thread.
-func (a *app) boxSync() {
-	a.boxShare.store(a.box.text, a.box.images)
-	show := a.box.open && a.box.shown
-	if !show {
-		if a.box.win != nil && a.box.winShown {
-			a.box.win.Hide()
-		}
-		a.box.winShown = false
-		return
-	}
-	if !a.overlayNative() {
-		return // tests: the state is enough
-	}
-	if a.box.win == nil {
-		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui)
-	}
-	a.box.win.Invalidate()
-	if !a.box.winShown {
-		a.box.win.Center()
-		a.box.win.Show()
-		a.box.win.Focus()
-		a.box.winShown = true
-	}
-}
-
-// boxWinW and boxWinH are the box window's size.
-const boxWinW, boxWinH = 480, 340
-
-// closeBoxWindow destroys the window (quit).
-func (a *app) closeBoxWindow() {
-	if a.box.win != nil {
-		a.box.win.Destroy()
-		a.box.win = nil
-	}
 }

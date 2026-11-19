@@ -121,8 +121,9 @@ type answerCard struct {
 	conversation bool
 	// attach says which picture went to the language model
 	// (Snapshot.ImageHint); images are the input box's pictures.
-	attach string
-	images [][]byte
+	attach   string
+	images   [][]byte
+	previews []answerInputPreview
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
@@ -198,9 +199,11 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
-		BoxInput: a.boxShare.load,
-		Resolve:  resolver(lm),
-		History:  lib.store.History(),
+		BoxInput:          a.boxShare.load,
+		BoxAutoSuppressed: func() (bool, bool) { return a.boxShare.automaticSuppressed() },
+		BoxReview:         a.boxShare.waitForReview,
+		Resolve:           resolver(lm),
+		History:           lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
@@ -318,9 +321,13 @@ func (a *app) sessionChanged(s session.Snapshot) {
 			if s.Spoken != "" {
 				a.box.instruction = s.Spoken
 			}
-			if was.State == session.Recording && s.State != session.Recording {
+			if was.State != session.Composing && s.State == session.Composing {
 				a.box.shown = false // sent: the pill and the card take over
 			}
+		}
+		if s.ID == a.box.sending && s.ImagePreviewKind == "window" && len(s.ImagePreview) > 0 &&
+			(was.ID != s.ID || was.ImagePreviewKind != "window" || len(was.ImagePreview) == 0) {
+			a.box.shown = true
 		}
 		a.boxSync() // the box's lines follow its session
 	}

@@ -112,6 +112,18 @@ func TestCardFromHistoryTyped(t *testing.T) {
 }
 
 // A translation that became a Rewrite conversation is restored as its first turn.
+func TestCardFromHistoryRestoresTextInputPreviews(t *testing.T) {
+	entry := reopenEntry("rewrite", "polish", "Polished", time.Now())
+	entry.SourceText, entry.TypedText = "selected source", "typed context"
+	card, ok := cardFromHistory([]store.Entry{entry}, "rewrite")
+	if !ok || len(card.previews) != 2 {
+		t.Fatalf("restored previews %+v", card.previews)
+	}
+	if card.previews[0].Text != "selected source" || card.previews[1].Text != "typed context" {
+		t.Fatalf("restored previews %+v", card.previews)
+	}
+}
+
 func TestCardFromHistoryTranslation(t *testing.T) {
 	now := time.Now()
 	translation := reopenEntry("translate", "", "你好", now.Add(-2*time.Minute))

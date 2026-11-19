@@ -76,34 +76,81 @@ func (r *run) write(raw, selection string) {
 		// clipboard's picture and the window's, which an empty box
 		// leaves to today's rule — the window's is shot only now, so
 		// that one that will not be sent is never taken.
-		if r.req.Box && cfg.BoxInput != nil {
+		readBox := func(reviewed bool) bool {
+			if !r.req.Box || cfg.BoxInput == nil {
+				return true
+			}
 			typed, images, err := cfg.BoxInput(r.ctx)
 			if err != nil {
 				if r.ctx.Err() != nil {
 					r.endCancelled(nil)
-					return
+					return false
 				}
 				// The box keeps this error and the recognised instruction
 				// for the user's confirmation before another send.
 				r.m.update(r, func(s *Snapshot) { s.Spoken, s.Selection = raw, selection })
 				r.endWriteFailed(ProblemOf(err), false)
-				return
+				return false
 			}
-			// "": the box is closed or holds no text — a retry from the
-			// card keeps the typed text it carries.
-			if typed != "" {
+			// A live box can be cleared; a retry from the card keeps its
+			// typed text when the closed box returns nothing. After the
+			// review the box was shown, so what it holds is the answer.
+			if typed != "" || r.req.Text == nil || reviewed {
 				r.typed = typed
 			}
 			if len(images) > 0 {
 				r.req.Images = images
 			}
+			return true
 		}
-		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil {
+		if !readBox(false) {
+			return
+		}
+		automaticImageSuppressed := false
+		if r.req.Box && cfg.BoxAutoSuppressed != nil {
+			selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
+			if selectionSuppressed {
+				selection = ""
+			}
+			automaticImageSuppressed = imageSuppressed
+			if imageSuppressed {
+				r.clip, r.shot = nil, nil
+			}
+		}
+		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil && !automaticImageSuppressed {
 			// A send again (Text) with no pictures of its own keeps
 			// today's rule: the clipboard's picture, else the window's.
 			r.readClipboardImage()
 		}
-		r.shootWindow()
+		if !automaticImageSuppressed {
+			r.shootWindow()
+			if r.req.Box && r.shot != nil && r.svc.LLM != nil && cfg.BoxReview != nil {
+				if jpeg := r.shot(); jpeg != nil {
+					r.previewImage("window", jpeg)
+					if err := cfg.BoxReview(r.ctx); err != nil {
+						r.endCancelled(nil)
+						return
+					}
+					// The user may have typed or pasted while reviewing; the
+					// box's pictures then win over the window's.
+					if !readBox(true) {
+						return
+					}
+					if len(r.req.Images) > 0 {
+						r.previewImage("", nil)
+					}
+					if cfg.BoxAutoSuppressed != nil {
+						selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
+						if selectionSuppressed {
+							selection = ""
+						}
+						if imageSuppressed {
+							r.clip, r.shot = nil, nil
+						}
+					}
+				}
+			}
+		}
 	}
 	if r.svc.LLM == nil {
 		r.endWriteFailed(&Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}, false)

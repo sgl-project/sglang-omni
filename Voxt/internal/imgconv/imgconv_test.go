@@ -85,6 +85,13 @@ func TestJPEGRejectsOversize(t *testing.T) {
 	if _, err := JPEG(data); err == nil || err.Error() != "image is too large" {
 		t.Fatalf("over 40 megapixels: err=%v", err)
 	}
+	data = pngData(t, 1, 1)
+	binary.BigEndian.PutUint32(data[16:20], 30000)
+	binary.BigEndian.PutUint32(data[20:24], 30000)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	if _, err := JPEG(data); err == nil || err.Error() != "image is too large" {
+		t.Fatalf("30000x30000 pixels: err=%v", err)
+	}
 	path := filepath.Join(t.TempDir(), "large.png")
 	if err := os.WriteFile(path, make([]byte, (32<<20)+1), 0o644); err != nil {
 		t.Fatal(err)

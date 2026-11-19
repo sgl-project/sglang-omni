@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
@@ -504,14 +505,18 @@ func TestAnswerCardAttach(t *testing.T) {
 }
 
 // fakeBoxWindow records the panel's life (boxWindow).
-type fakeBoxWindow struct{ hidden, destroyed bool }
+type fakeBoxWindow struct {
+	hidden, destroyed bool
+	style             mygo.VibrancyStyle
+}
 
-func (f *fakeBoxWindow) Invalidate() {}
-func (f *fakeBoxWindow) Center()     {}
-func (f *fakeBoxWindow) Show()       {}
-func (f *fakeBoxWindow) Focus()      {}
-func (f *fakeBoxWindow) Hide()       { f.hidden = true }
-func (f *fakeBoxWindow) Destroy()    { f.destroyed = true }
+func (f *fakeBoxWindow) Invalidate()                           {}
+func (f *fakeBoxWindow) Center()                               {}
+func (f *fakeBoxWindow) Show()                                 {}
+func (f *fakeBoxWindow) Focus()                                {}
+func (f *fakeBoxWindow) Hide()                                 { f.hidden = true }
+func (f *fakeBoxWindow) Destroy()                              { f.destroyed = true }
+func (f *fakeBoxWindow) SetVibrancyStyle(s mygo.VibrancyStyle) { f.style = s }
 
 // TestRewriteBoxCloseClosesWindow: Esc drops the box's state, but the
 // panel must go with it — zeroing the window pointer first would
@@ -538,6 +543,20 @@ func TestRewriteBoxStaleConversionDropped(t *testing.T) {
 	a.boxConverted(gen, seq, boxJPEG(t), "")
 	if len(a.box.images) != 0 || a.boxPending != 0 {
 		t.Errorf("%d images, %d pending", len(a.box.images), a.boxPending)
+	}
+}
+
+func TestOpenBoxResetsAutomaticInputSuppression(t *testing.T) {
+	a := newBoxApp(t, "", &fakeChat{text: "A shorter text."})
+	a.box = rewriteBox{open: true, selectionSuppressed: true, automaticImageSuppressed: true}
+	a.postQueue(func() { a.openBox(slackApp, session.StartRequest{Kind: store.KindRewrite}) })
+	a.pump("the new recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	if a.box.selectionSuppressed || a.box.automaticImageSuppressed {
+		t.Fatal("the new box kept the previous box's removed inputs")
+	}
+	selectionSuppressed, imageSuppressed := a.boxShare.automaticSuppressed()
+	if selectionSuppressed || imageSuppressed {
+		t.Fatal("the session still suppresses the new automatic inputs")
 	}
 }
 

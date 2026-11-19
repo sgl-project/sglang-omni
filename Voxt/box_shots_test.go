@@ -66,6 +66,53 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording,
 				Selection: "hey, the release slips to thursday, sorry!", Partial: "make it more formal"})
 		}},
+		{"box-pasted-collapsed", func() {
+			a.box.session = "shot-box"
+			a.boxPasteText("first line\nsecond line\nthird line\nfourth line")
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
+		}},
+		{"box-pasted-expanded", func() {
+			a.box.session = "shot-box"
+			a.boxPasteText("first line\nsecond line\nthird line\nfourth line")
+			a.box.ui.expandedText = map[string]bool{"segment-0": true}
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
+		}},
+		{"box-two-pastes-selection", func() {
+			a.box.session = "shot-box"
+			a.boxPasteText("first line\nsecond line\nthird line\nfourth line")
+			a.boxPasteText("fifth line\nsixth line\nseventh line\neighth line")
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording,
+				Selection: "selected first\nselected second\nselected third\nselected fourth", Partial: "make it more formal"})
+		}},
+		{"box-image-caption", func() {
+			a.box.session = "shot-box"
+			a.boxAttach(boxJPEGOf(t, 32, 20), "clipboard")
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
+		}},
+		{"box-image-preview", func() {
+			a.box.session = "shot-box"
+			a.boxAttach(boxJPEGOf(t, 32, 20), "clipboard")
+			a.box.ui.previewImage = 1
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
+		}},
+		{"box-first-open-tip", func() {
+			a.box.showTip = true
+			a.box.session = "shot-box"
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording})
+		}},
+		{"box-add-menu", func() {
+			a.box.session = "shot-box"
+			a.box.ui.addOpen = true
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording, Partial: "make it more formal"})
+		}},
+		{"box-add-menu-crowded", func() {
+			for range 3 {
+				a.boxAddFileText("first\nsecond\nthird\nfourth", "notes.txt")
+			}
+			a.box.limit = true
+			a.box.err = "This file is too large: huge.pdf"
+			a.box.ui.addOpen = true
+		}},
 		{"box-limit-error", func() {
 			a.box.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t), shotBitmap(t), shotBitmap(t)}
 			a.box.images = [][]byte{{1}, {2}, {3}, {4}}
@@ -84,7 +131,7 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 			ui.Box(c).Absolute().Fill().Background(desk)
 			ui.Box(c).Absolute().Fill().Children(func() { a.boxView(c) })
 		}, boxWinW, boxWinH)
-		tt.SetDark(true)
+		tt.SetDark(dark)
 		tt.SetScale(2)
 		frames(tt)
 		f, err := os.Create(filepath.Join(out, "overlay-"+st.name+"-"+suffix+".png"))

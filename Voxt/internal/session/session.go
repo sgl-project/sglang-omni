@@ -230,6 +230,11 @@ type Snapshot struct {
 	// ("window", "clipboard", "box"; "" for none), so the answer card
 	// can say so.
 	ImageHint string
+	// ImagePreview is the immutable clipboard/window JPEG available for
+	// display, with ImagePreviewKind identifying its source. It is preview-only:
+	// ImageHint remains the record of what the request actually sent.
+	ImagePreview     []byte
+	ImagePreviewKind string
 	// Landing says where the result was pasted (nil: not inserted): the
 	// app, Target or the app the user went to and focused a text field
 	// in. Target stays the app the scene was chosen for (the history's app).
@@ -361,6 +366,12 @@ type Config struct {
 	// conversions and returns their error, if one needs confirmation. It
 	// is called on the session's goroutine. Nil: the box sends nothing.
 	BoxInput func(context.Context) (string, [][]byte, error)
+	// BoxAutoSuppressed reports whether the user removed the automatic
+	// selection or clipboard/window image from the box's preview. Nil: send both.
+	BoxAutoSuppressed func() (selection, image bool)
+	// BoxReview waits while the user reviews a newly captured automatic
+	// window image, before its request. Nil: send without another review.
+	BoxReview func(context.Context) error
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History

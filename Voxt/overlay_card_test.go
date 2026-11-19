@@ -203,7 +203,7 @@ func TestAnswerCardStates(t *testing.T) {
 						t.Errorf("%s: the text is %d high", st.name, body)
 					}
 				}
-				want := layout.CardChrome + body
+				want := layout.CardChrome + body + sessionCardAttachmentHeight(&v)
 				if st.msg {
 					want += layout.CardMsgGap + layout.CardMsgH
 				}

@@ -41,6 +41,19 @@ func TestSessionDemoRejectsInvalidCardFixture(t *testing.T) {
 	}
 }
 
+func TestSessionDemoImageInputGetsFixturePreview(t *testing.T) {
+	host := &meetingDemoHost{}
+	host.resetSessionFixture(meetingFixtureState{Kind: "session-overlay", Session: &sessionOverlayViewState{Card: &sessionCardViewState{
+		Inputs: []sessionCardInput{{Label: "draft.png", Width: 20, Height: 10, Image: true}},
+	}}, SessionUI: &sessionOverlayFixtureUI{}})
+	if len(host.sessionUI.cardPreviews) != 1 || host.sessionUI.cardPreviews[0].Image == nil {
+		t.Fatalf("image input lost its fixture preview: %+v", host.sessionUI.cardPreviews)
+	}
+	if got := host.sessionUI.cardPreviews[0]; got.Width != 20 || got.Height != 10 {
+		t.Fatalf("fixture dimensions %d × %d", got.Width, got.Height)
+	}
+}
+
 func newSessionDemoActionTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 	t.Helper()
 	placement := host.sessionDemoPlacement()

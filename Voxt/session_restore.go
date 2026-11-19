@@ -83,6 +83,7 @@ func cardFromHistory(entries []store.Entry, conversation string) (answerCard, bo
 			Answer: compose.Answer{Title: entry.Title, Content: entry.Result}})
 		card.input.Raw = entry.PromptText
 	}
+	card.previews = answerInputPreviews(session.Snapshot{Kind: card.kind, Selection: card.input.Selection, Typed: card.input.Typed}, nil)
 	card.conversation = len(card.turns) > 1
 	return card, true
 }

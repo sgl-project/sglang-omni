@@ -15,8 +15,8 @@ const windowTimeout = 3 * time.Second
 // shootWindow starts taking a picture of the target app's window, when
 // the settings send one to the language model (Privacy.SendWindow): at
 // the start, while the window the user speaks into is still in front
-// (the input box's session defers it to the answer's request, so that
-// pictures pasted into the box win). Not for a try, nor in Voxt itself,
+// (the input box's session defers it until the box's other inputs are
+// known, then shows it for review before the request). Not for a try, nor in Voxt itself,
 // nor for Transcribe without its clean-up (no language model), nor when
 // the picture would not be sent: the box's own pictures, and the
 // clipboard's, win over it.
@@ -60,4 +60,15 @@ func (r *run) readClipboardImage() {
 		r.logf("info", "the clipboard's picture goes to the language model (%d bytes)", len(jpeg))
 	}
 	r.clip = jpeg
+	if jpeg != nil {
+		r.previewImage("clipboard", jpeg)
+	}
+}
+
+// previewImage publishes display-only bytes without changing which image
+// the language model receives; llmChat's ImageHint remains that record.
+func (r *run) previewImage(kind string, jpeg []byte) {
+	r.m.update(r, func(s *Snapshot) {
+		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
+	})
 }

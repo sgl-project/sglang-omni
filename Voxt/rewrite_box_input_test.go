@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 )
 
 type fakeBoxDropWindow struct {
@@ -35,6 +36,7 @@ func TestRewriteBoxWindowAcceptsFileDrops(t *testing.T) {
 		func() rewriteBoxViewState { return rewriteBoxViewState{} },
 		rewriteBoxActions{drop: func(paths []string) { dropped = paths }},
 		&rewriteBoxLocalUI{},
+		floatingWindowOptions("Rewrite", boxWinW, boxWinH, nil),
 	)
 	if native.onDrop == nil {
 		t.Fatal("the panel does not accept file drops")
@@ -129,7 +131,7 @@ func TestRewriteBoxHTMLAndPNGClipboardPastesImage(t *testing.T) {
 func TestRewriteBoxOversizeClipboardDoesNotReadPNG(t *testing.T) {
 	a, fs, _ := newTestApp(t)
 	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
-		return proto.ClipboardImageResult{JPEG: make([]byte, (32<<20)+1)}, nil
+		return proto.ClipboardImageResult{JPEG: make([]byte, imgconv.MaxFileBytes+1)}, nil
 	}
 	a.box = rewriteBox{open: true, shown: true, focusText: true, images: [][]byte{boxJPEG(t)}}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
@@ -144,8 +146,8 @@ func TestRewriteBoxOversizeClipboardDoesNotReadPNG(t *testing.T) {
 	if read {
 		t.Fatal("the oversized clipboard PNG was read before rejection")
 	}
-	if a.box.err == "" || a.boxPending != 0 || len(a.box.images) != 1 {
-		t.Fatalf("oversize clipboard changed the existing input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
+	if a.box.err != "This image is too large." || a.boxPending != 0 || len(a.box.images) != 1 {
+		t.Fatalf("oversize clipboard image was not rejected or changed the existing input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
 	}
 }
 
