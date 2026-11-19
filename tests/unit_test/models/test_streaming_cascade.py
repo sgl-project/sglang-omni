@@ -9,7 +9,7 @@ import re
 import threading
 import time
 import wave
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -25,6 +25,7 @@ from sglang_omni.models.streaming_cascade.alignment import AlignmentConfig
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
     Replies,
+    SpeakerSegment,
     audio_chunk,
     messages_chunk,
     messages_of,
@@ -47,7 +48,10 @@ from sglang_omni.models.streaming_cascade.dialog import (
 )
 from sglang_omni.models.streaming_cascade.generators import ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
-from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
+from sglang_omni.models.streaming_cascade.recognizers import (
+    parse_speaker_segments,
+    probe_realtime_service,
+)
 from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
@@ -95,6 +99,7 @@ from tests.unit_test.fixtures.session_pipeline import (
 
 PROFILES = Path("examples/streaming_cascade/profiles")
 PROFILE_NAMES = (
+    "moss-td-qwen3-tts-vivian",
     "nemotron-qwen3-tts",
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
@@ -2458,6 +2463,177 @@ async def test_openai_transcription_leaves_the_language_out_when_the_service_nam
     audio = TimedChunk(AUDIO, 0, 100, 0, QUIET, format=PCM16)
     outputs = await drain(asr, [audio, control_chunk(COMMIT)])
     assert [o.payload for o in outputs] == [{"text": "hello", "is_final": True}]
+
+
+# Each fake speaker holds one sample value and says its word once per 500 ms.
+SPEAKER_WORDS = {1000: "alpha", -1000: "bravo", 2000: "charlie"}
+FRAME_MS = 10
+
+
+@dataclass
+class FakeSpeech:
+    value: int
+    start_ms: float
+    end_ms: float
+    spoken_ms: float
+
+
+def speaker_audio(value: int, duration_ms: int) -> bytes:
+    return np.full(duration_ms * 16, value, dtype="<i2").tobytes()
+
+
+def fake_moss_transcribe_diarize(requests_ms: list[float]):
+    """A MOSS-TD transcription endpoint whose labels start again at S01 in every request."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        body = request.content
+        with wave.open(io.BytesIO(body[body.index(b"RIFF") :])) as source:
+            samples = np.frombuffer(source.readframes(source.getnframes()), "<i2")
+        requests_ms.append(len(samples) / 16)
+        runs: list[FakeSpeech] = []
+        for index, value in enumerate(samples[:: 16 * FRAME_MS]):
+            start_ms = index * FRAME_MS
+            if value == 0:
+                pass
+            elif runs and runs[-1].value == value and start_ms == runs[-1].end_ms:
+                runs[-1].end_ms = start_ms + FRAME_MS
+                runs[-1].spoken_ms += FRAME_MS
+            else:
+                runs.append(FakeSpeech(value, start_ms, start_ms + FRAME_MS, FRAME_MS))
+        values = list(dict.fromkeys(run.value for run in runs))
+        markup = "".join(
+            f"[{run.start_ms / 1000:.2f}][S{values.index(run.value) + 1:02d}]"
+            + " ".join([SPEAKER_WORDS[run.value]] * max(round(run.spoken_ms / 500), 1))
+            + f"[{run.end_ms / 1000:.2f}]"
+            for run in runs
+        )
+        return httpx.Response(200, json={"text": markup})
+
+    return answer
+
+
+class FakeSpeakerModel:
+    """A speaker embedding model that tells the fake speakers apart by their sample value."""
+
+    def embed(self, samples: np.ndarray) -> np.ndarray:
+        values = list(SPEAKER_WORDS)
+        return np.eye(len(values))[values.index(round(float(samples[0]) * 32768))]
+
+
+@pytest.fixture
+def fake_speaker_model(monkeypatch):
+    monkeypatch.setattr(
+        "sglang_omni.models.streaming_cascade.recognizers.load_speaker_embedding_model",
+        lambda model_path: FakeSpeakerModel(),
+    )
+
+
+async def speaker_transcripts(
+    recognizer, utterances: list[list[tuple[int, int]]], requests_ms: list[float]
+) -> list[dict[str, object]]:
+    """The payloads for utterances 2 s apart on the session clock, each a list of (speaker value, ms) runs closed by a commit."""
+    recognizer.client = httpx.AsyncClient(
+        transport=httpx.MockTransport(fake_moss_transcribe_diarize(requests_ms))
+    )
+    inputs = []
+    for index, runs in enumerate(utterances):
+        pcm = b"".join(speaker_audio(value, duration_ms) for value, duration_ms in runs)
+        inputs += [
+            TimedChunk(AUDIO, index * 2000, len(pcm) / 32, index, pcm, format=PCM16),
+            control_chunk(COMMIT),
+        ]
+    return [chunk.payload for chunk in await drain(recognizer, inputs)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_speaker_model")
+async def test_speaker_transcription_keeps_the_label_of_a_voice_for_the_session():
+    """The model numbers the speakers of every request from S01; a voice heard before keeps its session label, however long ago, and a voice never heard gets a new one."""
+    sent_ms: list[float] = []
+    asr = build({"kind": "speaker_transcription", **HTTP_SERVICE})
+    payloads = await speaker_transcripts(
+        asr,
+        [[(1000, 500), (-1000, 500)], [(-1000, 500)], [(1000, 500)], [(2000, 500)]],
+        sent_ms,
+    )
+    assert payloads == [
+        {
+            "text": "[S01] alpha\n[S02] bravo",
+            "is_final": True,
+            "segments": [
+                {"speaker": "S01", "start_ms": 0, "end_ms": 500, "text": "alpha"},
+                {"speaker": "S02", "start_ms": 500, "end_ms": 1000, "text": "bravo"},
+            ],
+        },
+        {
+            "text": "[S02] bravo",
+            "is_final": True,
+            "segments": [
+                {"speaker": "S02", "start_ms": 2000, "end_ms": 2500, "text": "bravo"}
+            ],
+        },
+        {
+            "text": "[S01] alpha",
+            "is_final": True,
+            "segments": [
+                {"speaker": "S01", "start_ms": 4000, "end_ms": 4500, "text": "alpha"}
+            ],
+        },
+        {
+            "text": "[S03] charlie",
+            "is_final": True,
+            "segments": [
+                {"speaker": "S03", "start_ms": 6000, "end_ms": 6500, "text": "charlie"}
+            ],
+        },
+    ]
+    assert sent_ms == [1000, 500, 500, 500]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_speaker_model")
+async def test_a_replacement_speaker_transcription_keeps_the_session_labels():
+    sent_ms: list[float] = []
+    spec = {"kind": "speaker_transcription", **HTTP_SERVICE}
+    first = build(spec)
+    await speaker_transcripts(first, [[(1000, 500)]], sent_ms)
+    replacement = build({**spec, "timeout_s": 30})
+    replacement.adopt(first)
+    payloads = await speaker_transcripts(
+        replacement, [[(-1000, 500)], [(1000, 500)]], sent_ms
+    )
+    assert [payload["text"] for payload in payloads] == ["[S02] bravo", "[S01] alpha"]
+
+
+@pytest.mark.parametrize(
+    ("markup", "segments"),
+    [
+        (
+            "[S01] I didn't want to do it,[S01] you know.",
+            [
+                SpeakerSegment(
+                    speaker="S01",
+                    start_ms=0,
+                    end_ms=3000,
+                    text="I didn't want to do it, you know.",
+                )
+            ],
+        ),
+        (
+            "[10.41][S02][S01] Is mine. [S02] No,[13.67]",
+            [
+                SpeakerSegment(
+                    speaker="S02", start_ms=10410, end_ms=13670, text="Is mine. No,"
+                )
+            ],
+        ),
+    ],
+)
+def test_speaker_segments_keep_the_words_of_malformed_markup_without_its_labels(
+    markup, segments
+):
+    """MOSS-TD returned these: words with labels but no time markers, which no segment matched, and labels inside a segment, which would reach the language model as speakers the session never named."""
+    assert parse_speaker_segments(markup, 3000) == segments
 
 
 @pytest.mark.asyncio

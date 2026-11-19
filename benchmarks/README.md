@@ -205,6 +205,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_asr_stt_benchmark.py` | ASR concurrency scaling on the Pipecat STT benchmark set (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_longform.py` | ASR concurrency scaling on LongLibriHeavy 30/60 s and Meanwhile (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_realtime.py` | Realtime ASR streaming latency, protocol invariants, and WER on SeedTTS EN | Qwen3-ASR | `/v1/realtime?intent=transcription` |
+| `eval/benchmark_cascade_speaker_transcription.py` | Streaming cascade speaker-attributed transcripts (cpCER, CER, timestamp DER) on multi-party Movies800Time clips, through the VAD and `speaker_transcription` nodes | MOSS-Transcribe-Diarize | `/v1/audio/transcriptions` |
 | `eval/benchmark_duplex.py` | Native full-duplex VoiceChat continuous protocol case | Nemotron VoiceChat | `/v1/realtime` (native) |
 | `eval/benchmark_duplex_v15.py` | Full-Duplex-Bench v1.5 paired overlap sessions, event timing and judged behavior | Nemotron VoiceChat | `/v1/realtime` (native) |
 | `eval/benchmark_duplex_v10.py` | Full-Duplex-Bench v1.0 pause, turn-taking, interruption and backchannel takeover/latency | Nemotron VoiceChat | `/v1/realtime` (native) |

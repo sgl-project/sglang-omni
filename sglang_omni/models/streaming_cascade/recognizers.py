@@ -6,12 +6,14 @@ import base64
 import json
 import re
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Literal
 from urllib.parse import urlencode
 
 import httpx
+import numpy as np
 from pydantic import BaseModel, Field
+from scipy.optimize import linear_sum_assignment
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
@@ -21,21 +23,37 @@ from sglang_omni.audio.segmentation import (
     OPEN_UTTERANCE,
     UtteranceSegmenter,
 )
+from sglang_omni.audio.speaker_embedding import load_speaker_embedding_model
 from sglang_omni.audio.wav import pcm16_wav
 from sglang_omni.models.streaming_cascade.base import (
     ComponentConfig,
+    SpeakerSegment,
     StreamComponent,
     audio_bytes,
     bearer_headers,
     iterate,
     probe_models,
+    probe_openai_service,
     stop_running,
     transcript_chunk,
     with_language,
 )
 from sglang_omni.proto.session import TimedChunk
-from sglang_omni.proto.streams import SESSION_INPUT_SAMPLE_RATE_HZ
+from sglang_omni.proto.streams import (
+    PCM16_BYTES_PER_SAMPLE,
+    SESSION_INPUT_SAMPLE_RATE_HZ,
+)
 from sglang_omni.scheduling.session import ChunkEmitter
+
+PCM16_BYTES_PER_MS = PCM16_BYTES_PER_SAMPLE * SESSION_INPUT_SAMPLE_RATE_HZ // 1000
+# One [start][Sxx]text[end] segment of MOSS-Transcribe-Diarize, times in seconds.
+SPEAKER_SEGMENT = re.compile(
+    r"\[(\d+(?:[.,]\d+)?)\]\s*\[(S\d+)\](.*?)\[(\d+(?:[.,]\d+)?)\]", re.DOTALL
+)
+MARKUP_TAG = re.compile(r"\[[^\[\]]*\]")
+SPEAKER_TAG = re.compile(r"\[(S\d+)\]")
+# note (fweilun): the fbank of shorter speech has too few frames to say whose voice it is, so its speaker takes a new label.
+MIN_EMBEDDING_SAMPLES = SESSION_INPUT_SAMPLE_RATE_HZ // 10
 
 
 class OpenUtterance:
@@ -235,6 +253,209 @@ class OpenAITranscriptionRecognizer(UtteranceRecognizer):
         response.raise_for_status()
         result = TranscriptionResult.model_validate(response.json())
         yield transcript_chunk(result.text.strip(), True, result.language or None)
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
+class SpeakerTranscriptionRecognizerConfig(ComponentConfig):
+    """Speaker-attributed transcripts from the /audio/transcriptions endpoint of a MOSS-Transcribe-Diarize service; one final transcript per utterance.
+
+    Each utterance is transcribed alone; each of its speakers takes the label of the session speaker whose voice embedding it matches at speaker_similarity or above, and a new label otherwise.
+    """
+
+    kind: Literal["speaker_transcription"] = "speaker_transcription"
+    base_url: str = Field(pattern=r"^https?://[^/]+")
+    model: str
+    speaker_model_path: str = "csukuangfj/speaker-embedding-models"
+    # note (fweilun): the cosine similarity with the lowest speaker error over movies800time clips and AISHELL4 meetings, of 0.2 to 0.5.
+    speaker_similarity: float = Field(default=0.3, ge=-1, le=1)
+    api_key_env: str = "OPENAI_API_KEY"
+
+
+async def probe_speaker_transcription(
+    config: SpeakerTranscriptionRecognizerConfig,
+) -> None:
+    """The service answers, and the speaker model is downloaded and checked before the first session."""
+    await probe_openai_service(config)
+    await asyncio.to_thread(load_speaker_embedding_model, config.speaker_model_path)
+
+
+def seconds_ms(seconds: str) -> float:
+    return float(round(float(seconds.replace(",", ".")) * 1000))
+
+
+def spoken_words(text: str) -> str:
+    return " ".join(MARKUP_TAG.sub(" ", text).split())
+
+
+def parse_speaker_segments(markup: str, duration_ms: float) -> list[SpeakerSegment]:
+    """The segments of a MOSS-Transcribe-Diarize transcript; words without time markers are one segment over the whole audio, of the first speaker they name."""
+    segments: list[SpeakerSegment] = []
+    for start, speaker, text, end in SPEAKER_SEGMENT.findall(markup):
+        words = spoken_words(text)
+        if words:
+            start_ms = seconds_ms(start)
+            segments.append(
+                SpeakerSegment(
+                    speaker=speaker,
+                    start_ms=start_ms,
+                    end_ms=max(seconds_ms(end), start_ms),
+                    text=words,
+                )
+            )
+        else:
+            pass
+    words = spoken_words(markup)
+    if segments or not words:
+        return segments
+    else:
+        named = SPEAKER_TAG.search(markup)
+        return [
+            SpeakerSegment(
+                speaker="" if named is None else named.group(1),
+                start_ms=0,
+                end_ms=duration_ms,
+                text=words,
+            )
+        ]
+
+
+def shifted(segment: SpeakerSegment, delta_ms: float) -> SpeakerSegment:
+    return replace(
+        segment,
+        start_ms=segment.start_ms + delta_ms,
+        end_ms=segment.end_ms + delta_ms,
+    )
+
+
+def speaker_lines(segments: list[SpeakerSegment]) -> str:
+    """One "[S01] words" line per run of one speaker's segments."""
+    lines: list[tuple[str, list[str]]] = []
+    for segment in segments:
+        if lines and lines[-1][0] == segment.speaker:
+            lines[-1][1].append(segment.text)
+        else:
+            lines.append((segment.speaker, [segment.text]))
+    return "\n".join(f"[{speaker}] {' '.join(words)}" for speaker, words in lines)
+
+
+class SpeakerTranscriptionRecognizer(UtteranceRecognizer):
+    """Transcribes each finished utterance with speaker labels that hold for the whole session."""
+
+    def __init__(self, config: SpeakerTranscriptionRecognizerConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.client = httpx.AsyncClient(
+            timeout=config.timeout_s, headers=bearer_headers(config.api_key_env)
+        )
+        self.speaker_model = load_speaker_embedding_model(config.speaker_model_path)
+        self.speaker_count = 0
+        # Per session label, the sum of its speech's unit embeddings weighted by their seconds.
+        self.speaker_embeddings: dict[str, np.ndarray] = {}
+
+    def adopt(self, previous: StreamComponent) -> None:
+        super().adopt(previous)
+        if isinstance(previous, SpeakerTranscriptionRecognizer):
+            self.speaker_count = previous.speaker_count
+            self.speaker_embeddings = previous.speaker_embeddings
+        else:
+            pass
+
+    def state_bytes(self) -> int:
+        return sum(embedding.nbytes for embedding in self.speaker_embeddings.values())
+
+    def embed_speakers(
+        self, pcm: bytes, segments: list[SpeakerSegment]
+    ) -> dict[str, tuple[np.ndarray, float]]:
+        """Per label of the segments, the embedding of its speech in pcm and that speech's seconds."""
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
+        samples_per_ms = SESSION_INPUT_SAMPLE_RATE_HZ / 1000
+        embeddings: dict[str, tuple[np.ndarray, float]] = {}
+        for label in dict.fromkeys(segment.speaker for segment in segments):
+            speech = np.concatenate(
+                [
+                    samples[
+                        int(segment.start_ms * samples_per_ms) : int(
+                            segment.end_ms * samples_per_ms
+                        )
+                    ]
+                    for segment in segments
+                    if segment.speaker == label
+                ]
+            )
+            if speech.size >= MIN_EMBEDDING_SAMPLES:
+                embeddings[label] = (
+                    self.speaker_model.embed(speech),
+                    speech.size / SESSION_INPUT_SAMPLE_RATE_HZ,
+                )
+            else:
+                pass
+        return embeddings
+
+    async def utterance(
+        self, audio: AsyncIterator[TimedChunk]
+    ) -> AsyncIterator[TimedChunk]:
+        chunks = [chunk async for chunk in audio]
+        if not chunks:
+            yield transcript_chunk("", True)
+            return
+        else:
+            pass
+        pcm = b"".join(audio_bytes(chunk) for chunk in chunks)
+        response = await request_transcription(
+            self.client,
+            self.config.base_url,
+            self.config.model,
+            pcm,
+            SESSION_INPUT_SAMPLE_RATE_HZ,
+            language=None,
+            response_format="json",
+        )
+        response.raise_for_status()
+        segments = parse_speaker_segments(
+            TranscriptionResult.model_validate(response.json()).text,
+            len(pcm) / PCM16_BYTES_PER_MS,
+        )
+        embeddings = await asyncio.to_thread(self.embed_speakers, pcm, segments)
+        session_labels = list(self.speaker_embeddings)
+        utterance_labels = list(embeddings)
+        labels: dict[str, str] = {}
+        if session_labels and utterance_labels:
+            voices = np.stack(
+                [self.speaker_embeddings[label] for label in session_labels]
+            )
+            similarity = (
+                np.stack([embeddings[label][0] for label in utterance_labels])
+                @ (voices / np.linalg.norm(voices, axis=1, keepdims=True)).T
+            )
+            rows, columns = linear_sum_assignment(similarity, maximize=True)
+            labels = {
+                utterance_labels[row]: session_labels[column]
+                for row, column in zip(rows, columns)
+                if similarity[row, column] >= self.config.speaker_similarity
+            }
+        else:
+            pass
+        for label in dict.fromkeys(segment.speaker for segment in segments):
+            if label not in labels:
+                self.speaker_count += 1
+                labels[label] = f"S{self.speaker_count:02d}"
+            else:
+                pass
+        for label, (embedding, seconds) in embeddings.items():
+            voice = self.speaker_embeddings.get(labels[label])
+            self.speaker_embeddings[labels[label]] = (
+                embedding * seconds if voice is None else voice + embedding * seconds
+            )
+        labelled = [
+            replace(segment, speaker=labels[segment.speaker]) for segment in segments
+        ]
+        yield transcript_chunk(
+            speaker_lines(labelled),
+            True,
+            segments=[shifted(segment, chunks[0].t_start_ms) for segment in labelled],
+        )
 
     async def close(self) -> None:
         await self.client.aclose()
