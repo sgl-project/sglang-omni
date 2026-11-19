@@ -2,6 +2,8 @@ package omni
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,6 +49,17 @@ func watchLog(c *Config, sub string) func(*testing.T) {
 		case <-seen:
 		case <-time.After(10 * time.Second):
 			t.Fatalf("no log line with %q", sub)
+		}
+	}
+}
+
+// TestAudioBytes: the PCM an append message carries, for base64 lengths
+// with 0, 1 and 2 padding bytes (DecodedLen counts the padding as data).
+func TestAudioBytes(t *testing.T) {
+	for _, n := range []int{0, 3, 4, 5, 6, 3198, 3199, 3200} {
+		msg, _ := json.Marshal(map[string]string{"type": "input_audio_buffer.append", "audio": base64.StdEncoding.EncodeToString(make([]byte, n))})
+		if got := audioBytes(msg); got != n {
+			t.Errorf("%d bytes of PCM: got %d", n, got)
 		}
 	}
 }

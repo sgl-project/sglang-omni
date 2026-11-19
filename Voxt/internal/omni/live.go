@@ -50,6 +50,9 @@ type live struct {
 	previewed int           // bytes of audio the preview covers: written to the socket, or dropped by the cut (the batch preview: in its last text)
 	preview   bool          // the socket still takes audio
 	cut       *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
+	writeDone chan struct{} // closed when write returns (the queue is drained)
+	// writeGate, set by a test only, holds the writer before each write.
+	writeGate <-chan struct{}
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
 	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
@@ -114,7 +117,7 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn,
 		language: hint, bias: a.spec.ASR.contextBias(req.Hints, req.Prompt),
 		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
-		completed: make(chan string, 1), readDone: make(chan struct{})}
+		completed: make(chan string, 1), readDone: make(chan struct{}), writeDone: make(chan struct{})}
 	if conn != nil {
 		if a.spec.ASR.SpeechOnly && a.vad != nil {
 			s.cut = newPauseCut()
@@ -241,11 +244,19 @@ func (s *live) stopPreview(why string) {
 	}
 }
 
-// write sends the queued messages in order.
+// write sends the queued messages in order. A closed out is drained
+// first: Finish delivers the recording's tail before the Final runs.
 func (s *live) write() {
+	defer close(s.writeDone)
 	for {
 		select {
-		case msg := <-s.out:
+		case msg, ok := <-s.out:
+			if !ok {
+				return
+			}
+			if s.writeGate != nil {
+				<-s.writeGate
+			}
 			n := audioBytes(msg)
 			if err := s.conn.Write(s.ctx, websocket.MessageText, msg); err != nil {
 				s.mu.Lock()
@@ -343,11 +354,20 @@ func (s *live) Finish() error {
 	return nil
 }
 
+// previewDrain bounds the wait for the socket's writer to deliver the
+// queued audio: at most maxQueued (30 s) on a loopback socket. A server
+// that stops reading must not stall the Final.
+const previewDrain = 5 * time.Second
+
 // finalPass recognises pcm, the whole recording, once more (what the
-// pieces left of it) and ends the stream with the result.
+// pieces left of it) and ends the stream with the result. The preview's
+// queue is drained first, so its text (and coverage, for Salvage) keeps
+// the recording's tail; the socket stays open while the Final runs, so
+// the tail's segments still arrive.
 func (s *live) finalPass(pcm []byte) {
 	if s.conn != nil {
-		s.conn.CloseNow()
+		s.drainPreview()
+		defer s.conn.CloseNow()
 	}
 	start := time.Now()
 	language := s.language
@@ -392,6 +412,21 @@ func (s *live) finalPass(pcm []byte) {
 	text = joinParts(append(texts, text))
 	res := asr.Result{Text: text, Lang: language, Duration: asr.Duration(pcm, sampleRate), Model: s.a.spec.ID, Latency: took}
 	s.end(asr.Event{Kind: asr.EventFinal, Text: text, Result: res})
+}
+
+// drainPreview hands the audio queued for the preview's socket to the
+// server: Send accepted it, and closing the socket with the queue
+// pending would lose it.
+func (s *live) drainPreview() {
+	s.mu.Lock()
+	close(s.out)
+	s.mu.Unlock()
+	select {
+	case <-s.writeDone:
+	case <-s.ctx.Done():
+	case <-time.After(previewDrain):
+		s.a.rt.logf("warning", "%s: the preview's writer did not drain in %v", s.a.spec.ID, previewDrain)
+	}
 }
 
 // slowFinal: a Final after Stop this long gets the Mac's memory in its
