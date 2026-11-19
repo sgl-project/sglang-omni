@@ -128,7 +128,9 @@ class SummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             loop.summarize_reports([raw_report(100), warning, raw_report(200)])
 
-    def test_summary_content_hashes_are_ordered_without_fabricating_missing_values(self):
+    def test_summary_content_hashes_are_ordered_without_fabricating_missing_values(
+        self,
+    ):
         reports = [raw_report(300), raw_report(100), raw_report(200)]
         for report in reports:
             report["summary_content_sha256"] = f"content-{report['total_wall_ms']}"
@@ -137,7 +139,10 @@ class SummaryTests(unittest.TestCase):
             summary["summary_content_sha256"],
             ["content-300", "content-100", "content-200"],
         )
-        self.assertNotIn("summary_content_sha256", loop.summarize_reports([raw_report(100), raw_report(200), raw_report(300)]))
+        self.assertNotIn(
+            "summary_content_sha256",
+            loop.summarize_reports([raw_report(100), raw_report(200), raw_report(300)]),
+        )
 
     def test_summarize_reports_rejects_short_dictation_reports_without_resources(self):
         reports = []

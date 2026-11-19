@@ -80,9 +80,10 @@ func TestSpeechRegionsStrategy(t *testing.T) {
 	if err != nil || len(whole) != 1 {
 		t.Fatalf("whole segments %+v, err %v", whole, err)
 	}
-	batched, err := speechRegions(context.Background(), pcm, asr.SampleRate, &batchVAD{succeedFrom: 1}, nil, "batched")
-	if err != nil || len(batched) < 2 {
-		t.Fatalf("batched segments %+v, err %v", batched, err)
+	model := &batchVAD{succeedFrom: 1}
+	batched, err := speechRegions(context.Background(), pcm, asr.SampleRate, model, nil, "batched")
+	if err != nil || model.calls != 2 {
+		t.Fatalf("batched segments %+v, calls %d, err %v", batched, model.calls, err)
 	}
 	if _, err := speechRegions(context.Background(), pcm, asr.SampleRate, &batchVAD{}, nil, "whole"); err == nil {
 		t.Fatal("whole-track neural failure was hidden by the batched fallback")

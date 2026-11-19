@@ -193,7 +193,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 // diarizeChunkMax is how much of a track one MTD request covers: small
 // enough that a dictation waits at most one request (the runtime lets it
 // in between), and far from the native decoder's own 20-minute split.
-const diarizeChunkMax = time.Minute
+const diarizeChunkMax = 2 * time.Minute
 
 // mossPrompt is the instruction MOSS gets with no prompt of its own
 // (moss_transcriber.cpp's kDefaultPrompt, repeated here: a prompt of ours

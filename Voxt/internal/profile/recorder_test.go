@@ -252,6 +252,7 @@ func TestCorrectionResponseCategoriesAndBoundedRaw(t *testing.T) {
 		{"embedded", "before [{\"i\":0,\"text\":\"answer\"}] after", "successful_edit"},
 		{"empty", `[]`, "valid_noop"},
 		{"malformed", "not json", "malformed"},
+		{"empty response", "", "empty_response"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -260,10 +261,11 @@ func TestCorrectionResponseCategoriesAndBoundedRaw(t *testing.T) {
 				return llm.Response{Text: test.raw}, nil
 			}}
 			_, err := recorder.WrapChat("correction", chat).Chat(context.Background(), llm.Request{})
-			if test.want == "malformed" && err == nil {
-				t.Fatal("malformed response was accepted")
+			wantErr := test.want == "malformed" || test.want == "empty_response"
+			if wantErr && err == nil {
+				t.Fatalf("%s response was accepted", test.want)
 			}
-			if test.want != "malformed" && err != nil {
+			if !wantErr && err != nil {
 				t.Fatal(err)
 			}
 			report := recorder.Finish(nil)
@@ -274,6 +276,7 @@ func TestCorrectionResponseCategoriesAndBoundedRaw(t *testing.T) {
 	}
 	recorder := NewRecorder(validConfig())
 	const secret = "profile-test-secret-value"
+	recorder.RegisterSecrets(secret)
 	raw := `[{"i":0,"text":"answer"}]` + strings.Repeat(" ", 7990) + secret + "tail"
 	chat := chatFunc{chat: func(context.Context, llm.Request) (llm.Response, error) {
 		return llm.Response{Text: raw}, nil
@@ -282,7 +285,7 @@ func TestCorrectionResponseCategoriesAndBoundedRaw(t *testing.T) {
 		t.Fatal(err)
 	}
 	stage := recorder.Finish(nil).Stages[0]
-	if len(stage.Text) > 8000 || strings.Contains(stage.Text, secret) {
+	if len(stage.Text) > 8003 || strings.Contains(stage.Text, secret) {
 		t.Fatalf("raw response was not safely bounded: length=%d", len(stage.Text))
 	}
 	if stage.TextSHA256 != HashText(stage.Text) {

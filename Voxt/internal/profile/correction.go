@@ -10,8 +10,13 @@ func validateCorrectionResponse(raw string) (string, error) {
 	candidate := strings.TrimSpace(raw)
 	switch {
 	case candidate == "":
-		return "malformed", fmt.Errorf("profile: correction response must be a JSON array of {i,text} objects")
+		return "empty_response", fmt.Errorf("profile: correction response must be a JSON array of {i,text} objects")
 	case strings.HasPrefix(candidate, "["):
+		end := strings.LastIndex(candidate, "]")
+		if end < 0 {
+			return "malformed", fmt.Errorf("profile: correction response must be a JSON array of {i,text} objects")
+		}
+		candidate = candidate[:end+1]
 	case strings.HasPrefix(candidate, "```"):
 		lines := strings.Split(candidate, "\n")
 		if len(lines) < 2 {
