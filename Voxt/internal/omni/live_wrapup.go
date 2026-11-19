@@ -20,7 +20,9 @@ const previewCompleteTimeout = 20 * time.Second
 // previewQuiet calls the server unresponsive: a server recognising the
 // tail sends partials along the way, so this long without a word means
 // nothing more is coming, and the wrap-up gives up instead of running
-// the full previewCompleteTimeout behind a dead server.
+// the full previewCompleteTimeout behind a dead server. The window
+// starts at the wrap-up's write, not at some earlier message: a long
+// pause keeps the server silent longer than this with everything fine.
 const previewQuiet = previewDrain
 
 // wrapUpPreview drains the preview's queue and awaits the server's
@@ -82,10 +84,15 @@ func (s *live) completePreview() {
 	if err := s.conn.Write(ctx, websocket.MessageText, done); err != nil {
 		return // the socket is gone or the write timed out: the read side said why
 	}
+	start := time.Now()
 	for {
 		s.mu.Lock()
-		left := previewQuiet - time.Since(s.lastRecv)
+		since := s.lastRecv
 		s.mu.Unlock()
+		if start.After(since) {
+			since = start
+		}
+		left := previewQuiet - time.Since(since)
 		if left <= 0 {
 			s.a.rt.logf("warning", "%s: the server said nothing for %v; the wrap-up gives up", s.a.spec.ID, previewQuiet)
 			return
