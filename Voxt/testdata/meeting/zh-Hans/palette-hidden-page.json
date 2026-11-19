@@ -1,0 +1,11 @@
+{
+  "name": "palette-hidden-page",
+  "kind": "shell-palette",
+  "shell_ui": {
+    "palette_open": true,
+    "palette_query": "notes"
+  },
+  "shell_palette": {
+    "items": null
+  }
+}

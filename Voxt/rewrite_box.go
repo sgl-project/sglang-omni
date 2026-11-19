@@ -27,10 +27,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
-	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -56,7 +55,7 @@ type rewriteBox struct {
 	// images are the box's pictures (JPEGs), thumbs their decoded
 	// bitmaps; limit: one over boxMaxImages was refused.
 	images [][]byte
-	thumbs []*ui.Bitmap
+	thumbs []*boxBitmap
 	limit  bool
 	// instruction is the recognised spoken instruction, kept so a send
 	// that failed can go again with Enter.
@@ -69,6 +68,35 @@ type rewriteBox struct {
 	focusText bool
 	win       boxWindow
 	winShown  bool
+	ui        rewriteBoxLocalUI
+}
+
+// rewriteBoxViewState is the input box's display state.
+type rewriteBoxViewState struct {
+	Selection  string
+	Text       string
+	Thumbnails []*boxBitmap
+	VoiceLine  string
+	Error      string
+	CanSend    bool
+	Limit      bool
+	FocusText  bool
+}
+
+// rewriteBoxActions are the input box's user intents.
+type rewriteBoxActions struct {
+	close       func()
+	send        func()
+	drop        func([]string)
+	paste       func(uiServices) bool
+	remove      func(int)
+	textChanged func(string)
+	focused     func()
+}
+
+// rewriteBoxLocalUI owns the editor's text between frames.
+type rewriteBoxLocalUI struct {
+	text string
 }
 
 // boxWindow is the box's panel as boxSync and closeBoxWindow use it
@@ -237,7 +265,7 @@ func (a *app) boxAttach(jpeg []byte) {
 		a.boxSync()
 		return
 	}
-	bmp, _ := ui.DecodeBitmap(jpeg)
+	bmp, _ := decodeBoxBitmap(jpeg)
 	a.box.images = append(a.box.images, jpeg)
 	a.box.thumbs = append(a.box.thumbs, bmp)
 	a.box.limit = false
@@ -259,7 +287,7 @@ func (a *app) boxRemoveImage(i int) {
 // box (text it also holds wins, as with the copied-image setting); an
 // image file copied in Finder comes through the helper (HEIC too); text
 // pastes as ever. It reports whether the key was taken.
-func (a *app) boxPaste(svc ui.Services) bool {
+func (a *app) boxPaste(svc uiServices) bool {
 	formats := svc.ClipboardFormats()
 	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
 	switch {
@@ -358,6 +386,62 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 	}
 }
 
+// boxSelection is the selection the box shows: the session's while it
+// runs, the kept one after a send failed.
+func (a *app) boxSelection() string {
+	if a.box.session != "" && a.sess.ID == a.box.session {
+		return a.sess.Selection
+	}
+	return a.box.selection
+}
+
+// boxVoiceLine is the voice line's text: the hint, the instruction
+// being heard, or the recognised one (Enter sends it again).
+func (a *app) boxVoiceLine() string {
+	b := &a.box
+	if b.session != "" && a.sess.ID == b.session && a.sess.State.Live() {
+		switch a.sess.State {
+		case session.Recording:
+			if partial := a.sess.Partial; partial != "" {
+				return partial
+			}
+			return i18n.T("Listening…")
+		default:
+			return i18n.T("Recognising…")
+		}
+	}
+	if b.instruction != "" {
+		return b.instruction
+	}
+	if keys := a.featureKeys(hotkey.Rewrite); keys != "" {
+		return i18n.T("Say the instruction (%s), then Enter sends", keys)
+	}
+	return i18n.T("Say the instruction, then Enter sends")
+}
+
+func (a *app) boxViewState() rewriteBoxViewState {
+	box := &a.box
+	return rewriteBoxViewState{
+		Selection: a.boxSelection(), Text: box.text, Thumbnails: box.thumbs, VoiceLine: a.boxVoiceLine(), Error: box.err,
+		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording || box.session == "" && box.instruction != ""),
+		Limit:   box.limit, FocusText: box.focusText,
+	}
+}
+
+func (a *app) boxActions() rewriteBoxActions {
+	return rewriteBoxActions{
+		close: a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, remove: a.boxRemoveImage,
+		textChanged: func(text string) {
+			if !a.box.open {
+				return
+			}
+			a.box.text = text
+			a.boxShare.store(a.box.text, a.box.images)
+		},
+		focused: func() { a.box.focusText = false },
+	}
+}
+
 // boxSync shows, hides or refreshes the box's window. Main thread.
 func (a *app) boxSync() {
 	a.boxShare.store(a.box.text, a.box.images)
@@ -373,12 +457,7 @@ func (a *app) boxSync() {
 		return // tests: the state is enough
 	}
 	if a.box.win == nil {
-		a.box.win = mygo.NewWindow(mygo.WindowOptions{
-			Title: i18n.T("Rewrite"), Width: boxWinW, Height: boxWinH, UseContentSize: true,
-			Hidden: true, Frameless: true, Transparent: true, Vibrancy: mygo.VibrancyHUD,
-			Panel: true, DisableResize: true, DisableClose: true,
-			Content: hudContent(a.boxView),
-		})
+		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui)
 	}
 	a.box.win.Invalidate()
 	if !a.box.winShown {

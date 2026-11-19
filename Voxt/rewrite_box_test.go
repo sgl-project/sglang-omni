@@ -131,8 +131,8 @@ func TestRewriteBoxEndToEnd(t *testing.T) {
 	if len(imgs) != boxMaxImages {
 		t.Errorf("%d images sent", len(imgs))
 	}
-	if a.answer.attach != "box" || len(a.answer.thumbs) != boxMaxImages {
-		t.Errorf("the card's attach %q, %d thumbs", a.answer.attach, len(a.answer.thumbs))
+	if a.answer.attach != "box" || len(a.answer.ui.thumbs) != boxMaxImages {
+		t.Errorf("the card's attach %q, %d thumbs", a.answer.attach, len(a.answer.ui.thumbs))
 	}
 	if entries := a.history(); len(entries) != 1 || entries[0].Kind != store.KindRewrite {
 		t.Errorf("history %v", entries)
@@ -245,10 +245,10 @@ func TestRewriteBoxRedoSameBytes(t *testing.T) {
 	// Another thinking level asks the same input again.
 	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
 	a.answer.llmID = "deepseek"
-	if !a.cardNow().canThink {
+	if !a.cachedCard().CanThink {
 		t.Fatal("no thinking levels on the card")
 	}
-	a.postQueue(func() { a.chooseThinking(&llm.Thinking{Mode: llm.ThinkOn}) })
+	a.postQueue(func() { a.chooseThinking(sessionThinkingValueOf(&llm.Thinking{Mode: llm.ThinkOn})) })
 	a.pump("the redo", func() bool { return len(chat.requests()) == 2 && a.answer.redo == "" })
 	reqs := chat.requests()
 	first, _ := reqs[0]["images"].([][]byte)
@@ -347,6 +347,7 @@ func TestAnswerCardAttach(t *testing.T) {
 			}
 			_, with, _ := a.cardSize()
 			a.answer.attach = ""
+			a.refreshSessionOverlay(time.Now())
 			_, without, _ := a.cardSize()
 			if with != without+layout.CardAttachH {
 				t.Errorf("card height %d with the row, %d without", with, without)
@@ -363,8 +364,8 @@ func TestAnswerCardAttach(t *testing.T) {
 	}
 	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Done, Card: true,
 		Raw: "describe them", Title: "Two pictures", Result: "Two red squares.", ImageHint: "box"})
-	if a.answer.attach != "box" || len(a.answer.thumbs) != 2 {
-		t.Fatalf("the card's attach %q, %d thumbs", a.answer.attach, len(a.answer.thumbs))
+	if a.answer.attach != "box" || len(a.answer.ui.thumbs) != 2 {
+		t.Fatalf("the card's attach %q, %d thumbs", a.answer.attach, len(a.answer.ui.thumbs))
 	}
 	_, with, _ := a.cardSize()
 	if with == 0 {
@@ -542,4 +543,8 @@ func TestRewriteBoxDropKeepsBatchOrder(t *testing.T) {
 			t.Errorf("image %d is not the %dth dropped file", i, i+1)
 		}
 	}
+}
+
+func (a *app) boxView(context *ui.Context) {
+	rewriteBoxView(context, a.boxViewState(), a.boxActions(), &a.box.ui)
 }

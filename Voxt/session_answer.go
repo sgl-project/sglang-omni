@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -24,11 +25,11 @@ import (
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, conv: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
-		input: session.TextInput{Raw: s.Raw, Selection: s.Selection, Typed: s.Typed}, lang: s.TargetLanguage, llmID: s.LLM.ID,
+		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection, Typed: s.Typed}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name), attach: s.ImageHint,
 	}
 	if s.ID == a.box.session || s.ID == a.box.sending {
-		card.images, card.thumbs = a.box.images, a.box.thumbs
+		card.images, card.ui.thumbs = a.box.images, a.box.thumbs
 	}
 	if s.State == session.Failed {
 		card.problem = s.Problem
@@ -48,7 +49,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 		// too: its card turns into Rewrite's).
 		if a.followUp != "" && a.answer.id == a.followUp {
 			card.turns, card.conv = append(card.turns, a.answer.turns...), a.answer.conv
-			card.conversation, card.quotesOpen = a.answer.conversation, a.answer.quotesOpen
+			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
 			if card.why == "" {
 				card.why = a.answer.why
 			}
@@ -79,6 +80,7 @@ func (a *app) endRedo(s session.Snapshot) {
 	switch {
 	case s.State == session.Done && s.Result != "":
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
+		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
 		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
 			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
@@ -101,6 +103,7 @@ func (a *app) endRedo(s session.Snapshot) {
 // (Try again after a failure), or into the language lang (Translate's
 // target select). The card stays until the new session's own result.
 func (a *app) retryAnswer(lang string) {
+	a.closeLangMenu()
 	card := a.answer
 	if !card.open || a.sess.State.Live() {
 		return
@@ -142,7 +145,7 @@ func (a *app) retryAnswer(lang string) {
 // with its thinking level: it stays in the card, which shows its text
 // until the new one comes (Voxt's).
 func (a *app) redoAnswer(req session.StartRequest) {
-	req.Card, req.Conversation = true, a.answer.conv
+	req.Card, req.Conversation, req.Replaces = true, a.answer.conv, a.answer.id
 	a.answer.msg = ""
 	if n := a.sessionBlocker(req.Kind); n != nil {
 		a.answer.msg = n.text
@@ -161,6 +164,7 @@ func (a *app) redoAnswer(req session.StartRequest) {
 // translation is the conversation's first turn, its source as the
 // selection (#3897).
 func (a *app) followUpAnswer(hold string) bool {
+	a.closeLangMenu()
 	if !a.canFollowUp() {
 		return false
 	}
@@ -202,6 +206,7 @@ func (a *app) closeAnswer() {
 	}
 	a.answer, a.followUp = answerCard{}, ""
 	a.resurface()
+	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()
 }
@@ -214,7 +219,7 @@ func (a *app) closeAnswer() {
 func (a *app) setAside(try bool) {
 	c := a.answer
 	if held := c.kind == store.KindRewrite && len(c.turns) > 0 || c.kind == store.KindTranslate && c.text != ""; !try && c.open && held && c.problem == nil && !c.inserting {
-		c.msg, c.langOpen, c.thinkMenu, c.pillMenu, c.copied, c.redo, c.redoLang, c.redoThink = "", false, false, false, false, "", "", nil
+		c.msg, c.ui.langOpen, c.ui.thinkMenu, c.ui.pillMenu, c.copied, c.redo, c.redoLang, c.redoThink = "", false, false, false, false, "", "", nil
 		a.under = c
 	}
 	a.answer = answerCard{}
@@ -240,34 +245,13 @@ func (a *app) cardSessionLive() bool {
 // copyMark is how long Copy shows its mark (Voxt's).
 const copyMark = 2 * time.Second
 
-// copyAnswer copies the card's text (the button's handler gives the
-// window's clipboard); the card stays, Copy showing a mark for a moment
-// (Voxt's).
-func (a *app) copyAnswer(copyText func(string)) {
-	if !a.answer.open || a.answer.text == "" {
-		return
-	}
-	copyText(a.answer.text)
-	a.setDelivery(a.answer.id, "copy", proto.App{})
-	a.answer.copySeq++
-	seq, id := a.answer.copySeq, a.answer.id
-	a.answer.copied = true
-	a.later(copyMark, func() {
-		if a.answer.open && a.answer.copySeq == seq && a.answer.id == id {
-			a.answer.copied = false
-			if a.ov.win != nil {
-				a.ov.win.Invalidate()
-			}
-		}
-	})
-}
-
 // insertAnswer inserts the card's text where the user is typing: the
 // app the session started in (the user chose to, so any focused element
 // there will do; when VoxtNew is in front, that app comes back first), or
 // a text field in the app in front now. The card hides while it pastes
 // and comes back if that did not work (Voxt's).
 func (a *app) insertAnswer() {
+	a.closeLangMenu()
 	card := a.answer
 	if !card.open || card.inserting || card.text == "" || a.cardSessionLive() {
 		return
@@ -291,6 +275,7 @@ func (a *app) insertAnswer() {
 				if res.Moved(card.target) {
 					into = res.To // the user clicked into another app
 				}
+				a.reopen = slices.DeleteFunc(a.reopen, func(recent reopenConversation) bool { return recent.conversation == card.conv })
 				a.setDelivery(card.id, "insert", into)
 				a.closeAnswer()
 				return

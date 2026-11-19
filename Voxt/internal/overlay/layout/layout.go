@@ -235,6 +235,12 @@ func (s CardSize) BodyW() int { return s.W - 2*CardPadX - CardInset }
 // card's room beside a bubble, kept.
 func (s CardSize) BubbleW() int { return s.W - (AnswerW - BubbleW) }
 
+// BubbleTextWidth fits a Rewrite input's text, heading and selection widths,
+// rounded up to whole DIPs and capped at the conversation bubble's maximum.
+func BubbleTextWidth(text, title, quote, maxWidth float32) float32 {
+	return min(float32(math.Ceil(float64(max(text, title, quote)))), maxWidth)
+}
+
 // Bars of the waveform (Voxt's): WaveW wide in all, centred in the
 // waveform's slot.
 const (

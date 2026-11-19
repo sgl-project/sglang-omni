@@ -1,0 +1,21 @@
+{
+  "name": "key-recorder-typed-valid",
+  "kind": "key-recorder",
+  "key_recorder": {
+    "helper_records_keys": false,
+    "displayed_keys": "⌃⌥K",
+    "typed": {
+      "valid": true,
+      "canonical_keys": "Control+Option+K",
+      "formatted_keys": "⌃⌥K",
+      "error_text": ""
+    },
+    "raw_keys": "ctrl+opt+K",
+    "custom": true,
+    "typing": true,
+    "edited": false,
+    "unknown": false,
+    "record_denied": false,
+    "focused": true
+  }
+}

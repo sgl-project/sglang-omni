@@ -1,0 +1,88 @@
+{
+  "name": "step-rewrite",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 5,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "试一试改写",
+    "subtitle": "改写按你的要求写内容，或者按你说的修改选中的文字。按快捷键（或点“开始”），让它写一段短内容。",
+    "recording": false,
+    "try": {
+      "prefix": "ob-rw",
+      "shortcut": {
+        "present": true,
+        "feature_title": "改写",
+        "text": "⌃ 右 ⌥",
+        "how": "按一下开始，再按一下停止。",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": true,
+          "lit_keys": {
+            "control-left": true,
+            "control-right": true,
+            "option-right": true
+          },
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "比如说",
+      "sample_text": "给团队写一条短消息，说我站会要晚到十分钟。",
+      "sample_action": false,
+      "hint": "",
+      "card": {
+        "mine": false,
+        "state": "",
+        "session_kind": "",
+        "live": false,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": null,
+        "heard": false,
+        "elapsed_text": "",
+        "partial": "",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": ""
+      }
+    },
+    "footer": {
+      "mode": "try-wait",
+      "busy": false,
+      "back": true,
+      "continue_label": "继续",
+      "continue_tooltip": "试一次并得到结果后才能继续",
+      "continue_disabled": true
+    }
+  }
+}

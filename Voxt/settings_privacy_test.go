@@ -35,6 +35,15 @@ func TestPrivacySendWindow(t *testing.T) {
 	}
 }
 
+// The history setting says what turning it off removes from the menus.
+func TestPrivacyHistoryExplainsReopen(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	openPrivacy(t, a, tt)
+	if !has(tt, "the menu bar and Dock menus do not list cards to reopen") {
+		t.Fatalf("no Reopen card privacy explanation: %q", firstTexts(tt))
+	}
+}
+
 // TestPrivacySendClipboardImage: sending the copied image with Rewrite is
 // off by default; the switch saves it, asks for no permission, and its
 // note says what goes and what does not.

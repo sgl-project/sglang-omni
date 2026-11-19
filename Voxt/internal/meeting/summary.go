@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,8 +142,10 @@ func SpeakerLabel(speaker string, names map[string]string) string {
 	case "":
 		return "Them"
 	default:
-		if len(speaker) == 2 && speaker[0] == 's' && speaker[1] >= '1' && speaker[1] <= '4' {
-			return fmt.Sprintf("Speaker %c", speaker[1])
+		if n, ok := strings.CutPrefix(speaker, "s"); ok {
+			if _, err := strconv.Atoi(n); err == nil {
+				return "Speaker " + n
+			}
 		}
 		return speaker
 	}

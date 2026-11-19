@@ -1,0 +1,60 @@
+{
+  "name": "models-normal",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 2,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Models",
+    "subtitle": "Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.",
+    "recording": false,
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "asr.accurate",
+        "name": "Qwen3-ASR 1.7B (8bit)",
+        "ready": true,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "",
+        "show_download": false,
+        "download_label": "",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak."
+      },
+      "language_ready": true,
+      "language_name": "Fixture language model",
+      "needs_download": false,
+      "download_left": ""
+    },
+    "footer": {
+      "mode": "next",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-error-net-timeout",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": false,
+    "title": "Couldn't check for updates",
+    "subtitle": "",
+    "error_text": "GitHub did not answer in time. Check your connection, or the proxy in Speech models → Network.",
+    "notes": "",
+    "download": ""
+  }
+}
