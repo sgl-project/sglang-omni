@@ -190,6 +190,22 @@ func (a *app) boxAddFileText(text, source string) {
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
+	if a.box.text != "" && !strings.HasSuffix(a.box.text, "\n") {
+		a.box.text += "\n"
+	}
+	if a.box.text == "" && len(a.box.textSegments) > 0 {
+		for index := len(a.box.textSegments) - 1; index >= 0; index-- {
+			last := &a.box.textSegments[index]
+			if last.Text == "" {
+				continue
+			}
+			if !strings.HasSuffix(last.Text, "\n") {
+				last.Text += "\n"
+				last.Chars++
+			}
+			break
+		}
+	}
 	if a.box.text != "" {
 		a.box.textSegments = append(a.box.textSegments, a.newBoxTextSegment(a.box.text, "", false))
 		a.box.text = ""
@@ -215,9 +231,6 @@ func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...
 // and reservation order. A send queued behind it runs after it lands.
 func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
 	var conversionErr error
-	if gen == a.boxGen && landing.errText != "" {
-		conversionErr = errors.New(landing.errText)
-	}
 	landing.gen = gen
 	if a.boxHeld == nil {
 		a.boxHeld = map[int]boxLanding{}
@@ -235,11 +248,14 @@ func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
 			continue
 		}
 		if land.errText != "" {
+			conversionErr = errors.New(land.errText)
 			a.box.err = land.errText
 			a.boxSendQueued = false
 		} else {
 			if land.text != "" || len(land.jpeg) > 0 || len(land.jpegs) > 0 {
+				conversionErr = nil
 				a.box.err = ""
+				a.boxShare.clearError()
 			}
 			if land.text != "" {
 				a.boxAddFileText(land.text, land.source)

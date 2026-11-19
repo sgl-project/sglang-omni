@@ -10,6 +10,19 @@ import (
 	"testing"
 )
 
+func TestReadPDFWithMixedTextAndScanRendersOnlyScannedPage(t *testing.T) {
+	text, pages, pageCount, err := ReadPDF("../../testdata/rewrite-box/mixed-text-scan.pdf", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageCount != 1 || !strings.Contains(text, "real text") {
+		t.Fatalf("mixed PDF text: pageCount %d, text %q", pageCount, text)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("mixed PDF returned %d page images, want only the scanned page", len(pages))
+	}
+}
+
 func TestReadPDFWithThinTextLayerRendersPages(t *testing.T) {
 	text, pages, pageCount, err := ReadPDF("../../testdata/rewrite-box/thin-text.pdf", 4)
 	if err != nil {
@@ -28,7 +41,7 @@ func TestReadPDF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pageCount != 2 || len(pages) != 0 || !strings.Contains(text, "First line") || !strings.Contains(text, "Sixth line") {
+	if pageCount != 0 || len(pages) != 0 || !strings.Contains(text, "First line") || !strings.Contains(text, "Sixth line") {
 		t.Fatalf("text PDF: pageCount %d, %d rendered pages, text %q", pageCount, len(pages), text)
 	}
 

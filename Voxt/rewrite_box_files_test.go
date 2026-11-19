@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/png"
 	"os"
@@ -411,6 +412,70 @@ func TestBoxReadInputFileSuccessClearsError(t *testing.T) {
 	waitFor(t, drain, func() bool { return a.boxPending == 0 })
 	if a.box.err != "" {
 		t.Fatalf("a successful import kept the earlier error %q", a.box.err)
+	}
+	if _, _, err := a.boxShare.load(context.Background()); err != nil {
+		t.Fatalf("the session kept the earlier import error: %v", err)
+	}
+}
+
+func TestBoxAddFileTextSeparatesExistingText(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		pasted bool
+	}{{"typed", false}, {"pasted", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true}
+			want := "before\nfile body\n"
+			if test.pasted {
+				long := "before\nsecond\nthird\nfourth"
+				if !a.boxPasteText(long) {
+					t.Fatal("the fixture paste did not collapse")
+				}
+				want = long + "\nfile body\n"
+			} else {
+				a.box.text = "before"
+			}
+			a.boxAddFileText("file body", "notes.txt")
+			if got := a.boxTextContent(); got != want {
+				t.Fatalf("existing text fused with the file: %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestBoxConvertedLandingClearsErrorInReservationOrder(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	gen := a.boxGen
+	first := a.boxReserve()
+	second := a.boxReserve()
+	a.boxConvertedLanding(gen, second, boxLanding{text: "good"})
+	a.boxConvertedLanding(gen, first, boxLanding{errText: "bad"})
+	if a.box.err != "" {
+		t.Fatalf("the last ordered import failed: %q", a.box.err)
+	}
+	if _, _, err := a.boxShare.load(context.Background()); err != nil {
+		t.Fatalf("completion order restored the earlier error: %v", err)
+	}
+	if got, want := a.boxTextContent(), "good\n"; got != want {
+		t.Fatalf("ordered text %q, want %q", got, want)
+	}
+}
+
+func TestBoxAddFileTextSeparatesAfterEmptyTypedSuffix(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, text: "first"}
+	if !a.boxPasteText("one\ntwo\nthree\nfour") {
+		t.Fatal("the first fixture paste did not collapse")
+	}
+	if !a.boxPasteTextAt(0, "five\nsix\nseven\neight", 0, 5) {
+		t.Fatal("the second fixture paste did not collapse")
+	}
+	a.boxRemoveText(3)
+	a.boxAddFileText("file body", "notes.txt")
+	if got, want := a.boxTextContent(), "five\nsix\nseven\neight\nfile body\n"; got != want {
+		t.Fatalf("an empty typed suffix fused the file: %q, want %q", got, want)
 	}
 }
 

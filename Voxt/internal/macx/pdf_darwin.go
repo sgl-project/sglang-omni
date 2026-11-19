@@ -85,9 +85,9 @@ func pdfBytes(data objc.ID) []byte {
 	return append([]byte(nil), unsafe.Slice(pointer, length)...)
 }
 
-// ReadPDF extracts a PDF's text layer. It also renders the first maxPages
-// pages when the document has no text or only a thin multi-page text layer.
-// The returned page count covers the whole PDF.
+// ReadPDF extracts a PDF's text layer. It also renders up to maxPages pages
+// that have no text or only a thin multi-page text layer. The returned page
+// count says how many pages need rendering, including pages beyond maxPages.
 func ReadPDF(path string, maxPages int) (text string, pages [][]byte, pageCount int, err error) {
 	if err = loadPDF(); err != nil {
 		return "", nil, 0, err
@@ -101,14 +101,18 @@ func ReadPDF(path string, maxPages int) (text string, pages [][]byte, pageCount 
 		}
 		defer document.Send(pdfSelRelease)
 		text = goString(document.Send(pdfSelString))
-		pageCount = objc.Send[int](document, pdfSelPageCount)
-		trimmedText := strings.TrimSpace(text)
+		documentPageCount := objc.Send[int](document, pdfSelPageCount)
 		const minTextRunesPerPage = 20 // Short multi-page text is usually a scan's page numbers or watermark.
-		if pageCount == 0 || trimmedText != "" && (pageCount == 1 || utf8.RuneCountInString(trimmedText) >= minTextRunesPerPage*pageCount) {
-			return
-		}
-		for index := 0; index < min(pageCount, maxPages); index++ {
+		for index := 0; index < documentPageCount; index++ {
 			page := document.Send(pdfSelPageAt, index)
+			pageText := strings.TrimSpace(goString(page.Send(pdfSelString)))
+			if pageText != "" && (documentPageCount == 1 || utf8.RuneCountInString(pageText) >= minTextRunesPerPage) {
+				continue
+			}
+			pageCount++
+			if len(pages) >= maxPages {
+				continue
+			}
 			image := pdfNative.thumbnail(page, pdfSelThumbnail, pdfSize{width: 1600, height: 1600}, 1)
 			representation := class("NSBitmapImageRep").Send(pdfSelImageRep, image.Send(pdfSelTIFF))
 			encoded := pdfBytes(representation.Send(pdfSelRepresentation, uintptr(4), uintptr(0)))
