@@ -16,7 +16,8 @@ import (
 var boxDialogOpen = mygo.Dialog.Open
 var boxReadPDF = macx.ReadPDF
 
-const boxMaxInputFileBytes int64 = 32 << 20
+// A bigger text takes seconds to appear and goes to the model whole.
+const boxMaxInputFileBytes int64 = 1 << 20
 
 // boxLanding is one converted input waiting for its turn in boxHeld.
 type boxLanding struct {
@@ -224,6 +225,7 @@ func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
 			a.box.err = land.errText
 			a.boxSendQueued = false
 		} else {
+			a.box.err = ""
 			if land.text != "" {
 				a.boxAddFileText(land.text, land.source)
 			}

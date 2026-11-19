@@ -409,3 +409,73 @@ func TestBoxReadInputFileRejectsOversizeBeforeReading(t *testing.T) {
 		})
 	}
 }
+
+func TestBoxTextContentKeepsFilesOnTheirOwnLines(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		typed string
+		files []string
+		after string
+		want  string
+	}{
+		{name: "two files without newline", files: []string{"first", "second"}, want: "first\nsecond"},
+		{name: "file already ends with newline", files: []string{"first\n", "second\n"}, want: "first\nsecond\n"},
+		{name: "typed text around a file", typed: "before", files: []string{"body"}, after: "after", want: "before\nbody\nafter"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true, text: test.typed}
+			for _, text := range test.files {
+				a.boxAddFileText(text, "notes.txt")
+			}
+			a.box.text = test.after
+			if got := a.boxTextContent(); got != test.want {
+				t.Fatalf("content %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBoxReadInputFileClearsAnEarlierFailure(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	drain := queuePosts(a)
+	dir := t.TempDir()
+	bad, good := filepath.Join(dir, "notes.docx"), filepath.Join(dir, "notes.txt")
+	for _, path := range []string{bad, good} {
+		if err := os.WriteFile(path, []byte("body"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.boxReadInputFile(bad)
+	waitFor(t, drain, func() bool { return a.boxPending == 0 && a.box.err != "" })
+	a.boxReadInputFile(good)
+	waitFor(t, drain, func() bool { return a.boxPending == 0 && len(a.box.textSegments) == 1 })
+	if a.box.err != "" {
+		t.Fatalf("error %q stayed after a file landed", a.box.err)
+	}
+}
+
+func TestBoxReadInputFileCapsTextAtOneMebibyte(t *testing.T) {
+	const limit = 1 << 20
+	for _, test := range []struct {
+		size     int
+		accepted bool
+	}{{size: limit, accepted: true}, {size: limit + 1, accepted: false}} {
+		a, _, _ := newTestApp(t)
+		a.box = rewriteBox{open: true, shown: true}
+		drain := queuePosts(a)
+		path := filepath.Join(t.TempDir(), "big.txt")
+		if err := os.WriteFile(path, bytes.Repeat([]byte("a"), test.size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		a.boxReadInputFile(path)
+		waitFor(t, drain, func() bool { return a.boxPending == 0 })
+		if accepted := len(a.box.textSegments) == 1; accepted != test.accepted {
+			t.Fatalf("%d bytes: accepted %v, want %v (error %q)", test.size, accepted, test.accepted, a.box.err)
+		}
+		if !test.accepted && a.box.err != "This file is too large: big.txt" {
+			t.Fatalf("%d bytes: error %q", test.size, a.box.err)
+		}
+	}
+}
