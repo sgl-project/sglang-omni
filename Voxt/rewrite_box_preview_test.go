@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -197,6 +201,129 @@ func TestBoxWindowPreviewStaysVisibleUntilConfirmed(t *testing.T) {
 	}
 }
 
+func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
+	chat := &fakeChat{status: 400, delay: 100 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Privacy.SendWindow = true
+	}, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(a.boxSend)
+	a.pump("the first window review", func() bool {
+		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
+	})
+	a.postQueue(func() {
+		a.boxSend()
+		a.boxSend()
+	})
+	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
+	sent := len(chat.requests())
+	chat.set("Recovered.", 0)
+	// A second click after the first review finished leaves this approval
+	// for the next send unless the resend clears it.
+	a.boxShare.reviewApproved = true
+
+	a.postQueue(a.boxSend)
+	a.pump("the resend's window review", func() bool {
+		return a.box.sending != "" && a.sess.ID == a.box.sending && a.sess.State == session.Composing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
+	})
+	if !a.box.shown || !a.boxViewState().CanSend {
+		t.Fatalf("the resend's screenshot cannot be confirmed: shown %v, canSend %v", a.box.shown, a.boxViewState().CanSend)
+	}
+	a.drain(100 * time.Millisecond)
+	if got := len(chat.requests()); got != sent {
+		t.Fatalf("the resend used the first send's approval: %d requests before its own confirmation, want %d", got, sent)
+	}
+	a.postQueue(func() {
+		a.boxSend()
+		if a.box.shown {
+			t.Error("the confirmed resend stayed visible")
+		}
+	})
+	a.postQueue(func() {
+		next := a.sess
+		next.Rev++
+		next.Draft = "streaming"
+		a.sessionChanged(next)
+		if a.box.shown {
+			t.Error("a later draft reopened the confirmed resend")
+		}
+	})
+	a.pump("the resend's answer", func() bool { return a.answer.open })
+	if a.sess.State != session.Done || a.sess.Result != "Recovered." {
+		t.Fatalf("resend ended %s with %q", a.sess.State, a.sess.Result)
+	}
+	reqs := chat.requests()
+	if len(reqs) <= sent {
+		t.Fatal("the resend never reached the language model")
+	}
+	images, _ := reqs[len(reqs)-1]["images"].([][]byte)
+	if len(images) != 1 {
+		t.Fatalf("the confirmed resend sent %d images, want the window screenshot", len(images))
+	}
+}
+
+func TestBoxResendWithoutWindowReviewHides(t *testing.T) {
+	chat := &fakeChat{status: 400, delay: 100 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, set, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(a.boxSend)
+	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
+	sent := len(chat.requests())
+	chat.set("Recovered.", 0)
+
+	a.postQueue(a.boxSend)
+	a.pump("the resend", func() bool { return a.box.sending != "" })
+	if a.box.shown {
+		t.Fatal("a resend without a window review stayed visible")
+	}
+	a.pump("the resend's answer", func() bool { return a.answer.open })
+	if a.sess.State != session.Done || len(chat.requests()) <= sent {
+		t.Fatalf("resend ended %s after %d requests", a.sess.State, len(chat.requests()))
+	}
+}
+
+func TestBoxCloseCancelsResendWindowReview(t *testing.T) {
+	chat := &fakeChat{status: 400}
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Privacy.SendWindow = true
+	}, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(a.boxSend)
+	a.pump("the first window review", func() bool {
+		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
+	})
+	a.postQueue(a.boxSend)
+	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
+	sent := len(chat.requests())
+	chat.set("Recovered.", 0)
+
+	a.postQueue(a.boxSend)
+	a.pump("the resend's window review", func() bool {
+		return a.box.sending != "" && a.sess.ID == a.box.sending && a.sess.State == session.Composing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
+	})
+	target, resend := a.box.target, a.box.sending
+	a.postQueue(a.closeBox)
+	a.pump("the resend's cancellation", func() bool { return !a.box.open && a.sess.State.Ended() })
+	if a.sess.State != session.Cancelled {
+		t.Fatalf("Close ended the resend as %s, want cancelled", a.sess.State)
+	}
+	if got := len(chat.requests()); got != sent {
+		t.Fatalf("Close sent the reviewed screenshot: %d requests, want %d", got, sent)
+	}
+	a.postQueue(func() { a.openBox(target, session.StartRequest{Kind: store.KindRewrite, Target: target}) })
+	a.pump("a new recording", func() bool {
+		return a.box.open && a.box.session != resend && a.sess.ID == a.box.session && a.sess.State == session.Recording
+	})
+}
+
 func TestAutomaticImageAppearsOnAnswerCardOnlyWhenSent(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	jpeg := boxJPEGOf(t, 20, 10)
@@ -228,6 +355,31 @@ func TestRedoDropsAutomaticImagePreviewWhenItWasNotResent(t *testing.T) {
 	if len(a.answer.previews) != 2 || a.answer.previews[0].Text != "source" || a.answer.previews[1].Text != "typed" {
 		t.Fatalf("redo text previews %+v", a.answer.previews)
 	}
+}
+
+func TestRedoAutomaticImageChipsClearWhileStreaming(t *testing.T) {
+	chat := &fakeChat{texts: []string{"First answer", "Second answer"}, delay: 200 * time.Millisecond}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the first answer", func() bool { return a.answer.open })
+	bitmap, _ := ui.DecodeBitmap(boxJPEGOf(t, 20, 10))
+	a.answer.attach = "clipboard"
+	a.answer.previews = append(a.answer.previews, answerInputPreview{Label: "Copied image", Image: bitmap})
+	input := a.answer.input
+	a.postQueue(func() {
+		a.redoAnswer(session.StartRequest{Kind: a.answer.kind, Target: a.answer.target, Text: &input})
+	})
+	a.pump("the redo streaming", func() bool {
+		return len(chat.requests()) == 2 && a.sess.ID == a.answer.redo && a.sess.State == session.Composing && a.sess.Draft != ""
+	})
+	if attachment := a.cachedCard().Attachment; attachment != "" {
+		t.Fatalf("the streaming redo kept %q", attachment)
+	}
+	for _, preview := range a.ov.ui.cardPreviews {
+		if preview.Image != nil {
+			t.Fatalf("the streaming redo kept an unsent image: %+v", a.answer.previews)
+		}
+	}
+	a.pump("the redo answer", func() bool { return a.answer.redo == "" })
 }
 
 func TestBoxLongPasteThroughEditorDoesNotDuplicate(t *testing.T) {
@@ -383,6 +535,63 @@ func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	}
 	if got, want := a.boxTextContent(), "HEL"+long+"LO world"; got != want {
 		t.Fatalf("text after pasting into an earlier segment %q, want %q", got, want)
+	}
+}
+
+func TestBoxPasteTextRejectsOversize(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	if a.boxPasteText(strings.Repeat("x", (32<<20)+1)) {
+		t.Fatal("the oversized paste was accepted")
+	}
+	if a.box.err == "" || len(a.box.textSegments) != 0 || a.box.text != "" {
+		t.Fatalf("oversized text reached the box: err %q, segments %d, editor %d", a.box.err, len(a.box.textSegments), len(a.box.text))
+	}
+}
+
+func TestBoxOversizePasteKeepsTrailingEditorText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("hello")
+	tt.SetClipboardData(transfer.TextData(strings.Repeat("x", (32<<20)+1)))
+	tt.Command("paste")
+	frames(tt)
+	if got := a.boxTextContent(); got != "hello" {
+		t.Fatalf("the rejected paste changed the editor to %q", got)
+	}
+	if a.box.err == "" {
+		t.Fatal("the rejected paste has no error")
+	}
+}
+
+func TestBoxOversizePasteKeepsExistingText(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		index int
+	}{
+		{name: "trailing editor", index: -1},
+		{name: "earlier typed segment", index: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true, text: "hello"}
+			if tc.index == 0 {
+				a.boxPasteText("one\ntwo\nthree\nfour")
+				a.boxRemoveText(1)
+			}
+			before := a.boxTextContent()
+			if a.boxPasteTextAt(tc.index, strings.Repeat("x", (32<<20)+1), 0, 0) {
+				t.Fatal("the oversized paste was accepted")
+			}
+			if got := a.boxTextContent(); got != before {
+				t.Fatalf("the rejected paste changed %q to %q", before, got)
+			}
+			if a.box.err == "" {
+				t.Fatal("the rejected paste has no error")
+			}
+		})
 	}
 }
 

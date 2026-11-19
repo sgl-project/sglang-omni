@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo"
@@ -122,8 +123,8 @@ func TestBoxChooseTextFileBecomesPastedText(t *testing.T) {
 		text     string
 		want     string
 	}{
-		{name: "long text", filename: "notes.txt", text: "First 中🙂\r\nSecond\r\nThird\r\nFourth", want: "First 中🙂\nSecond\nThird\nFourth"},
-		{name: "short markdown", filename: "notes.md", text: "**short**", want: "**short**"},
+		{name: "long text", filename: "notes.txt", text: "First 中🙂\r\nSecond\r\nThird\r\nFourth", want: "First 中🙂\nSecond\nThird\nFourth\n"},
+		{name: "short markdown", filename: "notes.md", text: "**short**", want: "**short**\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
@@ -169,7 +170,7 @@ func TestBoxChooseTextPDFBecomesPastedText(t *testing.T) {
 	t.Cleanup(func() { boxReadPDF = old })
 	stubBoxDialog(t, []string{path})
 	a.boxChooseFile()
-	want := "First line\nSecond line\nThird line\nFourth line"
+	want := "First line\nSecond line\nThird line\nFourth line\n"
 	waitFor(t, drain, func() bool { return a.boxPending == 0 && a.boxTextContent() == want })
 	if len(a.box.images) != 0 || len(a.box.textSegments) != 1 || !a.box.textSegments[0].File {
 		t.Fatalf("text PDF landed as images or not as a file block: %+v", a.box)
@@ -346,7 +347,7 @@ func TestBoxChooseTextFileKeepsExistingTextOrder(t *testing.T) {
 	}
 	stubBoxDialog(t, []string{path})
 	a.boxChooseFile()
-	waitFor(t, drain, func() bool { return a.boxPending == 0 && a.boxTextContent() == "before\nfile body" })
+	waitFor(t, drain, func() bool { return a.boxPending == 0 && a.boxTextContent() == "before\nfile body\n" })
 	if len(a.box.textSegments) != 2 || a.box.textSegments[0].Pasted || !a.box.textSegments[1].File {
 		t.Fatalf("file and typed prefix are out of order: %+v", a.box.textSegments)
 	}
@@ -375,6 +376,127 @@ func TestRewriteBoxAddStaysReachableAfterFileBlocks(t *testing.T) {
 	}
 }
 
+func TestBoxReadInputFileSeparatesFiles(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	drain := queuePosts(a)
+	for _, name := range []string{"first.txt", "second.txt"} {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte(strings.TrimSuffix(name, ".txt")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		a.boxReadInputFile(path)
+		waitFor(t, drain, func() bool { return a.boxPending == 0 })
+	}
+	if got, want := a.boxTextContent(), "first\nsecond\n"; got != want {
+		t.Fatalf("file blocks fused in the request: %q, want %q", got, want)
+	}
+}
+
+func TestBoxReadInputFileSuccessClearsError(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	drain := queuePosts(a)
+	unsupported := filepath.Join(t.TempDir(), "notes.docx")
+	if err := os.WriteFile(unsupported, []byte("not a supported input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a.boxReadInputFile(unsupported)
+	waitFor(t, drain, func() bool { return a.boxPending == 0 && a.box.err != "" })
+	path := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(path, []byte("good file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a.boxReadInputFile(path)
+	waitFor(t, drain, func() bool { return a.boxPending == 0 })
+	if a.box.err != "" {
+		t.Fatalf("a successful import kept the earlier error %q", a.box.err)
+	}
+}
+
+func TestBoxReadInputFileRejectsTextOverOneMiB(t *testing.T) {
+	for _, extension := range []string{".txt", ".pdf"} {
+		t.Run(extension, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true}
+			drain := queuePosts(a)
+			path := filepath.Join(t.TempDir(), "huge"+extension)
+			if extension == ".txt" {
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Truncate(path, (1<<20)+1); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.WriteFile(path, []byte("small container"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				old := boxReadPDF
+				boxReadPDF = func(string, int) (string, [][]byte, int, error) {
+					return strings.Repeat("x", (1<<20)+1), nil, 1, nil
+				}
+				t.Cleanup(func() { boxReadPDF = old })
+			}
+			a.boxReadInputFile(path)
+			waitFor(t, drain, func() bool { return a.boxPending == 0 })
+			if want := "This file is too large: huge" + extension; a.box.err != want {
+				t.Fatalf("error %q, want %q", a.box.err, want)
+			}
+		})
+	}
+}
+
+func TestBoxChooseThinTextPDFKeepsTextAndPages(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	drain := queuePosts(a)
+	path := filepath.Join("testdata", "rewrite-box", "thin-text.pdf")
+	pages := [][]byte{boxTestPNG(t, 16), boxTestPNG(t, 24)}
+	old := boxReadPDF
+	boxReadPDF = func(gotPath string, maxPages int) (string, [][]byte, int, error) {
+		if gotPath != path || maxPages != boxMaxImages {
+			t.Fatalf("ReadPDF(%q, %d)", gotPath, maxPages)
+		}
+		return "1\n2", pages, 2, nil
+	}
+	t.Cleanup(func() { boxReadPDF = old })
+	a.boxReadInputFile(path)
+	waitFor(t, drain, func() bool { return a.boxPending == 0 })
+	if got, want := a.boxTextContent(), "1\n2\n"; got != want {
+		t.Fatalf("thin text %q, want %q", got, want)
+	}
+	if len(a.box.images) != 2 {
+		t.Fatalf("a thin text layer lost the scanned pages: %d images", len(a.box.images))
+	}
+}
+
+func TestBoxReadInputPDFAcceptsLargeContainerWithSmallText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	drain := queuePosts(a)
+	path := filepath.Join(t.TempDir(), "pages.pdf")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, (1<<20)+1); err != nil {
+		t.Fatal(err)
+	}
+	old := boxReadPDF
+	boxReadPDF = func(string, int) (string, [][]byte, int, error) {
+		return "short text", nil, 20, nil
+	}
+	t.Cleanup(func() { boxReadPDF = old })
+	a.boxReadInputFile(path)
+	waitFor(t, drain, func() bool { return a.boxPending == 0 })
+	if a.box.err != "" {
+		t.Fatalf("a large PDF container with small text was rejected: %q", a.box.err)
+	}
+	if got, want := a.boxTextContent(), "short text\n"; got != want {
+		t.Fatalf("PDF text %q, want %q", got, want)
+	}
+}
+
 func TestBoxReadInputFileRejectsOversizeBeforeReading(t *testing.T) {
 	for _, extension := range []string{".txt", ".pdf"} {
 		t.Run(extension, func(t *testing.T) {
@@ -385,7 +507,11 @@ func TestBoxReadInputFileRejectsOversizeBeforeReading(t *testing.T) {
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Truncate(path, boxMaxInputFileBytes+1); err != nil {
+			maxBytes := int64(1 << 20)
+			if extension == ".pdf" {
+				maxBytes = 32 << 20
+			}
+			if err := os.Truncate(path, maxBytes+1); err != nil {
 				t.Fatal(err)
 			}
 			called := false

@@ -16,7 +16,8 @@ import (
 var boxDialogOpen = mygo.Dialog.Open
 var boxReadPDF = macx.ReadPDF
 
-const boxMaxInputFileBytes int64 = 32 << 20
+const boxMaxInputTextBytes int64 = 1 << 20
+const boxMaxInputPDFFileBytes int64 = 32 << 20
 
 // boxLanding is one converted input waiting for its turn in boxHeld.
 type boxLanding struct {
@@ -130,13 +131,17 @@ func (a *app) boxReadInputFile(path string) {
 	a.async(func() {
 		landing := boxLanding{source: source}
 		info, err := os.Stat(path)
+		extension := strings.ToLower(filepath.Ext(path))
+		maxBytes := boxMaxInputTextBytes
+		if extension == ".pdf" {
+			maxBytes = boxMaxInputPDFFileBytes
+		}
 		switch {
 		case err != nil:
 			landing.errText = i18n.T("This file could not be read: %s", source)
-		case info.Size() > boxMaxInputFileBytes:
+		case info.Size() > maxBytes:
 			landing.errText = i18n.T("This file is too large: %s", source)
 		default:
-			extension := strings.ToLower(filepath.Ext(path))
 			switch extension {
 			case ".txt", ".md":
 				data, err := os.ReadFile(path)
@@ -152,7 +157,7 @@ func (a *app) boxReadInputFile(path string) {
 					break
 				}
 				landing.text = strings.TrimSpace(strings.ReplaceAll(text, "\f", "\n"))
-				if landing.text == "" {
+				if len(pages) > 0 {
 					landing.totalPages = totalPages
 					for _, page := range pages {
 						jpeg, err := imgconv.JPEG(page)
@@ -168,6 +173,12 @@ func (a *app) boxReadInputFile(path string) {
 				landing.errText = i18n.T("This file type is not supported: %s", source)
 			}
 		}
+		if landing.errText == "" && len(landing.text) > int(boxMaxInputTextBytes) {
+			landing.errText = i18n.T("This file is too large: %s", source)
+			landing.text = ""
+			landing.totalPages = 0
+			landing.jpegs = nil
+		}
 		if landing.errText == "" && strings.TrimSpace(landing.text) == "" && landing.totalPages == 0 {
 			landing.errText = i18n.T("This file has no text: %s", source)
 		}
@@ -176,6 +187,9 @@ func (a *app) boxReadInputFile(path string) {
 }
 
 func (a *app) boxAddFileText(text, source string) {
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
 	if a.box.text != "" {
 		a.box.textSegments = append(a.box.textSegments, a.newBoxTextSegment(a.box.text, "", false))
 		a.box.text = ""
@@ -224,6 +238,9 @@ func (a *app) boxConvertedLanding(gen, seq int, landing boxLanding) {
 			a.box.err = land.errText
 			a.boxSendQueued = false
 		} else {
+			if land.text != "" || len(land.jpeg) > 0 || len(land.jpegs) > 0 {
+				a.box.err = ""
+			}
 			if land.text != "" {
 				a.boxAddFileText(land.text, land.source)
 			}

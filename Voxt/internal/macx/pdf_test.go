@@ -10,6 +10,19 @@ import (
 	"testing"
 )
 
+func TestReadPDFWithThinTextLayerRendersPages(t *testing.T) {
+	text, pages, pageCount, err := ReadPDF("../../testdata/rewrite-box/thin-text.pdf", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageCount != 2 || !strings.Contains(text, "1") || !strings.Contains(text, "2") {
+		t.Fatalf("thin text layer was lost: pageCount %d, text %q", pageCount, text)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("a scanned PDF with only page numbers returned %d page images, want 2", len(pages))
+	}
+}
+
 func TestReadPDF(t *testing.T) {
 	text, pages, pageCount, err := ReadPDF("../../testdata/rewrite-box/text.pdf", 4)
 	if err != nil {

@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +83,101 @@ func TestBoxWindowPreviewCanBeRemovedBeforeRequest(t *testing.T) {
 	reqs := model.requests()
 	if len(reqs) != 1 || len(reqs[0].Images) != 0 {
 		t.Fatalf("images sent after removing the preview: %+v", reqs)
+	}
+}
+
+// TestBoxInputTypedDuringWindowReviewIsSent: text typed and a text
+// block pasted into the box while the window preview waits for approval,
+// and a picture pasted there, go with the request; the box's picture
+// wins over the window's.
+func TestBoxInputTypedDuringWindowReviewIsSent(t *testing.T) {
+	model := &fakeLLM{text: "We ship on Friday."}
+	shot, pasted := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, []byte{0xff, 0xd8, 'p', 0xff, 0xd9}
+	typed := "and cc the team\n\nRelease notes:\n- faster start\n- fewer crashes"
+	approve := make(chan struct{})
+	var approved atomic.Bool
+	h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
+		s.Privacy.SendWindow = true
+		c.Window = func(context.Context, int) ([]byte, error) { return shot, nil }
+		c.BoxInput = func(context.Context) (string, [][]byte, error) {
+			if approved.Load() {
+				return typed, [][]byte{pasted}, nil
+			}
+			return "", nil, nil
+		}
+		c.BoxReview = func(ctx context.Context) error {
+			select {
+			case <-approve:
+				approved.Store(true)
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	})
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 3)
+	h.rec.waitFor(t, "the window preview", func(s Snapshot) bool { return s.ImagePreviewKind == "window" })
+	close(approve)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Typed != typed || end.ImagePreviewKind != "" {
+		t.Fatalf("end %s, typed %q, preview %q", end.State, end.Typed, end.ImagePreviewKind)
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; !strings.Contains(user, typed) {
+		t.Errorf("typed text missing from the user message:\n%s", user)
+	}
+	if !equalBytes(reqs[0].Images, [][]byte{pasted}) {
+		t.Errorf("images %q, want the box's picture only", reqs[0].Images)
+	}
+}
+
+func TestBoxInputClearedDuringWindowReviewIsNotSent(t *testing.T) {
+	model := &fakeLLM{text: `{"title":"Friday","content":"We ship on Friday."}`}
+	approve := make(chan struct{})
+	var approved atomic.Bool
+	h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
+		s.Privacy.SendWindow = true
+		c.Window = func(context.Context, int) ([]byte, error) { return []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, nil }
+		c.BoxInput = func(context.Context) (string, [][]byte, error) {
+			if approved.Load() {
+				return "", nil, nil
+			}
+			return "delete me", nil, nil
+		}
+		c.BoxReview = func(ctx context.Context) error {
+			select {
+			case <-approve:
+				approved.Store(true)
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	})
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 3)
+	h.rec.waitFor(t, "the window preview", func(s Snapshot) bool { return s.ImagePreviewKind == "window" })
+	close(approve)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Typed != "" {
+		t.Fatalf("cleared text survived: end %s, typed %q", end.State, end.Typed)
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; strings.Contains(user, "delete me") {
+		t.Errorf("cleared text in the user message:\n%s", user)
 	}
 }
 

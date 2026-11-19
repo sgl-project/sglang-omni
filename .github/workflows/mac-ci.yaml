@@ -76,7 +76,11 @@ jobs:
             const hasChangesUnder = (directory) =>
               hasWorkflowChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
             core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
-            core.setOutput("has_voxt_helper_changes", hasChangesUnder("Voxt/helper/"));
+            core.setOutput("has_voxt_helper_changes",
+              hasChangesUnder("Voxt/helper/") ||
+              hasChangesUnder("Voxt/third_party/mygo-patches/") ||
+              changedPaths.includes("Voxt/scripts/vendor-mygo.sh")
+            );
 
       - name: Block draft PR
         if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
@@ -173,6 +177,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - name: Vendored MyGo and native drop regressions
+        working-directory: Voxt
+        run: scripts/vendor-mygo.sh --check
 
       - name: Helper tests
         run: swift test --package-path Voxt/helper

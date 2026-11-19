@@ -312,6 +312,10 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 			}
 			start, end = local.pasteCaret, local.pasteCaret
 		}
+		if len(paste) > boxMaxTextBytes {
+			actions.pasteText(index, paste, start, end)
+			return true
+		}
 		if !actions.pasteText(index, paste, start, end) {
 			return actions.paste(context.Services())
 		}

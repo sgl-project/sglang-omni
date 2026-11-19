@@ -8,7 +8,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
-const boxTextCollapseLines = 3
+const (
+	boxTextCollapseLines = 3
+	boxMaxTextBytes      = 32 << 20
+)
 
 // boxTextSegment is one editable typed or removable pasted part, in request order.
 type boxTextSegment struct {
@@ -44,8 +47,16 @@ func (a *app) boxPasteText(text string) bool {
 // boxPasteTextAt replaces the selected runes in one editor with a collapsed
 // pasted block. Index -1 is the trailing editor; other indexes are typed segments.
 func (a *app) boxPasteTextAt(index int, text string, start, end int) bool {
+	if !a.box.open {
+		return false
+	}
+	if len(text) > boxMaxTextBytes {
+		a.box.err = i18n.T("This text is too large.")
+		a.boxSync()
+		return false
+	}
 	segment := newBoxTextSegment(text, i18n.T("Pasted text"), true)
-	if !a.box.open || segment.Lines <= boxTextCollapseLines || index < -1 || index >= len(a.box.textSegments) {
+	if segment.Lines <= boxTextCollapseLines || index < -1 || index >= len(a.box.textSegments) {
 		return false
 	}
 	editor := a.box.text

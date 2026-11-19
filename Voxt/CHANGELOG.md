@@ -13,7 +13,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Rewrite keeps crowded warnings visible and bounds file reads**: image-limit and error messages stay outside scrolling previews. Text, Markdown, and PDF files over 32 MB are rejected before reading or extraction, and one trailing newline no longer counts as an extra pasted line.
+- **Rewrite keeps crowded warnings visible and bounds file reads**: image-limit and error messages stay outside scrolling previews. Text and Markdown files over 1 MiB are rejected before reading, and one trailing newline no longer counts as an extra pasted line.
+- **Rewrite resend and oversized inputs stay safe**: with Send the window on, Enter after a failed send keeps the screenshot visible and allows confirmation before the request; Esc cancels the resend, and repeated Enter cannot pre-approve the next screenshot. A new box no longer keeps earlier removed automatic inputs. Images over 32 MiB or 40 megapixels and pasted text over 32 MiB are refused with an error instead of being read or decoded.
+- **Rewrite keeps imported files separate and clears stale errors**: imported files start on a new line instead of fusing with the next block, and a successful import clears the previous file error. PDF text over 1 MiB is rejected after extraction. A scanned PDF with only page numbers or other thin text keeps that text and adds its page images too.
 - **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first. An image that finishes early still reserves its slot until it lands, so later drops cannot use that slot to exceed the limit.
 - **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
 - **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut, a hold release, the recording length limit or the end word waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and History details and the typed history export now read that stored value. History search also finds words that appear only in the typed text. Full model close markers no longer leak into answers.
@@ -39,7 +41,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **改写拥挤时仍显示提示，并限制文件读取量**：图片数量和错误提示固定在滚动预览之外；TXT/Markdown/PDF 文件超过 32 MB 时先报错，不读取或提取；末尾一个规范化换行不再多算一行粘贴文字。
+- **改写拥挤时仍显示提示，并限制文件读取量**：图片数量和错误提示固定在滚动预览之外；TXT/Markdown 文件超过 1 MiB 时先报错，不读取；末尾一个规范化换行不再多算一行粘贴文字。
+- **改写重发和超大输入更安全**：开启“发送窗口”后，发送失败再按 Enter 会保留窗口截图，确认后才发请求；Esc 会取消重发，重复按 Enter 不会预先批准下一张截图。新打开的输入框不再沿用上一次被移除的自动输入。超过 32 MiB 或 4000 万像素的图片、超过 32 MiB 的粘贴文字会报错拒绝，不再直接读取或解码。
+- **改写导入的文件保持分行，并清除过期错误**：每个文件末尾补齐换行，不再和下一块文字粘连；后续导入成功后清除之前的文件错误。PDF 提取文字超过 1 MiB 时拒绝发送。只有页码等少量文字的扫描版 PDF 保留这些文字，同时加入页面图片。
 - **改写分批拖入图片时保持顺序**：先拖入的大图不会再排到后拖入的小图后面，输入框和发给语言模型的请求都按拖入顺序排列。提前完成转换但还在等待按序入箱的图片继续占用位置，后续拖入不会因此超过 4 张上限。
 - **改写保留补充输入的文字，并等待图片转换**：按快捷键、松开按住、达到录音时长上限或听到结束词而停止输入框时，都和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文，历史详情和 typed 导出也读取这份保存的内容，历史搜索也能找到只出现在补充输入里的文字；完整的模型结束标记也不再漏进回答。
 - **改写可以粘贴和拖入图片**：按 ⌘V 或把图片拖到输入框会添加图片，不再没有反应，包括只提供文件网址或仅声明通用操作的原生拖放。剪贴板只有 HTML 和 PNG、没有纯文本时也会粘贴 PNG。剪贴板图片读取失败时，输入框会显示错误，不再静默失败。超过 4 张的图片会在转换前拒绝。

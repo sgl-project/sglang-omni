@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -84,8 +85,9 @@ func pdfBytes(data objc.ID) []byte {
 	return append([]byte(nil), unsafe.Slice(pointer, length)...)
 }
 
-// ReadPDF extracts a PDF's text layer, or renders its first maxPages pages
-// when the document has no text. The returned page count covers the whole PDF.
+// ReadPDF extracts a PDF's text layer. It also renders the first maxPages
+// pages when the document has no text or only a thin multi-page text layer.
+// The returned page count covers the whole PDF.
 func ReadPDF(path string, maxPages int) (text string, pages [][]byte, pageCount int, err error) {
 	if err = loadPDF(); err != nil {
 		return "", nil, 0, err
@@ -100,7 +102,9 @@ func ReadPDF(path string, maxPages int) (text string, pages [][]byte, pageCount 
 		defer document.Send(pdfSelRelease)
 		text = goString(document.Send(pdfSelString))
 		pageCount = objc.Send[int](document, pdfSelPageCount)
-		if strings.TrimSpace(text) != "" || pageCount == 0 {
+		trimmedText := strings.TrimSpace(text)
+		const minTextRunesPerPage = 20 // Short multi-page text is usually a scan's page numbers or watermark.
+		if pageCount == 0 || trimmedText != "" && (pageCount == 1 || utf8.RuneCountInString(trimmedText) >= minTextRunesPerPage*pageCount) {
 			return
 		}
 		for index := 0; index < min(pageCount, maxPages); index++ {

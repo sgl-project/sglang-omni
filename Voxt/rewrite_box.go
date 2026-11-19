@@ -140,6 +140,9 @@ type boxWindow interface {
 // stopped. A box that stayed open (a send failed) keeps its content.
 func (a *app) openBox(target proto.App, req session.StartRequest) {
 	req.Box = true
+	if !a.sess.State.Live() {
+		a.boxShare.clearReview()
+	}
 	id, n := a.startSessionID(req)
 	if n != nil || id == "" {
 		return // the notice says what is missing
@@ -150,6 +153,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 	a.box.open, a.box.shown, a.box.err = true, true, ""
 	a.box.target, a.box.session = target, id
 	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
+	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
 	a.box.focusText = true
 	a.boxSync()
 }
@@ -157,7 +161,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 // closeBox closes the box and drops its content (Esc, its Close button,
 // the window's close); the recording is cancelled.
 func (a *app) closeBox() {
-	if a.box.session != "" && a.sess.State.Live() && a.sess.ID == a.box.session {
+	if id := a.boxSessionID(); id != "" && a.sess.State.Live() && a.sess.ID == id {
 		a.cancelSession()
 	}
 	a.dropBox()
@@ -201,9 +205,18 @@ func (a *app) boxSend() {
 		}
 		return
 	}
-	if a.box.instruction == "" || a.box.sending != "" || a.sess.State.Live() {
+	if a.box.sending != "" {
+		if a.sess.ID == a.box.sending && a.box.shown && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
+			a.boxShare.approveReview()
+			a.box.shown = false
+			a.boxSync()
+		}
 		return
 	}
+	if a.box.instruction == "" || a.sess.State.Live() {
+		return
+	}
+	a.boxShare.clearReview()
 	in := session.TextInput{Raw: a.box.instruction, Selection: a.box.selection}
 	id, n := a.startSessionID(session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in})
 	if n == nil && id != "" {
@@ -467,10 +480,11 @@ func (a *app) boxViewState() rewriteBoxViewState {
 		imageInfo = append(imageInfo, box.autoInfo)
 	}
 	selection := a.boxSelection()
+	resendReview := box.sending != "" && box.shown && a.sess.ID == box.sending && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
 	return rewriteBoxViewState{
 		Selection: selection, SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
 		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), Error: box.err,
-		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
+		CanSend: resendReview || box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
 		Limit:   box.limit, FocusText: box.focusText,
 	}
 }

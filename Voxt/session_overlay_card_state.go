@@ -469,16 +469,20 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	input.CanFollowUp = a.canFollowUp()
 	input.ThinkingProvider, _ = a.llmService(a.answer.llmID)
 	input.Generation = a.llmGeneration(a.answer.llmID)
+	if sessionCardRedoWriting(input) && input.Answer.attach != "box" {
+		input.Answer.attach = input.Snapshot.ImageHint
+		input.Answer.previews = answerInputPreviews(input.Snapshot, nil)
+	}
 	return input
 }
 
 func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection, next *sessionOverlayViewState) {
-	a.ov.ui.cardThumbs = a.answer.ui.thumbs
-	a.ov.ui.cardPreviews = a.answer.previews
-	if !a.answer.open && a.sess.ID == a.boxSessionID() {
+	input := a.sessionCardProjectionInput()
+	a.ov.ui.cardThumbs = input.Answer.ui.thumbs
+	a.ov.ui.cardPreviews = input.Answer.previews
+	if !input.Answer.open && a.sess.ID == a.boxSessionID() {
 		a.ov.ui.cardThumbs = a.box.thumbs
 	}
-	input := a.sessionCardProjectionInput()
 	key, liveKey := sessionCardKeyFor(input), sessionCardLiveKeyFor(input)
 	if !projection.cardReady || key != projection.cardKey {
 		projection.card = buildSessionCardViewState(projection.translator, input)
