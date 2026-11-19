@@ -291,3 +291,25 @@ func TestEstimateTokens(t *testing.T) {
 		t.Fatal(n)
 	}
 }
+
+// TestSerializedToolReply: internal tool messages must not reach the answer or streaming preview.
+func TestSerializedToolReply(t *testing.T) {
+	for _, test := range []struct {
+		reply  string
+		finish string
+	}{
+		{`<|open|>tools<|sep|><|open|>call tool="thinking" index="1"<|sep|>The input is just "As."<|close|>call<|sep|><|close|>tools<|sep|><|close|>message<|sep|>`, FinishStop},
+		{`<|open|>tools<|sep|><|open|>call tool="response"<|sep|><|close|>response<|sep|><|close|>message<|sep|>`, FinishLength},
+	} {
+		reply := test.reply
+		for split := 0; split <= len(reply); split++ {
+			var streamed strings.Builder
+			backend := &fakeBackend{steps: []step{{resp: Response{Text: reply, FinishReason: test.finish}, deltas: []string{reply[:split], reply[split:]}}}}
+			client := &Client{Backend: backend}
+			response, err := client.Chat(context.Background(), Request{Skill: SkillTranscribeEnhance, Messages: msgs("As."), OnDelta: func(delta string) { streamed.WriteString(delta) }})
+			if Code(err) != CodeEmpty || response.Text != "" || streamed.Len() != 0 {
+				t.Fatalf("split %d: answer %q, stream %q, error %v", split, response.Text, streamed.String(), err)
+			}
+		}
+	}
+}
