@@ -79,7 +79,8 @@ func TestHistorySettingsDialog(t *testing.T) {
 		t.Error("Done did not close it")
 	}
 	// Settings → Privacy has the switch, and opens the dialog.
-	openPrivacy(t, a, tt)
+	a.navigate("/settings/privacy")
+	frames(tt)
 	click(t, tt, "Save each recording")
 	if !a.prefs.Privacy.KeepAudio || !a.settings.Get().Privacy.KeepAudio {
 		t.Error("Keep recordings did not turn on")

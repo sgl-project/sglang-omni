@@ -270,8 +270,9 @@ func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 		t.Errorf("items: %v\n got %q\nwant %q", err, out, want)
 	}
 	// voxt-appcast.yaml makes the entry the channel's latest only when the
-	// appcasts' item has its hardware requirement. An API reply is no proof
-	// that Voxt 1.x's XML carries it.
+	// appcasts' item has its hardware requirement, or when an ok reply kept it
+	// and the appcast already renders it for another item. An API reply alone
+	// is no proof that Voxt 1.x's XML carries it.
 	const voxt1Reply = `{"ok":true,"data":{"channel":"beta","version":"2.0.2","packageURL":"https://voxt.actnow.dev/p","zipURL":"https://voxt.actnow.dev/z","dmgURL":"https://voxt.actnow.dev/d","sha256":"ab","size":1,"updated":true}}`
 	withoutElement := strings.ReplaceAll(releaseAppcastXML, "<sparkle:hardwareRequirements> arm64 </sparkle:hardwareRequirements>", "")
 	for _, c := range []struct {
@@ -286,6 +287,7 @@ func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 		{"not ok", "200000299", `{"ok":false,"data":{"hardwareRequirements":"arm64"}}`, withoutElement, false},
 		{"not JSON", "200000299", `"hardwareRequirements":"arm64"`, withoutElement, false},
 		{"another build's", "200000399", voxt1Reply, releaseAppcastXML, false},
+		{"a new build, kept in the reply and rendered for another item", "200000399", strings.Replace(voxt1Reply, `"updated":true`, `"updated":true,"hardwareRequirements": "arm64"`, 1), releaseAppcastXML, true},
 		{"another requirement", "200000299", `{"ok":true,"data":{"hardwareRequirements":"x86_64"}}`, withoutElement, false},
 	} {
 		_, err := runReleaseAppcast(t, c.appcast, "hardware-kept", c.build, c.reply)

@@ -9,36 +9,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Apply a model to several features** (#4276): model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
-### Changed
-
-- **Settings → Privacy and the README explain local and API data paths** (#4159): they list the text and optional images a language-model request can contain, distinguish requests that stay on this Mac from those sent to an external provider, and cover Translate's fallback. The README gives the same local-versus-API breakdown for speech recognition.
-
-### Fixed
-
-- **Rewrite cleanup uses earlier turns without exempting new control markup** (#4085): literal thinking markup in earlier turns stays intact, while new reasoning blocks and control tokens are still removed. An orphan close surrounded by newlines is removed with its reasoning; inline literal closes keep the surrounding answer.
-- **Rewrite keeps quoted selections and literal thinking markers intact** (#4085): a quoted selection keeps the model answer's surrounding quotes after an instruction is added. A `<channel|>` mention before punctuation or an unmatched `</think>` mention between words no longer discards the surrounding streamed, final, or structured answer.
-- **Answers no longer show a model's raw tool-call or thinking control markup, or fenced JSON after that markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged. An unmatched thinking-close marker no longer discards the answer that follows it, and a literal control-token mention inside a sentence stays intact. A code fence around a structured answer is removed after the control blocks too, so the card shows the answer instead of the raw JSON.
-- **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
-- **Transcribe no longer sends a built-in example for the language model to copy** (#4228): a short dictation could look like an instruction to rewrite the example, so the model returned the built-in weekly-report text instead of your words. Cleanup rules now go in the system prompt without an example conversation, in both the built-in and custom prompt paths. Spoken Translate keeps its translated example.
-
 ### 中文
 
 #### 新增
 
 - **将模型批量应用到功能**（#4276）：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
-
-#### 变更
-
-- **“设置 → 隐私”和 README 说明本机与 API 两条数据路径**（#4159）：列出语言模型请求可能包含的文字和可选图片，区分留在本机的请求和发给外部服务商的请求，并说明翻译使用备用模型时的数据去向。README 也分别说明了语音识别在本机和通过 API 运行时的数据路径。
-
-#### 修复
-
-- **改写清理参考先前轮次，但仍去除新的控制标记**（#4085）：先前轮次里字面提到的思考标记原样保留，新的推理块和控制标记仍会去掉。被换行包围的未配对结束标记连同推理一起去掉，同行内联的字面标记仍保留周围回答。
-- **改写保留选区引号和字面提到的思考标记**（#4085）：带引号的选区加上指令后，模型回答仍保留外围引号。`<channel|>` 后面紧跟标点，或 `</think>` 未配对地出现在句子中时，流式、最终和结构化回答都会保留周围文字。
-- **回答不再显示语言模型原始的内部工具调用、思考控制标记或跟在标记后的代码块 JSON**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。未配对的思考结束标记不再误删后面的正式回答，句子中字面提到的控制标记也原样保留。控制块后的结构化回答也会去掉代码块标记，答案卡片显示回答内容，不再显示原始 JSON。
-- **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
-- **转录不再发送可能被语言模型复制的内置示例**（#4228）：短听写以前可能被当成改写示例的指令，导致模型返回内置周报文本而不是你说的话。现在，清理规则直接写在系统提示词里，内置提示词和自定义提示词都不再附带示例对话；语音翻译仍保留翻译示例。
 
 ## [2.1.1] - 2026-11-17
 

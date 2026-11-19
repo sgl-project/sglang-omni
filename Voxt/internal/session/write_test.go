@@ -293,19 +293,6 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{
-			name: "a follow-up keeps literal control markup", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: "<|im_end|>", chunk: 4, pause: 10 * time.Millisecond},
-			req:    StartRequest{Text: &TextInput{Raw: "Repeat <|im_end|> exactly"}, Previous: []compose.Turn{{Instruction: "write it", Answer: compose.Answer{Title: "Friday", Content: "We ship on Friday."}}}},
-			states: "composing done", state: Done, result: "<|im_end|>", card: deliver.ReasonCard,
-			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
-				for _, s := range h.rec.all() {
-					if s.State == Composing && strings.Contains(s.Draft, "<|im_end|>") {
-						return
-					}
-				}
-				t.Error("the streamed draft lost the instruction's literal control markup")
-			},
-		},
-		{
 			// A rewritten selection takes follow-ups too: its turn holds it;
 			// still selected, it does not go twice (#3816).
 			name: "a follow-up on a selection", kind: store.KindRewrite, sel: &fakeSelector{text: "ship friday\n"}, llm: &fakeLLM{text: "Team: Friday."},
@@ -333,19 +320,6 @@ func TestWrite(t *testing.T) {
 				if e := h.hist.all()[0]; e.SourceText != "Ben: tests passed" {
 					t.Errorf("entry %+v", e)
 				}
-			},
-		},
-		{
-			name: "literal control markup survives streaming", kind: store.KindTranslate,
-			sel: &fakeSelector{text: "Explain <|im_end|> literally"}, llm: &fakeLLM{text: "Explain <|im_end|> literally, then keep the rest of this answer", chunk: 5, pause: 10 * time.Millisecond},
-			states: "reading composing delivering done", state: Done, result: "Explain <|im_end|> literally, then keep the rest of this answer", pasted: true,
-			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
-				for _, s := range h.rec.all() {
-					if s.State == Composing && strings.Contains(s.Draft, "<|im_end|>") {
-						return
-					}
-				}
-				t.Error("the streamed draft lost the selection's literal control markup")
 			},
 		},
 		{

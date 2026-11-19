@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"testing"
 
 	"github.com/egoist/mygo"
@@ -68,29 +67,6 @@ func TestCloseWindowMenu(t *testing.T) {
 		} else if it.Accelerator != acc {
 			t.Errorf("%q has %q, want %q", label, it.Accelerator, acc)
 		}
-	}
-}
-
-// TestGoMenuLeavesOutHiddenPages: the Go menu lists a feature's page only
-// while the feature is shown, as the sidebar and ⌘K do. The settings are
-// set directly: saving them rebinds the hotkeys, which needs MyGo's main
-// loop (newMenuApp).
-func TestGoMenuLeavesOutHiddenPages(t *testing.T) {
-	a := newMenuApp(t)
-	goMenu := func(hidden ...string) []*mygo.MenuItem {
-		a.prefs.Features.Hidden = hidden
-		a.buildMenu()
-		return findMenuItem(mygo.App.Menu().Items(), "Go").Submenu
-	}
-	if findMenuItem(goMenu(), "Translate") == nil {
-		t.Fatal("Translate is shown and not in the Go menu")
-	}
-	items := goMenu(settings.HideTranslate)
-	if findMenuItem(items, "Translate") != nil {
-		t.Error("the Go menu lists the hidden Translate")
-	}
-	if findMenuItem(items, "Transcribe") == nil {
-		t.Error("the Go menu lost Transcribe")
 	}
 }
 

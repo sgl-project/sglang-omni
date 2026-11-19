@@ -124,6 +124,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_SNAPSHOTS_OUT` | File where `TestRealSnapshots` in `internal/models` writes its list. | Unset: the test skips |
 | `VOXTNEW_SNAPSHOTS_SIZE` | Window size for the snapshots, as `WxH` or `min`. | Unset: the default window size |
 | `VOXTNEW_SNAPSHOT_ICONS` | Directory of app icon PNGs that the fake helper of the snapshot tests returns. | Unset: no icons |
+| `VOXTNEW_SWIFT_DISABLE_SANDBOX` | `1` makes `scripts/build-helper.sh` pass `--disable-sandbox` to SwiftPM, for a caller that already isolates the build. | Unset: SwiftPM's own sandbox |
 | `VOXTNEW_TEXTFIT_AUDIT` | `1` lists text that does not fit. `strict` fails on any. | Unset: no audit |
 | `VOXTNEW_TEXTFIT_AUDIT_OUT` | File where the text fit audit writes its list. | Unset: log only |
 | `VOXTNEW_TEXTFIT_PROBE` | Any value runs the probe of the MyGo text engine (useful on macOS). | Unset: the probe skips |

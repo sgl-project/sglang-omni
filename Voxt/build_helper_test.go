@@ -30,11 +30,13 @@ func TestBuildHelperCopiesFromSwiftBinPath(t *testing.T) {
 		t.Fatal("helper/Support/Info.plist must keep CFBundleShortVersionString's key and string on adjacent lines: build-helper.sh reads it with grep -A1")
 	}
 	cases := []struct {
-		name       string
-		productDir string // where the fake swift puts the product, under helper/
+		name           string
+		productDir     string // where the fake swift puts the product, under helper/
+		disableSandbox bool
 	}{
-		{"swift-6.4-layout", ".build/out/Products/Release"},
-		{"legacy-layout", ".build/arm64-apple-macosx/release"},
+		{name: "swift-6.4-layout", productDir: ".build/out/Products/Release"},
+		{name: "legacy-layout", productDir: ".build/arm64-apple-macosx/release"},
+		{name: "sandbox-disabled-by-environment", productDir: ".build/out/Products/Release", disableSandbox: true},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -58,9 +60,11 @@ func TestBuildHelperCopiesFromSwiftBinPath(t *testing.T) {
 			}
 			productDir := filepath.Join(root, "helper", testCase.productDir)
 			codesignLogPath := filepath.Join(root, "codesign.log")
+			swiftLogPath := filepath.Join(root, "swift.log")
 			fakes := map[string]string{
 				"uname": "#!/bin/sh\necho Darwin\n",
 				"swift": `#!/bin/sh
+printf '%s\n' "$@" >> "$FAKE_SWIFT_LOG"
 case " $* " in
 *" --show-bin-path "*)
 	echo "$FAKE_SWIFT_PRODUCTS"
@@ -83,7 +87,11 @@ printf '<key>CFBundleShortVersionString</key>\n<string>%s</string>\n' "$version"
 			command.Env = append(os.Environ(),
 				"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"FAKE_SWIFT_PRODUCTS="+productDir,
-				"FAKE_CODESIGN_LOG="+codesignLogPath)
+				"FAKE_CODESIGN_LOG="+codesignLogPath,
+				"FAKE_SWIFT_LOG="+swiftLogPath)
+			if testCase.disableSandbox {
+				command.Env = append(command.Env, "VOXTNEW_SWIFT_DISABLE_SANDBOX=1")
+			}
 			output, err := command.CombinedOutput()
 			if err != nil {
 				t.Fatalf("build-helper.sh failed: %v\n%s", err, output)
@@ -105,6 +113,17 @@ printf '<key>CFBundleShortVersionString</key>\n<string>%s</string>\n' "$version"
 			}
 			if !strings.Contains(string(codesignLog), filepath.Join(outDir, "voxtnew-helper")) {
 				t.Fatalf("codesign ran on something else:\n%s", codesignLog)
+			}
+			swiftLog, err := os.ReadFile(swiftLogPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSandboxFlags := 0
+			if testCase.disableSandbox {
+				wantSandboxFlags = 2
+			}
+			if got := strings.Count(string(swiftLog), "--disable-sandbox"); got != wantSandboxFlags {
+				t.Fatalf("--disable-sandbox count=%d, want %d; swift args:\n%s", got, wantSandboxFlags, swiftLog)
 			}
 		})
 	}

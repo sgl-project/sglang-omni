@@ -216,7 +216,7 @@ func (a *app) sheetModel() *sheetViewState {
 }
 
 // buildMenu sets the native menu bar in the current language; the
-// language switch and a change of the hidden features call it again. Items with shortcuts open what the
+// language switch calls it again. Items with shortcuts open what the
 // window's own shortcuts open (shell_commands.go's shellShortcuts).
 func (a *app) buildMenu() {
 	a.menuLocale = i18n.Locale()
@@ -234,9 +234,6 @@ func (a *app) buildMenu() {
 		for _, p := range g.pages {
 			if p.path == settingsPath {
 				continue // the app menu's Settings… (⌘,)
-			}
-			if a.pageHidden(p.path) {
-				continue // as in the sidebar and ⌘K
 			}
 			acc := ""
 			if k := pageKeys(p.path); k != "" {

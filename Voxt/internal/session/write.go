@@ -219,11 +219,6 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
-	answerInputs := []string{in.Text + "\n" + in.Instruction}
-	for _, turn := range in.Previous {
-		answerInputs = append(answerInputs, turn.Instruction+"\n"+turn.Selection+"\n"+turn.Answer.Title+"\n"+turn.Answer.Content)
-	}
-	quoteSource := cmp.Or(in.Text, in.Instruction)
 	var last time.Time
 	publish := func(force bool) {
 		now := time.Now()
@@ -233,9 +228,9 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		last = now
 		var a compose.Answer
 		if in.Answer {
-			a = compose.PartialAnswer(buf.String(), answerInputs...)
+			a = compose.PartialAnswer(buf.String())
 		} else {
-			a.Content = compose.PartialCleanWithInputs(buf.String(), answerInputs, quoteSource)
+			a.Content = strings.TrimSpace(buf.String())
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
@@ -263,13 +258,14 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
-		if a, ok := compose.ParseAnswer(resp.Text, answerInputs...); ok {
+		if a, ok := compose.ParseAnswer(resp.Text); ok {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.CleanWithInputs(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, quoteSource)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), in.Instruction)}, out.Profile(), truncated, nil
 	}
-	return compose.Answer{Content: compose.CleanWithInputs(resp.Text, answerInputs, quoteSource)}, out.Profile(), truncated, nil
+	input := in.Text
+	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,

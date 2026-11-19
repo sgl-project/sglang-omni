@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -95,12 +94,10 @@ func TestGoldenTranscribe(t *testing.T) {
 	}
 }
 
-func TestCleanupLayers(t *testing.T) {
+func TestCleanupDoesNotChangeSystem(t *testing.T) {
 	cases := []Input{
 		{Task: Transcribe, Cleanup: false, MainLanguage: "en", Text: "x"},
 		{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"},
-		{Task: Transcribe, Cleanup: false, MainLanguage: "en", TaskPrompt: "Custom rules", Text: "x"},
-		{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: "Custom rules", Text: "x"},
 		{Task: Translate, Cleanup: false, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Translate, Cleanup: true, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Rewrite, Cleanup: false, MainLanguage: "en", Instruction: "shorter", Text: "hi"},
@@ -116,11 +113,7 @@ func TestCleanupLayers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if off.Task == Transcribe {
-			if a.System == b.System || len(a.History) != 0 || len(b.History) != 0 || !slices.Contains(b.Layers, "cleanup") {
-				t.Errorf("Transcribe cleanup has no rules-only layer:\n--- off\n%s\n--- on\n%s", a.System, b.System)
-			}
-		} else if a.System != b.System {
+		if a.System != b.System {
 			t.Errorf("%s cleanup changes system:\n--- off\n%s\n--- on\n%s", off.Task, a.System, b.System)
 		}
 	}
@@ -143,33 +136,15 @@ func TestFullPromptSentAsIs(t *testing.T) {
 	}
 }
 
-// TestEditedBuiltinPromptKeepsOneCleanup: appending a rule to the built-in
-// Transcribe prompt must not add a second cleanup layer beside the one the
-// user edited. A short custom prompt still gets the cleanup layer.
-func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
-	base, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	custom := base.System + "\nUse British spelling."
-	edited, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: custom, Text: "x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(edited.System, custom) || strings.Count(edited.System, "Basic cleanup:") != 1 || len(edited.History) != 0 {
-		t.Errorf("edited built-in prompt changed or duplicated cleanup:\n%s", edited.System)
-	}
-}
-
 func TestLayersAndProfile(t *testing.T) {
 	out, err := Build(Input{Task: Transcribe, Cleanup: true, Structure: true, MainLanguage: "zh", Text: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output" {
+	if got := strings.Join(out.Layers, " "); got != "transcribe input structure task output" {
 		t.Errorf("layers %q", got)
 	}
-	if out.Profile() != "transcribe:cleanup+structure" {
+	if out.Profile() != "transcribe:structure" {
 		t.Errorf("profile %q", out.Profile())
 	}
 	out, _ = Build(Input{Task: Transcribe, MainLanguage: "en", Text: "x"})
@@ -438,12 +413,6 @@ func TestParseAnswer(t *testing.T) {
 		{`{"title":"Update","content":"Ships Friday."}`, Answer{"Update", "Ships Friday."}, true},
 		{"```json\n{\"title\": \" **Update** \", \"content\": \"Line 1\\nLine 2\"}\n```", Answer{"Update", "Line 1\nLine 2"}, true},
 		{`Sure! {"title":"T","content":"x {y} z"} hope it helps`, Answer{"T", "x {y} z"}, true},
-		{`{"title":"T","content":"No image was provided.<|tool_call|>internal"}`, Answer{"T", "No image was provided."}, true},
-		{`{"title":"T","content":"<|im_start|>assistant\nVisible answer<|im_end|>"}`, Answer{"T", "Visible answer"}, true},
-		{`{"title":"T","content":"Visible<|endoftext|>"}`, Answer{"T", "Visible"}, true},
-		{`{"title":"T","content":"Visible</think>"}`, Answer{"T", "Visible"}, true},
-		{`{"title":"T","content":"Visible<channel|>"}`, Answer{"T", "Visible"}, true},
-		{`{"title":"T","content":"a <"}`, Answer{"T", "a <"}, true},
 		{`{"title":"T","content":"  "}`, Answer{Title: "T"}, true},
 		{`{"title":"T","text":"x"}`, Answer{}, false},
 		{`{"title":"T"`, Answer{}, false},
@@ -474,22 +443,8 @@ func TestPartialAnswer(t *testing.T) {
 		t.Errorf("final %+v", last)
 	}
 	for text, want := range map[string]Answer{
-		"":                            {},
-		"Plain text answer":           {Content: "Plain text answer"},
-		"Answer<|tool_call|>internal": {Content: "Answer"},
-		"Answer<|tool_":               {Content: "Answer"},
-		"Answer<th":                   {Content: "Answer"},
-		"a <|x":                       {Content: "a <|x"},
-		`{"title":"T","content":"A\u003cthink\u003eprivate\u003c/think\u003e"}`:             {Title: "T", Content: "A"},
-		`{"title":"T<|tool_call|>x","content":"Visible"}`:                                   {Title: "T", Content: "Visible"},
-		`<think>private</think>{"title":"T","content":"Visible"}`:                           {Title: "T", Content: "Visible"},
-		`<|channel>private<channel|>{"title":"T","content":"Visible"}`:                      {Title: "T", Content: "Visible"},
-		"<|im_start|>assistant\nVisible answer<|im_end|>":                                   {Content: "Visible answer"},
-		"<|im_start|>assistant\n{\"title\":\"T\",\"content\":\"Visible answer\"}<|im_end|>": {Title: "T", Content: "Visible answer"},
-		"Visible<|endoftext|>":           {Content: "Visible"},
-		"Visible</think>":                {Content: "Visible"},
-		"Visible<channel|>":              {Content: "Visible"},
-		"Use <b>bold</b>":                {Content: "Use <b>bold</b>"},
+		"":                               {},
+		"Plain text answer":              {Content: "Plain text answer"},
 		"```":                            {},
 		"```json\n{\"title\":\"T\",\"co": {Title: "T"},
 		`{"content":"a\`:                 {Content: "a"},
@@ -596,16 +551,6 @@ func TestClean(t *testing.T) {
 		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
 		{`"Quoted."`, `"quoted"`, `"Quoted."`},
 		{"", "x", ""},
-		{"No image was provided.<|tool_call|>{\"name\":\"view_image\"}<|im_end|>", "help me explain this picture", "No image was provided."},
-		{"Answer<think>private</think>", "x", "Answer"},
-		{"<|im_start|>assistant\nVisible answer<|im_end|>", "x", "Visible answer"},
-		{"Visible<|endoftext|>", "x", "Visible"},
-		{"Visible</think>", "x", "Visible"},
-		{"Visible<channel|>", "x", "Visible"},
-		{"Answer<|tool_", "x", "Answer<|tool_"},
-		{"a <|x", "x", "a <|x"},
-		{"a <", "x", "a <"},
-		{"Use <b>bold</b> and 2 < 3.", "format this as HTML", "Use <b>bold</b> and 2 < 3."},
 		// Only Transcribe's clean-up asks for <output> tags: a Rewrite
 		// or Translate answer whose text itself has them (HTML it was
 		// asked for) keeps them.
@@ -669,10 +614,6 @@ func TestPartialOutput(t *testing.T) {
 		"<outpu":                      "",
 		"<output>":                    "",
 		"plain text":                  "plain text",
-		"Answer<|tool_call|>internal": "Answer",
-		"Answer<|tool_":               "Answer",
-		"Answer<th":                   "Answer",
-		"a <|x":                       "a <|x",
 		"<output>\nHello.":            "Hello.",
 		"<output>Hello.</output>\n":   "Hello.",
 		"Here you go: <output>Hello.": "Hello.",

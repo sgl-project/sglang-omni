@@ -380,9 +380,6 @@ type fakeLLM struct {
 	chunk  int
 	pause  time.Duration
 	finish string // the response's FinishReason
-	// copyExample answers with the earlier assistant message when there is
-	// one, as a model that repeats the prompt's example does.
-	copyExample bool
 
 	mu   sync.Mutex
 	reqs []llm.Request
@@ -394,13 +391,6 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	text := f.text
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.reqs), len(f.texts))-1]
-	}
-	if f.copyExample {
-		for _, message := range req.Messages {
-			if message.Role == llm.Assistant {
-				text = message.Content
-			}
-		}
 	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
 	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))

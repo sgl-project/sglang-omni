@@ -112,7 +112,7 @@ func TestLanguagePieces(t *testing.T) {
 }
 
 // TestBuildParts: Transcribe of long or mixed speech gets a part per
-// piece, every one with the same system prompt and no example turn;
+// piece, every one with the same system prompt and example turn;
 // Translate, Rewrite and short speech get one.
 func TestBuildParts(t *testing.T) {
 	zh := "嗯，那个，我们下周二，呃不对，下周三下午三点开个会，讨论一下预算。"
@@ -133,7 +133,7 @@ func TestBuildParts(t *testing.T) {
 	for i, p := range parts {
 		// The glossary of a large dictionary is the whole text's, in each
 		// user message: Auralink is in the last piece only.
-		if p.System != whole.System || len(p.History) != 0 || p.User != whole.Glossary+"\n\n"+UserMessage(p.Text) ||
+		if p.System != whole.System || len(p.History) != 2 || p.User != whole.Glossary+"\n\n"+UserMessage(p.Text) ||
 			!strings.Contains(p.User, "- Auralink") || strings.Contains(p.System, "Auralink") {
 			t.Errorf("part %d: %+v", i, p)
 		}

@@ -39,9 +39,10 @@ type Part struct {
 // over LongChars characters). Translate and Rewrite are one request: a
 // translation has one target language, and in pieces it was no better
 // and slower (docs/eval.md).
-// Every part has the whole input's system prompt and its piece as the user
-// message (after the glossary picked from the whole text, when it is there):
-// the parts share their prefix, which the model's prompt cache keeps.
+// Every part has the whole input's system prompt and example turn, and
+// its piece as the user message (after the glossary picked from the whole
+// text, when it is there): the parts share their prefix, which the
+// model's prompt cache keeps.
 func BuildParts(in Input) ([]Part, error) {
 	out, err := Build(in)
 	if err != nil {
