@@ -9,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 )
 
 type fakeBoxDropWindow struct {
@@ -117,6 +118,21 @@ func TestRewriteBoxHTMLAndPNGClipboardPastesImage(t *testing.T) {
 	frames(tt)
 	if len(a.box.images) != 1 {
 		t.Fatalf("%d images after an HTML+PNG paste, want 1", len(a.box.images))
+	}
+}
+
+// TestRewriteBoxOversizedClipboardImageIsRefused: a pasted picture past
+// the converter's limit is refused when read, before any conversion.
+func TestRewriteBoxOversizedClipboardImageIsRefused(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, make([]byte, imgconv.MaxFileBytes+1)))))
+	tt.Command("paste")
+	frames(tt)
+	if len(a.box.images) != 0 || a.boxSeq != 0 || !has(tt, "This image is too large.") {
+		t.Fatalf("oversized paste: %d images, %d conversions, texts %q", len(a.box.images), a.boxSeq, firstTexts(tt))
 	}
 }
 
