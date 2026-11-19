@@ -655,8 +655,8 @@ const mtdEnglishCeiling = 0.25
 
 // mtdFloor fails a config that answers in the wrong language or whose
 // English clips' group error rate passes mtdEnglishCeiling: #4188
-// returned Vietnamese and Russian for English clips and the unchecked
-// eval still passed.
+// returned Vietnamese for an English clip and the unchecked eval still
+// passed.
 func mtdFloor(t *testing.T, config string, runs []*mtdRun) {
 	t.Helper()
 	var english eval.Score
@@ -721,8 +721,10 @@ func hanShare(text string) float64 {
 }
 
 // TestMTDWrongScript: the floor's script check takes the good runtimes'
-// transcripts and rejects the languages #4188 answered the English clips
-// in (voxt-sync studio/mtd-bisect.md).
+// transcripts and rejects the Vietnamese #4188 answered an English clip
+// in (voxt-sync studio/mtd-bisect.md); the other wrong-language cases
+// (Spanish, Russian, Chinese, Japanese, a full translation) are
+// synthetic boundaries, not observed outputs.
 func TestMTDWrongScript(t *testing.T) {
 	en := eval.Clip{Lang: "en", Text: "So um, the first thing is we need to update the docs, and uh, then we should fix the login bug."}
 	zh := eval.Clip{Lang: "zh", Text: "今天的天气很好，我们下午去公园散步，晚上一起吃饭吧。"}
