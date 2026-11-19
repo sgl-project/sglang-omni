@@ -64,7 +64,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 18, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 19, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -625,6 +625,11 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#measuring-accurately">Measuring Accurately</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mixed-streaming-and-non-streaming-load">Mixed Streaming and Non Streaming Load</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mixture-fields">Mixture Fields</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mixture-caveats">Mixture Caveats</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-results">Reference Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comparing-with-tts-ci">Comparing with TTS CI</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#notes">Notes</a></li>
@@ -1040,6 +1045,100 @@ python<span class="w"> </span>/work/summary.py<span class="w"> </span>/work/resu
 <p><strong>Audio length.</strong> Throughput and RTF depend on how much audio each request makes. Compare <code class="docutils literal notranslate"><span class="pre">audio_duration_mean_s</span></code> along with them. A faster run with shorter audio did less work.</p>
 <p>For profiling, use the skill in <code class="docutils literal notranslate"><span class="pre">.claude/skills/model-profiling</span></code>.</p>
 </section>
+<section id="mixed-streaming-and-non-streaming-load">
+<h2>Mixed Streaming and Non Streaming Load<a class="headerlink" href="#mixed-streaming-and-non-streaming-load" title="Link to this heading">#</a></h2>
+<p>Real traffic mixes streaming and non streaming requests, and some scheduler problems only show under that mix. <code class="docutils literal notranslate"><span class="pre">--mixture</span> <span class="pre">NS+S</span></code> runs NS non streaming and S streaming closed loop clients against one server at the same time. Each client sends a request, waits for the whole response and sends the next one at once. <code class="docutils literal notranslate"><span class="pre">48+0</span></code> measures non streaming alone and <code class="docutils literal notranslate"><span class="pre">0+16</span></code> streaming alone, with the same method and the same result fields as a mixture load such as <code class="docutils literal notranslate"><span class="pre">48+16</span></code>.</p>
+<p>Each load runs this timeline:</p>
+<ol class="arabic simple">
+<li><p>Warmup. Every client sends one request with the first sample of its class. It stays out of the results and <code class="docutils literal notranslate"><span class="pre">generated.json</span></code>, its audio is saved under the plain row id and not scored, and a failed warmup request stops the run. <code class="docutils literal notranslate"><span class="pre">--warmup</span> <span class="pre">0</span></code> skips it.</p></li>
+<li><p>Settle. All clients start together and run for <code class="docutils literal notranslate"><span class="pre">--mixture-settle-s</span></code> seconds (default 10). Requests that finish in this time are recorded but not counted.</p></li>
+<li><p>Window. The next <code class="docutils literal notranslate"><span class="pre">--mixture-duration-s</span></code> seconds (default 120) are measured.</p></li>
+<li><p>Drain. Clients stop sending when the window ends and the requests in flight finish. They are recorded but not counted.</p></li>
+</ol>
+<p>A summary counts the requests whose response completed inside the window, and every throughput divides by the window length. Both classes walk the sample pool that <code class="docutils literal notranslate"><span class="pre">--max-samples</span></code> and <code class="docutils literal notranslate"><span class="pre">--sample-offset</span></code> select, in dataset order, non streaming from the first row and streaming from the middle row, and start over at the end. Request ids get a <code class="docutils literal notranslate"><span class="pre">#n&lt;k&gt;</span></code> or <code class="docutils literal notranslate"><span class="pre">#s&lt;k&gt;</span></code> suffix, so every saved WAV and <code class="docutils literal notranslate"><span class="pre">generated.json</span></code> entry is unique.</p>
+<p>One load writes to <code class="docutils literal notranslate"><span class="pre">--output-dir</span></code> and then scores WER on every request in <code class="docutils literal notranslate"><span class="pre">generated.json</span></code>, as a normal run does:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_tts_seedtts<span class="w"> </span>--meta<span class="w"> </span>zhaochenyang20/seed-tts-eval-arrow<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--model<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span>--lang<span class="w"> </span>en<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--mixture<span class="w"> </span><span class="m">48</span>+16<span class="w"> </span>--output-dir<span class="w"> </span>/work/results/mix/cosyvoice3_48_16
+</pre></div>
+</div>
+<p>Several loads, or <code class="docutils literal notranslate"><span class="pre">--repeats</span></code> above 1, need <code class="docutils literal notranslate"><span class="pre">--generate-only</span></code>. The loads run in the given order on one server. Each point goes to <code class="docutils literal notranslate"><span class="pre">ns&lt;NS&gt;_s&lt;S&gt;</span></code>, or <code class="docutils literal notranslate"><span class="pre">ns&lt;NS&gt;_s&lt;S&gt;_r&lt;k&gt;</span></code> with repeats, and <code class="docutils literal notranslate"><span class="pre">mixture_sweep.json</span></code> holds the mean, min, max and count of the main fields of each class across repeats, and every repeat’s full summaries under <code class="docutils literal notranslate"><span class="pre">per_repeat</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_tts_seedtts<span class="w"> </span>--meta<span class="w"> </span>zhaochenyang20/seed-tts-eval-arrow<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--model<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span>--lang<span class="w"> </span>en<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--mixture<span class="w"> </span><span class="m">48</span>+16,16+16,48+0,0+16,0+48<span class="w"> </span>--generate-only<span class="w"> </span>--fingerprint<span class="w"> </span>--seed<span class="w"> </span><span class="m">1234</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--output-dir<span class="w"> </span>/work/results/mix/cosyvoice3_sweep
+</pre></div>
+</div>
+<p>For a smoke test, add <code class="docutils literal notranslate"><span class="pre">--mixture-duration-s</span> <span class="pre">20</span> <span class="pre">--mixture-settle-s</span> <span class="pre">2</span> <span class="pre">--max-samples</span> <span class="pre">32</span></code>. Its numbers are not comparable with full runs.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--mixture</span></code> cannot be combined with <code class="docutils literal notranslate"><span class="pre">--concurrency</span></code> or <code class="docutils literal notranslate"><span class="pre">--max-concurrency</span></code>, <code class="docutils literal notranslate"><span class="pre">--concurrencies</span></code>, <code class="docutils literal notranslate"><span class="pre">--stream</span></code>, <code class="docutils literal notranslate"><span class="pre">--request-rate</span></code>, <code class="docutils literal notranslate"><span class="pre">--arrival-seed</span></code>, <code class="docutils literal notranslate"><span class="pre">--sustained-overshoot</span></code>, <code class="docutils literal notranslate"><span class="pre">--subtalker-dosample-ratio</span></code>, <code class="docutils literal notranslate"><span class="pre">--inline-ref-audio</span></code>, <code class="docutils literal notranslate"><span class="pre">--server-pid</span></code>, a <code class="docutils literal notranslate"><span class="pre">--warmup</span></code> other than 0, or the <code class="docutils literal notranslate"><span class="pre">--transcribe-only</span></code>, <code class="docutils literal notranslate"><span class="pre">--similarity-only</span></code> and <code class="docutils literal notranslate"><span class="pre">--utmos-only</span></code> phases. Run those phases later without <code class="docutils literal notranslate"><span class="pre">--mixture</span></code> on the output directory of one load, or on each point directory of a sweep. <code class="docutils literal notranslate"><span class="pre">wer_results.json</span></code> then still records the run as a mixture, and speaker similarity scores each repeated row against the reference audio of its dataset row. <code class="docutils literal notranslate"><span class="pre">--response-format</span></code> applies to the non streaming class, and the streaming class always reads raw PCM. A load above <code class="docutils literal notranslate"><span class="pre">--max-running-requests</span></code> plus <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> needs <code class="docutils literal notranslate"><span class="pre">--warmup</span> <span class="pre">0</span></code>, because the warmup sends one request per client at once and the server rejects the excess. Such a load still fails if the server rejects a request during the run. The AuK profile sets a concurrency and a warmup, so AuK cannot run <code class="docutils literal notranslate"><span class="pre">--mixture</span></code>.</p>
+<section id="mixture-fields">
+<h3>Mixture Fields<a class="headerlink" href="#mixture-fields" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">speed_results.json</span></code> of a mixture point keeps every usual key and adds <code class="docutils literal notranslate"><span class="pre">summary_by_class</span></code> and <code class="docutils literal notranslate"><span class="pre">mixture</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Field</p></th>
+<th class="head"><p>Unit</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Total audio</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">summary.audio_throughput_s_per_s</span></code></p></td>
+<td><p>Audio seconds per second of window, both classes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Non streaming throughput</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">summary_by_class.non_streaming.throughput_qps</span></code>, <code class="docutils literal notranslate"><span class="pre">audio_throughput_s_per_s</span></code></p></td>
+<td><p>Requests per second, audio seconds per second</p></td>
+</tr>
+<tr class="row-even"><td><p>Non streaming latency</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">summary_by_class.non_streaming.latency_median_s</span></code>, <code class="docutils literal notranslate"><span class="pre">latency_p95_s</span></code>, <code class="docutils literal notranslate"><span class="pre">latency_p99_s</span></code></p></td>
+<td><p>Seconds per request, end to end</p></td>
+</tr>
+<tr class="row-odd"><td><p>Streams finished</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">summary_by_class.streaming.throughput_qps</span></code></p></td>
+<td><p>Streams per second</p></td>
+</tr>
+<tr class="row-even"><td><p>First audio</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">summary_by_class.streaming.audio_ttfp_median_s</span></code>, <code class="docutils literal notranslate"><span class="pre">audio_ttfp_p95_s</span></code>, <code class="docutils literal notranslate"><span class="pre">audio_ttfp_p99_s</span></code></p></td>
+<td><p>Seconds from send to the first audio chunk</p></td>
+</tr>
+<tr class="row-odd"><td><p>Playback underrun</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">summary_by_class.streaming.max_playback_underrun_p99_s</span></code>, <code class="docutils literal notranslate"><span class="pre">max_playback_underrun_max_s</span></code></p></td>
+<td><p>Seconds of the longest playback gap in a stream</p></td>
+</tr>
+<tr class="row-even"><td><p>Longest window with no stream finishing</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">summary_by_class.streaming.stream_finish_gap_max_s</span></code></p></td>
+<td><p>Seconds, both window edges counted, the whole window when no stream finished in it</p></td>
+</tr>
+<tr class="row-odd"><td><p>Requests outside the window</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mixture.outside_window_requests</span></code>, <code class="docutils literal notranslate"><span class="pre">mixture.outside_window_failed_requests</span></code></p></td>
+<td><p>Requests per class</p></td>
+</tr>
+<tr class="row-even"><td><p>Pool wraps</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mixture.pool_cycles</span></code></p></td>
+<td><p>Requests issued per class divided by the pool size</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Each class summary has the fields of a normal <code class="docutils literal notranslate"><span class="pre">summary</span></code>, computed over that class only. A class that completes nothing inside the window reports <code class="docutils literal notranslate"><span class="pre">throughput_qps</span></code> and <code class="docutils literal notranslate"><span class="pre">audio_throughput_s_per_s</span></code> of 0, so starved streams read as the worst value and not as a missing one. The latency fields of the combined <code class="docutils literal notranslate"><span class="pre">summary</span></code> mix both classes, and its first audio fields come from the streams only, so read them per class. A class with no clients has no entry in <code class="docutils literal notranslate"><span class="pre">summary_by_class</span></code>. <code class="docutils literal notranslate"><span class="pre">per_request</span></code> lists every request after warmup with <code class="docutils literal notranslate"><span class="pre">request_class</span></code>, plus <code class="docutils literal notranslate"><span class="pre">sent_at_s</span></code> and <code class="docutils literal notranslate"><span class="pre">finished_at_s</span></code> in seconds from the window start, so a request is in the window when <code class="docutils literal notranslate"><span class="pre">0</span> <span class="pre">&lt;=</span> <span class="pre">finished_at_s</span> <span class="pre">&lt;=</span> <span class="pre">mixture.duration_s</span></code>. A failed request stops its client for the rest of the load. Failures outside the window are in <code class="docutils literal notranslate"><span class="pre">mixture.outside_window_failed_requests</span></code>, and the <code class="docutils literal notranslate"><span class="pre">failed_requests</span></code> of a <code class="docutils literal notranslate"><span class="pre">mixture_sweep.json</span></code> row counts both.</p>
+<p>A load is complete when <code class="docutils literal notranslate"><span class="pre">summary.failed_requests</span></code> and every <code class="docutils literal notranslate"><span class="pre">mixture.outside_window_failed_requests</span></code> entry are 0. Otherwise the command saves the results, skips WER and exits with an error, so a class whose clients all failed cannot pass for starved streams. <code class="docutils literal notranslate"><span class="pre">--transcribe-only</span></code> on that output directory still scores it. Also check that <code class="docutils literal notranslate"><span class="pre">finish_reason_observed</span></code> equals <code class="docutils literal notranslate"><span class="pre">completed_requests</span></code> in each class. If it is lower, <code class="docutils literal notranslate"><span class="pre">max_token_hits</span></code> undercounts, which is always the case for streams with <code class="docutils literal notranslate"><span class="pre">--no-collect-stream-outcomes</span></code>.</p>
+<p>In <code class="docutils literal notranslate"><span class="pre">mixture_sweep.json</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code> describes the whole sweep: <code class="docutils literal notranslate"><span class="pre">mixture</span></code> lists the loads, the settle and the window, and <code class="docutils literal notranslate"><span class="pre">concurrency</span></code> and <code class="docutils literal notranslate"><span class="pre">warmup</span></code> are null (<code class="docutils literal notranslate"><span class="pre">warmup</span></code> is 0 with <code class="docutils literal notranslate"><span class="pre">--warmup</span> <span class="pre">0</span></code>) because they change with the load. Each point’s <code class="docutils literal notranslate"><span class="pre">speed_results.json</span></code> records its own. A mixture row gets <code class="docutils literal notranslate"><span class="pre">normalized_work</span></code> when the sweep also ran an <code class="docutils literal notranslate"><span class="pre">N+0</span></code> and a <code class="docutils literal notranslate"><span class="pre">0+M</span></code> load that completed work. It is the non streaming audio throughput divided by the highest <code class="docutils literal notranslate"><span class="pre">N+0</span></code> audio throughput, plus the streaming audio throughput divided by the highest <code class="docutils literal notranslate"><span class="pre">0+M</span></code> one. Streaming audio costs more vocoder time per second, so a change that moves work to the streams can lower total audio while normalized work stays the same (#3668).</p>
+</section>
+<section id="mixture-caveats">
+<h3>Mixture Caveats<a class="headerlink" href="#mixture-caveats" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Mixture numbers are not comparable with the single pass numbers on this page. The pool starts over, so rows repeat and hit server caches more often. On one H100 with Fun-CosyVoice3, the non streaming class at 48+16 walked the 1088 rows 3.2 to 3.7 times per load, as <code class="docutils literal notranslate"><span class="pre">mixture.pool_cycles</span></code> reports.</p></li>
+<li><p>The faster build in an A/B measures more requests and reaches further into the pool. Both builds send the same request sequence, but their windows cover different rows. Streams start halfway through the pool, so at 96+16 on one H100 the build before #3668, which finished about half as many streams, drew them from rows with about 3 percent more audio each. Check audio per request per class before you read a small throughput change.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">normalized_work</span></code> divides by the single mode loads of the same sweep, so in an A/B it also carries each sweep’s single mode noise. To compare builds, divide both by the same references, such as the mean of both builds’ single mode throughput.</p></li>
+<li><p>Use the same <code class="docutils literal notranslate"><span class="pre">--seed</span></code> setting on both sides. Seeded server generation is not byte identical across runs, so compare <code class="docutils literal notranslate"><span class="pre">max_token_hits</span></code> and <code class="docutils literal notranslate"><span class="pre">output_tokens_total</span></code> per class before you trust a throughput change.</p></li>
+<li><p>One Python event loop drives every client. Keep the CPU pinning from the setup above, and run the same build twice to see the run to run spread before you read small differences.</p></li>
+<li><p>Every WAV is saved. At about 160 audio seconds per second, which Fun-CosyVoice3 reaches at 48+16 on one H100, a 120 s window holds about 19,000 audio seconds, about 0.9 GB at 24 kHz 16 bit mono.</p></li>
+<li><p>Tails of a build that starves streams vary widely between legs. On one H100 at 48+16, the build before #3668 gave a max underrun p99 of 15.1 s in one leg and 7.7 s in the other, while its total audio stayed within 0.2 percent and its first audio and non streaming latency medians within 1.5 percent. Even its streaming audio moved 7 percent, from 18.4 to 19.8 audio seconds per second. Read such tails as a sign of starvation, not as a precise number.</p></li>
+<li><p>#3668 measured a 7 to 9 percent speed difference between two H100s. Compare only legs on the same GPU, start each leg with a fresh server, and run the builds in a balanced order such as A, B, B, A.</p></li>
+</ul>
+</section>
+</section>
 <section id="reference-results">
 <h2>Reference Results<a class="headerlink" href="#reference-results" title="Link to this heading">#</a></h2>
 <p>These numbers were not measured with the setup on this page. Use them only to see whether your numbers are in a sensible range. Compare only numbers you measured yourself on one machine.</p>
@@ -1172,6 +1271,11 @@ python<span class="w"> </span>/work/summary.py<span class="w"> </span>/work/resu
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#measuring-accurately">Measuring Accurately</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mixed-streaming-and-non-streaming-load">Mixed Streaming and Non Streaming Load</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mixture-fields">Mixture Fields</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mixture-caveats">Mixture Caveats</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-results">Reference Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comparing-with-tts-ci">Comparing with TTS CI</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#notes">Notes</a></li>
@@ -1208,7 +1312,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 18, 2026.
+  Last updated on Nov 19, 2026.
   <br/>
 </p>
   </div>
