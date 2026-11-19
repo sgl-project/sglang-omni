@@ -19,3 +19,11 @@ sglang generate \
 ```
 
 The external package replaces the in-tree SenseNova pipeline registration while both implementations coexist. The package registers the model classes shipped under `sglang_omni.vendor.sensenova_u1`; it does not import SGLang's SenseNova model implementation. Keep the environment variable set for the launcher and all worker processes.
+
+## Devices smaller than the checkpoint
+
+The bf16 checkpoint needs 32.7 GiB because the MoT backbone carries a second expert branch for image tokens. When the launch device cannot hold it, the loader places the backbone across as many consecutive devices as the weights need and leaves the rest free; a device that holds the checkpoint on its own keeps single-device loading. On Intel XPU with 24 GiB Arc Pro B60 cards that means two cards, so the launcher needs at least two visible devices:
+
+```bash
+export ZE_AFFINITY_MASK=0,1
+```

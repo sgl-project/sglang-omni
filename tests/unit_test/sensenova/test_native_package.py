@@ -19,6 +19,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
 from sglang.multimodal_gen.runtime.platforms import current_platform
 
+from sglang_omni.models.sensenova_u1.native import loader
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 from sglang_omni.vendor.sensenova_u1 import modeling_neo_chat
@@ -284,3 +285,56 @@ def test_warmup_generation_uses_native_extra_defaults(
     assert generation_arguments["t_eps"] == 0.02
     assert generation_arguments["think_mode"] is False
     assert output.usage is None
+
+
+@pytest.mark.parametrize(
+    ("device_total_gib", "expected_device_indexes"),
+    [(96, None), (24, (1, 2)), (12, (1, 2, 3, 4))],
+)
+def test_backbone_spans_only_as_many_devices_as_the_weights_need(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    device_total_gib: int,
+    expected_device_indexes: tuple[int, ...] | None,
+) -> None:
+    """A device that holds the checkpoint keeps single-device loading."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+        json.dumps({"metadata": {"total_size": 33 * 2**30}, "weight_map": {}})
+    )
+    monkeypatch.setattr(
+        current_platform,
+        "get_device_total_memory",
+        lambda device_id=0: device_total_gib * 2**30,
+    )
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(device_count=lambda: 5),
+    )
+
+    device_map = loader.build_spanning_device_map(
+        str(checkpoint), 42, torch.device("xpu", 1), None
+    )
+
+    if expected_device_indexes is None:
+        assert device_map is None
+    else:
+        assert {device.index for device in device_map.values()} == set(
+            expected_device_indexes
+        )
+        last_device = torch.device("xpu", expected_device_indexes[-1])
+        # Denoising subtracts a latent made next to the prefix hidden states from
+        # the flow-matching head output, so both have to land on one device.
+        assert device_map["fm_modules"] == last_device
+        assert device_map["language_model.model.norm"] == last_device
+        assert device_map["language_model.model.embed_tokens"] == torch.device(
+            "xpu", expected_device_indexes[0]
+        )
+        placed_layers = [
+            device_map[f"language_model.model.layers.{layer_index}"].index
+            for layer_index in range(42)
+        ]
+        assert placed_layers == sorted(placed_layers)
+        assert set(placed_layers) == set(expected_device_indexes)

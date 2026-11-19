@@ -7,6 +7,7 @@ import torch
 import torch._dynamo
 import torch.nn.functional as F
 from sglang.srt.layers.layernorm import RMSNorm
+from sglang.srt.utils import is_xpu
 from torch import nn
 from transformers import Qwen3Config
 from transformers.activations import ACT2FN
@@ -272,10 +273,13 @@ def create_block_causal_mask(
 
 
 def make_qwen3_rms_norm(hidden_size: int, eps: float) -> RMSNorm:
+    # The XPU RMSNorm kernel drops the HF multiply order that the CUDA path keeps,
+    # and the deviation reaches NaN across these 42 two-branch layers.
     return RMSNorm(
         hidden_size,
         eps=eps,
         cast_x_before_out_mul=True,
+        force_native=is_xpu(),
     )
 
 
