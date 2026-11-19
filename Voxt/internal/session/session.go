@@ -368,6 +368,9 @@ type Config struct {
 	// BoxAutoSuppressed reports whether the user removed the automatic
 	// selection or clipboard/window image from the box's preview. Nil: send both.
 	BoxAutoSuppressed func() (selection, image bool)
+	// BoxReview waits while the user reviews a newly captured automatic
+	// window image, before its request. Nil: send without another review.
+	BoxReview func(context.Context) error
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History

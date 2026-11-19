@@ -66,7 +66,6 @@ func cardFromHistory(entries []store.Entry, conversation string) (answerCard, bo
 		card.id, card.text, card.title, card.llmID = entry.ID, entry.Result, entry.Title, entry.LLMProvider
 		card.target = proto.App{BundleID: entry.AppBundle, Name: entry.AppName}
 		card.input = session.TextInput{Raw: entry.RawText, Selection: entry.SourceText, Typed: entry.TypedText}
-		card.previews = answerInputPreviews(session.Snapshot{Kind: entry.Kind, Selection: entry.SourceText, Typed: entry.TypedText}, nil)
 		if !hasRewrite {
 			card.lang = entry.TargetLang
 			continue
@@ -84,6 +83,7 @@ func cardFromHistory(entries []store.Entry, conversation string) (answerCard, bo
 			Answer: compose.Answer{Title: entry.Title, Content: entry.Result}})
 		card.input.Raw = entry.PromptText
 	}
+	card.previews = answerInputPreviews(session.Snapshot{Kind: card.kind, Selection: card.input.Selection, Typed: card.input.Typed}, nil)
 	card.conversation = len(card.turns) > 1
 	return card, true
 }

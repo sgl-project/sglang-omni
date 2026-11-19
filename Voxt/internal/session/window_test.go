@@ -239,11 +239,10 @@ func TestImageHintClearedWhenDropped(t *testing.T) {
 
 // TestBoxInput: the input box's session records and reads the selection
 // as ever; when the answer is asked for, the box's typed text and
-// pictures (Config.BoxInput) go with it, the pictures required, in one
-// fixed order: the selection, the typed text, the spoken instruction. The
-// early window preview is not sent once the box has pictures. A send again
-// (Text) carries the same bytes in the same position, so the server's
-// prefix cache reuses them.
+// pictures (Config.BoxInput) go with it, the pictures required, the
+// window's never taken, in one fixed order: the selection, the typed
+// text, the spoken instruction. A send again (Text) carries the same
+// bytes in the same position, so the server's prefix cache reuses them.
 func TestBoxInput(t *testing.T) {
 	box1, box2 := []byte{0xff, 0xd8, '1', 0xff, 0xd9}, []byte{0xff, 0xd8, '2', 0xff, 0xd9}
 	shot := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
@@ -285,8 +284,8 @@ func TestBoxInput(t *testing.T) {
 	if !equalBytes(reqs[0].Images, [][]byte{box1, box2}) || !reqs[0].ImagesRequired {
 		t.Errorf("images %q, required %v", reqs[0].Images, reqs[0].ImagesRequired)
 	}
-	if shots != 1 || end.ImagePreviewKind != "" || len(end.ImagePreview) != 0 {
-		t.Errorf("%d window pictures taken, preview %q %d bytes; want one capture and no preview sent", shots, end.ImagePreviewKind, len(end.ImagePreview))
+	if shots != 0 {
+		t.Errorf("%d window pictures taken, want none", shots)
 	}
 	// A send again (Text): the same bytes in the same position.
 	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
@@ -306,8 +305,8 @@ func TestBoxInput(t *testing.T) {
 	if user := reqs[1].Messages[len(reqs[1].Messages)-1].Content; user != want {
 		t.Errorf("resend's user message:\n%s", user)
 	}
-	if shots != 1 {
-		t.Errorf("%d window pictures taken, want only the early preview", shots)
+	if shots != 0 {
+		t.Errorf("%d window pictures taken, want none", shots)
 	}
 }
 

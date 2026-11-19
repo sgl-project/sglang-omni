@@ -94,10 +94,10 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
 		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
-		if a.answer.kind == store.KindRewrite && a.answer.attach != "box" {
-			a.answer.attach = s.ImageHint
+		if a.answer.attach != "box" {
 			a.answer.previews = answerInputPreviews(s, nil)
 		}
+		a.answer.attach = s.ImageHint
 		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
 			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
 		}

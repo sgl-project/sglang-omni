@@ -107,7 +107,6 @@ func (r *run) write(raw, selection string) {
 			automaticImageSuppressed = imageSuppressed
 			if imageSuppressed {
 				r.clip, r.shot = nil, nil
-				r.stopAutomaticPreview()
 			}
 		}
 		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil && !automaticImageSuppressed {
@@ -117,6 +116,24 @@ func (r *run) write(raw, selection string) {
 		}
 		if !automaticImageSuppressed {
 			r.shootWindow()
+			if r.req.Box && r.shot != nil && r.svc.LLM != nil && cfg.BoxReview != nil {
+				if jpeg := r.shot(); jpeg != nil {
+					r.previewImage("window", jpeg)
+					if err := cfg.BoxReview(r.ctx); err != nil {
+						r.endCancelled(nil)
+						return
+					}
+					if cfg.BoxAutoSuppressed != nil {
+						selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
+						if selectionSuppressed {
+							selection = ""
+						}
+						if imageSuppressed {
+							r.clip, r.shot = nil, nil
+						}
+					}
+				}
+			}
 		}
 	}
 	if r.svc.LLM == nil {

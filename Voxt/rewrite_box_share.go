@@ -19,6 +19,8 @@ type boxShare struct {
 	pending                  int
 	err                      error
 	changed                  chan struct{}
+	review                   chan struct{}
+	reviewApproved           bool
 }
 
 func (b *boxShare) store(text string, images [][]byte) {
@@ -65,7 +67,47 @@ func (b *boxShare) reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.text, b.images, b.err = "", nil, nil
+	b.review, b.reviewApproved = nil, false
 	b.signalLocked()
+}
+
+// waitForReview holds an automatic window image's request until the user
+// confirms the preview that is already visible in the box.
+func (b *boxShare) waitForReview(ctx context.Context) error {
+	b.mu.Lock()
+	if b.reviewApproved {
+		b.reviewApproved = false
+		b.mu.Unlock()
+		return nil
+	}
+	if b.review == nil {
+		b.review = make(chan struct{})
+	}
+	review := b.review
+	b.mu.Unlock()
+	select {
+	case <-review:
+		b.mu.Lock()
+		if b.review == review {
+			b.review = nil
+		}
+		b.reviewApproved = false
+		b.mu.Unlock()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *boxShare) approveReview() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.review == nil {
+		b.reviewApproved = true
+		return
+	}
+	close(b.review)
+	b.review = nil
 }
 
 func (b *boxShare) load(ctx context.Context) (string, [][]byte, error) {

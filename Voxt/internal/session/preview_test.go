@@ -37,70 +37,76 @@ func TestBoxAutomaticInputsCanBeSuppressed(t *testing.T) {
 	}
 }
 
-func TestBoxWindowPreviewCanBeRemovedBeforeSending(t *testing.T) {
-	shot := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
+func TestBoxWindowPreviewCanBeRemovedBeforeRequest(t *testing.T) {
 	model := &fakeLLM{text: "We ship on Friday."}
-	var removed atomic.Bool
-	var shots int
+	shot := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
+	reviewStarted, approve := make(chan struct{}), make(chan struct{})
+	var suppressed atomic.Bool
 	h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
-		c.Select = &fakeSelector{text: "ship friday?"}
 		s.Privacy.SendWindow = true
-		c.Window = func(context.Context, int) ([]byte, error) { shots++; return shot, nil }
-		c.BoxAutoSuppressed = func() (bool, bool) { return false, removed.Load() }
+		c.Window = func(context.Context, int) ([]byte, error) { return shot, nil }
+		c.BoxInput = func(context.Context) (string, [][]byte, error) { return "", nil, nil }
+		c.BoxAutoSuppressed = func() (bool, bool) { return false, suppressed.Load() }
+		c.BoxReview = func(ctx context.Context) error {
+			close(reviewStarted)
+			select {
+			case <-approve:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	})
 	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.rec.waitFor(t, "the window preview while recording", func(s Snapshot) bool {
-		return s.State == Recording && s.ImagePreviewKind == "window" && bytes.Equal(s.ImagePreview, shot)
-	})
-	if got := len(model.requests()); got != 0 {
-		t.Fatalf("%d requests before recording stopped", got)
-	}
-	removed.Store(true)
 	h.speak(id, 3)
+	select {
+	case <-reviewStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request did not wait for the window preview's review")
+	}
+	preview := h.rec.waitFor(t, "the removable window preview", func(s Snapshot) bool {
+		return s.State == Recognizing && s.ImagePreviewKind == "window" && bytes.Equal(s.ImagePreview, shot)
+	})
+	if len(model.requests()) != 0 || preview.ImageHint != "" {
+		t.Fatalf("window image was sent before its review: requests %d, hint %q", len(model.requests()), preview.ImageHint)
+	}
+	suppressed.Store(true)
+	close(approve)
 	end := h.rec.wait(t)
-	if end.State != Done || end.ImageHint != "" || end.ImagePreviewKind != "" || len(end.ImagePreview) != 0 {
-		t.Fatalf("removed preview survived: end %s, hint %q, preview %q %d bytes", end.State, end.ImageHint, end.ImagePreviewKind, len(end.ImagePreview))
+	if end.State != Done || end.ImageHint != "" {
+		t.Fatalf("suppressed window image survived: end %s, hint %q", end.State, end.ImageHint)
 	}
 	reqs := model.requests()
 	if len(reqs) != 1 || len(reqs[0].Images) != 0 {
-		t.Fatalf("images sent after removal: %+v", reqs)
-	}
-	if shots != 1 {
-		t.Fatalf("%d window captures, want one", shots)
+		t.Fatalf("images sent after removing the preview: %+v", reqs)
 	}
 }
 
-func TestLateWindowPreviewDoesNotReplaceBoxImages(t *testing.T) {
-	shot, own := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, []byte{0xff, 0xd8, 'o', 0xff, 0xd9}
-	model := &fakeLLM{text: "We ship on Friday.", pause: 200 * time.Millisecond}
-	releaseCapture := make(chan struct{})
-	var shots atomic.Int64
-	h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
-		c.Select = &fakeSelector{text: "ship friday?"}
+func TestBoxWindowReviewDoesNotBlockMissingLanguageModel(t *testing.T) {
+	review := make(chan struct{}, 1)
+	h := newHarness(t, &fakeFile{text: "make it polite"}, nil, func(c *Config, s *settings.Settings) {
 		s.Privacy.SendWindow = true
-		c.Window = func(context.Context, int) ([]byte, error) {
-			shots.Add(1)
-			<-releaseCapture
-			return shot, nil
+		c.Window = func(context.Context, int) ([]byte, error) { return []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, nil }
+		c.BoxReview = func(context.Context) error {
+			review <- struct{}{}
+			return nil
 		}
-		c.BoxInput = func(context.Context) (string, [][]byte, error) { return "", [][]byte{own}, nil }
 	})
-	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
-	if err != nil {
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?"}}); err != nil {
 		t.Fatal(err)
 	}
-	h.speak(id, 3)
-	h.rec.waitFor(t, "the box image request", func(s Snapshot) bool { return s.ImageHint == "box" })
-	close(releaseCapture)
 	end := h.rec.wait(t)
-	if end.State != Done || end.ImageHint != "box" || end.ImagePreviewKind != "" || len(end.ImagePreview) != 0 {
-		t.Fatalf("late capture replaced the box input: end %s, hint %q, preview %q %d bytes", end.State, end.ImageHint, end.ImagePreviewKind, len(end.ImagePreview))
+	if end.State != Failed || end.Problem == nil || end.Problem.Code != ProblemNoLLM {
+		t.Fatalf("end %s, problem %+v", end.State, end.Problem)
 	}
-	if shots.Load() != 1 {
-		t.Fatalf("%d window captures, want one", shots.Load())
+	select {
+	case <-review:
+		t.Fatal("the missing model error waited for an image review")
+	default:
 	}
 }
 

@@ -176,8 +176,9 @@ func (a *app) dropBox() {
 }
 
 // boxSend is Enter or the shortcut's stop in the box: while it records,
-// it finishes the recording and the session sends; after a send failed,
-// it sends the kept instruction, text and pictures again.
+// it finishes the recording and the session sends; a newly captured window
+// preview waits for one more confirmation. After a send failed, it sends
+// the kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
 		return
@@ -192,6 +193,9 @@ func (a *app) boxSend() {
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		if a.sess.State == session.Recording {
 			a.stopSession()
+		}
+		if a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
+			a.boxShare.approveReview()
 		}
 		return
 	}
@@ -522,7 +526,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	return rewriteBoxViewState{
 		Selection: selection, SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
 		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), Error: box.err,
-		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording || box.session == "" && box.instruction != ""),
+		CanSend: box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
 		Limit:   box.limit, FocusText: box.focusText,
 	}
 }
