@@ -34,6 +34,7 @@ from sglang_omni.serve.protocol import (
     TranscriptionUsage,
     build_sglext,
 )
+from sglang_omni.serve.speech_limits import MAX_SPEECH_TO_TEXT_UPLOAD_BYTES
 from sglang_omni.serve.streaming import (
     STREAM_DONE_SENTINEL,
     ClosableStreamingResponse,
@@ -95,8 +96,18 @@ async def parse_speech_to_text_form(
 
 
 async def read_and_validate_speech_to_text_audio(file: UploadFile) -> bytes:
-    """Reject empty uploads, then give headerless uploads a container."""
-    audio_bytes = await file.read()
+    """Reject empty and oversized uploads, then give headerless uploads a container."""
+    audio_bytes = await file.read(MAX_SPEECH_TO_TEXT_UPLOAD_BYTES + 1)
+    if len(audio_bytes) > MAX_SPEECH_TO_TEXT_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Uploaded audio file must be at most "
+                f"{MAX_SPEECH_TO_TEXT_UPLOAD_BYTES} bytes"
+            ),
+        )
+    else:
+        pass
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
     else:

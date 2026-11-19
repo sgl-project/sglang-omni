@@ -26,9 +26,12 @@ from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
-from sglang_omni.serve import create_app
+from sglang_omni.serve import create_app, speech_to_text
 from sglang_omni.serve.openai_api import (
+    AUDIO_UPLOAD_BODY_LIMITS,
+    TRANSCRIPTIONS_ENDPOINT,
     ServerStatus,
+    UploadBodyLimit,
     _ClosableStreamingResponse,
     await_speech_response,
     build_chat_generate_request,
@@ -2976,6 +2979,40 @@ def test_long_audio_past_the_admission_cap_is_rejected_before_decoding(
             again = await post_transcription(client, wav_upload(2.5))
             assert again.status_code == 200
             assert admission.active == 0
+
+    asyncio.run(scenario())
+
+
+def test_transcription_upload_over_the_body_cap_is_rejected_before_parsing(
+    monkeypatch,
+) -> None:
+    # The body cap is patched down so the case needs a tiny upload, not 128 MiB.
+    monkeypatch.setitem(
+        AUDIO_UPLOAD_BODY_LIMITS,
+        TRANSCRIPTIONS_ENDPOINT,
+        UploadBodyLimit(max_body_bytes=512, param="file"),
+    )
+
+    async def unreachable_reader(file) -> None:
+        raise AssertionError("an oversized upload reached the endpoint reader")
+
+    monkeypatch.setattr(
+        speech_to_text,
+        "read_and_validate_speech_to_text_audio",
+        unreachable_reader,
+    )
+
+    async def scenario() -> None:
+        client_impl = ChunkRecordingTranscriptionClient()
+        app = chunking_app(client_impl)
+        async with asgi_client(app) as client:
+            response = await post_transcription(client, b"\x00" * 512, "big.wav")
+
+        assert response.status_code == 413
+        error = response.json()["error"]
+        assert error["type"] == "RequestTooLargeError"
+        assert error["param"] == "file"
+        assert client_impl.requests == []
 
     asyncio.run(scenario())
 

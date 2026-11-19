@@ -16,6 +16,7 @@ from sglang_omni.serve.speech_to_text import (
     read_and_validate_speech_to_text_audio,
 )
 
+DIARIZATIONS_ENDPOINT = "/v1/audio/diarizations"
 DIARIZATION_ARCHITECTURES = frozenset(
     {"Nemotron3DiarizationForAudioFrameClassification"}
 )
@@ -39,7 +40,7 @@ def register_diarizations(app: FastAPI) -> None:
         await websocket.send_json({"type": "error", "message": message})
         await websocket.close(code=1008)
 
-    @app.post("/v1/audio/diarizations")
+    @app.post(DIARIZATIONS_ENDPOINT)
     async def create_diarization(
         request: Request,
         file: UploadFile = File(...),

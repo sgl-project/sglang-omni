@@ -27,7 +27,7 @@ import logging
 import time
 import uuid
 from contextlib import aclosing, suppress
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import AsyncGenerator, AsyncIterator, Literal
 
@@ -81,7 +81,7 @@ from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.proto.session import SessionLimits
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
-from sglang_omni.serve.diarizations import register_diarizations
+from sglang_omni.serve.diarizations import DIARIZATIONS_ENDPOINT, register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -128,6 +128,7 @@ from sglang_omni.serve.speech_errors import (
 )
 from sglang_omni.serve.speech_limits import (
     MAX_SPEECH_STREAM_OUTCOMES,
+    MAX_SPEECH_TO_TEXT_BODY_BYTES,
     MAX_VOICE_UPLOAD_BODY_BYTES,
     MAX_VOICE_UPLOAD_BYTES,
 )
@@ -148,8 +149,12 @@ from sglang_omni.serve.streaming import (
 from sglang_omni.serve.streaming import (
     close_async_iterator_if_supported as _close_async_iterator_if_supported,
 )
-from sglang_omni.serve.transcriptions import LongAudioAdmission, register_transcriptions
-from sglang_omni.serve.translations import register_translations
+from sglang_omni.serve.transcriptions import (
+    TRANSCRIPTIONS_ENDPOINT,
+    LongAudioAdmission,
+    register_transcriptions,
+)
+from sglang_omni.serve.translations import TRANSLATIONS_ENDPOINT, register_translations
 
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
@@ -167,12 +172,37 @@ class RequestBodyTooLarge(Exception):
     pass
 
 
-class VoiceUploadBodyLimitMiddleware:
-    """Reject oversized voice uploads before Starlette parses multipart bodies."""
+VOICES_ENDPOINT = "/v1/audio/voices"
 
-    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+
+@dataclass(frozen=True, kw_only=True)
+class UploadBodyLimit:
+    """Body cap for one multipart upload path and the form field its 413 payload names."""
+
+    max_body_bytes: int
+    param: str
+
+
+SPEECH_TO_TEXT_UPLOAD_BODY_LIMIT = UploadBodyLimit(
+    max_body_bytes=MAX_SPEECH_TO_TEXT_BODY_BYTES, param="file"
+)
+
+AUDIO_UPLOAD_BODY_LIMITS = {
+    VOICES_ENDPOINT: UploadBodyLimit(
+        max_body_bytes=MAX_VOICE_UPLOAD_BODY_BYTES, param="audio_sample"
+    ),
+    TRANSCRIPTIONS_ENDPOINT: SPEECH_TO_TEXT_UPLOAD_BODY_LIMIT,
+    TRANSLATIONS_ENDPOINT: SPEECH_TO_TEXT_UPLOAD_BODY_LIMIT,
+    DIARIZATIONS_ENDPOINT: SPEECH_TO_TEXT_UPLOAD_BODY_LIMIT,
+}
+
+
+class AudioUploadBodyLimitMiddleware:
+    """Reject oversized audio uploads before Starlette parses multipart bodies."""
+
+    def __init__(self, app: ASGIApp, path_limits: dict[str, UploadBodyLimit]) -> None:
         self.app = app
-        self.max_bytes = max_bytes
+        self.path_limits = path_limits
 
     async def __call__(
         self,
@@ -180,7 +210,12 @@ class VoiceUploadBodyLimitMiddleware:
         receive: Receive,
         send: Send,
     ) -> None:
-        if not is_voice_upload_scope(scope):
+        upload_limit: UploadBodyLimit | None = None
+        if scope.get("type") == "http" and scope.get("method") == "POST":
+            upload_limit = self.path_limits.get(scope.get("path"))
+        else:
+            pass
+        if upload_limit is None:
             await self.app(scope, receive, send)
             return
         else:
@@ -189,9 +224,9 @@ class VoiceUploadBodyLimitMiddleware:
         request_content_length = content_length(scope)
         if (
             request_content_length is not None
-            and request_content_length > self.max_bytes
+            and request_content_length > upload_limit.max_body_bytes
         ):
-            await send_voice_upload_too_large(send, self.max_bytes)
+            await send_upload_too_large(send, upload_limit)
             return
         else:
             pass
@@ -203,7 +238,7 @@ class VoiceUploadBodyLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received_bytes += len(message.get("body", b""))
-                if received_bytes > self.max_bytes:
+                if received_bytes > upload_limit.max_body_bytes:
                     raise RequestBodyTooLarge
                 else:
                     pass
@@ -214,7 +249,7 @@ class VoiceUploadBodyLimitMiddleware:
         try:
             await self.app(scope, limited_receive, send)
         except RequestBodyTooLarge:
-            await send_voice_upload_too_large(send, self.max_bytes)
+            await send_upload_too_large(send, upload_limit)
 
 
 def create_app(
@@ -314,8 +349,8 @@ def create_app(
         allow_headers=["*"],
     )
     app.add_middleware(
-        VoiceUploadBodyLimitMiddleware,
-        max_bytes=MAX_VOICE_UPLOAD_BODY_BYTES,
+        AudioUploadBodyLimitMiddleware,
+        path_limits=AUDIO_UPLOAD_BODY_LIMITS,
     )
 
     # Store references in app state for access from route handlers
@@ -637,7 +672,7 @@ def register_images(
 
 
 def register_voices(app: FastAPI) -> None:
-    @app.get("/v1/audio/voices")
+    @app.get(VOICES_ENDPOINT)
     async def list_voices(names_only: bool = False) -> JSONResponse:
         voice_store: SpeakerSampleStore = app.state.speaker_sample_store
         if names_only:
@@ -657,7 +692,7 @@ def register_voices(app: FastAPI) -> None:
         response = VoiceListResponse.model_validate(voice_list)
         return JSONResponse(content=response.model_dump(exclude_none=True))
 
-    @app.post("/v1/audio/voices")
+    @app.post(VOICES_ENDPOINT)
     async def upload_voice(
         audio_sample: UploadFile = File(...),
         consent: str = Form(...),
@@ -718,14 +753,6 @@ async def read_voice_upload(audio_sample: UploadFile) -> bytes:
     return audio_bytes
 
 
-def is_voice_upload_scope(scope: Scope) -> bool:
-    return (
-        scope.get("type") == "http"
-        and scope.get("method") == "POST"
-        and scope.get("path") == "/v1/audio/voices"
-    )
-
-
 def content_length(scope: Scope) -> int | None:
     for name, value in scope.get("headers", ()):
         if name.lower() != b"content-length":
@@ -739,15 +766,15 @@ def content_length(scope: Scope) -> int | None:
     return None
 
 
-async def send_voice_upload_too_large(
+async def send_upload_too_large(
     send: Send,
-    max_bytes: int,
+    upload_limit: UploadBodyLimit,
 ) -> None:
     body = json.dumps(
         openai_error_payload(
-            f"request body must be at most {max_bytes} bytes",
+            f"request body must be at most {upload_limit.max_body_bytes} bytes",
             error_type="RequestTooLargeError",
-            param="audio_sample",
+            param=upload_limit.param,
             code=413,
         )
     ).encode("utf-8")

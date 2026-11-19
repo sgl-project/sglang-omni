@@ -256,8 +256,11 @@ class Upload:
         self.content_type = content_type
         self.filename = filename
 
-    async def read(self) -> bytes:
-        return self.data
+    async def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            return self.data
+        else:
+            return self.data[:size]
 
 
 @pytest.mark.asyncio
@@ -293,6 +296,31 @@ async def test_read_still_rejects_empty_g711_uploads() -> None:
         )
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_read_rejects_uploads_above_the_size_cap(monkeypatch) -> None:
+    # The cap is patched down so the boundary cases stay cheap to build.
+    monkeypatch.setattr(speech_to_text, "MAX_SPEECH_TO_TEXT_UPLOAD_BYTES", 8)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await speech_to_text.read_and_validate_speech_to_text_audio(
+            Upload(b"\xff" * 9, "audio/wav", "big.wav")
+        )
+
+    assert exc_info.value.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_read_accepts_an_upload_exactly_at_the_size_cap(monkeypatch) -> None:
+    monkeypatch.setattr(speech_to_text, "MAX_SPEECH_TO_TEXT_UPLOAD_BYTES", 8)
+    raw = b"RIFF" + b"\x00" * 4
+
+    audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+        Upload(raw, "audio/wav", "clip.wav")
+    )
+
+    assert audio_bytes is raw
 
 
 @pytest.mark.asyncio
