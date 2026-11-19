@@ -1115,17 +1115,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         dtype: torch.dtype,
         in_place_frames: int,
     ) -> Qwen3TTSCodecStateArena | None:
-        """The stream rows, and as many for whole requests, that the asynchronous workers decode against."""
-        if self.incremental_decoder is None or (not self.async_decode):
-            # note (ratish): the left-context decoder keeps no Codec state and a synchronous decode keeps it on each stream, so only the asynchronous stateful workers take rows.
-            return None
-        elif num_slots is None:
-            raise ValueError(
-                "Qwen3-TTS has no Codec state slot count for asynchronous decode; bound "
-                "--tts_engine.engine.max_queued_requests so the in-flight cap sets it, or set "
-                "--vocoder.factory.codec_state_slots to a positive integer"
-            )
-        elif (
+        """The stream rows, and as many for whole requests, that the asynchronous workers decode against; a set slot count is checked in every mode."""
+        if num_slots is not None and (
             isinstance(num_slots, bool)
             or not isinstance(num_slots, int)
             or num_slots <= 0
@@ -1133,6 +1124,15 @@ class Qwen3TTSStreamingVocoderScheduler(
             # note (ratish): the slot count arrives untyped from factory config, and a fraction would pass the arena's own check and size it to zero rows.
             raise ValueError(
                 f"--vocoder.factory.codec_state_slots must be a positive integer, got {num_slots!r}"
+            )
+        elif self.incremental_decoder is None or (not self.async_decode):
+            # note (ratish): the left-context decoder keeps no Codec state and a synchronous decode keeps it on each stream, so only the asynchronous stateful workers take rows.
+            return None
+        elif num_slots is None:
+            raise ValueError(
+                "Qwen3-TTS has no Codec state slot count for asynchronous decode; set "
+                "--vocoder.factory.codec_state_slots to a positive integer, or leave it unset "
+                "and bound --tts_engine.engine.max_queued_requests so the in-flight cap sets it"
             )
         else:
             pass
