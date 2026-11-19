@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
@@ -29,6 +30,13 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
             dict[str, torch.nn.Module | PreTrainedTokenizerBase] | None
         ) = None,
     ) -> dict[str, torch.nn.Module | PreTrainedTokenizerBase]:
+        if not {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"} & os.environ.keys():
+            # note (Richard Wang): Edit prefix attention buffers change size per query and fragment fixed segments.
+            torch._C._accelerator_setAllocatorSettings(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                "expandable_segments:True"
+            )
+        else:
+            pass
         if loaded_modules is not None and {"model", "tokenizer"} <= set(loaded_modules):
             return loaded_modules
         else:

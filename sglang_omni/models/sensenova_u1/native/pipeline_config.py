@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate deployment options for native SenseNova generation."""
-import os
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -225,11 +224,6 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
                 "SenseNovaU1Pipeline does not support attention backend config yet. "
                 "Please omit --attention-backend-config."
             )
-        else:
-            pass
-        if not {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"} & os.environ.keys():
-            # note (Richard Wang): Edit prefix attention buffers change size per query and fragment fixed segments.
-            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         else:
             pass
 
