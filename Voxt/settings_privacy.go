@@ -14,12 +14,13 @@ import (
 )
 
 type settingsPrivacyLocalUI struct {
-	keepHistory     bool
-	keepAudio       bool
-	logText         bool
-	sendWindow      bool
-	sendClipboard   bool
-	clearHistoryAsk bool
+	keepHistory                bool
+	keepAudio                  bool
+	logText                    bool
+	sendWindow                 bool
+	sendClipboard              bool
+	sendClipboardWithSelection bool
+	clearHistoryAsk            bool
 }
 
 func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions settingsPrivacyActions, local *settingsPrivacyLocalUI, historyLocal *historyAccessLocalUI) {
@@ -28,7 +29,8 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
 			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up in Settings → Speech models, its recordings go to that service. Voxt has no server of its own."),
-			i18n.T("Text to clean up, translate or rewrite goes to the language model you set up in Settings → Language models. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service."),
+			i18n.T("The language model you set up in Settings → Language models can get text Voxt recognised, text you selected or typed, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content. With the switches below on, it can also get a screenshot of the window or an image you copied."),
+			i18n.T("A request to a language-model server on this Mac, such as Ollama, stays on this Mac. A request to an external API goes to the provider handling it. If Translate uses your fallback model, that provider gets the same request too."),
 			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your account and its terms."),
 			state.Online,
 			i18n.T("Voxt reads the address of the current browser tab only to pick your app enhancement rules. The language model never sees it, only the app's name."),
@@ -43,9 +45,14 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 			actions.setSendWindow(local.sendWindow)
 		}
 	})
-	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with the selected text and what you said. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. With text selected, only the text goes unless Text and a copied image together is also on. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
 		if ui.Switch(c.Key("priv-copied"), &local.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
 			actions.setSendClipboardImage(local.sendClipboard)
+		}
+	})
+	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Off by default: a text selection sends only the text, so an image you copied earlier cannot take over a text rewrite. Turn it on to send the selected text and the copied image together."), func() {
+		if ui.Switch(c.Key("priv-copied-with-text"), &local.sendClipboardWithSelection).Label(i18n.T("Send both with Rewrite")).Changed() {
+			actions.setSendClipboardImageWithSelection(local.sendClipboardWithSelection)
 		}
 	})
 
