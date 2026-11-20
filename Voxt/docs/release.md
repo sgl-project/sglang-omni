@@ -433,7 +433,7 @@ MAC_DIR=code/VoxtNew-upd scripts/mac.sh scripts/mac-beta-e2e.sh     # 两个通�
 
 ## Voxt 1.x 的应用内更新和 Homebrew
 
-Swift 版 Voxt 1.x 用 Sparkle 2.10 更新：读 `https://voxt.actnow.dev/updates/stable/appcast.xml`，1.x 的 设置 → 关于 里打开 **Beta 更新**（Beta Updates）时读 `…/beta/appcast.xml`。[Voxt Appcast](../../.github/workflows/voxt-appcast.yaml) 工作流把一个已发布的 Release 放进其中一个通道：用 Sparkle 私钥给 `Voxt-X.Y.Z-macOS.zip` 签名，把 ZIP 和 dmg 传到 Voxt 的更新服务，设成这个通道的最新一项，再等 appcast 里出现它的构建号。通道是 stable 时，它还把 `hehehai/homebrew-tap` 的 `Casks/voxt.rb` 指向这个 ZIP。beta 和 stable 都只能手动运行：更新服务输出 `sparkle:hardwareRequirements` 之前，Release 发布时它不自动运行（见下面“只给 Apple 芯片”）。它是 1.x 的同名工作流（#3043 合并时删掉了）移植过来的，构建号、条目、更新说明和 cask 由 [scripts/release-appcast.sh](../scripts/release-appcast.sh) 生成（测试：`go test -run TestReleaseAppcast .`）。
+Swift 版 Voxt 1.x 用 Sparkle 2.10 更新：读 `https://voxt.actnow.dev/updates/stable/appcast.xml`，1.x 的 设置 → 关于 里打开 **Beta 更新**（Beta Updates）时读 `…/beta/appcast.xml`。[Voxt Appcast](../../.github/workflows/voxt-appcast.yaml) 工作流把一个已发布的 Release 放进其中一个通道：用 Sparkle 私钥给 `Voxt-X.Y.Z-macOS.zip` 签名，把 ZIP 和 dmg 传到 Voxt 的更新服务，设成这个通道的最新一项，再等 appcast 里出现它的构建号。通道是 stable 时，它还把 `hehehai/homebrew-tap` 的 `Casks/voxt.rb` 指向这个 ZIP。beta 和 stable 都只能手动运行：先发 beta，在真机上测通 1.x → 2.x 以后再发 stable（见下面“发一个版本给 1.x 用户”）。它是 1.x 的同名工作流（#3043 合并时删掉了）移植过来的，构建号、条目、更新说明和 cask 由 [scripts/release-appcast.sh](../scripts/release-appcast.sh) 生成（测试：`go test -run TestReleaseAppcast .`）。
 
 Sparkle 要满足下面几条才装 2.x（Sparkle 2.10 的 `SUPlainInstaller.m`、`SUUpdateValidator.m`、`SUInstaller.m`）：
 
@@ -456,11 +456,11 @@ Sparkle 要满足下面几条才装 2.x（Sparkle 2.10 的 `SUPlainInstaller.m`�
 
 ### 只给 Apple 芯片
 
-appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发条目。工作流在条目里发 `"hardwareRequirements": "arm64"`（`scripts/release-appcast.sh entry`）。设成最新一项（`replace-latest`）之前，它要在 beta / stable 的 appcast 里看到这个构建号的那一项有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（`scripts/release-appcast.sh hardware-kept`）；只在 API 返回里留下这个字段不算，因为 1.x 读的是 XML。没有就停下，什么都不会推给 1.x 用户，日志写“the update service does not output hardwareRequirements yet…”。设成最新以后，它还要求这个通道 appcast 的第一项既是这个构建号，又有这个元素。
+appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发条目。工作流在条目里发 `"hardwareRequirements": "arm64"`（`scripts/release-appcast.sh entry`）。设成最新一项（`replace-latest`）之前，它检查更新服务会把这个要求写进 appcast（`scripts/release-appcast.sh hardware-kept`）。下面两种情况算通过：beta / stable 的 appcast 里这个构建号的那一项已经有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`；或者 `/api/pkg/update` 的返回留下了 `hardwareRequirements: arm64`，并且 appcast 里已经有别的条目带这个元素。一个版本在设成最新之前还不在 appcast 里，所以第一次发它时走的是后一种。API 返回留下了这个字段、appcast 里却没有一项带这个元素，不算，因为 1.x 读的是 XML。两种都不满足就停下，什么都不会推给 1.x 用户，日志写“the update service does not output hardwareRequirements yet…”。设成最新以后，它还要求这个通道 appcast 的第一项既是这个构建号，又有这个元素。
 
-现在的更新服务还不输出这个元素（两个 appcast 里只有 `sparkle:version` 和 `sparkle:shortVersionString`），所以两个通道都会在 `replace-latest` 之前停下。要在 voxt.actnow.dev 的服务端让 `/api/pkg/update` 接受 `hardwareRequirements`、在返回的 `data` 里带上它，并在生成 appcast 时输出 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（1.x 和 2.x 都要求 macOS 15，不用加 `sparkle:minimumSystemVersion`）。这一步在服务端做，这个仓库做不了。
+更新服务已经输出这个元素：beta 的 appcast 里 2.1.0 那一项（构建号 200100099）带 `arm64`（1.x 和 2.x 都要求 macOS 15，不用加 `sparkle:minimumSystemVersion`）。2.1.1 那次运行在 `replace-latest` 之前停下，是因为当时的检查只认这个构建号自己的那一项，而它在设成最新之前还不在 appcast 里；#4212 把通过条件改成了上面两种。
 
-服务端支持以后，想让 Release 发布时自动发 beta，在 voxt-appcast.yaml 里改回 1.x 的做法：`on:` 里加回 `release: types: [published]`；`appcast` job 加 `if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'voxt-v') && !github.event.release.prerelease)`；`TAG` 改成 `${{ github.event.release.tag_name || inputs.tag }}`，`CHANNEL` 改成 `${{ inputs.channel || 'beta' }}`（发布事件没有 inputs，只发 beta）。拦截那一步不用动，服务端支持以后它自己就会通过。
+想让 Release 发布时自动发 beta，在 voxt-appcast.yaml 里改回 1.x 的做法：`on:` 里加回 `release: types: [published]`；`appcast` job 加 `if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'voxt-v') && !github.event.release.prerelease)`；`TAG` 改成 `${{ github.event.release.tag_name || inputs.tag }}`，`CHANNEL` 改成 `${{ inputs.channel || 'beta' }}`（发布事件没有 inputs，只发 beta）。拦截那一步不用动。
 
 ### 发一个版本给 1.x 用户
 
@@ -468,7 +468,7 @@ appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发
    ```sh
    gh workflow run voxt-appcast.yaml --repo sgl-project/sglang-omni -f tag=voxt-vX.Y.Z -f channel=beta
    ```
-   成功时最后一步写“The beta appcast offers Voxt X.Y.Z (构建号) for arm64”。在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行应该是“构建号 arm64”。更新服务还不输出 `hardwareRequirements` 时，它在设成最新之前停下（上一节），要先在服务端加上。
+   成功时最后一步写“The beta appcast offers Voxt X.Y.Z (构建号) for arm64”。在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行应该是“构建号 arm64”。更新服务没留下这个要求时，它在设成最新之前停下（上一节）。
 2. **在真机上测 1.x → 2.x**：按 [manual-test.md](manual-test.md) §11 在一台装着 1.x 的 Mac 上更新一次。
 3. **发到 stable**：测通以后先在群里告诉 1.x 的维护者，再用同一个工作流，channel 选 `stable`：
    ```sh
