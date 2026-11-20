@@ -39,7 +39,7 @@
     "card": {
       "id": "session-problem",
       "kind": "rewrite",
-      "title": "AI 回答",
+      "title": "改写",
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",

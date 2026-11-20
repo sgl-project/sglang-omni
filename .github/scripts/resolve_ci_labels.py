@@ -3,14 +3,14 @@
 
 A stage runs with its own stage label. A model label picks its model for every
 selected stage that accepts it. When no stage that accepts it is selected, an
-ASR or TTS model label selects the ASR or TTS stages that test its model:
+ASR, TTS or Omni model label selects the stages that test its model:
 run-asr-ci covers two stages (MOSS-TD multi-speaker and SeedTTS), and a model
 label alone runs only its own. TTS runs Higgs serving stress with run-tts-ci,
-or when the Higgs label selects it. MPS and Omni model labels never select a
-stage, and Higgs and MOSS labels, shared by TTS and MPS, select only TTS. Every
-stage except Mac also runs PR Test on H100. run-lint-only satisfies the gate
-and runs no self-hosted job. A selected stage without a model label draws its
-model at random.
+or when the Higgs label selects it. A model label never selects MPS, so Higgs
+and MOSS labels, shared by TTS and MPS, select only TTS. Every stage except
+Mac also runs PR Test on H100. run-lint-only satisfies the gate and runs no
+self-hosted job. A selected stage without a model label draws its model at
+random.
 """
 
 from __future__ import annotations
@@ -111,6 +111,7 @@ CI_STAGES: tuple[CiStage, ...] = (
             "run-minicpm-o-4.5": "minicpmo",
         },
         random_presets=("qwen3-omni", "minicpmo"),
+        is_selected_by_model_label=True,
     ),
     CiStage(
         name="full_duplex",
@@ -172,7 +173,6 @@ GATED_WORKFLOWS = frozenset(stage.workflow for stage in CI_STAGES)
 class CiPlan:
     enabled_stage_names: frozenset[str]
     preset_by_stage_name: dict[str, str]
-    ignored_model_labels: tuple[str, ...]
     runs_tts_serving: bool
 
 
@@ -221,15 +221,13 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
     if not enabled_stage_names and RUN_LINT_ONLY_LABEL not in labels:
         stage_labels = ", ".join(dict.fromkeys(stage.label for stage in CI_STAGES))
         raise ValueError(
-            f"No CI label found. Add {RUN_LINT_ONLY_LABEL}, an ASR or TTS model label "
-            f"or a stage label: {stage_labels}."
+            f"No CI label found. Add {RUN_LINT_ONLY_LABEL}, a model label or a stage "
+            f"label: {stage_labels}."
         )
     else:
         pass
 
     preset_by_stage_name: dict[str, str] = {}
-    unused_model_labels: list[str] = []
-    used_model_labels: set[str] = set()
     for stage in CI_STAGES:
         model_labels = sorted(stage.preset_by_model_label.keys() & labels)
         if len(model_labels) > 1:
@@ -237,31 +235,23 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
                 f"Keep only one {stage.name} model label: {', '.join(model_labels)}."
             )
         elif stage.name not in enabled_stage_names:
-            unused_model_labels.extend(model_labels)
+            pass
         elif model_labels:
-            selected_model_label = model_labels[0]
             preset_by_stage_name[stage.name] = stage.preset_by_model_label[
-                selected_model_label
+                model_labels[0]
             ]
-            used_model_labels.add(selected_model_label)
         elif stage.random_presets:
             preset_by_stage_name[stage.name] = random.Random(
                 f"{seed}-{stage.name}"
             ).choice(stage.random_presets)
         else:
             pass
-    ignored_model_labels = tuple(
-        dict.fromkeys(
-            label for label in unused_model_labels if label not in used_model_labels
-        )
-    )
     runs_tts_serving = TTS_STAGE_LABEL in labels or (
         "tts" in enabled_stage_names and HIGGS_TTS_MODEL_LABEL in labels
     )
     return CiPlan(
         enabled_stage_names=enabled_stage_names,
         preset_by_stage_name=preset_by_stage_name,
-        ignored_model_labels=ignored_model_labels,
         runs_tts_serving=runs_tts_serving,
     )
 
@@ -324,8 +314,6 @@ def main() -> None:
     except ValueError as error:
         print(f"::error::{error}")
         sys.exit(1)
-    for model_label in plan.ignored_model_labels:
-        print(f"::warning::Ignoring {model_label}: its stage label is missing.")
     output_lines = format_github_outputs(plan)
     print("\n".join(output_lines))
     with arguments.github_output.open("a", encoding="utf-8") as output_file:
