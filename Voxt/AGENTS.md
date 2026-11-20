@@ -32,7 +32,7 @@ Code:
 - **A removal is complete in one PR**: the callers, helpers, strings and translations, doc links and environment switches of what is removed go with it.
 - **An unchecked error is written down**: `_ = f()` with a one-line reason. On a path that moves or deletes the user's data, each error is handled or logged.
 - **Every `VOXTNEW_*` environment switch is documented** by the PR that adds it: what it does and who sets it (`docs/development.md`, or the doc of its area).
-- **The helper builds without compiler warnings.** Until Mac CI enforces this, check the helper build output for `warning:` and treat any match as a failure.
+- **The helper builds without compiler warnings.** Mac CI's Helper builds without warnings step fails on any `warning:` in the helper build log.
 
 Tests:
 
