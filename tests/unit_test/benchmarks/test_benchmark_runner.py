@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 from types import SimpleNamespace
 
@@ -583,3 +584,66 @@ def test_run_config_preserves_positional_arrival_seed() -> None:
     config = RunConfig(4, 2.0, 0, True, 60, 42)
     assert config.arrival_seed == 42
     assert config.trust_env is False
+
+
+@pytest.mark.asyncio
+async def test_timed_dispatch_pauses_cyclic_gc_and_restores_it() -> None:
+    """Cyclic GC stays off across the timed dispatch window and is restored even on error."""
+    was_enabled = gc.isenabled()
+    gc.enable()
+    observed_gc_state: list[bool] = []
+    async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
+        observed_gc_state.append(gc.isenabled())
+        if sample == "boom":
+            raise RuntimeError("boom")
+        else:
+            return RequestResult(request_id=sample, is_success=True)
+    runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
+    try:
+        await runner.run(["a", "b"], send)
+        assert observed_gc_state == [False, False]
+        assert gc.isenabled() is True
+        with pytest.raises(RuntimeError, match="boom"):
+            await runner.run(["boom"], send)
+        assert gc.isenabled() is True
+    finally:
+        if not was_enabled:
+            gc.disable()
+        else:
+            pass
+@pytest.mark.asyncio
+async def test_runner_reuses_caller_session_without_closing_it() -> None:
+    seen_sessions: list[aiohttp.ClientSession] = []
+    async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
+        seen_sessions.append(session)
+        return RequestResult(request_id=sample, is_success=True)
+    runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
+    async with aiohttp.ClientSession() as session:
+        await runner.run(["a", "b"], send, session=session)
+        assert seen_sessions == [session, session]
+        assert session.closed is False
+@pytest.mark.asyncio
+async def test_closed_loop_worker_pool_caps_concurrency_and_preserves_order() -> None:
+    in_flight = 0
+    peak_in_flight = 0
+    delays = {"0": 0.06, "1": 0.01, "2": 0.03, "3": 0.01, "4": 0.02}
+    async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
+        nonlocal in_flight, peak_in_flight
+        in_flight += 1
+        peak_in_flight = max(peak_in_flight, in_flight)
+        try:
+            await asyncio.sleep(delays[sample])
+        finally:
+            in_flight -= 1
+        return RequestResult(request_id=sample, is_success=True)
+    runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
+    results = await runner.run(["0", "1", "2", "3", "4"], send)
+    assert peak_in_flight == 2
+    assert [result.request_id for result in results] == ["0", "1", "2", "3", "4"]
+    assert [result.waited_for_slot for result in results] == [
+        False,
+        False,
+        True,
+        True,
+        True,
+    ]
