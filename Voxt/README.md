@@ -149,6 +149,7 @@ A model on your Mac and an external API are two paths for your data. You choose 
 - **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
 - **Change settings with a script or an agent**: [every setting, where it is stored and how to edit it safely](docs/settings.md).
 - **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
+- **Import dictionary terms from a script**: [`Voxt dictionary import`](docs/dictionary-import.md) merges a CSV, text or Voxt 1.x file into your dictionary, as Dictionary → Import… does, with `--dry-run` to see the counts first.
 
 ## For developers
 
