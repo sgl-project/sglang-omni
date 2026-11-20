@@ -103,7 +103,6 @@ PROFILE_NAMES = (
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3-tts-vivian-dflash",
-    "qwen3-asr-qwen3.8-27b-vivian",
     "qwen3-asr-qwen3.8-27b-vivian-styles",
     "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
     "qwen3-asr-streaming-qwen3-tts-vivian",
@@ -1294,7 +1293,7 @@ def test_a_client_cancel_while_the_dialog_interrupts_its_reply_keeps_the_interru
 
 def test_the_profile_dialog_waits_for_the_audio_its_synthesizer_delivered():
     assert profile_config(
-        "qwen3-asr-qwen3.8-27b-vivian"
+        "qwen3-asr-qwen3.8-27b-vivian-tts-tool"
     ).component_graph().delivery_reporters("dialog") == ["tts"]
 
 
@@ -2490,8 +2489,8 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
     [
         "qwen3-asr-qwen3-tts-vivian",
         "qwen3-asr-qwen3-tts-vivian-dflash",
-        "qwen3-asr-qwen3.8-27b-vivian",
         "qwen3-asr-qwen3.8-27b-vivian-styles",
+        "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
         "qwen3-asr-qwen3-tts-base-clone",
     ],
 )
@@ -2692,7 +2691,7 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
             id="styles",
         ),
         pytest.param(
-            "qwen3-asr-qwen3.8-27b-vivian",
+            "qwen3-asr-qwen3-tts-vivian",
             "[Cheerful] Great news! [calm] Take a breath. [soon] stays calm. [ca",
             ["vivian.wav"] * 4,
             id="no_styles",
@@ -2936,7 +2935,7 @@ def test_profiles_cloning_vivian_send_its_transcript_and_drop_the_quiet_start(pr
     ("flags", "admitted"), [([], 16), (["--max_sessions", "24"], 24)]
 )
 def test_node_stages_admit_max_sessions_and_refuse_the_next(flags, admitted):
-    manager = ConfigManager(profile_config("qwen3-asr-qwen3.8-27b-vivian"))
+    manager = ConfigManager(profile_config("qwen3-asr-qwen3.8-27b-vivian-tts-tool"))
     config = manager.merge_config(manager.parse_extra_args(flags))
     stages = {}
     for name in ("vad", "dialog"):
