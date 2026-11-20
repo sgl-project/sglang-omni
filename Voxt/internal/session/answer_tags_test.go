@@ -16,6 +16,7 @@ func TestTranslateKeepsInputTags(t *testing.T) {
 	for _, answer := range []string{
 		"<instruction>Hello</instruction>",
 		"<selected_text>Good morning</selected_text>",
+		"<指令>Hello</指令>",
 	} {
 		t.Run(answer, func(t *testing.T) {
 			h := newHarness(t, &fakeFile{}, &fakeLLM{text: answer}, nil)

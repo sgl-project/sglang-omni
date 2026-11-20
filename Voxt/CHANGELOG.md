@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Translate accepts answers that keep Chinese input-tag names**: `<指令>` around a valid translation no longer counts as untranslated Chinese text; the tags stay in the delivered answer.
+
+### 中文
+
+#### 修复
+
+- **翻译接受保留中文输入标签的回答**：有效译文外保留 `<指令>` 标签时，不再把标签当成未翻译的中文内容；标签原样保留在回答中。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added
