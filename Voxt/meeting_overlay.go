@@ -10,6 +10,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
+// meetingTimeW is the least room the meeting's elapsed time keeps ("0:00"
+// at 12 pt), so the controls do not move as it ticks.
+const meetingTimeW = 30
+
 type meetingOverlayLocalUI struct {
 	collapsed bool
 	list      ui.ListState
@@ -116,7 +120,7 @@ func meetingOverlayBar(c *ui.Context, state meetingOverlayViewState, model meeti
 				}
 			})
 		}
-		ui.Box(c).Grow(1).MinWidth(layout.TimeW).Height(rowHeight).Center().Children(func() {
+		ui.Box(c).Grow(1).MinWidth(meetingTimeW).Height(rowHeight).Center().Children(func() {
 			ui.Text(c, state.ElapsedText).FontSize(12).FontFeatures("tnum").FixedLineHeight(layout.LineH).TextColor(ovText2).SingleLine().Shrink(0).Translate(0, -0.75)
 		})
 		ui.Row(c.Key("mt-actions")).Gap(2).AlignItems(ui.Center).Shrink(0).Children(func() {
