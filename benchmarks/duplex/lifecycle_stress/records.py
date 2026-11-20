@@ -11,6 +11,7 @@ SAMPLES_FILE = "samples.json"
 SUMMARY_FILE = "summary.json"
 SERVER_LOG_FILE = "server.log"
 DEBUG_ROUTE_PATH = "/debug/lifecycle"
+DEBUG_SETTINGS_PATH = "/debug/lifecycle/settings"
 MS_PER_SECOND = 1000
 
 Scenario = Literal["churn", "drop", "cancel", "idle", "reconnect", "long", "interrupt"]
@@ -22,7 +23,7 @@ Outcome = Literal["completed", "dropped", "denied", "errored", "expired"]
 
 
 class ServerSnapshot(BaseModel):
-    """What the mock's debug route reports; a real server gives the resident memory and the device memory at most."""
+    """What the mock's debug route reports; a real server on this host gives its resident memory, threads, open files and the device memory."""
 
     protocol: Protocol | None = None
     active_sessions: int | None = None
@@ -31,6 +32,8 @@ class ServerSnapshot(BaseModel):
     device_megabytes: float | None = None
     task_count: int | None = None
     thread_count: int | None = None
+    open_files: int | None = None
+    process_count: int | None = None
 
 
 class SessionOutcome(BaseModel):
@@ -79,7 +82,10 @@ class StressSamples(BaseModel):
     scenario: Scenario
     protocol: Protocol
     url: str
+    started_at: str
+    duration_s: float
     server: dict[str, JsonValue]
+    mock_settings: dict[str, JsonValue] | None
     source: dict[str, JsonValue]
     platform: str
     concurrency: int

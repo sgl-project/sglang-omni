@@ -60,8 +60,6 @@ class SessionPlan:
     protocol: Protocol
     pcm: bytes
     packets: int
-    # note (Yi Zhao): the packet that completes the server's first unit; a reply cannot start before the server has it.
-    reply_packet_index: int
     leave_point: LeavePoint
     leave_style: LeaveStyle
     idle_point: IdlePoint
@@ -172,6 +170,40 @@ async def leave_early(connection: ClientConnection, leave_style: LeaveStyle) -> 
     await connection.wait_closed()
 
 
+async def send_packets(
+    connection: ClientConnection,
+    plan: SessionPlan,
+    reply_task: asyncio.Task[None] | None,
+    last_sent_s: float,
+) -> float:
+    """Send the plan's packets at their pace and return when the last one went out; a plan that leaves mid-reply stops at the first packet after the reply has started."""
+    first_packet_s = time.perf_counter()
+    for packet_index in range(plan.packets):
+        due_s = first_packet_s + packet_index * PACKET_MS / MS_PER_SECOND
+        await asyncio.sleep(max(0.0, due_s - time.perf_counter()))
+        if plan.leave_point == "reply" and reply_task is not None and reply_task.done():
+            break
+        else:
+            pass
+        byte_offset = packet_index * PACKET_BYTES
+        last_sent_s = time.perf_counter()
+        await connection.send(
+            client_event(
+                "input_audio_buffer.append",
+                {
+                    "audio": base64.b64encode(
+                        plan.pcm[byte_offset : byte_offset + PACKET_BYTES]
+                    ).decode("ascii"),
+                    "sglang": {
+                        "seq": packet_index,
+                        "t_start_ms": byte_offset / 2 / SAMPLE_RATE * MS_PER_SECOND,
+                    },
+                },
+            )
+        )
+    return last_sent_s
+
+
 async def drive_session(
     connection: ClientConnection, plan: SessionPlan, connect_started_s: float
 ) -> SessionOutcome:
@@ -215,55 +247,53 @@ async def drive_session(
         await receive_until(connection, "session.updated")
 
     cancelled_response_id: str | None = None
-    first_packet_s = time.perf_counter()
-    for packet_index in range(plan.packets):
-        due_s = first_packet_s + packet_index * PACKET_MS / MS_PER_SECOND
-        await asyncio.sleep(max(0.0, due_s - time.perf_counter()))
-        byte_offset = packet_index * PACKET_BYTES
-        last_sent_s = time.perf_counter()
-        await connection.send(
-            client_event(
-                "input_audio_buffer.append",
-                {
-                    "audio": base64.b64encode(
-                        plan.pcm[byte_offset : byte_offset + PACKET_BYTES]
-                    ).decode("ascii"),
-                    "sglang": {
-                        "seq": packet_index,
-                        "t_start_ms": byte_offset / 2 / SAMPLE_RATE * MS_PER_SECOND,
-                    },
-                },
-            )
-        )
-        # note (Yi Zhao): acting on the first response.created read live keeps the reply in progress; one read from a backlog may already be over.
-        if packet_index == plan.reply_packet_index and plan.should_cancel_reply:
-            created = await receive_response(connection, "response.created")
-            cancel_sent_s = time.perf_counter()
-            await connection.send(client_event("response.cancel", {}))
-            if plan.leave_point == "reply":
-                break
-            elif plan.supports_cancel:
-                cancelled_response_id = created.id
-                while cancel_status is None:
-                    done = await receive_response(connection, "response.done")
-                    if done.id == cancelled_response_id:
-                        cancel_status = done.status
-                    else:
-                        pass
-            else:
-                refusal = (await receive_until(connection, "error"))[-1]
-                cancel_status = EventError.model_validate(refusal.error).code
-                if cancel_status != CANCEL_REFUSAL_CODE:
-                    raise ServerErrorEvent(refusal)
-                else:
-                    pass
-            cancel_ms = (time.perf_counter() - cancel_sent_s) * MS_PER_SECOND
-        elif packet_index == plan.reply_packet_index and plan.leave_point == "reply":
-            await receive_until(connection, "response.created")
-            break
+
+    async def act_on_reply() -> None:
+        """Wait for the first reply and cancel it if the plan says so; the packets keep going meanwhile."""
+        nonlocal cancel_ms, cancel_status, cancelled_response_id
+        created = await receive_response(connection, "response.created")
+        if not plan.should_cancel_reply:
+            return
         else:
             pass
+        cancel_sent_s = time.perf_counter()
+        await connection.send(client_event("response.cancel", {}))
+        if plan.leave_point == "reply":
+            return
+        elif plan.supports_cancel:
+            cancelled_response_id = created.id
+            while cancel_status is None:
+                done = await receive_response(connection, "response.done")
+                if done.id == cancelled_response_id:
+                    cancel_status = done.status
+                else:
+                    pass
+        else:
+            refusal = (await receive_until(connection, "error"))[-1]
+            cancel_status = EventError.model_validate(refusal.error).code
+            if cancel_status != CANCEL_REFUSAL_CODE:
+                raise ServerErrorEvent(refusal)
+            else:
+                pass
+        cancel_ms = (time.perf_counter() - cancel_sent_s) * MS_PER_SECOND
 
+    # note (Yi Zhao): a server that takes turns answers only once it has heard the turn end, which takes the packets after the speech, so the client must not stop sending while it waits for the reply. Reading the reply as it arrives also keeps it in progress when the client acts on it.
+    reply_task = (
+        asyncio.create_task(act_on_reply())
+        if plan.should_cancel_reply or plan.leave_point == "reply"
+        else None
+    )
+    try:
+        last_sent_s = await send_packets(connection, plan, reply_task, last_sent_s)
+        if reply_task is None:
+            pass
+        else:
+            await reply_task
+    finally:
+        if reply_task is None:
+            pass
+        else:
+            reply_task.cancel()
     if plan.leave_point in ("reply", "append"):
         await leave_early(connection, plan.leave_style)
         return ended("dropped")
@@ -405,7 +435,7 @@ async def run_recorded_session(
 async def take_slot(
     url: str, timeout_s: float
 ) -> ClientConnection | Literal["denied", "errored"]:
-    """Open one connection up to session.created and keep it open for the caller to close."""
+    """Open one session up to session.updated and keep it open for the caller to close; a server may refuse at the connect or at session.update, and either is a denial."""
     try:
         async with asyncio.timeout(timeout_s):
             connection = await connect(
@@ -421,14 +451,23 @@ async def take_slot(
     try:
         async with asyncio.timeout(timeout_s):
             await receive_until(connection, "session.created")
-    except (ConnectionClosed, ServerErrorEvent, TimeoutError, ValidationError):
+            await connection.send(
+                client_event(
+                    "session.update", {"session": SESSION_CONFIGURATION["native"]}
+                )
+            )
+            await receive_until(connection, "session.updated")
+    except ServerErrorEvent as exc:
+        await connection.close()
+        return "denied" if exc.is_admission_rejection else "errored"
+    except (ConnectionClosed, TimeoutError, ValidationError):
         await connection.close()
         return "errored"
     return connection
 
 
 async def probe_capacity(url: str, slots: int, timeout_s: float) -> CapacityProbe:
-    """Hold the given number of connections open together, then release them; a denial means a slot is still taken."""
+    """Hold the given number of admitted sessions open together, then release them; a denial means a slot is still taken, whether the server counts slots at the connect or at session.update."""
     results = await asyncio.gather(*(take_slot(url, timeout_s) for _ in range(slots)))
     connections = [result for result in results if isinstance(result, ClientConnection)]
     await asyncio.gather(*(connection.close() for connection in connections))

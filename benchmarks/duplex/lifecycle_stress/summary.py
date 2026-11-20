@@ -35,7 +35,10 @@ class Distribution(BaseModel):
 class StressSummary(BaseModel):
     scenario: Scenario
     protocol: Protocol
+    started_at: str
+    duration_s: float
     server: dict[str, JsonValue]
+    mock_settings: dict[str, JsonValue] | None
     server_unit_ms: int | None
     server_supports_cancel: bool | None
     device_models: list[str] | None
@@ -62,6 +65,8 @@ class StressSummary(BaseModel):
     device_growth_megabytes_per_cycle: float | None
     task_count_growth: int | None
     thread_count_growth: int | None
+    open_files_growth: int | None
+    process_count_growth: int | None
     cancel_ms: Distribution
     cancel_statuses: dict[str, int]
     late_outputs: int | None
@@ -100,6 +105,15 @@ def growth_per_cycle(readings: list[float]) -> float | None:
         return None
 
 
+def count_growth(counts: list[int | None]) -> int | None:
+    """The last reading of a count minus the first; None below two readings."""
+    readings = [count for count in counts if count is not None]
+    if len(readings) >= MIN_GROWTH_POINTS:
+        return readings[-1] - readings[0]
+    else:
+        return None
+
+
 def summarize(samples: StressSamples) -> StressSummary:
     sessions = [session for cycle in samples.cycles for session in cycle.sessions]
     snapshots = [
@@ -130,28 +144,6 @@ def summarize(samples: StressSamples) -> StressSummary:
         for snapshot in measured_snapshots
         if snapshot.device_megabytes is not None
     ]
-    task_count_growth: int | None = None
-    thread_count_growth: int | None = None
-    if len(measured_snapshots) >= MIN_GROWTH_POINTS:
-        first_measured, last_measured = measured_snapshots[0], measured_snapshots[-1]
-        if (
-            first_measured.task_count is not None
-            and last_measured.task_count is not None
-        ):
-            task_count_growth = last_measured.task_count - first_measured.task_count
-        else:
-            pass
-        if (
-            first_measured.thread_count is not None
-            and last_measured.thread_count is not None
-        ):
-            thread_count_growth = (
-                last_measured.thread_count - first_measured.thread_count
-            )
-        else:
-            pass
-    else:
-        pass
     peaks = [
         snapshot.peak_rss_megabytes
         for snapshot in snapshots
@@ -205,7 +197,10 @@ def summarize(samples: StressSamples) -> StressSummary:
     return StressSummary(
         scenario=samples.scenario,
         protocol=samples.protocol,
+        started_at=samples.started_at,
+        duration_s=samples.duration_s,
         server=samples.server,
+        mock_settings=samples.mock_settings,
         server_unit_ms=samples.server_unit_ms,
         server_supports_cancel=samples.server_supports_cancel,
         device_models=samples.device_models,
@@ -244,8 +239,18 @@ def summarize(samples: StressSamples) -> StressSummary:
         device_megabytes_last=device_series[-1] if device_series else None,
         device_megabytes_peak=max(device_series) if device_series else None,
         device_growth_megabytes_per_cycle=growth_per_cycle(measured_device),
-        task_count_growth=task_count_growth,
-        thread_count_growth=thread_count_growth,
+        task_count_growth=count_growth(
+            [snapshot.task_count for snapshot in measured_snapshots]
+        ),
+        thread_count_growth=count_growth(
+            [snapshot.thread_count for snapshot in measured_snapshots]
+        ),
+        open_files_growth=count_growth(
+            [snapshot.open_files for snapshot in measured_snapshots]
+        ),
+        process_count_growth=count_growth(
+            [snapshot.process_count for snapshot in measured_snapshots]
+        ),
         cancel_ms=distribution(
             [
                 session.cancel_ms

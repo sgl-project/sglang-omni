@@ -11,19 +11,22 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import uvicorn
 from fastapi import FastAPI
+from pydantic import JsonValue
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from benchmarks.duplex.client import ADMISSION_DENIED_STATUS, PACKET_MS
 from benchmarks.duplex.lifecycle_stress.host_metrics import (
     peak_rss_megabytes,
+    read_open_files,
     read_rss_megabytes,
 )
 from benchmarks.duplex.lifecycle_stress.records import (
     DEBUG_ROUTE_PATH,
+    DEBUG_SETTINGS_PATH,
     MS_PER_SECOND,
     Protocol,
     ServerSnapshot,
@@ -220,12 +223,15 @@ class EchoAdapter(InteractionAdapter):
 
 @dataclass(kw_only=True)
 class SpeechTurnAdapter(InteractionAdapter):
-    """Stands in for a turn-based pipeline: a unit with speech starts a reply, every silent unit after it carries one delta, and speech during a reply ends it as interrupted."""
+    """Stands in for a turn-based pipeline: the first silent unit after speech starts a reply, every silent unit after it carries one delta, and speech during a reply ends it as interrupted."""
 
     reply_text: str
     reply_chunks: int
+    supports_cancel: bool
     output_sink: OutputSink | None = None
     reply_index: int = 0
+    has_heard_speech: bool = False
+    is_cancel_requested: bool = False
     # note (Yi Zhao): None while no reply is in progress; the reply advances with the input, not with the clock, so a test decides exactly where speech meets it.
     deltas_sent: int | None = None
 
@@ -234,26 +240,38 @@ class SpeechTurnAdapter(InteractionAdapter):
     ) -> None:
         self.output_sink = emit
 
-    async def process(self, unit: Unit) -> int:
-        assert self.output_sink is not None, "process before open"
+    async def end_reply(self, unit: Unit, status: ResponseStatus, reason: str) -> None:
+        assert self.output_sink is not None and self.deltas_sent is not None
         response_id = f"response_{self.reply_index}"
         item_id = f"item_{self.reply_index}"
+        reply_text = self.reply_text * self.deltas_sent
+        if status == "completed":
+            await self.output_sink(TextFinished(response_id, item_id, reply_text), unit)
+        else:
+            pass
+        await self.output_sink(
+            ResponseFinished(response_id, item_id, reply_text, False, status, reason),
+            unit,
+        )
+        self.reply_index += 1
+        self.deltas_sent = None
+
+    async def process(self, unit: Unit) -> int:
+        assert self.output_sink is not None, "process before open"
+        if self.is_cancel_requested and self.deltas_sent is not None:
+            await self.end_reply(unit, "cancelled", "client_cancelled")
+        else:
+            pass
+        self.is_cancel_requested = False
         if any(unit.pcm):
             if self.deltas_sent is None:
                 pass
             else:
-                await self.output_sink(
-                    ResponseFinished(
-                        response_id,
-                        item_id,
-                        self.reply_text * self.deltas_sent,
-                        False,
-                        "cancelled",
-                        INTERRUPTED_REASON,
-                    ),
-                    unit,
-                )
-                self.reply_index += 1
+                await self.end_reply(unit, "cancelled", INTERRUPTED_REASON)
+            self.has_heard_speech = True
+        elif self.has_heard_speech:
+            # note (Yi Zhao): the turn has ended; a client that stopped sending after its speech would never get here.
+            self.has_heard_speech = False
             self.deltas_sent = 0
             await self.output_sink(
                 ResponseStarted(f"response_{self.reply_index}"), unit
@@ -262,25 +280,26 @@ class SpeechTurnAdapter(InteractionAdapter):
             pass
         else:
             await self.output_sink(
-                TextDelta(response_id, item_id, self.reply_text), unit
+                TextDelta(
+                    f"response_{self.reply_index}",
+                    f"item_{self.reply_index}",
+                    self.reply_text,
+                ),
+                unit,
             )
             self.deltas_sent += 1
             if self.deltas_sent == self.reply_chunks:
-                reply_text = self.reply_text * self.reply_chunks
-                await self.output_sink(
-                    TextFinished(response_id, item_id, reply_text), unit
-                )
-                await self.output_sink(
-                    ResponseFinished(
-                        response_id, item_id, reply_text, False, "completed", "stop"
-                    ),
-                    unit,
-                )
-                self.reply_index += 1
-                self.deltas_sent = None
+                await self.end_reply(unit, "completed", "stop")
             else:
                 pass
         return unit.real_samples
+
+    async def cancel(self) -> None:
+        # note (Yi Zhao): the reply ends with the next unit, because an output needs a unit to belong to.
+        if not self.supports_cancel:
+            await super().cancel()
+        else:
+            self.is_cancel_requested = True
 
     async def close(self) -> None:
         pass
@@ -325,7 +344,9 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
 
         def speech_turn_adapter() -> InteractionAdapter:
             return SpeechTurnAdapter(
-                reply_text=settings.reply_text, reply_chunks=settings.reply_chunks
+                reply_text=settings.reply_text,
+                reply_chunks=settings.reply_chunks,
+                supports_cancel=settings.supports_cancel,
             )
 
         def echo_adapter() -> InteractionAdapter:
@@ -348,6 +369,7 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
                 turn_control=(TURN_DETECTION_TYPE, None),
                 output_modalities=RECORDER_OUTPUT_MODALITIES,
                 native_unit_ms=settings.unit_ms,
+                supports_cancel=settings.supports_cancel,
             )
             adapter_factory = speech_turn_adapter
         else:
@@ -403,7 +425,12 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
             peak_rss_megabytes=peak_rss_megabytes(),
             task_count=len(asyncio.all_tasks()),
             thread_count=threading.active_count(),
+            open_files=read_open_files(os.getpid()),
         )
+
+    @app.get(DEBUG_SETTINGS_PATH)
+    async def mock_settings() -> dict[str, JsonValue]:
+        return asdict(settings)
 
     return app
 

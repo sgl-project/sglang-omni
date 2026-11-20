@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from pydantic import JsonValue
 from websockets.asyncio.client import ClientConnection
 
 from benchmarks.duplex.client import PACKET_BYTES, PACKET_MS
+from benchmarks.duplex.lifecycle_stress import host_metrics
 from benchmarks.duplex.lifecycle_stress.mock_server import (
     MockSettings,
     serve_in_process,
@@ -45,6 +48,7 @@ from sglang_omni.serve.realtime import turn_detector as turn_detector_module
 CLEANUP_WAIT_S = 5.0
 PACKETS_PER_SESSION = 2
 SHORT_TIMEOUT_S = 0.3
+STAND_IN_PID = 4242
 # note (Yi Zhao): any nonzero sample is speech to the stand-in pipeline.
 SPEECH_PACKET = b"\x01\x00" * (PACKET_BYTES // 2)
 SERVER: dict[str, JsonValue] = {"revision": "0" * 40, "model": "lifecycle-stress-mock"}
@@ -61,6 +65,7 @@ async def stress_against_mock(
     reconnects: int = 0,
     max_connections: int | None = None,
     has_debug_route: bool = True,
+    server_pid: int | None = None,
     cleanup_wait_s: float = CLEANUP_WAIT_S,
     has_device_memory: bool = False,
     pcm: bytes = bytes(PACKETS_PER_SESSION * PACKET_BYTES),
@@ -81,13 +86,13 @@ async def stress_against_mock(
                 audio_file=None,
                 audio_sha256=None,
                 audio_conversion=None,
-                packets_per_session=PACKETS_PER_SESSION,
+                packets_per_session=len(pcm) // PACKET_BYTES,
                 leave_point=leave_point,
                 leave_style=leave_style,
                 idle_point=idle_point,
                 reconnects=reconnects,
                 max_connections=max_connections,
-                server_pid=None,
+                server_pid=server_pid,
                 has_debug_route=has_debug_route,
                 has_device_memory=has_device_memory,
                 server_log=server_log,
@@ -112,6 +117,9 @@ def test_churn_cycle_completes_and_every_check_passes(tmp_path: Path) -> None:
     assert cycle.snapshot_after is not None
     assert cycle.snapshot_after.device_megabytes is None
     assert samples.device_models is None
+    assert samples.mock_settings is not None
+    assert samples.mock_settings["max_connections"] == 2
+    assert samples.duration_s > 0
     assert summarize(samples).checks == {
         "no_sessions_left": True,
         "slots_recovered": True,
@@ -329,13 +337,15 @@ def test_reconnect_after_a_reset_is_denied_until_the_old_session_is_gone(
     assert second.readmit_ms is not None and second.readmit_ms > 0
 
 
-def test_capacity_probe_reports_a_slot_that_is_still_taken() -> None:
-    """Three connections held together against a cap of two: the probe must see the missing slot."""
+@pytest.mark.parametrize(
+    "mock",
+    [MockSettings(max_connections=2), MockSettings(max_connections=3, model_slots=2)],
+)
+def test_capacity_probe_reports_a_slot_that_is_still_taken(mock: MockSettings) -> None:
+    """Three sessions held together against two slots: the probe must see the missing one, whether the server refuses the connect or, as a turn-based pipeline does, the session.update."""
 
     async def probe() -> tuple[int, int]:
-        async with serve_in_process(
-            MockSettings(max_connections=2), "127.0.0.1", 0
-        ) as url:
+        async with serve_in_process(mock, "127.0.0.1", 0) as url:
             result = await probe_capacity(url, 3, CLEANUP_WAIT_S)
             return result.admitted, result.denied
 
@@ -426,12 +436,12 @@ def test_device_memory_is_the_sum_over_gpus_and_joins_every_reading(
 
 
 @pytest.mark.parametrize(
-    ("speech_packets", "interrupted_replies"), [((0, 2), 1), ((0,), 0)]
+    ("speech_packets", "interrupted_replies"), [((0, 3), 1), ((0,), 0)]
 )
 def test_speech_over_a_reply_is_counted_as_an_interruption_and_its_control_is_not(
     tmp_path: Path, speech_packets: tuple[int, ...], interrupted_replies: int
 ) -> None:
-    """The stand-in pipeline starts a reply on the first packet and needs three silent packets to finish it; speech in the third packet meets it, and the same input without that speech does not."""
+    """The stand-in pipeline starts a reply on the silent packet after the speech and needs three more silent packets to finish it; speech in the fourth packet meets it, and the same input without that speech does not."""
     packets = [bytes(PACKET_BYTES)] * 6
     for packet_index in speech_packets:
         packets[packet_index] = SPEECH_PACKET
@@ -449,6 +459,38 @@ def test_speech_over_a_reply_is_counted_as_an_interruption_and_its_control_is_no
     assert summary.interrupted_sessions == 2 * interrupted_replies
     assert summary.late_outputs == 0
     assert summary.failed_checks == []
+
+
+@pytest.mark.parametrize(
+    ("scenario", "leave_point", "leave_style", "outcomes", "cancel_statuses"),
+    [
+        ("cancel", "end", "goodbye", {"completed": 2}, {"cancelled": 2}),
+        ("drop", "reply", "reset", {"dropped": 2}, {}),
+    ],
+)
+def test_a_reply_that_only_comes_after_the_turn_has_ended_is_still_met(
+    tmp_path: Path,
+    scenario: Scenario,
+    leave_point: LeavePoint,
+    leave_style: LeaveStyle,
+    outcomes: dict[str, int],
+    cancel_statuses: dict[str, int],
+) -> None:
+    """The stand-in pipeline answers only on the silent packet after the speech; a client that stopped sending to wait for the reply would never get one."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2, takes_turns=True, reply_chunks=8),
+            tmp_path,
+            scenario=scenario,
+            leave_point=leave_point,
+            leave_style=leave_style,
+            pcm=SPEECH_PACKET + bytes(5 * PACKET_BYTES),
+        )
+    )
+    summary = summarize(samples)
+    assert summary.session_outcomes == outcomes
+    assert summary.cancel_statuses == cancel_statuses
+    assert summary.sessions_left == 0
 
 
 def test_only_what_the_server_logs_during_the_run_is_kept_and_counted(
@@ -484,11 +526,54 @@ def test_only_what_the_server_logs_during_the_run_is_kept_and_counted(
     assert (tmp_path / "run" / "server.log").read_text() == logged_during_run
 
 
-def test_legacy_sessions_close_with_a_frame_and_are_released(
+def test_a_model_server_on_this_host_gives_its_threads_and_open_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The legacy protocol has no session.close and no connection cap; a close frame is its goodbye."""
-    # note (Yi Zhao): the legacy mock replaces these module attributes; registering them restores the real ones after the test.
+    """Without a debug route the counts come from /proc of the server's process tree; a stand-in /proc holds a server with seven threads and three descriptors and a stage process with two and one."""
+    for pid, threads, descriptors in ((STAND_IN_PID, 7, 3), (STAND_IN_PID + 1, 2, 1)):
+        process_directory = tmp_path / "proc" / str(pid)
+        (process_directory / "fd").mkdir(parents=True)
+        for descriptor in range(descriptors):
+            (process_directory / "fd" / str(descriptor)).touch()
+        (process_directory / "status").write_text(f"Threads:\t{threads}\n")
+        (process_directory / "statm").write_text("0 256 0 0 0 0 0\n")
+    monkeypatch.setattr(host_metrics, "PROC_ROOT", tmp_path / "proc")
+    monkeypatch.setattr(
+        host_metrics, "process_tree", lambda pid: [STAND_IN_PID, STAND_IN_PID + 1]
+    )
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2),
+            tmp_path / "run",
+            has_debug_route=False,
+            server_pid=STAND_IN_PID,
+        )
+    )
+    snapshot = samples.cycles[0].snapshot_after
+    assert snapshot is not None
+    assert (snapshot.process_count, snapshot.thread_count, snapshot.open_files) == (
+        2,
+        9,
+        4,
+    )
+    assert snapshot.rss_megabytes == 2 * 256 * os.sysconf("SC_PAGE_SIZE") / 2**20
+
+
+def test_the_process_tree_holds_a_child_this_process_started() -> None:
+    """A model server's stages are its child processes; the tree of this process has to hold one it has just started."""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        tree = host_metrics.process_tree(os.getpid())
+    finally:
+        child.kill()
+        child.wait()
+    assert tree[0] == os.getpid()
+    assert child.pid in tree
+
+
+@pytest.fixture
+def restored_legacy_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The legacy mock replaces these module attributes; registering them restores the real ones after the test."""
     monkeypatch.setattr(session_module, "StreamingVAD", session_module.StreamingVAD)
     monkeypatch.setattr(
         turn_detector_module, "StreamingVAD", turn_detector_module.StreamingVAD
@@ -496,6 +581,28 @@ def test_legacy_sessions_close_with_a_frame_and_are_released(
     monkeypatch.setattr(
         smart_turn_module, "load_smart_turn", smart_turn_module.load_smart_turn
     )
+
+
+def test_the_idle_scenario_is_refused_on_the_legacy_protocol(
+    tmp_path: Path, restored_legacy_modules: None
+) -> None:
+    """The legacy server publishes no idle limits, so an expiry could not be told from an early close; the run has to say so before it opens a session."""
+    with pytest.raises(ValueError, match="native protocol"):
+        asyncio.run(
+            stress_against_mock(
+                MockSettings(protocol="legacy"),
+                tmp_path,
+                scenario="idle",
+                leave_style="close_frame",
+                idle_point="open",
+            )
+        )
+
+
+def test_legacy_sessions_close_with_a_frame_and_are_released(
+    tmp_path: Path, restored_legacy_modules: None
+) -> None:
+    """The legacy protocol has no session.close and no connection cap; a close frame is its goodbye."""
     samples = asyncio.run(
         stress_against_mock(
             MockSettings(protocol="legacy"), tmp_path, leave_style="close_frame"
@@ -517,7 +624,10 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
         scenario="drop",
         protocol="legacy",
         url="ws://127.0.0.1:1/v1/realtime",
+        started_at="2026-11-20T00:00:00+00:00",
+        duration_s=1.0,
         server=SERVER,
+        mock_settings=None,
         source={},
         platform="test",
         concurrency=1,
@@ -554,6 +664,7 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
                 capacity_recovery_ms=None,
                 snapshot_after=ServerSnapshot(
                     active_sessions=index + 1,
+                    open_files=10 + 3 * index,
                     rss_megabytes=megabytes,
                     device_megabytes=10 * megabytes,
                 ),
@@ -571,3 +682,5 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
     assert summary.rss_growth_megabytes_per_cycle == pytest.approx(2.0)
     assert summary.device_growth_megabytes_per_cycle == pytest.approx(20.0)
     assert summary.device_megabytes_peak == 3000.0
+    assert summary.open_files_growth == 9
+    assert summary.thread_count_growth is None

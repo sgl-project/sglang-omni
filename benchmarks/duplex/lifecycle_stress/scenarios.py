@@ -10,6 +10,7 @@ import re
 import time
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -21,10 +22,11 @@ from benchmarks.duplex.client import PACKET_BYTES, PACKET_MS, SAMPLE_RATE, TurnD
 from benchmarks.duplex.lifecycle_stress.host_metrics import (
     read_device_megabytes,
     read_device_models,
-    read_rss_megabytes,
+    read_process_tree,
 )
 from benchmarks.duplex.lifecycle_stress.records import (
     DEBUG_ROUTE_PATH,
+    DEBUG_SETTINGS_PATH,
     MS_PER_SECOND,
     SAMPLES_FILE,
     SERVER_LOG_FILE,
@@ -130,7 +132,8 @@ class ServerObserver:
             response.raise_for_status()
             snapshot = ServerSnapshot.model_validate_json(response.text)
         elif self.server_pid is not None:
-            snapshot = ServerSnapshot(rss_megabytes=read_rss_megabytes(self.server_pid))
+            # note (Yi Zhao): a model server shows no task or session count; the processes, threads and open files of its process tree are the counts it leaves to read.
+            snapshot = await asyncio.to_thread(read_process_tree, self.server_pid)
         else:
             snapshot = None
         if self.has_device_memory:
@@ -282,6 +285,8 @@ async def run_cycle(
 async def run_stress(settings: RunSettings) -> StressSamples:
     """Run every cycle, then one ordinary session that must still complete."""
     input_seconds = len(settings.pcm) / (2 * SAMPLE_RATE)
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    started_s = time.perf_counter()
     log_offset = (
         0 if settings.server_log is None else settings.server_log.stat().st_size
     )
@@ -300,11 +305,19 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             has_debug_route=settings.has_debug_route,
             has_device_memory=settings.has_device_memory,
         )
+        mock_settings: dict[str, JsonValue] | None = None
+        if settings.has_debug_route:
+            # note (Yi Zhao): figures such as how often a reconnect is denied first depend on how the mock was started, so a run keeps that with its results.
+            response = await http.get(observer.http_url(DEBUG_SETTINGS_PATH))
+            response.raise_for_status()
+            mock_settings = response.json()
+        else:
+            pass
         server_unit_ms: int | None = None
         # note (Yi Zhao): the legacy path publishes no capabilities and always takes response.cancel.
         server_supports_cancel: bool | None = None
         server_timeout_s: float | None = None
-        reply_packet_index = 0
+        unit_packets = 1
         session_timeout_s = SESSION_TIMEOUT_S + input_seconds
         if settings.protocol == "native":
             # note (Yi Zhao): the unit and the idle limits belong to the deployment; the client reads them where the server publishes them.
@@ -313,7 +326,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             published = PublishedCapabilities.model_validate_json(response.text)
             server_unit_ms = published.native_unit_ms
             server_supports_cancel = published.supports_cancel
-            reply_packet_index = math.ceil(server_unit_ms / PACKET_MS) - 1
+            unit_packets = math.ceil(server_unit_ms / PACKET_MS)
             if settings.idle_point != "none":
                 server_timeout_s = published.limits.model_dump()[
                     f"{EXPIRY_LIMITS[settings.idle_point]}_s"
@@ -321,14 +334,18 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                 session_timeout_s = SESSION_TIMEOUT_S + server_timeout_s
             else:
                 pass
+        elif settings.idle_point != "none":
+            raise ValueError(
+                "the idle scenario needs the native protocol: only its server publishes the idle limits an expiry is checked against"
+            )
         else:
             pass
         should_cancel_reply = settings.scenario == "cancel"
         if (
             should_cancel_reply or settings.leave_point == "reply"
-        ) and reply_packet_index >= settings.packets_per_session:
+        ) and unit_packets > settings.packets_per_session:
             raise ValueError(
-                f"a reply needs one whole unit of {server_unit_ms} ms; send at least {reply_packet_index + 1} packets per session"
+                f"a reply needs one whole unit of {server_unit_ms} ms; send at least {unit_packets} packets per session"
             )
         else:
             pass
@@ -336,7 +353,6 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             protocol=settings.protocol,
             pcm=settings.pcm,
             packets=settings.packets_per_session,
-            reply_packet_index=reply_packet_index,
             leave_point=settings.leave_point,
             leave_style=settings.leave_style,
             idle_point=settings.idle_point,
@@ -366,7 +382,6 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                     protocol=settings.protocol,
                     pcm=settings.pcm,
                     packets=settings.packets_per_session,
-                    reply_packet_index=reply_packet_index,
                     leave_point="end",
                     leave_style="close_frame",
                     idle_point="none",
@@ -406,7 +421,10 @@ async def run_stress(settings: RunSettings) -> StressSamples:
         scenario=settings.scenario,
         protocol=settings.protocol,
         url=settings.url,
+        started_at=started_at,
+        duration_s=time.perf_counter() - started_s,
         server=settings.server,
+        mock_settings=mock_settings,
         source=source_fingerprint(),
         platform=platform.platform(),
         concurrency=settings.concurrency,
