@@ -1,7 +1,7 @@
 package main
 
-// The first-use opening (#4173): a few seconds of Voxt's mark before the
-// setup guide, once per install; opening.go draws it.
+// The opening (#4173): a few seconds of Voxt's mark, once per app version
+// (before the setup guide on a new install); opening.go draws it.
 
 import (
 	"time"
@@ -11,14 +11,17 @@ import (
 
 const openingDuration = 3200 * time.Millisecond
 
-// startOpening plays the opening on the first start of a setup not done
-// yet, and remembers it played.
+// startOpening plays the opening on the first start of each app version,
+// and remembers the version it played for.
 func (a *app) startOpening() {
-	if a.prefs.Setup.Done || a.prefs.Setup.OpeningShown {
+	version := a.version
+	if a.prefs.Setup.OpeningShown && a.prefs.Setup.OpeningVersion == version {
 		return
 	}
 	a.openingStarted = time.Now()
-	a.updateSettings(func(s *settings.Settings) { s.Setup.OpeningShown = true })
+	a.updateSettings(func(s *settings.Settings) {
+		s.Setup.OpeningShown, s.Setup.OpeningVersion = true, version
+	})
 }
 
 // openingModel is the opening's view state this frame, nil once it has

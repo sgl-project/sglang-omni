@@ -360,7 +360,7 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 	background, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
 	titleAlpha, textAlpha := float32(0.64), float32(0.92)
 	if block.User {
-		justify, background, line, titleAlpha = ui.End, ui.RGBA(255, 255, 255, 0.1), ui.RGBA(255, 255, 255, 0.12), 0.7
+		justify, background, line, titleAlpha = ui.End, ui.RGBA(255, 255, 255, 0.14), ui.RGBA(255, 255, 255, 0.16), 0.7
 	}
 	if block.Live {
 		// An answer being written keeps its text's full strength (#4105).

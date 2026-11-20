@@ -36,13 +36,14 @@ func obTester(t *testing.T) (*app, *ui.Tester) {
 
 func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	a, _, tt := newTestApp(t)
+	a.version = "2.1.1"
 	a.startOpening()
 	a.maybeOnboard()
 	frames(tt)
 	if a.openingStarted.IsZero() || has(tt, "Get started") {
 		t.Fatal("the first launch did not show the opening before the guide")
 	}
-	if !a.lib.settings.Get().Setup.OpeningShown || a.prefs.Setup.Done {
+	if saved := a.lib.settings.Get().Setup; !saved.OpeningShown || saved.OpeningVersion != a.version || saved.Done {
 		t.Fatal("the opening did not persist independently of guide completion")
 	}
 	a.openingStarted = time.Now().Add(-openingDuration)
@@ -63,20 +64,27 @@ func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	}
 }
 
-func TestOpeningSkipsExistingSetupsAndReducedMotion(t *testing.T) {
-	for _, mode := range []string{"existing", "app-reduced-motion", "system-reduced-motion"} {
+func TestOpeningSkipsReducedMotion(t *testing.T) {
+	for _, mode := range []string{"app-reduced-motion", "system-reduced-motion"} {
 		t.Run(mode, func(t *testing.T) {
 			a, _, tt := newTestApp(t)
+			a.version = "2.1.1"
 			a.updateSettings(func(s *settings.Settings) {
-				s.Setup.Done = mode == "existing"
 				s.Appearance.ReduceMotion = mode == "app-reduced-motion"
 			})
 			tt.SetPreferences(ui.Preferences{ReduceMotion: mode == "system-reduced-motion"})
 			a.startOpening()
 			a.maybeOnboard()
 			frames(tt)
-			if !a.openingStarted.IsZero() || (mode != "existing" && !has(tt, "Get started")) {
-				t.Fatal("an existing setup or reduced motion did not skip the opening")
+			if !a.openingStarted.IsZero() || !has(tt, "Get started") {
+				t.Fatal("reduced motion did not skip the opening")
+			}
+			a.updateSettings(func(s *settings.Settings) { s.Appearance.ReduceMotion = false })
+			tt.SetPreferences(ui.Preferences{})
+			a.startOpening()
+			frames(tt)
+			if !a.openingStarted.IsZero() {
+				t.Fatal("turning reduced motion off replayed the opening for the same version")
 			}
 		})
 	}
@@ -210,6 +218,44 @@ func TestOnboardingSteps(t *testing.T) {
 	frames(tt)
 	if a.ob.open {
 		t.Error("Escape left it open")
+	}
+}
+
+func TestOnboardingHeaderBackNavigation(t *testing.T) {
+	a, tt := obTester(t)
+	click(t, tt, "Get started")
+	click(t, tt, "Welcome")
+	if a.ob.step != obWelcome || !has(tt, "Get started") {
+		t.Fatal("the Permissions header could not return to Welcome")
+	}
+	click(t, tt, "Get started")
+	click(t, tt, "Models")
+	if a.ob.step != obPermissions {
+		t.Fatal("the header skipped ahead to an unreached step")
+	}
+	a.ob.passed[obTranscribe] = true
+	a.ob.tries[obTranscribe] = "completed-transcription"
+	a.obGo(obMore)
+	frames(tt)
+	click(t, tt, "Permissions")
+	if a.ob.step != obPermissions || !has(tt, "Microphone") || !a.ob.passed[obTranscribe] || a.ob.tries[obTranscribe] != "completed-transcription" {
+		t.Fatal("returning to an earlier step lost guide progress")
+	}
+	a.obGo(obRewrite)
+	a.ob.tries[obRewrite] = "active-rewrite"
+	for _, state := range []session.State{session.Recording, session.Composing} {
+		a.sess = obSnap(a, "active-rewrite", store.KindRewrite, state)
+		frames(tt)
+		click(t, tt, "Welcome")
+		if a.ob.step != obRewrite || a.sess.State != state {
+			t.Fatal("header navigation interrupted an active try")
+		}
+	}
+	a.sess.State = session.Done
+	frames(tt)
+	click(t, tt, "Welcome")
+	if a.ob.step != obWelcome || !has(tt, "Get started") {
+		t.Fatal("the header stayed disabled after the try finished")
 	}
 }
 
@@ -383,7 +429,7 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 				if !ok1 || !ok2 || !ok3 {
 					t.Fatalf("%s %v: steps or × not found in %q", lang, size, tt.Texts())
 				}
-				if math.Abs(float64(first.Y-last.Y)) > 1 || last.X+last.W > x.X {
+				if math.Abs(float64(first.Y+first.H/2-last.Y-last.H/2)) > 1 || last.X+last.W > x.X {
 					t.Errorf("%s %v step %d: %q at %+v, %q at %+v, × at %+v", lang, size, step, titles[0], first, titles[len(titles)-1], last, x)
 				}
 			}

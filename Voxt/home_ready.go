@@ -5,14 +5,17 @@ package main
 // ready.
 
 import (
+	"strconv"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
-// homeReadiness is what is still missing, a line each (the whole line
-// fixes it), and below it, quieter, what is ready. Nothing when all is
-// ready: Home is then the day's numbers and the recent results.
+// homeReadiness is what is still missing, a numbered line each (the whole
+// line fixes it; the next one's number is ink), and below it, quieter, what
+// is ready. Something broken has no number. Nothing when all is ready: Home
+// is then the day's numbers and the recent results.
 func homeReadiness(c *ui.Context, state *homeViewState, actions homeActions) {
 	t := c.Theme()
 	k := tok(t)
@@ -21,13 +24,12 @@ func homeReadiness(c *ui.Context, state *homeViewState, actions homeActions) {
 	}
 	sectionTitle(c, i18n.N(len(state.Missing), "%d step to go", "%d steps to go", len(state.Missing)))
 	card(c.Key("home-missing")).Padding(px(t, sp1)).Gap(0).Children(func() {
+		step := 0
 		for _, readiness := range state.Missing {
-			icon, color := icons.InfoCircle, k.Text2
-			switch readiness.Kind {
-			case "warn":
-				icon, color = icons.DangerTriangle, k.Warning
-			case "error":
-				icon, color = icons.DangerCircle, k.Danger
+			number := 0
+			if readiness.Kind != "error" {
+				step++
+				number = step
 			}
 			row := ui.ButtonBase(c.Key(readiness.Key)).Padding(px(t, sp2), px(t, sp3)).Radius(px(t, radiusControl)).
 				Gap(px(t, sp3)).AlignItems(ui.Center).Label(i18n.T("%s: %s", readiness.Title, readiness.Action)).Tooltip(readiness.Action).Disabled(readiness.Fix == "")
@@ -35,7 +37,20 @@ func homeReadiness(c *ui.Context, state *homeViewState, actions homeActions) {
 				row.Background(k.Hover)
 			}
 			row.Children(func() {
-				ui.Icon(c, icon.Linear).Size(px(t, 16), px(t, 16)).TextColor(color).Shrink(0)
+				if number == 0 {
+					ui.Icon(c, icons.DangerCircle.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Danger).Shrink(0)
+				} else {
+					mark, digit := ui.Row(c).Size(px(t, 20), px(t, 20)).Center().Radius(px(t, 10)).Shrink(0), k.Text2
+					if number == 1 {
+						mark.Background(k.Ink)
+						digit = k.OnInk
+					} else {
+						mark.Border(1, k.G[5])
+					}
+					mark.Children(func() {
+						ui.Text(c, strconv.Itoa(number)).FontSize(px(t, fsMicro)).FontWeight(600).TextColor(digit).SingleLine()
+					})
+				}
 				ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 					ui.Text(c, readiness.Title).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0)
 					ui.Text(c, readiness.Text).FontSize(px(t, fsCaption)).TextColor(k.Text2).MinWidth(0)

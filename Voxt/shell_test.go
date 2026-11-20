@@ -305,6 +305,12 @@ func TestProblemCards(t *testing.T) {
 	if !hasExact(tt, "No models") || !has(tt, "To start, install a speech model, then set up a language model.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
+	cardTitle, _ := tt.Find("No models")
+	tt.Move(cardTitle.X+cardTitle.W/2, cardTitle.Y+cardTitle.H/2)
+	tt.Advance(time.Second)
+	if hasExact(tt, i18n.DateTime(a.notices[0].Time)) {
+		t.Fatal("hovering the problem card shows its timestamp over the sidebar navigation")
+	}
 	click(t, tt, "Open Speech models")
 	if a.shownPath() != modelsPath {
 		t.Errorf("its action: %s", a.shownPath())

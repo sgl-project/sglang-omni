@@ -56,7 +56,6 @@ func TestHomeReadiness(t *testing.T) {
 		"No speech model is installed. Install one to transcribe, translate and rewrite by voice.",
 		"No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.",
 		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
-		"Right ⌥ (once Accessibility is allowed)",
 		"Try it", "Today", "Recent results", "Results appear here after you use a shortcut.",
 	} {
 		if !has(tt, s) {
@@ -66,6 +65,16 @@ func TestHomeReadiness(t *testing.T) {
 	if !hasSuffix(tt, " steps to go") {
 		t.Errorf("no steps to go: %q", tt.Texts())
 	}
+	// The Accessibility step already says the shortcut waits for it; once
+	// allowed, a shortcut whose tap is not in yet says so itself.
+	if has(tt, "Right ⌥ (once Accessibility is allowed)") {
+		t.Errorf("the shortcut repeats the Accessibility step: %q", tt.Texts())
+	}
+	a.perms.access = true
+	if !has(tt, "Right ⌥ (once Accessibility is allowed)") {
+		t.Errorf("no shortcut waiting for its tap: %q", tt.Texts())
+	}
+	a.perms.access = false
 	// The whole line is the way to fix it: speech models are local,
 	// language models are set up on their page.
 	if _, ok := tt.Find("Speech recognition: Download (2.5 GB)"); !ok {

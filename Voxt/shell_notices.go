@@ -75,8 +75,7 @@ func noticeCard(c *ui.Context, n noticeViewState, actions noticeActions) {
 		ic, col = icons.CheckCircle, k.Success
 	}
 	card := ui.Column(c.Key("notice-"+n.ID)).Gap(px(t, 2)).Padding(px(t, 6), px(t, sp1), px(t, sp2), px(t, sp2)).
-		Radius(px(t, radiusControl+2)).Background(k.Bg).Border(1, k.Line).Shadow(0, 2, 8, 0, ui.RGBA(0, 0, 0, 0.06)).
-		Tooltip(n.TimeHint)
+		Radius(px(t, radiusControl+2)).Background(k.Bg).Border(1, k.Line).Shadow(0, 2, 8, 0, ui.RGBA(0, 0, 0, 0.06))
 	card.Children(func() {
 		ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Start).Children(func() {
 			ui.Icon(c, ic.Linear).Size(px(t, 14), px(t, 14)).TextColor(col).Shrink(0).Margin(px(t, 3), 0, 0, 0)

@@ -13,14 +13,14 @@
     },
     "missing": [
       {
-        "key": "home-access",
-        "title": "Accessibility",
+        "key": "home-mic",
+        "title": "Microphone",
         "ok": false,
         "warn": false,
-        "text": "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
-        "kind": "warn",
-        "action": "Open Permissions",
-        "fix": "permissions"
+        "text": "macOS asks for the microphone the first time you record.",
+        "kind": "info",
+        "action": "Ask now",
+        "fix": "microphone"
       }
     ],
     "ready": [
@@ -45,8 +45,8 @@
         "fix": ""
       },
       {
-        "key": "home-mic",
-        "title": "Microphone",
+        "key": "home-access",
+        "title": "Accessibility",
         "ok": true,
         "warn": false,
         "text": "Allowed",

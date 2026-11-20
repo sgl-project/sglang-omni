@@ -48,7 +48,7 @@ func settingsSectionIcon(id string) icons.Icon {
 	case "permissions":
 		return permissionsIcon
 	case "audio":
-		return icons.MicrophoneLarge
+		return icons.VoxtMicrophone
 	case "overlay":
 		return icons.Monitor
 	case "shortcuts":

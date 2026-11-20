@@ -67,8 +67,8 @@ func (a *app) applyTray() {
 		return
 	}
 	live := a.trayShowsRecording()
-	// Voxt's microphone, a 36 px template image MyGo shows 18 pt tall
-	// (Voxt: 18×18 pt, template); while recording it has a dot.
+	// The star-free microphone is a 36 px template image shown 18 pt tall;
+	// while recording it has a dot.
 	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: a.trayToolTip()})
 	if err != nil {
 		a.toast(i18n.T("Could not create the menu bar icon: %v", err))

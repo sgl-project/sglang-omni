@@ -326,6 +326,7 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `version` | integer | The document's schema version; Voxt rewrites it |
 | `setup.done` | bool | The setup guide is finished |
 | `setup.openingShown` | bool | The first-use opening was shown |
+| `setup.openingVersion` | string | The app version whose opening was last shown; a newer version plays it once |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
