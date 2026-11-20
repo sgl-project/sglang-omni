@@ -76,7 +76,7 @@ This is opt-in. A decode batch enters the lookahead path only after its request 
 No reference audio is required. Send text to the running server:
 
 ```bash
-curl --fail-with-body -X POST http://localhost:8000/v1/audio/speech \
+curl -fS -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "fishaudio/s2-pro",
@@ -93,7 +93,7 @@ The response is a complete WAV file containing 44.1 kHz mono speech. Open `outpu
 Add `references` to clone a voice. Include the clip's transcript in `text`. The clip below is from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini).
 
 ```bash
-curl --fail-with-body -X POST http://localhost:8000/v1/audio/speech \
+curl -fS -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "model": "fishaudio/s2-pro",
@@ -134,7 +134,7 @@ Add these fields to the JSON request as needed. Shared speech fields are documen
 
 <a id="known-limitations"></a>
 
-### Known limitations
+## Known limitations
 
 - Keep `top_k` inside `-1` or `1..30`. Invalid values currently fail the pipeline instead of returning a clean parameter error.
 - Long reference clips can exceed the preprocessing GPU allocator budget and fail encoding. Raise `--preprocessing.total_reserve_bytes` or encode on CPU as shown above.
@@ -166,11 +166,17 @@ The text-only request above works unchanged. Sampling defaults (`temperature` 0.
 - A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in the queue included, is cancelled: it returns 504, or its stream ends early. A client that disconnects cancels its request.
 - A request body over 16 MiB returns 413; that fits 60 s of 48 kHz stereo 16-bit WAV as base64.
 
-Validated on an Apple M5 (24 GB), MLX 0.32.3, 15 utterances: 1.0 s load, real-time factor 1.99, and 9.8 GB peak memory (10.1 GB for an 80 s utterance, 8.4 GB with a 60 s reference, which takes 4.4 s to encode). Transcribed back with Qwen3-ASR-1.7B, 10 English sentences give 0.0% WER and 5 Chinese sentences give 0.0% CER. Seeded speech differs from mlx-audio's Fish Speech port on the same checkpoint. `sglang_omni_mlx/native/ci/check_model_golden.py` checks five seeded requests against `sglang_omni_mlx/native/ci/model_golden/fish-s2-pro-8bit.json`.
+Validated on an Apple M5 (24 GB), MLX 0.32.3, 15 utterances: 1.0 s load, real-time factor 1.99 (it generates about 11 of the 21.5 frames in a second of audio, so streamed speech arrives slower than it plays), and 9.8 GB peak memory (10.1 GB for an 80 s utterance, 8.4 GB with a 60 s reference, which takes 4.4 s to encode). Transcribed back with Qwen3-ASR-1.7B, 10 English sentences give 0.0% WER and 5 Chinese sentences give 0.0% CER. Seeded speech differs from mlx-audio's Fish Speech port on the same checkpoint. `sglang_omni_mlx/native/ci/check_model_golden.py` checks five seeded requests against `sglang_omni_mlx/native/ci/model_golden/fish-s2-pro-8bit.json`. Mac CI runs no model, so this check is run by hand.
 
 ## Ascend NPU
 
-The same `sgl-omni serve` command works on Ascend NPU after following the [NPU installation guide](../other_platforms/installation_npu.md). Device strings are resolved by the platform layer. Validated: SeedTTS English, 1088 samples, concurrency 16, on Ascend 910 (64 GiB).
+Follow the [NPU installation guide](../other_platforms/installation_npu.md) and run `sgl-omni serve --model-path fishaudio/s2-pro --config examples/configs/s2pro_tts.yaml --port 8000`. [PR #1691](https://github.com/sgl-project/sglang-omni/pull/1691) also passed `--allowed-local-media-path .` for its local reference clip. The PR validated S2-Pro with the configuration below and reported the SeedTTS results, which were not re-measured for this page.
+
+| Validation | Configuration or result |
+|---|---|
+| Environment | Official Ascend SGLang 0.5.18 image `sglang:v0.5.18-cann9.0.0-a3` (CANN 9.0.0) on a single Ascend 910 (`Ascend910_9362`, 64 GiB HBM) |
+| NPU graph decode | Enabled with decode buckets `[1, 2, 4, 8, 16]` and `max_running_requests=16` |
+| SeedTTS full set (1088 utterances), concurrency 16 | 1.428 req/s, mean latency 11.14 s, RTF 2.88, 1088/1088 successful requests |
 
 ## Next steps
 
