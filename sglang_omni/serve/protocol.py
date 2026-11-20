@@ -597,6 +597,7 @@ class SpeechBatchResult(BaseModel):
     format: str | None = None
     media_type: str | None = None
     finish_reason: str | None = None
+    text: str | None = None
     error: dict[str, object] | None = None
 
 

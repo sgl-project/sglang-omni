@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/kv_cache.h"
+#include "common/layers.h"
 #include "mlx/mlx.h"
 
 namespace whisper {
@@ -31,11 +33,10 @@ struct WhisperConfig {
   int text_layer_count = 0;
 };
 
-// Self-attention keys and values grow by one token per step; cross-attention
+// Self-attention keys and values grow in the cache's steps; cross-attention
 // keys and values are projected once per window.
 struct DecoderLayerCache {
-  std::optional<mlx::core::array> self_keys;
-  std::optional<mlx::core::array> self_values;
+  omni_common::KVCache self_attention;
   std::optional<mlx::core::array> cross_keys;
   std::optional<mlx::core::array> cross_values;
 };
@@ -43,6 +44,10 @@ struct DecoderLayerCache {
 // Keeps the first token_count positions of each layer's self-attention keys
 // and values.
 void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count);
+// Keeps the batch rows at indices, int32 [rows], of every layer's keys and
+// values.
+void KeepCacheRows(std::vector<DecoderLayerCache> &caches,
+                   const mlx::core::array &rows);
 
 class WhisperModel {
 public:
@@ -66,31 +71,18 @@ public:
                           int logit_count) const;
 
 private:
-  mlx::core::array LogMel(std::span<const float> window_samples) const;
-  const mlx::core::array &Weight(const std::string &name) const;
-  mlx::core::array Linear(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array LayerNorm(const mlx::core::array &x,
-                             const std::string &prefix) const;
-  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
-                          int stride) const;
   mlx::core::array Attention(const mlx::core::array &queries_input,
                              const mlx::core::array &keys,
                              const mlx::core::array &values,
                              const std::string &prefix, int head_count,
-                             const std::optional<mlx::core::array> &mask) const;
+                             bool is_causal) const;
   mlx::core::array EncoderLayer(const mlx::core::array &x, int layer) const;
   mlx::core::array DecoderLayer(const mlx::core::array &x, int layer,
                                 const mlx::core::array &encoder_states,
-                                const std::optional<mlx::core::array> &mask,
-                                DecoderLayerCache &cache) const;
+                                bool is_causal, DecoderLayerCache &cache) const;
 
   WhisperConfig config_;
-  // The log-mel front end's periodic Hann window [400] and mel filters
-  // [201, mel_bins].
-  mlx::core::array hann_window_;
-  mlx::core::array mel_filters_;
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 } // namespace whisper

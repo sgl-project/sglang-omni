@@ -54,75 +54,10 @@ func TestMeetingDiarizerRequiresInstalledMTD(t *testing.T) {
 	}
 	provider := &meetingDiarizerFake{}
 	a.local = &meetingMTDLocal{provider: provider}
-	a.prefs.General.MainLanguage = "en"
+	a.prefs.General.MainLanguage = "en" // an unknown language keeps the selected model
 	d, err = a.meetingDiarizer(context.Background())
 	if err != nil || d != provider {
 		t.Fatalf("with MTD: diarizer %v, err %v", d, err)
-	}
-}
-
-func TestMeetingImportDiarizerLanguage(t *testing.T) {
-	for _, test := range []struct {
-		language string
-		want     bool
-	}{{"", false}, {"en", true}, {"zh-Hans", true}, {"ko", false}} {
-		t.Run(test.language, func(t *testing.T) {
-			a, _, _ := newTestApp(t)
-			a.prefs.General.MainLanguage = test.language
-			if got := a.meetingDiarizerLanguage(); got != test.want {
-				t.Fatalf("language %q: got %v, want %v", test.language, got, test.want)
-			}
-		})
-	}
-}
-
-func TestRecordedMeetingDiarizesWithInstalledMTD(t *testing.T) {
-	for _, language := range []string{"", "ko"} {
-		t.Run(language, func(t *testing.T) {
-			a, _, _ := newTestApp(t)
-			a.prefs.General.MainLanguage = language
-			provider := &meetingDiarizerFake{result: asr.Result{Segments: []asr.SpeakerSegment{
-				{End: time.Second, Speaker: "S01", Text: "labeled"},
-			}}}
-			a.local = &meetingMTDLocal{provider: provider}
-			plain := &fakeTranscriptions{text: "plain"}
-			root := t.TempDir()
-			meetDir := filepath.Join(root, "recorded")
-			if err := os.MkdirAll(meetDir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			pcm := tone(1)
-			if err := os.WriteFile(filepath.Join(meetDir, "system.wav"), asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			mt, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
-				ID: "recorded", CreatedAt: time.Now(), Status: store.MeetingDone,
-				Mode: store.MeetingModeMeeting, Audio: "recorded", DurationMS: 1000,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg := meeting.Config{
-				Store:    a.lib.store.Meetings(),
-				Dir:      root,
-				Settings: func() settings.Meeting { return settings.Meeting{} },
-				Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
-				ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
-					return meeting.TrackASR{Caps: plain.Caps(), File: plain}, nil
-				},
-				Diarizer: a.meetingDiarizer,
-			}
-			if err := meeting.FinalizePass(context.Background(), cfg, mt, nil); err != nil {
-				t.Fatal(err)
-			}
-			_, segments, err := a.lib.store.Meetings().Meeting(context.Background(), "recorded")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plain.count() != 0 || len(segments) != 1 || segments[0].Speaker != "s1" || segments[0].Text != "labeled" {
-				t.Fatalf("language %q: segments %+v, plain calls %d", language, segments, plain.count())
-			}
-		})
 	}
 }
 
@@ -186,5 +121,101 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 		if !strings.Contains(ta.Prompt, "A Zoom call about Voxt") || ta.StreamReq.Prompt != ta.Prompt {
 			t.Errorf("%s: file Prompt %q, stream Prompt %q; want the speech context", tc.name, ta.Prompt, ta.StreamReq.Prompt)
 		}
+	}
+}
+
+func TestRecordedMeetingDiarizesWithInstalledMTD(t *testing.T) {
+	for _, language := range []string{"en", "zh-Hans"} {
+		t.Run(language, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.prefs.General.MainLanguage = language
+			provider := &meetingDiarizerFake{result: asr.Result{Segments: []asr.SpeakerSegment{
+				{End: time.Second, Speaker: "S01", Text: "labeled"},
+			}}}
+			a.local = &meetingMTDLocal{provider: provider}
+			plain := &fakeTranscriptions{text: "plain"}
+			root := t.TempDir()
+			meetDir := filepath.Join(root, "recorded")
+			if err := os.MkdirAll(meetDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			pcm := tone(1)
+			if err := os.WriteFile(filepath.Join(meetDir, "system.wav"), asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mt, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+				ID: "recorded", CreatedAt: time.Now(), Status: store.MeetingDone,
+				Mode: store.MeetingModeMeeting, Audio: "recorded", DurationMS: 1000,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := meeting.Config{
+				Store:    a.lib.store.Meetings(),
+				Dir:      root,
+				Settings: func() settings.Meeting { return settings.Meeting{} },
+				Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+				ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+					return meeting.TrackASR{Caps: plain.Caps(), File: plain}, nil
+				},
+				Diarizer: a.meetingDiarizer,
+			}
+			if err := meeting.FinalizePass(context.Background(), cfg, mt, nil); err != nil {
+				t.Fatal(err)
+			}
+			_, segments, err := a.lib.store.Meetings().Meeting(context.Background(), "recorded")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plain.count() != 0 || len(segments) != 1 || segments[0].Speaker != "s1" || segments[0].Text != "labeled" {
+				t.Fatalf("language %q: segments %+v, plain calls %d", language, segments, plain.count())
+			}
+		})
+	}
+}
+
+func TestMeetingImportDiarizerLanguage(t *testing.T) {
+	for _, test := range []struct {
+		language string
+		want     bool
+	}{{"", false}, {"en", true}, {"zh-Hans", true}, {"ko", false}} {
+		t.Run(test.language, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.prefs.General.MainLanguage = test.language
+			if got := a.meetingDiarizerLanguage(); got != test.want {
+				t.Fatalf("language %q: got %v, want %v", test.language, got, test.want)
+			}
+		})
+	}
+}
+
+// MTD knows only zh and en: a meeting in another language keeps the
+// selected model's transcription instead of a forced wrong-language one.
+// An unknown language (English UI, no main language: no hint, #3398) is
+// not zh or en either.
+func TestMeetingDiarizerLanguageGate(t *testing.T) {
+	provider := &meetingDiarizerFake{}
+	for _, tc := range []struct {
+		main string
+		want bool
+	}{
+		{"zh-Hans", true},
+		{"en", true},
+		{"ko", false},
+		{"ja", false},
+		{"", false},
+	} {
+		t.Run(tc.main, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.local = &meetingMTDLocal{provider: provider}
+			a.prefs.General.MainLanguage = tc.main
+			d, err := a.meetingDiarizer(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (d != nil) != tc.want {
+				t.Errorf("%s: diarizer %v", tc.main, d)
+			}
+		})
 	}
 }

@@ -44,7 +44,8 @@ func (a *app) meetingMTDInstalled() bool {
 
 func (a *app) meetingDiarizerLanguage() bool {
 	language := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
-	// An empty hint means the language is unknown, so MTD cannot safely choose zh or en.
+	// MTD knows only zh and en. An empty hint means the language is unknown
+	// (SpeechLang stays empty on purpose, #3398), so it is not safe either.
 	if language == "" {
 		return false
 	}
@@ -58,6 +59,11 @@ func (a *app) meetingDiarizerLanguage() bool {
 
 func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
 	if !a.meetingMTDInstalled() {
+		return nil, nil
+	}
+	// A meeting in another language keeps the selected model's
+	// transcription instead of a wrong-language one.
+	if !a.meetingDiarizerLanguage() {
 		return nil, nil
 	}
 	p, opened, err := a.local.ASR(ctx, models.ASRMoss)

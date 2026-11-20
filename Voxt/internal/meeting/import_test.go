@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
@@ -55,7 +57,22 @@ func (d *importDiarizer) got() []asr.FileRequest {
 	return append([]asr.FileRequest(nil), d.requests...)
 }
 
-func importFixture(t *testing.T, chat *fixingChat, diarizer asr.Diarizer, plain *importFileASR) (*Manager, store.Meetings) {
+// blockingSummaryChat lets the test cancel while the summary is running.
+type blockingSummaryChat struct {
+	fixingChat
+	started chan struct{}
+}
+
+func (c *blockingSummaryChat) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if req.Messages[0].Role != llm.System {
+		close(c.started)
+		<-ctx.Done()
+		return llm.Response{}, ctx.Err()
+	}
+	return c.fixingChat.Chat(ctx, req)
+}
+
+func importFixture(t *testing.T, chat SummaryChat, diarizer asr.Diarizer, plain *importFileASR) (*Manager, store.Meetings) {
 	t.Helper()
 	ctx := context.Background()
 	s, err := sqlitestore.Open(ctx, filepath.Join(t.TempDir(), "db"))
@@ -77,7 +94,11 @@ func importFixture(t *testing.T, chat *fixingChat, diarizer asr.Diarizer, plain 
 }
 
 func importPCM(seconds int) []byte {
-	return silencePCM(time.Duration(seconds*1000)*time.Millisecond, asr.SampleRate)
+	pcm := silencePCM(time.Duration(seconds*1000)*time.Millisecond, asr.SampleRate)
+	for i := 0; i < len(pcm); i += 2 {
+		pcm[i], pcm[i+1] = 0x10, 0x7f
+	}
+	return pcm
 }
 
 // An imported recording gets MTD's speaker labels on every voice (S05
@@ -193,6 +214,69 @@ func TestImportCancelStopsTheWork(t *testing.T) {
 	}
 	if mt.Status != store.MeetingInterrupted {
 		t.Fatalf("status %s", mt.Status)
+	}
+}
+
+// Cancelling during the summary leaves an interrupted import with its WAV,
+// so Continue processing can finish it instead of showing a done meeting
+// with no summary and no way to reprocess it.
+func TestImportCancelDuringSummaryCanContinue(t *testing.T) {
+	chat := &blockingSummaryChat{started: make(chan struct{})}
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "Box one"},
+	}}}
+	m, repo := importFixture(t, chat, diarizer, &importFileASR{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var id string
+	go func() {
+		var err error
+		id, err = m.Import(ctx, ImportRequest{Name: "long", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+		done <- err
+	}()
+	<-chat.started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	mt, _, err := repo.Meeting(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt.Status != store.MeetingInterrupted || mt.Audio == "" {
+		t.Fatalf("status %s, audio %q", mt.Status, mt.Audio)
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, mt.Audio, "system.wav")); err != nil {
+		t.Fatalf("the interrupted import lost its WAV: %v", err)
+	}
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) { return &fixingChat{}, nil }
+	if err := m.Reprocess(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	mt, _, err = repo.Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingDone || mt.Title != "T" || mt.Summary == "" {
+		t.Fatalf("after Continue: status %s, title %q, summary %q, err %v", mt.Status, mt.Title, mt.Summary, err)
+	}
+}
+
+// A cancel that lands after the pass but before the summary starts must
+// not leave the pass's early done status behind either.
+func TestFinishImportCancelBeforeSummary(t *testing.T) {
+	m, repo := importFixture(t, &fixingChat{}, &importDiarizer{}, &importFileASR{})
+	mt, err := repo.CreateMeeting(context.Background(), store.Meeting{
+		ID: "early-cancel", CreatedAt: time.Now(), Status: store.MeetingDone, Mode: store.MeetingModeImport,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.finishImport(ctx, mt, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	updated, _, err := repo.Meeting(context.Background(), mt.ID)
+	if err != nil || updated.Status != store.MeetingInterrupted {
+		t.Fatalf("status %s, err %v", updated.Status, err)
 	}
 }
 
@@ -433,7 +517,11 @@ func TestImportCorrectionFailureSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("the failed correction looked like a success")
 	}
-	if _, _, err := repo.Meeting(context.Background(), id); err != nil {
+	mt, _, err := repo.Meeting(context.Background(), id)
+	if err != nil {
 		t.Fatalf("the meeting is gone: %v", err)
+	}
+	if mt.Status != store.MeetingDone {
+		t.Fatalf("a correction failure left status %s, want done for the Correct action", mt.Status)
 	}
 }

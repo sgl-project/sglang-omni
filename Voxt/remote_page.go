@@ -1,207 +1,142 @@
 package main
 
-// The Language models page (/language-models; Auralink's Model services
-// page) and the remote services' cards, which the Speech models page shows
-// too (models_cards.go): a card per service, those set up first, each with
-// its state, where it runs (on this Mac or remote), model, saved key and a
-// connection test; a streaming speech service's card is tagged Realtime. A
-// card opens the service's dialog (remote_dialog.go): its key, address and
-// model. A feature uses a remote model once the user chooses it on its
-// page (feature_models.go), or when no local model of its kind is
-// installed. What to build and test is internal/providers'.
+// The Language models section in Settings (/settings/language-models;
+// /language-models before) and the remote service cards shared with the
+// Speech models section. Rendering depends only on view state,
+// actions, local widget state and the UI kit.
 
 import (
-	"net/url"
-	"strings"
-
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-func (a *app) remotePage(c *ui.Context) {
-	t := c.Theme()
-	columnPageHeader(c, i18n.T("Language models"), nil)
-	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
-		pageColumn(c).Gap(px(t, sp4)).Children(func() {
-			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
-			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
-			a.llmWaitRow(c) // llm_wait.go; above the cards, seen without scrolling (#3821)
-			a.providerCards(c, local.LLM)
-			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
-				a.navigate(llmDebugPath)
+// remoteSettingsView is the Language models section in Settings
+// (/settings/language-models); the settings dialog gives it its scroll and
+// title, and shell.go draws the provider dialog over the window.
+func remoteSettingsView(c *ui.Context, state *remoteViewState, actions remoteActions, local *remoteLocalUI, width float32) {
+	if state.BackBar != nil {
+		notice(c, "ob-back", noticeInfo, state.BackBar.Text, "", func() {
+			if ui.Button(c.Key("ob-back-open"), i18n.T("Back to the setup guide")).Clicked() {
+				actions.openOnboarding()
 			}
-		})
+		}, actions.dismissOnboardingBack)
+	}
+	caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
+	llmWaitView(c, &state.Wait, actions, local.wait)
+	on := state.Switch
+	settingRow(c, "llm-switch", i18n.T("Switch models when one fails"), i18n.T("When a feature's language model does not answer, Voxt asks the next language-model server on this Mac you set up, once, even one you chose for another feature. Translate asks its own fallback model first. Voxt never switches to an external API you did not choose for that feature. A used-up plan does not switch."), func() {
+		if ui.Switch(c.Key("llm-switch-switch"), &on).Label(i18n.T("Switch models when one fails")).Changed() {
+			actions.setLLMSwitch(on)
+		}
 	})
-	a.providerDialogView(c) // remote_dialog.go
+	remoteProviderCards(c, &state.Cards, actions, width)
+	if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
+		actions.openLLMDebug()
+	}
 }
 
-// providerCards lists kind's services: those set up first, then the
-// servers that run on this Mac (Voxt 1.x's 本地), then the online
-// services (远程), each group with what it takes; the speech services, all
-// online by default, as Set up and Online services on the Speech models
-// page.
-func (a *app) providerCards(c *ui.Context, kind local.Kind) {
+// settingsSectionWidth is the width of a Settings section's content: the
+// dialog less its sidebar column.
+func settingsSectionWidth(c *ui.Context) float32 {
 	t := c.Theme()
-	var mine, here, online []service
-	for _, sv := range services(kind) {
-		_, set := a.setupOf(kind, sv.id)
-		switch {
-		case set:
-			mine = append(mine, sv)
-		case onThisMac(sv.endpoint):
-			here = append(here, sv)
-		default:
-			online = append(online, sv)
-		}
-	}
-	room := min(a.pageWidth(c), px(t, 880)) - px(t, 2*sp6) - 1 // the column's padding
-	// Cards at least 260 wide: two columns in the default window (800
-	// wide) and the smallest.
+	w, h := c.Size()
+	dw, _ := settingsDialogSize(t, w, h)
+	return dw - px(t, settingsColumnW)
+}
+
+// remoteProviderCards lists configured services first, then loopback and
+// online services. Card width and grid layout stay on the UI side.
+func remoteProviderCards(c *ui.Context, state *remoteCardsViewState, actions remoteCardsActions, width float32) {
+	t := c.Theme()
+	room := width - px(t, 2*sp6) - 1 // the content's padding
+	// Cards at least 260 wide, in as many columns as the section fits.
 	cols := max(1, int((room+px(t, sp3))/(px(t, 260)+px(t, sp3))))
-	cardW := (room - px(t, sp3)*float32(cols-1)) / float32(cols)
-	grid := func(key string, list []service) {
-		ui.Row(c.Key(key)).Wrap().Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-			for _, sv := range list {
-				a.providerCard(c, sv, cardW)
+	cardWidth := (room - px(t, sp3)*float32(cols-1)) / float32(cols)
+	for _, group := range state.Groups {
+		sectionTitle(c, group.Title)
+		if group.Caption != "" {
+			caption(c, group.Caption)
+		}
+		ui.Row(c.Key(group.Key)).Wrap().Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
+			for _, card := range group.Cards {
+				remoteProviderCard(c, card, actions, cardWidth)
 			}
 		})
 	}
-	if kind == local.ASR {
-		if len(mine) > 0 {
-			sectionTitle(c, i18n.T("Set up"))
-			grid("remote-asr-mine", mine)
-		}
-		if rest := append(here, online...); len(rest) > 0 {
-			sectionTitle(c, i18n.T("Online services"))
-			caption(c, i18n.T("A service gets your recordings only for the features you choose it for."))
-			grid("remote-asr-online", rest)
-		}
-		return
-	}
-	if len(mine) > 0 {
-		sectionTitle(c, i18n.T("Set up"))
-		grid("remote-mine", mine)
-	}
-	if len(here) > 0 {
-		sectionTitle(c, i18n.T("On this Mac"))
-		caption(c, i18n.T("Free, and the text stays on this Mac."))
-		grid("remote-here", here)
-	}
-	if len(online) > 0 {
-		sectionTitle(c, i18n.T("Online services"))
-		grid("remote-online", online)
-	}
 }
 
-// providerState is a card's state line: its dot's colour and text.
-func (a *app) providerState(c *ui.Context, kind local.Kind, p settings.Provider, configured bool) (ui.Color, string) {
-	k := tok(c.Theme())
-	if !configured {
-		return k.G[5], i18n.T("Not set up")
+func remoteDotColor(c *ui.Context, status string) ui.Color {
+	colors := tok(c.Theme())
+	switch status {
+	case remoteStatusWarning:
+		return colors.Warning
+	case remoteStatusDanger:
+		return colors.Danger
+	case remoteStatusSuccess:
+		return colors.Success
 	}
-	switch a.setupMissing(kind, p) {
-	case providers.MissingKey:
-		if lookupService(kind, p.ID).signIn {
-			return k.Warning, i18n.T("Sign-in needed")
-		}
-		return k.Warning, i18n.T("API key needed")
-	case providers.MissingEndpoint:
-		return k.Warning, i18n.T("No address")
-	case providers.MissingAddress:
-		return k.Warning, i18n.T("Address not allowed")
-	case providers.MissingModel:
-		return k.Warning, i18n.T("No model")
-	}
-	if tr, ok := a.provTests[providers.Account(kind, p.ID)]; ok && !tr.running && tr.res.Err != nil {
-		return k.Danger, i18n.T("Test failed")
-	}
-	return k.Success, i18n.T("Ready")
+	return colors.G[5]
 }
 
-// providerCard is a service's card: its state dot, name, where it runs
-// and model; once set up, where it is used, its key's mask, its last test
-// and a Test button. A speech service's card follows the local speech
-// cards' order, its labels at the foot. A click opens its dialog.
-func (a *app) providerCard(c *ui.Context, sv service, w float32) {
+func remoteKeyColor(c *ui.Context, status string) ui.Color {
+	colors := tok(c.Theme())
+	switch status {
+	case remoteStatusWarning:
+		return colors.Warning
+	case "muted":
+		return colors.Text3
+	}
+	return colors.Text2
+}
+
+// remoteProviderCard is one service's display and its open/test intents.
+func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions remoteCardsActions, width float32) {
 	t := c.Theme()
-	k := tok(t)
-	kind, acct := sv.kind, providers.Account(sv.kind, sv.id)
-	p, configured := a.setupOf(kind, sv.id)
-	dot, state := a.providerState(c, kind, p, configured)
-	missing := a.setupMissing(kind, p)
-	b := ui.ButtonBase(c.Key("remote-card-"+acct)).Width(w).Padding(px(t, sp3), px(t, sp4)).Radius(px(t, radiusCard)).Border(1, k.Line).
-		Label(sv.name).Tooltip(i18n.T("Set up %s", sv.name)).AlignItems(ui.Stretch).Shrink(0).
-		Role(ui.RoleGroup) // a group, not a button: assistive technology reaches its Test button too; pressing it still opens the dialog
-	if b.Hovered() {
-		b.Background(k.Subtle)
-	}
-	model := setupModel(kind, p)
-	if model == "" {
-		model = i18n.T("Model not chosen")
-	}
-	used := ""
-	if configured {
-		used = a.usedBy(kind, p.ID)
+	colors := tok(t)
+	button := ui.ButtonBase(c.Key("remote-card-"+state.Account)).Width(width).Padding(px(t, sp3), px(t, sp4)).Radius(px(t, radiusCard)).Border(1, colors.Line).
+		Label(state.Name).Tooltip(i18n.T("Set up %s", state.Name)).AlignItems(ui.Stretch).Shrink(0).
+		Role(ui.RoleGroup)
+	if button.Hovered() {
+		button.Background(colors.Subtle)
 	}
 	keyRow := func() {
 		ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Height(px(t, 30)).Children(func() {
-			mask, read := a.keyMasks[acct]
-			keyText, keyCol := mask, k.Text2
-			switch {
-			case mask == "" && !read:
-				keyText = "…"
-			case missing != "":
-				keyText, keyCol = state, k.Warning
-			case a.keySpaced[acct]:
-				keyText, keyCol = i18n.T("Key has a space"), k.Warning
-			case mask == "":
-				keyText, keyCol = i18n.T("No key"), k.Text3
-			}
-			ui.Icon(c, icons.KeyMinimalisticSquare.Linear).Size(px(t, 14), px(t, 14)).TextColor(keyCol).Shrink(0)
-			ui.Text(c, keyText).FontSize(px(t, fsCaption)).TextColor(keyCol).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
-			switch missing {
-			case "":
-				if tr, ok := a.provTests[acct]; ok {
-					testStatus(c, tr, false)
+			ui.Icon(c, icons.KeyMinimalisticSquare.Linear).Size(px(t, 14), px(t, 14)).TextColor(remoteKeyColor(c, state.KeyStatus)).Shrink(0)
+			ui.Text(c, state.KeyText).FontSize(px(t, fsCaption)).TextColor(remoteKeyColor(c, state.KeyStatus)).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+			if state.Missing == "" {
+				if state.Test != nil {
+					remoteTestStatus(c, *state.Test, false)
 				}
-				if ghostButton(c.Key("remote-test-"+acct), i18n.T("Test")).Label(i18n.T("Test %s", sv.name)).Disabled(a.provTests[acct].running).Clicked() {
-					kr := a.keys
-					a.testProvider(kind, p, func() (string, error) { return kr.Get(acct) })
+				if ghostButton(c.Key("remote-test-"+state.Account), i18n.T("Test")).Label(i18n.T("Test %s", state.Name)).Shrink(0).Disabled(state.TestDisabled).Clicked() {
+					actions.testRemoteProvider(state.Kind, state.ID)
 				}
-			default:
-				if ghostButton(c.Key("remote-complete-"+acct), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", sv.name)).Clicked() {
-					a.openProviderDialog(kind, sv.id)
+				if ghostButton(c.Key("remote-assign-"+state.Account), i18n.T("Apply to")).Label(i18n.T("Apply %s to features", state.Name)).Shrink(0).Tooltip(i18n.T("Choose the features that use this service")).Clicked() {
+					actions.openModelAssignment(state.Kind, state.ID)
 				}
+			} else if ghostButton(c.Key("remote-complete-"+state.Account), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", state.Name)).Clicked() {
+				actions.openRemoteProvider(state.Kind, state.ID)
 			}
 		})
 	}
-	b.Children(func() {
-		if kind == local.ASR {
-			// The local speech cards' order (Voxt 1.x's): the name, then the
-			// model and where it is used, the key, and the labels at the foot.
+	button.Children(func() {
+		if state.Kind == "asr" {
 			ui.Column(c).Gap(px(t, sp2)).Grow(1).MinWidth(0).Children(func() {
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Start).MinHeight(px(t, 22)).Children(func() {
-					ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { statusDot(c, dot) })
-					ui.Text(c, sv.name).FontWeight(600).Grow(1).MinWidth(0).MaxLines(2).Ellipsis("…").Margin(px(t, 2), 0, 0, 0)
+					ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { statusDot(c, remoteDotColor(c, state.Status)) })
+					ui.Text(c, state.Name).FontWeight(600).Grow(1).MinWidth(0).MaxLines(2).Ellipsis("…").Margin(px(t, 2), 0, 0, 0)
 				})
-				meta := model
-				if used != "" {
-					meta += " · " + used
+				meta := state.Model
+				if state.Used != "" {
+					meta += " · " + state.Used
 				}
 				caption(c, meta).MinWidth(0)
-				if configured {
+				if state.Configured {
 					keyRow()
 				}
 				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-					tagChip(c, whereText(sv, p))
-					if sv.speech.Streams(setupModel(kind, p)) {
+					tagChip(c, state.Where)
+					if state.Realtime {
 						tagChip(c, i18n.T("Realtime"))
 					}
 				})
@@ -210,81 +145,48 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 		}
 		ui.Column(c).Gap(px(t, 6)).Grow(1).MinWidth(0).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Start).MinHeight(px(t, 22)).Children(func() {
-				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { statusDot(c, dot) })
-				ui.Text(c, sv.name).FontWeight(600).Grow(1).MinWidth(0).MaxLines(2).Ellipsis("…").Margin(px(t, 2), 0, 0, 0)
-				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { tagChip(c, whereText(sv, p)) })
+				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { statusDot(c, remoteDotColor(c, state.Status)) })
+				ui.Text(c, state.Name).FontWeight(600).Grow(1).MinWidth(0).MaxLines(2).Ellipsis("…").Margin(px(t, 2), 0, 0, 0)
+				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { tagChip(c, state.Where) })
 			})
-			truncText(c, model).FontSize(px(t, fsCaption)).TextColor(k.Text2)
-			if !configured {
-				return // the rest shows once it is set up
+			truncText(c, state.Model).FontSize(px(t, fsCaption)).TextColor(colors.Text2)
+			if !state.Configured {
+				return
 			}
-			if used != "" {
-				truncText(c, used).FontSize(px(t, fsCaption)).TextColor(k.Text2)
+			if state.Used != "" {
+				truncText(c, state.Used).FontSize(px(t, fsCaption)).TextColor(colors.Text2)
 			}
 			keyRow()
 		})
 	})
-	if b.Clicked() {
-		a.openProviderDialog(kind, sv.id)
+	if button.Clicked() {
+		actions.openRemoteProvider(state.Kind, state.ID)
 	}
 }
 
-// whereText is a service's label: on this Mac (a server on the loopback:
-// Ollama, LM Studio, oMLX, a custom one) or remote.
-func whereText(sv service, p settings.Provider) string {
-	ep := strings.TrimSpace(p.Endpoint)
-	if ep == "" {
-		ep = sv.endpoint
-	}
-	if onThisMac(ep) {
-		return i18n.T("On this Mac")
-	}
-	return i18n.T("Remote")
-}
-
-// onThisMac says whether a service's address is a server on this Mac.
-func onThisMac(base string) bool {
-	u, err := url.Parse(base)
-	return err == nil && u.Host != "" && core.IsLoopback(u.Hostname())
-}
-
-// testStatus is a connection test's state: a spinner while it runs, a
-// green tick and its time once it works, a red mark and a short reason
-// when it failed, with what the service said in a tooltip (and an ⓘ,
-// when long is set: the dialog's).
-func testStatus(c *ui.Context, tr providerTest, long bool) {
+// remoteTestStatus renders a predetermined connection-test state and its
+// redacted detail. The view chooses the dialog's long or the card's short form.
+func remoteTestStatus(c *ui.Context, state remoteTestViewState, long bool) {
 	t := c.Theme()
-	k := tok(t)
-	switch {
-	case tr.running:
+	colors := tok(t)
+	text, tooltip := state.Text, state.Tooltip
+	if long {
+		text, tooltip = state.LongText, state.LongTooltip
+	}
+	switch state.State {
+	case "running":
 		ui.Spinner(c).Size(px(t, 14), px(t, 14)).Shrink(0)
 		if long {
-			caption(c, i18n.T("Testing…")).SingleLine().Ellipsis("…").MinWidth(0)
+			caption(c, text).SingleLine().Ellipsis("…").MinWidth(0)
 		}
-	case tr.res.At.IsZero():
-	case tr.res.Err == nil:
-		text := i18n.T("%d ms", tr.res.Latency.Milliseconds())
-		if long {
-			text = i18n.T("Connection OK · %d ms", tr.res.Latency.Milliseconds())
-		}
-		statusMark(c, icons.CheckCircle, k.Success, text).Shrink(1).Tooltip(text)
-	default:
-		msg, _ := uitext.ModelErrorText(tr.res.Err)
-		if m := tr.res.Models; len(m) > 0 {
-			if len(m) > 8 {
-				m = append(m[:8:8], "…")
-			}
-			msg = i18n.T("The server does not have this model. It has: %s", strings.Join(m, ", "))
-		}
-		if long && llm.Code(tr.res.Err) == llm.CodeNoKey {
-			msg = i18n.T("Paste the service's API key above, then test again.") // the dialog has the key's field
-		}
-		tip := msg + "\n\n" + tr.detail
+	case "success":
+		statusMark(c, icons.CheckCircle, colors.Success, text).Shrink(1).Tooltip(tooltip)
+	case "failure":
 		if !long {
-			statusMark(c, icons.CloseCircle, k.Danger, i18n.T("Failed")).Shrink(0).Tooltip(tip)
+			statusMark(c, icons.CloseCircle, colors.Danger, text).Shrink(0).Tooltip(tooltip)
 			return
 		}
-		statusMark(c, icons.CloseCircle, k.Danger, msg).Shrink(1).Tooltip(tip)
-		infoTip(c, tip).Shrink(0) // the reason is cut beside the button: the ⓘ tells all of it
+		statusMark(c, icons.CloseCircle, colors.Danger, text).Shrink(1).Tooltip(tooltip)
+		infoTip(c, tooltip).Shrink(0)
 	}
 }

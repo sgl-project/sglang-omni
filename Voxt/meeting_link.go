@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"time"
 
@@ -25,10 +24,9 @@ import (
 const meetingLogSource = "meeting"
 
 type meetingState struct {
-	meetMgr        *meeting.Manager
-	meetSnap       meeting.Snapshot
-	meetingUI      *meetingSettingsUI // settings_meeting.go
-	meetingAbandon bool               // abandon while recording
+	meetMgr   *meeting.Manager
+	meetSnap  meeting.Snapshot
+	meetingUI *meetingSettingsUI // settings_meeting.go
 }
 
 func (a *app) openMeetings() {
@@ -96,7 +94,7 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	prev := a.meetSnap
 	a.meetSnap = s
 	if s.ID != prev.ID || s.State != prev.State {
-		a.meetOvMenu = meetingMenuNone // a menu for the state it opened in
+		a.meetOvUI.menu = meetingMenuNone // a menu for the state it opened in
 	}
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
@@ -231,6 +229,7 @@ func (a *app) meetingCorrect(id string) {
 	n := &a.mv
 	if n.detail != nil && n.detail.id == id {
 		n.detail.correcting = true
+		a.rebuildMeetingDetail()
 	}
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
@@ -286,33 +285,4 @@ func (a *app) meetingDiscard() {
 func (a *app) meetingFailed(what, msg string, err error) {
 	a.toast(msg)
 	a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: what + ": " + err.Error()})
-}
-
-// meetingStartProblem is what the user reads when a meeting does not start.
-func meetingStartProblem(err error) string {
-	var se *meeting.StartError
-	switch {
-	case errors.Is(err, local.ErrNotInstalled):
-		return i18n.T("The speech model for meetings is not downloaded. Download it in Settings → Meetings.")
-	case errors.Is(err, meeting.ErrBusy):
-		return i18n.T("A meeting is already recording.")
-	case errors.As(err, &se):
-		if se.Guidance == meeting.GuidanceModel {
-			return i18n.T("Could not load the speech model for meetings: %v", se.Err)
-		}
-		denied := errors.Is(se.Err, &proto.Error{Code: proto.CodePermissionDenied})
-		switch se.Source {
-		case meeting.SourceSystem:
-			if denied {
-				return i18n.T("Could not record system audio. Allow system audio recording for Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.")
-			}
-			return i18n.T("Could not record system audio. Try again, or record the microphone only.")
-		case meeting.SourceMic:
-			if denied {
-				return i18n.T("Could not record the microphone. Allow Voxt in System Settings → Privacy & Security → Microphone.")
-			}
-			return i18n.T("Could not record the microphone. Check your input device and try again.")
-		}
-	}
-	return i18n.T("Could not start the meeting: %v", err)
 }

@@ -117,15 +117,22 @@ def unit_chunk(index: int) -> TimedChunk:
 class CallDriver:
     """Plays SGLang's streaming session: the history is kept between units."""
 
-    def __init__(self, adapter: PersonaPlexSessionAdapter) -> None:
+    def __init__(
+        self,
+        adapter: PersonaPlexSessionAdapter,
+        session_identity: SessionIdentity = CALL,
+    ) -> None:
         self.adapter = adapter
+        self.session_identity = session_identity
         self.runner = make_runner(FakeModel())
         self.history: list[int] = []
         self.units = 0
 
     def build(self, codes: torch.Tensor) -> SimpleNamespace:
         data = self.adapter.build(
-            CALL, unit_chunk(self.units), unit_payload(self.units, codes)
+            self.session_identity,
+            unit_chunk(self.units),
+            unit_payload(self.units, codes),
         )
         return SimpleNamespace(data=data)
 
@@ -142,7 +149,7 @@ class CallDriver:
         request.data.output_ids = list(tokens)
         self.history = origin + list(tokens)
         self.units += 1
-        result = self.adapter.result(CALL, request.data)
+        result = self.adapter.result(self.session_identity, request.data)
         return inputs, PersonaPlexState.from_dict(result.data)
 
 
@@ -232,3 +239,41 @@ def test_close_after_a_failed_open_is_a_no_op():
     )
     adapter.close(CALL)
     assert adapter.states == {}
+
+
+def test_interleaved_histories_and_reopened_call_own_their_storage():
+    adapter = open_adapter()
+    other_call = SessionIdentity("other-call")
+    adapter.open(other_call, OmniRequest(inputs=None))
+    first = CallDriver(adapter)
+    second = CallDriver(adapter, other_call)
+    second.runner = first.runner
+    first.unit(caller_codes(1), [77, 78])
+    first_history = adapter.states[CALL].history
+    previous_rows = first_history.model_inputs["decode_feedback"].user_rows
+    previous_copy = previous_rows.clone()
+    second.unit(caller_codes(2) + 1000, [80, 81, 82])
+    first.unit(caller_codes(64), list(range(100, 164)))
+    second_history = adapter.states[other_call].history
+    assert torch.equal(previous_rows, previous_copy)
+    assert first_history.timeline.num_frames == 65
+    assert second_history.timeline.num_frames == 2
+    assert torch.equal(second_history.timeline.user_frames[-2:], caller_codes(2) + 1000)
+    assert (
+        first_history.timeline.user_rows_storage
+        is not second_history.timeline.user_rows_storage
+    )
+    adapter.close(CALL)
+    adapter.open(CALL, OmniRequest(inputs=None))
+    reopened = CallDriver(adapter)
+    reopened.runner = first.runner
+    reopened.unit(caller_codes(1) + 2000, [90, 91])
+    new_history = adapter.states[CALL].history
+    assert new_history is not first_history
+    assert new_history.timeline.num_frames == 1
+    assert (
+        new_history.timeline.user_rows_storage
+        is not first_history.timeline.user_rows_storage
+    )
+    assert new_history.model_inputs["decode_feedback"].launched_frames == 2
+    assert adapter.states[other_call].history is second_history

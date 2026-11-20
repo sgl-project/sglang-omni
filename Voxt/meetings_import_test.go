@@ -60,6 +60,9 @@ func TestMeetingImportLabelsSpeakersAndSummarizes(t *testing.T) {
 	a.prefs.General.MainLanguage = "en"
 	wav := filepath.Join(t.TempDir(), "zoom-standup.wav")
 	pcm := make([]byte, 2*asr.SampleRate*3)
+	for i := 0; i < len(pcm); i += 2 {
+		pcm[i], pcm[i+1] = 0x10, 0x7f
+	}
 	if err := os.WriteFile(wav, asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +179,7 @@ func TestMeetingImportExplainsLanguage(t *testing.T) {
 				t.Fatal(err)
 			}
 			frames(tt)
-			if !a.mv.setOpen {
+			if !a.mvUI.setOpen {
 				t.Fatal("Meeting settings did not open")
 			}
 			list, _ := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
@@ -196,8 +199,8 @@ func TestMeetingImportLanguageFailureDoesNotSayMTDMissing(t *testing.T) {
 		return make([]byte, 2*asr.SampleRate), nil
 	}
 	a.importRecording("unknown-language.wav")
-	if !a.mv.importNoLanguage || a.mv.importNoMTD {
-		t.Fatalf("language failure: noLanguage=%v, noMTD=%v", a.mv.importNoLanguage, a.mv.importNoMTD)
+	if !a.mvUI.importNoLanguage || a.mvUI.importNoMTD {
+		t.Fatalf("language failure: noLanguage=%v, noMTD=%v", a.mvUI.importNoLanguage, a.mvUI.importNoMTD)
 	}
 }
 
@@ -218,7 +221,7 @@ func TestMeetingImportExplainsHistoryOff(t *testing.T) {
 	}
 	frames(tt)
 	if _, ok := tt.Find("Keep a history is off"); !ok {
-		t.Fatalf("no history dialog (%q) noMTD=%v noHistory=%v keep=%v", firstTexts(tt), a.mv.importNoMTD, a.mv.importNoHistory, a.prefs.Privacy.KeepHistory)
+		t.Fatalf("no history dialog (%q) noMTD=%v noHistory=%v keep=%v", firstTexts(tt), a.mvUI.importNoMTD, a.mvUI.importNoHistory, a.prefs.Privacy.KeepHistory)
 	}
 	if err := tt.ClickControl("Open Privacy settings"); err != nil {
 		t.Fatal(err)

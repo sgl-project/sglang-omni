@@ -1,9 +1,9 @@
 package meeting
 
 // Importing a recording file as a meeting: the file's decoded sound is
-// the meeting's one track (ModeImport), the final pass gives the whole
-// file to MTD so every voice is Speaker 1..N, then the same correction
-// and summary as a recorded meeting's run.
+// the meeting's one track (ModeImport), the final pass gives it to MTD in
+// two-minute requests so every voice is Speaker 1..N, then the same
+// correction and summary as a recorded meeting's run.
 
 import (
 	"context"
@@ -72,12 +72,48 @@ func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func
 	if err := FinalizePass(ctx, importPassConfig(m.cfg), mt, onProgress); err != nil {
 		return id, err
 	}
-	if !m.cfg.Settings().NoAutoSummary {
-		if err := m.correctAndSummarize(ctx, id); err != nil {
-			return id, err
+	return id, m.finishImport(ctx, mt, !m.cfg.Settings().NoAutoSummary)
+}
+
+// finishImport keeps an import finishing through correction and summary.
+// A cancel there leaves it interrupted with its WAV for Continue processing;
+// any other result ends done and applies the ordinary audio retention.
+func (m *Manager) finishImport(ctx context.Context, mt store.Meeting, summarize bool) error {
+	mt.Status = store.MeetingFinishing
+	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			current, _, readErr := m.cfg.Store.Meeting(context.WithoutCancel(ctx), mt.ID)
+			if readErr != nil {
+				return errors.Join(err, readErr)
+			}
+			if markErr := markFinalizeFailed(context.WithoutCancel(ctx), m.cfg, current); markErr != nil {
+				return errors.Join(err, markErr)
+			}
 		}
+		return err
 	}
-	return id, nil
+	var first error
+	if summarize {
+		first = m.correctAndSummarize(ctx, mt.ID)
+	}
+	current, _, err := m.cfg.Store.Meeting(context.WithoutCancel(ctx), mt.ID)
+	if err != nil {
+		return err
+	}
+	if errors.Is(first, context.Canceled) || errors.Is(first, context.DeadlineExceeded) {
+		if err := markFinalizeFailed(context.WithoutCancel(ctx), m.cfg, current); err != nil {
+			return errors.Join(first, err)
+		}
+		return first
+	}
+	if err := applyAudioRetention(context.WithoutCancel(ctx), m.cfg, current, ModeImport, true); err != nil {
+		return err
+	}
+	current.Status = store.MeetingDone
+	if err := m.cfg.Store.UpdateMeeting(context.WithoutCancel(ctx), current); err != nil {
+		return err
+	}
+	return first
 }
 
 // importPassConfig forces the final pass on for an import: the "skip the

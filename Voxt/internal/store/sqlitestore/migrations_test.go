@@ -4,21 +4,24 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // TestMigrationNumbering guards the numbering contract the migrator
 // enforces: the embedded files are consecutive from 1. Migrations 9 and 10
 // are the notes app name and the history reopen, shared with the notes and
-// history changes byte for byte; 11 is dictionary profiles and 12 is meeting
-// import mode.
+// history changes byte for byte; 11 is the dictionary profiles, 12 is
+// the Rewrite input box's typed text, 13 indexes that text for search,
+// and 14 lets meetings hold imported recordings.
 func TestMigrationNumbering(t *testing.T) {
 	for i, m := range migrations {
 		if m.version != i+1 {
 			t.Fatalf("migration %d is missing", i+1)
 		}
 	}
-	if Version() != 12 {
-		t.Fatalf("schema version %d, want 12", Version())
+	if Version() != 14 {
+		t.Fatalf("schema version %d, want 14", Version())
 	}
 }
 
@@ -28,7 +31,7 @@ func TestCombinedUpgradeLegacyImportVersion9(t *testing.T) {
 
 	dir := t.TempDir()
 	migrations = slices.Clone(saved[:8])
-	migrations = append(migrations, migration{version: 9, statements: saved[11].statements})
+	migrations = append(migrations, migration{version: 9, statements: saved[13].statements})
 	s := openTest(t, dir)
 	if v, _ := userVersion(ctx, s.db); v != 9 {
 		t.Fatalf("user_version %d, want the old import migration's 9", v)
@@ -85,8 +88,8 @@ func TestCombinedUpgradeLegacyDictionaryVersion9(t *testing.T) {
 
 	migrations = saved
 	s = openTest(t, dir)
-	if v, _ := userVersion(ctx, s.db); v != 12 {
-		t.Fatalf("user_version %d, want 12", v)
+	if v, _ := userVersion(ctx, s.db); v != Version() {
+		t.Fatalf("user_version %d, want %d", v, Version())
 	}
 	rows, err := s.db.Query(ctx, "PRAGMA table_info(notes)")
 	if err != nil {
@@ -114,11 +117,12 @@ func TestCombinedUpgradeLegacyDictionaryVersion9(t *testing.T) {
 
 // TestCombinedUpgrade opens a database at each schema the merged tree can
 // meet — 8 (before the notes, history and profile changes), 9 (notes app
-// name), 10 (plus history reopen), 11 (plus dictionary profiles) — and
-// migrates it to 12: every change's columns land, the old dictionary's terms
-// move into the active Default profile, and imported meetings are accepted.
+// name), 10 (plus history reopen), 11 (dictionary profiles), 12 (typed
+// Rewrite text), 13 (its search index) — and migrates it to 14: every
+// change's columns land, old dictionary terms move into Default, typed
+// Rewrite search survives, and imported meetings are accepted.
 func TestCombinedUpgrade(t *testing.T) {
-	for _, from := range []int{8, 9, 10, 11} {
+	for _, from := range []int{8, 9, 10, 11, 12, 13} {
 		t.Run(strconv.Itoa(from), func(t *testing.T) {
 			saved := migrations
 			t.Cleanup(func() { migrations = saved })
@@ -129,23 +133,28 @@ func TestCombinedUpgrade(t *testing.T) {
 			if v, _ := userVersion(ctx, s.db); v != from {
 				t.Fatalf("user_version %d, want %d", v, from)
 			}
-			termInsert := `INSERT INTO dictionary_terms (id, term, aliases, created_at, updated_at) VALUES ('t1', 'voxt', '["voxted"]', 1, 1)`
-			if from == 11 {
-				termInsert = `INSERT INTO dictionary_terms (profile_id, id, term, aliases, created_at, updated_at) VALUES ('default', 't1', 'voxt', '["voxted"]', 1, 1)`
+			insertTerm := `INSERT INTO dictionary_terms (id, term, aliases, created_at, updated_at) VALUES ('t1', 'voxt', '["voxted"]', 1, 1)`
+			if from >= 11 {
+				insertTerm = `INSERT INTO dictionary_terms (profile_id, id, term, aliases, created_at, updated_at) VALUES ('default', 't1', 'voxt', '["voxted"]', 1, 1)`
 			}
-			if _, err := s.db.Execute(ctx, termInsert); err != nil {
+			if _, err := s.db.Execute(ctx, insertTerm); err != nil {
 				t.Fatal(err)
+			}
+			if from >= 12 {
+				if _, err := s.db.Execute(ctx, `INSERT INTO history (id, kind, created_at, typed_text) VALUES ('typed-upgrade', 'rewrite', 1, 'upgrade-only-typed')`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			s.Close()
 
 			migrations = saved
 			s = openTest(t, dir)
-			if v, _ := userVersion(ctx, s.db); v != 12 {
-				t.Fatalf("user_version %d, want 12", v)
+			if v, _ := userVersion(ctx, s.db); v != Version() {
+				t.Fatalf("user_version %d, want %d", v, Version())
 			}
 			for table, cols := range map[string][]string{
 				"notes":   {"app_name"},
-				"history": {"title", "replaces"},
+				"history": {"title", "replaces", "typed_text"},
 			} {
 				rows, err := s.db.Query(ctx, "PRAGMA table_info("+table+")")
 				if err != nil {
@@ -174,6 +183,12 @@ func TestCombinedUpgrade(t *testing.T) {
 			}
 			if len(profiles) != 1 || profiles[0].Name != "Default" || !profiles[0].Active {
 				t.Errorf("profiles after upgrade: %+v", profiles)
+			}
+			if from >= 12 {
+				entries, err := s.History().List(ctx, store.HistoryQuery{Search: "upgrade-only-typed"})
+				if err != nil || len(entries) != 1 || entries[0].ID != "typed-upgrade" {
+					t.Errorf("typed text after upgrade: entries %+v, error %v", entries, err)
+				}
 			}
 			if _, err := s.db.Execute(ctx, `INSERT INTO meetings (id, created_at, status, mode) VALUES ('imported', 1, 'done', 'import')`); err != nil {
 				t.Errorf("import mode after upgrade: %v", err)

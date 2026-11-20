@@ -125,13 +125,26 @@ DOC_DRAFTS, UNREADABLE_DOC_DRAFT_FLAGS = drafts_in_docs()
 SERVED_DRAFTS = DOC_DRAFTS + drafts_in_example_configs()
 
 
+def served_draft_identity(
+    served: ServedDraft,
+) -> tuple[str | None, str, str | None, str | None]:
+    """The model, stage, algorithm and draft repo a served draft names; a bundled draft's repo is its model."""
+    return (
+        served.model_path,
+        served.stage,
+        served.engine_keys.get("speculative_algorithm"),
+        served.engine_keys.get("speculative_draft_model_path", served.model_path),
+    )
+
+
+def registry_draft_identity(draft: PinnedDraft) -> tuple[str, str, str, str]:
+    return (draft.model_path, draft.stage, draft.algorithm, draft.draft_model_path)
+
+
 def test_registry_pins_each_draft_and_turns_on_at_most_one_per_stage() -> None:
     for draft in DRAFT_REGISTRY:
         assert re.fullmatch(r"[0-9a-f]{40}", draft.draft_model_revision), draft
         assert all(key.startswith("speculative_") for key in draft.engine_settings)
-    assert len(
-        {(draft.model_path, draft.stage, draft.algorithm) for draft in DRAFT_REGISTRY}
-    ) == len(DRAFT_REGISTRY)
     draft_repos = Counter(draft.draft_model_path for draft in DRAFT_REGISTRY)
     assert all(count == 1 for count in draft_repos.values()), draft_repos
     default_on = Counter(
@@ -200,20 +213,13 @@ def test_disabling_a_bundled_draft_preserves_the_target_revision() -> None:
 @pytest.mark.parametrize(
     "served",
     SERVED_DRAFTS,
-    ids=lambda served: f"{served.source}:{served.stage}:{served.engine_keys.get('speculative_algorithm')}",
+    ids=lambda served: ":".join(
+        str(part) for part in (served.source, *served_draft_identity(served)[1:])
+    ),
 )
 def test_served_draft_gives_its_registry_entry_keys(served: ServedDraft) -> None:
-    registered = {
-        (draft.model_path, draft.stage, draft.algorithm): draft
-        for draft in DRAFT_REGISTRY
-    }
-    draft = registered.get(
-        (
-            served.model_path,
-            served.stage,
-            served.engine_keys.get("speculative_algorithm"),
-        )
-    )
+    registered = {registry_draft_identity(draft): draft for draft in DRAFT_REGISTRY}
+    draft = registered.get(served_draft_identity(served))
     assert draft is not None, (
         f"{served.source} serves a draft for {served.model_path} {served.stage} that "
         "sglang_omni/speculative/draft_registry.py does not pin"
@@ -222,16 +228,9 @@ def test_served_draft_gives_its_registry_entry_keys(served: ServedDraft) -> None
 
 
 def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> None:
-    served_drafts = {
-        (
-            served.model_path,
-            served.stage,
-            served.engine_keys.get("speculative_algorithm"),
-        )
-        for served in SERVED_DRAFTS
-    }
+    served_drafts = {served_draft_identity(served) for served in SERVED_DRAFTS}
     assert {
-        (draft.model_path, draft.stage, draft.algorithm)
+        registry_draft_identity(draft)
         for draft in DRAFT_REGISTRY
         if not draft.is_default_on
     } <= served_drafts
@@ -239,14 +238,18 @@ def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> No
 
 @pytest.mark.parametrize("is_cuda", [True, False])
 def test_each_model_launches_exactly_its_default_on_drafts_and_only_on_cuda(
-    monkeypatch: pytest.MonkeyPatch, is_cuda: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_cuda: bool
 ) -> None:
+    """Check CUDA draft defaults without fetching checkpoint metadata."""
     monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
     registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
     # note (Haoling Pu): a near-miss path stands for a sibling checkpoint without an entry, such as Qwen3-ASR 0.6B next to 1.7B.
     model_paths = registry_paths + [
         f"{path}-without-a-draft" for path in registry_paths
     ]
+    monkeypatch.chdir(tmp_path)
+    for model_path in model_paths:
+        (tmp_path / model_path).mkdir(parents=True)
     default_drafts = set()
     for config_module_path in sorted(
         (REPO_ROOT / "sglang_omni" / "models").glob("*/config.py")
