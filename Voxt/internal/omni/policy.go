@@ -235,26 +235,8 @@ func spaced(r rune) bool {
 	return true
 }
 
-// mossMarkup is MOSS's diarization markup, a speaker turn ([S01]) or a
-// timestamp ([2.62]): the model sometimes writes it even on its
-// plain-text instruction (single-speaker English dictation), and
-// dictation inserts plain text only.
-var (
-	mossMarkup       = regexp.MustCompile(`\[S\d{1,2}\]|\[\d{1,4}\.\d{1,2}\]`)
-	mossMarkupSpaces = regexp.MustCompile(` {2,}`)
-)
-
-// plainText is a plain-text answer of spec's model without the
-// diarization markup (other models' text is unchanged).
-func (s Spec) plainText(t string) string {
-	if s.Kind != kindMoss {
-		return t
-	}
-	return strings.TrimSpace(mossMarkupSpaces.ReplaceAllString(mossMarkup.ReplaceAllString(t, ""), " "))
-}
-
 // joinParts joins transcript pieces as the server joins segments: each
-// trimmed, a space only between two other characters.
+// trimmed, a space only between two characters of spaced scripts.
 func joinParts(parts []string) string {
 	var b strings.Builder
 	for _, p := range parts {
