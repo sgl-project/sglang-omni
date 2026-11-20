@@ -59,7 +59,29 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=text
 ```
 
-Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, speculative decoding, and `/v1/realtime` are outside this integration.
+Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, and `/v1/realtime` are outside this integration.
+
+## MTP decoding
+
+The checkpoint includes a multi-token prediction (MTP) layer that the decoder can use as a NEXTN draft, so decoding needs no separate draft model. MTP is off by default, and the launch above does not load it. Enable it with:
+
+```bash
+sgl-omni serve   --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B   --model-name nemotron-transcribe   --mem-fraction-static 0.85   --asr.engine.revision c17667641642c4265ff2b7037dd101b7d4567634   --asr.engine.speculative_algorithm NEXTN   --port 8000
+```
+
+The revision pins the checkpoint whose MTP layer was validated with this integration. The decoder and the draft load from the same snapshot, so leave `speculative_draft_model_path` and `speculative_draft_model_revision` unset. The draft proposes 7 tokens per step by default (`speculative_num_steps 7`, `speculative_num_draft_tokens 8`).
+
+<!-- TODO(coordinator): state the recommended H100 80 GB setting here (speculative_num_steps, and any memory or concurrency change), measured from the H100 sweep. If it differs from 7 steps, also change the builder default MTP_DEFAULT_NUM_STEPS or the registry entry's engine_settings so this command keeps matching sglang_omni/speculative/draft_registry.py. -->
+
+Usage notes:
+
+- Keep `speculative_eagle_topk 1` and set `speculative_num_draft_tokens` to `speculative_num_steps` plus one. The MTP layer drafts a single chain, and the launch fails with the setting to change otherwise.
+- `EAGLE` is accepted as another name for `NEXTN`. Separate draft models, EAGLE3, multi-layer EAGLE, and mixed chunking are rejected at launch.
+- The launch fails if the checkpoint is missing any `llm.mtp.*` tensor the draft needs, or has one the draft cannot place.
+- To disable MTP in a config that enables it, add `--asr.engine.disable_speculative_decoding true`.
+- Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` with the acceptance statistics on `json` and `verbose_json` responses.
+
+<!-- TODO(coordinator): add the H100 80 GB baseline versus MTP results here: GPU, SGLang version, corpus, client concurrency, the MTP setting, RTFx or QPS, latency, WER for both modes, and the mean acceptance length. -->
 
 ## Compile the encoder
 

@@ -180,4 +180,12 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         engine_settings={"speculative_num_draft_tokens": 16},
         license="mit",
     ),
+    PinnedDraft(
+        model_path="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        stage="asr",
+        algorithm="NEXTN",
+        draft_model_path="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        draft_model_revision="c17667641642c4265ff2b7037dd101b7d4567634",
+        license="openmdw-1.1",
+    ),
 )
