@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -64,6 +66,24 @@ def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
             pre_lm_max_batch_size=batch_size,
             pre_lm_max_batch_wait_ms=wait_ms,
         )
+
+
+@pytest.mark.parametrize(
+    ("pd_role", "memory_fraction"),
+    [(None, None), (None, 0.85), ("prefill", 0.85), ("decode", 0.85)],
+)
+def test_fun_asr_stage_forwards_gpu_memory_fraction(
+    monkeypatch: pytest.MonkeyPatch,
+    pd_role: Literal["prefill", "decode"] | None,
+    memory_fraction: float | None,
+) -> None:
+    build = Mock()
+    monkeypatch.setattr(fun_asr_builder.FunASREngineBuilder, "build", build)
+    fun_asr_stages.create_sglang_fun_asr_executor(
+        "dummy", pd_role=pd_role, total_gpu_memory_fraction=memory_fraction
+    )
+
+    assert build.call_args.kwargs["total_gpu_memory_fraction"] == memory_fraction
 
 
 def test_fun_asr_threads_generation_batch_and_request_build_policy(
