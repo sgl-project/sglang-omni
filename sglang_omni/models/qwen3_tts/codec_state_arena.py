@@ -164,14 +164,19 @@ class Qwen3TTSCodecStateArena:
                 pass
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
-        try:
-            if released is not None:
+        if released is not None:
+            try:
                 self.device_module.current_stream(self.device).wait_event(released)
-            else:
-                pass
+            except BaseException:
+                # note (ratish): this stream is not ordered after the last holder's work, so no event it records could order the next holder and the slot is withdrawn.
+                self.retire(slot)
+                raise
+        else:
+            pass
+        try:
             self.zero_slot(slot)
         except BaseException:
-            # note (ratish): no decode has read the slot yet, so it goes back and the next acquire zeroes it again.
+            # note (ratish): this stream already waits for the last holder, so the event release records orders the next holder after both and its acquire zeroes the slot again.
             self.release(slot)
             raise
         return slot

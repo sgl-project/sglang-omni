@@ -1185,19 +1185,31 @@ def test_codec_state_arena_retires_a_slot_whose_release_cannot_be_recorded(
     assert arena.active_slots() == 0
 
 
-def test_codec_state_arena_never_loses_a_slot_whose_wait_fails(
+class RecordableEvent:
+    def record(self, stream: object) -> None:
+        pass
+
+
+def test_codec_state_arena_retires_a_slot_whose_wait_for_its_last_holder_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A wait that raised after acquire took the slot left it neither free nor retired, so the arena lost a row for good."""
+    """A slot whose wait for its last holder raised went back free under an event the failed waiter recorded, so the next holder could reset it while the last holder still wrote it."""
     _, arena = make_arena(Decoder(), slots=1)
-    arena.release_events[0] = UnrecordableEvent()
-    fail_device(arena, monkeypatch)
+    arena.release_events[0] = RecordableEvent()
+    monkeypatch.setattr(codec_state_arena, "has_device_streams", lambda device: True)
+    monkeypatch.setattr(
+        arena,
+        "device_module",
+        SimpleNamespace(
+            Event=RecordableEvent, current_stream=lambda device: FailedDeviceStream()
+        ),
+    )
 
     with pytest.raises(RuntimeError, match="stream wait failed"):
         arena.acquire()
 
     assert arena.retired == {0}
-    assert arena.active_slots() == 0
+    assert arena.acquire() is None
 
 
 @pytest.mark.accelerator
