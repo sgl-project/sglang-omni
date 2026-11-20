@@ -5,7 +5,7 @@ One command for every draft: name its server config and a workload. The no-draft
 
 The summary gives, per concurrency, both sides' throughput, the gain, p95 latency and its change, first-output p95 when the client streams, the workload's accuracy metrics and failed requests; then k, the loads where the draft is worse than no draft, and per leg the startup time, KV pool, peak token usage, retractions, acceptance length and peak GPU memory. sweep.json holds the same comparison, and baseline.yaml and draft.yaml the configs each side served.
 
-Set CUDA_VISIBLE_DEVICES to one GPU that nothing else uses: after each leg the managed server ends every process still using it. Arguments after -- go to the client, such as --stream to measure first output.
+Set CUDA_VISIBLE_DEVICES to one GPU that nothing else uses. By default the sweep cleans up leftover GPU processes and waits for memory release after each leg. With --skip-gpu-cleanup it stops only the managed server and skips that wait. Peak GPU memory measures the whole device, including any other processes on it. Arguments after -- go to the client, such as --stream to measure first output.
 
 TTS workloads save generated audio at every load in every leg before starting one ASR server to score all saved audio. The ASR server uses the port after the last generation leg. Transcription is outside the TTS performance measurement and uses --asr-model-path and --asr-concurrency.
 
@@ -260,7 +260,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--skip-gpu-cleanup",
         action="store_true",
-        help="Stop only the managed server; leave other GPU processes alone.",
+        help="Stop only the managed server and skip the GPU memory release wait.",
     )
     parser.add_argument(
         "--asr-model-path",

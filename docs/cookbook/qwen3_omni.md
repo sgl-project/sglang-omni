@@ -366,7 +366,7 @@ CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
   --skip-gpu-cleanup -- --repo-id zhaochenyang20/mmmu-ci-50 --max-tokens 128
 ```
 
-`--skip-gpu-cleanup` stops only the managed server. For the full c1–c64 ABBA sweep with three repeats per load, remove `--max-samples`, `--concurrencies`, `--repeats`, `--order` and the client arguments after `--`. Use `-- --repo-id PATH` to compare both sides on the same local dataset. To measure repeated prefixes, pass a dataset with duplicated prompts and add `--prefix-cache` before `--`. Check the cached prompt token share in the report to verify reuse.
+`--skip-gpu-cleanup` stops only the managed server and skips the GPU memory release wait. Peak GPU memory covers the whole device, including any other processes. For the full c1–c64 ABBA sweep with three repeats per load, remove `--max-samples`, `--concurrencies`, `--repeats`, `--order` and the client arguments after `--`. Use `-- --repo-id PATH` to compare both sides on the same local dataset. To measure repeated prefixes, pass a dataset with duplicated prompts and add `--prefix-cache` before `--`. Check the cached prompt token share in the report to verify reuse.
 
 The report includes accuracy, request throughput, end-to-end and first-text p95 latency, failures, sampled GPU memory, and KV and acceptance statistics from the server log.
 
