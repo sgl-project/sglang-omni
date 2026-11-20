@@ -112,7 +112,7 @@ func ModelErrorTextFor(translator *i18n.Translator, err error) (msg, more string
 		case llm.CodeAddress:
 			return translator.T("Nothing answers at the remote model's address. Check the address in Settings → Language models."), more
 		case llm.CodeConfig:
-			return translator.T("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac."), more
+			return translator.T("The remote model's address is not allowed. Use http:// or https:// without a user name or password."), more
 		case llm.CodeTimeout:
 			return translator.T("The language model did not answer in time."), more
 		case llm.CodeNetwork, llm.CodeServer, llm.CodeOverloaded, llm.CodeRateLimited:

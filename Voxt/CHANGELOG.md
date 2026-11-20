@@ -30,6 +30,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **System dictation keeps recognized text when stopping**: an empty result from macOS no longer clears the live transcript and causes Voxt to report no speech.
 - **A feature's unavailable language model is not replaced silently**: when the model chosen for Transcribe, Translate or Rewrite is no longer ready, Voxt no longer sends the text to the first ready service. Translate can still use its explicitly selected fallback model.
 - **A saved note no longer looks like an error**: after you recorded a note with the note shortcut, the "Saved to Notes" notice showed the red error mark, so a note that was saved looked as if it had failed. The notice now shows the green tick, as "Added to the dictionary" does.
+- **Language models can use an HTTP gateway**: API-key services now accept HTTP addresses on other hosts, including a private-network gateway. HTTP sends the key and text without encryption, which the Address tip in the service's set-up dialog says; ChatGPT sign-in still requires HTTPS for remote addresses.
 
 ### 中文
 
@@ -58,6 +59,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **系统听写停止后保留已识别文字**：macOS 返回空结果时，不再清空实时转录并提示没有声音。
 - **功能选用的语言模型不可用时不再静默换成其他服务**：转录、翻译或改写当前选用的模型不再可用时，Voxt 不会把文字发给列表中的第一个可用服务。翻译仍可使用明确选择的备用模型。
 - **存好的笔记不再像出错**：用笔记快捷键录完后，“已存到笔记”的通知显示的是红色的错误图标，明明存好了，看起来却像失败了。现在显示绿色的对勾，和“已加入词典”一样。
+- **语言模型可使用 HTTP 网关**：使用 API Key 的服务现在可以连接其他主机上的 HTTP 地址，包括局域网网关。HTTP 会明文传输密钥和文本，服务设置对话框里“地址”旁的提示写了这一点；ChatGPT 登录仍要求远程地址使用 HTTPS。
 
 ## [2.1.1] - 2026-11-17
 
