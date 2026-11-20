@@ -297,6 +297,30 @@ func TestBoxPasteClipboardTextAtRejectsOversize(t *testing.T) {
 	}
 }
 
+func TestBoxPasteAfterOversizeClearsError(t *testing.T) {
+	long := "hello world\nsecond\nthird\nfourth"
+	for _, tc := range []struct{ name, text, want string }{
+		{name: "short", text: "hello", want: "keep mehello"},
+		{name: "collapsed block", text: long, want: "keep me\n" + long},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.box = rewriteBox{open: true, shown: true, text: "keep me"}
+			a.boxPasteClipboardTextAt(strings.Repeat("x", (32<<20)+1), -1, 7, 7)
+			if a.box.err == "" {
+				t.Fatal("the fixture rejection has no error")
+			}
+			a.boxPasteClipboardTextAt(tc.text, -1, 7, 7)
+			if a.box.err != "" {
+				t.Fatalf("successful paste kept the old error %q", a.box.err)
+			}
+			if got := a.boxTextContent(); got != tc.want {
+				t.Fatalf("request text %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRewriteBoxAddMenuPastesAtTheCaret(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, focusText: true}
@@ -315,12 +339,12 @@ func TestRewriteBoxAddMenuPastesAtTheCaret(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames(tt)
-	if got, want := a.boxTextContent(), "hello"+long+" world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+long+"\n world"; got != want {
 		t.Fatalf("clipboard text %q, want %q", got, want)
 	}
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), "hello"+long+"X world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+long+"\nX world"; got != want {
 		t.Fatalf("text after typing past the collapsed block %q, want %q", got, want)
 	}
 }
@@ -353,7 +377,7 @@ func TestBoxPasteClipboardTextAtEarlierSegment(t *testing.T) {
 	}
 	second := "five\nsix\nseven\neight"
 	a.boxPasteClipboardTextAt(second, 0, 0, 0)
-	if got, want := a.boxTextContent(), second+"before "+first; got != want {
+	if got, want := a.boxTextContent(), second+"\nbefore \n"+first; got != want {
 		t.Fatalf("earlier-segment paste %q, want %q", got, want)
 	}
 	if a.box.ui.pasteCaret != 0 {
@@ -375,7 +399,7 @@ func TestRewriteBoxAddMenuPasteFollowsEditorAfterBlockRemoval(t *testing.T) {
 	a.boxRemoveText(1)
 	index, start, end := boxClipboardEditor(a.boxViewState(), &a.box.ui)
 	a.boxPasteClipboardTextAt("X", index, start, end)
-	if got, want := a.boxTextContent(), "Xbefore "+first; got != want {
+	if got, want := a.boxTextContent(), "Xbefore \n"+first; got != want {
 		t.Fatalf("paste after removing an earlier block %q, want %q", got, want)
 	}
 }

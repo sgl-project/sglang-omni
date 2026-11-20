@@ -114,6 +114,7 @@ func (a *app) boxPasteClipboardTextAt(text string, index, start, end int) {
 	}
 	if !collapsed {
 		inserted := string(runes[:start]) + text + string(runes[end:])
+		a.box.err = ""
 		if index == -1 {
 			a.box.text = inserted
 		} else {

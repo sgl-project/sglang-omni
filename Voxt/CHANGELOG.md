@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rewrite paste errors clear after a successful paste, and pasted blocks keep their boundaries**: a later valid paste removes “This text is too large.”; typed text before or after a collapsed pasted block stays on a separate line in the request.
+
+### 中文
+
+#### 修复
+
+- **改写粘贴成功后清除旧错误，粘贴块保留边界**：之后粘贴有效内容会清除“这段文字太大了。”的旧错误；折叠粘贴块与前后输入文字在请求中分行。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added
