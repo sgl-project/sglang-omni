@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -40,5 +41,21 @@ func TestCardFirstOverlay(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCardFirstFailureOffersRetry: a card-first Transcribe whose speech
+// model fails ends with Card off (session.run.endFailed): no card opens,
+// and the overlay's notice retries the kept recording.
+func TestCardFirstFailureOffersRetry(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	snap(a, session.Snapshot{ID: "card-first", Kind: store.KindTranscribe, State: session.Recording, Card: true, Levels: wave(), HeardAt: time.Now()})
+	snap(a, session.Snapshot{ID: "card-first", Kind: store.KindTranscribe, State: session.Failed, Recording: true,
+		Problem: &session.Problem{Code: session.ProblemASR, Err: errors.New("500")}})
+	if a.answer.open {
+		t.Fatal("a card opened for a failure with nothing to show")
+	}
+	if a.notice == nil || a.notice.action != actionRetry || a.notice.entry != "card-first" {
+		t.Fatalf("notice %+v", a.notice)
 	}
 }

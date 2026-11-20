@@ -355,7 +355,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 func (r *run) fail(p *Problem) {
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	r.m.end(r, Failed, func(s *Snapshot) { s.Problem = p }, nil)
+	// No result for the card (a card-first session set Card from its
+	// start): the overlay shows the problem, and History no card.
+	r.m.end(r, Failed, func(s *Snapshot) { s.Problem, s.Card = p, false }, nil)
 }
 
 // endFailed ends the session failed after it recorded: the entry keeps
@@ -370,6 +372,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem = p
+		s.Card = false // as fail's: the overlay offers Retry
 		s.Timings.Total = total
 		s.Timings.Audio = audio
 		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusFailed)
@@ -392,6 +395,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Cancelled, func(s *Snapshot) {
+		s.Card = false // no result went to the card
 		s.Timings.Total = total
 		s.Timings.Audio = audio
 		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording(store.StatusCancelled)

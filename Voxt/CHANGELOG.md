@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **Transcribe and Translate open in the answer card from the start** (#4167): with Show the result in a card on, the card opens when recording starts and shows the waveform, the selected text and the recognised text, then the result, instead of the pill handing over to a card at the end. The card never takes the keyboard, so clicking or dragging it leaves the text where you were typing. A failed recording still shows Retry, and closing the card while it records cancels the session.
+
+### 中文
+
+#### 变更
+
+- **转录和翻译从录音开始就显示在答案卡片里**（#4167）：开启“在卡片中显示结果”后，卡片在开始录音时就出现，依次显示波形、选中的文字、识别中的文字和结果，不再先用浮窗录音、结束时再切到卡片。卡片不会抢键盘焦点，点击或拖动它后文字仍输入到原来的位置。录音失败时仍可重试；录音中关闭卡片会取消本次会话。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added
