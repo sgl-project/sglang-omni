@@ -128,13 +128,26 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 			return false
 		}
 	}
-	if !trailingControlToken(token) {
+	if !trailingControlToken(token) || turnEndLeak(rest) {
 		return false
 	}
 	if inlineLiteral(s, start, token) {
 		return true
 	}
 	return false
+}
+
+// turnEndLeak says the text after a turn-end marker is a fresh
+// sentence: the model kept writing into the next turn, so the marker
+// gets no prose exemption. A fragment or a continuation without
+// sentence shape ("x", "放在句尾") stays literal.
+func turnEndLeak(after string) bool {
+	rest := strings.TrimSpace(after)
+	if rest == "" || !strings.ContainsRune(".!?。！？", rune(rest[len(rest)-1])) {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(rest)
+	return unicode.IsUpper(first) || unicode.Is(unicode.Han, first)
 }
 
 func bracketedToolPayload(rest string) bool {
@@ -272,7 +285,7 @@ func controlTokenStartSkipping(s, literalOpen string, inputs ...string) int {
 				offset = i + len(token)
 				continue
 			}
-			if token != "</think>" && trailingControlToken(token) && !onlyControlMarkup(after, input, previous...) {
+			if token != "</think>" && trailingControlToken(token) && !turnEndLeak(after) && !onlyControlMarkup(after, input, previous...) {
 				offset = i + len(token)
 				continue
 			}
