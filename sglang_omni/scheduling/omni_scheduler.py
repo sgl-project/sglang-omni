@@ -310,6 +310,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     enable_async_decode: bool
     enable_plain_fallback: bool
     async_decode_min_batch_size: int
+    prefill_drain_below_batch_size: int | None
     async_decode_resolve_before_prefill: bool
     async_prefill: bool
     should_run_top_priority_stream: bool
@@ -390,6 +391,7 @@ class OmniScheduler(Generic[RequestDataT]):
         enable_async_decode: bool = False,
         enable_plain_fallback: bool = False,
         async_decode_min_batch_size: int = 1,
+        prefill_drain_below_batch_size: int | None = None,
         async_decode_resolve_before_prefill: bool = False,
         async_prefill: bool = False,
         should_run_top_priority_stream: bool = False,
@@ -494,6 +496,12 @@ class OmniScheduler(Generic[RequestDataT]):
         self.enable_async_decode = enable_async_decode
         # note (Haoling Pu): decode batches with fewer requests run synchronously, so a light load streams each round's tokens without waiting on the next launch.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
+        # note (Zhenning Guo): unset follows async_decode_min_batch_size, so existing configs keep their behavior.
+        self.prefill_drain_below_batch_size = (
+            self.async_decode_min_batch_size
+            if prefill_drain_below_batch_size is None
+            else int(prefill_drain_below_batch_size)
+        )
         self.async_decode_resolve_before_prefill = async_decode_resolve_before_prefill
         # Plain prefill batches join the lookahead: launch, then resolve after
         # the next launch, so the host never blocks on a prefill's tokens.
@@ -4500,7 +4508,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
     @DynamicGradMode()
     def event_loop_spec_overlap(self) -> None:
-        """Submit the next speculative round before consuming the previous result, except that a decode batch under async_decode_min_batch_size is consumed right after its own launch, and a prefill after which fewer requests than it are decoding is consumed before the next batch is chosen."""
+        """Submit the next speculative round before consuming the previous result.
+
+        A decode batch under async_decode_min_batch_size is consumed right after its launch. A prefill is consumed before the next batch is chosen while fewer than prefill_drain_below_batch_size requests are decoding.
+        """
         self.enable_skip_finishing_decode = True
         while self.running:
             self.process_admin_requests()
@@ -4521,14 +4532,15 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
 
             # note (Haoling Pu): when the decode set stays under the minimum, the pending prefill is processed before choosing, so its first tokens stream without waiting on a launch.
+            # note (Zhenning Guo): the minimum for this drain is prefill_drain_below_batch_size, which defaults to async_decode_min_batch_size if not explicitly set.
             if (
-                self.async_decode_min_batch_size > 1
+                self.prefill_drain_below_batch_size > 1
                 and self.result_queue
                 and self.last_batch is not None
                 and self.last_batch.forward_mode.is_extend()
                 and sum(not request.finished() for request in self.running_batch.reqs)
                 + len(self.last_batch.reqs)
-                < self.async_decode_min_batch_size
+                < self.prefill_drain_below_batch_size
             ):
                 pending_batch, pending_result = self.result_queue.popleft()
                 self.process_batch_result(pending_batch, pending_result)

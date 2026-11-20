@@ -60,6 +60,7 @@ def make_moss_engine_builder(
         enable_async_decode=enable_async_decode,
         enable_plain_fallback=False,
         async_decode_min_batch_size=2,
+        prefill_drain_below_batch_size=None,
         prefill_coalesce_requests=0,
         prefill_coalesce_wait_ms=0.0,
         prefill_coalesce_when_idle=True,
@@ -418,6 +419,7 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     scheduler_kwargs = calls["scheduler_kwargs"][0]
     assert scheduler_kwargs["enable_async_decode"] is True
     assert scheduler_kwargs["async_decode_min_batch_size"] == 1
+    assert scheduler_kwargs["prefill_drain_below_batch_size"] is None
     assert scheduler_kwargs["prefill_coalesce_requests"] == 4
     assert scheduler_kwargs["prefill_coalesce_wait_ms"] == 12.0
     assert scheduler_kwargs["prefill_coalesce_when_idle"] is True
