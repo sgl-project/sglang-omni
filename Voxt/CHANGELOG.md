@@ -58,6 +58,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **System dictation keeps recognized text when stopping**: an empty result from macOS no longer clears the live transcript and causes Voxt to report no speech.
 - **A feature's unavailable language model is not replaced silently**: when the model chosen for Transcribe, Translate or Rewrite is no longer ready, Voxt no longer sends the text to the first ready service. Translate can still use its explicitly selected fallback model.
 - **A saved note no longer looks like an error**: after you recorded a note with the note shortcut, the "Saved to Notes" notice showed the red error mark, so a note that was saved looked as if it had failed. The notice now shows the green tick, as "Added to the dictionary" does.
+- **Rewrite cleanup uses earlier turns without exempting new control markup** (#4085): literal thinking markup in earlier turns stays intact, while new reasoning blocks and control tokens are still removed. An orphan close surrounded by newlines is removed with its reasoning; inline literal closes keep the surrounding answer.
+- **Literal thinking markers keep the surrounding answer** (#4085): a `<channel|>` mention before punctuation and an unmatched `</think>` mention between words no longer discard the text around them in streamed, final, or structured answers.
+- **Answers no longer show a model's raw tool-call or thinking control markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged. An unmatched thinking-close marker no longer discards the answer that follows it, and a literal control-token mention inside a sentence stays intact.
+- **Transcribe no longer sends a built-in example for the language model to copy** (#4228): a short dictation could look like an instruction to rewrite the example, so the model returned the built-in weekly-report text instead of your words. Cleanup rules now go in the system prompt without an example conversation, in both the built-in and custom prompt paths. Spoken Translate keeps its translated example.
 
 ### 中文
 
@@ -113,6 +117,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **系统听写停止后保留已识别文字**：macOS 返回空结果时，不再清空实时转录并提示没有声音。
 - **功能选用的语言模型不可用时不再静默换成其他服务**：转录、翻译或改写当前选用的模型不再可用时，Voxt 不会把文字发给列表中的第一个可用服务。翻译仍可使用明确选择的备用模型。
 - **存好的笔记不再像出错**：用笔记快捷键录完后，“已存到笔记”的通知显示的是红色的错误图标，明明存好了，看起来却像失败了。现在显示绿色的对勾，和“已加入词典”一样。
+- **改写清理参考先前轮次，但仍去除新的控制标记**（#4085）：先前轮次里字面提到的思考标记原样保留，新的推理块和控制标记仍会去掉。被换行包围的未配对结束标记连同推理一起去掉，同行内联的字面标记仍保留周围回答。
+- **字面提到的思考标记不再误删周围回答**（#4085）：`<channel|>` 后面紧跟标点，或 `</think>` 未配对地出现在句子中时，流式、最终和结构化回答都会保留周围文字。
+- **回答不再显示语言模型原始的内部工具调用或思考控制标记**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。未配对的思考结束标记不再误删后面的正式回答，句子中字面提到的控制标记也原样保留。
+- **转录不再发送可能被语言模型复制的内置示例**（#4228）：短听写以前可能被当成改写示例的指令，导致模型返回内置周报文本而不是你说的话。现在，清理规则直接写在系统提示词里，内置提示词和自定义提示词都不再附带示例对话；语音翻译仍保留翻译示例。
 
 ## [2.1.1] - 2026-11-17
 
