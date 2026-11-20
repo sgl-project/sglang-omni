@@ -229,6 +229,38 @@ def report_memory_pressure_valid(report: dict[str, object]) -> bool:
     return report_peak_memory_pressure(report) == "normal"
 
 
+def min_preview_samples_valid(row: dict[str, object]) -> bool:
+    """A latency row carries the native min_preview_samples it ran with:
+    the actual value, or null with an unavailable_reason. A numeric 0
+    (written when no native event arrived) is not evidence."""
+    if "min_preview_samples" not in row:
+        return False
+    value = row["min_preview_samples"]
+    if value is None:
+        reason = row.get("min_preview_samples_unavailable_reason")
+        return isinstance(reason, str) and reason.strip() != ""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value > 0
+    return False
+
+
+def distinct_text_hashes(rows: list[dict[str, object]]) -> list[str]:
+    """The text hashes a kept decision must be written against: one per
+    scenario, different scenarios are expected to differ only when the
+    model or config changed them (a cold/warm pair shares one)."""
+    return sorted({str(row.get("text_sha256", "")) for row in rows})
+
+
+def latency_rows_valid(rows: list[dict[str, object]]) -> bool:
+    """Every latency row in a kept group passes the evidence gates."""
+    return bool(rows) and all(
+        min_preview_samples_valid(row) and str(row.get("text_sha256", "")) != ""
+        for row in rows
+    )
+
+
 def report_fast_profile_pressure_recorded(report: dict[str, object]) -> bool:
     pressure = report_peak_memory_pressure(report)
     return pressure == "warning" or pressure == "critical"
@@ -241,10 +273,6 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
         or report.get("errors")
         or (
             not report_memory_pressure_valid(report)
-            and not (
-                report.get("simulated_llm") is True
-                and not isinstance(report.get("resources"), dict)
-            )
             and not (
                 report.get("config", {}).get("fast_profile")
                 and report_fast_profile_pressure_recorded(report)

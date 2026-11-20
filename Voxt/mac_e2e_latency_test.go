@@ -61,27 +61,39 @@ type latencyStages struct {
 }
 
 type latencyResult struct {
-	MainSHA            string  `json:"main_sha"`
-	Scenario           string  `json:"scenario"`
-	Round              int     `json:"round"`
-	Attempt            int     `json:"attempt"`
-	Arm                string  `json:"arm"`
-	MinPreviewSamples  int     `json:"min_preview_samples"`
-	Model              string  `json:"model"`
-	ASRCold            bool    `json:"asr_cold"`
-	VADCold            bool    `json:"vad_cold"`
-	AppReadyMS         float64 `json:"app_ready_ms"`
-	FirstAudioMS       float64 `json:"first_audio_ms"`
-	ServerReadyMS      float64 `json:"server_ready_ms"`
-	ModelLoadMS        float64 `json:"model_load_ms"`
-	FirstPartialMS     float64 `json:"first_partial_ms"`
-	StopToFinalMS      float64 `json:"stop_to_final_ms"`
-	StopToInsertMS     float64 `json:"stop_to_insert_ms"`
-	StopToDoneMS       float64 `json:"stop_to_done_ms"`
-	LiveUpdates        int     `json:"live_updates"`
-	LongestUpdateGapMS float64 `json:"longest_update_gap_ms"`
-	Text               string  `json:"text"`
-	TextSHA256         string  `json:"text_sha256"`
+	MainSHA  string `json:"main_sha"`
+	Scenario string `json:"scenario"`
+	Round    int    `json:"round"`
+	Attempt  int    `json:"attempt"`
+	Arm      string `json:"arm"`
+	// The native min_preview_samples the run used, null when the model
+	// or runtime emitted no such event; a numeric 0 is never written.
+	MinPreviewSamples                  *int    `json:"min_preview_samples"`
+	MinPreviewSamplesUnavailableReason string  `json:"min_preview_samples_unavailable_reason,omitempty"`
+	Model                              string  `json:"model"`
+	ASRCold                            bool    `json:"asr_cold"`
+	VADCold                            bool    `json:"vad_cold"`
+	AppReadyMS                         float64 `json:"app_ready_ms"`
+	FirstAudioMS                       float64 `json:"first_audio_ms"`
+	ServerReadyMS                      float64 `json:"server_ready_ms"`
+	ModelLoadMS                        float64 `json:"model_load_ms"`
+	FirstPartialMS                     float64 `json:"first_partial_ms"`
+	StopToFinalMS                      float64 `json:"stop_to_final_ms"`
+	StopToInsertMS                     float64 `json:"stop_to_insert_ms"`
+	StopToDoneMS                       float64 `json:"stop_to_done_ms"`
+	LiveUpdates                        int     `json:"live_updates"`
+	LongestUpdateGapMS                 float64 `json:"longest_update_gap_ms"`
+	Text                               string  `json:"text"`
+	TextSHA256                         string  `json:"text_sha256"`
+}
+
+// minPreviewEvidence is the actual gate when the native event arrived,
+// else nil: the row then carries the unavailable reason, never a 0.
+func minPreviewEvidence(samples int) *int {
+	if samples > 0 {
+		return &samples
+	}
+	return nil
 }
 
 // readyLine is the runtime's line about a server that became ready.
@@ -354,7 +366,7 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 	milliseconds := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	result := latencyResult{
 		MainSHA: latencyMainSHA(), Scenario: name, Round: round, Attempt: round,
-		Arm: os.Getenv("VOXTNEW_LATENCY_ARM"), MinPreviewSamples: st.minPreviewSamples, Model: id,
+		Arm: os.Getenv("VOXTNEW_LATENCY_ARM"), MinPreviewSamples: minPreviewEvidence(st.minPreviewSamples), Model: id,
 		ASRCold: name != "warm", VADCold: name == "cold",
 		AppReadyMS:   milliseconds(st.appReady),
 		FirstAudioMS: milliseconds(st.heard), ServerReadyMS: milliseconds(st.ready), ModelLoadMS: milliseconds(st.load),
@@ -362,6 +374,9 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 		StopToInsertMS: milliseconds(st.insert), StopToDoneMS: milliseconds(st.done),
 		LiveUpdates: updates, LongestUpdateGapMS: milliseconds(gap), Text: text,
 		TextSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(text))),
+	}
+	if result.MinPreviewSamples == nil {
+		result.MinPreviewSamplesUnavailableReason = "no native moss_preview_timing event for this model or runtime"
 	}
 	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -399,7 +414,7 @@ func TestLatencyResultJSON(t *testing.T) {
 	if !got.ASRCold || !got.VADCold || got.Round != 2 || got.LiveUpdates != 4 || got.LongestUpdateGapMS != 275 {
 		t.Fatalf("scenario metadata: %+v", got)
 	}
-	if got.MainSHA != "49f60636411e24ce4f7441878c9333d68e649a83" || got.Attempt != 2 || got.Arm != "A" || got.MinPreviewSamples != 20000 {
+	if got.MainSHA != "49f60636411e24ce4f7441878c9333d68e649a83" || got.Attempt != 2 || got.Arm != "A" || got.MinPreviewSamples == nil || *got.MinPreviewSamples != 20000 {
 		t.Fatalf("run identity: %+v", got)
 	}
 	if got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
@@ -411,6 +426,28 @@ func TestLatencyResultJSON(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("latency output mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestLatencyResultWritesNullPreviewWithReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", path)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	writeLatencyResult(t, "cold", "asr.test", 1, latencyStages{final: time.Second}, 1, time.Second, "text")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(data, &row); err != nil {
+		t.Fatal(err)
+	}
+	value, present := row["min_preview_samples"]
+	if !present || value != nil {
+		t.Fatalf("a model without the native event must write null, not 0 or a missing field: %v", row)
+	}
+	if reason, _ := row["min_preview_samples_unavailable_reason"].(string); reason == "" {
+		t.Fatalf("a null min_preview_samples needs its unavailable_reason: %v", row)
 	}
 }
 
