@@ -75,9 +75,10 @@ const (
 	LLMQwen3  = "llm.qwen3"
 	LLMGemma4 = "llm.gemma4"
 	// The speech models' DFlash drafts (Draft), one per size: quants of a size share it.
-	ASRAccurateDraft = "asr.accurate.draft"
-	ASRFastDraft     = "asr.fast.draft"
-	ASRMossDraft     = "asr.moss.draft"
+	ASRAccurateDraft     = "asr.accurate.draft"
+	ASRFastDraft         = "asr.fast.draft"
+	ASRMossDraft         = "asr.moss.draft"
+	ASRWhisperLargeDraft = "asr.whisper-large.draft"
 )
 
 // File is one file of a model, at its path in the repo (and in the
@@ -254,7 +255,7 @@ var catalog = []Model{
 	},
 	{
 		ID: ASRWhisperLarge, Name: "Whisper Large v3", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero, AuxWhisperLarge},
-		Family: "whisper", Quant: "fp16",
+		Family: "whisper", Quant: "fp16", Draft: ASRWhisperLargeDraft,
 		Repo: "mlx-community/whisper-large-v3-mlx", Revision: "49e6aa286ad60c14352c404340ded53710378a11",
 		Files: []File{
 			{"config.json", 269, "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3", false},
@@ -311,8 +312,8 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRMossDraft,
-		Family: "moss-transcribe-diarize", Quant: "bf16",
+		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		Family: "moss-transcribe-diarize", Quant: "bf16", Draft: ASRMossDraft,
 		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
 		Files: []File{
 			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},
@@ -374,6 +375,15 @@ var catalog = []Model{
 		Files: []File{
 			{"config.json", 1888, "c240f41c98040d6eec7ca8f0f6bd548d3d9df302cbe10f5a91e2e833d1463250", false},
 			{"model.safetensors", 262451248, "b7ee3fde257d5f0c95a0f8805f62934e202e4d6b7d993f04dd53e4d512045a10", true},
+		},
+	},
+	{
+		ID: ASRWhisperLargeDraft, Name: "Whisper Large v3 Distil draft", Kind: Draft, Runtime: Omni, Family: "whisper-distil", Quant: "bf16",
+		Repo: "wilsonzheng0327/Whisper-large-v3-distil-draft", Revision: "257104348ea24677cf6338967592a9d6078b383b",
+		Files: []File{
+			{"config.json", 1225, "e771f2e9f9ebb1838830c00d3aa2ce7e240874ef0133fa5fab8cd189ca766cdb", false},
+			{"generation_config.json", 4242, "2d07fa6d3ad06295b03b3be822a20b817949c26fdcb45d73c6e73cd4cdbd91b1", false},
+			{"model.safetensors", 1512875008, "de43643bd06cb2139943899fe56ef43a21ed8623f3bf24e57d96592105c30bf3", true},
 		},
 	},
 	{

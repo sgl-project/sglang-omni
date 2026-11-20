@@ -4,21 +4,19 @@ package main
 // else there is; the models' step is onboarding_models.go.
 
 import (
+	"strconv"
+
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // obRow is a line of the guide: an icon, a title and a line under it.
-func obRow(c *ui.Context, key string, ic icons.Icon, title, detail string) {
+func obRow(c *ui.Context, key string, icon icons.Icon, title, detail string) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c.Key(key)).Gap(px(t, sp3)).AlignItems(ui.Start).Padding(px(t, 6), 0).Children(func() {
-		ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+		ui.Icon(c, icon.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 			ui.Text(c, title).FontWeight(600)
 			if detail != "" {
@@ -29,9 +27,9 @@ func obRow(c *ui.Context, key string, ic icons.Icon, title, detail string) {
 }
 
 // obWelcomeStep is the privacy promise.
-func (a *app) obWelcomeStep(c *ui.Context) {
-	if legacyLibrary() != "" { // first, so it shows without scrolling
-		a.obLegacyCard(c)
+func obWelcomeStep(c *ui.Context, state onboardingWelcomeViewState, actions onboardingActions) {
+	if state.LegacyAvailable {
+		obLegacyCard(c, state.Legacy, actions)
 	}
 	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio stays on this Mac"),
 		i18n.T("Speech is recognised on this Mac unless you choose a remote speech service. Text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
@@ -43,80 +41,161 @@ func (a *app) obWelcomeStep(c *ui.Context) {
 
 // obLegacyCard offers the previous Voxt's dictionary when that app's data
 // is on this Mac: one button, then one click in the panel it opens.
-func (a *app) obLegacyCard(c *ui.Context) {
+func obLegacyCard(c *ui.Context, state onboardingLegacyViewState, actions onboardingActions) {
 	t := c.Theme()
 	card(c.Key("ob-legacy")).Children(func() {
 		ui.Column(c).Gap(px(t, sp2)).Children(func() {
 			ui.Text(c, i18n.T("The previous Voxt is on this Mac")).FontWeight(600)
 			caption(c, i18n.T("Click Import from Voxt 1.x to bring over its dictionary, history and settings. The previous Voxt keeps all its data."))
-			if a.ob.legacyDone || a.ob.legacy.failed != "" {
-				a.legacyReportView(c, a.ob.legacy) // legacy_report.go
+			if state.Done || state.Failed != "" {
+				onboardingLegacyReportView(c, state, actions)
 			}
 			button, label := primaryButton, i18n.T("Import from Voxt 1.x")
-			if a.ob.legacyDone {
+			if state.Done {
 				button, label = ghostButton, i18n.T("Import again")
 			}
 			if button(c.Key("ob-legacy-import"), label).Clicked() {
-				a.importLegacy()
+				actions.importLegacy()
 			}
 		})
 	})
 }
 
-// obTryStep is a try step: the shortcut, a sample, the Try area, and
-// the result once it passed.
-func (a *app) obTryStep(c *ui.Context) {
+func onboardingLegacyReportView(c *ui.Context, state onboardingLegacyViewState, actions onboardingActions) {
 	t := c.Theme()
 	k := tok(t)
-	kind, _ := obStepKind(a.ob.step)
-	feature := string(kind)
-	step := a.ob.step
-	// The shortcut.
+	if state.Failed != "" {
+		statusMark(c, icons.DangerTriangle, k.Warning, state.Failed)
+		return
+	}
+	group := func(key string, icon icons.Icon, color ui.Color, title string, lines func()) {
+		ui.Column(c.Key(key)).Gap(px(t, 2)).Children(func() {
+			ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, icon.Linear).Size(px(t, 14), px(t, 14)).TextColor(color).Shrink(0)
+				sectionTitleText(c, title)
+			})
+			ui.Column(c).Gap(px(t, 2)).Padding(0, 0, 0, px(t, 20)).Children(lines)
+		})
+	}
+	group("legacy-imported", icons.CheckCircle, k.Success, i18n.T("Imported"), func() {
+		for _, line := range state.Imported {
+			caption(c, line)
+		}
+	})
+	if len(state.Skipped) > 0 {
+		group("legacy-skipped", icons.InfoCircle, k.Text2, i18n.T("Left out"), func() {
+			for _, line := range state.Skipped {
+				caption(c, line)
+			}
+		})
+	}
+	if len(state.Todos) > 0 {
+		group("legacy-todo", icons.DangerTriangle, k.Warning, i18n.T("To do"), func() {
+			for index, todo := range state.Todos {
+				ui.Row(c.Key("todo-" + strconv.Itoa(index))).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+					caption(c, todo.Text).Grow(1).MinWidth(0)
+					if ghostButton(c.Key("complete"), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", todo.ServiceName)).Clicked() {
+						actions.completeOnboardingLegacyTodo(todo.Kind, todo.ID)
+					}
+				})
+			}
+		})
+	}
+}
+
+func onboardingPermissionRows(c *ui.Context, state onboardingPermissionsViewState, actions onboardingActions) {
+	t := c.Theme()
+	badge := func(text string, ok bool) {
+		if ok {
+			statusMark(c, icons.CheckCircle, t.Success, text)
+		} else {
+			statusMark(c, icons.DangerTriangle, t.Warning, text)
+		}
+	}
+	if state.AskRequired {
+		ui.Row(c).Children(func() {
+			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
+				actions.askRequired()
+			}
+		})
+	}
+	sectionTitle(c, i18n.T("Required"))
+	row := func(key, title, description, privacyURL string, permission onboardingPermissionRowViewState) {
+		settingRow(c, key, title, description, func() {
+			badge(permission.Text, permission.OK)
+			if permission.CanAsk {
+				button := ghostButton(c.Key(key+"-ask"), i18n.T("Ask"))
+				if permission.AskTooltip != "" {
+					button = button.Tooltip(permission.AskTooltip)
+				}
+				if button.Clicked() {
+					actions.askPermission(permission.AskAction, nil)
+				}
+			}
+			if permission.CanOpen {
+				if ghostIconButton(c.Key(key+"-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
+					actions.onboardingOpenPrivacy(privacyURL)
+				}
+			}
+		})
+	}
+	row("perm-mic", i18n.T("Microphone"), "", privacyMicrophone, state.Microphone)
+	row("perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results, read the selected text and the browser tab's address, and use single keys like Right ⌥ as shortcuts."), privacyAccessibility, state.Access)
+	sectionTitle(c, i18n.T("Optional"))
+	settingRow(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+		statusMark(c, icons.InfoCircle, tok(t).Text2, i18n.T("Unknown")).Tooltip(i18n.T("macOS does not let apps read this permission. Check it in System Settings."))
+		if ghostButton(c.Key("perm-system-audio-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
+			actions.askPermission("systemAudio", nil)
+		}
+		if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
+			actions.onboardingOpenPrivacy(privacyAudioCapture)
+		}
+	})
+	row("perm-speech", i18n.T("Speech Recognition"), i18n.T("Needed only for System dictation."), privacySpeech, state.Speech)
+	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
+		if secondaryIconButton(c.Key("perm-recheck"), icons.Refresh, i18n.T("Check again")).Label(i18n.T("Check again")).Clicked() {
+			actions.recheckPermissions()
+		}
+		infoTip(c.Key("perm-note"), i18n.T("After changing a permission, you may need to reopen Voxt."))
+	})
+}
+
+// obTryStep is a try step: the shortcut, a sample, the Try area, and
+// the result once it passed.
+func obTryStep(c *ui.Context, state onboardingTryViewState, actions onboardingActions) {
+	t := c.Theme()
+	k := tok(t)
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-		hs := hotkey.HotkeysOf(a.prefs.Features, feature)
-		if len(hs) == 0 {
-			caption(c, i18n.T("%s has no shortcut yet. Use Start, or add one on its page.", uitext.KindTitle(kind)))
+		if !state.Shortcut.Present {
+			caption(c, i18n.T("%s has no shortcut yet. Use Start, or add one on its page.", state.Shortcut.FeatureTitle))
 			return
 		}
 		caption(c, i18n.T("Shortcut"))
-		h := hs[0]
-		ui.Text(c, uitext.HotkeyText(h.Keys)).FontSize(px(t, fsCaption)).Font("monospace").Padding(px(t, 2), px(t, 8)).Radius(px(t, 4)).Background(k.Hover)
-		caption(c, uitext.TriggerHowText(h.Trigger))
-		if hotkey.NeedsTap(h) && !a.hotkeys.Installed {
+		ui.Text(c, state.Shortcut.Text).FontSize(px(t, fsCaption)).Font("monospace").Padding(px(t, 2), px(t, 8)).Radius(px(t, 4)).Background(k.Hover)
+		caption(c, state.Shortcut.How)
+		if state.Shortcut.AccessibilityWarning {
 			warnLine(c, i18n.T("This shortcut works once Voxt has Accessibility access. Start works now."))
 		}
 	})
-	if hs := hotkey.HotkeysOf(a.prefs.Features, feature); len(hs) > 0 {
-		a.obKeyboard(c, hs[0].Keys) // onboarding_keys.go
-	}
-	problemLines(c, a.conflictLines(feature, 0)) // another ActNow app's keys too
-	if a.ob.passed[step] {
+	obKeyboard(c, state.Shortcut.Keyboard)
+	problemLines(c, state.Conflicts)
+	if state.Passed {
 		notice(c, "ob-passed", noticeOK, i18n.T("It works. Continue, or try again."), "", nil, nil)
 	}
-	// A sample.
-	switch kind {
-	case store.KindTranscribe:
-		obSample(c, "ob-sample", i18n.T("Read this, or say anything"), i18n.T("Um, so the design review moves to Thursday afternoon, no, Friday morning, and I'll send the agenda tonight."), nil)
-	case store.KindTranslate:
-		target := session.TranslateTarget(a.prefs, i18n.Locale(), "")
-		sample := i18n.T("Let's go camping in the mountains this weekend; remember to bring a warm jacket and a torch.")
-		obSample(c, "ob-sample", i18n.T("Sample text · into %s", uitext.TargetLanguageLabel(target)), sample, func() {
-			if ui.Button(c.Key("ob-translate-sample"), i18n.T("Translate this text")).Disabled(a.sess.State.Live()).Clicked() {
-				a.obTry(sample)
+	var sampleAction func()
+	if state.SampleAction {
+		sampleAction = func() {
+			if ui.Button(c.Key("ob-translate-sample"), i18n.T("Translate this text")).Disabled(state.Card.Live).Clicked() {
+				_ = actions.obTry(state.SampleText)
 			}
-		})
-	case store.KindRewrite:
-		obSample(c, "ob-sample", i18n.T("Say, for example"), i18n.T("Write a short note to the team saying I'll be ten minutes late to the stand-up."), nil)
+		}
 	}
-	if a.ob.hint != "" {
-		warnLine(c, a.ob.hint)
+	obSample(c, "ob-sample", state.SampleTitle, state.SampleText, sampleAction)
+	if state.Hint != "" {
+		warnLine(c, state.Hint)
 	}
-	a.obTryPrereqs(c, kind, "ob-"+uitext.FeaturePrefix(feature))
-	id := a.ob.tries[step]
-	a.tryCard(c, tryOpts{
-		prefix: "ob-" + uitext.FeaturePrefix(feature), feature: feature, mine: id != "" && a.sess.ID == id,
-		block: &a.ob.block, start: func() *sessionNotice { return a.obTry("") },
-	})
+	obTryPrereqs(c, state, actions)
+	obTryCard(c, state.Prefix, state.Card, actions)
 }
 
 // obSample is a sample text in a grey card, with a title and an action.
@@ -134,20 +213,19 @@ func obSample(c *ui.Context, key, title, text string, action func()) {
 
 // obMoreStep introduces App enhancement and the dictionary, and lists
 // the shortcuts.
-func (a *app) obMoreStep(c *ui.Context) {
+func obMoreStep(c *ui.Context, state onboardingMoreViewState, actions onboardingActions) {
 	t := c.Theme()
 	k := tok(t)
-	feature := func(key string, ic icons.Icon, title, about, button, path string) {
+	feature := func(key string, icon icons.Icon, title, about, button, path string) {
 		card(c.Key(key)).Children(func() {
 			ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-				ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+				ui.Icon(c, icon.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
 				ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
 					ui.Text(c, title).FontWeight(600)
 					caption(c, about)
 					ui.Row(c).Children(func() {
 						if ui.Button(c.Key(key+"-open"), button).Clicked() {
-							a.finishOnboarding() // the last step: the guide is done
-							a.navigate(path)
+							actions.finishOnboarding(path)
 						}
 					})
 				})
@@ -161,21 +239,38 @@ func (a *app) obMoreStep(c *ui.Context) {
 		i18n.T("Names and jargon the speech model should expect and the language model should keep as written."),
 		i18n.T("Open Dictionary"), "/dictionary")
 	sectionTitle(c, i18n.T("Your shortcuts"))
-	a.shortcutPresetPicker(c, "ob")
+	onboardingShortcutPresetPicker(c, state, actions)
 	ui.Column(c.Key("ob-keys")).Gap(px(t, sp1)).Children(func() {
-		row := func(feature, keys string) {
+		for _, row := range state.Shortcuts {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, uitext.FeatureTitle(feature)).Grow(1).MinWidth(0)
-				if keys == "" {
-					keys = i18n.T("None")
-				}
-				ui.Text(c, keys).FontSize(px(t, fsCaption)).Font("monospace").TextColor(k.Text2)
+				ui.Text(c, row.Title).Grow(1).MinWidth(0)
+				ui.Text(c, row.Keys).FontSize(px(t, fsCaption)).Font("monospace").TextColor(k.Text2)
 			})
-			problemLines(c, a.conflictLines(feature, 0)) // another ActNow app's keys too
+			problemLines(c, row.Problems)
 		}
-		for _, f := range hotkey.Features {
-			row(f, a.featureKeys(f))
-		}
-		row(hotkey.PasteLast, uitext.HotkeyText(a.prefs.Features.PasteLast.Keys))
 	})
+}
+
+func onboardingShortcutPresetPicker(c *ui.Context, state onboardingMoreViewState, actions onboardingActions) {
+	t := c.Theme()
+	settingRow(c, "ob-preset", i18n.T("Preset"), i18n.T("You can change them later in Settings → Shortcuts."), func() {
+		options := make([]string, len(state.PresetOptions))
+		for index, option := range state.PresetOptions {
+			options[index] = option.Label
+		}
+		selected := state.PresetSelected
+		if ui.Select(c.Key("ob-preset-sel"), &selected, options).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
+			for _, option := range state.PresetOptions {
+				if option.Label == selected {
+					actions.applyShortcutPreset(option.ID)
+				}
+			}
+		}
+	})
+	if state.PresetAbout != "" {
+		caption(c, state.PresetAbout)
+	}
+	for _, warning := range state.PresetWarnings {
+		warnLine(c, warning)
+	}
 }

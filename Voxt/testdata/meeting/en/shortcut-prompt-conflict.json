@@ -1,0 +1,11 @@
+{
+  "name": "shortcut-prompt-conflict",
+  "kind": "shortcut-prompt",
+  "shortcut_prompt": {
+    "keys": "Right ⌥",
+    "other_app": "Fixture Other App",
+    "function": "Fixture transcription",
+    "link": "fixture-other:///shortcuts",
+    "feature_path": "/transcribe"
+  }
+}

@@ -119,6 +119,7 @@ class Qwen3ASRPreLMEncoderService(
 ):
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
+    USE_DEFAULT_CUDA_STREAM = False
     ENCODE_TIMEOUT_S = 300.0
     MODEL_NAME = "Qwen3-ASR"
     WORKER_NAME = "qwen3-asr-audio-encode"
@@ -140,11 +141,12 @@ class Qwen3ASRPreLMEncoderService(
         self.hidden_size = self.output_hidden_size(model)
         # Keep encoder submissions off the generation lane on Ascend, where the
         # decode graph replay and update threads can otherwise stall behind it.
-        self.stream = (
-            create_device_stream(self.device)
-            if self.device.type in {"cuda", "npu"}
-            else None
-        )
+        if self.device.type == "cuda" and self.USE_DEFAULT_CUDA_STREAM:
+            self.stream = torch.cuda.default_stream(self.device)
+        elif self.device.type in {"cuda", "npu"}:
+            self.stream = create_device_stream(self.device)
+        else:
+            self.stream = None
         self.cache = StageOutputCache(
             max_size=cache_max_entries,
             max_bytes=cache_max_bytes,

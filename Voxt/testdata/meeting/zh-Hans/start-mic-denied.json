@@ -1,0 +1,8 @@
+{
+  "name": "start-mic-denied",
+  "kind": "start",
+  "start": {
+    "code": "meeting.mic.unavailable",
+    "text": "没能录麦克风。请在“系统设置 → 隐私与安全性 → 麦克风”里允许 Voxt。"
+  }
+}

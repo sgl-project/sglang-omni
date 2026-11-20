@@ -34,6 +34,8 @@ from sglang_omni.models.ming3_tts.acoustic import (
 from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
 from sglang_omni.modules.ming_audio.flow.cfm import get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.flow_loss import FlowLoss
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +190,7 @@ def install_speech_heads(
 class AcousticGraph:
     """A captured step; the graph reads sampling_scales and constants, so they must outlive capture."""
 
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     inputs: AcousticInputs
     sampling_scales: torch.Tensor
     constants: FlowConstants | None
@@ -278,8 +280,14 @@ class SpeechHeadModel:
     def capture_acoustic_graphs(self, max_batch_size: int) -> None:
         """Capture batch buckets up to max_batch_size in one memory pool."""
         device = self.stop_head.weight.device
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            return
+        else:
+            pass
+        device_module = torch.get_device_module(device)
         latent_dim = int(self.config.tts_config["latent_dim"])
-        memory_pool = torch.cuda.graph_pool_handle()
+        memory_pool = graph_backend.graph_pool_handle()
         # note (rsi): a replay pays for every padded row of its bucket, so
         # small batches, where decode spends most steps, get exact buckets.
         bucket_batch_sizes = {
@@ -303,14 +311,13 @@ class SpeechHeadModel:
             )
             sampling_scales = self.build_sampling_scales(batch_size)
             constants = self.build_flow_constants(batch_size)
-            stream = torch.cuda.Stream(device=device)
-            stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(stream):
+            stream = device_module.Stream(device=device)
+            stream.wait_stream(device_module.current_stream(device))
+            with device_module.stream(stream):
                 for _ in range(ACOUSTIC_GRAPH_WARMUP_STEPS):
                     self.compute_acoustic_step(inputs, sampling_scales, constants)
-            torch.cuda.current_stream(device).wait_stream(stream)
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, pool=memory_pool, stream=stream):
+            device_module.current_stream(device).wait_stream(stream)
+            with graph_backend.capture(pool=memory_pool, stream=stream) as graph:
                 outputs = self.compute_acoustic_step(inputs, sampling_scales, constants)
             self.acoustic_graphs[batch_size] = AcousticGraph(
                 graph=graph,

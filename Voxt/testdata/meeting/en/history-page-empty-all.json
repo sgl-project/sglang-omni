@@ -1,0 +1,28 @@
+{
+  "name": "history-page-empty-all",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [],
+    "empty": {
+      "search": false,
+      "kind": "",
+      "title": "No history yet",
+      "body": "Transcriptions, translations and rewrites show up here.",
+      "action_label": ""
+    }
+  }
+}

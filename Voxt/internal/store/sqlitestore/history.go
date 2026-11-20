@@ -16,7 +16,8 @@ import (
 )
 
 // historyRepo stores finished sessions (the history table: migration 001,
-// rule_source 002, sent_ms 003, dsp and gain_db 004, audio_until 005, conversation 008;
+// rule_source 002, sent_ms 003, dsp and gain_db 004, audio_until 005, conversation 008,
+// title and replaces 009, typed_text 012;
 // the app a result was inserted into rides in delivery, joinDelivery);
 // its recordings folder and clean-up are in history_retention.go.
 type historyRepo struct {
@@ -30,7 +31,7 @@ type historyRepo struct {
 // historyColumns are the columns an Entry has, in scanEntry's order.
 const historyColumns = `id, kind, created_at, status, error, app_bundle, app_name, url_host, rule_id, rule_name,
 raw_text, source_text, prompt_text, result, target_lang, delivery, asr_provider, asr_model, llm_provider, llm_model,
-audio_ms, asr_ms, llm_ms, total_ms, audio, rule_source, sent_ms, dsp, gain_db, audio_until, conversation`
+audio_ms, asr_ms, llm_ms, total_ms, audio, rule_source, sent_ms, dsp, gain_db, audio_until, conversation, title, replaces, typed_text`
 
 var historyUpsert = func() string {
 	cols := strings.Split(strings.ReplaceAll(historyColumns, "\n", " "), ",")
@@ -61,7 +62,7 @@ func (r *historyRepo) Put(ctx context.Context, e store.Entry) error {
 	_, err := r.db.Execute(ctx, historyUpsert,
 		e.ID, string(e.Kind), e.CreatedAt.UnixMilli(), string(e.Status), e.Error, e.AppBundle, e.AppName, e.URLHost, e.RuleID, e.RuleName,
 		e.RawText, e.SourceText, e.PromptText, e.Result, e.TargetLang, joinDelivery(e), e.ASRProvider, e.ASRModel, e.LLMProvider, e.LLMModel,
-		e.AudioMS, e.ASRMS, e.LLMMS, e.TotalMS, e.Audio, e.RuleSource, e.SentMS, e.DSP, e.GainDB, untilMS(e.AudioUntil), e.Conversation)
+		e.AudioMS, e.ASRMS, e.LLMMS, e.TotalMS, e.Audio, e.RuleSource, e.SentMS, e.DSP, e.GainDB, untilMS(e.AudioUntil), e.Conversation, e.Title, e.Replaces, e.TypedText)
 	return wrap("history "+e.ID, err)
 }
 
@@ -94,7 +95,7 @@ func scanEntry(row []any) store.Entry {
 		ASRProvider: str(16), ASRModel: str(17), LLMProvider: str(18), LLMModel: str(19),
 		AudioMS: asInt(row[20]), ASRMS: asInt(row[21]), LLMMS: asInt(row[22]), TotalMS: asInt(row[23]), Audio: str(24),
 		RuleSource: str(25), SentMS: asInt(row[26]), DSP: str(27), GainDB: asFloat(row[28]),
-		AudioUntil: untilTime(row[29]), Conversation: str(30),
+		AudioUntil: untilTime(row[29]), Conversation: str(30), Title: str(31), Replaces: str(32), TypedText: str(33),
 	}
 	splitDelivery(&e, str(15))
 	return e
@@ -138,12 +139,15 @@ func historyWhere(q store.HistoryQuery) (string, []any) {
 			args = append(args, ftsPhrase(s))
 		} else {
 			p := likePattern(s)
-			where = append(where, `(raw_text LIKE ? ESCAPE '\' OR source_text LIKE ? ESCAPE '\' OR prompt_text LIKE ? ESCAPE '\' OR result LIKE ? ESCAPE '\')`)
-			args = append(args, p, p, p, p)
+			where = append(where, `(raw_text LIKE ? ESCAPE '\' OR source_text LIKE ? ESCAPE '\' OR prompt_text LIKE ? ESCAPE '\' OR result LIKE ? ESCAPE '\' OR typed_text LIKE ? ESCAPE '\')`)
+			args = append(args, p, p, p, p, p)
 		}
 	}
 	if q.Kind != "" {
 		where, args = append(where, `kind = ?`), append(args, string(q.Kind))
+	}
+	if q.Conversation != "" {
+		where, args = append(where, `conversation = ?`), append(args, q.Conversation)
 	}
 	if q.WithAudio {
 		where = append(where, `audio != ''`)

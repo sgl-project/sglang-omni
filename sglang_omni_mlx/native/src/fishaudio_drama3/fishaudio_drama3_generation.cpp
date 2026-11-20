@@ -12,6 +12,7 @@
 #include <stdexcept>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 #include "fishaudio_drama3/fishaudio_drama3_text.h"
 
@@ -136,7 +137,7 @@ mx::array Drama3Model::Prefill(const mx::array &frames, ModelCaches &caches,
       for (const mx::array &array : cache.attention.Arrays())
         state.push_back(array);
     }
-    for (const qwen3_asr::KVCache &cache : caches.tower) {
+    for (const omni_common::KVCache &cache : caches.tower) {
       for (const mx::array &array : cache.Arrays())
         state.push_back(array);
     }
