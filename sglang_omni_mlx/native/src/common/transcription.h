@@ -2,6 +2,7 @@
 // Model-independent transcription results and their JSON form.
 #pragma once
 
+#include <chrono>
 #include <optional>
 #include <string>
 #include <vector>
@@ -39,6 +40,20 @@ struct TranscriptionResult {
   // Ordered text of each window in a multi-window Whisper request.
   std::vector<std::string> window_texts;
 };
+
+// Realtime preview timing without prompt, transcript or speaker content.
+struct MossPreviewTiming {
+  int window_id = 0;
+  std::string kind = "preview";
+  int audio_sample_count = 0;
+  int64_t append_ms = 0;
+  int64_t decision_ms = 0;
+  int64_t submit_ms = 0;
+  int64_t transcribe_ms = 0;
+  int64_t publish_ms = 0;
+};
+
+nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing);
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
 // and language, emotion and event when set.

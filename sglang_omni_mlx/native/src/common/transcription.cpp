@@ -5,6 +5,18 @@
 
 namespace omni_common {
 
+nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing) {
+  return {{"event", "moss_preview_timing"},
+          {"window_id", timing.window_id},
+          {"kind", timing.kind},
+          {"audio_sample_count", timing.audio_sample_count},
+          {"append_ms", timing.append_ms},
+          {"decision_ms", timing.decision_ms},
+          {"submit_ms", timing.submit_ms},
+          {"transcribe_ms", timing.transcribe_ms},
+          {"publish_ms", timing.publish_ms}};
+}
+
 nlohmann::ordered_json
 SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments) {
   nlohmann::ordered_json array = nlohmann::ordered_json::array();

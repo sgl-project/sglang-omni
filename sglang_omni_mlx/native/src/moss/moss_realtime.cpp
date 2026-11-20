@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <stdexcept>
 
 #include "common/audio.h"
@@ -16,6 +17,17 @@ using omni_common::SpeakerSegment;
 using omni_common::SpeakerSegmentsJson;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::TranscriptionResult;
+
+namespace omni_common {
+
+int64_t MillisecondsSinceEpoch(
+    const std::chrono::steady_clock::time_point &time_point) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             time_point.time_since_epoch())
+      .count();
+}
+
+} // namespace omni_common
 
 namespace {
 
@@ -93,6 +105,7 @@ bool MossRealtimeSession::Handle(const nlohmann::json &message) {
 }
 
 void MossRealtimeSession::Append(const nlohmann::json &audio) {
+  const auto append_started = std::chrono::steady_clock::now();
   const std::optional<std::vector<float>> appended = AppendedSamples(audio);
   if (!appended.has_value()) {
     return;
@@ -100,6 +113,7 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
   }
   std::optional<Decode> decode;
   MossOptions options;
+  ::omni_common::MossPreviewTiming timing;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_samples_.insert(pending_samples_.end(), appended->begin(),
@@ -111,19 +125,34 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
       return;
     }
   }
+  const auto decision_started = std::chrono::steady_clock::now();
+  timing.window_id = decode->window_id;
+  timing.kind = decode->kind == DecodeKind::kPreview ? "preview" : "final";
+  timing.audio_sample_count = static_cast<int>(decode->samples.size());
+  timing.append_ms = omni_common::MillisecondsSinceEpoch(append_started);
+  timing.decision_ms = omni_common::MillisecondsSinceEpoch(decision_started);
+  timing.submit_ms = omni_common::MillisecondsSinceEpoch(
+      std::chrono::steady_clock::now());
   omni_server::Transcription job = DecodeJob(*decode, std::move(options));
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
   worker_.Submit(
       std::move(job), cancel_,
-      [weak_self, decode = std::move(*decode)](
-          std::optional<TranscriptionResult> result, std::exception_ptr error) {
+      [weak_self, decode = std::move(*decode), timing](
+          std::optional<TranscriptionResult> result, std::exception_ptr error) mutable {
         const std::shared_ptr<MossRealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
         } else if (error) {
           self->ReportDecodeFailure(error);
         } else {
+          const auto transcribe_finished = std::chrono::steady_clock::now();
+          timing.transcribe_ms =
+              omni_common::MillisecondsSinceEpoch(transcribe_finished);
+          timing.publish_ms = omni_common::MillisecondsSinceEpoch(
+              std::chrono::steady_clock::now());
+          std::cerr << ::omni_common::MossPreviewTimingJson(timing).dump()
+                    << "\n";
           self->Publish(decode, *result);
         }
         {
