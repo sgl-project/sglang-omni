@@ -15,7 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Rewrite is one card from the shortcut to the last follow-up** (#4375): the Rewrite card no longer hands over to a preview at the screen's edge and then to a separate answer card. It stays while your speech is recognised and the language model works, and says what it is doing; the answer is written in that same card, above the text box, with Insert and Copy in its header. The text box stays at the foot of the card: type there and press Enter to follow up (no recording needed), or press the Rewrite shortcut to say it, and the conversation scrolls above. The card keeps one height and follows Rewrite's card size for its width (Fill included), with the size button in its corner. Typed text alone is now enough: nothing has to be said. With Rewrite's card switched off, the card closes once the result is inserted. Sending again after a failure keeps the card too.
-- **The Rewrite card can be dragged again, and other windows can go over it**: since Rewrite became one card (#4375), the card could not be moved and floated above every app's windows. Drag it by its margins or its header, as the answer card; it keeps its place when its size changes and through follow-ups, stays on the screen, and opens at its usual place next time. It no longer stays on top: another app's window can cover it, and the Rewrite shortcut brings it back in front.
+- **Cards can be dragged and covered by other windows; only previews stay on top**: since Rewrite became one card (#4375), its card could not be moved, and like every answer card it floated above all apps' windows. Drag the Rewrite card by its margins or its header, as the answer card; it keeps its place when its size changes and through follow-ups, stays on the screen, and opens at its usual place next time. Answer cards and the Rewrite card no longer stay on top: another app's window can cover them. A card comes in front when it opens and with each new answer, and the Rewrite shortcut brings the Rewrite card back. The recording pill and its live text, and the meeting's live window, are previews and still stay on top.
 
 ### 中文
 
@@ -30,7 +30,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **改写从按下快捷键到最后一次追问只有一张卡片**（#4375）：改写卡片不再先换成屏幕边缘的预览条、再换成另一张结果卡片。识别语音和语言模型处理时它一直留在屏幕上，并说明正在做什么；结果直接写在这张卡片里、输入框的上方，标题栏有“插入”和“复制”。输入框一直在卡片底部：在里面打字按 Enter 就是追问（不用录音），也可以按改写快捷键说出来，对话在上方滚动。卡片高度固定，宽度跟随改写的卡片大小（包括“充满”），角上有切换大小的按钮。只打字不说话也可以发送。关掉改写的“显示卡片”时，结果插入后卡片关闭。发送失败后再次发送，卡片同样留着。
-- **改写卡片又可以拖动，别的窗口也能盖住它**：改写变成一张卡片（#4375）之后，卡片拖不动，而且浮在所有 App 的窗口之上。现在和答案卡片一样，按住卡片的空白处或标题栏就能拖动；换卡片大小和追问时留在拖到的位置，并始终留在屏幕内，下次打开回到原来的位置。卡片不再置顶：别的 App 的窗口可以盖住它，再按改写快捷键它会回到最前。
+- **卡片可以拖动，也能被别的窗口盖住；只有预览置顶**：改写变成一张卡片（#4375）之后，改写卡片拖不动，而且和所有答案卡片一样浮在所有 App 的窗口之上。现在和答案卡片一样，按住改写卡片的空白处或标题栏就能拖动；换卡片大小和追问时留在拖到的位置，并始终留在屏幕内，下次打开回到原来的位置。答案卡片和改写卡片不再置顶：别的 App 的窗口可以盖住它们。卡片出现时和每次有新答案时回到最前，再按改写快捷键，改写卡片也会回到最前。录音时的浮窗胶囊和实时文字、会议浮窗是预览，仍然置顶。
 
 ## [2.1.2] - 2026-11-19
 
