@@ -1193,6 +1193,31 @@ def test_admin_routes_forward_to_client() -> None:
     ]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_chat_pcm16_returns_raw_samples(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    """Chat returned a WAV header as PCM samples in both JSON and SSE."""
+    client, _, _ = streaming_client()
+    monkeypatch.setattr(client, "generate", SuccessfulSpeechClient().generate)
+    response = TestClient(create_app(client, model_name="qwen3-omni")).post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "Say hello."}],
+            "modalities": ["audio"],
+            "audio": {"format": "pcm16", "voice": "alloy"},
+            "stream": stream,
+        },
+    )
+    assert response.status_code == 200
+    if stream:
+        event = json.loads(next(response.iter_lines()).removeprefix("data: "))
+        audio = event["choices"][0]["delta"]["audio"]
+    else:
+        audio = response.json()["choices"][0]["message"]["audio"]
+    assert base64.b64decode(audio["data"]) == struct.pack("<4h", 0, 3276, -3276, 0)
+
+
 def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
     chunks: list[str] = []
     client = fault_client("qwen3-omni")
