@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -88,8 +89,9 @@ func TestCardResizeOnCard(t *testing.T) {
 }
 
 // TestCardFillSize: the fill size takes the width the work area leaves
-// for the card, never less than the large card, and the card's window
-// stays inside the work area.
+// for the card, never less than the large card, the card's window
+// stays inside the work area, and a rendered fill card passes the ink
+// check (its width is no CardSizes literal).
 func TestCardFillSize(t *testing.T) {
 	saved := ovTestArea
 	t.Cleanup(func() { ovTestArea = saved })
@@ -109,6 +111,15 @@ func TestCardFillSize(t *testing.T) {
 		if f := a.ov.frame; f.X < area.X || f.X+f.Width > area.X+area.Width {
 			t.Errorf("area %+v: the card's window %+v reaches past it", area, f)
 		}
+		img := renderOverlay(t, a)
+		if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cachedCardRef())); len(bad) > 0 {
+			t.Errorf("area %+v: the fill card's ink: %v", area, bad)
+		}
+		if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
+			var b bytes.Buffer
+			png.Encode(&b, img)
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("card-fill-%d.png", area.Width)), b.Bytes(), 0o644)
+		}
 	}
 }
 
@@ -127,6 +138,3 @@ func TestCardFitsTheScreen(t *testing.T) {
 		t.Errorf("the card's window %+v is not inside the work area %+v", f, ovTestArea)
 	}
 }
-
-// TestCardDragged: a card the user dragged (overlayDragged keeps the
-// offset) keeps its place as its answer grows, stays on the screen, and
