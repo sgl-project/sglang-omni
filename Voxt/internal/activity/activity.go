@@ -13,10 +13,9 @@ import (
 // Key is the document the log is stored under (store.Documents).
 const Key = "activity:days"
 
-// Day is one day's finished results: how many, and their characters.
+// Day is one day's finished results.
 type Day struct {
 	Count int `json:"count"`
-	Chars int `json:"chars,omitempty"`
 }
 
 // Log is the days with at least one finished result, by local date
@@ -28,15 +27,14 @@ type Log struct {
 // DayKey is t's local date, the log's key for its day.
 func DayKey(t time.Time) string { return t.Format("2006-01-02") }
 
-// Add counts a finished result of chars characters on t's day.
-func (l *Log) Add(t time.Time, chars int) {
+// Add counts a finished result on t's day.
+func (l *Log) Add(t time.Time) {
 	if l.Days == nil {
 		l.Days = map[string]Day{}
 	}
 	key := DayKey(t)
 	day := l.Days[key]
 	day.Count++
-	day.Chars += max(chars, 0)
 	l.Days[key] = day
 }
 

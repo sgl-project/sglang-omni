@@ -68,7 +68,7 @@ func TestActivityCountsHistoryThenSessions(t *testing.T) {
 	end("try", session.Snapshot{State: session.Done, Result: "Hello.", Try: true})
 	end("failed", session.Snapshot{State: session.Failed})
 	end("blank", session.Snapshot{State: session.Done, Result: "  "})
-	if got := a.act.log.Get(now); got.Count != 1 || got.Chars != countChars("Hello.") {
+	if got := a.act.log.Get(now); got.Count != 1 {
 		t.Fatalf("today: %+v", got)
 	}
 	untilActivity(t, tt, "the log stored with today", func() bool {
@@ -93,7 +93,7 @@ func TestActivityPendingBeforeRead(t *testing.T) {
 	a, tt := homeTester(t)
 	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
 	var stored activity.Log
-	stored.Add(time.Now().AddDate(0, 0, -1), 5)
+	stored.Add(time.Now().AddDate(0, 0, -1))
 	data, _ := stored.Marshal()
 	if err := a.lib.store.Documents().Put(context.Background(), activity.Key, data); err != nil {
 		t.Fatal(err)
@@ -112,12 +112,12 @@ func TestHomeActivityViewState(t *testing.T) {
 	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local) // a Friday
 	var log activity.Log
 	for _, d := range []int{-1, 0} {
-		log.Add(now.AddDate(0, 0, d), 3)
+		log.Add(now.AddDate(0, 0, d))
 	}
 	for range 12 {
-		log.Add(now.AddDate(0, 0, -3), 1)
+		log.Add(now.AddDate(0, 0, -3))
 	}
-	log.Add(now.AddDate(0, -9, 0), 1) // before this page
+	log.Add(now.AddDate(0, -9, 0)) // before this page
 	tr := i18n.NewTranslator("en")
 	state := buildHomeActivityViewState(tr, log, 0, now)
 	if got := []string{state.Stats[0].Value, state.Stats[1].Value, state.Stats[2].Value}; got[0] != "4" || got[1] != "2" || got[2] != "2" {
@@ -160,7 +160,7 @@ func TestHomeActivityViewState(t *testing.T) {
 func TestHomeActivityShows(t *testing.T) {
 	a, tt := homeTester(t)
 	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
-	a.act.log.Add(time.Now(), 4)
+	a.act.log.Add(time.Now())
 	a.act.gen++
 	frames(tt)
 	for _, s := range []string{"Activity", "Active days", "Current streak", "Longest streak", "Less often", "More often"} {
@@ -172,7 +172,7 @@ func TestHomeActivityShows(t *testing.T) {
 	if _, ok := tt.Find(today); !ok {
 		t.Fatalf("no square for today (%q)", today)
 	}
-	a.act.log.Add(time.Now().AddDate(-1, 0, 0), 1)
+	a.act.log.Add(time.Now().AddDate(-1, 0, 0))
 	a.act.gen++
 	click(t, tt, "Earlier weeks")
 	if a.act.page != 1 {
@@ -181,5 +181,31 @@ func TestHomeActivityShows(t *testing.T) {
 	click(t, tt, "Later weeks")
 	if a.act.page != 0 {
 		t.Fatalf("back to today: page %d", a.act.page)
+	}
+}
+
+// TestActivityPendingSeenByTheCount: a result that ended while the first
+// count read the history is added once: not again when the count saw its
+// entry, and when the count read that day before the entry was written.
+func TestActivityPendingSeenByTheCount(t *testing.T) {
+	a, tt := homeTester(t)
+	ctx := context.Background()
+	docs := a.lib.store.Documents()
+	untilActivity(t, tt, "the first log stored", func() bool { _, ok, _ := docs.Get(ctx, activity.Key); return ok })
+	if err := docs.Delete(ctx, activity.Key); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := a.lib.store.History().Put(ctx, store.Entry{ID: "counted", Kind: store.KindTranscribe, CreatedAt: now, Status: store.StatusDone, Result: "In the history."}); err != nil {
+		t.Fatal(err)
+	}
+	a.act = homeActivity{loading: true} // the count is on its way
+	a.recordActivity(session.Snapshot{ID: "counted", State: session.Done, Result: "In the history.", StartedAt: now})
+	a.recordActivity(session.Snapshot{ID: "missed", State: session.Done, Result: "Written after the count.", StartedAt: now})
+	a.act.loading = false
+	a.loadActivity()
+	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
+	if got := a.act.log.Get(now).Count; got != 2 {
+		t.Fatalf("today counted %d, want the history's entry once and the missed result", got)
 	}
 }

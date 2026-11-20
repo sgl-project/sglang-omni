@@ -16,7 +16,7 @@ func day(s string) time.Time {
 func logOf(days ...string) Log {
 	var l Log
 	for _, d := range days {
-		l.Add(day(d), 10)
+		l.Add(day(d))
 	}
 	return l
 }
@@ -45,9 +45,9 @@ func TestStats(t *testing.T) {
 
 func TestAddAndStore(t *testing.T) {
 	var l Log
-	l.Add(day("2026-11-07"), 12)
-	l.Add(day("2026-11-07"), 3)
-	l.Add(day("2026-11-08"), -1)
+	l.Add(day("2026-11-07"))
+	l.Add(day("2026-11-07"))
+	l.Add(day("2026-11-08"))
 	data, err := l.Marshal()
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestAddAndStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := back.Get(day("2026-11-07")); got != (Day{Count: 2, Chars: 15}) {
+	if got := back.Get(day("2026-11-07")); got != (Day{Count: 2}) {
 		t.Fatalf("Nov 7: %+v", got)
 	}
 	if got := back.Get(day("2026-11-08")); got != (Day{Count: 1}) {

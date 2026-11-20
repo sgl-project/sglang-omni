@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **An activity calendar on Home** (#4360): under Today, the days you used Voxt over the last half year, shaded by how many results each had, with the number of active days, your current streak and your longest one. Hover a day for its date and count; the arrows go back by half a year. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
+
+### 中文
+
+#### 新增
+
+- **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近半年使用 Voxt 的情况，颜色越深表示当天结果越多，并显示活跃天数、当前连续天数和最长连续天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻半年。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

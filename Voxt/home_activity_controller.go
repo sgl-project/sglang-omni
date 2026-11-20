@@ -7,6 +7,7 @@ package main
 // while the history is off.
 
 import (
+	"cmp"
 	"context"
 	"strings"
 	"sync"
@@ -30,9 +31,11 @@ type homeActivity struct {
 	saves activitySaves
 }
 
+// activityResult is a result that ended before the log was read: its
+// session (its History entry's ID) and when it started.
 type activityResult struct {
-	at    time.Time
-	chars int
+	id string
+	at time.Time
 }
 
 type activitySaves struct {
@@ -51,7 +54,7 @@ func (a *app) loadActivity() {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		log, counted, err := readActivity(ctx, docs, history)
+		log, seen, err := readActivity(ctx, docs, history, time.Now())
 		a.post(func() {
 			act := &a.act
 			act.loading = false
@@ -59,11 +62,12 @@ func (a *app) loadActivity() {
 				return // Home shows the calendar empty; the next visit tries again
 			}
 			act.log, act.loaded = log, true
-			if !counted {
-				// Read from the stored log: add what ended meanwhile. A log
-				// just counted from the history already has it.
-				for _, r := range act.pending {
-					act.log.Add(r.at, r.chars)
+			// What ended meanwhile, unless the history counted it: its
+			// entry is written before its end is published, but a count
+			// that read that day before then did not see it.
+			for _, r := range act.pending {
+				if !seen[r.id] {
+					act.log.Add(r.at)
 				}
 			}
 			act.pending = nil
@@ -74,29 +78,35 @@ func (a *app) loadActivity() {
 }
 
 // readActivity reads the stored log; without one it counts the history's
-// finished results (counted reports that it did).
-func readActivity(ctx context.Context, docs store.Documents, history store.History) (log activity.Log, counted bool, err error) {
+// finished results, and reports which of now's day and the day before it
+// counted (seen, by entry ID).
+func readActivity(ctx context.Context, docs store.Documents, history store.History, now time.Time) (log activity.Log, seen map[string]bool, err error) {
 	data, ok, err := docs.Get(ctx, activity.Key)
 	if err != nil {
-		return log, false, err
+		return log, nil, err
 	}
 	if ok {
 		log, err = activity.Unmarshal(data)
-		return log, false, err
+		return log, nil, err
 	}
+	seen = map[string]bool{}
+	recent := now.AddDate(0, 0, -2)
 	const page = 500
 	for off := 0; ; off += page {
 		entries, err := history.List(ctx, store.HistoryQuery{Limit: page, Offset: off})
 		if err != nil {
-			return log, true, err
+			return log, nil, err
 		}
 		for _, e := range entries {
 			if e.Status == store.StatusDone && strings.TrimSpace(e.Result) != "" {
-				log.Add(e.CreatedAt.Local(), countChars(e.Result))
+				log.Add(e.CreatedAt.Local())
+				if e.CreatedAt.After(recent) {
+					seen[e.ID] = true
+				}
 			}
 		}
 		if len(entries) < page {
-			return log, true, nil
+			return log, seen, nil
 		}
 	}
 }
@@ -107,13 +117,14 @@ func (a *app) recordActivity(s session.Snapshot) {
 		return
 	}
 	act := &a.act
-	result := activityResult{at: time.Now(), chars: countChars(s.Result)}
+	// Its day is its start's, as its History entry's (CreatedAt).
+	result := activityResult{id: s.ID, at: cmp.Or(s.StartedAt, time.Now())}
 	if !act.loaded {
 		act.pending = append(act.pending, result)
 		a.loadActivity()
 		return
 	}
-	act.log.Add(result.at, result.chars)
+	act.log.Add(result.at)
 	act.gen++
 	a.saveActivity()
 }
