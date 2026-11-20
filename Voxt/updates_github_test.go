@@ -114,8 +114,16 @@ func TestParseVersion(t *testing.T) {
 			t.Errorf("%q parsed", s)
 		}
 	}
-	if !checksReleases(false, "2.0.3") || !checksReleases(false, "2.0.4-beta.1") || !checksReleases(false, "2.0.4-beta.20261111.120") || checksReleases(true, "2.0.3") || checksReleases(false, "0.0.0-dev") {
+	if !checksReleases("darwin", false, "2.0.3") || !checksReleases("darwin", false, "2.0.4-beta.1") || !checksReleases("darwin", false, "2.0.4-beta.20261111.120") || checksReleases("darwin", true, "2.0.3") || checksReleases("darwin", false, "0.0.0-dev") {
 		t.Error("checksReleases")
+	}
+}
+
+func TestWindowsBetaSkipsGitHubReleaseCheck(t *testing.T) {
+	const version = "2.0.4-beta.20261111.120"
+
+	if checksReleases("windows", false, version) {
+		t.Error("Windows beta must skip the macOS GitHub release check")
 	}
 }
 
@@ -216,7 +224,7 @@ func TestReleaseCheckMergeBetas(t *testing.T) {
 		t.Errorf("release, betas on: %+v %v", rel, newer)
 	}
 	running := "2.0.4-beta.20261111.120"
-	if !checksReleases(false, running) || !(settings.Updates{}).BetaOn(running) {
+	if !checksReleases("darwin", false, running) || !(settings.Updates{}).BetaOn(running) {
 		t.Fatal("a beta does not check for betas")
 	}
 	if rel, newer := check(running, true); !newer || rel.Version != "2.0.4-beta.20261112.3" {

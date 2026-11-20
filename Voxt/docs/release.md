@@ -38,6 +38,12 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 更新用的是 MyGo 官方方案（`mygo.Updater` + updater 插件的 `native.Plugin` 窗口），说明见 MyGo 的 `docs/updates.md`、`docs/plugins/updater.md`；beta 通道是我们的补丁 0006（`third_party/mygo-patches/`，和 Auralink 的同一个）。
 
+## Windows beta
+
+[Voxt Windows Beta](../../.github/workflows/voxt-windows-beta.yaml) 在 `main` 收到 `Voxt/` 或该 workflow 的改动时打包。纯 Markdown 改动会跳过。Windows x64 安装包使用 NSIS，包含 Voxt 和 helper，推理由 WSL 或远端服务提供。
+
+从 GitHub Releases 的 `voxt-win-v*` prerelease 下载未签名的 `Setup.exe` 和 SHA-256 校验文件。Windows beta 需要手动下载安装，公开渠道保留最新五份。手动运行 workflow 可从 Actions 下载产物，产物保留七天。
+
 ## 从 tag 发布（GitHub Actions）
 
 1. 说明写在 [CHANGELOG.md](../CHANGELOG.md) 最上面一节（格式见 §2.1 第 2 步）：发布时用这个版本的一节，没有就用 `## [Unreleased]`。要在 main 上留下版本号，就在发布前的提交里把 `## [Unreleased]` 改成 `## [X.Y.Z] - 日期`，mygo.json 和两个 Info.plist 也改成 X.Y.Z（§2.1 第 1 步）；不改也可以，发布的版本号由 tag 决定。
@@ -130,7 +136,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 
 ## 0. 两个通道
 
-**Voxt 2 有独立的 MyGo 更新通道**：Voxt Release 工作流在构建 tag 正式版和 beta 时把 `updates`（公钥、`url`、`prereleases`）写进 `release/mygo.release.json`，用 `MYGO_UPDATER_PRIVATE_KEY` 签 tar.gz 和 delta，把它们和 `update-darwin-arm64.json` 附到 GitHub Release。清单里当前版本的文件地址改成这个 Release 的下载地址；`previous` 里旧版本的地址不变。Voxt Appcast 工作流的 Voxt 2 job 把清单发给更新服务：正式版由 Release 发布事件触发，beta 由 Voxt Release 构建后调用（`GITHUB_TOKEN` 建的 prerelease 不会触发发布事件）；手动运行也能发所选通道。app 里的 MyGo 更新器下载、校验、安装并重新启动。没有更新源的构建仍走 `updates_github.go` 的 GitHub 检查回退，开发构建没有更新器。
+**Voxt 2 有独立的 MyGo 更新通道**：Voxt Release 工作流在构建 tag 正式版和 beta 时把 `updates`（公钥、`url`、`prereleases`）写进 `release/mygo.release.json`，用 `MYGO_UPDATER_PRIVATE_KEY` 签 tar.gz 和 delta，把它们和 `update-darwin-arm64.json` 附到 GitHub Release。清单里当前版本的文件地址改成这个 Release 的下载地址；`previous` 里旧版本的地址不变。Voxt Appcast 工作流的 Voxt 2 job 把清单发给更新服务：正式版由 Release 发布事件触发，beta 由 Voxt Release 构建后调用（`GITHUB_TOKEN` 建的 prerelease 不会触发发布事件）；手动运行也能发所选通道。app 里的 MyGo 更新器下载、校验、安装并重新启动。macOS 没有更新源的构建仍走 `updates_github.go` 的 GitHub 检查回退，开发构建没有更新器。
 
 | | 正式版 | beta 版 |
 |---|---|---|
