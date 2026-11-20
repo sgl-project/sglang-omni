@@ -230,14 +230,10 @@ func pillLineFor(translator *i18n.Translator, snapshot session.Snapshot, now tim
 	return "", false
 }
 
-// limitNote warns while recording that a limit of Settings → Audio is
+// limitNoteFor warns while recording that a limit of Settings → Audio is
 // near (#3840): in the last minute before the length limit stops the
 // recording, and from 30 s before it passes the upload size limit (it
 // then goes to the speech model in pieces); "" for none.
-func limitNote(snapshot session.Snapshot, now time.Time) string {
-	return limitNoteFor(i18n.CurrentTranslator(), snapshot, now)
-}
-
 func limitNoteFor(translator *i18n.Translator, snapshot session.Snapshot, now time.Time) string {
 	if snapshot.State != session.Recording {
 		return ""

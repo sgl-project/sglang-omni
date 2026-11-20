@@ -99,7 +99,7 @@ What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-mi
 
 - A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
 - About 280 MB for the app, and 2.5 GB for the recommended speech model.
-- Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About), but does not install it itself. Install a newer version the same way: from its disk image.
+- Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About). Builds with an update feed can also install updates automatically. Builds without one only check GitHub Releases; install newer versions of those builds from a disk image.
 
 ## Your models, your data
 
@@ -141,6 +141,7 @@ Without a language model, Transcribe types the text as recognised; Translate and
 - **Something is wrong**: Settings → About → **Report a problem** opens a GitHub issue with the diagnostics filled in. Or [open an issue][issues] with "[Voxt]" in its title.
 - **Questions and ideas**: join the SGLang [Slack][slack].
 - **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
+- **Change settings with a script or an agent**: [every setting, where it is stored and how to edit it safely](docs/settings.md).
 - **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
 
 ## For developers
