@@ -135,6 +135,18 @@ func TestBuildDefaults(t *testing.T) {
 	}
 }
 
+// TestBuildLeavesOutAHiddenNotes: hiding Notes in Settings → General
+// stops its shortcut, as hiding Translate stops Translate's (#4224).
+func TestBuildLeavesOutAHiddenNotes(t *testing.T) {
+	f := settings.Defaults().Features
+	f.Hidden = []string{settings.HideNotes}
+	for _, b := range Build(f, Features).Bindings {
+		if b.ID == Note {
+			t.Fatalf("hidden Notes still binds %+v", b)
+		}
+	}
+}
+
 func TestBuildSkipsBadAndDuplicates(t *testing.T) {
 	f := settings.Features{Transcribe: settings.Transcribe{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 		{Keys: "Fn"}, {Keys: "Hyper"}, {Keys: "Fn", Trigger: settings.TriggerTap}, {Keys: "Fn", Trigger: settings.TriggerDouble},
@@ -415,6 +427,11 @@ func TestRoute(t *testing.T) {
 		{"other release does nothing", ev("transcribe/3", proto.PhaseUp), Recording, "transcribe/2", Decision{}},
 		{"long press while recording stops", ev("transcribe/3", proto.PhaseDown), Recording, "", Decision{Action: Stop}},
 		{"busy waits", ev("transcribe/0", proto.PhaseTrigger), Busy, "", Decision{}},
+		{"composing starts", ev("transcribe/0", proto.PhaseTrigger), Composing, "", Decision{Action: Start, Feature: Transcribe}},
+		{"composing starts held", ev("transcribe/2", proto.PhaseDown), Composing, "", Decision{Action: Start, Feature: Transcribe, Hold: true}},
+		{"composing up does nothing", ev("transcribe/2", proto.PhaseUp), Composing, "", Decision{}},
+		{"paste last while composing", ev(PasteLast, proto.PhaseTrigger), Composing, "", Decision{}},
+		{"cancel shortcut cancels composing", ev(proto.HotkeyCancel, proto.PhaseTrigger), Composing, "", Decision{Action: Cancel}},
 		{"cancel shortcut cancels recording", ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", Decision{Action: Cancel}},
 		{"cancel shortcut cancels busy", ev(proto.HotkeyCancel, proto.PhaseTrigger), Busy, "", Decision{Action: Cancel}},
 		{"cancel shortcut idle", ev(proto.HotkeyCancel, proto.PhaseTrigger), Idle, "", Decision{}},

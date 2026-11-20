@@ -37,6 +37,7 @@ func (r *run) awaitServices() bool {
 // useServices keeps the resolved services.
 func (r *run) useServices(s svcResult) {
 	r.resolved, r.svc, r.terms = true, s.svc, s.terms
+	close(r.svcResolved)
 	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
 	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
 }
@@ -181,7 +182,7 @@ func (r *run) listen() (string, bool) {
 	// Until the speech model's stream is open, the session waits for it
 	// (Snapshot.Waiting, after Config.WaitNote).
 	r.opening.Store(true)
-	waitNote := r.waitTimer(r.m.Current().StartedAt)
+	waitNote := r.waitTimer(r.m.snapshot(r).StartedAt)
 	if waitNote == nil {
 		r.noteWait()
 	}
@@ -283,7 +284,7 @@ func (r *run) listen() (string, bool) {
 	})
 	first := time.Duration(captured.res.FirstFrameMS * float64(time.Millisecond))
 	r.logf("info", "recorded %v (%s, %d frames, %d restarts, first audio after %v from %s)", audioLen.Round(time.Millisecond), captured.res.Reason,
-		captured.res.Frames, captured.res.Restarts, first.Round(time.Millisecond), r.m.Current().Device)
+		captured.res.Frames, captured.res.Restarts, first.Round(time.Millisecond), r.m.snapshot(r).Device)
 	if first > slowMic {
 		r.logf("warning", "the microphone gave its first audio %v after the start: what was said before is not in the recording", first.Round(time.Millisecond))
 	}
@@ -417,7 +418,7 @@ func (r *run) salvage(st asr.Stream) string {
 			return text
 		}
 	}
-	return strings.TrimSpace(r.m.Current().Partial)
+	return strings.TrimSpace(r.m.snapshot(r).Partial)
 }
 
 // isCancelled reports whether a capture error is the end of a job that
