@@ -150,6 +150,18 @@ func TestDiarizeTrackPacksPausesToTheCap(t *testing.T) {
 	}
 }
 
+func TestDiarizeTrackSkipsNoSpeech(t *testing.T) {
+	rate := asr.SampleRate
+	d := &seqDiarizer{}
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, make([]byte, rate*1800*2), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.requests) != 0 || len(segs) != 0 {
+		t.Fatalf("a silent track made %d requests and %d segments, want none", len(d.requests), len(segs))
+	}
+}
+
 func TestDiarizeTrackHonorsProfilingChunkParams(t *testing.T) {
 	rate := asr.SampleRate
 	pcm := make([]byte, rate*300*2)

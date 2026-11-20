@@ -190,6 +190,7 @@ TMPDIR=/tmp CGO_ENABLED=0 go test -run 'TestMeetingProfileFake' .
 
 ```sh
 VOXTNEW_LATENCY=1 VOXTNEW_LATENCY_ROUNDS=3 \
+VOXTNEW_MAIN_SHA=<完整的源码提交 SHA> \
 VOXTNEW_LATENCY_PCM=/ABS/copied-input/short.wav \
 VOXTNEW_LATENCY_OUT=/ABS/results/short-open.jsonl \
 VOXTNEW_OMNI_RUNTIME=/ABS/omni VOXTNEW_OMNI_MODELS='asr.moss=/ABS/moss;asr.accurate=/ABS/qwen;vad.silero=/ABS/vad' \

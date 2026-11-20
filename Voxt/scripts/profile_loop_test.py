@@ -129,6 +129,20 @@ class SummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             loop.summarize_reports([raw_report(100), warning, raw_report(200)])
 
+    def test_simulated_overlap_summary_allows_missing_resources(self):
+        reports = [raw_report(300), raw_report(100), raw_report(200)]
+        for report in reports:
+            report["simulated_llm"] = True
+            report.pop("resources")
+        summary = loop.summarize_reports(reports)
+        self.assertEqual(summary["median"]["total_wall_ms"], 200)
+
+    def test_summary_missing_numeric_field_is_a_value_error(self):
+        reports = [raw_report(300), raw_report(100), raw_report(200)]
+        reports[1].pop("total_wall_ms")
+        with self.assertRaises(ValueError):
+            loop.summarize_reports(reports)
+
     def test_summary_content_hashes_are_ordered_without_fabricating_missing_values(
         self,
     ):

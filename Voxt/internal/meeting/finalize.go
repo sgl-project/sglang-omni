@@ -223,9 +223,6 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 		p.PauseMin = diarizeChunkMax
 	}
 	chunks := PlanChunks(speech, len(pcm)/2, p)
-	if len(chunks) == 0 {
-		chunks = []Chunk{{Start: 0, End: len(pcm) / 2}}
-	}
 	var out []Segment
 	var carry string
 	var covered time.Duration // the earlier chunks returned audio up to here

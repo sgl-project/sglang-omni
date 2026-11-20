@@ -357,7 +357,7 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 		LiveUpdates: updates, LongestUpdateGapMS: milliseconds(gap), Text: text,
 		TextSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(text))),
 	}
-	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,6 +396,23 @@ func TestLatencyResultJSON(t *testing.T) {
 	}
 	if got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
 		t.Fatalf("text hash: %+v", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("latency output mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestMacLatencyScriptRequiresMainSHA(t *testing.T) {
+	script, err := os.ReadFile("scripts/mac-latency.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), `VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?`) {
+		t.Fatal("the latency runner does not require an explicit source SHA")
 	}
 }
 

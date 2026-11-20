@@ -199,6 +199,8 @@ def numeric_path(report: dict[str, object], path: list[str]) -> float:
     for component in path:
         if not isinstance(current, dict):
             raise ValueError(f"missing numeric field {'.'.join(path)}")
+        if component not in current:
+            raise ValueError(f"missing numeric field {'.'.join(path)}")
         current = current[component]
     if isinstance(current, bool) or not isinstance(current, (int, float)):
         raise ValueError(f"missing numeric field {'.'.join(path)}")
@@ -232,6 +234,10 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
         or report.get("errors")
         or (
             not report_memory_pressure_valid(report)
+            and not (
+                report.get("simulated_llm") is True
+                and not isinstance(report.get("resources"), dict)
+            )
             and not (
                 report.get("config", {}).get("fast_profile")
                 and report_fast_profile_pressure_recorded(report)
