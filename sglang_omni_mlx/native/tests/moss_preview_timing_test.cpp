@@ -39,11 +39,11 @@ int main() {
                                            "submit_at_ms",
                                            "transcribe_started_at_ms",
                                            "transcribe_at_ms",
-                                            "publish_at_ms",
-                                            "min_preview_samples",
-                                            "verify_round_count",
-                                            "proposed_draft_token_count",
-                                            "accepted_draft_token_count"};
+                                           "publish_at_ms",
+                                           "min_preview_samples",
+                                           "verify_round_count",
+                                           "proposed_draft_token_count",
+                                           "accepted_draft_token_count"};
   if (!Check(json.size() == schema.size(), "exact schema size") ||
       !Check(json["event"] == "moss_preview_timing", "event") ||
       !Check(json["window_id"] == 7, "window_id") ||
