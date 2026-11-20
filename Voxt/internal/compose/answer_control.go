@@ -16,50 +16,156 @@ func previousControlToken(token string, inputs []string) bool {
 }
 
 func inlineLiteral(s string, start int, token string) bool {
-	if start == 0 || !strings.ContainsRune(" \t", rune(s[start-1])) {
+	if start == 0 || !strings.ContainsRune(" \t\r\n", rune(s[start-1])) {
 		return false
 	}
 	next, _ := utf8.DecodeRuneInString(s[start+len(token):])
 	return start+len(token) < len(s) && (strings.ContainsRune(" \t", next) || unicode.IsPunct(next))
 }
 
-func proseTokenMention(s string, start int, token string) bool {
+func fieldStart(s string, start int) bool {
+	return strings.TrimSpace(s[:start]) == ""
+}
+
+func inlineLiteralAtStart(s, token string) bool {
+	s = strings.TrimLeft(s, " \t\r\n")
+	next, _ := utf8.DecodeRuneInString(s[len(token):])
+	return len(s) > len(token) && (strings.ContainsRune(" \t\r\n", next) || unicode.IsPunct(next))
+}
+
+func completeProse(rest string) bool {
+	trimmed := strings.TrimSpace(rest)
+	if trimmed == "" {
+		return false
+	}
+	last, _ := utf8.DecodeLastRuneInString(trimmed)
+	return strings.ContainsRune(".!?。！？", last)
+}
+
+func proseContinuation(rest string) bool {
+	if rest == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(rest)
+	if !unicode.IsSpace(first) && !unicode.IsPunct(first) {
+		return false
+	}
+	trimmed := strings.TrimLeftFunc(rest, func(r rune) bool {
+		if r == '<' || r == '>' {
+			return false
+		}
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	})
+	if trimmed == "" {
+		return false
+	}
+	next, _ := utf8.DecodeRuneInString(trimmed)
+	return unicode.IsLower(next) || unicode.Is(unicode.Han, next)
+}
+
+func lowerOrHan(rest string) bool {
+	trimmed := strings.TrimLeft(rest, " \t")
+	if trimmed == "" {
+		return false
+	}
+	next, _ := utf8.DecodeRuneInString(trimmed)
+	return unicode.IsLower(next) || unicode.Is(unicode.Han, next)
+}
+
+func structuralControlSuffix(s string) bool {
+	for _, token := range controlTokens {
+		index := strings.Index(s, token)
+		if index < 0 {
+			continue
+		}
+		after := s[index+len(token):]
+		if !structuralControlToken(token, after) {
+			continue
+		}
+		if !strings.HasPrefix(token, "<|tool") || bracketedToolPayload(after) {
+			return true
+		}
+		if fields := strings.Fields(after); len(fields) > 0 && strings.Contains(fields[0], "_") {
+			return true
+		}
+	}
+	return false
+}
+
+func literalControlPrefix(s string, start int, token, input string, previous []string) bool {
+	for _, other := range controlTokens {
+		if other == token || !strings.Contains(s[:start], other) {
+			continue
+		}
+		if preservedControlToken(other, input) || previousControlToken(other, previous) {
+			return true
+		}
+	}
+	return false
+}
+
+func proseTokenMention(s string, start int, token string, inputs ...string) bool {
 	if quotedControlToken(s, start, token) {
 		return true
 	}
+	input := ""
+	var previous []string
+	if len(inputs) > 0 {
+		input, previous = inputs[0], inputs[1:]
+	}
 	rest := s[start+len(token):]
-	trimmed := strings.TrimLeft(rest, " \t")
-	if trimmed == rest {
-		return false
-	}
-	if structuralControlToken(token, rest) && bracketedToolPayload(trimmed) {
-		return false
-	}
-	for _, word := range []string{"tag", "marker", "token", "tokens", "literally", "标记"} {
-		if strings.HasPrefix(trimmed, word) {
-			return true
+	for _, tag := range thinkingTags {
+		if token == tag[1] {
+			if fieldStart(s, start) && previousControlToken(token, previous) && inlineLiteralAtStart(s, token) && proseContinuation(rest) {
+				return true
+			}
+			return proseContinuation(rest)
+		}
+		if token == tag[0] {
+			if inlineLiteral(s, start, token) && proseContinuation(rest) && literalControlPrefix(s, start, token, input, previous) {
+				return true
+			}
+			close := strings.Index(rest, tag[1])
+			if close < 0 {
+				if fieldStart(s, start) && previousControlToken(token, previous) && inlineLiteralAtStart(s, token) && proseContinuation(rest) {
+					return true
+				}
+				return completeProse(rest) && (fieldStart(s, start) && proseContinuation(rest) || inlineLiteral(s, start, token) && proseContinuation(rest))
+			}
+			if fieldStart(s, start) {
+				return false
+			}
+			after := rest[close+len(tag[1]):]
+			if strings.TrimSpace(after) != "" {
+				return lowerOrHan(rest) && proseContinuation(after)
+			}
+			if !completeProse(rest[:close]) {
+				return false
+			}
+			return inlineLiteral(s, start, token) && proseContinuation(rest)
 		}
 	}
-	if structuralControlToken(token, rest) && structuredToolPayload(rest) {
+	if structuralControlSuffix(rest) {
 		return false
 	}
-	if start == 0 {
-		return strings.HasPrefix(trimmed, "is ")
+	if fieldStart(s, start) && previousControlToken(token, previous) && inlineLiteralAtStart(s, token) && proseContinuation(rest) {
+		return true
 	}
-	for _, phrase := range []string{"and ", "at ", "in ", "into ", "is ", "to ", "for ", "on ", "starts ", "before the ", "before its ", "before your ", "before a ", "before every ", "就", "可以", "能", "让", "模型就"} {
-		if strings.HasPrefix(trimmed, phrase) {
-			return true
+	if structuralControlToken(token, rest) {
+		if !strings.HasPrefix(token, "<|tool") {
+			return false
+		}
+		if bracketedToolPayload(rest) {
+			return false
+		}
+		if fields := strings.Fields(rest); len(fields) > 0 && strings.Contains(fields[0], "_") {
+			return false
 		}
 	}
-	return strings.HasPrefix(trimmed, "before it ") && modelOutputContext(s[:start])
-}
-
-func modelOutputContext(prefix string) bool {
-	if index := strings.LastIndexAny(prefix, ".!?;,:\n，。！？；："); index >= 0 {
-		prefix = prefix[index+1:]
+	if inlineLiteral(s, start, token) {
+		return true
 	}
-	prefix = strings.ToLower(prefix)
-	return strings.Contains(prefix, "chatml") || strings.Contains(prefix, "emit")
+	return completeProse(rest) && !structuralControlToken(token, rest)
 }
 
 func bracketedToolPayload(rest string) bool {
@@ -71,18 +177,6 @@ func bracketedToolPayload(rest string) bool {
 	}
 	fields := strings.Fields(rest)
 	return len(fields) > 1 && strings.ContainsRune("{[\"", rune(fields[1][0]))
-}
-
-func structuredToolPayload(after string) bool {
-	rest := strings.TrimLeft(after, " \t\r\n")
-	if rest == "" {
-		return false
-	}
-	if bracketedToolPayload(rest) {
-		return true
-	}
-	fields := strings.Fields(rest)
-	return len(fields) == 1 || strings.Contains(fields[0], "_")
 }
 
 func literalThinkingPair(pair string, tag [2]string, input string, previous []string) bool {
@@ -132,6 +226,10 @@ func structuralControlToken(token, after string) bool {
 // controlTokenStart is the start of the first model control token in s
 // that did not occur in the user's input; -1 when s has only answer text.
 func controlTokenStart(s string, inputs ...string) int {
+	return controlTokenStartSkipping(s, "", inputs...)
+}
+
+func controlTokenStartSkipping(s, literalOpen string, inputs ...string) int {
 	input := ""
 	var previous []string
 	if len(inputs) > 0 {
@@ -147,13 +245,17 @@ func controlTokenStart(s string, inputs ...string) int {
 				break
 			}
 			i += offset
+			if literalOpen != "" && strings.HasPrefix(s[i:], literalOpen) && strings.Index(s, literalOpen) == i {
+				offset = i + len(token)
+				continue
+			}
 			after := s[i+len(token):]
 			proseBlock := false
 			for _, tag := range thinkingTags {
 				if token == tag[0] {
 					if close := strings.Index(after, tag[1]); close >= 0 {
 						close += i + len(token)
-						if proseTokenMention(s, close, tag[1]) {
+						if strings.TrimSpace(s[close+len(tag[1]):]) != "" && proseTokenMention(s, i, token, inputs...) {
 							offset, proseBlock = close+len(tag[1]), true
 						}
 					}
@@ -162,7 +264,7 @@ func controlTokenStart(s string, inputs ...string) int {
 			if proseBlock {
 				continue
 			}
-			if proseTokenMention(s, i, token) {
+			if proseTokenMention(s, i, token, inputs...) {
 				offset = i + len(token)
 				continue
 			}
@@ -174,7 +276,7 @@ func controlTokenStart(s string, inputs ...string) int {
 			for _, tag := range thinkingTags {
 				open := strings.LastIndex(s[:i], tag[0])
 				if token == tag[1] && strings.TrimSpace(after) == "" && open > strings.LastIndex(s[:i], tag[1]) &&
-					literalThinkingPair(s[open:i+len(token)], tag, input, previous) && !proseTokenMention(s, open, tag[0]) {
+					literalThinkingPair(s[open:i+len(token)], tag, input, previous) && !proseTokenMention(s, open, tag[0], inputs...) {
 					literalPair = true
 				}
 			}

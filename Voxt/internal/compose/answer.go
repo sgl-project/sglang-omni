@@ -136,12 +136,12 @@ func onlyControlMarkup(s, input string, previous ...string) bool {
 			}
 			if strings.HasPrefix(s, tag[0]) {
 				rest := s[len(tag[0]):]
-				if previousControlToken(tag[0], previous) && proseTokenMention(s, 0, tag[0]) {
+				if previousControlToken(tag[0], previous) && proseTokenMention(s, 0, tag[0], append([]string{input}, previous...)...) {
 					return false
 				}
 				j := strings.Index(rest, tag[1])
 				if j < 0 {
-					return true
+					return !proseTokenMention(s, 0, tag[0], append([]string{input}, previous...)...)
 				}
 				s = rest[j+len(tag[1]):]
 				matched = true
@@ -161,7 +161,7 @@ func onlyControlMarkup(s, input string, previous ...string) bool {
 				continue
 			}
 			if !trailingControlToken(token) {
-				if previousControlToken(token, previous) && proseTokenMention(s, 0, token) {
+				if previousControlToken(token, previous) && proseTokenMention(s, 0, token, append([]string{input}, previous...)...) {
 					return false
 				}
 				return true
@@ -185,6 +185,12 @@ func stripControlMarkup(s string, inputs ...string) string {
 	if len(inputs) > 0 {
 		input, previous = inputs[0], inputs[1:]
 	}
+	literalMarker := ""
+	markLiteral := func(index int, token string) {
+		if literalMarker == "" {
+			literalMarker = s[index : index+len(token)]
+		}
+	}
 	trimmed := strings.TrimLeft(s, " \t\r\n")
 	if strings.HasPrefix(trimmed, assistantAnswerPrefix) {
 		s = strings.TrimLeft(trimmed[len(assistantAnswerPrefix):], " \t\r\n")
@@ -205,7 +211,7 @@ func stripControlMarkup(s string, inputs ...string) string {
 				j += closeSearchFrom
 			}
 			if j >= 0 && (i < 0 || j < i) {
-				if proseTokenMention(s, j, tag[1]) {
+				if proseTokenMention(s, j, tag[1], inputs...) {
 					literalOpen = -1
 					closeSearchFrom = j + len(tag[1])
 					continue
@@ -234,10 +240,16 @@ func stripControlMarkup(s string, inputs ...string) string {
 			}
 			rest := s[i+len(tag[0]):]
 			j = strings.Index(rest, tag[1])
+			if nested := strings.Index(rest, tag[0]); nested >= 0 && (j < 0 || nested < j) {
+				markLiteral(i, tag[0])
+				openSearchFrom = i + len(tag[0]) + nested
+				closeSearchFrom = openSearchFrom
+				continue
+			}
 			if i > 0 && literalOpen < 0 && j >= 0 {
-				close := i + len(tag[0]) + j
-				if proseTokenMention(s, close, tag[1]) {
-					end := close + len(tag[1])
+				after := rest[j+len(tag[1]):]
+				if strings.TrimSpace(after) != "" && lowerOrHan(rest) && proseContinuation(after) {
+					end := i + len(tag[0]) + j + len(tag[1])
 					openSearchFrom, closeSearchFrom = end, end
 					continue
 				}
@@ -247,13 +259,19 @@ func stripControlMarkup(s string, inputs ...string) string {
 					continue
 				}
 			}
-			if proseTokenMention(s, i, tag[0]) {
+			if proseTokenMention(s, i, tag[0], inputs...) {
+				markLiteral(i, tag[0])
 				literalOpen = i
 				openSearchFrom = i + len(tag[0])
 				closeSearchFrom = openSearchFrom
 				continue
 			}
 			if j < 0 {
+				if literalMarker != "" && strings.HasPrefix(s[i:], literalMarker) && strings.Index(s, literalMarker) == i {
+					openSearchFrom = i + len(tag[0])
+					closeSearchFrom = openSearchFrom
+					continue
+				}
 				s = s[:i]
 				break
 			}
@@ -261,7 +279,7 @@ func stripControlMarkup(s string, inputs ...string) string {
 			openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 		}
 	}
-	if i := controlTokenStart(s, inputs...); i >= 0 {
+	if i := controlTokenStartSkipping(s, literalMarker, inputs...); i >= 0 {
 		s = s[:i]
 	}
 	return s

@@ -318,6 +318,13 @@ func TestAnswerCleanupKeepsEverydayControlTokenProse(t *testing.T) {
 		{name: "closing marker in reworded prose", text: "The reasoning stops at </think> and the answer comes next."},
 		{name: "thinking pair in reworded prose", text: "Write it as <think>step one</think> and continue."},
 		{name: "tool marker in reworded prose", text: "A tool call begins with <|tool_call|> in this template."},
+		{name: "channel marker ahead of thoughts", text: "Gemma writes <|channel> ahead of its thoughts. Ok."},
+		{name: "thinking marker prior to a question", text: "You should write <think> prior to the question."},
+		{name: "tool marker inside a template", text: "A tool call begins with <|tool_call|> inside this template."},
+		{name: "closing marker before a comma", text: "The reasoning stops at </think>, and the answer comes next."},
+		{name: "thinking marker in fresh Chinese prose", text: "在提示词开头加 <think> 会让模型先思考。"},
+		{name: "thinking marker near the prompt top", text: "Just add <think> near the top of your prompt."},
+		{name: "thinking pair before then", text: "Write it as <think>step one</think> then continue."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertAnswerCleanup(t, tc.text, "q", tc.text)
