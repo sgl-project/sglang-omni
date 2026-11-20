@@ -69,4 +69,9 @@ func TestDocsEnvironmentVariables(t *testing.T) {
 			t.Errorf("%s (used in %s) has no row in the docs/development.md environment variable table", found, path)
 		}
 	}
+	for found := range documented {
+		if _, ok := used[found]; !ok {
+			t.Errorf("%s is documented in docs/development.md but no longer used in the code", found)
+		}
+	}
 }
