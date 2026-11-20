@@ -137,10 +137,11 @@ def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
         )
 
 
-def tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
+def tiny_audio_encoder(pool_step: int = 2, head_dim: int = 16) -> MiniCPMOAudioEncoder:
     """A MiniCPMOAudioEncoder with random weights and no checkpoint I/O."""
     torch.manual_seed(0)
     config = small_whisper_config()
+    config.d_model = config.encoder_attention_heads * head_dim
     encoder = object.__new__(MiniCPMOAudioEncoder)
     torch.nn.Module.__init__(encoder)
     encoder.device = torch.device("cpu")
@@ -153,6 +154,8 @@ def tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
     encoder.audio_avg_pooler = torch.nn.AvgPool1d(pool_step, stride=pool_step)
     encoder.chunk_num_frame = 50
     encoder.chunk_mask_cache = None
+    encoder.history_rows = None
+    encoder.free_history_rows = []
     return encoder
 
 
