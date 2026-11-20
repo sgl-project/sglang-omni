@@ -47,10 +47,138 @@ class SliceGeometry(Protocol):
     ) -> tuple[int, int]: ...
 
 
+class SizedImage(Protocol):
+    """Anything that reports a frame size, such as a PIL image or a placeholder."""
+
+    size: tuple[int, int]
+
+
+def normalize_image_batches(
+    images: SizedImage | list[SizedImage] | list[list[SizedImage]] | None,
+) -> list[list[SizedImage]]:
+    """Normalize the checkpoint processor's image argument into image batches."""
+    if images is None:
+        return [[]]
+    elif isinstance(images, (list, tuple)):
+        if images and isinstance(images[0], (list, tuple)):
+            return [list(image_batch) for image_batch in images]
+        else:
+            pass
+        return [list(images)]
+    else:
+        return [[images]]
+
+
+def processor_slice_limit(
+    geometry: SliceGeometry, max_slice_nums: int | None, return_tensors: str
+) -> int:
+    """Validate the tensor format and resolve the checkpoint's slice limit."""
+    if return_tensors != "pt":
+        raise ValueError("MiniCPM-o image preprocessing requires return_tensors='pt'")
+    else:
+        pass
+    return geometry.max_slice_nums if max_slice_nums is None else max_slice_nums
+
+
 class ImageFeatures(TypedDict):
     pixel_values: list[list[torch.Tensor]]
     image_sizes: list[list[tuple[int, int]]]
     tgt_sizes: list[torch.Tensor]
+
+
+def slice_output_layout(
+    geometry: SliceGeometry,
+    image_size: tuple[int, int],
+    slice_limit: int,
+) -> list[tuple[tuple[int, int], list[int] | None]]:
+    """Return each output size and, for a tiled output, its (columns, rows) grid."""
+    if geometry.slice_mode:
+        grid = geometry.get_sliced_grid(image_size, slice_limit)
+        overview_size = geometry.find_best_resize(
+            image_size,
+            geometry.scale_resolution,
+            geometry.patch_size,
+            allow_upscale=grid is None,
+        )
+        output_layout = [(overview_size, None)]
+        if grid is not None:
+            output_layout.append(
+                (
+                    geometry.get_refine_size(
+                        image_size,
+                        grid,
+                        geometry.scale_resolution,
+                        geometry.patch_size,
+                        allow_upscale=True,
+                    ),
+                    grid,
+                )
+            )
+        else:
+            pass
+    else:
+        output_layout = [(image_size, None)]
+    return output_layout
+
+
+def slice_target_sizes(
+    geometry: SliceGeometry,
+    image_size: tuple[int, int],
+    slice_limit: int,
+) -> list[tuple[int, int]]:
+    """Return the (rows, columns) patch grid of every slice of one image."""
+    patch_size = geometry.patch_size
+    target_sizes: list[tuple[int, int]] = []
+    for (width, height), grid in slice_output_layout(geometry, image_size, slice_limit):
+        if grid is None:
+            target_sizes.append((height // patch_size, width // patch_size))
+        else:
+            tile_width, tile_height = width // grid[0], height // grid[1]
+            tile_size = (tile_height // patch_size, tile_width // patch_size)
+            target_sizes.extend([tile_size] * (grid[0] * grid[1]))
+    return target_sizes
+
+
+class MetadataOnlyImageProcessor:
+    """Report slice geometry and target sizes without reading pixel values."""
+
+    def __init__(self, geometry: SliceGeometry) -> None:
+        self.geometry = geometry
+
+    @torch.inference_mode()
+    def __call__(
+        self,
+        images: SizedImage | list[SizedImage] | list[list[SizedImage]] | None = None,
+        do_pad: bool = True,
+        max_slice_nums: int | None = 1,
+        return_tensors: str = "pt",
+    ) -> ImageFeatures:
+        """Match the checkpoint's image features except for the pixel values.
+
+        do_pad is retained for the checkpoint processor contract.
+        """
+        geometry = self.geometry
+        slice_limit = processor_slice_limit(geometry, max_slice_nums, return_tensors)
+        image_batches = normalize_image_batches(images)
+        size_batches: list[list[tuple[int, int]]] = []
+        target_batches: list[torch.Tensor] = []
+        for image_batch in image_batches:
+            original_sizes: list[tuple[int, int]] = []
+            target_sizes: list[tuple[int, int]] = []
+            for image in image_batch:
+                original_sizes.append(image.size)
+                target_sizes.extend(
+                    slice_target_sizes(geometry, image.size, slice_limit)
+                )
+            size_batches.append(original_sizes)
+            target_batches.append(
+                torch.tensor(target_sizes, dtype=torch.int64).reshape(-1, 2)
+            )
+        return {
+            "pixel_values": [[] for _ in image_batches],
+            "image_sizes": size_batches,
+            "tgt_sizes": target_batches,
+        }
 
 
 @triton.jit
@@ -187,23 +315,12 @@ class CUDAImageProcessor:
     ) -> ImageFeatures:
         """Pack slices; do_pad is retained for the checkpoint processor contract."""
         geometry = self.geometry
-        if return_tensors != "pt":
-            raise ValueError("CUDA image preprocessing requires return_tensors='pt'")
-        else:
-            pass
+        slice_limit = processor_slice_limit(geometry, max_slice_nums, return_tensors)
         pixel_batches: list[list[torch.Tensor]] = []
         size_batches: list[list[tuple[int, int]]] = []
         target_batches: list[torch.Tensor] = []
         device = self.device
-        slice_limit = (
-            geometry.max_slice_nums if max_slice_nums is None else max_slice_nums
-        )
-        if isinstance(images, Image.Image):
-            image_batches = [[images]]
-        elif images and isinstance(images[0], Image.Image):
-            image_batches = [images]
-        else:
-            image_batches = images or [[]]
+        image_batches = normalize_image_batches(images)
         for image_batch in image_batches:
             packed_slices: list[torch.Tensor] = []
             target_sizes: list[tuple[int, int]] = []
@@ -212,39 +329,16 @@ class CUDAImageProcessor:
                 original_sizes.append(image.size)
                 pixels = torch.from_numpy(np.array(image.convert("RGB"))).to(device)
                 pixels = pixels.permute(2, 0, 1).contiguous()
-                if geometry.slice_mode:
-                    grid = geometry.get_sliced_grid(image.size, slice_limit)
-                    overview_size = geometry.find_best_resize(
-                        image.size,
-                        geometry.scale_resolution,
-                        geometry.patch_size,
-                        allow_upscale=grid is None,
-                    )
-                    output_sizes = [overview_size]
-                    if grid is not None:
-                        output_sizes.append(
-                            geometry.get_refine_size(
-                                image.size,
-                                grid,
-                                geometry.scale_resolution,
-                                geometry.patch_size,
-                                allow_upscale=True,
-                            )
-                        )
-                    else:
-                        pass
-                else:
-                    grid = None
-                    output_sizes = [image.size]
-                for output_index, (width, height) in enumerate(output_sizes):
+                for (width, height), grid in slice_output_layout(
+                    geometry, image.size, slice_limit
+                ):
                     resized = self.resize(pixels, (width, height))
                     normalized = self.normalized_pixels[
                         torch.arange(3, device=device)[:, None, None], resized.long()
                     ]
-                    if output_index == 0:
+                    if grid is None:
                         slices = [normalized]
                     else:
-                        assert grid is not None
                         tile_width, tile_height = width // grid[0], height // grid[1]
                         slices = [
                             normalized[:, y : y + tile_height, x : x + tile_width]

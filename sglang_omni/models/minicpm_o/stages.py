@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import Mapping
 from contextlib import nullcontext
+from functools import lru_cache
 
 import numpy as np
 import torch
@@ -27,7 +28,11 @@ from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
-from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.models.minicpm_o.routing import (
+    IMAGE_STAGE,
+    TALKER_STAGE,
+    code2wav_reference_audio,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as emit_event
 from sglang_omni.proto import StagePayload
@@ -55,6 +60,22 @@ from sglang_omni.utils.misc import avail_gpu_mem
 logger = logging.getLogger(__name__)
 
 
+ENCODER_CACHE_MAX_ENTRIES = 64
+ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
+
+
+@lru_cache(maxsize=None)
+def encoder_output_cache(
+    stage_name: str,
+) -> StageOutputCache[dict[str, torch.Tensor]]:
+    """Return the process-wide encoder cache, so every stage sees the same entries."""
+    return StageOutputCache(
+        max_size=ENCODER_CACHE_MAX_ENTRIES,
+        max_bytes=ENCODER_CACHE_MAX_BYTES,
+        cache_device="cpu",
+    )
+
+
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -77,6 +98,7 @@ def create_preprocessing_executor(
         speech_enabled=speech_enabled,
         device=resolve_concrete_device(device, gpu_id),
         video_decode_threads=video_decode_threads,
+        image_cache=encoder_output_cache(IMAGE_STAGE),
     )
 
     async def preprocess_with_events(payload: StagePayload) -> StagePayload:
@@ -102,10 +124,6 @@ def create_preprocessing_executor(
         )
 
 
-ENCODER_CACHE_MAX_ENTRIES = 64
-ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
-
-
 def create_encoder_executor(
     encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder, *, stage_name: str
 ) -> SimpleScheduler[StagePayload, StagePayload]:
@@ -116,11 +134,7 @@ def create_encoder_executor(
         encoder_stream.wait_stream(device_module.current_stream(encoder.device))
     else:
         encoder_stream = None
-    cache = StageOutputCache(
-        max_size=ENCODER_CACHE_MAX_ENTRIES,
-        max_bytes=ENCODER_CACHE_MAX_BYTES,
-        cache_device="cpu",
-    )
+    cache = encoder_output_cache(stage_name)
 
     def _encode_stage(payload: StagePayload) -> StagePayload:
         state = MiniCPMOPipelineState.from_dict(payload.data)

@@ -259,6 +259,17 @@ def hash_media_item(item: object) -> str | None:
     else:
         pass
 
+    # Sequence of media items, such as video frames given as a Python list.
+    if isinstance(item, (list, tuple)):
+        item_hashes = [hash_media_item(entry) for entry in item]
+        if not item_hashes or any(entry_hash is None for entry_hash in item_hashes):
+            return None
+        else:
+            pass
+        return f"seq:{hash_joined(item_hashes)}"
+    else:
+        pass
+
     # Unsupported type
     return None
 
