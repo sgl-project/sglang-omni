@@ -155,7 +155,7 @@ func macOperations(o transfer.Operation) uint {
 }
 func goOperations(n uint) transfer.Operation {
 	var o transfer.Operation
-	if n&1 != 0 {
+	if n&5 != 0 {
 		o |= transfer.Copy
 	}
 	if n&16 != 0 {
@@ -347,5 +347,10 @@ func (s *surface) nativeDataOperation(info id) uint {
 	if !s.nativeDataEvent(info, platform.DataDragOver) {
 		return 0
 	}
-	return macOperations(s.dragOperation)
+	operation := macOperations(s.dragOperation)
+	sourceOperations := uint(send(info, "draggingSourceOperationMask"))
+	if operation&sourceOperations == 0 && sourceOperations&4 != 0 {
+		return 4
+	}
+	return operation
 }

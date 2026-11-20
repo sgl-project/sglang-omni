@@ -1,7 +1,11 @@
 package i18n
 
 import (
+	"bytes"
+	"encoding/json"
+	"io/fs"
 	"maps"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -110,6 +114,63 @@ func TestCatalogsParse(t *testing.T) {
 			t.Errorf("SetLocale(%s) = %s", tag, got)
 		}
 	}
+}
+
+// TestNoDuplicateKeys fails on a key written twice in one catalog object:
+// encoding/json keeps the last copy, so an edit to the first does nothing.
+func TestNoDuplicateKeys(t *testing.T) {
+	err := fs.WalkDir(localeFS, "locales", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".json") {
+			return err
+		}
+		data, err := fs.ReadFile(localeFS, path)
+		if err != nil {
+			return err
+		}
+		dec := json.NewDecoder(bytes.NewReader(data))
+		if err := checkDuplicateKeys(dec, func(key string) { t.Errorf("%s: duplicate key %q", path, key) }); err != nil {
+			t.Errorf("%s: %v", path, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// checkDuplicateKeys reads one JSON value from dec and calls dup for each
+// key that repeats within the same object.
+func checkDuplicateKeys(dec *json.Decoder, dup func(string)) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if seen[key.(string)] {
+				dup(key.(string))
+			}
+			seen[key.(string)] = true
+			if err := checkDuplicateKeys(dec, dup); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+	case json.Delim('['):
+		for dec.More() {
+			if err := checkDuplicateKeys(dec, dup); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+	}
+	return err
 }
 
 func TestNames(t *testing.T) {

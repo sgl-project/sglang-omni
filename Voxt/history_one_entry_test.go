@@ -31,7 +31,7 @@ func TestEverySessionLeavesOneHistoryEntry(t *testing.T) {
 		status store.Status
 	}{
 		{"transcribe", "", tap("transcribe/0", 400), &fakeChat{text: "Hello."}, store.KindTranscribe, store.StatusDone},
-		{"translate speech", "", tap("translate/0", 400), &fakeChat{text: "Hello."}, store.KindTranslate, store.StatusDone},
+		{"translate speech", "", tap("translate/0", 400), &fakeChat{text: "你好。"}, store.KindTranslate, store.StatusDone},
 		{"translate selection", selection, tap("translate/0", 0), &fakeChat{text: "早上好，团队。"}, store.KindTranslate, store.StatusDone},
 		{"rewrite", selection, tap("rewrite/0", 500), &fakeChat{text: "Good morning to the team."}, store.KindRewrite, store.StatusDone},
 		{"cancelled", "", []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(500, proto.HotkeyCancel, proto.PhaseTrigger)},

@@ -16,7 +16,7 @@
       "has_saved": true
     },
     "endpoint": {
-      "info": "任意 OpenAI 兼容服务的 API 根地址，以 /v1 结尾。只能用 https://，或指向本机的 http://。",
+      "info": "任意 OpenAI 兼容服务的 API 根地址，以 /v1 结尾。HTTP 会明文发送 API Key 和文本。",
       "placeholder": "https://…/v1"
     },
     "model_options": [
@@ -151,9 +151,9 @@
       "state": "failure",
       "code": "llm.config",
       "text": "失败",
-      "long_text": "远程模型的地址不能用，请用 https://，或者指向本机的 http://。",
-      "tooltip": "远程模型的地址不能用，请用 https://，或者指向本机的 http://。\n\nredacted fixture detail",
-      "long_tooltip": "远程模型的地址不能用，请用 https://，或者指向本机的 http://。\n\nredacted fixture detail"
+      "long_text": "远程模型的地址不能用。请使用 http:// 或 https://，且不要在地址中填写用户名或密码。",
+      "tooltip": "远程模型的地址不能用。请使用 http:// 或 https://，且不要在地址中填写用户名或密码。\n\nredacted fixture detail",
+      "long_tooltip": "远程模型的地址不能用。请使用 http:// 或 https://，且不要在地址中填写用户名或密码。\n\nredacted fixture detail"
     },
     "show_remove": true,
     "saving": false,

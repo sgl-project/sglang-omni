@@ -141,6 +141,9 @@ func (host *meetingDemoHost) copyFeatureText(text string) { host.record("copyFea
 func (host *meetingDemoHost) setFeatureEndWord(word string) {
 	host.record("setFeatureEndWord %q", word)
 }
+func (host *meetingDemoHost) setFeatureReturnFinish(on bool) {
+	host.record("setFeatureReturnFinish %t", on)
+}
 
 func (host *meetingDemoHost) startTry()  { host.record("startTry") }
 func (host *meetingDemoHost) stopTry()   { host.record("stopTry") }
