@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch._dynamo.utils import counters
 
-from sglang_omni.models.qwen3_tts import codec_state_arena, incremental_codec
+from sglang_omni.models.qwen3_tts import incremental_codec
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -1117,109 +1117,22 @@ def make_arena(
     return incremental, arena
 
 
-def test_codec_state_arena_returns_a_slot_whose_reset_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A reset that raised after acquire took the slot left it neither free nor held, so the arena lost a row for good."""
-    _, arena = make_arena(Decoder(), slots=1)
-    zero_slot = arena.zero_slot
-
-    def fail_reset(slot: int) -> None:
-        raise RuntimeError("device fault")
-
-    monkeypatch.setattr(arena, "zero_slot", fail_reset)
-    with pytest.raises(RuntimeError, match="device fault"):
-        arena.acquire()
-    monkeypatch.setattr(arena, "zero_slot", zero_slot)
-
-    assert arena.active_slots() == 0
-    assert arena.acquire() == 0
-    assert arena.exhausted_count == 0
-
-
-def test_codec_state_arena_counts_only_misses_that_do_not_wait() -> None:
-    _, arena = make_arena(Decoder(), slots=1)
-
-    assert arena.acquire() == 0
-    assert arena.acquire(should_count_exhaustion=False) is None
-    assert arena.exhausted_count == 0
-    assert arena.acquire() is None
-    assert arena.exhausted_count == 1
-
-
-def test_codec_state_arena_keeps_free_slots_for_waiting_callers() -> None:
-    _, arena = make_arena(Decoder(), slots=2)
-
-    assert arena.acquire(keep_free=2) is None
-    assert arena.acquire(keep_free=1) is not None
-    assert arena.acquire(keep_free=1) is None
-    assert arena.acquire() is not None
-    assert arena.exhausted_count == 2
-
-
-class UnrecordableEvent:
-    def record(self, stream: object) -> None:
-        raise RuntimeError("CUDA error: event record failed")
-
-
-class FailedDeviceStream:
-    def wait_event(self, event: object) -> None:
-        raise RuntimeError("CUDA error: stream wait failed")
-
-
-def fail_device(
-    arena: Qwen3TTSCodecStateArena, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(codec_state_arena, "has_device_streams", lambda device: True)
-    monkeypatch.setattr(
-        arena,
-        "device_module",
-        SimpleNamespace(
-            Event=UnrecordableEvent, current_stream=lambda device: FailedDeviceStream()
-        ),
+def test_codec_state_arena_never_hands_out_reserved_slots() -> None:
+    arena = Qwen3TTSCodecStateArena(
+        Qwen3TTSIncrementalDecoder(Decoder()),
+        num_slots=2,
+        reserved_slots=3,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
     )
 
-
-def test_codec_state_arena_retires_a_slot_whose_release_cannot_be_recorded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A release on a failed device raised out of the worker that freed the slot."""
-    _, arena = make_arena(Decoder(), slots=2)
-    slot = arena.acquire()
-    fail_device(arena, monkeypatch)
-
-    arena.release(slot)
-
-    assert arena.retired == {slot}
-    assert slot not in arena.free
-    assert arena.active_slots() == 0
-
-
-class RecordableEvent:
-    def record(self, stream: object) -> None:
-        pass
-
-
-def test_codec_state_arena_retires_a_slot_whose_wait_for_its_last_holder_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A slot whose wait for its last holder raised went back free under an event the failed waiter recorded, so the next holder could reset it while the last holder still wrote it."""
-    _, arena = make_arena(Decoder(), slots=1)
-    arena.release_events[0] = RecordableEvent()
-    monkeypatch.setattr(codec_state_arena, "has_device_streams", lambda device: True)
-    monkeypatch.setattr(
-        arena,
-        "device_module",
-        SimpleNamespace(
-            Event=RecordableEvent, current_stream=lambda device: FailedDeviceStream()
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="stream wait failed"):
-        arena.acquire()
-
-    assert arena.retired == {0}
-    assert arena.acquire() is None
+    assert [arena.acquire(), arena.acquire(), arena.acquire()] == [0, 1, None]
+    assert list(arena.reserved_slots) == [2, 3, 4]
+    assert arena.scratch_slot == 5
+    assert arena.describe()["slots"] == 2
+    arena.release(1)
+    arena.retire(3)
+    assert arena.active_slots() == 1
 
 
 @pytest.mark.accelerator

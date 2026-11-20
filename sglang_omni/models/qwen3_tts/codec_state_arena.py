@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypedDict
@@ -23,8 +22,6 @@ if TYPE_CHECKING:
     )
 else:
     pass
-
-logger = logging.getLogger(__name__)
 
 
 class DisabledCodecGraphStats(TypedDict):
@@ -74,9 +71,12 @@ class Qwen3TTSCodecStateArena:
         device: torch.device,
         dtype: torch.dtype,
         in_place_frames: int = 0,
+        reserved_slots: int = 0,
     ) -> None:
         """in_place_frames: the widest decode a fused decoder attends in place, which sizes
-        its K/V rings; 0 keeps the K/V in gathered buffers."""
+        its K/V rings; 0 keeps the K/V in gathered buffers. reserved_slots: rows past
+        num_slots that acquire never hands out, for an owner that manages them itself.
+        """
         if num_slots <= 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
         else:
@@ -86,7 +86,8 @@ class Qwen3TTSCodecStateArena:
         self.device_module = torch.get_device_module(self.device)
         self.dtype = dtype
         self._num_slots = int(num_slots)  # noqa: leading-underscore
-        self.scratch_slot = self._num_slots  # noqa: leading-underscore
+        self.scratch_slot = int(num_slots) + int(reserved_slots)
+        self.reserved_slots: range = range(int(num_slots), self.scratch_slot)
         spec = decoder.state_spec()
         if decoder.fused_transformer is not None and in_place_frames > 0:
             self.ring_frames = spec.retained_context + int(in_place_frames)
@@ -136,7 +137,7 @@ class Qwen3TTSCodecStateArena:
 
     @property
     def total_bytes(self) -> int:
-        return self._bytes_per_slot * self._num_slots  # noqa: leading-underscore
+        return self._bytes_per_slot * self.scratch_slot  # noqa: leading-underscore
 
     @property
     def exhausted_count(self) -> int:
@@ -145,63 +146,33 @@ class Qwen3TTSCodecStateArena:
     def active_slots(self) -> int:
         with self.lock:
             return (
-                self._num_slots - len(self.free) - len(self.retired)
+                self._num_slots
+                - len(self.free)
+                - sum(slot < self._num_slots for slot in self.retired)
             )  # noqa: leading-underscore
 
-    def acquire(
-        self, *, keep_free: int = 0, should_count_exhaustion: bool = True
-    ) -> int | None:
-        """Take a zeroed slot while more than keep_free slots are free, or None.
-
-        A caller that waits and asks again passes should_count_exhaustion=False, so only a miss that sends a stream to another path counts.
-        """
+    def acquire(self) -> int | None:
+        """Take a zeroed slot, or ``None`` when the arena is full."""
         with self.lock:
-            if len(self.free) <= keep_free:
-                if should_count_exhaustion:
-                    self._exhausted_count += 1  # noqa: leading-underscore
-                else:
-                    pass
+            if not self.free:
+                self._exhausted_count += 1  # noqa: leading-underscore
                 return None
             else:
                 pass
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
         if released is not None:
-            try:
-                self.device_module.current_stream(self.device).wait_event(released)
-            except BaseException:
-                # note (ratish): this stream is not ordered after the last holder's work, so no event it records could order the next holder and the slot is withdrawn.
-                self.retire(slot)
-                raise
+            self.device_module.current_stream(self.device).wait_event(released)
         else:
             pass
-        try:
-            self.zero_slot(slot)
-        except BaseException:
-            # note (ratish): this stream already waits for the last holder, so the event release records orders the next holder after both and its acquire zeroes the slot again.
-            self.release(slot)
-            raise
+        self.zero_slot(slot)
         return slot
 
     def release(self, slot: int) -> None:
-        if slot in self.retired:
-            # note (ratish): retire only ever adds, so a retired slot returns before recording on a device that may have failed.
-            return
-        else:
-            pass
         released = None
         if has_device_streams(self.device):
-            try:
-                released = self.device_module.Event()
-                released.record(self.device_module.current_stream(self.device))
-            except RuntimeError:
-                # note (ratish): without the event no later holder is ordered after this one's work, so the slot is withdrawn like a decode never proven complete.
-                logger.warning(
-                    f"Qwen3-TTS codec state slot {slot} could not record its release and is retired",
-                    exc_info=True,
-                )
-                self.retire(slot)
-                return
+            released = self.device_module.Event()
+            released.record(self.device_module.current_stream(self.device))
         else:
             pass
         with self.lock:
