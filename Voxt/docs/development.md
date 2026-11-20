@@ -98,6 +98,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_MAC` | Any value runs the tests that use real macOS services (Keychain, permissions, app activation). | Unset: these tests skip |
 | `VOXTNEW_MAC_E2E` | `1` runs the headless end-to-end tests on a real Mac. | Unset: the tests skip |
 | `VOXTNEW_MAC_MIC_CAPTURE` | `1` lets the Mac end-to-end test record from the real microphone. | Unset: the test skips |
+| `VOXTNEW_MAC_SYSTEM_IDLE` | `1` lets the Mac end-to-end test capture real system audio while the output is idle. | Unset: the test skips |
 | `VOXTNEW_MAC_OUTPUT` | UID of an output device that the output device test can switch to. | Unset: the test skips |
 | `VOXTNEW_MAC_OUTPUT_DEFAULT` | `1` lets the output device test change the default output device. | Unset: not allowed |
 | `VOXTNEW_MIN_FREE` | `scripts/mac-beta-e2e.sh` and `scripts/mac-regress.sh` stop when less than this percentage of memory is free. | `40` in `mac-beta-e2e.sh`, `30` in `mac-regress.sh` |
