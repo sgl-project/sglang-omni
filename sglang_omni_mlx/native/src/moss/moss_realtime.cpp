@@ -113,7 +113,7 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
   }
   std::optional<Decode> decode;
   MossOptions options;
-  ::omni_common::MossPreviewTiming timing;
+  auto timing = std::make_shared<::omni_common::MossPreviewTiming>();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_samples_.insert(pending_samples_.end(), appended->begin(),
@@ -126,14 +126,17 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
     }
   }
   const auto decision_started = std::chrono::steady_clock::now();
-  timing.window_id = decode->window_id;
-  timing.kind = decode->kind == DecodeKind::kPreview ? "preview" : "final";
-  timing.audio_sample_count = static_cast<int>(decode->samples.size());
-  timing.append_at_ms = omni_common::MillisecondsSinceEpoch(append_started);
-  timing.decision_at_ms = omni_common::MillisecondsSinceEpoch(decision_started);
-  timing.submit_at_ms =
+  timing->window_id = decode->window_id;
+  timing->kind = decode->kind == DecodeKind::kPreview ? "preview" : "final";
+  timing->audio_sample_count = static_cast<int>(decode->samples.size());
+  timing->append_at_ms = omni_common::MillisecondsSinceEpoch(append_started);
+  timing->decision_at_ms =
+      omni_common::MillisecondsSinceEpoch(decision_started);
+  timing->submit_at_ms =
       omni_common::MillisecondsSinceEpoch(std::chrono::steady_clock::now());
-  omni_server::Transcription job = DecodeJob(*decode, std::move(options));
+  timing->min_preview_samples = kMinPreviewSamples;
+  omni_server::Transcription job =
+      DecodeJob(*decode, std::move(options), timing);
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
   worker_.Submit(
@@ -147,14 +150,14 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
         } else if (error) {
           self->ReportDecodeFailure(error);
         } else {
-          timing.transcribe_at_ms = omni_common::MillisecondsSinceEpoch(
+          timing->transcribe_at_ms = omni_common::MillisecondsSinceEpoch(
               std::chrono::steady_clock::now());
           self->Publish(decode, *result);
           // Stamped after Publish so publish_at_ms - transcribe_at_ms is the
           // real publish cost; the event line goes out once it is complete.
-          timing.publish_at_ms = omni_common::MillisecondsSinceEpoch(
+          timing->publish_at_ms = omni_common::MillisecondsSinceEpoch(
               std::chrono::steady_clock::now());
-          std::cerr << ::omni_common::MossPreviewTimingJson(timing).dump()
+          std::cerr << ::omni_common::MossPreviewTimingJson(*timing).dump()
                     << "\n";
         }
         {
@@ -230,11 +233,17 @@ MossOptions MossRealtimeSession::DecodeOptions(const Decode &decode) const {
   return options;
 }
 
-omni_server::Transcription
-MossRealtimeSession::DecodeJob(const Decode &decode,
-                               MossOptions options) const {
+omni_server::Transcription MossRealtimeSession::DecodeJob(
+    const Decode &decode, MossOptions options,
+    std::shared_ptr<::omni_common::MossPreviewTiming> timing) const {
   return [&transcriber = transcriber_, samples = decode.samples,
-          options = std::move(options)](const std::atomic<bool> &cancel) {
+          options = std::move(options),
+          timing](const std::atomic<bool> &cancel) {
+    if (timing) {
+      timing->transcribe_started_at_ms =
+          omni_common::MillisecondsSinceEpoch(std::chrono::steady_clock::now());
+    } else {
+    }
     return transcriber.Transcribe(samples, options, cancel);
   };
 }

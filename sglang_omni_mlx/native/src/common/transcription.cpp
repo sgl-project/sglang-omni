@@ -13,8 +13,10 @@ nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing) {
           {"append_at_ms", timing.append_at_ms},
           {"decision_at_ms", timing.decision_at_ms},
           {"submit_at_ms", timing.submit_at_ms},
+          {"transcribe_started_at_ms", timing.transcribe_started_at_ms},
           {"transcribe_at_ms", timing.transcribe_at_ms},
-          {"publish_at_ms", timing.publish_at_ms}};
+          {"publish_at_ms", timing.publish_at_ms},
+          {"min_preview_samples", timing.min_preview_samples}};
 }
 
 nlohmann::ordered_json

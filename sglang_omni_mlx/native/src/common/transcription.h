@@ -52,8 +52,10 @@ struct MossPreviewTiming {
   int64_t append_at_ms = 0;
   int64_t decision_at_ms = 0;
   int64_t submit_at_ms = 0;
+  int64_t transcribe_started_at_ms = 0;
   int64_t transcribe_at_ms = 0;
   int64_t publish_at_ms = 0;
+  int min_preview_samples = 0;
 };
 
 nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing);
