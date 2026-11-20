@@ -62,6 +62,61 @@ func waitEarly(t *testing.T, model *fakeLLM, n int) {
 	}
 }
 
+type earlyOrderedLLM struct {
+	mu      sync.Mutex
+	calls   int
+	started [4]chan struct{}
+	release [4]chan struct{}
+	reqs    []llm.Request
+}
+
+func newEarlyOrderedLLM() *earlyOrderedLLM {
+	model := &earlyOrderedLLM{}
+	for i := range model.started {
+		model.started[i] = make(chan struct{})
+		model.release[i] = make(chan struct{})
+	}
+	return model
+}
+
+func (m *earlyOrderedLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
+	m.mu.Lock()
+	m.calls++
+	call := m.calls
+	m.reqs = append(m.reqs, req)
+	m.mu.Unlock()
+	if call > len(m.started) {
+		return llm.Response{Text: "extra"}, nil
+	}
+	close(m.started[call-1])
+	select {
+	case <-m.release[call-1]:
+		return llm.Response{Text: []string{"整理一。", "整理二。", "整理三。", "整理四。"}[call-1]}, nil
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
+func (m *earlyOrderedLLM) finish(t *testing.T, call int) {
+	t.Helper()
+	close(m.release[call])
+}
+
+func (m *earlyOrderedLLM) waitStarted(t *testing.T, call int) {
+	t.Helper()
+	select {
+	case <-m.started[call]:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("request %d did not start", call+1)
+	}
+}
+
+func (m *earlyOrderedLLM) requests() []llm.Request {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]llm.Request(nil), m.reqs...)
+}
+
 // TestEarlyCleanWhileRecording: on a stream that finalises stretches
 // while recording continues, each finished stretch is cleaned by the
 // language model right away: at Stop only the tail is left, the wait
@@ -69,26 +124,18 @@ func waitEarly(t *testing.T, model *fakeLLM, n int) {
 // is the stretches' answers in order.
 func TestEarlyCleanWhileRecording(t *testing.T) {
 	f := newEarlyFixture(t)
-	const delay = 3 * time.Second
-	model := &fakeLLM{texts: []string{"整理一。", "整理二。", "整理三。", "整理四。"}, pause: delay}
-	h := newHarness(t, &fakeStreamer{final: f.full, pieces: f.stable}, model, func(c *Config, s *settings.Settings) {
-		c.LLMTimeout = 30 * time.Second
-	})
+	model := newEarlyOrderedLLM()
+	h := newHarness(t, &fakeStreamer{final: f.full, pieces: f.stable}, model, nil)
 	id := h.start()
-	waitEarly(t, model, 3)
-	if n := len(model.requests()); n != 3 {
-		t.Fatalf("%d requests before Stop, want the 3 finished stretches'", n)
-	}
-	stop := time.Now()
+	model.finish(t, 0)
+	model.waitStarted(t, 1)
+	model.finish(t, 1)
+	model.waitStarted(t, 2)
+	model.finish(t, 2)
 	h.m.Stop(id)
+	model.waitStarted(t, 3)
+	model.finish(t, 3)
 	end := h.rec.wait(t)
-	waited := time.Since(stop)
-	if waited >= 2*delay {
-		t.Errorf("waited %v after Stop, want about one request (%v), not one per stretch", waited.Round(time.Millisecond), delay)
-	}
-	if waited < delay/2 {
-		t.Errorf("waited only %v after Stop: the last stretch was not cleaned", waited.Round(time.Millisecond))
-	}
 	if want := "整理一。整理二。整理三。整理四。"; end.Result != want || end.Raw != f.full {
 		t.Errorf("result %q, raw %q, want %q", end.Result, end.Raw, want)
 	}
@@ -273,10 +320,17 @@ type earlyFallbackLLM struct {
 	secondStarted chan struct{}
 	secondErr     error
 	thirdStarted  bool
+	tailStarted   chan struct{}
+	tailRelease   chan struct{}
+	tailOnce      sync.Once
 }
 
 func (f *earlyFallbackLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if req.OnDelta != nil {
+		if f.tailStarted != nil {
+			f.tailOnce.Do(func() { close(f.tailStarted) })
+			<-f.tailRelease
+		}
 		return llm.Response{Text: "fallback"}, nil
 	}
 	f.mu.Lock()
@@ -325,6 +379,59 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 	}
 	if model.thirdStarted {
 		t.Error("the queued third request started after the final-text mismatch")
+	}
+}
+
+func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
+	model := &earlyFallbackLLM{secondStarted: make(chan struct{})}
+	r := newEarlyUnitRun(t, model, nil)
+	r.m.cfg.LLMBase, r.m.cfg.LLMStall, r.m.cfg.LLMTimeout = 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond
+	r.hearPiece("one")
+	r.hearPiece("one two")
+	r.hearPiece("one two three")
+	<-model.secondStarted
+	result, _, err := r.cleanUpFirst("one two three tail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "early one fallback" {
+		t.Errorf("result %q, want the completed early answer and the fallback tail", result)
+	}
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls != 2 {
+		t.Errorf("%d requests, want the first and the cancelled second; the queued early request must not run", calls)
+	}
+}
+
+func TestEarlyCleanMatchingFinalSkipAndRethink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(*Manager, string)
+	}{
+		{name: "skip", act: func(m *Manager, id string) { m.SkipLLM(id) }},
+		{name: "rethink", act: func(m *Manager, id string) { m.Rethink(id, &llm.Thinking{Mode: llm.ThinkOff}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &earlyFallbackLLM{secondStarted: make(chan struct{}), tailStarted: make(chan struct{}), tailRelease: make(chan struct{})}
+			h := newHarness(t, &fakeStreamer{final: "one two three tail", pieces: []string{"one", "one two", "one two three"}}, model, nil)
+			h.m.cfg.LLMBase, h.m.cfg.LLMStall, h.m.cfg.LLMTimeout = 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond
+			id := h.start()
+			<-model.secondStarted
+			h.speak(id, 3)
+			h.m.Stop(id)
+			<-model.tailStarted
+			tc.act(h.m, id)
+			close(model.tailRelease)
+			end := h.rec.wait(t)
+			if tc.name == "skip" && end.Result != "one two three tail" {
+				t.Errorf("skip end %+v, want the raw transcript", end)
+			}
+			if tc.name == "rethink" && (end.Result != "fallback" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
+				t.Errorf("rethink end %+v", end)
+			}
+		})
 	}
 }
 

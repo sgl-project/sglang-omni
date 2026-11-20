@@ -234,10 +234,11 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	fallback := broken || !e.finalMatches(text)
 	e.mu.Lock()
 	e.closed = true
+	done, jobs := len(e.segs), len(e.jobs)
 	e.mu.Unlock()
 	e.cond.Broadcast()
-	if fallback {
-		e.cancel()
+	if fallback || done < jobs-1 {
+		e.cancel() // abandon queued work; an active last request may still finish
 	}
 	<-e.workerDone
 	e.mu.Lock()
