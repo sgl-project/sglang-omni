@@ -76,7 +76,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         mm_attention_backend: str | None,
         enable_pre_lm_encoder: bool,
         pre_lm_cache_max_entries: int,
@@ -492,8 +492,11 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (wilsonzheng0327): with the draft a decode round is a whole verify round, so by default a ready prefill is no longer held during decode, as for Qwen3-ASR and MOSS-TD.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.speculative_worker_class is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
             "request_build_max_workers": (
                 1 if self.uses_torch_mps() else self.request_build_max_workers
