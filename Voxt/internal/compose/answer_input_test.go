@@ -171,6 +171,49 @@ func TestAnswerCleanupKeepsTextAfterOrphanThinkClose(t *testing.T) {
 	}
 }
 
+func TestAnswerCleanupStripsTurnEndLeak(t *testing.T) {
+	// A turn-end marker followed by a fresh sentence is the model
+	// writing into the next turn: cut there, as with a role marker.
+	const leak = "Visible <|im_end|> Next turn."
+	if got := Clean(leak, "x"); got != "Visible" {
+		t.Errorf("Clean(%q) = %q, want %q", leak, got, "Visible")
+	}
+	if got := PartialClean(leak, "x"); got != "Visible" {
+		t.Errorf("PartialClean(%q) = %q, want %q", leak, got, "Visible")
+	}
+	structured := `{"title":"T","content":` + strconv.Quote(leak) + `}`
+	if got, ok := ParseAnswer(structured, "x"); !ok || got.Content != "Visible" {
+		t.Errorf("ParseAnswer(%q) = %+v, %v", structured, got, ok)
+	}
+	if got := PartialAnswer(structured, "x"); got.Content != "Visible " {
+		t.Errorf("PartialAnswer(%q) = %+v", structured, got)
+	}
+	// Fragments and continuations without sentence shape stay literal.
+	assertAnswerCleanup(t, "把 <|im_end|> 放在句尾", "x", "把 <|im_end|> 放在句尾")
+}
+
+func TestAnswerCleanupStripsReasoningBeforeFinalAnswer(t *testing.T) {
+	// A complete thinking pair the input never quoted is reasoning,
+	// whatever words follow the open tag; the final answer stays.
+	const reasoning = "The model emits <think> before it checks the request</think> Final answer."
+	for name, got := range map[string]string{
+		"Clean":         Clean(reasoning, "x"),
+		"PartialClean":  PartialClean(reasoning, "x"),
+		"CleanOutput":   CleanOutput(reasoning, "x"),
+		"PartialOutput": PartialOutput(reasoning, "x"),
+	} {
+		if strings.Contains(got, "checks the request") {
+			t.Errorf("%s preserved the reasoning as prose: %q", name, got)
+		}
+		if !strings.Contains(got, "Final answer.") {
+			t.Errorf("%s lost the visible answer: %q", name, got)
+		}
+	}
+	// Prose mentions of the tag have no close tag and stay whole.
+	assertAnswerCleanup(t, "Put <think> at the top of the prompt. That is all.", "x", "Put <think> at the top of the prompt. That is all.")
+	assertAnswerCleanup(t, "在提示词开头写 <think> 就可以让模型先思考。", "x", "在提示词开头写 <think> 就可以让模型先思考。")
+}
+
 func TestAnswerCleanupPreservesInlineControlToken(t *testing.T) {
 	const controlRun = "Visible <|im_end|> <|im_end|> <|im_start|>user"
 	if got := Clean(controlRun, "x"); got != "Visible" {
