@@ -117,8 +117,10 @@ async def negotiate_session_admission(
     """Send session.update and retry non-fatal session admission rejections under one shared budget."""
     await send_session_update()
     admitted = await settle_session_updated()
+    # note (IcyDesert): The manifest retry limit now spans HTTP and session rejections; older recordings used separate budgets.
     while rejected.is_set() and admission_state.denials <= max_retries:
         rejected.clear()
+        # note (Yucheng Hu): The server's session_update_timeout waits behind a slow open, so it can fail the session right after a rejection; the backoff ends on that abort.
         try:
             await asyncio.wait_for(aborted.wait(), backoff_seconds)
         except asyncio.TimeoutError:
@@ -588,7 +590,6 @@ async def run_session(
                     async def settle_updated() -> bool:
                         return await settle("session.updated")
 
-                    # note (IcyDesert): The manifest retry limit spans HTTP and session rejections; backoff ends early if the session aborts.
                     if await settle("session.created"):
                         admitted = await negotiate_session_admission(
                             send_session_update=send_update,
