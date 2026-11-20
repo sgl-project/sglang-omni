@@ -279,7 +279,7 @@ def resolve_physical_plans(
     return physical_plans
 
 
-_UNSUPPORTED_PROCESS_ENV = (
+UNSUPPORTED_PROCESS_ENV = (
     "CUDA_VISIBLE_DEVICES",
     "CUDA_DEVICE_ORDER",
     "CUDA_MPS_PIPE_DIRECTORY",
@@ -292,7 +292,7 @@ def reject_process_env_overrides(process_specs) -> None:
     for process_spec in process_specs:
         for stage_spec in process_spec.stage_specs:
             env_defaults = getattr(stage_spec, "env_defaults", {})
-            for name in _UNSUPPORTED_PROCESS_ENV:
+            for name in UNSUPPORTED_PROCESS_ENV:
                 if name in env_defaults:
                     conflicts.append(
                         f"process {process_spec.process_name!r}, stage "

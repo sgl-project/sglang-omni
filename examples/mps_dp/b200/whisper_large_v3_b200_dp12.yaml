@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-# Whisper large-v3, 12 replicas on one 183 GB B200 under native MPS: the most audio within a p99 request latency of 1 and 3 s, measured with sglang-omni 8848e500 (see docs/basic_usage/mps_dp.md).
+# Whisper large-v3, 12 replicas on one 183 GB B200 under native MPS, measured with sglang-omni 8848e500: the most audio within a p99 request latency of 1 and 3 s.
+# The B200 default is 6 replicas, the most within 0.5 s; serve this file with sgl-omni serve --config for a looser target (see docs/basic_usage/mps_dp.md).
 
 config_cls: WhisperASRPipelineConfig
 model_path: openai/whisper-large-v3
+mps: 'on'
 stages:
   asr:
     gpu: 0

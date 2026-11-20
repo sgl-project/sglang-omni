@@ -126,17 +126,23 @@ def warn_replica_device_overrides(
     stages_cfg: list[StageConfig],
     plan: LogicalProcessPlan,
 ) -> None:
-    """Warn when process devices replace a GPU stage's declared placement."""
+    """Warn when process devices move a GPU stage off its declared placement."""
     stage_by_name = {stage.name: stage for stage in stages_cfg}
     for process in plan.processes:
         if process.replica_devices is not None:
             for stage_name in process.stage_names:
                 stage = stage_by_name[stage_name]
-                if stage.gpu is not None:
+                assignments = [
+                    replica_stage_gpu(stage, devices)
+                    for devices in process.replica_devices
+                ]
+                if stage.gpu is not None and any(
+                    assignment != stage.gpu for assignment in assignments
+                ):
                     logger.warning(
                         f"Stage {stage.name!r}: processes.{process.name}.replica_devices "
                         f"overrides gpu={stage.gpu!r}; replica GPU assignments: "
-                        f"{[replica_stage_gpu(stage, devices) for devices in process.replica_devices]}"
+                        f"{assignments}"
                     )
                 else:
                     pass

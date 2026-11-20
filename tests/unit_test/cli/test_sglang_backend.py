@@ -15,6 +15,7 @@ from sglang_omni.cli import app
 from sglang_omni.cli.sglang_backend import run
 from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.patch import ConfigPatchSet
 
 
 def single_stage_config(model_path: str) -> PipelineConfig:
@@ -42,6 +43,7 @@ def file_config_manager(
 class DummyManager:
     def __init__(self, model_path: str):
         self.config = single_stage_config(model_path)
+        self.source_patches = ConfigPatchSet()
 
     def parse_extra_args(self, args):
         assert args == []

@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-# Qwen3-TTS 1.7B CustomVoice, 7 replicas on one 183 GB B200 under native MPS: the most audio within a p99 stall-free start of 0.5 s, measured with sglang-omni 8848e500 (see docs/basic_usage/mps_dp.md).
+# Qwen3-TTS 1.7B CustomVoice, 7 replicas on one 183 GB B200 under native MPS, measured with sglang-omni 8848e500: the most audio within a p99 stall-free start of 0.5 s.
+# sgl-omni serve --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice serves this config by default on a B200 (see docs/basic_usage/mps_dp.md).
 
 config_cls: Qwen3TTSPipelineConfig
 model_path: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+mps: 'on'
 stages:
   tts_engine:
     gpu: 0

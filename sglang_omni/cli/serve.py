@@ -19,10 +19,16 @@ from sglang_omni.config.patch import (
     Specificity,
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
-from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.config.sources import (
+    dump_user_config,
+    patches_from_dotted_cli,
+    patches_from_model_path_flag,
+)
 from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
+from sglang_omni.mps.devices import NvmlDeviceInfo
+from sglang_omni.mps.replica_profiles import decide_replica_profile
 from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -689,6 +695,9 @@ def serve(
             extra_args,
             extra_patches=flag_patches,
         )
+        cli_patches = patches_from_dotted_cli(extra_args, config_manager.config).merge(
+            flag_patches
+        )
     except (ConfigPathError, ValueError) as exc:
         # Unknown path, unwritable path, two sources disagreeing at one
         # precedence, or a value the schema refuses. Every one of these
@@ -703,6 +712,16 @@ def serve(
         merged_config,
         stage_offload_components=stage_offload_components,
     )
+    replica_profile = decide_replica_profile(
+        merged_config,
+        user_patches=[*config_manager.source_patches, *cli_patches],
+        device_info=NvmlDeviceInfo(),
+    )
+    if replica_profile.message is not None:
+        logger.info(replica_profile.message)
+    else:
+        pass
+    merged_config = apply_engine_writes(merged_config, replica_profile.writes)
     merged_config = apply_default_draft_engine_overrides(merged_config)
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 

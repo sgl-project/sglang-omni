@@ -69,6 +69,10 @@ def fake_pynvml(failed_uuids: set[str] | None = None):
         nvmlDeviceGetUUID=lambda handle: handle,
         nvmlDeviceGetCudaComputeCapability=lambda handle: (9, 0),
         nvmlDeviceGetMigMode=lambda handle: (0, 0),
+        nvmlDeviceGetName=lambda handle: b"NVIDIA B200",
+        nvmlDeviceGetMemoryInfo=lambda handle: SimpleNamespace(
+            total=183359 << 20, free=180000 << 20
+        ),
     )
 
 
@@ -117,3 +121,18 @@ def test_nvml_failure_preserves_driver_resolved_uuid(monkeypatch):
     assert inspected[0].unsupported_reason is None
     assert inspected[1].gpu_uuid == GPU_B
     assert "NVML query failed" in inspected[1].unsupported_reason
+
+
+def test_supported_device_reports_its_nvml_name_and_memory(monkeypatch):
+    """Replica profiles match the card by these fields, so a supported device carries them."""
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml())
+    install_cuda_driver(monkeypatch, FakeDriver({0: GPU_A}))
+
+    device = NvmlDeviceInfo().inspect([0])[0]
+
+    assert device.unsupported_reason is None
+    assert (device.name, device.total_memory_bytes, device.free_memory_bytes) == (
+        "NVIDIA B200",
+        183359 << 20,
+        180000 << 20,
+    )
