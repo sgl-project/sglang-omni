@@ -124,14 +124,14 @@ func partialTagSuffix(s, tag string) int {
 	return 0
 }
 
-// stripInputTags drops an <instruction> or <selected_text> pair a model
-// echoed from RewriteMessage, keeping the text between: a pair that wraps
-// the whole answer, or one around exactly a text the user sent (whole
+// stripInputTags drops an <instruction>, <selected_text> or <typed_text>
+// pair a model echoed from RewriteMessage, keeping the text between: a
+// pair that wraps the whole answer, or one around exactly a text the user sent (whole
 // lines of input). Other pairs are part of the answer (a prompt template the
 // user asked for) and stay, as do the tags the user's own text has.
 func stripInputTags(s string, input ...string) string {
 	sent := "\n" + strings.Join(input, "\n") + "\n"
-	for _, name := range []string{"instruction", "selected_text"} {
+	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
 		open, close := "<"+name+">", "</"+name+">"
 		if strings.Contains(sent, open) || strings.Contains(sent, close) {
 			continue
@@ -163,7 +163,7 @@ func stripInputTags(s string, input ...string) string {
 func stripPartialInputTags(s string, input ...string) string {
 	s = stripInputTags(s, input...)
 	sent := "\n" + strings.Join(input, "\n") + "\n"
-	for _, name := range []string{"instruction", "selected_text"} {
+	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
 		open, close := "<"+name+">", "</"+name+">"
 		if strings.Contains(sent, open) || strings.Contains(sent, close) {
 			continue
@@ -190,7 +190,7 @@ func stripPartialInputTags(s string, input ...string) string {
 // may sit in a code fence or among other text. ok is false when there is
 // no such object; the caller then takes the text as it is (Clean),
 // without a title. An object whose content is empty is an empty answer.
-// Input is what the user sent (the selection, the instruction).
+// Input is what the user sent (the selection, typed text, the instruction).
 func ParseAnswer(text string, input ...string) (Answer, bool) {
 	raw := extractObject(text)
 	if raw == "" {
