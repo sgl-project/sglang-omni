@@ -389,7 +389,8 @@ type fakeLLM struct {
 
 	mu       sync.Mutex
 	reqs     []llm.Request
-	answered int // the requests answered so far
+	answered int           // the requests answered so far
+	answerCh chan struct{} // closed on the next answer; see answerSignal
 }
 
 func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -438,6 +439,10 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	}
 	f.mu.Lock()
 	f.answered++
+	if f.answerCh != nil {
+		close(f.answerCh)
+		f.answerCh = nil
+	}
 	f.mu.Unlock()
 	return llm.Response{Text: text, FinishReason: f.finish}, nil
 }
@@ -446,6 +451,16 @@ func (f *fakeLLM) requests() []llm.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]llm.Request(nil), f.reqs...)
+}
+
+// answerSignal returns a channel that closes when the next request is answered.
+func (f *fakeLLM) answerSignal() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.answerCh == nil {
+		f.answerCh = make(chan struct{})
+	}
+	return f.answerCh
 }
 
 func (f *fakeLLM) answeredCount() int {

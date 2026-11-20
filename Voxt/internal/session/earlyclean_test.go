@@ -53,12 +53,17 @@ func newEarlyFixture(t *testing.T) earlyFixture {
 // early clean-up reverted, none do before Stop).
 func waitEarly(t *testing.T, model *fakeLLM, n int) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for model.answeredCount() < n {
-		if time.Now().After(deadline) {
+	timeout := time.After(30 * time.Second)
+	for {
+		answered := model.answerSignal() // taken before the count, so no answer slips between them
+		if model.answeredCount() >= n {
+			return
+		}
+		select {
+		case <-answered:
+		case <-timeout:
 			t.Fatalf("only %d requests answered while recording, want %d", model.answeredCount(), n)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
