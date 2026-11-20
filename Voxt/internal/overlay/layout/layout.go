@@ -230,12 +230,12 @@ type CardSize struct{ W int }
 var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}, {}}
 
 // CardFillW is the fill size's width in the work area wa. It never makes
-// the card narrower when Large already fits; past Large it leaves the
-// frame's margins (Overlay.Margin and the shadow's Pad on each side).
+// the card narrower when the largest fixed size already fits; past that it
+// leaves the frame's margins (Overlay.Margin and the shadow's Pad on each side).
 func CardFillW(wa mygo.Rectangle, margin float64) int {
 	availableWidth := wa.Width - 2*(int(math.Round(margin))+Pad)
 	fitWidth := max(AnswerW, wa.Width-2*Pad)
-	return max(AnswerW, availableWidth, min(CardSizes[2].W, fitWidth))
+	return max(AnswerW, availableWidth, min(CardSizes[len(CardSizes)-2].W, fitWidth))
 }
 
 // Width is the size's width in the work area: the fixed one, or
