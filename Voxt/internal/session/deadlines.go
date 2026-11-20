@@ -42,7 +42,11 @@ func TimedOut(err error) bool {
 // llmChat runs req within its deadlines, until SkipLLM; an error says
 // which one passed.
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
-	ctx, cancel := context.WithTimeout(r.llmCtx, req.Timeout)
+	return r.llmChatContext(r.llmCtx, req)
+}
+
+func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Response, error) {
+	ctx, cancel := context.WithTimeout(parent, req.Timeout)
 	defer cancel()
 	switch {
 	case r.clip != nil: // the picture the user copied wins over the window's

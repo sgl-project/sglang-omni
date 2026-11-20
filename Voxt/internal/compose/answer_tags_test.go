@@ -40,7 +40,7 @@ func TestAnswerKeepsRequestedTags(t *testing.T) {
 
 func checkAnswer(t *testing.T, out, want string, input ...string) {
 	t.Helper()
-	if got := CleanRewrite(out, input...); got != want {
+	if got := CleanRewrite(out, input, false); got != want {
 		t.Errorf("CleanRewrite(%q) = %q, want %q", out, got, want)
 	}
 	b, _ := json.Marshal(Answer{Title: "T", Content: out})

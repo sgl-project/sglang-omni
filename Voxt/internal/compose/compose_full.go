@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// buildFullPrompt sends the user's template as the system prompt, with
-// scene and glossary layers when they apply (FB3).
+// buildFullPrompt sends the user's template as the custom system layer,
+// with Transcribe's cleanup, scene and glossary layers when they apply (FB3).
 func buildFullPrompt(in Input, set string, vars, flags map[string]string, full string) (Output, error) {
 	render := func(name string, extra map[string]string) string {
 		x := maps.Clone(flags)
@@ -23,6 +23,13 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 		layers = append(layers, layer)
 	}
 	add("custom", strings.TrimSpace(Render(full, vars, flags)))
+	if in.Task == Transcribe && in.Cleanup {
+		cleanup := render("cleanup", nil)
+		heading := strings.SplitN(cleanup, "\n", 2)[0]
+		if !strings.Contains(full, heading) {
+			add("cleanup", cleanup)
+		}
+	}
 	dictionary := addDictionary(in, add)
 	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))

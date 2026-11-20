@@ -223,13 +223,12 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	if in.Task == compose.Rewrite {
 		skill = llm.SkillRewrite
 	}
-	// Every text the request wraps in tags, earlier turns' too: the model
-	// may echo any of them.
-	sent := []string{in.Text, in.Instruction}
-	for _, t := range in.Previous {
-		sent = append(sent, t.Selection, t.Instruction)
-	}
 	var buf strings.Builder
+	answerInputs := []string{in.Text + "\n" + in.Instruction}
+	for _, turn := range in.Previous {
+		answerInputs = append(answerInputs, turn.Instruction+"\n"+turn.Selection+"\n"+turn.Answer.Title+"\n"+turn.Answer.Content)
+	}
+	quoteSource := cmp.Or(in.Text, in.Instruction)
 	var last time.Time
 	publish := func(force bool) {
 		now := time.Now()
@@ -239,11 +238,11 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		last = now
 		var a compose.Answer
 		if in.Answer {
-			a = compose.PartialAnswer(buf.String(), sent...)
+			a = compose.PartialAnswer(buf.String(), answerInputs...)
 		} else if in.Task == compose.Rewrite {
-			a.Content = strings.TrimSpace(compose.CleanRewrite(buf.String(), sent...))
+			a.Content = compose.CleanRewrite(buf.String(), answerInputs, true, quoteSource)
 		} else {
-			a.Content = strings.TrimSpace(buf.String())
+			a.Content = compose.PartialCleanWithInputs(buf.String(), answerInputs, quoteSource)
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
@@ -271,16 +270,16 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
-		if a, ok := compose.ParseAnswer(resp.Text, sent...); ok {
+		if a, ok := compose.ParseAnswer(resp.Text, answerInputs...); ok {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.CleanRewrite(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), sent...)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewrite(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
 	}
 	if in.Task == compose.Rewrite {
-		return compose.Answer{Content: compose.CleanRewrite(resp.Text, sent...)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewrite(resp.Text, answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
 	}
-	return compose.Answer{Content: compose.Clean(resp.Text, sent...)}, out.Profile(), truncated, nil
+	return compose.Answer{Content: compose.CleanWithInputs(resp.Text, answerInputs, quoteSource)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,
