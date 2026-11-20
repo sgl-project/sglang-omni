@@ -65,3 +65,4 @@ Announcements and release notes	L	TestAnnouncements	none
 Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
 Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	Only HTTP requests through the default transport are recorded
 Privacy and where data goes	L	TestLearnNeverLogsTheEdit	none
+Paste a copied picture into the Rewrite card	L	TestRewriteBoxPastesCopiedPictures	Each app's real clipboard types (Finder, browsers, chat apps) and the helper's decoding are seen on a Mac only

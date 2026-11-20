@@ -343,6 +343,9 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 		start, end = local.pasteCaret, local.pasteCaret
 	}
 	textArea.OnPaste(func(paste string) bool {
+		if actions.paste(context.Services()) {
+			return true // a picture, or an image file copied in Finder whose name is the text
+		}
 		original := *text
 		if local.paste != nil {
 			applyBoxPaste(local, actions.viewState())
@@ -365,7 +368,7 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 			return true
 		}
 		if !actions.pasteText(index, paste, start, end) {
-			return actions.paste(context.Services())
+			return false
 		}
 		suffixID := -1
 		if index >= 0 {
