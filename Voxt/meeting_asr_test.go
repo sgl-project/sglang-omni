@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
@@ -150,19 +151,25 @@ func TestMeetingDiarizerLanguageGate(t *testing.T) {
 	}
 }
 
-// meetingGateLocal lists MTD and Qwen3-ASR 1.7B and keeps the id it
-// opened, for the Automatic language-gate tests.
+// meetingGateLocal lists MTD and Qwen3-ASR 1.7B (and System dictation
+// with withSystem) and keeps the id it opened, for the Automatic
+// language-gate tests.
 type meetingGateLocal struct {
 	local.NotInstalled
-	opened string
+	opened     string
+	withSystem bool
 }
 
 func (l *meetingGateLocal) Installed(kind local.Kind) []local.Model {
 	if kind == local.ASR {
-		return []local.Model{
+		out := []local.Model{
 			{Kind: local.ASR, ID: models.ASRMoss, Name: "MOSS-Transcribe-Diarize", Stream: true},
 			{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Stream: true},
 		}
+		if l.withSystem {
+			out = append(out, local.Model{Kind: local.ASR, ID: dictation.ModelID, Name: "System dictation", Stream: true})
+		}
+		return out
 	}
 	return nil
 }
@@ -183,18 +190,20 @@ func (l *meetingGateLocal) ASR(_ context.Context, id string) (asr.Provider, loca
 // unknown language keeps the first installed, as before.
 func TestMeetingTrackASRLanguageGate(t *testing.T) {
 	for _, tc := range []struct {
-		name, main, explicit, want string
+		name, main, meetingLang, explicit, want string
 	}{
-		{"automatic picks the model that knows the language", "ja", "", models.ASRAccurate},
-		{"automatic keeps MTD for Chinese", "zh", "", models.ASRMoss},
-		{"unknown language keeps the first installed", "", "", models.ASRMoss},
-		{"explicit MTD is untouched", "ja", models.ASRMoss, models.ASRMoss},
+		{"automatic picks the model that knows the language", "ja", "", "", models.ASRAccurate},
+		{"automatic keeps MTD for Chinese", "zh", "", "", models.ASRMoss},
+		{"the meeting's own language wins over the main one", "zh", "ja", "", models.ASRAccurate},
+		{"unknown language keeps the first installed", "", "", "", models.ASRMoss},
+		{"explicit MTD is untouched", "ja", "", models.ASRMoss, models.ASRMoss},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := &meetingGateLocal{}
 			a, _, _ := newTestApp(t)
 			a.local = l
 			a.prefs.General.MainLanguage = tc.main
+			a.prefs.Features.Meeting.Lang = tc.meetingLang
 			a.prefs.Features.Meeting.ASR = tc.explicit
 			if _, err := a.meetingTrackASR(context.Background(), meeting.SourceMic); err != nil {
 				t.Fatal(err)
@@ -218,6 +227,18 @@ func TestMeetingTrackASRLanguageGate(t *testing.T) {
 		}
 		if id, _ := a.firstOmniASR(); id != "" {
 			t.Errorf("firstOmniASR %s, want none", id)
+		}
+	})
+	t.Run("System dictation is the fallback nothing else knows", func(t *testing.T) {
+		l := &meetingGateLocal{withSystem: true}
+		a, _, _ := newTestApp(t)
+		a.local = l
+		a.prefs.General.MainLanguage = "zz"
+		if _, err := a.meetingTrackASR(context.Background(), meeting.SourceMic); err != nil {
+			t.Fatal(err)
+		}
+		if l.opened != dictation.ModelID {
+			t.Errorf("opened %s, want System dictation", l.opened)
 		}
 	})
 }

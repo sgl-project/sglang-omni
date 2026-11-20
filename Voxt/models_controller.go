@@ -163,13 +163,18 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 }
 
 // automaticSpeech is installed's speech models for a feature left on
-// Automatic: a model whose catalogue spec knows languages the main
-// language is not among goes, so Automatic never lands on a model that
-// cannot recognise it (MOSS-Transcribe-Diarize knows Chinese and English
-// only, #4067). A model without language data stays, and an explicit
-// choice never comes here.
+// Automatic: automaticSpeechFor the main language.
 func automaticSpeech(prefs settings.Settings, installed []local.Model) []local.Model {
-	main := session.MainLanguage(prefs, i18n.Locale())
+	return automaticSpeechFor(session.MainLanguage(prefs, i18n.Locale()), installed)
+}
+
+// automaticSpeechFor is installed's speech models for a feature left on
+// Automatic and spoken to in main: a model whose catalogue spec knows
+// languages main is not among goes, so Automatic never lands on a model
+// that cannot recognise it (MOSS-Transcribe-Diarize knows Chinese and
+// English only, #4067). A model without language data stays, an empty
+// main keeps everything, and an explicit choice never comes here.
+func automaticSpeechFor(main string, installed []local.Model) []local.Model {
 	if main == "" {
 		return installed
 	}

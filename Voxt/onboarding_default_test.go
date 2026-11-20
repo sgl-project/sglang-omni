@@ -204,8 +204,13 @@ func TestGuidePackDraftLeft(t *testing.T) {
 	}
 	click(t, tt, findPrefix(t, tt, "Download and continue"))
 	downloadAsked(t, a, drain, models.ASRMossDraft)
-	if s := a.models.Status(models.ASRMoss); s.Err != nil {
-		t.Errorf("the speech model downloaded again: %+v", s)
+	for _, m := range models.Catalog() {
+		if m.ID == models.ASRMossDraft {
+			continue
+		}
+		if s := a.models.Status(m.ID); s.Err != nil || s.Downloading {
+			t.Errorf("%s downloaded too: %+v", m.ID, s)
+		}
 	}
 }
 
