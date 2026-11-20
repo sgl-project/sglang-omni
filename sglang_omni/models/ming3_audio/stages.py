@@ -171,16 +171,25 @@ def prepare_draft_checkpoint(
     draft_checkpoint = materialize_draft_checkpoint(
         draft_model_path, None if revision is None else str(revision)
     )
-    draft_config = json.loads((Path(draft_checkpoint.name) / "config.json").read_text())
-    draft_token_count = int(
-        overrides.get("speculative_num_draft_tokens")
-        or draft_config["dflash_config"]["block_size"]
-    )
     # note (evanderfff123-boop): fold accepted KDA inputs from a power-of-two ring covering twice the draft block instead of keeping per-draft-token state snapshots.
-    overrides.setdefault("enable_linear_replayssm_spec", True)
-    overrides.setdefault(
-        "linear_replayssm_cache_len", 2 ** (2 * draft_token_count - 1).bit_length()
-    )
+    if overrides.setdefault("enable_linear_replayssm_spec", True):
+        dflash_block_size = overrides.get("speculative_dflash_block_size")
+        num_draft_tokens = overrides.get("speculative_num_draft_tokens")
+        # note (evanderfff123-boop): SGLang verifies speculative_dflash_block_size tokens per step, else speculative_num_draft_tokens, else the draft's block size.
+        if dflash_block_size is not None:
+            draft_width = int(dflash_block_size)
+        elif num_draft_tokens is not None:
+            draft_width = int(num_draft_tokens)
+        else:
+            draft_config = json.loads(
+                (Path(draft_checkpoint.name) / "config.json").read_text()
+            )
+            draft_width = int(draft_config["dflash_config"]["block_size"])
+        overrides.setdefault(
+            "linear_replayssm_cache_len", 2 ** (2 * draft_width - 1).bit_length()
+        )
+    else:
+        pass
     overrides.update(
         speculative_draft_model_path=draft_checkpoint.name,
         speculative_draft_model_revision=None,
