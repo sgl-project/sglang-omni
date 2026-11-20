@@ -636,7 +636,7 @@
 <div class="vx-anim" data-scene="llm-open" data-lang="en"></div>
 </li>
 <li><p>Click the <strong>API Key</strong> field and press <code class="docutils literal notranslate"><span class="pre">⌘V</span></code> to paste the key. It shows as dots, and when you save, it goes into this Mac’s Keychain, never into Voxt’s settings or logs.</p></li>
-<li><p>For the provider’s own service, leave <strong>Address</strong> as it is. For another OpenAI-compatible service, enter its API root, usually ending in <code class="docutils literal notranslate"><span class="pre">/v1</span></code>. It must start with <code class="docutils literal notranslate"><span class="pre">https://</span></code> (<code class="docutils literal notranslate"><span class="pre">http://</span></code> only for a server on this Mac).</p></li>
+<li><p>For the provider’s own service, leave <strong>Address</strong> as it is. For another OpenAI-compatible service, enter its API root, usually ending in <code class="docutils literal notranslate"><span class="pre">/v1</span></code>. The address may start with <code class="docutils literal notranslate"><span class="pre">https://</span></code> or <code class="docutils literal notranslate"><span class="pre">http://</span></code>. HTTP sends the API key and text without encryption, so use it only on a network you trust.</p></li>
 <li><p>Choose one of the provider’s models under <strong>Model</strong>. If yours is not listed, choose <strong>Other model…</strong> and paste the exact model ID into the field that appears; it is case-sensitive.</p>
 <div class="vx-anim" data-scene="llm-fill" data-lang="en"></div>
 <p>In some versions these are labelled <strong>Custom…</strong> instead of <strong>Other model…</strong>, and <strong>Endpoint</strong> instead of <strong>Address</strong>; <strong>Endpoint</strong> takes the full Chat Completions URL, ending in <code class="docutils literal notranslate"><span class="pre">/chat/completions</span></code>. Fill in what your version shows. You can leave the generation settings as they are for now.</p>
@@ -666,8 +666,8 @@
 <tr class="row-odd"><td><p>Paste the service’s API key above, then test again.</p></td>
 <td><p>No key yet</p></td>
 </tr>
-<tr class="row-even"><td><p>The remote model’s address is not allowed. Use https://, or http:// for an address on this Mac.</p></td>
-<td><p>Make the address start with <code class="docutils literal notranslate"><span class="pre">https://</span></code></p></td>
+<tr class="row-even"><td><p>The remote model’s address is not allowed.</p></td>
+<td><p>Check that the address starts with <code class="docutils literal notranslate"><span class="pre">http://</span></code> or <code class="docutils literal notranslate"><span class="pre">https://</span></code> and has no user name or password</p></td>
 </tr>
 <tr class="row-odd"><td><p>Model not found, 404</p></td>
 <td><p>Check that the model ID matches exactly and the address ends in <code class="docutils literal notranslate"><span class="pre">/v1</span></code></p></td>

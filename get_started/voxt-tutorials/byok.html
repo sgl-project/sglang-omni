@@ -636,7 +636,7 @@
 <div class="vx-anim" data-scene="llm-open" data-lang="zh"></div>
 </li>
 <li><p>在 <strong>API Key</strong> 输入框按 <code class="docutils literal notranslate"><span class="pre">⌘V</span></code> 粘贴 Key。输入后界面只显示圆点，保存时 Key 写入这台 Mac 的钥匙串，不会写进设置文件和日志。</p></li>
-<li><p>使用官方服务时，<strong>地址</strong>保留默认。使用其他兼容 OpenAI 的服务时，填服务商提供的 API 根地址，通常以 <code class="docutils literal notranslate"><span class="pre">/v1</span></code> 结尾，必须是 <code class="docutils literal notranslate"><span class="pre">https://</span></code>（指向本机的服务可以用 <code class="docutils literal notranslate"><span class="pre">http://</span></code>）。</p></li>
+<li><p>使用官方服务时，<strong>地址</strong>保留默认。使用其他兼容 OpenAI 的服务时，填服务商提供的 API 根地址，通常以 <code class="docutils literal notranslate"><span class="pre">/v1</span></code> 结尾。地址可以用 <code class="docutils literal notranslate"><span class="pre">https://</span></code> 或 <code class="docutils literal notranslate"><span class="pre">http://</span></code>；HTTP 会明文传输 API Key 和文本，仅在可信网络中使用。</p></li>
 <li><p>在<strong>模型</strong>下拉框选服务商的预设模型。列表里没有时选<strong>其他模型…</strong>，把服务商给出的准确模型 ID 粘贴到下方出现的输入框，区分大小写。</p>
 <div class="vx-anim" data-scene="llm-fill" data-lang="zh"></div>
 <p>有的版本里，<strong>其他模型…<strong>叫</strong>自定义…</strong>，<strong>地址</strong>叫<strong>端点</strong>，要填完整的 Chat Completions 请求地址（以 <code class="docutils literal notranslate"><span class="pre">/chat/completions</span></code> 结尾）。按你的界面填。首次设置可以保留默认的生成设置。</p>
@@ -666,8 +666,8 @@
 <tr class="row-odd"><td><p>请在上方粘贴该服务的 API Key，然后再测试</p></td>
 <td><p>还没有填 Key</p></td>
 </tr>
-<tr class="row-even"><td><p>远程模型的地址不能用，请用 https://，或者指向本机的 http://</p></td>
-<td><p>地址改成 <code class="docutils literal notranslate"><span class="pre">https://</span></code> 开头</p></td>
+<tr class="row-even"><td><p>远程模型的地址不能用</p></td>
+<td><p>检查地址是否以 <code class="docutils literal notranslate"><span class="pre">http://</span></code> 或 <code class="docutils literal notranslate"><span class="pre">https://</span></code> 开头，且不含用户名或密码</p></td>
 </tr>
 <tr class="row-odd"><td><p>找不到模型、404</p></td>
 <td><p>核对模型 ID 是否逐字一致、地址是否少了 <code class="docutils literal notranslate"><span class="pre">/v1</span></code></p></td>
