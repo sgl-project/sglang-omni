@@ -332,7 +332,7 @@ configuration path reaches them:
 | Name | Value | Meaning |
 |---|---|---|
 | `allow_audio_chunking` | `true` | Qwen3-ASR transcribes an isolated chunk correctly, so chunking is on. |
-| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff; the Torch MPS compatibility path resolves it to its qualified 60-second cap. |
+| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). A lower configured `max_total_audio_s` sets the streaming cutoff. The Torch MPS compatibility path resolves the native limit to its qualified 60-second cap. |
 | `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length. |
 
 Note: Raising `audio_chunking.max_audio_clip_s` also resizes the encoder CUDA-graph bucket

@@ -669,11 +669,15 @@ class ResolvedAudioChunking:
     @property
     def stream_clip_limit_s(self) -> float:
         """Longest clip the un-chunkable streaming path accepts."""
-        return (
+        single_request_limit_s = (
             self.max_native_clip_s
             if self.max_native_clip_s is not None
             else self.max_audio_clip_s
         )
+        if self.max_total_audio_s is None:
+            return single_request_limit_s
+        else:
+            return min(single_request_limit_s, self.max_total_audio_s)
 
     def chunk_samples(self, sample_rate: int) -> int:
         """Chunk length in samples, at least one sample."""

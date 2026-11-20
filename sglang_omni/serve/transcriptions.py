@@ -149,7 +149,7 @@ def register_transcriptions(app: FastAPI) -> None:
             ):
                 if (
                     chunking.max_total_audio_s is not None
-                    and chunking.max_total_audio_s <= chunking.stream_clip_limit_s
+                    and duration_s > chunking.max_total_audio_s
                 ):
                     recovery = "use a shorter audio file"
                 else:
