@@ -1,0 +1,10 @@
+config_cls: Nemotron3_5ASRPipelineConfig
+model_path: nvidia/nemotron-3.5-asr-streaming-0.6b
+
+stages:
+  asr:
+    gpu: 0
+    factory:
+      dtype: bfloat16
+      num_lookahead_tokens: 3
+      enable_encoder_cuda_graph: false
