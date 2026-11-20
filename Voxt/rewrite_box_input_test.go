@@ -15,15 +15,33 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 )
 
+// fakeBoxDropWindow is the native panel newBoxWindow makes: its drop and
+// move handlers, its level and how often it was raised.
 type fakeBoxDropWindow struct {
 	fakeBoxWindow
 	onDrop func(*mygo.FileDropEvent)
+	onMove func()
+	onTop  bool
+	raised int
 }
 
 func (f *fakeBoxDropWindow) OnFileDrop(fn func(*mygo.FileDropEvent)) func() {
 	f.onDrop = fn
 	return func() { f.onDrop = nil }
 }
+
+func (f *fakeBoxDropWindow) OnMove(fn func()) func() {
+	f.onMove = fn
+	return func() { f.onMove = nil }
+}
+
+func (f *fakeBoxDropWindow) SetAlwaysOnTop(on bool) { f.onTop = on }
+
+func (f *fakeBoxDropWindow) ShowInactive() { f.raised++ }
+
+func (f *fakeBoxWindow) ContentBounds() mygo.Rectangle { return f.bounds }
+
+func (f *fakeBoxWindow) ShowInactive() {}
 
 func TestRewriteBoxWindowAcceptsFileDrops(t *testing.T) {
 	native := &fakeBoxDropWindow{}

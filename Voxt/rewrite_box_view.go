@@ -59,6 +59,8 @@ const boxThumb = 72
 type boxDropWindow interface {
 	boxWindow
 	OnFileDrop(func(*mygo.FileDropEvent)) func()
+	OnMove(func()) func()
+	SetAlwaysOnTop(bool)
 }
 
 var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
@@ -71,7 +73,11 @@ func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, l
 	options.NonActivating = false
 	options.DisableClose = true
 	window := newBoxNativeWindow(options)
+	// A panel floats over every app's windows; the card stays at the
+	// windows' level, so the user can put another window over it.
+	window.SetAlwaysOnTop(false)
 	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
+	window.OnMove(actions.moved)
 	return window
 }
 
@@ -93,7 +99,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 		}
 	}
 	root.Children(func() {
-		faceStyle(context, ui.Column(context.Key("box-face")).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Gap(8), state.Radius, state.Alpha).Children(func() {
+		faceStyle(context, ui.Column(context.Key("box-face")).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Gap(8), state.Radius, state.Alpha).DragWindow().Children(func() {
 			// The header: what it is, Send while it records or a resend
 			// waits, Close.
 			ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {

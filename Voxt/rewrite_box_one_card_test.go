@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -163,5 +165,74 @@ func TestRewriteCardClosesAfterInserting(t *testing.T) {
 	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Done, Result: "Shorter.", Inserted: true})
 	if a.box.open || a.answer.open {
 		t.Errorf("after inserting: box open %v, answer open %v", a.box.open, a.answer.open)
+	}
+}
+
+// TestRewriteCardDrags: the card moves where the user drags it (its face
+// drags the window), keeps that place through a change of size and a
+// follow-up, stays on the screen, and opens at its usual place again once
+// it was closed, as the answer card does (TestCardDragged).
+func TestRewriteCardDrags(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	native := &fakeBoxDropWindow{}
+	previous := newBoxNativeWindow
+	newBoxNativeWindow = func(mygo.WindowOptions) boxDropWindow { return native }
+	t.Cleanup(func() { newBoxNativeWindow = previous })
+	a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea}
+	a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, floatingWindowOptions("Rewrite", boxWinW, boxWinH, nil))
+	anchored := a.boxFrame()
+	a.box.frame = anchored
+	if native.onMove == nil {
+		t.Fatal("the window reports no move")
+	}
+	native.bounds = mygo.Rectangle{X: anchored.X - 300, Y: anchored.Y - 200, Width: anchored.Width, Height: anchored.Height}
+	native.onMove()
+	if f := a.boxFrame(); f != native.bounds {
+		t.Fatalf("dragged to %+v, the card's frame is %+v", native.bounds, f)
+	}
+
+	a.boxCycleSize()
+	if f := a.boxFrame(); f.Width == anchored.Width || f.Y != anchored.Y-200 {
+		t.Errorf("another size moved the dragged card: %+v, anchored %+v", f, anchored)
+	}
+	a.boxKeep() // the answer is in: the card takes the follow-up where it is
+	if f := a.boxFrame(); f.Y != anchored.Y-200 {
+		t.Errorf("the follow-up moved the dragged card: %+v", f)
+	}
+	a.box.dragged.y = -5000
+	if f := a.boxFrame(); f.Y != ovTestArea.Y-layout.Pad {
+		t.Errorf("dragged past the top: %+v", f)
+	}
+
+	a.closeBox()
+	a.setCardSize(string(store.KindRewrite), 0)
+	a.box.open, a.box.shown, a.box.area = true, true, ovTestArea
+	if f := a.boxFrame(); f != anchored {
+		t.Errorf("the next card: %+v, want %+v", f, anchored)
+	}
+}
+
+// TestRewriteCardIsNotAlwaysOnTop: the card stays at the windows' level,
+// so the user can put another window over it; the Rewrite shortcut
+// brings it back in front, and a refresh of what it shows does not.
+func TestRewriteCardIsNotAlwaysOnTop(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.ov.native = true
+	native := &fakeBoxDropWindow{onTop: true}
+	previous := newBoxNativeWindow
+	newBoxNativeWindow = func(mygo.WindowOptions) boxDropWindow { return native }
+	t.Cleanup(func() { newBoxNativeWindow = previous })
+	a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea} // already placed: no screen to ask in a test
+	a.boxSync()
+	if native.onTop || native.raised != 0 {
+		t.Fatalf("the new card: always on top %v, raised %d times", native.onTop, native.raised)
+	}
+	a.showBox(proto.App{PID: 42}, "r2") // the Rewrite shortcut asks in the card
+	if native.raised != 1 {
+		t.Errorf("the shortcut raised the card %d times, want 1", native.raised)
+	}
+	a.boxSync()
+	if native.raised != 1 {
+		t.Errorf("a refresh raised the card: %d times", native.raised)
 	}
 }

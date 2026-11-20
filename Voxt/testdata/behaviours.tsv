@@ -65,3 +65,5 @@ Announcements and release notes	L	TestAnnouncements	none
 Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
 Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	Only HTTP requests through the default transport are recorded
 Privacy and where data goes	L	TestLearnNeverLogsTheEdit	none
+Drag the Rewrite card	L	TestRewriteCardDrags	That the card's face drags the window (DragWindow) is seen on a Mac only: the headless tester does not move windows
+Cover the Rewrite card with other windows; the shortcut brings it back	L	TestRewriteCardIsNotAlwaysOnTop	The window level over another active app is seen on a Mac only

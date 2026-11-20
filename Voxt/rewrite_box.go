@@ -13,10 +13,11 @@ package main
 // sending. Nothing selected, typed or pasted: the request is the speech
 // alone, as before.
 //
-// The card's window is a panel (mygo WindowOptions.Panel): it floats
-// and takes the keyboard without activating VoxtNew, so the app the
-// user was in stays in front and gets the keyboard back when the card
-// hides.
+// The card's window is a panel (mygo WindowOptions.Panel): it takes the
+// keyboard without activating VoxtNew, so the app the user was in stays
+// active and gets the keyboard back when the card hides. It does not
+// float: the user drags it by its margins, and other windows may cover
+// it until the Rewrite shortcut brings it back in front.
 //
 // A send that fails (a model that takes no images refuses them) brings
 // the card back with the error and everything kept: Enter sends again
@@ -49,6 +50,12 @@ type rewriteBox struct {
 	area   mygo.Rectangle // the screen the window opened on
 	frame  mygo.Rectangle
 	target proto.App // the app in front when the box opened
+	// dragged is how far the user moved the card from where it opens
+	// (boxDraggedTo): it keeps that place until it closes.
+	dragged struct{ x, y int }
+	// raise brings the window in front of the windows over it at the
+	// next boxSync: the Rewrite shortcut opened the card or asked in it.
+	raise bool
 	// session is the recording session's id ("" when it ended); sending
 	// a resend's after a failure.
 	session, sending string
@@ -150,6 +157,7 @@ type rewriteBoxActions struct {
 	segmentChanged  func(int, string)
 	dismissTip      func()
 	focused         func()
+	moved           func() // the user dragged the window
 }
 
 // boxWindow is the box's panel as boxSync and closeBoxWindow use it
@@ -157,6 +165,8 @@ type rewriteBoxActions struct {
 type boxWindow interface {
 	Invalidate()
 	SetContentBounds(mygo.Rectangle)
+	ContentBounds() mygo.Rectangle
+	ShowInactive()
 	Show()
 	Focus()
 	Hide()
@@ -192,7 +202,7 @@ func (a *app) showBox(target proto.App, id string) {
 			})
 		}
 	}
-	a.box.open, a.box.shown, a.box.err = true, true, ""
+	a.box.open, a.box.shown, a.box.err, a.box.raise = true, true, "", true
 	a.box.target, a.box.session = target, id
 	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
 	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
@@ -242,8 +252,8 @@ func (a *app) boxAnswered() bool {
 // the input is emptied for the next follow-up.
 func (a *app) boxKeep() {
 	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
-	target := a.box.target
-	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, ui: ui}
+	target, dragged := a.box.target, a.box.dragged
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, ui: ui}
 	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
