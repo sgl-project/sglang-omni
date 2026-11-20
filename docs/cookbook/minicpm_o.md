@@ -1,6 +1,6 @@
 # MiniCPM-o
 
-[MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) is OpenBMB's omni model for vision, speech, and full-duplex live streaming. SGLang-Omni serves it in three ways:
+[MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) accepts text, images, audio, and video, and can respond with text or speech. It also supports live full-duplex conversations:
 
 | Mode | Endpoint | Use it for |
 |---|---|---|
@@ -30,7 +30,7 @@ curl -fS http://localhost:8000/health
 
 The server is ready when this returns HTTP 200 with `"status": "healthy"`. While it starts, the request returns HTTP 503 or the connection is refused.
 
-### Send a first request
+### Send a chat request
 
 ```bash
 curl -fS http://localhost:8000/v1/chat/completions \
@@ -49,16 +49,13 @@ For a spoken reply, set `modalities` and `audio` in the same request:
 {
   "messages": [{"role": "user", "content": "Please say hello."}],
   "modalities": ["text", "audio"],
-  "audio": {
-    "format": "wav",
-    "ref_audio": "data:audio/wav;base64,<base64 of a reference clip>"
-  }
+  "audio": {"format": "wav"}
 }
 ```
 
-The reply carries base64 WAV in `message.audio.data` and the spoken text in `message.audio.transcript`. `audio.ref_audio` clones the voice of a reference clip, such as `docs/_static/audio/male-voice.wav`, and must be a base64 audio data URI; without it the checkpoint's default voice speaks.
+The reply contains base64-encoded WAV audio in `message.audio.data` and a transcript in `message.audio.transcript`. To clone a voice, add `audio.ref_audio` as a base64 audio data URI, using a clip such as `docs/_static/audio/male-voice.wav`.
 
-Video goes in the same request as inline `video_url` content parts or the top-level `videos` field. Set `use_audio` on an inline video, or `use_audio_in_video` on a top-level request, to include interleaved audio from file or URL sources, and `video_max_frames` to limit the sampled frames. [Video and Audio Input](../basic_usage/omni.md#video-and-audio-input) has a request to copy.
+For video input, use inline `video_url` content parts or the top-level `videos` field. To include the video's audio, set `use_audio` (inline) or `use_audio_in_video` (top-level). See [Video and Audio Input](../basic_usage/omni.md#video-and-audio-input) for an example and `video_max_frames` for frame limits.
 
 ## Text to speech
 
@@ -99,7 +96,7 @@ sgl-omni serve --model-path Realtime-Venus/Realtime-Venus-Omni --variant session
 
 ## Speculative decoding
 
-The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, [`Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm`](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
+To enable speculative decoding for the Thinker, use the multimodal [DSpark draft](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
 
 ```bash
 sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
@@ -119,4 +116,4 @@ Add `"return_spec_tokens_details": true` to a chat request to get the acceptance
 
 ## Next steps
 
-The shared examples in [Omni Model Usage](../basic_usage/omni.md) use the model name `qwen3-omni` and port 8008; the servers on this page listen on port 8000, and a chat request may omit `model`.
+For more request examples, see [Omni Model Usage](../basic_usage/omni.md). Its examples use `qwen3-omni` on port 8008; use port 8000 and omit the optional `model` field for MiniCPM-o.
