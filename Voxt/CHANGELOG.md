@@ -26,6 +26,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Literal thinking markers keep the surrounding answer** (#4085): a `<channel|>` mention before punctuation and an unmatched `</think>` mention between words no longer discard the text around them in streamed, final, or structured answers.
 - **Answers no longer show a model's raw tool-call or thinking control markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged. An unmatched thinking-close marker no longer discards the answer that follows it, and a literal control-token mention inside a sentence stays intact.
 
+### Fixed
+
+- **Transcribe no longer sends a built-in example for the language model to copy** (#4228): a short dictation could look like an instruction to rewrite the example, so the model returned the built-in weekly-report text instead of your words. Cleanup rules now go in the system prompt without an example conversation, in both the built-in and custom prompt paths. Spoken Translate keeps its translated example.
+
 ### 中文
 
 #### 新增
@@ -49,6 +53,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **改写清理参考先前轮次，但仍去除新的控制标记**（#4085）：先前轮次里字面提到的思考标记原样保留，新的推理块和控制标记仍会去掉。被换行包围的未配对结束标记连同推理一起去掉，同行内联的字面标记仍保留周围回答。
 - **字面提到的思考标记不再误删周围回答**（#4085）：`<channel|>` 后面紧跟标点，或 `</think>` 未配对地出现在句子中时，流式、最终和结构化回答都会保留周围文字。
 - **回答不再显示语言模型原始的内部工具调用或思考控制标记**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。未配对的思考结束标记不再误删后面的正式回答，句子中字面提到的控制标记也原样保留。
+
+#### 修复
+
+- **转录不再发送可能被语言模型复制的内置示例**（#4228）：短听写以前可能被当成改写示例的指令，导致模型返回内置周报文本而不是你说的话。现在，清理规则直接写在系统提示词里，内置提示词和自定义提示词都不再附带示例对话；语音翻译仍保留翻译示例。
 
 ## [2.1.1] - 2026-11-17
 

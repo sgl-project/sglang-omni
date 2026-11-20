@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -94,10 +95,12 @@ func TestGoldenTranscribe(t *testing.T) {
 	}
 }
 
-func TestCleanupDoesNotChangeSystem(t *testing.T) {
+func TestCleanupLayers(t *testing.T) {
 	cases := []Input{
 		{Task: Transcribe, Cleanup: false, MainLanguage: "en", Text: "x"},
 		{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"},
+		{Task: Transcribe, Cleanup: false, MainLanguage: "en", TaskPrompt: "Custom rules", Text: "x"},
+		{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: "Custom rules", Text: "x"},
 		{Task: Translate, Cleanup: false, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Translate, Cleanup: true, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Rewrite, Cleanup: false, MainLanguage: "en", Instruction: "shorter", Text: "hi"},
@@ -113,7 +116,11 @@ func TestCleanupDoesNotChangeSystem(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if a.System != b.System {
+		if off.Task == Transcribe {
+			if a.System == b.System || len(a.History) != 0 || len(b.History) != 0 || !slices.Contains(b.Layers, "cleanup") {
+				t.Errorf("Transcribe cleanup has no rules-only layer:\n--- off\n%s\n--- on\n%s", a.System, b.System)
+			}
+		} else if a.System != b.System {
 			t.Errorf("%s cleanup changes system:\n--- off\n%s\n--- on\n%s", off.Task, a.System, b.System)
 		}
 	}
@@ -136,15 +143,33 @@ func TestFullPromptSentAsIs(t *testing.T) {
 	}
 }
 
+// TestEditedBuiltinPromptKeepsOneCleanup: appending a rule to the built-in
+// Transcribe prompt must not add a second cleanup layer beside the one the
+// user edited. A short custom prompt still gets the cleanup layer.
+func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
+	base, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := base.System + "\nUse British spelling."
+	edited, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: custom, Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(edited.System, custom) || strings.Count(edited.System, "Basic cleanup:") != 1 || len(edited.History) != 0 {
+		t.Errorf("edited built-in prompt changed or duplicated cleanup:\n%s", edited.System)
+	}
+}
+
 func TestLayersAndProfile(t *testing.T) {
 	out, err := Build(Input{Task: Transcribe, Cleanup: true, Structure: true, MainLanguage: "zh", Text: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(out.Layers, " "); got != "transcribe input structure task output" {
+	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output" {
 		t.Errorf("layers %q", got)
 	}
-	if out.Profile() != "transcribe:structure" {
+	if out.Profile() != "transcribe:cleanup+structure" {
 		t.Errorf("profile %q", out.Profile())
 	}
 	out, _ = Build(Input{Task: Transcribe, MainLanguage: "en", Text: "x"})
