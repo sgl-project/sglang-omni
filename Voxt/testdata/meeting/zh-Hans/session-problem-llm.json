@@ -43,6 +43,14 @@
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "inputs": [
+        {
+          "label": "选中的文字",
+          "text": "the release slips",
+          "chars": 17,
+          "lines": 1
+        }
+      ],
       "problem_code": "llm",
       "size_step": 0,
       "levels": [

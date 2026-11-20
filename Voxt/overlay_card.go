@@ -15,10 +15,13 @@ var (
 	ovCardRule = ui.RGBA(255, 255, 255, 0.08)
 )
 
-// answerCardUI is the card's view-local menu and quote state.
+// answerCardUI is the card's view-local menu, quote and thumbnail state.
 type answerCardUI struct {
 	langOpen, thinkMenu, pillMenu bool
 	quotesOpen                    map[int]bool
+	thumbs                        []*ui.Bitmap
+	preview                       int
+	previewScroll                 ui.ScrollState
 }
 
 const quoteGap, quoteToggleH, quoteSize = layout.BubbleTitleGap, 16, 12
@@ -44,8 +47,8 @@ func sessionCardPreviewKey(sessionID string, card *sessionCardViewState, blockIn
 	return key
 }
 
-func newSessionOverlayPreviewRequest(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, blockIndex int, textColor uiColor, bodyHeight float32) sessionOverlayPreviewRequest {
-	text, _, _ := sessionCardBlockText(card, block)
+func newSessionOverlayPreviewRequest(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, blockIndex int, textColor uiColor, bodyHeight float32, width int) sessionOverlayPreviewRequest {
+	text, _, _ := sessionCardBlockText(block, width)
 	background := ui.RGB(36, 36, 40)
 	if blockIndex < 0 {
 		background = ui.RGB(22, 22, 26)
@@ -71,27 +74,30 @@ func sessionCardBlockAt(card *sessionCardViewState, index int) sessionCardBlock 
 	return card.Live[index-len(card.Blocks)]
 }
 
-func sessionCardBlockText(card *sessionCardViewState, block sessionCardBlock) (text, title, quote ovSized) {
-	bodyWidth := float32(layout.CardSizes[card.SizeStep].BodyW())
+// sessionCardBlockText maps a block to its draw metrics at the card's
+// resolved width (layout.CardSize.Width: the fill size follows the work
+// area, so the step alone does not say how wide the card is).
+func sessionCardBlockText(block sessionCardBlock, width int) (text, title, quote ovSized) {
+	bodyWidth := float32(width - 2*layout.CardPadX - layout.CardInset)
 	switch block.Kind {
 	case sessionCardProblem:
-		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth - layout.ProblemIcon - layout.ProblemGap}, ovSized{}, ovSized{}
+		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth - layout.ProblemIcon - layout.ProblemGap, ""}, ovSized{}, ovSized{}
 	case sessionCardProblemMore:
-		return ovSized{block.Text, 12, 0, bodyWidth}, ovSized{}, ovSized{}
+		return ovSized{block.Text, 12, 0, bodyWidth, ""}, ovSized{}, ovSized{}
 	case sessionCardSource:
-		return ovSized{block.Text, 13, 0, bodyWidth}, ovSized{}, ovSized{}
+		return ovSized{block.Text, 13, 0, bodyWidth, ""}, ovSized{}, ovSized{}
 	case sessionCardBubble:
-		inner := float32(layout.CardSizes[card.SizeStep].BubbleW() - 2*layout.BubblePadX)
-		text = ovSized{block.Text, layout.BubbleTextSize, 500, inner}
+		inner := float32(width - (layout.AnswerW - layout.BubbleW) - 2*layout.BubblePadX)
+		text = ovSized{block.Text, layout.BubbleTextSize, 500, inner, ""}
 		if block.Title != "" {
-			title = ovSized{block.Title, layout.BubbleTitleSize, 600, 0}
+			title = ovSized{block.Title, layout.BubbleTitleSize, 600, 0, ""}
 		}
 		if block.Quote != "" {
-			quote = ovSized{block.Quote, quoteSize, 0, inner}
+			quote = ovSized{block.Quote, quoteSize, 0, inner, ""}
 		}
 		return text, title, quote
 	default:
-		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth}, ovSized{}, ovSized{}
+		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth, ""}, ovSized{}, ovSized{}
 	}
 }
 
