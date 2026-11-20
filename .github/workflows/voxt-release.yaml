@@ -368,14 +368,3 @@ jobs:
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --latest \
             --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*
-
-  voxt2-beta-feed:
-    name: Publish the beta update manifest
-    # A prerelease created by GITHUB_TOKEN emits no release event for another workflow.
-    if: inputs.beta == true && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: release
-    uses: ./.github/workflows/voxt-appcast.yaml
-    with:
-      tag: voxt-v${{ needs.release.outputs.version }}
-      channel: beta
-    secrets: inherit

@@ -30,8 +30,10 @@ set -euo pipefail
 public_key="iMt1voRdgfUUpKxdY7DliGLaOl17gJFB8Jhlo5ox2eE="
 # Voxt 2 runs on Apple silicon only.
 hardware=arm64
-# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads.
-voxt2_feed="https://voxt.actnow.dev/updates/voxt2"
+# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads. They are the
+# update-darwin-arm64.json of each GitHub release: MyGo resolves {version} to the newest voxt-v
+# release, and under beta/ to the highest version of the releases and prereleases (patch 0020).
+voxt2_feed="https://github.com/sgl-project/sglang-omni/releases/download/voxt-v{version}"
 
 usage() {
   sed -n 's/^#   //p' "$0" >&2

@@ -130,22 +130,23 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 
 ## 0. 两个通道
 
-**Voxt 2 有独立的 MyGo 更新通道**：Voxt Release 工作流在构建 tag 正式版和 beta 时把 `updates`（公钥、`url`、`prereleases`）写进 `release/mygo.release.json`，用 `MYGO_UPDATER_PRIVATE_KEY` 签 tar.gz 和 delta，把它们和 `update-darwin-arm64.json` 附到 GitHub Release。清单里当前版本的文件地址改成这个 Release 的下载地址；`previous` 里旧版本的地址不变。Voxt Appcast 工作流的 Voxt 2 job 把清单发给更新服务：正式版由 Release 发布事件触发，beta 由 Voxt Release 构建后调用（`GITHUB_TOKEN` 建的 prerelease 不会触发发布事件）；手动运行也能发所选通道。app 里的 MyGo 更新器下载、校验、安装并重新启动。没有更新源的构建仍走 `updates_github.go` 的 GitHub 检查回退，开发构建没有更新器。
+**Voxt 2 有独立的 MyGo 更新通道**：Voxt Release 工作流在构建 tag 正式版和 beta 时把 `updates`（公钥、`url`、`prereleases`）写进 `release/mygo.release.json`，用 `MYGO_UPDATER_PRIVATE_KEY` 签 tar.gz 和 delta，把它们和 `update-darwin-arm64.json` 附到 GitHub Release。清单里当前版本的文件地址改成这个 Release 的下载地址；`previous` 里旧版本的地址不变。更新源就是这些 GitHub Release，不经过更新服务，发版后不用再推清单：app 里的 MyGo 更新器通过 GitHub API 找到最新的 `voxt-v` Release，读它的清单，再下载、校验、安装并重新启动（MyGo 补丁 0020 加了 beta 通道）。没有更新源的构建仍走 `updates_github.go` 的 GitHub 检查回退，开发构建没有更新器。
 
 | | 正式版 | beta 版 |
 |---|---|---|
 | 版本号 | `2.1.0` | `2.1.0-beta.1`（版本号里有 `-`） |
-| 更新源 | `https://voxt.actnow.dev/updates/voxt2/update-darwin-arm64.json` | `https://voxt.actnow.dev/updates/voxt2/beta/update-darwin-arm64.json` |
+| 更新源 | `https://github.com/sgl-project/sglang-omni/releases/download/voxt-v{version}/update-darwin-arm64.json`：最新的正式版 Release | 同一地址的 `voxt-v{version}/beta/update-darwin-arm64.json`：正式版和 prerelease 中版本最高的那个 |
 | 清单里文件的地址 | 这个版本的 GitHub Release | 这个版本的 GitHub Release |
 | 谁会收到 | 所有人 | 只有打开了 设置 → 诊断与关于 → **Beta 更新** 的人 |
 
-- **Beta 更新开关**：打开时检查更新读 beta 通道的清单（官网保证它始终是 beta 和正式版中较新的那个），比当前版本新就提示；读不到时退回正式版的清单。关闭时只读正式版的清单。
+- **Beta 更新开关**：打开时检查更新读 beta 通道的清单（MyGo 取 beta 和正式版中较新的那个），比当前版本新就提示；读不到时退回正式版的清单。关闭时只读正式版的清单。
 - **默认值**：用户没动过开关时，当前运行的是 beta 就默认打开，是正式版就默认关闭。用户拨过一次就以用户为准。
-- **版本号只能往上走**（官网后台的规则）：新版本必须高于这个通道发布过的所有版本，已发布或下架过的版本号不能再用。
+- **版本号只能往上走**：正式版通道取 GitHub 上最新建的正式版 Release，所以新版本必须高于已发布的版本。
+- **检查更新会调 GitHub API**：每次一到两个请求（beta 读不到时退回正式版），未登录的上限是每个 IP 每小时 60 次，每天的后台检查和手动检查都远低于它。
 - **不降级**：只会更新到比当前更新的版本。beta 用户关掉开关后，要等到比当前 beta 新的正式版才会更新。
 - **还没有正式版时**，正式版通道的清单是 404，关着开关检查更新显示“已是最新”，不报错（`mygo.ErrNotPublished`）。
 
-**更新服务需要提供的新接口**：`POST /api/pkg/voxt2/update` 接收 `{channel, version, mode: "replace-latest", manifest}`，用现有 `VOXT_RELEASE_API_KEY` 鉴权，保存成功时返回 `{"ok":true}`。服务在上面的 stable 和 beta URL 原样返回 MyGo JSON 清单；正式版同时更新 stable，并且只在它较新时更新 beta，beta 只更新 beta，版本比较遵循 semver，不能覆盖更新的版本。清单只含 Voxt 2，Voxt 1.x 的 Sparkle 只读 `/updates/{stable,beta}/appcast.xml`，不会读这两个新地址。tar.gz 和 delta 仍从 GitHub Release 下载，服务不需要保存它们。现有 1.x appcast 仍要保留 `hardwareRequirements` 并输出 `sparkle:hardwareRequirements`，它的拦截逻辑不变。
+**2.1.2 及更早的 2.x** 写死的更新源是 `https://voxt.actnow.dev/updates/voxt2/...`，那个服务没有这两个清单（404），所以它们的检查更新一直显示“已是最新”。这些用户要手动下载一次换了更新源的版本，之后的更新走 GitHub。
 
 ## 1. 一次性准备
 
