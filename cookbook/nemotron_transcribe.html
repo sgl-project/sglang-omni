@@ -624,17 +624,17 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="nemotron-transcribe">
 <h1>Nemotron Transcribe<a class="headerlink" href="#nemotron-transcribe" title="Link to this heading">#</a></h1>
-<p><a class="reference external" href="https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B">Nemotron Transcribe 30B-A4B</a> serves whole-file transcription through <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang’s NemotronH decoder. The serving path does not require NeMo.</p>
-<p>This integration accepts consolidated NeMo SpeechLM checkpoints with the <code class="docutils literal notranslate"><span class="pre">NeMoSpeechLMForConditionalGeneration</span></code> architecture, a NemotronH <code class="docutils literal notranslate"><span class="pre">llm_config</span></code>, and <code class="docutils literal notranslate"><span class="pre">perception</span></code> and <code class="docutils literal notranslate"><span class="pre">pe_encoder_config</span></code> sections. The checkpoint directory must contain its tokenizer files and model weights. The loader creates a small configuration shim and reads the original weights without copying them.</p>
+<p><a class="reference external" href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B">Nemotron Transcribe 30B-A4B</a> serves whole-file transcription through <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang’s NemotronH decoder. The serving path does not require NeMo.</p>
+<p>This integration accepts consolidated NeMo SpeechLM checkpoints with the <code class="docutils literal notranslate"><span class="pre">Nemotron3_5TranscribeForConditionalGeneration</span></code> architecture, a NemotronH <code class="docutils literal notranslate"><span class="pre">llm_config</span></code>, and <code class="docutils literal notranslate"><span class="pre">perception</span></code> and <code class="docutils literal notranslate"><span class="pre">pe_encoder_config</span></code> sections. Earlier checkpoints using <code class="docutils literal notranslate"><span class="pre">NeMoSpeechLMForConditionalGeneration</span></code> are also supported. The <a class="reference external" href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-FP8">FP8 checkpoint</a> loads its decoder through SGLang’s ModelOpt FP8 path. Its speech encoder stores 128 transformer linears as FP8 with static per-tensor weight and input scales; they run as FP8 GEMMs on CUDA GPUs with compute capability 8.9 or newer and are dequantized to BF16 elsewhere. Compile the encoder with <code class="docutils literal notranslate"><span class="pre">--asr.factory.compile_perception</span> <span class="pre">true</span></code> to fuse the activation quantization into neighboring kernels; an eager FP8 encoder is slower than BF16. The checkpoint directory must contain its tokenizer files and matching model weights from the same checkpoint revision. The loader creates a small configuration shim and reads the original weights without copying them.</p>
 <section id="serve-a-checkpoint">
 <h2>Serve a checkpoint<a class="headerlink" href="#serve-a-checkpoint" title="Link to this heading">#</a></h2>
 <p>Install SGLang-Omni following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then download the checkpoint:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>nvidia/Nemotron-3.5-Transcribe-30B-A4B
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
 </pre></div>
 </div>
 <p>The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>nvidia/Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-name<span class="w"> </span>nemotron-transcribe<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.85<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
@@ -682,6 +682,10 @@
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Capture encoder graphs; requires compilation</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--asr.factory.perception_fp8</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Run an FP8 checkpoint’s encoder linears as FP8 GEMMs; <code class="docutils literal notranslate"><span class="pre">false</span></code> dequantizes them to BF16</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -711,7 +715,7 @@
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">SGLANG_FLASHINFER_AUTOTUNE_EXTEND</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="nv">SGLANG_FLASHINFER_AUTOTUNE_CACHE</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
 sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>nvidia/Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-name<span class="w"> </span>nemotron-transcribe<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.85<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--asr.engine.max_running_requests<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
