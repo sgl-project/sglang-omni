@@ -253,6 +253,29 @@ func TestFirstCardKeepsLiveDrag(t *testing.T) {
 	}
 }
 
+// A later recording has its own drag; it does not replace the position
+// already saved for the user's card.
+func TestLaterRecordingKeepsSavedCardDrag(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
+	a.answer = answerCard{}
+	a.sess = session.Snapshot{ID: "recording", State: session.Recording}
+	a.overlaySync()
+	a.ov.dragged.x, a.ov.dragged.y = -50, -40
+	a.sess = session.Snapshot{ID: "recording", State: session.Delivering}
+	a.overlaySync()
+	a.sess = session.Snapshot{}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	if a.ov.frame != moved {
+		t.Errorf("the later recording replaced the card's drag: %+v, want %+v", a.ov.frame, moved)
+	}
+}
+
 // TestLiveLinesScroll: live text in lines longer than the face takes the
 // wheel: the overlay does not let the pointer through, the wheel scrolls
 // up to what came before and new words leave it there; back at the end,

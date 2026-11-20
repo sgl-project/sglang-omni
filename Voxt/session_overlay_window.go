@@ -150,7 +150,7 @@ func (a *app) overlaySync() {
 		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
 	}
 	if mode == ovHidden {
-		if a.ov.mode != ovAnswer {
+		if a.ov.mode != ovAnswer && !a.ov.cardDraggedSet {
 			a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
 		}
 		a.ov.mode, a.ov.shown = mode, false
@@ -197,7 +197,6 @@ func (a *app) overlaySync() {
 		)
 		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
 		opts.Vibrancy = mygo.VibrancyHUD
-		opts.StateKey = "session-overlay"
 		opts.X, opts.Y = frame.X, frame.Y
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })

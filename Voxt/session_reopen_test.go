@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -206,30 +206,16 @@ func TestRestoredCardFrameAllowsNewContentSize(t *testing.T) {
 	}
 }
 
-// A recording can be the first overlay after an app restart. Adopting the
-// restored window there keeps the position for the card that follows it.
-func TestRestoredOverlayPositionSurvivesRecordingFirst(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	a.sess = session.Snapshot{ID: "recording", State: session.Recording}
-	a.overlaySync()
-	saved := mygo.Rectangle{Width: 476, Height: 345}
-	x, y := layout.Place(a.ov.area, a.prefs.Overlay, saved.Width, saved.Height)
-	saved.X, saved.Y = x-300, y-200
-	a.overlayDraggedAt(saved)
-	a.overlaySync()
-	assertSavedPosition := func(mode overlayMode) {
-		t.Helper()
-		frame := a.ov.frame
-		if frame.X+frame.Width/2 != saved.X+saved.Width/2 || frame.Y+frame.Height != saved.Y+saved.Height {
-			t.Errorf("%s lost restored position: %+v, saved window %+v", mode, frame, saved)
-		}
+// The recording pill and answer card share one window, so restoring its
+// bounds after a restart can put the next overlay where the last one was.
+func TestSessionOverlayDoesNotRestoreSharedWindowBounds(t *testing.T) {
+	source, err := os.ReadFile("session_overlay_window.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertSavedPosition(ovRecording)
-	a.sess = session.Snapshot{}
-	a.overlaySync()
-	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
-	a.overlaySync()
-	assertSavedPosition(ovAnswer)
+	if strings.Contains(string(source), `opts.StateKey = "session-overlay"`) {
+		t.Fatal("the shared session overlay must open each launch's first pill or card at its configured position")
+	}
 }
 
 // Deleting an entry or clearing history removes its menu row and prevents reopening.
