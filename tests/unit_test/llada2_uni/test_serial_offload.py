@@ -6,6 +6,8 @@ from __future__ import annotations
 from contextlib import nullcontext
 from importlib.machinery import ModuleSpec
 from pathlib import Path
+from queue import Queue
+from threading import Lock
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
@@ -270,7 +272,7 @@ def test_thinker_retains_weights_while_requests_are_staged(
 ) -> None:
     scheduler = offload_scheduler
     batch = Mock()
-    monkeypatch.setattr(DllmScheduler, "drain_and_purge", lambda self: None)
+    monkeypatch.setattr(DllmScheduler, "drain_and_purge", lambda self: True)
     monkeypatch.setattr(DllmScheduler, "schedule_next_batch", lambda self: batch)
     monkeypatch.setattr(DllmScheduler, "post_step", lambda self, batch: None)
     assert scheduler.schedule_next_batch() is batch
@@ -294,17 +296,18 @@ def test_thinker_releases_weights_after_base_scheduler_purges_requests(
     monkeypatch: pytest.MonkeyPatch, offload_scheduler: SerialOffloadDllmScheduler
 ) -> None:
     scheduler = offload_scheduler
-    monkeypatch.setattr(DllmScheduler, "drain_and_purge", lambda self: None)
+    monkeypatch.setattr(DllmScheduler, "drain_and_purge", lambda self: True)
     monkeypatch.setattr(DllmScheduler, "schedule_next_batch", lambda self: Mock())
     scheduler.schedule_next_batch()
     scheduler.staging_queue = [Mock()]
     scheduler.drain_and_purge()
     assert scheduler.has_residency
 
-    def retire_cancelled(self: DllmScheduler) -> None:
+    def retire_cancelled(self: DllmScheduler) -> bool:
         assert scheduler.has_residency
         self.staging_queue.clear()
         self.waiting_queue.clear()
+        return True
 
     monkeypatch.setattr(DllmScheduler, "drain_and_purge", retire_cancelled)
     scheduler.drain_and_purge()
@@ -312,3 +315,29 @@ def test_thinker_releases_weights_after_base_scheduler_purges_requests(
     scheduler.tp_worker.model_runner.memory_saver_adapter.pause.assert_called_once_with(
         "weights"
     )
+
+
+def test_offload_event_loop_schedules_until_stopped(
+    monkeypatch: pytest.MonkeyPatch, offload_scheduler: SerialOffloadDllmScheduler
+) -> None:
+    """The real base drain result must keep the serving loop alive until stop."""
+    scheduler = offload_scheduler
+    scheduler.inbox = Queue()
+    scheduler.abort_lock = Lock()
+    scheduler.aborted_request_ids = set()
+    scheduler.waiting_queue.clear()
+    scheduler.tp_size = 1
+    scheduler.orphaned_uncond_rids = set()
+
+    def stop_after_scheduling() -> None:
+        scheduler.stop()
+
+    schedule = Mock(side_effect=stop_after_scheduling)
+    monkeypatch.setattr(scheduler, "schedule_next_batch", schedule)
+
+    scheduler.start()
+
+    schedule.assert_called_once_with()
+    assert not scheduler.running
+    assert not scheduler.has_residency
+    assert not scheduler.coordinator.lock.locked()

@@ -42,7 +42,11 @@ def test_thinker_factory_preserves_tp_and_cfg_configuration(
 
     assert scheduler is create_scheduler.return_value
     create_scheduler.assert_called_once_with(
-        server_args, tp_rank + 2, tp_rank=tp_rank, nccl_port=29500
+        server_args,
+        tp_rank + 2,
+        tp_rank=tp_rank,
+        nccl_port=29500,
+        enable_serial_offload=False,
     )
     settings = build_args.call_args.kwargs
     assert settings["tp_size"] == tp_size

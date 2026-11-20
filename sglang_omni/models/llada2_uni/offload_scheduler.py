@@ -48,12 +48,13 @@ class SerialOffloadDllmScheduler(DllmScheduler):
             f"LLaDA2-Uni thinker release_seconds={time.perf_counter() - started_seconds:.4f}"
         )
 
-    def drain_and_purge(self) -> None:
-        super().drain_and_purge()
+    def drain_and_purge(self) -> bool:
+        running = super().drain_and_purge()
         if self.has_residency and not self.staging_queue:
             self.release_thinker()
         else:
             pass
+        return running
 
     def schedule_next_batch(self) -> ScheduleBatch | None:
         if not self.waiting_queue and not self.staging_queue:
