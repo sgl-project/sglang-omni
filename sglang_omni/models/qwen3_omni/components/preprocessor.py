@@ -353,7 +353,7 @@ class ChatRequestInputs:
 
 @dataclass(frozen=True, kw_only=True)
 class VideoLane:
-    """Where a video request preprocesses: its media loads on media_executor, its frame resizes and HF processor call on frame_pool, and each video's decoders on decode_threads FFmpeg threads."""
+    """Where a video request preprocesses: its media loads on media_executor, its frame decode pieces, frame resizes and HF processor call on frame_pool, and each video's decoders on decode_threads FFmpeg threads."""
 
     media_executor: Executor
     frame_pool: FramePool

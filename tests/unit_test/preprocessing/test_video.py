@@ -491,6 +491,46 @@ def test_parallel_torchcodec_decode_returns_the_reader_frames(
 @pytest.mark.skipif(
     video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
 )
+def test_a_frame_pool_decodes_every_share_of_a_split_video_on_its_threads(
+    mpeg4_video: Path,
+    opened_decoders: list[tuple[int, list[int]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A split decode started a thread for each share, whose torch ops ran on the process's intra-op threads instead of the frame pool's."""
+    video_options = {
+        "video": str(mpeg4_video),
+        "fps": 4.0,
+        "video_start": 0.25,
+        "video_end": 1.5,
+    }
+    expected_frames, expected_fps = video.qwen_vision.VIDEO_READER_BACKENDS[
+        "torchcodec"
+    ](dict(video_options))
+    share_threads: list[str] = []
+    recording_decoder = video.VideoDecoder
+
+    class ThreadRecordingDecoder(recording_decoder):
+        def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
+            share_threads.append(threading.current_thread().name)
+            return super().get_frames_at(indices)
+
+    monkeypatch.setattr(video, "VideoDecoder", ThreadRecordingDecoder)
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="frames") as executor:
+        frames, sample_fps = video.read_video_torchcodec(
+            dict(video_options),
+            16,
+            FramePool(executor=executor, frame_workers=3),
+        )
+
+    assert torch.equal(frames, expected_frames)
+    assert sample_fps == expected_fps
+    assert len(share_threads) > 1
+    assert all(name.startswith("frames") for name in share_threads)
+
+
+@pytest.mark.skipif(
+    video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
+)
 def test_videos_of_one_request_share_its_decode_threads(
     mpeg4_video: Path, opened_decoders: list[tuple[int, list[int]]]
 ) -> None:

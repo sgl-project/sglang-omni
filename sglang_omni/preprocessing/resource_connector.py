@@ -48,7 +48,7 @@ atexit.register(global_thread_pool.shutdown)
 
 @dataclass(frozen=True, kw_only=True)
 class FramePool:
-    """Threads that resize a video's frames, which split evenly among frame_workers of them."""
+    """Threads that decode and resize a video's frames in pieces, its resize split evenly among frame_workers of them."""
 
     executor: Executor
     frame_workers: int
@@ -740,7 +740,7 @@ class MultiModalResourceConnector:
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
             decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
-            frame_pool: Threads that resize this video's frames; None resizes them on the loading thread.
+            frame_pool: Threads that decode and resize this video's frames in pieces; None keeps that work on the loading thread and threads it starts.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
