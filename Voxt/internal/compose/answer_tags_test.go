@@ -61,16 +61,13 @@ func TestAnswerDropsRewriteTagsChangelog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sections := strings.SplitN(string(data), "\n## [", 3)
-	if len(sections) < 2 {
-		t.Fatal("CHANGELOG.md has no Unreleased section")
-	}
 	for _, entry := range []string{
 		"Rewrite answers no longer show echoed input tags",
 		"改写回答不再显示重复的输入标签",
 	} {
-		if !strings.Contains(sections[1], entry) {
-			t.Errorf("Unreleased changelog missing %q", entry)
+		// A release moves the entry out of Unreleased, so any section counts.
+		if !strings.Contains(string(data), entry) {
+			t.Errorf("changelog missing %q", entry)
 		}
 	}
 }
