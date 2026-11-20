@@ -29,15 +29,23 @@ type Row struct {
 	Instruction string     `json:"instruction,omitempty"`
 	TargetLang  string     `json:"target_lang,omitempty"`
 	Selection   string     `json:"selection,omitempty"`
+	Typed       string     `json:"typed,omitempty"`
 }
 
 // FromEntry is what an entry exports; the selected text only when
 // selection is on.
 func FromEntry(e store.Entry, selection bool) Row {
+	heard := e.RawText
+	if e.Kind == store.KindRewrite && e.PromptText != "" {
+		heard = ""
+	}
 	r := Row{ID: e.ID, CreatedAt: e.CreatedAt.Local(), Kind: e.Kind, App: e.AppName, Text: e.Result,
-		Heard: e.RawText, Instruction: e.PromptText, TargetLang: e.TargetLang}
+		Heard: heard, Instruction: e.PromptText, TargetLang: e.TargetLang}
 	if selection {
 		r.Selection = e.SourceText
+		if e.Kind == store.KindRewrite && e.PromptText != "" {
+			r.Typed = e.TypedText
+		}
 	}
 	return r
 }

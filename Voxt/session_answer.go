@@ -25,9 +25,13 @@ import (
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, conv: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
-		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
-		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
+		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection, Typed: s.Typed}, lang: s.TargetLanguage, llmID: s.LLM.ID,
+		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name), attach: s.ImageHint,
 	}
+	if s.ImageHint == "box" && (s.ID == a.box.session || s.ID == a.box.sending) {
+		card.images, card.ui.thumbs = a.box.images, a.box.thumbs
+	}
+	card.previews = answerInputPreviews(s, &a.box)
 	if s.State == session.Failed {
 		card.problem = s.Problem
 	}
@@ -47,16 +51,28 @@ func (a *app) openAnswer(s session.Snapshot) {
 		if a.followUp != "" && a.answer.id == a.followUp {
 			card.turns, card.conv = append(card.turns, a.answer.turns...), a.answer.conv
 			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
+			if card.attach == "box" {
+				card.images, card.ui.thumbs = a.answer.images, a.answer.ui.thumbs
+				for _, preview := range a.answer.previews {
+					if preview.Image != nil {
+						card.previews = append(card.previews, preview)
+					}
+				}
+			}
 			if card.why == "" {
 				card.why = a.answer.why
 			}
 		}
 		if card.problem == nil {
 			// Any answer takes follow-ups, a rewritten selection's too
-			// (Voxt's): the selection goes with its turn.
-			card.turns = append(card.turns, compose.Turn{Instruction: s.Raw, Selection: s.Selection, Answer: compose.Answer{Title: s.Title, Content: s.Result}})
+			// (Voxt's). Typed text alone was the first turn's source.
+			selection, typed := s.Selection, s.Typed
+			if selection == "" {
+				selection, typed = typed, ""
+			}
+			card.turns = append(card.turns, compose.Turn{Instruction: s.Raw, Selection: selection, Typed: typed, Answer: compose.Answer{Title: s.Title, Content: s.Result}})
 		} else if card.problem != nil && len(card.turns) > 0 {
-			card.input.Raw = s.Raw // Try again asks the same follow-up
+			card.input.Raw, card.input.Typed = s.Raw, s.Typed // Try again asks the same follow-up
 		}
 	}
 	a.followUp = ""
@@ -78,6 +94,12 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
 		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
+		a.answer.llmID = s.LLM.ID
+		a.answer.attach = s.ImageHint
+		if a.answer.attach != "box" {
+			a.answer.previews = answerInputPreviews(s, nil)
+			a.answer.images, a.answer.ui.thumbs = nil, nil
+		}
 		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
 			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
 		}
@@ -106,6 +128,11 @@ func (a *app) retryAnswer(lang string) {
 	}
 	in := card.input
 	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang, Thinking: card.think}
+	if card.kind == store.KindRewrite && card.attach == "box" {
+		// The box's pictures go with its answer again (another thinking
+		// level), not the contents of a box opened since.
+		req.Images = card.images
+	}
 	if req.TargetLanguage == "" {
 		req.TargetLanguage = card.lang
 	}
@@ -166,7 +193,11 @@ func (a *app) followUpAnswer(hold string) bool {
 	}
 	card := a.answer
 	a.followUp = card.id
-	if n := a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}); n != nil {
+	req := session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}
+	// The box's pictures go with the follow-up too: the same bytes in
+	// the same position, so the server's prefix cache reuses them.
+	req.Images = card.images
+	if n := a.startSession(req); n != nil {
 		a.followUp = ""
 	} else {
 		// The card turns into a conversation, where the follow-up records
@@ -178,18 +209,23 @@ func (a *app) followUpAnswer(hold string) bool {
 }
 
 // canFollowUp says whether the card takes a follow-up now: a Rewrite
-// answer written from an instruction, or a translation, nothing running.
+// answer written from an instruction, or a translation, nothing running
+// — the current session's and the backgrounded answer's too (the card's
+// own follow-up may still be streaming there).
 func (a *app) canFollowUp() bool {
 	card := a.answer
 	ok := card.kind == store.KindRewrite && len(card.turns) > 0 || card.kind == store.KindTranslate && card.text != ""
-	return card.open && ok && card.problem == nil && !a.sess.State.Live()
+	bgLive := a.bgID != "" && a.bgSess.State.Live()
+	return card.open && ok && card.problem == nil && !a.sess.State.Live() && !bgLive
 }
 
-// closeAnswer closes the answer card (and cancels a follow-up, or another
-// language, on its way).
+// closeAnswer closes the answer card (and cancels a follow-up, another
+// language, or the backgrounded answer, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() || a.writingAnswer() || a.liveCard() {
-		a.cancelSession()
+	if a.liveCard() {
+		a.cancelSession() // a card-first Transcribe or Translate, still recording or working
+	} else if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
+		a.cancelCardSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""
 	a.resurface()
@@ -215,7 +251,7 @@ func (a *app) setAside(try bool) {
 // resurface brings the card under back once no card shows and no session
 // runs, and says whether it did.
 func (a *app) resurface() bool {
-	if !a.under.open || a.answer.open || a.sess.State.Live() {
+	if !a.under.open || a.answer.open || a.sess.State.Live() || a.bgID != "" && a.bgSess.State.Live() {
 		return false
 	}
 	a.answer, a.under = a.under, answerCard{}
@@ -223,10 +259,11 @@ func (a *app) resurface() bool {
 }
 
 // cardSessionLive says whether the session running is the card's own: a
-// follow-up, or the text into another language.
+// follow-up, or the text into another language. The backgrounded answer
+// is its card's own too.
 func (a *app) cardSessionLive() bool {
-	s := a.sess
-	return a.answer.open && s.State.Live() && !s.Try && (a.followUp != "" && a.followUp == a.answer.id || s.ID == a.answer.redo)
+	s := a.cardSnapshot()
+	return a.answer.open && s.State.Live() && !s.Try && (a.followUp != "" && a.followUp == a.answer.id || s.ID == a.answer.redo || s.ID == a.answer.id)
 }
 
 // copyMark is how long Copy shows its mark (Voxt's).

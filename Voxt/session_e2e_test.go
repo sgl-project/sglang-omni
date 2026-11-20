@@ -125,9 +125,11 @@ func (s *sessionApp) pump(what string, cond func() bool) {
 	}
 }
 
-// settle runs posted functions for d, so an action with an asynchronous
-// effect (a session's stop) has landed before a negative assertion.
-func (s *sessionApp) settle(d time.Duration) {
+// drain serves the queue for d: a wait during which nothing is
+// expected, with the posts that do come still run, so an action with an
+// asynchronous effect (a session's stop) has landed before a negative
+// assertion.
+func (s *sessionApp) drain(d time.Duration) {
 	s.t.Helper()
 	deadline := time.After(d)
 	for {
@@ -244,8 +246,8 @@ func TestSessionEndToEnd(t *testing.T) {
 	}
 	msgs, _ := reqs[0]["messages"].([]any)
 	sys, _ := msgs[0].(map[string]any)["content"].(string)
-	user, _ := msgs[len(msgs)-1].(map[string]any)["content"].(string) // after the clean-up's example turn
-	if len(msgs) != 4 || !strings.Contains(sys, "Keep it short.") || strings.Contains(sys, "hello aura link") || user != "<input>\nhello aura link\n</input>" ||
+	user, _ := msgs[len(msgs)-1].(map[string]any)["content"].(string) // after the system prompt, with no example turn
+	if len(msgs) != 2 || !strings.Contains(sys, "Keep it short.") || strings.Contains(sys, "hello aura link") || user != "<input>\nhello aura link\n</input>" ||
 		reqs[0]["temperature"] != nil {
 		t.Errorf("chat %v", reqs[0])
 	}
@@ -297,7 +299,7 @@ func TestSessionPasteLastOtherKeyKeepsRecording(t *testing.T) {
 	a := newSessionApp(t, ev, set, keys)
 	a.pump("the recording", func() bool { return a.sess.State == session.Recording })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "paste-last", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: a.hotkeyGen})
-	a.settle(250 * time.Millisecond)
+	a.drain(250 * time.Millisecond)
 	if a.sess.State != session.Recording {
 		t.Fatalf("Paste last on its ordinary shortcut stopped dictation: %+v", a.sess)
 	}
@@ -351,7 +353,7 @@ func TestSessionStaleFinishEvent(t *testing.T) {
 				t.Fatal("the second dictation did not start")
 			}
 			a.hotkeyFired(stale)
-			a.settle(250 * time.Millisecond) // a wrongly accepted stop lands asynchronously
+			a.drain(250 * time.Millisecond) // a wrongly accepted stop lands asynchronously
 			if a.sess.State != session.Recording {
 				t.Fatalf("a Return event from the first dictation's configuration stopped the second: %+v", a.sess)
 			}

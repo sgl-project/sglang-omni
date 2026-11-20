@@ -51,8 +51,29 @@ type sessionState struct {
 	mgr *session.Manager
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
+	// bgID is the backgrounded answer's session ("" for none) and bgSess
+	// its newest snapshot: an answer that kept streaming into its card
+	// while a new session started (session_background.go, wall 116).
+	bgID   string
+	bgSess session.Snapshot
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
+	// box is Rewrite's card with the input box (rewrite_box.go): the
+	// Rewrite shortcut opens it with the microphone. boxShare is its
+	// content as the sending session reads it (Config.BoxInput).
+	box      rewriteBox
+	boxShare boxShare
+	// boxGen numbers the box's lives: a picture conversion posted for an
+	// older life is dropped. boxPending counts the conversions not yet
+	// landed in order, including held ones; boxSendQueued: Enter came
+	// while one converted.
+	boxGen, boxPending int
+	boxSendQueued      bool
+	// boxSeq numbers the picture conversions in drop (or paste) order;
+	// one lands only after every earlier number (boxNext is the next
+	// due), boxHeld keeping one whose earlier numbers still convert.
+	boxSeq, boxNext int
+	boxHeld         map[int]boxLanding
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
@@ -113,6 +134,11 @@ type answerCard struct {
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
+	// attach says which picture went to the language model
+	// (Snapshot.ImageHint); images are the input box's pictures.
+	attach   string
+	images   [][]byte
+	previews []answerInputPreview
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
@@ -188,8 +214,11 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
-		Resolve: resolver(lm),
-		History: lib.store.History(),
+		BoxInput:          a.boxShare.load,
+		BoxAutoSuppressed: func() (bool, bool) { return a.boxShare.automaticSuppressed() },
+		BoxReview:         a.boxShare.waitForReview,
+		Resolve:           resolver(lm),
+		History:           lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
@@ -253,22 +282,45 @@ func resolver(lm local.Services) session.Resolver {
 				svc.LLM, svc.LLMInfo = c, sessionModel(ml)
 			}
 		}
-		// Translate's fallback model, or its model when that one did not open.
-		fb := s.Features.Translate.Fallback
-		if kind != store.KindTranslate || fb == "" || fb == m.ID || !slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
-			return svc, nil
-		}
-		c, ml, err := lm.LLM(ctx, fb)
-		if err != nil || ml.ID != fb {
-			return svc, nil
-		}
-		if svc.LLM == nil {
-			svc.LLM, svc.LLMInfo = c, sessionModel(ml)
-		} else {
-			svc.Fallback, svc.FallbackInfo = c, sessionModel(ml)
+		// The fallback model, or the model when that one did not open: the
+		// first candidate that opens.
+		for _, id := range fallbackCandidates(kind, s, ready, m.ID) {
+			c, ml, err := lm.LLM(ctx, id)
+			if err != nil || ml.ID != id {
+				continue
+			}
+			if svc.LLM == nil {
+				svc.LLM, svc.LLMInfo = c, sessionModel(ml)
+			} else {
+				svc.Fallback, svc.FallbackInfo = c, sessionModel(ml)
+			}
+			break
 		}
 		return svc, nil
 	}
+}
+
+// fallbackCandidates are the models a session may fall back to, in order:
+// Translate's fallback model, then, with Models.LLMSwitch, every other
+// ready model on this Mac in the Language models page's order. The switch
+// never picks an external API: the text would go to a provider the user
+// did not choose for the feature.
+func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Model, chosen string) []string {
+	var ids []string
+	if fb := s.Features.Translate.Fallback; kind == store.KindTranslate && fb != "" && fb != chosen && slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
+		ids = append(ids, fb)
+	}
+	if !s.Models.LLMSwitch {
+		return ids
+	}
+	for _, x := range ready {
+		setup, _ := providers.Setup(s, x.ID)
+		preset, err := providers.Config(setup).Resolve()
+		if x.ID != chosen && !slices.Contains(ids, x.ID) && err == nil && onThisMac(preset.BaseURL) {
+			ids = append(ids, x.ID)
+		}
+	}
+	return ids
 }
 
 // sessionModel is how a session (and its history entry) names a model.
@@ -277,13 +329,36 @@ func sessionModel(m local.Model) session.Model {
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and
-// updates the overlay, the shortcuts and the menu bar.
+// updates the overlay, the shortcuts and the menu bar. The backgrounded
+// answer's snapshots go to its card (backgroundChanged).
 func (a *app) sessionChanged(s session.Snapshot) {
+	if a.bgID != "" && s.ID == a.bgID {
+		a.backgroundChanged(s)
+		return
+	}
 	if s.Rev <= a.sess.Rev {
 		return
 	}
 	was := a.sess
 	a.sess = s
+	if a.box.open {
+		if s.ID == a.box.session {
+			if s.Selection != "" {
+				a.box.selection = s.Selection
+			}
+			if s.Spoken != "" {
+				a.box.instruction = s.Spoken
+			}
+			if was.State != session.Composing && s.State == session.Composing {
+				a.box.shown = false // sent: the pill and the card take over
+			}
+		}
+		if s.ID == a.box.sending && s.ImagePreviewKind == "window" && len(s.ImagePreview) > 0 &&
+			(was.ID != s.ID || was.ImagePreviewKind != "window" || len(was.ImagePreview) == 0) {
+			a.box.shown = true
+		}
+		a.boxSync() // the box's lines follow its session
+	}
 	for _, fn := range a.onSession { // events.go: the setup guide, the sounds
 		fn(was, s)
 	}
@@ -318,9 +393,46 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)
 	case s.Card && (s.Result != "" || s.State == session.Failed):
-		a.openAnswer(s)
-		a.syncHotkeys() // the cancel shortcut closes the card
+		// The box's send failed: the box shows the error and keeps its
+		// text and pictures, no failed card.
+		if s.State != session.Failed || s.ID != a.box.sending && s.ID != a.box.session {
+			switch {
+			case s.ID == a.bgID:
+				// The backgrounded answer's own end: its card opens (and its
+				// conversation merges) as the foreground path's would. A card
+				// that is not its own waits under it: setAside holds only
+				// Rewrite and Translate cards, so a Transcribe card is held
+				// directly.
+				if a.answer.open && a.followUp == "" {
+					if c := a.answer; c.kind == store.KindTranscribe && c.problem == nil && !c.inserting {
+						a.under, a.answer = c, answerCard{}
+					} else {
+						a.setAside(false)
+					}
+				}
+				a.openAnswer(s)
+			case a.answer.open && a.answer.id != s.ID && a.bgID != "" &&
+				(a.followUp != "" && a.followUp == a.answer.id || a.answer.redo == a.bgID):
+				// The open card's own answer still streams in the background:
+				// this card waits under it, conversation and redo untouched.
+				saved, followUp := a.answer, a.followUp
+				a.followUp = ""
+				a.openAnswer(s)
+				a.under, a.answer = a.answer, saved
+				a.followUp = followUp
+			case a.answer.open && a.answer.id != s.ID && !(a.followUp != "" && a.followUp == a.answer.id):
+				// A card that is not this session's own waits under the new
+				// one and comes back when it closes, as setAside would have
+				// held it. A follow-up is the card's own: it merges instead.
+				a.setAside(false)
+				a.openAnswer(s)
+			default:
+				a.openAnswer(s)
+			}
+			a.syncHotkeys() // the cancel shortcut closes the card
+		}
 	}
+	a.boxEnded(s)
 	back := a.resurface()
 	var copied *sessionNotice
 	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
@@ -417,10 +529,16 @@ func (a *app) noticeAction(action string) {
 	}
 }
 
-// closeSessions cancels a running session and removes the Carbon
+// closeSessions cancels the running sessions and removes the Carbon
 // shortcuts; it runs on quit.
 func (a *app) closeSessions() {
 	a.cancelSession()
+	if a.mgr != nil && a.bgID != "" {
+		a.mgr.Cancel(a.bgID)
+	}
+	if a.mgr != nil {
+		a.mgr.Close()
+	}
 	if a.hasMenu {
 		for _, acc := range a.carbon {
 			mygo.GlobalShortcut.Unregister(acc)
