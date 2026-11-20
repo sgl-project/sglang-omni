@@ -12092,17 +12092,37 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
         return IncomingMessage(name, "new_request", payload)
 
     scheduler.activate_decode_worker(scheduler.decode_stream)
+    scheduler.initial_worker = threading.current_thread()
+    scheduler.followup_worker = scheduler.initial_worker
+    stream_codes = torch.randint(
+        scheduler.decoder.config.codebook_size,
+        (64, scheduler.decoder.config.num_quantizers),
+        generator=generator,
+    )
+    stream = admit_reference_stream(scheduler, "stream", stream_codes, ref_code_len=0)
+    scheduler.initial_queue.put(("stream", stream))
+    scheduler.run_non_streaming_batch(
+        [message(name) for name in lengths], asyncio.new_event_loop()
+    )
+    stream_slots: set[int | None] = set()
+    has_waited_for_a_whole_row = False
+    while not scheduler.initial_queue.empty() or scheduler.whole_requests:
+        scheduler.run_initial_pass()
+        stream_slots.add(stream.codec_slot)
+        whole_slots = {request.slot for request in scheduler.whole_requests}
+        assert whole_slots <= {None, *scheduler.codec_arena.reserved_slots}
+        has_waited_for_a_whole_row = has_waited_for_a_whole_row or None in whole_slots
+    scheduler.abort("stream")
     results: dict[str, OutgoingMessage] = {}
-    for names in (["tail", "padded"], ["reused"]):
-        scheduler.run_non_streaming_batch(
-            [message(name) for name in names], asyncio.new_event_loop()
-        )
-        while not scheduler.initial_queue.empty() or scheduler.whole_requests:
-            scheduler.run_initial_pass()
-        while not scheduler.outbox.empty():
-            result = scheduler.outbox.get_nowait()
-            results[result.request_id] = result
+    while not scheduler.outbox.empty():
+        result = scheduler.outbox.get_nowait()
+        results[result.request_id] = result
 
+    assert len(stream_slots) == 1
+    assert stream_slots <= set(range(scheduler.codec_arena.num_slots))
+    assert stream.incremental_codec_fallback is False
+    assert has_waited_for_a_whole_row
+    assert scheduler.codec_arena.active_slots() == 0
     graph_stats = scheduler.codec_state_stats()["cuda_graphs"]
     assert graph_stats["tail"]["runtime"]["replays"] > 0
     assert graph_stats["window"]["runtime"]["replays"] > 0
