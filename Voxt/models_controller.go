@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -173,7 +174,11 @@ func automaticSpeech(prefs settings.Settings, installed []local.Model) []local.M
 // languages main is not among goes, so Automatic never lands on a model
 // that cannot recognise it (MOSS-Transcribe-Diarize knows Chinese and
 // English only, #4067). A model without language data stays, an empty
-// main keeps everything, and an explicit choice never comes here.
+// main keeps everything, and an explicit choice never comes here. A
+// remote speech service goes too while any on-device model is installed:
+// Automatic uses one only when the user chose it or no local model is
+// installed (providers.Services' contract), and the gate does not change
+// that by removing the local entries.
 func automaticSpeechFor(main string, installed []local.Model) []local.Model {
 	if main == "" {
 		return installed
@@ -189,8 +194,22 @@ func automaticSpeechFor(main string, installed []local.Model) []local.Model {
 			out = append(out, m)
 		}
 	}
+	if slices.ContainsFunc(installed, onDeviceSpeech) {
+		out = slices.DeleteFunc(out, isRemoteSpeech)
+	}
 	return out
 }
+
+// isRemoteSpeech says whether m is a remote speech service; System
+// dictation and the local models are not.
+func isRemoteSpeech(m local.Model) bool {
+	_, remote := providers.LookupSpeech(m.ID)
+	return remote
+}
+
+// onDeviceSpeech says whether m is an on-device speech model (System
+// dictation included), for the remote-services contract.
+func onDeviceSpeech(m local.Model) bool { return !isRemoteSpeech(m) }
 
 // usedBy says which features use model id of kind now, as Voxt 1.x's
 // model list did ("Used by Transcribe · Rewrite"), "" for none. A

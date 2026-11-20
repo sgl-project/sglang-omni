@@ -14,6 +14,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/openai"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -584,4 +585,84 @@ func (l *automaticGateLocal) ASR(_ context.Context, id string) (asr.Provider, lo
 		}
 	}
 	return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+}
+
+// TestAutomaticSpeechRemoteGuard: Automatic never promotes a remote
+// speech service over an installed on-device model the language gate
+// removed — a remote service is a feature's explicit choice, or the
+// fallback when no local model is installed (providers.Services,
+// #4067). With MTD (Chinese and English) installed, a ready remote
+// service and the main language ja, the resolver opens nothing, or
+// System dictation when it is there; only with no on-device model at
+// all does Automatic open the remote service.
+func TestAutomaticSpeechRemoteGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		system     bool
+		wantOpened string // "": the resolver opens no speech model
+	}{
+		{"local MTD installed, the remote service stays unopened", false, ""},
+		{"System dictation is the on-device fallback", true, dictation.ModelID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.prefs.General.MainLanguage = "ja"
+			lm := &remoteGateLocal{system: tc.system}
+			svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lm.opened != tc.wantOpened {
+				t.Errorf("opened %q, want %q", lm.opened, tc.wantOpened)
+			}
+			if tc.wantOpened == "" && svc.ASR != nil {
+				t.Errorf("the session got a speech model: %+v", svc.ASRInfo)
+			}
+		})
+	}
+	t.Run("no on-device model: Automatic opens the remote service", func(t *testing.T) {
+		a, _, _ := newTestApp(t)
+		a.prefs.General.MainLanguage = "ja"
+		lm := &remoteGateLocal{remoteOnly: true}
+		svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lm.opened != openai.ID || svc.ASRInfo.ID != openai.ID {
+			t.Errorf("opened %q (ASRInfo %q), want %s", lm.opened, svc.ASRInfo.ID, openai.ID)
+		}
+	})
+}
+
+// remoteGateLocal is MTD and a ready remote speech service (System
+// dictation with system; the remote service alone with remoteOnly),
+// recording what a session's resolver opens.
+type remoteGateLocal struct {
+	local.NotInstalled
+	opened     string
+	system     bool
+	remoteOnly bool
+}
+
+func (l *remoteGateLocal) Installed(kind local.Kind) []local.Model {
+	if kind != local.ASR {
+		return nil
+	}
+	var out []local.Model
+	if !l.remoteOnly {
+		out = append(out, local.Model{Kind: local.ASR, ID: models.ASRMoss, Name: "MOSS-Transcribe-Diarize", Stream: true})
+	}
+	if l.system {
+		out = append(out, local.Model{Kind: local.ASR, ID: dictation.ModelID, Name: "System dictation", Stream: true})
+	}
+	return append(out, local.Model{Kind: local.ASR, ID: openai.ID, Name: "OpenAI Transcribe", Stream: true})
+}
+
+func (l *remoteGateLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	m, ok := local.Choose(l.Installed(local.ASR), id)
+	if !ok {
+		return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+	}
+	l.opened = m.ID
+	return &fakeTranscriptions{}, m, nil
 }
