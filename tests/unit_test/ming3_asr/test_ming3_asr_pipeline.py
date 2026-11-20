@@ -53,6 +53,7 @@ def test_default_pipeline_ends_at_thinker() -> None:
         "thinker"
     )
     factory_arguments = resolve_stage_factory_args(thinker, config)
+    assert factory_arguments["enable_async_decode"] is False
     assert not any(
         name.startswith("speculative_")
         for name in factory_arguments["server_args_overrides"]
@@ -127,12 +128,26 @@ def two_stage_document(
     }
 
 
-def test_two_stage_configuration_loads_pre_lm_knobs() -> None:
+def test_two_stage_configuration_resolves_thinker_overrides() -> None:
     config = Ming3ASRPipelineConfig.model_validate(two_stage_document())
+    config_manager = ConfigManager(config)
+    config = config_manager.merge_config(
+        config_manager.parse_extra_args(
+            [
+                "--thinker.factory.enable_async_decode",
+                "true",
+                "--thinker.factory.async_decode_min_batch_size",
+                "2",
+            ]
+        )
+    )
     assert [stage.name for stage in config.stages] == ["preprocessing", "thinker"]
     thinker = config.stages[1]
     assert thinker.factory.pre_lm_max_batch_size == 4
     assert thinker.factory.pre_lm_max_batch_wait_ms == 0
+    factory_arguments = resolve_stage_factory_args(thinker, config)
+    assert factory_arguments["enable_async_decode"] is True
+    assert factory_arguments["async_decode_min_batch_size"] == 2
 
 
 @pytest.mark.parametrize(
@@ -173,6 +188,8 @@ def test_thinker_factory_rejects_invalid_pre_lm_knobs_before_load(
             "missing-checkpoint",
             max_seq_len=8,
             max_new_tokens=4,
+            enable_async_decode=False,
+            async_decode_min_batch_size=1,
             stream_emit_interval_seconds=0.05,
             pre_lm_max_batch_size=batch_size,
             pre_lm_max_batch_wait_ms=wait_ms,
@@ -187,6 +204,8 @@ def test_thinker_factory_rejects_tensor_parallelism_before_load() -> None:
             "missing-checkpoint",
             max_seq_len=8,
             max_new_tokens=4,
+            enable_async_decode=False,
+            async_decode_min_batch_size=1,
             stream_emit_interval_seconds=0.05,
             pre_lm_max_batch_size=8,
             pre_lm_max_batch_wait_ms=2,
@@ -225,6 +244,7 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DSpark greedy requests must survive architecture and sampling adaptation."""
+    monkeypatch.setattr(stages, "patch_kda_diagonal_anchor", MagicMock())
     checkpoint = TemporaryDirectory(prefix="test-ming-dspark-")
     checkpoint_path = Path(checkpoint.name)
     Qwen3Config(
@@ -322,6 +342,7 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
 def test_dspark_startup_failure_releases_adapted_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(stages, "patch_kda_diagonal_anchor", MagicMock())
     checkpoint = TemporaryDirectory(prefix="test-ming-dspark-")
     checkpoint_path = Path(checkpoint.name)
     monkeypatch.setattr(

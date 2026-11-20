@@ -13,6 +13,7 @@ from pydantic import JsonValue
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.utils import LazyImport
 from transformers import AutoConfig, PreTrainedTokenizerFast
 
 from sglang_omni.models.ming3_asr.encoder_service import Ming3ASRPreLMEncoderService
@@ -44,6 +45,10 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.speculative.dspark_checkpoint import materialize_draft_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
+
+patch_kda_diagonal_anchor: LazyImport = LazyImport(
+    "sglang_omni.vendor.sglang.kda", "patch_kda_diagonal_anchor"
+)
 
 
 class Ming3ASRConfig(Ming3AudioConfig):
@@ -84,6 +89,8 @@ def create_thinker_executor(
     *,
     max_seq_len: int,
     max_new_tokens: int,
+    enable_async_decode: bool,
+    async_decode_min_batch_size: int,
     stream_emit_interval_seconds: float,
     pre_lm_max_batch_size: int,
     pre_lm_max_batch_wait_ms: int,
@@ -115,6 +122,10 @@ def create_thinker_executor(
         pass
     overrides = dict(server_args_overrides or {})
     resolved_device = resolve_concrete_device(device, gpu_id)
+    if resolved_device.type == "cuda":
+        patch_kda_diagonal_anchor()
+    else:
+        pass
     with ExitStack() as resources:
         draft_checkpoint = None
         if overrides.get("speculative_algorithm") == "DSPARK":
@@ -251,6 +262,9 @@ def create_thinker_executor(
             model_runner=Ming3AudioModelRunner(worker, SGLangOutputProcessor()),
             request_builder=build_request,
             result_adapter=build_result,
+            enable_async_decode=enable_async_decode and resolved_device.type == "cuda",
+            async_decode_min_batch_size=async_decode_min_batch_size,
+            async_decode_resolve_before_prefill=True,
             request_build_max_workers=request_build_max_workers,
             request_build_max_pending=request_build_max_pending,
             stream_output_builder=Ming3ASRStreamOutputBuilder(

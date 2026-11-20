@@ -27,6 +27,19 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
   --ragged-verify-mode static
 ```
 
+## Async Decode
+
+Async decode is opt-in on CUDA. It launches the next decode step before collecting the previous step's CPU results, for both streaming and non-streaming transcription. It remains disabled on other devices. To enable async decode:
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.factory.enable_async_decode true
+```
+
+`--thinker.factory.async_decode_min_batch_size 2` limits lookahead to decode batches with at least two requests; the default threshold is one. Prefill drains pending decode results before admission when predicted by the scheduler. Sampling that depends on output history, including `repetition_penalty` other than `1.0`, uses the synchronous path.
+
+This option does not make audio encoding or prefill asynchronous.
+
 ## Transcription
 
 The prompt is the checkpoint's transcription instruction followed by the audio. The chat template is not used. The model answers with a language label, a tab, and the transcript, and this endpoint returns only the transcript. Decoding is greedy unless `temperature` is set. Generation stops at the end-of-text token or after 256 new tokens.
@@ -146,3 +159,7 @@ data: [DONE]
 ```
 
 The first stable text is emitted immediately; later updates use a 50 ms interval (`--thinker.factory.stream_emit_interval_seconds`). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event's `text`. When `max_new_tokens` is reached, `transcript.text.done` includes `"finish_reason":"length"` and the partial transcript.
+
+## KDA diagonal anchor
+
+The CUDA thinker applies the KDA diagonal anchor fix from [sglang#48745](https://github.com/sgl-project/sglang/pull/48745) while it is absent from the pinned dependency. The patch aligns the unfused gate normalization anchor with the fused path and is installed before model construction and CUDA Graph capture.
