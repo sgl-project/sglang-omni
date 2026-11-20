@@ -39,6 +39,12 @@ DONE_EVENT = (
     b'data: {"type":"transcript.text.done","text":"actual transcript",'
     b'"generation_metadata":{"generated_token_count":2,"language":"en","finish_reason":"stop"}}\n\n'
 )
+DRAFT_DONE_EVENT = (
+    b'data: {"type":"transcript.text.done","text":"actual transcript",'
+    b'"generation_metadata":{"generated_token_count":40,"language":"en",'
+    b'"finish_reason":"stop","verify_round_count":9,'
+    b'"proposed_draft_token_count":63,"accepted_draft_token_count":35}}\n\n'
+)
 STUB_KIND_FLAGS = ("--", "--model-kind", "stub_asr")
 
 
@@ -397,6 +403,29 @@ def test_http_requires_a_successful_final_event(reply: bytes) -> None:
             assert b'name="stop_on_token_loop"\r\n\r\ntrue' in submitted[0]
         finally:
             thread.join(timeout=5)
+
+
+def test_http_reads_the_statistics_of_a_decode_with_a_draft() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(DRAFT_DONE_EVENT)
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.handle_request)
+        thread.start()
+        try:
+            result = transcribe_http(server.server_port, b"audio", "en", 2)
+        finally:
+            thread.join(timeout=5)
+    [metadata] = result.generation_metadata
+    assert metadata.generated_token_count == 40
+    assert metadata.verify_round_count == 9
+    assert metadata.proposed_draft_token_count == 63
+    assert metadata.accepted_draft_token_count == 35
+    assert metadata.window_texts is None
 
 
 @pytest.mark.parametrize(

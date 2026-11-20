@@ -44,6 +44,13 @@ class GenerationMetadata:
     generated_token_count: int
     language: str | None
     finish_reason: str
+    # Sent for a decode with a draft: its verify rounds and, over them, the
+    # proposed and accepted draft tokens.
+    verify_round_count: int | None = None
+    proposed_draft_token_count: int | None = None
+    accepted_draft_token_count: int | None = None
+    # Sent by Whisper: the text of each window.
+    window_texts: list[str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
