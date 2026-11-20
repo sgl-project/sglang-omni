@@ -18,7 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Paused toasts no longer wake Voxt while it is in the background**: a toast's fade-out now starts only after its paused display lifetime resumes and ends. Plain toasts and toasts with an action stay visible in the background and expire after you return.
-- **Stop bounds early cleanup**: a matching final cancels unfinished early requests instead of waiting for the whole backlog, then cleans the uncovered tail. The early-clean tests use channel-controlled request order instead of multi-second sleeps.
+- **Stop bounds early cleanup**: a matching final cancels queued early requests and skips the remaining parts of an unfinished job, then cleans that job with the uncovered tail after the active request finishes. The early-clean tests use channel-controlled request order instead of multi-second sleeps.
 
 ### 中文
 
@@ -36,7 +36,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **暂停的提示不再让后台的 Voxt 反复唤醒**：提示只会在暂停的显示计时恢复并结束后淡出。普通提示和带按钮的提示在后台保留，回到前台后继续计时并消失。
-- **停止时的提前整理有明确上限**：最终文本匹配时，未完成的提前请求会取消，不再等完整 backlog，随后整理未覆盖的尾段。提前整理测试改用 channel 控制请求顺序，不再依赖数秒真实等待。
+- **停止时的提前整理有明确上限**：最终文本匹配时，排队的提前请求会取消，未完成的整段不再请求剩余部分；当前请求收尾后，再把这一整段和未覆盖的尾段一起整理。提前整理测试改用 channel 控制请求顺序，不再依赖数秒真实等待。
 
 ## [2.1.1] - 2026-11-17
 

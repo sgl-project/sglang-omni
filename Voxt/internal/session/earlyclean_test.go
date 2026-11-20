@@ -294,7 +294,7 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 	}
 }
 
-func TestEarlyCleanRequestCountFollowsSpeechStretches(t *testing.T) {
+func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
 	first := strings.Repeat("a", 301)
 	full := first + strings.Repeat("b", 299)
 	model := &fakeLLM{text: "clean"}
@@ -308,8 +308,8 @@ func TestEarlyCleanRequestCountFollowsSpeechStretches(t *testing.T) {
 	if len(reqs) != 3 {
 		t.Fatalf("%d requests, want 2 for the first stretch and 1 for the tail", len(reqs))
 	}
-	if reqs[0].InputChars != 301 || reqs[1].InputChars != 301 || reqs[2].InputChars != 600 {
-		t.Errorf("request lengths are %d, %d, %d, want 301, 301, 600", reqs[0].InputChars, reqs[1].InputChars, reqs[2].InputChars)
+	if reqs[0].InputChars != 301 || reqs[1].InputChars != 600 || reqs[2].InputChars != 600 {
+		t.Errorf("request lengths are %d, %d, %d, want one early part and two whole-text tail requests", reqs[0].InputChars, reqs[1].InputChars, reqs[2].InputChars)
 	}
 }
 
@@ -318,6 +318,7 @@ type earlyFallbackLLM struct {
 	calls         int
 	answered      chan struct{}
 	secondStarted chan struct{}
+	secondRelease chan struct{}
 	secondErr     error
 	thirdStarted  bool
 	tailStarted   chan struct{}
@@ -345,7 +346,15 @@ func (f *earlyFallbackLLM) Chat(ctx context.Context, req llm.Request) (llm.Respo
 		return llm.Response{Text: "early one"}, nil
 	case 2:
 		close(f.secondStarted)
-		<-ctx.Done()
+		if f.secondRelease != nil {
+			select {
+			case <-f.secondRelease:
+				return llm.Response{Text: "early two"}, nil
+			case <-ctx.Done():
+			}
+		} else {
+			<-ctx.Done()
+		}
 		f.mu.Lock()
 		f.secondErr = ctx.Err()
 		f.mu.Unlock()
@@ -402,6 +411,34 @@ func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
 	model.mu.Unlock()
 	if calls != 2 {
 		t.Errorf("%d requests, want the first and the cancelled second; the queued early request must not run", calls)
+	}
+}
+
+func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
+	model := &earlyFallbackLLM{secondStarted: make(chan struct{}), secondRelease: make(chan struct{})}
+	r := newEarlyUnitRun(t, model, nil)
+	lastJob := strings.Repeat("a", 301)
+	full := "one " + lastJob + " tail"
+	r.hearPiece("one")
+	r.hearPiece("one " + lastJob)
+	<-model.secondStarted
+	r.early.mu.Lock()
+	r.early.closed = true
+	r.early.mu.Unlock()
+	close(model.secondRelease)
+	waitEarlyWorker(t, r)
+	parts, answers, tail, _, ok := r.early.drain(full)
+	if !ok || len(parts) != 1 || len(answers) != 1 || answers[0] != "early one" {
+		t.Fatalf("early parts = %d, answers = %q, ok = %v; want only the completed first job", len(parts), answers, ok)
+	}
+	if want := " " + lastJob + " tail"; tail != want {
+		t.Errorf("tail = %q, want the unfinished job and tail %q", tail, want)
+	}
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls != 2 {
+		t.Errorf("%d requests, want only the completed job and the active part", calls)
 	}
 }
 

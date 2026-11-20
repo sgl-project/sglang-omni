@@ -182,7 +182,16 @@ func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 		return
 	}
 	res := &segResult{sep: job.sep, replaced: job.replaced, parts: parts}
-	for _, p := range parts {
+	for index, p := range parts {
+		if index > 0 {
+			e.mu.Lock()
+			if e.closed {
+				e.segs = append(e.segs, res)
+				e.mu.Unlock()
+				return
+			}
+			e.mu.Unlock()
+		}
 		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, InputChars: chars}
 		resp, err := r.llmChatContext(e.ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		if e.ctx.Err() != nil {
