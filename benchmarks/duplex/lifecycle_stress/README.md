@@ -11,7 +11,7 @@ MODEL=$MODEL MAX_SESSIONS=$MAX_SESSIONS SERVER_PID=$SERVER_PID SERVER_LOG=$SERVE
 ```
 
 - `MAX_SESSIONS` is the server's `max_sessions`, `SERVER_PID` its main process, `SERVER_LOG` the file its log goes to.
-- `PAIR` is a directory with `input.wav`, in which the user talks over the reply, and `clean_input.wav`, in which nobody does.
+- `PAIR` is a directory with `input.wav`, in which the user talks over the reply, and `clean_input.wav`, in which nobody does. The Full-Duplex-Bench v1.5 dataset has such pairs under `user_interruption/`. If `$FDB_WORK/dataset/v1.5` is not on the host yet, `python -m benchmarks.duplex.fdb setup` puts it there along with the rest of the Full-Duplex-Bench setup; see Setup in the [full-duplex guide](../../../docs/developer_reference/full_duplex_guide.md). `FDB_WORK` defaults to `$HOME/fdb`.
 - `URL` (default `ws://127.0.0.1:8000/v1/realtime`) and `CYCLES` (default 10) can be set the same way.
 
 Each cell first runs one cycle of two clients. A cell that fails there is skipped; the others run `CYCLES` cycles at `MAX_SESSIONS` clients. No failure stops the script, and a rerun with the same output directory skips what is already there. It ends with `runs/gpu/report.txt`, and `runs/gpu` is what to send back.
