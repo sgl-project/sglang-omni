@@ -11,10 +11,11 @@ from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, Literal
 from unittest.mock import AsyncMock, Mock
 
 import httpx
+import msgspec
 import pytest
 import uvicorn
 from fastapi import Depends, FastAPI
@@ -26,6 +27,7 @@ from sglang_omni.config.schema import (
     CustomVoiceConfig,
     EndpointsConfig,
     EngineStageConfig,
+    FactoryArgs,
     PipelineConfig,
     ProcessConfig,
     StageConfig,
@@ -33,6 +35,9 @@ from sglang_omni.config.schema import (
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
+from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
+from sglang_omni.proto.kv_transfer import KVBufferSpec, KVPoolLayout, PDStageKVLayout
+from sglang_omni.scheduling.omni_scheduler import AdminActionResult
 from sglang_omni.serve import launcher
 from sglang_omni.serve.openai_api import ServerStatus
 from sglang_omni.serve.protocol import (
@@ -47,7 +52,11 @@ from sglang_omni.serve.server_warmup import (
 )
 from sglang_omni.serve.speech_to_text import SpeechToTextForm, parse_speech_to_text_form
 from sglang_omni.serve.transcriptions import TRANSCRIPTIONS_ENDPOINT
-from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
+from tests.unit_test.fixtures.pipeline_fakes import (
+    FakeMpContext,
+    FakeRelay,
+    FakeScheduler,
+)
 
 
 def noop_factory():
@@ -56,6 +65,25 @@ def noop_factory():
 
 def failing_factory():
     raise RuntimeError("factory boom")
+
+
+class PDKVLayoutProbe(FakeScheduler):
+    def __init__(self, pd_role: Literal["prefill", "decode"], page_size: int) -> None:
+        super().__init__()
+        self.layout = PDStageKVLayout(
+            role=pd_role,
+            pool_id=f"{pd_role}:kv",
+            layout=KVPoolLayout("model", page_size, (KVBufferSpec("key", 64),)),
+            partner_stage="decode" if pd_role == "prefill" else None,
+        )
+
+    def admin(self, action: str, payload: dict[str, object]) -> AdminActionResult:
+        assert action == ADMIN_PD_KV_LAYOUT
+        return {
+            "success": True,
+            "message": "ok",
+            "data": msgspec.to_builtins(self.layout),
+        }
 
 
 class FakeControlPlane:
@@ -340,6 +368,44 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     with pytest.raises(RuntimeError, match="factory boom"):
         await runner.start(timeout=30.0)
 
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_mp_runner_rejects_incompatible_pd_pair_at_startup(
+    tmp_path: Path,
+) -> None:
+    config = PipelineConfig(
+        model_path="model",
+        entry_stage="prefill",
+        stages=[
+            StageConfig(
+                name="prefill",
+                process="prefill",
+                factory_path=f"{__name__}.PDKVLayoutProbe",
+                factory=FactoryArgs(pd_role="prefill", page_size=1),
+                next="decode",
+            ),
+            StageConfig(
+                name="decode",
+                process="decode",
+                factory_path=f"{__name__}.PDKVLayoutProbe",
+                factory=FactoryArgs(pd_role="decode", page_size=2),
+                terminal=True,
+            ),
+        ],
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+    )
+    runner = mp_runner.MultiProcessPipelineRunner(config)
+
+    try:
+        with pytest.raises(
+            RuntimeError, match="KV layouts do not match between 'prefill' and 'decode'"
+        ):
+            await runner.start(timeout=30.0)
+        assert not runner.started
+    finally:
+        await runner.stop()
     assert list(tmp_path.iterdir()) == []
 
 

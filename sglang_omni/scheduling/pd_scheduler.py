@@ -12,6 +12,7 @@ from contextlib import nullcontext
 from typing import Callable
 from uuid import uuid4
 
+import msgspec
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.mem_cache.allocator.swa import (
@@ -21,6 +22,8 @@ from sglang.srt.mem_cache.allocator.swa import (
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 
 from sglang_omni.comm import KVPageTransfer
+from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
+from sglang_omni.proto.kv_transfer import PDStageKVLayout
 from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
@@ -42,10 +45,31 @@ logger = logging.getLogger(__name__)
 class PDKVLifecycle(OmniScheduler):
     """Own PD-only KV state that upstream scheduler lifecycle checks cannot see."""
 
+    pd_partner_stage: str | None = None
+
     def __init__(self, *args, **kwargs) -> None:
         self.pd_due_releases: queue.SimpleQueue = queue.SimpleQueue()
         self.pd_outstanding_releases: set[str] = set()
         super().__init__(*args, **kwargs)
+
+    def run_admin_action(
+        self, action: str, payload: dict[str, object] | None = None
+    ) -> AdminActionResult:
+        if action == ADMIN_PD_KV_LAYOUT:
+            ((pool, receiver),) = self.kv_registrations
+            layout = PDStageKVLayout(
+                role="prefill" if receiver is None else "decode",
+                pool_id=pool.pool_id,
+                layout=pool.layout,
+                partner_stage=self.pd_partner_stage,
+            )
+            return {
+                "success": True,
+                "message": "ok",
+                "data": msgspec.to_builtins(layout),
+            }
+        else:
+            return super().run_admin_action(action, payload)
 
     def pd_holds_kv(self) -> bool:
         return bool(self.pd_outstanding_releases)

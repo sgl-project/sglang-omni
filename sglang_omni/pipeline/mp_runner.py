@@ -14,6 +14,8 @@ import multiprocessing
 from collections.abc import Mapping
 from typing import TypedDict
 
+import msgspec
+
 from sglang_omni.config.placement import (
     StagePlacementPlan,
     resolve_gpu_stage_names,
@@ -48,6 +50,8 @@ from sglang_omni.pipeline.stage_workers import (
     stage_gpu_ids,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
+from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
+from sglang_omni.proto.kv_transfer import PDStageKVLayout
 from sglang_omni.utils.cpu import effective_cpu_count, gpu_local_affinity
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_tcp_port
@@ -724,6 +728,7 @@ class MultiProcessPipelineRunner:
         else:
             pass
 
+        stages_registered = False
         try:
             ctx = multiprocessing.get_context("spawn")
             self.fatal_event = asyncio.Event()
@@ -882,6 +887,8 @@ class MultiProcessPipelineRunner:
                         stage_name, endpoint
                     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
+            stages_registered = True
+            await self.validate_pd_handoffs(prep.replica_topology, timeout)
             self.started = True
             self.monitor_task = asyncio.create_task(self.monitor_children())
 
@@ -895,10 +902,15 @@ class MultiProcessPipelineRunner:
                 total_procs,
             )
 
-        # Note (Jiaxin Deng): one branch for both, because a cancellation
-        # without MPS used to skip cleanup entirely and strand the children it
-        # had already spawned; only the MPS release is conditional.
         except BaseException as startup_error:
+            if stages_registered and not self.started:
+                try:
+                    await finish_despite_cancellation(self.teardown())
+                except BaseException as cleanup_error:
+                    raise startup_error from cleanup_error
+                raise
+            else:
+                pass
             process_start_attempts: set[str] | None = None
             if self.mps is not None:
                 process_start_attempts = self.process_start_attempts()
@@ -917,6 +929,96 @@ class MultiProcessPipelineRunner:
                 else:
                     pass
             raise
+
+    async def validate_pd_handoffs(
+        self, replica_topology: ReplicaTopology, timeout_seconds: float
+    ) -> None:
+        stages = (
+            stage
+            for group in self.groups
+            for process in group.process_specs
+            for stage in process.stage_specs
+            if stage.owns_external_io
+        )
+        roles: dict[str, str] = {}
+        for stage in stages:
+            role = stage.typed_kwargs.get(
+                "pd_role", stage.factory_kwargs.get("pd_role")
+            )
+            if isinstance(role, str) and role in ("prefill", "decode"):
+                roles[stage.stage_name] = role
+            else:
+                pass
+        if not roles:
+            return
+        else:
+            pass
+
+        try:
+            response = await self.coordinator.admin(
+                ADMIN_PD_KV_LAYOUT, stages=list(roles), timeout_s=timeout_seconds
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "Timed out reading PD KV layouts during startup"
+            ) from exc
+        if not response["success"]:
+            raise RuntimeError(f"Could not read PD KV layouts: {response['message']}")
+        else:
+            pass
+
+        layouts: dict[str, PDStageKVLayout] = {}
+        for result in response["results"]:
+            stage_name = result["stage"]
+            try:
+                layout = msgspec.convert(result["data"], type=PDStageKVLayout)
+            except msgspec.ValidationError as exc:
+                raise RuntimeError(
+                    f"Stage {stage_name!r} did not report its PD KV layout"
+                ) from exc
+            if layout.role != roles[stage_name]:
+                raise RuntimeError(f"Stage {stage_name!r} reported the wrong PD role")
+            else:
+                pass
+            layouts[stage_name] = layout
+
+        unpaired = {
+            stage_name for stage_name, role in roles.items() if role == "decode"
+        }
+        for stage_name, source in layouts.items():
+            if source.role != "prefill":
+                continue
+            else:
+                pass
+            if source.partner_stage is None:
+                raise RuntimeError(
+                    f"PD Prefill stage {stage_name!r} has no Decode target"
+                )
+            else:
+                pass
+            for target_name in replica_topology.instances(source.partner_stage):
+                target = layouts.get(target_name)
+                if target is None or target.role != "decode":
+                    raise RuntimeError(
+                        f"PD Prefill stage {stage_name!r} targets missing Decode stage {target_name!r}"
+                    )
+                elif target.pool_id != f"{target_name}:kv":
+                    raise RuntimeError(
+                        f"PD Decode stage {target_name!r} registered unexpected KV pool {target.pool_id!r}"
+                    )
+                elif not source.layout.compatible_with(target.layout):
+                    raise RuntimeError(
+                        f"PD KV layouts do not match between {stage_name!r} and {target_name!r}"
+                    )
+                else:
+                    pass
+                unpaired.discard(target_name)
+        if unpaired:
+            raise RuntimeError(
+                f"PD Decode stages have no Prefill source: {sorted(unpaired)}"
+            )
+        else:
+            pass
 
     def process_start_attempts(self) -> set[str]:
         return {

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 import msgspec
 
@@ -41,6 +42,14 @@ class KVPoolLayout:
             and source.bytes_per_page == destination.bytes_per_page
             for source, destination in zip(self.buffers, other.buffers, strict=True)
         )
+
+
+@dataclass(frozen=True)
+class PDStageKVLayout:
+    role: Literal["prefill", "decode"]
+    pool_id: str
+    layout: KVPoolLayout
+    partner_stage: str | None = None
 
 
 @dataclass(frozen=True)
