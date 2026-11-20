@@ -76,6 +76,7 @@ func (a *app) boxPasteTextAt(index int, text string, start, end int) bool {
 		start, end = end, start
 	}
 	prefix, suffix := string(runes[:start]), string(runes[end:])
+	a.box.err = ""
 	pasted := a.newBoxTextSegment(segment.Text, segment.Source, true)
 	if index == -1 {
 		if prefix != "" {
@@ -105,7 +106,7 @@ func (a *app) boxTextContent() string {
 		if text == "" {
 			return
 		}
-		// An imported file starts and ends on its own line, or two files glue together.
+		// An imported file or pasted block starts and ends on its own line.
 		if (file || afterFile) && content.Len() > 0 && !strings.HasSuffix(content.String(), "\n") {
 			content.WriteByte('\n')
 		}
@@ -113,7 +114,7 @@ func (a *app) boxTextContent() string {
 		afterFile = file
 	}
 	for _, segment := range a.box.textSegments {
-		add(segment.Text, segment.File)
+		add(segment.Text, segment.File || segment.Pasted)
 	}
 	add(a.box.text, false)
 	a.box.textCache = content.String()

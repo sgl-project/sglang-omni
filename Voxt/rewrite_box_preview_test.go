@@ -44,7 +44,7 @@ func TestBoxPastedTextCollapseThreshold(t *testing.T) {
 		t.Fatal("a four-line paste stayed in the editor")
 	}
 	a.box.text = "after"
-	if got, want := a.boxTextContent(), "before\n"+long+"after"; got != want {
+	if got, want := a.boxTextContent(), "before\n"+long+"\nafter"; got != want {
 		t.Fatalf("request text %q, want %q", got, want)
 	}
 	if len(a.box.textSegments) != 2 {
@@ -444,7 +444,7 @@ func TestBoxLongPasteThroughEditorDoesNotDuplicate(t *testing.T) {
 	}
 	tt.Type("after")
 	frames(tt)
-	if got, want := a.boxTextContent(), "before\n"+long+"after"; got != want {
+	if got, want := a.boxTextContent(), "before\n"+long+"\nafter"; got != want {
 		t.Fatalf("request text after typing %q, want %q", got, want)
 	}
 }
@@ -461,7 +461,7 @@ func TestBoxTypingImmediatelyAfterPaste(t *testing.T) {
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), "before\n"+long+"X"; got != want {
+	if got, want := a.boxTextContent(), "before\n"+long+"\nX"; got != want {
 		t.Fatalf("request text after fast typing %q, want %q", got, want)
 	}
 }
@@ -482,7 +482,7 @@ func TestBoxCaretMovesAfterPastedBlock(t *testing.T) {
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), "hello"+long+"X world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+long+"\nX world"; got != want {
 		t.Fatalf("request text after typing at the suffix caret %q, want %q", got, want)
 	}
 }
@@ -501,7 +501,7 @@ func TestBoxSelectedReplacementFollowedByTyping(t *testing.T) {
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), long+"X"; got != want {
+	if got, want := a.boxTextContent(), long+"\nX"; got != want {
 		t.Fatalf("request text after selected replacement and typing %q, want %q", got, want)
 	}
 }
@@ -521,14 +521,14 @@ func TestBoxBackToBackPastesKeepTheirOrder(t *testing.T) {
 	second := "five\nsix\nseven\neight"
 	tt.SetClipboardData(transfer.TextData(first))
 	tt.Command("paste")
-	if got, want := a.boxTextContent(), "hello"+first+" world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+first+"\n world"; got != want {
 		t.Fatalf("request text after the first paste %q, want %q", got, want)
 	}
 	tt.SetClipboardData(transfer.TextData(second))
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), "hello"+first+second+"X world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+first+"\n"+second+"\nX world"; got != want {
 		t.Fatalf("request text after back-to-back pastes %q, want %q", got, want)
 	}
 }
@@ -540,8 +540,8 @@ func TestBoxMixedPasteLengthsWithoutAFrame(t *testing.T) {
 		pastes []string
 		want   string
 	}{
-		{name: "long then short", pastes: []string{long, "x"}, want: long + "x"},
-		{name: "short then long", pastes: []string{"x", long}, want: "x" + long},
+		{name: "long then short", pastes: []string{long, "x"}, want: long + "\nx"},
+		{name: "short then long", pastes: []string{"x", long}, want: "x\n" + long},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
@@ -568,7 +568,7 @@ func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	if !a.boxPasteTextAt(-1, long, 5, 5) {
 		t.Fatal("the long paste was not taken")
 	}
-	if got, want := a.boxTextContent(), "hello"+long+" world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+long+"\n world"; got != want {
 		t.Fatalf("request text %q, want %q", got, want)
 	}
 	a.boxRemoveText(1)
@@ -579,7 +579,7 @@ func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	if !a.boxPasteTextAt(0, long, 3, 3) {
 		t.Fatal("a paste into an earlier typed segment was not taken")
 	}
-	if got, want := a.boxTextContent(), "HEL"+long+"LO world"; got != want {
+	if got, want := a.boxTextContent(), "HEL\n"+long+"\nLO world"; got != want {
 		t.Fatalf("text after pasting into an earlier segment %q, want %q", got, want)
 	}
 }
