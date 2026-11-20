@@ -37,3 +37,4 @@ report	fix	symptom	level	check
 #4086	#4088	Transcribe inserts commentary outside <output> tags along with the tagged cleaned text	L	TestOnlyTheCleanedText
 #4120	#4129	Dictation hangs on Starting the microphone after a microphone is added in Settings	L	testSecondSilentEngineGoesToTheDefaultInputThirdEnds
 #4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
+#4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible

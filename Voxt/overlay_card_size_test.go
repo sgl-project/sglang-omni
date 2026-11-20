@@ -188,6 +188,33 @@ func TestCardFillFollowsDraggedDisplay(t *testing.T) {
 	}
 }
 
+// TestCardSizeButtonVisible: the size button is visible without a
+// hover (#4100: a 16 pt button with a 12 pt icon at 42 % opacity was
+// effectively invisible): a 20 pt hit area with a 14 pt icon, drawn at
+// 0.6 alpha resting (about 170 over the dark face; 0.42 blends to
+// about 128), CardSizeBtnInset from the card's bottom-right corner.
+func TestCardSizeButtonVisible(t *testing.T) {
+	if layout.CardSizeBtn < 20 || layout.CardSizeBtnIcon < 14 {
+		t.Fatalf("the size button is %d pt with a %d pt icon; 16/12 was invisible", layout.CardSizeBtn, layout.CardSizeBtnIcon)
+	}
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	img := renderOverlay(t, a)
+	bright := 0
+	for y := 2 * (layout.Pad + a.ov.h - layout.CardSizeBtnInset - layout.CardSizeBtn); y < 2*(layout.Pad+a.ov.h-layout.CardSizeBtnInset); y++ {
+		for x := 2 * (layout.Pad + a.ov.w - layout.CardSizeBtnInset - layout.CardSizeBtn); x < 2*(layout.Pad+a.ov.w-layout.CardSizeBtnInset); x++ {
+			o := img.PixOffset(x, y)
+			if v := (int(img.Pix[o]) + int(img.Pix[o+1]) + int(img.Pix[o+2])) / 3; v > 150 {
+				bright++
+			}
+		}
+	}
+	if bright == 0 {
+		t.Errorf("nothing brighter than 150 in the size button's area: the resting alpha does not show")
+	}
+}
+
 // TestCardFitsTheScreen: a large card with a long answer on a short
 // screen keeps its text to the room the work area leaves, instead of
 // reaching past the screen's other edge.
