@@ -1115,7 +1115,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         dtype: torch.dtype,
         in_place_frames: int,
     ) -> Qwen3TTSCodecStateArena | None:
-        """The stream rows, and as many for whole requests, that the asynchronous workers decode against; a set slot count is checked in every mode."""
+        """The stream rows, and the rows one replay of whole requests takes, that the asynchronous workers decode against; a set slot count is checked in every mode."""
         if num_slots is not None and (
             isinstance(num_slots, bool)
             or not isinstance(num_slots, int)
@@ -1141,12 +1141,18 @@ class Qwen3TTSStreamingVocoderScheduler(
             if self.incremental_decoder.pointwise_conv is not None
             else Qwen3TTSCodecStateArena
         )
+        # note (ratish): a replay takes at most the largest graph batch of whole requests, each keeping its row from its first replay to its last, so that many rows let one replay take a full batch; only the initial worker takes and returns them, so a whole request never waits for a stream's row.
+        whole_request_slots = (
+            self.resolve_incremental_warm_graph_batch_sizes(
+                max_batch_size=min(self.followup_max_batch_size, num_slots)
+            )[-1]
+            if self.decodes_whole_requests
+            else 0
+        )
         arena = arena_type(
             self.incremental_decoder,
             num_slots=num_slots,
-            # note (ratish): as many whole requests as streams hold state at once, and neither
-            # takes the other's slots, so stream load never changes a whole request's audio.
-            reserved_slots=num_slots if self.decodes_whole_requests else 0,
+            reserved_slots=whole_request_slots,
             device=self.device,
             dtype=dtype,
             in_place_frames=in_place_frames,

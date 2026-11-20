@@ -4075,6 +4075,54 @@ def test_qwen3_tts_whole_requests_past_their_slots_wait_for_one_to_finish(
     assert chunk_samples(results["next"].data) == expected_whole_samples(scheduler, 8)
 
 
+def test_qwen3_tts_streams_and_whole_requests_keep_to_their_own_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With one set of rows for both, a stream that started while a whole request waited for a row decoded on the left-context path, and the whole request waited for rows streams held."""
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    scheduler.followup_worker = scheduler.initial_worker
+    arena = scheduler.codec_arena
+    for _ in range(arena.num_slots - WHOLE_REQUEST_SLOTS - 1):
+        arena.acquire()
+    held_whole_slots = scheduler.idle_whole_request_slots[1:]
+    scheduler.idle_whole_request_slots = scheduler.idle_whole_request_slots[:1]
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("first", 8), whole_request_message("waiting", 4)],
+        asyncio.new_event_loop(),
+    )
+    scheduler.run_initial_pass()
+    codes = torch.arange(1, 65).view(-1, 1).repeat(1, 2)
+    stream = admit_reference_stream(scheduler, "stream", codes, ref_code_len=0)
+    scheduler.initial_queue.put(("stream", stream))
+
+    scheduler.run_initial_pass()
+
+    assert stream.codec_slot is not None
+    assert stream.incremental_codec_fallback is False
+    assert [request.request_id for request in scheduler.whole_requests] == ["waiting"]
+    scheduler.idle_whole_request_slots.extend(held_whole_slots)
+    results = run_whole_requests(scheduler)
+    assert chunk_samples(results["first"].data) == expected_whole_samples(scheduler, 8)
+    assert chunk_samples(results["waiting"].data) == expected_whole_samples(
+        scheduler, 4
+    )
+
+
+@pytest.mark.parametrize("codec_state_slots,whole_request_slots", [(128, 8), (2, 2)])
+def test_qwen3_tts_whole_requests_keep_the_rows_one_replay_takes(
+    monkeypatch: pytest.MonkeyPatch, codec_state_slots: int, whole_request_slots: int
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    scheduler.decodes_whole_requests = True
+
+    arena = scheduler.build_codec_arena(
+        codec_state_slots, dtype=torch.float32, in_place_frames=0
+    )
+
+    assert arena.num_slots == codec_state_slots
+    assert len(arena.reserved_slots) == whole_request_slots
+
+
 def test_qwen3_tts_whole_request_after_a_failed_capture_keeps_the_batch_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
