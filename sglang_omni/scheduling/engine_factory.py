@@ -81,6 +81,7 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     stream_output_builder: StreamOutputBuilder[RequestDataT] | None
     enable_async_decode: bool
     async_decode_min_batch_size: int
+    prefill_drain_below_batch_size: int | None
     async_decode_resolve_before_prefill: bool
     async_prefill: bool
     should_run_top_priority_stream: bool
