@@ -28,6 +28,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			caption(c, fixture.name)
 		})
 		ui.Box(c).Grow(1).Children(func() {
+			// note (Suning Zhao): Back or Continue above may have switched the fixture in this frame.
+			fixture := host.current()
 			switch fixture.state.Kind {
 			case "page":
 				meetingsPage(c, fixture.state.Page, host, &host.pageUI, 800)
