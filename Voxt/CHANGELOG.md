@@ -6,12 +6,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **A system-audio failure no longer leaves meeting startup stuck** (#4409): if the microphone stop after a system-capture failure goes unanswered, Voxt stops waiting after five seconds and returns the original capture error instead of leaving the meeting In progress.
 - **Rewrite is one card from the shortcut to the last follow-up** (#4375): the Rewrite card no longer hands over to a preview at the screen's edge and then to a separate answer card. It stays while your speech is recognised and the language model works, and says what it is doing; the answer is written in that same card, above the text box, with Insert and Copy in its header. The text box stays at the foot of the card: type there and press Enter to follow up (no recording needed), or press the Rewrite shortcut to say it, and the conversation scrolls above. The card keeps one height and follows Rewrite's card size for its width (Fill included), with the size button in its corner. Typed text alone is now enough: nothing has to be said. With Rewrite's card switched off, the card closes once the result is inserted. Sending again after a failure keeps the card too.
 
 ### 中文
 
 #### 修复
 
+- **系统音频采集失败不再让会议一直停在“进行中”**（#4409）：系统音频采集失败后，如果停止麦克风的请求没有回应，Voxt 最多等待 5 秒，随后显示原来的采集错误，不再让会议启动过程卡住。
 - **改写从按下快捷键到最后一次追问只有一张卡片**（#4375）：改写卡片不再先换成屏幕边缘的预览条、再换成另一张结果卡片。识别语音和语言模型处理时它一直留在屏幕上，并说明正在做什么；结果直接写在这张卡片里、输入框的上方，标题栏有“插入”和“复制”。输入框一直在卡片底部：在里面打字按 Enter 就是追问（不用录音），也可以按改写快捷键说出来，对话在上方滚动。卡片高度固定，宽度跟随改写的卡片大小（包括“充满”），角上有切换大小的按钮。只打字不说话也可以发送。关掉改写的“显示卡片”时，结果插入后卡片关闭。发送失败后再次发送，卡片同样留着。
 
 ## [2.1.2] - 2026-11-19

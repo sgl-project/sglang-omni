@@ -43,7 +43,7 @@ func testManager(t *testing.T, micPCM, sysPCM []byte, sysFail bool) (*meeting.Ma
 	return testManagerMic(t, newFakeAudio(micPCM), sysPCM, sysFail)
 }
 
-func testManagerMic(t *testing.T, mic *fakeAudio, sysPCM []byte, sysFail bool) (*meeting.Manager, context.Context, *fakeClock, string) {
+func testManagerMic(t *testing.T, mic session.Audio, sysPCM []byte, sysFail bool) (*meeting.Manager, context.Context, *fakeClock, string) {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -121,6 +121,44 @@ func TestSystemStartFailsMicStopped(t *testing.T) {
 	}
 	if m.Current().State.Active() {
 		t.Fatal("meeting should not be active after failed start")
+	}
+}
+
+type deadlineStopAudio struct {
+	*fakeAudio
+	missingDeadline bool
+}
+
+func (a *deadlineStopAudio) Stop(ctx context.Context, id string) error {
+	if _, ok := ctx.Deadline(); !ok {
+		a.missingDeadline = true
+		return errors.New("capture stop has no deadline")
+	}
+	return a.fakeAudio.Stop(context.Background(), id)
+}
+
+func TestSystemStartFailureBoundsMicStop(t *testing.T) {
+	mic := &deadlineStopAudio{fakeAudio: newFakeAudio([]byte{9})}
+	m, ctx, _, _ := testManagerMic(t, mic, nil, true)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeMeeting})
+		errc <- err
+	}()
+	select {
+	case err := <-errc:
+		var startErr *meeting.StartError
+		if !errors.As(err, &startErr) || startErr.Source != meeting.SourceSystem || startErr.Err.Error() != "permission denied" {
+			t.Fatalf("Start: %v", err)
+		}
+		if m.Current().State.Active() {
+			t.Fatal("meeting should not be active after failed start")
+		}
+		if mic.missingDeadline {
+			t.Fatal("microphone stop has no deadline")
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("Start still hangs after the system capture failed")
 	}
 }
 

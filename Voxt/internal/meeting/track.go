@@ -16,7 +16,7 @@ type track struct {
 	audio      session.Audio
 	stopping   bool
 	transcribe *trackTranscriber
-	done       chan struct{} // closed once Record returned and its PCM is handled
+	done       chan struct{} // closed once Record returned, its PCM is handled and its transcriber finished
 }
 
 func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
@@ -111,6 +111,9 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		})
 		pcm.close()
 		<-pumped
+		if tx != nil {
+			_ = tx.finish(context.Background())
+		}
 		close(done)
 		if err != nil {
 			select {
@@ -146,14 +149,12 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 // stop ends the capture first, so the transcriber sees its last PCM
 // before it finishes.
 func (t *track) stop() {
-	_ = t.audio.Stop(context.Background(), t.job)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = t.audio.Stop(ctx, t.job)
 	select {
 	case <-t.done:
-	case <-time.After(5 * time.Second): // a helper that never answers Stop
-	}
-	if t.transcribe != nil {
-		_ = t.transcribe.finish(context.Background())
-		t.transcribe = nil
+	case <-ctx.Done(): // a helper that never answers Stop; its PCM pump may still be running
 	}
 }
 
