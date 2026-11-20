@@ -622,7 +622,6 @@ class DecodeKVReceiver:
             reservation = self.reservations.pop(request.transfer_id, None)
             if reservation is not None:
                 self.remember_finished_transfer(request.transfer_id)
-                # note (weixilin): idle checks must wait until these slots are free.
                 self.allocator.free(reservation.allocation.slots)
             else:
                 pass
