@@ -222,7 +222,6 @@ func (a *ASR) finalBias(b bias) bias {
 			b.context = mossDiarizePrompt
 		}
 		b.context += " Hotwords: " + strings.Join(b.hotwords, ", ")
-		b.terms = b.hotwords
 	}
 	return b
 }

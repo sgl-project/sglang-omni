@@ -320,7 +320,7 @@ func mtdTerms(t *testing.T, ctx context.Context, a *omni.ASR, cfg mtdConfig, e *
 		total, with, without = total+len(r.clip.Terms), with+w, without+wo
 		rows.add(r.clip.ID, strings.Join(r.clip.Terms, ", "), mdText(withHotwords), mdText(plain))
 	}
-	fmt.Fprintf(&b, "\nDictionary terms written exactly: %d of %d with the context bias, %d without.\n\n%s", with, total, without, rows.String())
+	fmt.Fprintf(&b, "\nDictionary terms written exactly: %d of %d with the dictionary, %d without.\n\n%s", with, total, without, rows.String())
 	return b.String()
 }
 

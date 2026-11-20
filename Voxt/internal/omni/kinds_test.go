@@ -271,10 +271,9 @@ func TestMossTranscribeHotwords(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		hints []string
-		want  string
 	}{
-		{"one rare term", []string{"Zephyria"}, instruction + " Hotwords: Zephyria"},
-		{"empty dictionary", nil, instruction},
+		{"one rare term", []string{"Zephyria"}},
+		{"empty dictionary", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Hints: tc.hints}); err != nil {
@@ -285,12 +284,36 @@ func TestMossTranscribeHotwords(t *testing.T) {
 	if _, err := a.WithInstruction("").Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Hints: []string{"Zephyria"}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := a.WithInstruction("").Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en"}); err != nil {
+		t.Fatal(err)
+	}
 	finals := f.records("final")
-	if len(finals) != 3 || finals[0].Fields["prompt"] != instruction+" Hotwords: Zephyria" || finals[1].Fields["prompt"] != instruction {
+	if len(finals) != 4 || finals[0].Fields["prompt"] != instruction+" Hotwords: Zephyria" || finals[1].Fields["prompt"] != instruction {
 		t.Errorf("finals %+v", finals)
 	}
 	if got := finals[2].Fields["prompt"]; !strings.HasPrefix(got, "Transcribe the audio into text. Start each segment") || !strings.HasSuffix(got, " Hotwords: Zephyria") {
 		t.Errorf("default diarization prompt = %q", got)
+	}
+	if got := finals[3].Fields["prompt"]; got != "" {
+		t.Errorf("default diarization prompt with no dictionary = %q, want the server's default", got)
+	}
+}
+
+// TestMossHotwordsKeepRecognisedTerms: MOSS does not use Qwen's echo filter,
+// which could otherwise delete the very terms the hotword request recognised.
+func TestMossHotwordsKeepRecognisedTerms(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "Zephyria, Voxt", NoPromptText: "Zephyr, Vox"}, withServers(t, "moss_transcribe_diarize_server"))
+	a := f.asr(t, ASRMoss)
+	res, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Hints: []string{"Zephyria", "Voxt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "Zephyria, Voxt" {
+		t.Errorf("text = %q", res.Text)
+	}
+	finals := f.records("final")
+	if len(finals) != 1 || finals[0].Fields["prompt"] != again(ASRMoss).ASR.Instruction+" Hotwords: Zephyria, Voxt" {
+		t.Errorf("finals %+v", finals)
 	}
 }
 
