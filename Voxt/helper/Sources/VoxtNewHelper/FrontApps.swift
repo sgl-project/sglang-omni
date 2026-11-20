@@ -95,6 +95,23 @@ final class FrontApps: @unchecked Sendable {
         return is_
     }
 
+    /// Whether the focused editor has an IME composition in progress. The
+    /// hotkey tap asks only after a shortcut matched, with a short timeout.
+    func hasMarkedText() -> Bool {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.05)
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &ref) == .success, let ref,
+              CFGetTypeID(ref) == AXUIElementGetTypeID() else { return false }
+        let element = ref as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.05)
+        for attribute in ["AXTextInputMarkedRange", "AXTextInputMarkedTextMarkerRange"] {
+            var marked: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, attribute as CFString, &marked) == .success, marked != nil { return true }
+        }
+        return false
+    }
+
     /// The app in front now: the cache, else NSWorkspace (on the main thread).
     func current() async -> App {
         if let a = cached { return a }

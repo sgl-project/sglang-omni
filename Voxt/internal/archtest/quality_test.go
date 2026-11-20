@@ -22,7 +22,7 @@ func TestQualityRulesMatchTheirChecks(t *testing.T) {
 			"keep shared fakes and helpers",
 			"compare the changed file names",
 			"names an automatic check when one exists",
-			"check the helper build output for `warning:`",
+			"Helper builds without warnings",
 			"add a file or raise its numeric line ceiling only for a fix that cannot wait",
 		}},
 		{"docs/architecture.md", []string{
