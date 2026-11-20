@@ -7,9 +7,11 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from functools import partial
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.server_args import ServerArgs
@@ -25,6 +27,7 @@ from sglang_omni.models.fun_asr.encoder_service import (
     FunASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.fun_asr.pd import FunASRPDAdapter
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
@@ -39,6 +42,11 @@ from sglang_omni.scheduling.engine_factory import (
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
+)
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
@@ -86,7 +94,13 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         request_build_max_workers: int,
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
+        pd_role: Literal["prefill", "decode"] | None = None,
     ) -> None:
+        if pd_role not in (None, "prefill", "decode"):
+            raise ValueError(f"Invalid Fun-ASR PD role: {pd_role!r}")
+        else:
+            pass
+        self.pd_role = pd_role
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static
@@ -155,6 +169,10 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         speculative_algorithm = SpeculativeAlgorithm.from_string(
             overrides.get("speculative_algorithm")
         )
+        if self.pd_role is not None and not speculative_algorithm.is_none():
+            raise ValueError("Fun-ASR PD requires speculative decoding disabled")
+        else:
+            pass
         if speculative_algorithm.is_none():
             if draft_model_path is not None:
                 raise ValueError(
@@ -214,6 +232,12 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             self.context_length += self.engine_context_padding
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        if self.pd_role is not None and (
+            not current_platform.is_cuda() or resolved_view(server_args).tp_size != 1
+        ):
+            raise ValueError("Fun-ASR PD requires CUDA and TP=1")
+        else:
+            pass
         if self.uses_torch_mps():
             if not current_platform.is_mps():
                 raise ValueError("Fun-ASR Torch/MPS requires the Apple Metal platform")
@@ -362,7 +386,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        if self.uses_torch_mps():
+        if self.uses_torch_mps() or self.pd_role == "decode":
             return
         else:
             pass
@@ -418,7 +442,11 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         model: FunAsrNanoForConditionalGeneration | None,
         server_args: ServerArgs | None,
     ) -> None:
-        if self.uses_torch_mps() or not self.enable_pre_lm_encoder:
+        if (
+            self.uses_torch_mps()
+            or not self.enable_pre_lm_encoder
+            or self.pd_role == "decode"
+        ):
             return
         else:
             pass
@@ -467,13 +495,44 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         else:
             pass
 
+    def scheduler_factory(
+        self,
+    ) -> (
+        type[OmniScheduler[request_builders.FunASRRequestData]]
+        | partial[OmniScheduler[request_builders.FunASRRequestData]]
+    ):
+        if self.pd_role is None:
+            return super().scheduler_factory()
+        else:
+            pass
+        adapter = FunASRPDAdapter(tokenizer=self.tokenizer)
+        if self.pd_role == "prefill":
+            return partial(
+                OmniPrefillScheduler,
+                stage_name="asr",
+                partner_stage="asr_decode",
+                state_builder=adapter.build_state,
+            )
+        else:
+            return partial(
+                OmniDecodeScheduler,
+                stage_name="asr_decode",
+                resume_schema=adapter.schema,
+                state_restorer=adapter.restore_state,
+                emit_transferred_token=True,
+            )
+
     def extra_scheduler_kwargs(
         self,
     ) -> SchedulerExtras[request_builders.FunASRRequestData]:
         return {
-            "stream_output_builder": request_builders.make_fun_asr_stream_output_builder(
-                tokenizer=self.tokenizer,
-                min_emit_interval_s=self.stream_emit_interval_s,
+            "stream_output_builder": (
+                None
+                if self.pd_role == "prefill"
+                else request_builders.make_fun_asr_stream_output_builder(
+                    tokenizer=self.tokenizer,
+                    min_emit_interval_s=self.stream_emit_interval_s,
+                )
             ),
             "enable_async_decode": (
                 False if self.uses_torch_mps() else self.enable_async_decode

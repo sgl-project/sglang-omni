@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
@@ -135,6 +135,8 @@ def create_sglang_fun_asr_executor(
     request_build_max_pending: int | None = 32,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: Mapping[str, object] | None = None,
+    total_gpu_memory_fraction: float | None = None,
+    pd_role: Literal["prefill", "decode"] | None = None,
 ) -> OmniScheduler[FunASRRequestData]:
     if pre_lm_max_batch_size < 1:
         raise ValueError(
@@ -179,6 +181,7 @@ def create_sglang_fun_asr_executor(
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         stream_emit_interval_s=stream_emit_interval_s,
+        pd_role=pd_role,
     )
     try:
         return builder.build(
@@ -187,6 +190,7 @@ def create_sglang_fun_asr_executor(
             gpu_id=gpu_id,
             dtype=dtype,
             server_args_overrides=server_args_overrides,
+            total_gpu_memory_fraction=total_gpu_memory_fraction if pd_role else None,
         )
     finally:
         if builder.draft_checkpoint is not None:

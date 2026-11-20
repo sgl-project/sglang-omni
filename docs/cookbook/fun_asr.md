@@ -39,7 +39,7 @@ sgl-omni serve \
 
 ## Server Configuration
 
-Fun-ASR-Nano runs a single ASR stage on one accelerator.
+The default profile runs a single ASR stage on one accelerator.
 
 ```bash
 sgl-omni serve \
@@ -65,6 +65,16 @@ sgl-omni serve \
 ```
 
 The stage's `gpu` value selects a logical device among the visible NPUs; for example, add `--asr.gpu 1` to select the second visible NPU.
+
+### Experimental Prefill and Decode
+
+Select the CUDA PD profile to run audio encoding and Prefill on visible GPU 0 and Decode on GPU 1.
+
+```bash
+sgl-omni serve --config examples/configs/fun_asr_nano_pd.yaml
+```
+
+Both stages use the same checkpoint, TP=1, one token per KV page, and disabled RadixCache and speculative decoding. The handoff transfers prompt KV, the first sampled token, and the transcription state used by the existing JSON and streaming output paths.
 
 ## Transcribe Audio
 

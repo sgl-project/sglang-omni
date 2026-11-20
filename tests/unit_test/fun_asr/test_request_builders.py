@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 
 import sglang_omni.models.fun_asr.request_builders as request_builders
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.fun_asr.pd import FunASRPDAdapter
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.pd_utils import (
+    DecodeContinuation,
+    ReservedKV,
+    continuation_from_req,
+    req_from_continuation,
+)
 from sglang_omni.utils.audio import audio_fingerprint
 
 AUDIO_PAD = "<|object_ref_start|>"
@@ -240,6 +249,45 @@ def test_fun_asr_result_adapter_decodes_transcript_directly() -> None:
         "skip_special_tokens": True,
         "clean_up_tokenization_spaces": False,
     }
+
+
+def test_fun_asr_pd_continuation_preserves_the_transcript() -> None:
+    tokenizer = FakeTokenizer()
+    request_builder, result_adapter = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer, max_new_tokens=32, feature_extractor=feature_extractor(17)
+    )
+    audio = Path(__file__).parents[2] / "data" / "query_to_draw.wav"
+    data = request_builder(
+        StagePayload(
+            request_id="fun-asr-pd",
+            request=OmniRequest(inputs=str(audio), params={"language": "zh"}),
+            data=None,
+        )
+    )
+    data.streaming_prefix_text = "前缀"
+    data.req.omni_data = data
+    data.req.output_ids.append(20)
+    data.output_ids = data.req.output_ids
+    adapter = FunASRPDAdapter(tokenizer=tokenizer)
+    continuation = DecodeContinuation.decode(
+        continuation_from_req(data.req, "transfer", adapter.build_state).encode()
+    )
+    assert continuation.stage_payload["request"]["inputs"] is None
+    slots = torch.arange(1, len(continuation.origin_input_ids) + 1)
+    pool = ReqToTokenPool(1, 64, "cpu", enable_memory_saver=False)
+    restored = req_from_continuation(
+        continuation,
+        ReservedKV(slots, tuple(slots.tolist()), len(slots)),
+        req_to_token_pool=pool,
+        state_restorer=adapter.restore_state,
+    )
+    assert list(restored.output_ids) == [20]
+    assert restored.multimodal_inputs.mm_items == []
+    expected = result_adapter(data).data
+    resumed = result_adapter(restored.omni_data).data
+    for name in ("text", "duration_s", "language", "audio_tokens"):
+        assert resumed[name] == expected[name]
+    assert resumed["text"] == "前缀你好"
 
 
 def test_fun_asr_result_adapter_returns_the_speculative_acceptance_details() -> None:
