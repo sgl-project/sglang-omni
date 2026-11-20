@@ -40,6 +40,19 @@ func TestMossPlainTextLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	sendAll(t, st, tone(1500*time.Millisecond, 0.3))
+	// A marked-up partial must arrive and come back clean, or the
+	// segment path went unproven (review).
+	select {
+	case ev := <-st.Events():
+		if ev.Kind != asr.EventPartial {
+			t.Fatalf("first event %+v", ev)
+		}
+		if strings.ContainsAny(ev.Text, "[]") || !strings.Contains(ev.Text, "partial") {
+			t.Errorf("partial %q carries markup or lost the text", ev.Text)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no partial: the segment path went unproven")
+	}
 	if sv, ok := st.(asr.Salvager); ok {
 		if text := sv.Salvage(); strings.ContainsAny(text, "[]") {
 			t.Fatalf("Salvage %q carries markup", text)
