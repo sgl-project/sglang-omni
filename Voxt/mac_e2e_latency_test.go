@@ -231,7 +231,11 @@ func TestMacE2EFirstLatency(t *testing.T) {
 			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
 				s.Features.Transcribe.Enhance = false
 				s.Features.Transcribe.ASR = ids[0]
-				s.General.MainLanguage = "zh"
+				if lang := os.Getenv("VOXTNEW_LATENCY_LANG"); lang != "" {
+					s.General.MainLanguage = lang
+				} else {
+					s.General.MainLanguage = "zh"
+				}
 			}, realLocal{hub: hub})
 			a.pumpFor(30*time.Second, func() bool {
 				_, ok := a.featureModel(local.ASR, "transcribe")
@@ -311,7 +315,13 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 		}
 		return a.sess.State.Ended() || (a.sess.State == session.Recording && a.sess.Partial != "")
 	}) || a.sess.State.Ended() {
-		t.Fatalf("%s: no live text (session %s %+v)", name, a.sess.State, a.sess.Problem)
+		if os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
+			t.Fatalf("%s: no live text (session %s %+v)", name, a.sess.State, a.sess.Problem)
+		}
+		// The language matrix records a session that produced no partial:
+		// it still speaks the window and stops on time, so the Final or
+		// the problem is on record too.
+		t.Logf("%s: no live text in the first minute (session %s %+v); continuing without a partial", name, a.sess.State, a.sess.Problem)
 	}
 	st.partial = time.Since(t0)
 	// The live text's updates while the user speaks: their count and the longest wait between two.
@@ -328,7 +338,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	pastesBefore := len(a.pasted())
 	stopped := time.Now()
 	a.stopSession()
-	if !a.pumpFor(time.Minute, func() bool {
+	ended := !a.pumpFor(time.Minute, func() bool {
 		if st.final == 0 && a.sess.Raw != "" {
 			st.final = time.Since(stopped)
 		}
@@ -336,14 +346,18 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 			st.insert = time.Since(stopped)
 		}
 		return a.sess.State.Ended()
-	}) || a.sess.State != session.Done || a.sess.ASR.ID != id {
-		t.Fatalf("%s: end %s %+v on %s", name, a.sess.State, a.sess.Problem, a.sess.ASR.ID)
+	})
+	if ended || (a.sess.State != session.Done || a.sess.ASR.ID != id) {
+		if os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
+			t.Fatalf("%s: end %s %+v on %s", name, a.sess.State, a.sess.Problem, a.sess.ASR.ID)
+		}
+		t.Logf("%s: session ended %s %+v; recording the outcome without a Final", name, a.sess.State, a.sess.Problem)
 	}
 	st.done = time.Since(stopped)
-	if st.final == 0 {
+	if st.final == 0 && os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
 		t.Fatalf("%s: no ASR Final was observed before delivery", name)
 	}
-	if st.insert == 0 {
+	if st.insert == 0 && os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
 		t.Fatalf("%s: no helper paste was observed after the ASR Final", name)
 	}
 	if r, ok := lg.since(id, from); ok {
