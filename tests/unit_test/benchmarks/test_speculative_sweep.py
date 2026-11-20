@@ -7,6 +7,7 @@ import json
 import wave
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -15,7 +16,12 @@ from pydantic import JsonValue
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
-from benchmarks.eval import benchmark_asr_seedtts, speculative_workloads
+from benchmarks.eval import (
+    benchmark_asr_seedtts,
+    speculative_omni,
+    speculative_sweep,
+    speculative_workloads,
+)
 from benchmarks.eval.benchmark_asr_transcribe_diarize import (
     RESULTS_FILE,
     SPEED_RESULTS_FILE,
@@ -773,3 +779,112 @@ def test_the_sweep_refuses_to_start_on_a_bad_setup(
 
     with pytest.raises(SystemExit):
         parse_args(argv)
+
+
+@pytest.mark.parametrize(
+    "workload_name,speed_field",
+    [("omni-mmmu", "speed"), ("omni-mmsu", "speed_metrics")],
+)
+@pytest.mark.parametrize("first_output", [0.02, None])
+def test_omni_sweep_preserves_scoring_denominator_and_missing_first_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    workload_name: str,
+    speed_field: str,
+    first_output: float | None,
+) -> None:
+    """HTTP failures and unparseable answers must stay in the accuracy denominator."""
+    workload = WORKLOADS[workload_name]
+
+    def run_client(command: list[str], log_path: Path, *, check: bool) -> None:
+        directory = Path(command[command.index("--output-dir") + 1])
+        directory.mkdir()
+        assert command[command.index("--model") + 1] == "target-model"
+        assert command[command.index("--port") + 1] == "18700"
+        assert "--stream" in command
+        payload = {
+            "summary": {"total_samples": 4, "correct": 1},
+            speed_field: {
+                "total_requests": 4,
+                "completed_requests": 2,
+                "failed_requests": 2,
+                "throughput_qps": 1.0,
+                "latency_p95_s": 0.2,
+                "text_ttft_p95_s": first_output,
+            },
+        }
+        (directory / workload.results_file).write_text(json.dumps(payload))
+
+    monkeypatch.setattr(speculative_omni, "run_client", run_client)
+    settings = LoadSettings(
+        concurrencies=[1], repeats=2, warmup=True, max_samples=4, client_arguments=[]
+    )
+    loads = speculative_omni.measure_omni(
+        workload, settings, port=18700, model_path="target-model", leg_dir=tmp_path
+    )
+    assert len(loads) == 1
+    assert loads[0].total_requests == 8
+    assert loads[0].failed_requests == 4
+    assert loads[0].accuracy == {"Accuracy": 0.25}
+    assert bool(loads[0].incomplete_reasons) is (first_output is None)
+
+
+def test_omni_sweep_keeps_shared_gpu_processes_out_of_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The shared-host switch must reach the managed server's cleanup boundary."""
+    arguments = Namespace(
+        workload="omni-mmmu", output_dir=tmp_path, skip_gpu_cleanup=True
+    )
+    with (
+        patch.object(speculative_sweep, "managed_omni_server") as server,
+        patch.object(speculative_sweep, "measure_omni", return_value=[]),
+    ):
+        server.return_value.__enter__.side_effect = lambda: (
+            tmp_path / "draft/server.log"
+        ).write_text("")
+        leg = speculative_sweep.run_leg(
+            name="draft",
+            side="draft",
+            port=18700,
+            model_path="model",
+            server_config=tmp_path / "draft.yaml",
+            args=arguments,
+            settings=LoadSettings(
+                concurrencies=[1],
+                repeats=1,
+                warmup=False,
+                max_samples=4,
+                client_arguments=[],
+            ),
+        )
+    assert leg.name == "draft"
+    assert server.call_args.kwargs["wait_for_gpu_release"] is False
+
+
+@pytest.mark.parametrize(
+    "baseline_first_output,draft_first_output,is_worse",
+    [
+        (0.020, 0.024, False),
+        (0.020, 0.025, False),
+        (0.020, 0.0251, True),
+        (0.200, 0.208, False),
+        (0.200, 0.210, False),
+        (0.200, 0.211, True),
+    ],
+)
+def test_first_output_gate_keeps_the_absolute_and_relative_allowances(
+    baseline_first_output: float,
+    draft_first_output: float,
+    is_worse: bool,
+) -> None:
+    """A first-text change within either 5 ms or 5 percent must pass the roadmap gate."""
+    comparison = compare(
+        abba(
+            [load(16, 100.0, 1.0, first_output_latency_p95_s=baseline_first_output)],
+            [load(16, 150.0, 1.0, first_output_latency_p95_s=draft_first_output)],
+        ),
+        k_gain=1.2,
+    )
+    assert comparison.worse_concurrencies == ([16] if is_worse else [])

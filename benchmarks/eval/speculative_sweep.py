@@ -32,12 +32,14 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from benchmarks.benchmarker.utils import managed_omni_server
+from benchmarks.eval.speculative_omni import measure_omni
 from benchmarks.eval.speculative_tts import generate_tts, measure_tts
 from benchmarks.eval.speculative_workloads import (
     HOST,
     WORKLOADS,
     AsrWorkload,
     LoadSettings,
+    OmniWorkload,
     TtsWorkload,
     measure_asr,
     measure_transcribe_diarize,
@@ -85,6 +87,13 @@ DRIVER_CLIENT_FLAGS = (
     "--reuse-asr-results",
     "--asr-results-file",
     "--speed-results-file",
+)
+OMNI_DRIVER_CLIENT_FLAGS = (
+    "--model",
+    "--modalities",
+    "--enable-audio",
+    "--save-audio",
+    "--request-rate",
 )
 TTS_DRIVER_CLIENT_FLAGS = (
     "--model",
@@ -204,11 +213,16 @@ def run_leg(
         host=HOST,
         log_file=server_log,
         server_config=str(server_config),
+        wait_for_gpu_release=not args.skip_gpu_cleanup,
     ):
         startup_s = time.monotonic() - started
         logger.info(f"{name}: server ready in {startup_s:.1f} s")
         if isinstance(workload, AsrWorkload):
             loads = measure_asr(
+                workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
+            )
+        elif isinstance(workload, OmniWorkload):
+            loads = measure_omni(
                 workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
             )
         elif isinstance(workload, TtsWorkload):
@@ -243,6 +257,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--workload", choices=list(WORKLOADS), required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--skip-gpu-cleanup",
+        action="store_true",
+        help="Stop only the managed server; leave other GPU processes alone.",
+    )
     parser.add_argument(
         "--asr-model-path",
         help="ASR model used to score saved TTS audio after all generation legs finish.",
@@ -317,6 +336,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--asr-concurrency must be positive")
     elif args.max_samples is not None and args.max_samples < 1:
         parser.error("--max-samples must be positive")
+    elif isinstance(WORKLOADS[args.workload], OmniWorkload) and any(
+        flag.startswith(argument.split("=")[0])
+        for argument in args.client_args
+        if argument.startswith("--")
+        for flag in OMNI_DRIVER_CLIENT_FLAGS
+    ):
+        parser.error(
+            "Omni client arguments must not override routing, output modality or request load"
+        )
     elif is_tts and any(
         flag.startswith(argument.split("=")[0])
         for argument in args.client_args
@@ -414,6 +442,7 @@ def main() -> None:
             port=asr_port,
             host=HOST,
             log_file=args.output_dir / "asr_server.log",
+            wait_for_gpu_release=not args.skip_gpu_cleanup,
         ):
             for leg in legs:
                 logger.info(f"{leg.name}: scoring saved TTS audio")
