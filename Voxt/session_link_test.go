@@ -93,10 +93,10 @@ func TestResolverSwitch(t *testing.T) {
 		wantMain, wantBack string
 	}{
 		{"off", store.KindRewrite, false, "", "", "deepseek", ""},
-		{"rewrite skips the external API", store.KindRewrite, true, "", "", "deepseek", "custom"},
-		{"transcribe skips the external API", store.KindTranscribe, true, "", "", "deepseek", "custom"},
-		{"the next one does not open", store.KindRewrite, true, "", "custom", "deepseek", "ollama"},
-		{"the model does not open", store.KindRewrite, true, "", "deepseek", "custom", ""},
+		{"rewrite uses the next configured API", store.KindRewrite, true, "", "", "deepseek", "openai"},
+		{"transcribe uses the next configured API", store.KindTranscribe, true, "", "", "deepseek", "openai"},
+		{"the next one does not open", store.KindRewrite, true, "", "openai", "deepseek", "custom"},
+		{"the model does not open", store.KindRewrite, true, "", "deepseek", "openai", ""},
 		{"translate's own external fallback first", store.KindTranslate, true, "openai", "", "deepseek", "openai"},
 		{"translate's fallback does not open", store.KindTranslate, true, "openai", "openai", "deepseek", "custom"},
 	} {
@@ -118,10 +118,9 @@ func TestResolverSwitch(t *testing.T) {
 	}
 }
 
-// TestResolverSwitchKeepsTextOnTheMac: with only external APIs besides
-// the feature's own model, the switch finds no fallback, so a failure
-// never sends the text to a provider the feature did not choose.
-func TestResolverSwitchKeepsTextOnTheMac(t *testing.T) {
+// TestResolverSwitchUsesRemoteAPI: with no local server after the chosen
+// model, the switch uses the next configured external API.
+func TestResolverSwitchUsesRemoteAPI(t *testing.T) {
 	models := []local.Model{{Kind: local.LLM, ID: "ollama"}, {Kind: local.LLM, ID: "deepseek"}, {Kind: local.LLM, ID: "openai"}}
 	s := settings.Defaults()
 	s.Models.LLMSwitch = true
@@ -131,8 +130,8 @@ func TestResolverSwitchKeepsTextOnTheMac(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if svc.LLMInfo.ID != "ollama" || svc.Fallback != nil {
-		t.Errorf("model %q, fallback %q; want ollama and none: Transcribe's text would go to an external API it did not choose", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+	if svc.LLMInfo.ID != "ollama" || svc.FallbackInfo.ID != "deepseek" || svc.Fallback == nil {
+		t.Errorf("model %q, fallback %q; want ollama and deepseek", svc.LLMInfo.ID, svc.FallbackInfo.ID)
 	}
 }
 
