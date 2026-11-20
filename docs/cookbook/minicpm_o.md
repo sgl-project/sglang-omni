@@ -5,7 +5,7 @@
 | Mode | Endpoint | Use it for |
 |---|---|---|
 | Chat | `/v1/chat/completions` | One request, one reply, in text or speech |
-| Text to speech | `/v1/audio/speech` | Reading a given text aloud |
+| Text to speech | `/v1/audio/speech` | Generate speech from text |
 | Full duplex | `/v1/realtime` (WebSocket) | A live voice or video call where the model listens and speaks at the same time |
 
 ## Quick start
@@ -28,7 +28,7 @@ In another terminal, check readiness:
 curl -fS http://localhost:8000/health
 ```
 
-The server is ready when this returns HTTP 200 with `"status": "healthy"`. While it starts, the request returns HTTP 503 or the connection is refused.
+The server is ready when this returns HTTP 200 with `"status": "healthy"`. During startup, the endpoint may return HTTP 503 or refuse the connection.
 
 ### Send a chat request
 
@@ -59,7 +59,7 @@ For video input, use inline `video_url` content parts or the top-level `videos` 
 
 ## Text to speech
 
-The speech server also reads a given text aloud on `/v1/audio/speech`; [Non-streaming Speech](../basic_usage/tts.md#non-streaming-speech) has the request format. Set `language` to `Chinese` for Chinese text, and pass a base64 audio data URI as `ref_audio` to clone a voice. The output is non-streaming, and sampling fields such as `temperature`, `top_p` and `max_new_tokens` apply to the Talker.
+Use `/v1/audio/speech` to generate speech from text. In the shared [cURL example](../basic_usage/tts.md#use-curl), omit the Qwen3-TTS-specific `model` and `voice` fields; MiniCPM-o uses the served model and default voice. Set `language` to `Chinese` for Chinese text, or provide a base64 audio data URI as `ref_audio` for voice cloning. Output is non-streaming, and sampling fields such as `temperature`, `top_p`, and `max_new_tokens` apply to the Talker.
 
 ## Full duplex
 
@@ -79,7 +79,7 @@ Once the terminal prints `Running on`, open <http://localhost:8080> and click **
 
 ### Realtime-Venus checkpoints
 
-[Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) is a separate pair of checkpoints that inclusionAI fine-tuned from MiniCPM-o 4.5: Realtime-Venus-Omni for audio-visual full-duplex calls and Realtime-Venus-Audio for audio-only chat and calls. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
+[Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) provides two MiniCPM-o 4.5 fine-tuned checkpoints: Realtime-Venus-Omni for audio-video calls and Realtime-Venus-Audio for audio-only conversations. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
 
 Download them with the repository's script, which keeps the shared `config.yaml` beside the model directories. `--model audio` downloads Realtime-Venus-Audio instead.
 
