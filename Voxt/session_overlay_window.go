@@ -149,6 +149,11 @@ func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) myg
 	return opts
 }
 
+func (a *app) saveCardDrag() {
+	a.ov.cardDragged = a.ov.dragged
+	a.ov.cardDraggedSet = true
+}
+
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
 	a.paceDraft()
@@ -159,10 +164,10 @@ func (a *app) overlaySync() {
 	if mode == ovAnswer && a.ov.mode != ovAnswer && a.ov.cardDraggedSet {
 		a.ov.dragged = a.ov.cardDragged
 	} else if mode != ovAnswer && a.ov.mode == ovAnswer {
-		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
+		a.saveCardDrag()
 	}
 	if (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && (mode == ovHidden || mode == ovNotice) && !a.ov.cardDraggedSet {
-		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
+		a.saveCardDrag()
 	}
 	if mode == ovHidden {
 		a.ov.mode, a.ov.shown = mode, false
@@ -283,7 +288,7 @@ func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
 	}
 	if a.ov.mode == ovAnswer {
-		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
+		a.saveCardDrag()
 	}
 	a.syncLangMenu()
 }
@@ -292,7 +297,7 @@ func (a *app) overlayDraggedAt(bounds mygo.Rectangle) {
 	x, y := layout.Place(a.ov.area, a.prefs.Overlay, bounds.Width, bounds.Height)
 	a.ov.dragged.x, a.ov.dragged.y = bounds.X-x, bounds.Y-y
 	if a.ov.mode == ovAnswer {
-		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
+		a.saveCardDrag()
 	}
 }
 

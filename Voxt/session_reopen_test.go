@@ -301,9 +301,9 @@ func TestReopenCardAfterRestart(t *testing.T) {
 	}
 }
 
-// A window restored after an app restart can hold a different mode, answer
-// length, or size setting from the new card. Its saved center and pinned
-// edge are the user's position; the size difference is not a drag offset.
+// A new native window can report a different content size from the new card.
+// Its actual center and pinned edge determine the user's position; the size
+// difference itself is not a drag offset.
 func TestRestoredCardFrameAllowsNewContentSize(t *testing.T) {
 	for _, test := range []struct {
 		name   string
