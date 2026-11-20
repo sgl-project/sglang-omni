@@ -1017,30 +1017,30 @@ def batch_audio_encoder_payloads(
 # ---------------------------------------------------------------------------
 
 
-def fixed_team_thread_pool(
-    *, thread_count: int, intraop_threads: int, thread_name_prefix: str
+def thread_pool_with_intraop_threads(
+    *, max_workers: int, intraop_threads: int, thread_name_prefix: str
 ) -> ThreadPoolExecutor:
-    """Start thread_count threads now, each on an OpenMP team of intraop_threads, and leave the team that threads started later take as it was."""
+    """Start max_workers threads now, each running torch ops on intraop_threads threads, and leave threads started later the process's intra-op count."""
     with ThreadPoolExecutor(max_workers=1) as probe_executor:
         process_intraop_threads = probe_executor.submit(torch.get_num_threads).result()
 
     def start_thread() -> None:
         name_native_thread()
-        # note (ratish): a thread takes the process's team at its first parallel work, overwriting any size set before it, so it settles that team first.
+        # note (ratish): torch gives a thread the process's intra-op count at its first parallel op, replacing a count set before, so the thread reads its count first.
         if torch.get_num_threads() != intraop_threads:
             torch.set_num_threads(intraop_threads)
         else:
             pass
 
     thread_pool = ThreadPoolExecutor(
-        max_workers=thread_count,
+        max_workers=max_workers,
         thread_name_prefix=thread_name_prefix,
         initializer=start_thread,
     )
     # note (ratish): a pool starts a thread only for work no idle thread can take, so work that waits for every thread starts them all now.
-    threads_started = threading.Barrier(thread_count)
+    threads_started = threading.Barrier(max_workers)
     for start_future in [
-        thread_pool.submit(threads_started.wait) for _ in range(thread_count)
+        thread_pool.submit(threads_started.wait) for _ in range(max_workers)
     ]:
         start_future.result()
     if intraop_threads != process_intraop_threads:
@@ -1074,19 +1074,19 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
             thread_name_prefix="prep-video",
             initializer=name_native_thread,
         )
-        # note (ratish): a lone video's frame slices keep every frame thread busy at once, so the frame threads split the stage's CPUs, each at most the stage's own team.
+        # note (ratish): a lone video's frame slices keep every frame thread busy at once, so the frame threads split the stage's CPUs, each with at most the stage's intra-op threads.
         frame_worker_count = min(video_request_worker_count, stage_cpu_count)
         video_intraop_threads = min(
             stage_intraop_threads, stage_cpu_count // frame_worker_count
         )
-        self.media_executor = fixed_team_thread_pool(
-            thread_count=video_request_worker_count,
+        self.media_executor = thread_pool_with_intraop_threads(
+            max_workers=video_request_worker_count,
             intraop_threads=video_intraop_threads,
             thread_name_prefix="prep-media",
         )
         self.frame_pool = FramePool(
-            executor=fixed_team_thread_pool(
-                thread_count=frame_worker_count,
+            executor=thread_pool_with_intraop_threads(
+                max_workers=frame_worker_count,
                 intraop_threads=video_intraop_threads,
                 thread_name_prefix="prep-frames",
             ),

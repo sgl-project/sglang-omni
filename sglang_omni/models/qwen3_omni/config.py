@@ -36,7 +36,6 @@ TALKER_START_MIN_CHUNKS = 1
 
 TALKER_MAX_RUNNING_REQUESTS = 32
 
-# note (ratish): the video requests preprocessing runs at once, as measured on one H200 at Video-MME c16.
 PREPROCESSING_VIDEO_REQUESTS = 8
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR

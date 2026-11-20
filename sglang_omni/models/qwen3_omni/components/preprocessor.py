@@ -1063,7 +1063,7 @@ class Qwen3OmniPreprocessor:
                 else None
             )
         else:
-            # note (ratish): on the video lane the processor runs on a frame thread, so its OpenMP work counts among the lane's, and this thread hashes the frames beside it.
+            # note (ratish): on the video lane the processor runs on a frame thread, so its intra-op threads count among the lane's, and this thread hashes the frames beside it.
             processor_future = video_lane.frame_pool.executor.submit(run_processor)
             try:
                 video_cache_key = compute_video_cache_key(videos) if videos else None

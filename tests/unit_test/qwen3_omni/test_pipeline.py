@@ -3109,16 +3109,16 @@ def test_preprocessing_video_lane_splits_the_stage_cpus_among_its_threads(
     }
 
 
-def test_preprocessing_video_lane_threads_keep_their_team_and_later_threads_the_process_team() -> (
+def test_preprocessing_video_lane_leaves_later_threads_the_process_intraop_threads() -> (
     None
 ):
-    """Video requests set the process-wide thread count, so a thread started after them took a video's team instead of the stage's."""
+    """Video requests set the process-wide intra-op thread count, so a thread started after them took a video's count instead of the stage's."""
     with ThreadPoolExecutor(max_workers=1) as earlier_executor:
         process_intraop_threads = earlier_executor.submit(
             torch.get_num_threads
         ).result()
     lane_intraop_threads = process_intraop_threads + 1
-    teams: dict[str, int] = {}
+    intraop_threads_seen: dict[str, int] = {}
 
     class Preprocessor:
         async def process(
@@ -3128,12 +3128,12 @@ def test_preprocessing_video_lane_threads_keep_their_team_and_later_threads_the_
             video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
             if video_lane is None:
-                teams["scheduler"] = torch.get_num_threads()
+                intraop_threads_seen["scheduler"] = torch.get_num_threads()
             else:
-                teams["frames"] = video_lane.frame_pool.executor.submit(
+                intraop_threads_seen["frames"] = video_lane.frame_pool.executor.submit(
                     torch.get_num_threads
                 ).result()
-                teams["media"] = video_lane.media_executor.submit(
+                intraop_threads_seen["media"] = video_lane.media_executor.submit(
                     torch.get_num_threads
                 ).result()
             return payload.request_id
@@ -3156,9 +3156,11 @@ def test_preprocessing_video_lane_threads_keep_their_team_and_later_threads_the_
         scheduler.stop()
         worker.join(timeout=3)
     with ThreadPoolExecutor(max_workers=1) as later_executor:
-        teams["later"] = later_executor.submit(torch.get_num_threads).result()
+        intraop_threads_seen["later"] = later_executor.submit(
+            torch.get_num_threads
+        ).result()
 
-    assert teams == {
+    assert intraop_threads_seen == {
         "frames": lane_intraop_threads,
         "media": lane_intraop_threads,
         "scheduler": process_intraop_threads,
