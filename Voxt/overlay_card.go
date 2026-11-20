@@ -72,23 +72,23 @@ func sessionCardBlockText(card *sessionCardViewState, block sessionCardBlock) (t
 	bodyWidth := float32(layout.CardSizes[card.SizeStep].BodyW())
 	switch block.Kind {
 	case sessionCardProblem:
-		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth - layout.ProblemIcon - layout.ProblemGap}, ovSized{}, ovSized{}
+		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth - layout.ProblemIcon - layout.ProblemGap, ""}, ovSized{}, ovSized{}
 	case sessionCardProblemMore:
-		return ovSized{block.Text, 12, 0, bodyWidth}, ovSized{}, ovSized{}
+		return ovSized{block.Text, 12, 0, bodyWidth, ""}, ovSized{}, ovSized{}
 	case sessionCardSource:
-		return ovSized{block.Text, 13, 0, bodyWidth}, ovSized{}, ovSized{}
+		return ovSized{block.Text, 13, 0, bodyWidth, ""}, ovSized{}, ovSized{}
 	case sessionCardBubble:
 		inner := float32(layout.CardSizes[card.SizeStep].BubbleW() - 2*layout.BubblePadX)
-		text = ovSized{block.Text, layout.BubbleTextSize, 500, inner}
+		text = ovSized{block.Text, layout.BubbleTextSize, 500, inner, ""}
 		if block.Title != "" {
-			title = ovSized{block.Title, layout.BubbleTitleSize, 600, 0}
+			title = ovSized{block.Title, layout.BubbleTitleSize, 600, 0, ""}
 		}
 		if block.Quote != "" {
-			quote = ovSized{block.Quote, quoteSize, 0, inner}
+			quote = ovSized{block.Quote, quoteSize, 0, inner, ""}
 		}
 		return text, title, quote
 	default:
-		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth}, ovSized{}, ovSized{}
+		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth, ""}, ovSized{}, ovSized{}
 	}
 }
 

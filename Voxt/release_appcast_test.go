@@ -11,6 +11,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -225,14 +226,53 @@ const releaseAppcastXML = `<?xml version="1.0" encoding="utf-8"?>
 </rss>
 `
 
+func TestNightlyVulnerabilityScanUsesDarwin(t *testing.T) {
+	data, err := os.ReadFile("../.github/workflows/voxt-nightly.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	start := strings.Index(workflow, "  vulnerabilities:\n")
+	end := strings.Index(workflow, "\n  nightly:\n")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("vulnerability job not found")
+	}
+	job := workflow[start:end]
+	if !strings.Contains(job, "runs-on: macos-26") {
+		t.Errorf("vulnerability job must scan the release's Darwin arm64 packages:\n%s", job)
+	}
+}
+
+func TestNightlyArtifactLookupUsesPackageResult(t *testing.T) {
+	data, err := os.ReadFile("docs/release.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(data)
+	for _, want := range []string{
+		"--branch main",
+		"voxt-nightly.yaml --branch main --event schedule --status completed",
+		"--event workflow_dispatch",
+		`select(.name == "nightly / Voxt release package" and .conclusion == "success")`,
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("release instructions do not contain %q", want)
+		}
+	}
+	if strings.Contains(doc, "--workflow voxt-nightly.yaml --status success") {
+		t.Error("release instructions still require the vulnerability job to succeed")
+	}
+}
+
 func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 	out, err := runReleaseAppcast(t, releaseAppcastXML, "items")
 	if want := "200000299 arm64\n101600399 none\n"; err != nil || out != want {
 		t.Errorf("items: %v\n got %q\nwant %q", err, out, want)
 	}
 	// voxt-appcast.yaml makes the entry the channel's latest only when the
-	// appcasts' item has its hardware requirement. An API reply is no proof
-	// that Voxt 1.x's XML carries it.
+	// appcasts' item has its hardware requirement, or when an ok reply kept it
+	// and the appcast already renders it for another item. An API reply alone
+	// is no proof that Voxt 1.x's XML carries it.
 	const voxt1Reply = `{"ok":true,"data":{"channel":"beta","version":"2.0.2","packageURL":"https://voxt.actnow.dev/p","zipURL":"https://voxt.actnow.dev/z","dmgURL":"https://voxt.actnow.dev/d","sha256":"ab","size":1,"updated":true}}`
 	withoutElement := strings.ReplaceAll(releaseAppcastXML, "<sparkle:hardwareRequirements> arm64 </sparkle:hardwareRequirements>", "")
 	for _, c := range []struct {
@@ -247,6 +287,7 @@ func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 		{"not ok", "200000299", `{"ok":false,"data":{"hardwareRequirements":"arm64"}}`, withoutElement, false},
 		{"not JSON", "200000299", `"hardwareRequirements":"arm64"`, withoutElement, false},
 		{"another build's", "200000399", voxt1Reply, releaseAppcastXML, false},
+		{"a new build, kept in the reply and rendered for another item", "200000399", strings.Replace(voxt1Reply, `"updated":true`, `"updated":true,"hardwareRequirements": "arm64"`, 1), releaseAppcastXML, true},
 		{"another requirement", "200000299", `{"ok":true,"data":{"hardwareRequirements":"x86_64"}}`, withoutElement, false},
 	} {
 		_, err := runReleaseAppcast(t, c.appcast, "hardware-kept", c.build, c.reply)
@@ -259,5 +300,42 @@ func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 		case !c.kept && errors.As(err, &exit) && !strings.Contains(string(exit.Stderr), "does not output hardwareRequirements yet"):
 			t.Errorf("%s: hardware-kept says %q, not why it stops", c.name, exit.Stderr)
 		}
+	}
+}
+
+// A beta's version exists only in CI, and MyGo signs its update only with
+// notes under that exact heading (third_party/mygo/cmd/mygo/updates.go,
+// releaseNotes): beta-changelog gives it Unreleased's notes, else a line.
+func TestReleaseAppcastBetaChangelog(t *testing.T) {
+	const version = "2.1.2-beta.20261118.74"
+	const released = "## [2.1.1] - 2026-11-17\n\n- Old.\n"
+	section := func(changelog string) string {
+		_, rest, ok := strings.Cut(changelog, "\n## ["+version+"]\n")
+		if !ok {
+			t.Fatalf("no %s heading in:\n%s", version, changelog)
+		}
+		notes, _, _ := strings.Cut(rest, "\n## ")
+		return strings.TrimSpace(notes)
+	}
+	for _, test := range []struct{ name, changelog, want string }{
+		{"no Unreleased", "# Changelog\n\nIntro.\n\n" + released, "A beta of Voxt built from main at abc123."},
+		{"Unreleased", "# Changelog\n\n## [Unreleased]\n\n- New \\d.\n\n" + released, "- New \\d."},
+		{"no section yet", "# Changelog\n", "A beta of Voxt built from main at abc123."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, err := runReleaseAppcast(t, test.changelog, "beta-changelog", version, "abc123")
+			if err != nil {
+				t.Fatalf("beta-changelog: %v", err)
+			}
+			if got := section(out); got != test.want {
+				t.Errorf("the beta's notes are %q, want %q", got, test.want)
+			}
+			if !strings.HasPrefix(out, "# Changelog\n") || strings.Contains(test.changelog, released) != strings.Contains(out, released) {
+				t.Errorf("the other sections changed:\n%s", out)
+			}
+		})
+	}
+	if out, err := runReleaseAppcast(t, "", "beta-changelog", "2.1.2", "abc123"); err == nil {
+		t.Errorf("a release version got a beta section:\n%s", out)
 	}
 }

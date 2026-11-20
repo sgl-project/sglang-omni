@@ -70,10 +70,8 @@ const (
 	LinesTextW = 480
 	LinesW     = LinesTextW + 2*LivePadX
 	LinesMax   = 10
-	// After the waveform in the row, Gap before each, when they show:
-	// the time, and the matched group's name (SceneSize, at most
-	// SceneMaxW wide).
-	TimeW     = 30
+	// After the waveform in the row, Gap before the matched group's name
+	// (SceneSize, at most SceneMaxW wide).
 	SceneSize = 11
 	SceneMaxW = 88
 	// A notice: the icon's slot, Gap, its line (NoticeSize), the
@@ -110,14 +108,11 @@ func Place(wa mygo.Rectangle, o settings.Overlay, w, h int) (int, int) {
 	return x, y
 }
 
-// RowWidth is the width of the pill's row: the icon and the waveform, the
-// time when it shows, the group's name when one matched (scene DIPs
-// wide, at most SceneMaxW; 0 for none).
-func RowWidth(showTime bool, scene float32) int {
+// RowWidth is the width of the pill's row before the recording time: the
+// icon and waveform, then the group's name when one matched (scene DIPs wide,
+// at most SceneMaxW; 0 for none).
+func RowWidth(scene float32) int {
 	w := RowW
-	if showTime {
-		w += Gap + TimeW
-	}
 	if scene > 0 {
 		w += Gap + int(math.Ceil(float64(min(scene, SceneMaxW))))
 	}
@@ -194,10 +189,9 @@ const (
 	CardTextSize   = 14
 	CardTextWeight = 500
 	CardBtn        = 24
-	CardBtnGap     = 6 // between the header's icon buttons (CardTools)
 	CardBtnIcon    = 15
-	// The meeting card's size button sits in its corner, in the padding
-	// under the text (CardPadY), CardSizeBtnInset from the edges.
+	// The size button sits in the card's corner, in the padding under
+	// the text (CardPadY), CardSizeBtnInset from the edges.
 	CardSizeBtn      = 16
 	CardSizeBtnIcon  = 12
 	CardSizeBtnInset = 1
@@ -355,7 +349,3 @@ const (
 func FaceAlpha(o settings.Overlay) float32 {
 	return float32(min(max(o.Opacity, 0.5), 1))
 }
-
-// CardTools is how wide n of a card header's icon buttons are, side by
-// side.
-func CardTools(n int) int { return n*CardBtn + (n-1)*CardBtnGap }

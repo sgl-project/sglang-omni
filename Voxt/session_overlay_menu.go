@@ -50,7 +50,7 @@ func (a *app) syncLangMenu() {
 	} else if a.answer.ui.thinkMenu {
 		frame = thinkMenuFrame(frame, a.prefs.Overlay.Position == "top", len(state.Options))
 	} else if a.ov.projection.view.Card.ShowThinking {
-		frame.X -= layout.CardBtn + layout.CardBtnGap
+		frame.X -= layout.CardBtn + layout.CardHeadGap
 	}
 	moved := frame != menu.frame || !menu.shown
 	menu.frame = frame

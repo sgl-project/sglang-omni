@@ -63,10 +63,11 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 [voxt-nightly.yaml](../../.github/workflows/voxt-nightly.yaml) 每天 12:34 UTC（北京时间 20:34）在 main 上先跑 Voxt CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)，Go 测试）和 Mac CI（[mac-ci.yaml](../../.github/workflows/mac-ci.yaml)，原生运行时和 Swift 测试），两个都通过才跑上面的工作流，版本号是 mygo.json 的版本加 `-nightly.YYYYMMDD`（UTC 日期）。它和 tag 发布一样进 `voxt-release` 环境，用 Developer ID 签名、公证，`release-verify.sh developer-id` 全部通过，只是不建 Release。改了 voxt-nightly.yaml 的 PR 也跑它：挂 `run-mac-ci` 才跑 Mac 测试，挂 `run-lint-only` 跳过 Mac 测试，不挂 CI 标签则 Mac CI 报红、不构建；构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行时和 main 上一样签名、公证（环境要放行那个分支，见上）。GitHub 不保证定时任务准点开始，负载高时会晚一些；漏掉的一次可以在 Actions 页面从 main 手动运行。
 
-dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天（app 的 ZIP 只有 tag 的 Release 才有）：
+dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-nightly.YYYYMMDD-arm64`，保留 14 天（app 的 ZIP 只有 tag 的 Release 才有）。漏洞扫描失败不会阻止打包，所以一次运行的整体结果可能是失败，但 dmg 已经生成。先列出 main 上已完成的定时运行，再确认 `nightly / Voxt release package` 成功。`--event schedule` 会排除 PR 的 ad-hoc 构建，包括 fork 的 main 分支发起的构建。手动在 main 上补跑时，把它改成 `--event workflow_dispatch`：
 
 ```bash
-gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --status success --limit 1
+gh run list --repo sgl-project/sglang-omni --workflow voxt-nightly.yaml --branch main --event schedule --status completed --limit 10
+gh run view RUN_ID --repo sgl-project/sglang-omni --json jobs --jq '.jobs[] | select(.name == "nightly / Voxt release package" and .conclusion == "success")'
 gh run download RUN_ID --repo sgl-project/sglang-omni
 ```
 
@@ -116,7 +117,7 @@ gh workflow run voxt-upgrade-test.yaml --repo sgl-project/sglang-omni -f from_ta
 
 ## Beta（GitHub Actions）
 
-[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本把补丁号加一，再加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）：发完 2.0.3 后的 beta 是 `2.0.4-beta.…`，比 2.0.3 新、比 2.0.4 旧，app 的“Beta 更新”才会提供它（#3850）。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。main 上的 beta 还发成 GitHub 的 prerelease `voxt-vX.Y.Z-beta.YYYYMMDD.N`（附 dmg 和 `.sha256`，说明是 CHANGELOG 的 Unreleased 一节，不设为 Latest），只留最新的 5 个，更早的连同 tag 一起删掉；Voxt Release 随后调用 Voxt Appcast 的 Voxt 2 job 发布签名清单，打开“Beta 更新”的 app 在应用内下载并安装，不用登录 GitHub。这个 tag 由工作流的 token 创建，不会触发正式版的构建；正式版检查“比所有 voxt-v tag 新”时只看 X.Y.Z 形式的 tag。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行（Actions → Voxt Beta → Run workflow，选那个分支）时和 main 上一样签名、公证，版本号用那个分支 mygo.json 的版本（环境要放行那个分支，见上）。
+[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本把补丁号加一，再加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）：发完 2.0.3 后的 beta 是 `2.0.4-beta.…`，比 2.0.3 新、比 2.0.4 旧，app 的“Beta 更新”才会提供它（#3850）。MyGo 只用 CHANGELOG 里版本号完全对上的一节给更新包签名，beta 的版本号只在 CI 里才有，所以工作流先用 `scripts/release-appcast.sh beta-changelog` 在 CI 的工作区里给它加一节（内容取 Unreleased，没有就写一句“从 main 的某个提交构建”），仓库里的 CHANGELOG 不变。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。main 上的 beta 还发成 GitHub 的 prerelease `voxt-vX.Y.Z-beta.YYYYMMDD.N`（附 dmg 和 `.sha256`，说明是 CHANGELOG 的 Unreleased 一节，不设为 Latest），只留最新的 5 个，更早的连同 tag 一起删掉；Voxt Release 随后调用 Voxt Appcast 的 Voxt 2 job 发布签名清单，打开“Beta 更新”的 app 在应用内下载并安装，不用登录 GitHub。这个 tag 由工作流的 token 创建，不会触发正式版的构建；正式版检查“比所有 voxt-v tag 新”时只看 X.Y.Z 形式的 tag。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行（Actions → Voxt Beta → Run workflow，选那个分支）时和 main 上一样签名、公证，版本号用那个分支 mygo.json 的版本（环境要放行那个分支，见上）。
 
 和正式版、nightly 不同（它们每次从头编），beta 用 GitHub Actions 的缓存复用 Omni 运行时，再交给 `release.sh --runtimes`：缓存的是 `build-omni.sh --out` 编出来的成品，缓存键是 `sglang_omni_mlx/native/`、`build-omni.sh` 和 runner 上 Xcode 版本的哈希。成品和 app 的版本号、签名身份无关（它自己是 ad hoc 签名，mygo build 给 app 里的那份重新签名），源码没变就直接用，变了就从头编。
 
@@ -245,7 +246,11 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
    ```
    app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007），`release.sh` 的构建再改成 Voxt 1.x 的构建号（见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)）。
 2. **写 CHANGELOG.md**：把最上面的 `## [Unreleased]` 改成 `## [2.0.1] - 2026-11-20`（版本号和 mygo.json 完全一样），英文在前（`### Added`、`### Fixed`…），然后是 `### 中文`，下面用 `####` 小标题（`#### 新增`、`#### 修复`…）。更新窗口显示整节；官网用同一节：发布脚本从第一个含汉字的 `###` 标题（`### 中文`，这个标题本身去掉）分成 `notes`（英文）和 `notesZh`，后台还要求清单里的 notes（整节）包含英文部分。`--publish` 时没有这一节就失败。
-3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过，在 mac-air 上跑一遍回归（`scripts/mac-regress.sh`，[manual-test.md](manual-test.md) §10）。
+3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过。正式版打 tag 之前做三件事，beta 不用：
+   - 跑 `scripts/release-preflight.sh 2.0.1`（只读，不构建、不签名、不上传、不打 tag）：检查两处版本号、CHANGELOG 里这个版本的一节有英文和中文、六个页面的下载链接是这个版本，列出上一个正式版以来 CHANGELOG 没提到的 `[Voxt]` PR，并报 Developer ID 证书的到期日。有 `FAIL` 的行就先改掉。
+   - 在 Mac 上跑一遍回归 `scripts/mac-regress.sh`（[manual-test.md](manual-test.md) §10）和 `scripts/mac-e2e.sh`。
+   - 列出不在每个 PR 上自动检查的行为：`awk -F'\t' 'NR>1 && ($2!="L" || $4!="none")' testdata/behaviours.tsv`。按每行的 check（脚本、测试或 manual-test.md 的步骤）在 Mac 上过一遍，gap 一列写的是还要用手看的部分。
+   - 把 preflight 的输出、两个脚本结尾的结果表和上面这张表的结果贴进发版 PR。
 4. 从 Linux 同步到发布用的 checkout 并构建（§1.1 的 `mac-gui.sh`；更新私钥 `release.sh` 自己从 `~/.config/voxtnew-release/` 读，§1.3）：
    ```sh
    # 先不发布：构建、公证、检查、actnow-publish.sh --dry-run
