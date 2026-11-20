@@ -54,7 +54,8 @@ type rewriteBox struct {
 	// (boxDraggedTo): it keeps that place until it closes.
 	dragged struct{ x, y int }
 	// raise brings the window in front of the windows over it at the
-	// next boxSync: the Rewrite shortcut opened the card or asked in it.
+	// next boxSync: each press of the Rewrite shortcut on the card (it
+	// opens it, sends, asks in it) is a click on it.
 	raise bool
 	// session is the recording session's id ("" when it ended); sending
 	// a resend's after a failure.
@@ -271,6 +272,15 @@ func (a *app) dropBox() {
 	// A send queued behind a picture's conversion dies with the box: an
 	// old life's conversion landing later must not send the new life.
 	a.boxSendQueued = false
+}
+
+// boxShortcutSend is the Rewrite shortcut pressed again, or its hold let
+// go, while the card records: like a click on the card, it brings the
+// card in front of the windows over it; then it sends (boxSend).
+func (a *app) boxShortcutSend() {
+	a.box.raise = true
+	a.boxSync()
+	a.boxSend()
 }
 
 // boxSend is Enter or the shortcut's stop in the box: while it records,
