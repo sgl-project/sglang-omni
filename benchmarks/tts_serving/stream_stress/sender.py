@@ -16,8 +16,8 @@ from typing import Any
 
 import aiohttp
 
-from stress_test_pack.config_parser import StressConfig
-from stress_test_pack.responder import Responder, StreamRecorder
+from benchmarks.tts_serving.stream_stress.config_parser import StressConfig
+from benchmarks.tts_serving.stream_stress.responder import Responder, StreamRecorder
 
 LOGGER = logging.getLogger(__name__)
 

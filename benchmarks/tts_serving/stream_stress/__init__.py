@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Streaming TTS stress test: parser, sender, responder, and builder."""
 
-from stress_test_pack.config_parser import (
+from benchmarks.tts_serving.stream_stress.config_parser import (
     CorpusEntry,
     StressConfig,
     build_arg_parser,
     parse_config,
 )
-from stress_test_pack.responder import (
+from benchmarks.tts_serving.stream_stress.responder import (
     AggregateReport,
     ChunkRecord,
     RequestRecord,

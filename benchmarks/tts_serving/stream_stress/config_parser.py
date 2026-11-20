@@ -174,7 +174,7 @@ def redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="tts-stream-stress",
+        prog="benchmarks-tts-stream-stress",
         description=(
             "Stream TTS load test: drive /v1/audio/speech at a target QPM and "
             "write per-chunk TTFA, RTF, and stream-health metrics as jsonl."

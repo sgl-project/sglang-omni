@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """CLI entry point wiring the parser, sender, responder, and builder together.
 
-Run as python -m stress_test_pack.run_stress from the workspace root.
+Run as python -m benchmarks.tts_serving.stream_stress.run_stress from the repository root.
 """
 
 from __future__ import annotations
@@ -13,16 +13,20 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from stress_test_pack.builder import (
+from benchmarks.tts_serving.stream_stress.builder import (
     print_console_report,
     write_jsonl,
     write_summary_json,
 )
-from stress_test_pack.config_parser import StressConfig, describe_plan, parse_config
-from stress_test_pack.responder import Responder
+from benchmarks.tts_serving.stream_stress.config_parser import (
+    StressConfig,
+    describe_plan,
+    parse_config,
+)
+from benchmarks.tts_serving.stream_stress.responder import Responder
 
 try:
-    from stress_test_pack.sender import StopSignal, run_load
+    from benchmarks.tts_serving.stream_stress.sender import StopSignal, run_load
 except ImportError as exc:
     raise SystemExit(f"cannot start the stress client: {exc}") from None
 

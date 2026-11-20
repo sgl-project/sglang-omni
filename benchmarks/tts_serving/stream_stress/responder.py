@@ -11,7 +11,7 @@ import statistics
 from dataclasses import dataclass
 from typing import Any
 
-from stress_test_pack.config_parser import StressConfig
+from benchmarks.tts_serving.stream_stress.config_parser import StressConfig
 
 LOGGER = logging.getLogger(__name__)
 WAV_HEADER_BYTES = 44
