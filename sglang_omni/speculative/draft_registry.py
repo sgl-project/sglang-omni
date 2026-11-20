@@ -96,6 +96,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wilsonzheng0327/Fun-ASR-Nano-dflash",
         draft_model_revision="b3cb091f554c88274378d549d7e7d3c5a13052e6",
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="AutoArk-AI/ARK-ASR-3B",

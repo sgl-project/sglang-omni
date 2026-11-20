@@ -128,10 +128,13 @@ text; it does not change the final transcript.
 
 ## Speculative Decoding
 
-The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash) on one CUDA GPU. The example config pins the draft revision:
+On one CUDA GPU, Fun-ASR-Nano serves with its DFlash draft, [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `FunAudioLLM/Fun-ASR-Nano-2512-hf`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Apple Silicon, Ascend NPUs and other platforms serve without the draft, and so do a stage with `tp_size` above 1 and a copy outside the Hugging Face cache. The [two-replica H100 MPS profile](../basic_usage/mps_dp.md) turns it off, since it was validated without it. To serve without the draft, add `--asr.engine.disable_speculative_decoding true`:
 
 ```bash
-sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
 ```
 
 - **Accuracy.** The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.
