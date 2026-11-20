@@ -68,9 +68,14 @@ func requestsInputTemplate(input []string, name string) bool {
 	if !named {
 		return false
 	}
+	question := strings.ContainsAny(request, "?？")
 	for _, action := range []string{"写", "生成", "创建", "输出", "返回", "给", "用", "改", "按", "做"} {
 		actionAt := strings.Index(request, action)
 		if actionAt < 0 {
+			continue
+		}
+		prefix := strings.TrimSuffix(request[:actionAt], "使")
+		if strings.HasSuffix(prefix, "不要") || strings.HasSuffix(prefix, "不用") || strings.HasSuffix(prefix, "别") || question && action == "用" {
 			continue
 		}
 		rest := request[actionAt+len(action):]
@@ -97,13 +102,26 @@ func requestsInputTemplate(input []string, name string) bool {
 		}
 		return false
 	}
-	for _, word := range words {
-		switch word {
-		case "write", "create", "generate", "make", "produce", "use", "turn", "give", "show", "output", "return", "provide", "convert", "rewrite", "wrap", "need", "want":
-			if hasWord(words, "tag", "tags", "template", "templates") {
-				return true
+	hasAction := func(parts []string, targets ...string) bool {
+		for i, part := range parts {
+			if !hasWord(parts[i:i+1], targets...) {
+				continue
 			}
+			if question && (part == "use" || part == "need" || part == "want") {
+				continue
+			}
+			if i > 0 && (parts[i-1] == "not" || parts[i-1] == "never") {
+				continue
+			}
+			if i > 1 && parts[i-1] == "t" && parts[i-2] == "don" {
+				continue
+			}
+			return true
 		}
+		return false
+	}
+	if hasAction(words, "write", "create", "generate", "make", "produce", "use", "turn", "give", "show", "output", "return", "provide", "convert", "rewrite", "wrap", "need", "want") && hasWord(words, "tag", "tags", "template", "templates") {
+		return true
 	}
 	// Bare prompt wording counts only for an indefinite request or an explicit transformation.
 	for i, word := range words {
@@ -114,17 +132,17 @@ func requestsInputTemplate(input []string, name string) bool {
 			if words[j] != "into" && words[j] != "as" && words[j] != "to" {
 				continue
 			}
-			if hasWord(words[:j], "turn", "convert", "rewrite") {
+			if hasAction(words[:j], "turn", "convert", "rewrite") {
 				return true
 			}
 		}
-		if hasWord(words[:i], "turn", "convert", "rewrite") {
+		if hasAction(words[:i], "turn", "convert", "rewrite") {
 			continue
 		}
-		if hasWord(words[:i], "write", "create", "generate", "make", "produce", "give", "show", "output", "return", "provide") {
+		if hasAction(words[:i], "write", "create", "generate", "make", "produce", "give", "show", "output", "return", "provide") {
 			return true
 		}
-		if hasWord(words, "need", "want") && (!hasWord(words[i+1:], "to") || hasWord(words, "write", "create", "generate", "produce", "give", "show", "output", "return", "provide")) {
+		if hasAction(words, "need", "want") && (!hasWord(words[i+1:], "to") || hasAction(words, "write", "create", "generate", "produce", "give", "show", "output", "return", "provide")) {
 			return true
 		}
 	}

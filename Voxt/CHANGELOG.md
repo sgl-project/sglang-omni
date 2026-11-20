@@ -7,12 +7,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **A Rewrite answer keeps a requested input-tag template**: whole `<instruction>`, `<selected_text>` and `<typed_text>` pairs stay only when your current request names the tag and asks for a template. Cleanup still removes echoed wrappers around a real answer, including an unclosed selection tag and a whole instruction pair that does not repeat your instruction.
+- **Rewrite does not mistake a negated template mention for a request**: answers to “Do not use …” or a question about using a template drop echoed input-tag wrappers; an explicit request to generate one still keeps them.
 
 ### 中文
 
 #### 修复
 
 - **改写回答保留需要的输入标签模板**：只有当前请求写出标签名并要求生成模板时，整段 `<instruction>`、`<selected_text>` 和 `<typed_text>` 标签对才会保留。清理仍会去掉真实回答外回显的标签，包括未闭合的选区标签，以及内容并非重复你所发指令的整段指令标签。
+- **改写不会把否定提到模板当成生成请求**：回答“不要使用……”或只是询问能否使用模板时，去掉回显的输入标签；明确要求生成模板时仍保留标签。
 
 ## [2.1.2] - 2026-11-19
 

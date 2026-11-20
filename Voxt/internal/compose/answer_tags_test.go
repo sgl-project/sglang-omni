@@ -36,6 +36,12 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "I want this instruction prompt to be shorter")
 	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "rewrite this instructional prompt to be shorter")
 	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "把这个 instruction 提示词改短些")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Do not use an instruction template")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Do not write an instruction template")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Can I use an instruction template?")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Do I need an instruction template?")
+	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "不要使用 instruction 模板")
+	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "你可以用 instruction 模板吗？")
 	checkAnswer(t, "<selected_text>A real answer</selected_text>", "A real answer", "", "write an instruction template")
 }
 
@@ -63,6 +69,7 @@ func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
 	checkAnswer(t, template, template, "", "turn this into an instruction prompt")
 	checkAnswer(t, template, template, "", "convert this to an instruction prompt")
 	checkAnswer(t, template, template, "", "rewrite this as an instruction prompt")
+	checkAnswer(t, template, template, "", "Can you write an instruction template?")
 	checkAnswer(t, template, template, "", "把文字改成 instruction 提示词")
 }
 
