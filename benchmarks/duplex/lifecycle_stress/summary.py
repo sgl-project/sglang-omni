@@ -49,6 +49,7 @@ class StressSummary(BaseModel):
     concurrency: int
     cycles: int
     session_outcomes: dict[str, int]
+    unexpected_denials: int
     errors: list[str]
     sessions_left: int | None
     cleanup_latency_ms: Distribution
@@ -184,6 +185,20 @@ def summarize(samples: StressSamples) -> StressSummary:
     reconnected = [session for session in sessions if session.readmit_ms is not None]
     errored = [session for session in sessions if session.outcome == "errored"]
 
+    # note (Yi Zhao): a denial is the right answer only to the clients above the cap, and a server that admits nobody answers every session with one; without a cap to go by, no denial is expected.
+    expected_denials_per_cycle = (
+        0
+        if samples.max_connections is None
+        else max(0, samples.concurrency - samples.max_connections)
+    )
+    unexpected_denials = sum(
+        max(
+            0,
+            sum(session.outcome == "denied" for session in cycle.sessions)
+            - expected_denials_per_cycle,
+        )
+        for cycle in samples.cycles
+    )
     checks: dict[str, bool | None] = {
         "no_sessions_left": None if sessions_left is None else sessions_left == 0,
         "slots_recovered": (
@@ -191,8 +206,10 @@ def summarize(samples: StressSamples) -> StressSummary:
             if capacity_unrecovered_cycles is None
             else capacity_unrecovered_cycles == 0
         ),
-        "final_session_completed": samples.final_session.outcome == "completed",
+        "final_session_completed": samples.final_session is not None
+        and samples.final_session.outcome == "completed",
         "no_errored_sessions": not errored,
+        "no_unexpected_denials": unexpected_denials == 0,
     }
     return StressSummary(
         scenario=samples.scenario,
@@ -211,6 +228,7 @@ def summarize(samples: StressSamples) -> StressSummary:
         concurrency=samples.concurrency,
         cycles=len(samples.cycles),
         session_outcomes=dict(Counter(session.outcome for session in sessions)),
+        unexpected_denials=unexpected_denials,
         errors=sorted({session.error for session in errored if session.error})[
             :MAX_REPORTED_ERRORS
         ],

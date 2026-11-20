@@ -14,7 +14,7 @@ from pydantic import JsonValue
 from websockets.asyncio.client import ClientConnection
 
 from benchmarks.duplex.client import PACKET_BYTES, PACKET_MS
-from benchmarks.duplex.lifecycle_stress import host_metrics
+from benchmarks.duplex.lifecycle_stress import host_metrics, scenarios
 from benchmarks.duplex.lifecycle_stress.mock_server import (
     MockSettings,
     serve_in_process,
@@ -125,6 +125,7 @@ def test_churn_cycle_completes_and_every_check_passes(tmp_path: Path) -> None:
         "slots_recovered": True,
         "final_session_completed": True,
         "no_errored_sessions": True,
+        "no_unexpected_denials": True,
     }
 
 
@@ -309,11 +310,83 @@ def test_a_session_the_model_has_no_room_for_is_denied_not_errored(
             tmp_path,
             scenario="idle",
             idle_point="open",
+            max_connections=1,
         )
     )
     summary = summarize(samples)
     assert summary.session_outcomes == {"expired": 1, "denied": 1}
-    assert summary.checks["no_errored_sessions"] is True
+    assert summary.failed_checks == []
+
+
+def test_a_server_that_admits_nobody_fails_the_run_though_no_session_errors(
+    tmp_path: Path,
+) -> None:
+    """The stand-in model has no slot at all, so every session.update is refused in good order; nothing errors, and the run still has to fail, on its denials and on a final session that was never admitted."""
+    samples = asyncio.run(
+        stress_against_mock(MockSettings(max_connections=2, model_slots=0), tmp_path)
+    )
+    summary = summarize(samples)
+    assert summary.session_outcomes == {"denied": 2}
+    assert samples.final_session is not None
+    assert samples.final_session.outcome == "denied"
+    assert summary.unexpected_denials == 2
+    assert summary.failed_checks == [
+        "final_session_completed",
+        "no_unexpected_denials",
+    ]
+
+
+def test_a_run_that_dies_keeps_the_cycles_it_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final session fails outright here; the samples file written after the cycle must still be there, marked unfinished by its missing final session."""
+
+    async def failing_recorder(*arguments: object) -> SessionOutcome:
+        raise RuntimeError("recorder failed")
+
+    monkeypatch.setattr(scenarios, "run_recorded_session", failing_recorder)
+    with pytest.raises(RuntimeError, match="recorder failed"):
+        asyncio.run(stress_against_mock(MockSettings(max_connections=2), tmp_path))
+    kept = StressSamples.model_validate_json((tmp_path / "samples.json").read_text())
+    assert [session.outcome for session in kept.cycles[0].sessions] == ["completed"] * 2
+    assert kept.final_session is None
+    assert summarize(kept).failed_checks == ["final_session_completed"]
+
+
+def test_an_output_directory_that_holds_a_run_is_refused_before_any_session(
+    tmp_path: Path,
+) -> None:
+    """A second run into the same directory would fail on its first trace only after its cycles; it has to fail at once."""
+    asyncio.run(stress_against_mock(MockSettings(max_connections=2), tmp_path))
+    with pytest.raises(FileExistsError, match="already holds a run"):
+        asyncio.run(stress_against_mock(MockSettings(max_connections=2), tmp_path))
+
+
+def test_a_reading_that_fails_after_the_baseline_stays_empty_and_the_run_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stand-in nvidia-smi answers the two calls a run makes before its first cycle and fails from then on; the cycle keeps what the debug route gave and the run completes."""
+    tool_directory = tmp_path / "tools"
+    tool_directory.mkdir()
+    stand_in = tool_directory / "nvidia-smi"
+    stand_in.write_text(
+        f"#!/bin/sh\necho call >> {tool_directory}/calls\n"
+        f"[ $(wc -l < {tool_directory}/calls) -le 2 ] && echo 1000 || exit 1\n"
+    )
+    stand_in.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tool_directory}{os.pathsep}{os.environ['PATH']}")
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2), tmp_path / "run", has_device_memory=True
+        )
+    )
+    cycle_snapshot = samples.cycles[0].snapshot_after
+    assert samples.baseline is not None
+    assert samples.baseline.device_megabytes == 1000.0
+    assert cycle_snapshot is not None
+    assert cycle_snapshot.device_megabytes is None
+    assert cycle_snapshot.active_sessions == 0
+    assert summarize(samples).failed_checks == []
 
 
 def test_reconnect_after_a_reset_is_denied_until_the_old_session_is_gone(
@@ -363,15 +436,17 @@ def test_long_scenario_runs_the_recorder_and_keeps_its_trace(tmp_path: Path) -> 
     assert (tmp_path / "traces/cycle-000/session-000/trace.jsonl").exists()
 
 
+@pytest.mark.parametrize(
+    "mock",
+    [MockSettings(max_connections=1), MockSettings(max_connections=2, model_slots=1)],
+)
 def test_a_recorded_session_the_server_has_no_slot_for_is_denied(
-    tmp_path: Path,
+    tmp_path: Path, mock: MockSettings
 ) -> None:
-    """The recorder gives up after its retries without an error line; with the only slot held, that must read as a denial."""
+    """The recorder gives up after its retries without an error line; with the only slot held, that must read as a denial, also when the server refuses at session.update and the recorder then closes the session in good order."""
 
     async def record_against_a_full_server() -> SessionOutcome:
-        async with serve_in_process(
-            MockSettings(max_connections=1), "127.0.0.1", 0
-        ) as url:
+        async with serve_in_process(mock, "127.0.0.1", 0) as url:
             held = await take_slot(url, CLEANUP_WAIT_S)
             assert isinstance(held, ClientConnection)
             outcome = await run_recorded_session(

@@ -113,6 +113,7 @@ class StressSamples(BaseModel):
     device_models: list[str] | None
     baseline: ServerSnapshot | None
     cycles: list[CycleSample]
-    final_session: SessionOutcome
+    # note (Yi Zhao): empty in the file a run writes after each cycle, so a run that dies keeps the cycles it finished.
+    final_session: SessionOutcome | None
     server_log: ServerLog | None
     closing: ServerSnapshot | None

@@ -388,12 +388,21 @@ async def run_recorded_session(
         for line in trace_path.read_text().splitlines()
     ]
     errors = [record.event for record in records if record.direction == "error"]
-    received_types = [
-        record.event["type"] for record in records if record.direction == "receive"
-    ]
+    received = [record.event for record in records if record.direction == "receive"]
+    received_types = [event["type"] for event in received]
+    # note (Yi Zhao): a server refuses at the connect, which the recorder writes as an admission line, or at session.update, which it only counts; after its retries it closes the session in good order either way, so a session.closed alone does not say the session was ever admitted.
+    was_refused = any(record.direction == "admission" for record in records) or any(
+        is_admission_rejection(event) for event in received
+    )
     if errors:
         return SessionOutcome(
             outcome="errored", ended_s=ended_s, error=json.dumps(errors[0])
+        )
+    elif "session.updated" not in received_types and was_refused:
+        return SessionOutcome(outcome="denied", ended_s=ended_s)
+    elif "session.updated" not in received_types:
+        return SessionOutcome(
+            outcome="errored", ended_s=ended_s, error="trace has no session.updated"
         )
     elif "session.closed" in received_types:
         interrupted_ids: set[str] = set()
@@ -423,9 +432,6 @@ async def run_recorded_session(
                 interrupted_replies=len(interrupted_ids),
                 late_outputs=late_outputs,
             )
-    elif any(record.direction == "admission" for record in records):
-        # note (Yi Zhao): the recorder retries a denied connection a few times before it gives up without an error line.
-        return SessionOutcome(outcome="denied", ended_s=ended_s)
     else:
         return SessionOutcome(
             outcome="errored", ended_s=ended_s, error="trace has no session.closed"

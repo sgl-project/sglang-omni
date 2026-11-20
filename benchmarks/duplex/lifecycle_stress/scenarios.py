@@ -7,6 +7,7 @@ import asyncio
 import math
 import platform
 import re
+import subprocess
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -64,6 +65,8 @@ ERROR_LEVEL_MARKER = "ERROR"
 VARIABLE_TEXT_PATTERN = re.compile(r"[0-9a-f]{8,}|\d+")
 MAX_ERROR_KINDS = 5
 MAX_ERROR_LINE_CHARS = 200
+READING_FAILURES = (httpx.HTTPError, subprocess.SubprocessError, OSError)
+MAX_RECOVERY_POLL_INTERVAL_S = 2.0
 
 
 @dataclass(kw_only=True)
@@ -125,25 +128,39 @@ class ServerObserver:
         scheme = "https" if parts.scheme == "wss" else "http"
         return urlunsplit((scheme, parts.netloc, route_path, "", ""))
 
-    async def snapshot(self) -> ServerSnapshot | None:
-        snapshot: ServerSnapshot | None
-        if self.has_debug_route:
-            response = await self.http.get(self.http_url(DEBUG_ROUTE_PATH))
-            response.raise_for_status()
-            snapshot = ServerSnapshot.model_validate_json(response.text)
-        elif self.server_pid is not None:
-            # note (Yi Zhao): a model server shows no task or session count; the processes, threads and open files of its process tree are the counts it leaves to read.
-            snapshot = await asyncio.to_thread(read_process_tree, self.server_pid)
+    async def snapshot(self, is_required: bool) -> ServerSnapshot | None:
+        """One reading of the server; a required one raises when a source fails, any other leaves that source's part empty, so that one failed reading late in a long run does not cost the run."""
+        snapshot: ServerSnapshot | None = None
+        try:
+            if self.has_debug_route:
+                response = await self.http.get(self.http_url(DEBUG_ROUTE_PATH))
+                response.raise_for_status()
+                snapshot = ServerSnapshot.model_validate_json(response.text)
+            elif self.server_pid is not None:
+                # note (Yi Zhao): a model server shows no task or session count; the processes, threads and open files of its process tree are the counts it leaves to read.
+                snapshot = await asyncio.to_thread(read_process_tree, self.server_pid)
+            else:
+                pass
+        except READING_FAILURES:
+            if is_required:
+                raise
+            else:
+                pass
+        if not self.has_device_memory:
+            return snapshot
         else:
-            snapshot = None
-        if self.has_device_memory:
+            pass
+        try:
             # note (Yi Zhao): nvidia-smi takes a noticeable fraction of a second; a thread keeps this client's sockets served meanwhile.
             device_megabytes = await asyncio.to_thread(read_device_megabytes)
-            return (snapshot or ServerSnapshot()).model_copy(
-                update={"device_megabytes": device_megabytes}
-            )
-        else:
-            return snapshot
+        except READING_FAILURES:
+            if is_required:
+                raise
+            else:
+                return snapshot
+        return (snapshot or ServerSnapshot()).model_copy(
+            update={"device_megabytes": device_megabytes}
+        )
 
     async def await_no_sessions(
         self, since_s: float, deadline_s: float
@@ -154,10 +171,9 @@ class ServerObserver:
         else:
             pass
         while True:
-            snapshot = await self.snapshot()
+            snapshot = await self.snapshot(is_required=False)
             observed_s = time.perf_counter()
-            assert snapshot is not None, "debug route without a snapshot"
-            if snapshot.active_sessions == 0:
+            if snapshot is not None and snapshot.active_sessions == 0:
                 return (observed_s - since_s) * MS_PER_SECOND, False
             elif observed_s >= deadline_s:
                 return None, True
@@ -217,7 +233,7 @@ async def run_cycle(
     cycle_index: int,
 ) -> CycleSample:
     cycle_directory = settings.output / "traces" / f"cycle-{cycle_index:03d}"
-    client_outcomes = await asyncio.gather(
+    client_results = await asyncio.gather(
         *(
             run_client(
                 settings,
@@ -226,9 +242,24 @@ async def run_cycle(
                 cycle_directory / f"session-{index:03d}",
             )
             for index in range(settings.concurrency)
-        )
+        ),
+        return_exceptions=True,
     )
-    outcomes = [outcome for client in client_outcomes for outcome in client]
+    outcomes: list[SessionOutcome] = []
+    for result in client_results:
+        if isinstance(result, Exception):
+            # note (Yi Zhao): the recorder can raise where the short driver cannot; that client is one errored session and the others of the cycle still count.
+            outcomes.append(
+                SessionOutcome(
+                    outcome="errored",
+                    ended_s=time.perf_counter(),
+                    error=f"{type(result).__name__}: {result}",
+                )
+            )
+        elif isinstance(result, BaseException):
+            raise result
+        else:
+            outcomes.extend(result)
     # note (Yi Zhao): a run without clients is the control that shows what the capacity probe alone leaves behind.
     last_ended_s = max(
         (outcome.ended_s for outcome in outcomes), default=time.perf_counter()
@@ -237,12 +268,17 @@ async def run_cycle(
     cleanup_latency_ms, is_cleanup_timed_out = await observer.await_no_sessions(
         last_ended_s, deadline_s
     )
-    # note (Yi Zhao): read before the probe, so the probe's own connections are not in this cycle's resources.
-    snapshot_after = await observer.snapshot()
+    # note (Yi Zhao): read before the probe, so the probe's own sessions are not in this cycle's resources. That needs the session count to say the cycle's sessions are gone; without it the reading waits for the probe instead, see below.
+    snapshot_after = (
+        await observer.snapshot(is_required=False)
+        if observer.has_debug_route or settings.max_connections is None
+        else None
+    )
     probe: CapacityProbe | None = None
     capacity_recovery_ms: float | None = None
     if settings.max_connections is not None:
         is_recovered = False
+        retry_interval_s = RECOVERY_POLL_INTERVAL_S
         while not is_recovered:
             probe_started_s = time.perf_counter()
             probe = await probe_capacity(
@@ -261,12 +297,22 @@ async def run_cycle(
             elif time.perf_counter() >= deadline_s:
                 break
             else:
-                await asyncio.sleep(RECOVERY_POLL_INTERVAL_S)
+                # note (Yi Zhao): the sessions a failed probe did get in are still closing; a retry that came at once would be denied by them, so each retry waits for them, by the session count where there is one and twice as long as the last time where there is none.
+                await observer.await_no_sessions(time.perf_counter(), deadline_s)
+                await asyncio.sleep(retry_interval_s)
+                retry_interval_s = min(
+                    2 * retry_interval_s, MAX_RECOVERY_POLL_INTERVAL_S
+                )
         probe_cleanup_ms, _ = await observer.await_no_sessions(
             time.perf_counter(), time.perf_counter() + settings.cleanup_wait_s
         )
         if probe_cleanup_ms is None:
             await asyncio.sleep(PROBE_SETTLE_S)
+        else:
+            pass
+        if snapshot_after is None:
+            # note (Yi Zhao): with no session count, a probe that got every slot is the only sign that the cycle's sessions are gone, so the resources are read after it and hold what it left.
+            snapshot_after = await observer.snapshot(is_required=False)
         else:
             pass
     else:
@@ -297,6 +343,14 @@ async def run_stress(settings: RunSettings) -> StressSamples:
     assert settings.packets_per_session * PACKET_BYTES <= len(
         settings.pcm
     ), "input audio shorter than the packets of one session"
+    if (settings.output / "traces").exists() or (
+        settings.output / SAMPLES_FILE
+    ).exists():
+        raise FileExistsError(f"{settings.output} already holds a run")
+    else:
+        settings.output.mkdir(parents=True, exist_ok=True)
+    # note (Yi Zhao): the GPUs are the server's only because device memory is read where the server runs; a missing nvidia-smi fails here, before any session.
+    device_models = read_device_models() if settings.has_device_memory else None
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as http:
         observer = ServerObserver(
             http=http,
@@ -360,12 +414,64 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             supports_cancel=server_supports_cancel is not False,
             timeout_s=session_timeout_s,
         )
-        baseline = await observer.snapshot()
+        baseline = await observer.snapshot(is_required=True)
         cycles: list[CycleSample] = []
+
+        def record(
+            final_session: SessionOutcome | None,
+            server_log: ServerLog | None,
+            closing: ServerSnapshot | None,
+        ) -> StressSamples:
+            """Write everything the run has so far; called after every cycle, so a run that dies keeps its finished cycles."""
+            samples = StressSamples(
+                scenario=settings.scenario,
+                protocol=settings.protocol,
+                url=settings.url,
+                started_at=started_at,
+                duration_s=time.perf_counter() - started_s,
+                server=settings.server,
+                mock_settings=mock_settings,
+                source=source_fingerprint(),
+                platform=platform.platform(),
+                concurrency=settings.concurrency,
+                cycles_requested=settings.cycles,
+                packets_per_session=settings.packets_per_session,
+                input_seconds=input_seconds,
+                is_input_silence=settings.is_input_silence,
+                audio_file=settings.audio_file,
+                audio_sha256=settings.audio_sha256,
+                audio_conversion=settings.audio_conversion,
+                leave_point=settings.leave_point,
+                leave_style=settings.leave_style,
+                idle_point=settings.idle_point,
+                should_cancel_reply=plan.should_cancel_reply,
+                reconnects=settings.reconnects,
+                server_unit_ms=server_unit_ms,
+                server_supports_cancel=server_supports_cancel,
+                server_timeout_s=server_timeout_s,
+                max_connections=settings.max_connections,
+                cleanup_wait_s=settings.cleanup_wait_s,
+                cleanup_poll_interval_s=CLEANUP_POLL_INTERVAL_S,
+                has_debug_route=settings.has_debug_route,
+                server_pid=settings.server_pid,
+                has_device_memory=settings.has_device_memory,
+                device_models=device_models,
+                baseline=baseline,
+                cycles=cycles,
+                final_session=final_session,
+                server_log=server_log,
+                closing=closing,
+            )
+            (settings.output / SAMPLES_FILE).write_text(
+                samples.model_dump_json(indent=2) + "\n"
+            )
+            return samples
+
         for cycle_index in range(settings.cycles):
             cycles.append(
                 await run_cycle(settings, plan, turn_detection, observer, cycle_index)
             )
+            record(None, None, None)
         if settings.protocol == "native":
             final_session = await run_recorded_session(
                 settings.url,
@@ -394,8 +500,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
         await observer.await_no_sessions(
             final_session.ended_s, final_session.ended_s + settings.cleanup_wait_s
         )
-        closing = await observer.snapshot()
-    settings.output.mkdir(parents=True, exist_ok=True)
+        closing = await observer.snapshot(is_required=False)
     server_log: ServerLog | None
     if settings.server_log is None:
         server_log = None
@@ -417,47 +522,4 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                 ).most_common(MAX_ERROR_KINDS)
             ),
         )
-    samples = StressSamples(
-        scenario=settings.scenario,
-        protocol=settings.protocol,
-        url=settings.url,
-        started_at=started_at,
-        duration_s=time.perf_counter() - started_s,
-        server=settings.server,
-        mock_settings=mock_settings,
-        source=source_fingerprint(),
-        platform=platform.platform(),
-        concurrency=settings.concurrency,
-        cycles_requested=settings.cycles,
-        packets_per_session=settings.packets_per_session,
-        input_seconds=input_seconds,
-        is_input_silence=settings.is_input_silence,
-        audio_file=settings.audio_file,
-        audio_sha256=settings.audio_sha256,
-        audio_conversion=settings.audio_conversion,
-        leave_point=settings.leave_point,
-        leave_style=settings.leave_style,
-        idle_point=settings.idle_point,
-        should_cancel_reply=plan.should_cancel_reply,
-        reconnects=settings.reconnects,
-        server_unit_ms=server_unit_ms,
-        server_supports_cancel=server_supports_cancel,
-        server_timeout_s=server_timeout_s,
-        max_connections=settings.max_connections,
-        cleanup_wait_s=settings.cleanup_wait_s,
-        cleanup_poll_interval_s=CLEANUP_POLL_INTERVAL_S,
-        has_debug_route=settings.has_debug_route,
-        server_pid=settings.server_pid,
-        has_device_memory=settings.has_device_memory,
-        # note (Yi Zhao): the GPUs are the server's only because device memory is read where the server runs.
-        device_models=read_device_models() if settings.has_device_memory else None,
-        baseline=baseline,
-        cycles=cycles,
-        final_session=final_session,
-        server_log=server_log,
-        closing=closing,
-    )
-    (settings.output / SAMPLES_FILE).write_text(
-        samples.model_dump_json(indent=2) + "\n"
-    )
-    return samples
+    return record(final_session, server_log, closing)
