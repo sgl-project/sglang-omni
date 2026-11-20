@@ -127,6 +127,27 @@ def two_stage_document(
     }
 
 
+def test_checkpoint_config_loads_from_a_hub_model_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "config.json").write_text('{"text_config": {"hidden_size": 64}}')
+    hub_lookup = MagicMock(return_value=str(tmp_path / "config.json"))
+    monkeypatch.setattr(stages, "cached_file", hub_lookup)
+
+    configuration = stages.load_checkpoint_config("inclusionAI/Ming-3.0-asr-tiny")
+
+    assert configuration == {"text_config": {"hidden_size": 64}}
+    hub_lookup.assert_called_once_with("inclusionAI/Ming-3.0-asr-tiny", "config.json")
+
+
+def test_checkpoint_config_loads_from_a_local_directory(tmp_path: Path) -> None:
+    (tmp_path / "config.json").write_text('{"text_config": {"hidden_size": 64}}')
+
+    assert stages.load_checkpoint_config(str(tmp_path)) == {
+        "text_config": {"hidden_size": 64}
+    }
+
+
 def test_two_stage_configuration_loads_pre_lm_knobs() -> None:
     config = Ming3ASRPipelineConfig.model_validate(two_stage_document())
     assert [stage.name for stage in config.stages] == ["preprocessing", "thinker"]
@@ -331,6 +352,9 @@ def test_dspark_startup_failure_releases_adapted_checkpoint(
     )
     monkeypatch.setattr(
         stages, "materialize_draft_checkpoint", MagicMock(return_value=checkpoint)
+    )
+    monkeypatch.setattr(
+        stages, "cached_file", MagicMock(side_effect=FileNotFoundError("config.json"))
     )
     manager = ConfigManager(
         Ming3ASRPipelineConfig(model_path="missing-target-checkpoint")

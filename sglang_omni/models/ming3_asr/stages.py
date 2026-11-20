@@ -14,6 +14,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import AutoConfig, PreTrainedTokenizerFast
+from transformers.utils.hub import cached_file
 
 from sglang_omni.models.ming3_asr.encoder_service import Ming3ASRPreLMEncoderService
 from sglang_omni.models.ming3_asr.preprocessing import (
@@ -64,7 +65,7 @@ class Ming3ASRConfig(Ming3AudioConfig):
 
 
 def load_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
-    return json.loads((Path(model_path) / "config.json").read_text())
+    return json.loads(Path(cached_file(model_path, "config.json")).read_text())
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
