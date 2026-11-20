@@ -128,7 +128,7 @@ func TestSessionFixtureCoverage(t *testing.T) {
 	if cardFixtures != len(cardSteps()) {
 		t.Errorf("covered %d card prefixes, want all %d", cardFixtures, len(cardSteps()))
 	}
-	for _, name := range []string{"session-empty-idle", "session-loading-reading", "session-normal-recording", "session-error-failed"} {
+	for _, name := range []string{"session-empty-idle", "session-loading-reading", "session-normal-recording", "session-error-failed", "session-markdown-conversation"} {
 		if !expectedNames[name] {
 			t.Errorf("missing required scenario %q", name)
 		}

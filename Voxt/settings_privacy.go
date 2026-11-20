@@ -14,12 +14,13 @@ import (
 )
 
 type settingsPrivacyLocalUI struct {
-	keepHistory     bool
-	keepAudio       bool
-	logText         bool
-	sendWindow      bool
-	sendClipboard   bool
-	clearHistoryAsk bool
+	keepHistory                bool
+	keepAudio                  bool
+	logText                    bool
+	sendWindow                 bool
+	sendClipboard              bool
+	sendClipboardWithSelection bool
+	clearHistoryAsk            bool
 }
 
 func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions settingsPrivacyActions, local *settingsPrivacyLocalUI, historyLocal *historyAccessLocalUI) {
@@ -43,9 +44,14 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 			actions.setSendWindow(local.sendWindow)
 		}
 	})
-	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with the selected text and what you said. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. With text selected, only the text goes unless Text and a copied image together is also on. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
 		if ui.Switch(c.Key("priv-copied"), &local.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
 			actions.setSendClipboardImage(local.sendClipboard)
+		}
+	})
+	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Off by default: a text selection sends only the text, so an image you copied earlier cannot take over a text rewrite. Turn it on to send the selected text and the copied image together."), func() {
+		if ui.Switch(c.Key("priv-copied-with-text"), &local.sendClipboardWithSelection).Label(i18n.T("Send both with Rewrite")).Changed() {
+			actions.setSendClipboardImageWithSelection(local.sendClipboardWithSelection)
 		}
 	})
 

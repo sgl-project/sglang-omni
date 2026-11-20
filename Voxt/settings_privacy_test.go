@@ -18,6 +18,8 @@ func TestPrivacySendWindow(t *testing.T) {
 		t.Fatal("on by default")
 	}
 	openPrivacy(t, a, tt)
+	tt.Scroll(float32(windowWidth)*0.6, 900, 0, -10000)
+	frames(tt)
 	if !has(tt, "sends it to the language model with the text") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
@@ -62,5 +64,16 @@ func TestPrivacySendClipboardImage(t *testing.T) {
 	click(t, tt, "Send the copied image with Rewrite")
 	if a.settings.Get().Privacy.SendClipboardImage {
 		t.Error("off: still on")
+	}
+	if a.settings.Get().Privacy.SendClipboardImageWithSelection {
+		t.Fatal("text and image together is on by default")
+	}
+	click(t, tt, "Send both with Rewrite")
+	if !a.settings.Get().Privacy.SendClipboardImageWithSelection || len(fs.asked) != 0 {
+		t.Fatalf("text and image together: setting %v, asked %v", a.settings.Get().Privacy.SendClipboardImageWithSelection, fs.asked)
+	}
+	click(t, tt, "Send both with Rewrite")
+	if a.settings.Get().Privacy.SendClipboardImageWithSelection {
+		t.Error("text and image together: still on")
 	}
 }

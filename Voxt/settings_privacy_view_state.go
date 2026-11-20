@@ -6,15 +6,16 @@ import (
 )
 
 type settingsPrivacyViewState struct {
-	Online           string                 `json:"online"`
-	SendWindow       bool                   `json:"send_window"`
-	SendClipboard    bool                   `json:"send_clipboard"`
-	KeepHistory      bool                   `json:"keep_history"`
-	KeepAudio        bool                   `json:"keep_audio"`
-	KeepAudioEnabled bool                   `json:"keep_audio_enabled"`
-	LogText          bool                   `json:"log_text"`
-	ClearHistoryAsk  bool                   `json:"clear_history_ask"`
-	HistoryAccess    historyAccessViewState `json:"history_access"`
+	Online                     string                 `json:"online"`
+	SendWindow                 bool                   `json:"send_window"`
+	SendClipboard              bool                   `json:"send_clipboard"`
+	SendClipboardWithSelection bool                   `json:"send_clipboard_with_selection"`
+	KeepHistory                bool                   `json:"keep_history"`
+	KeepAudio                  bool                   `json:"keep_audio"`
+	KeepAudioEnabled           bool                   `json:"keep_audio_enabled"`
+	LogText                    bool                   `json:"log_text"`
+	ClearHistoryAsk            bool                   `json:"clear_history_ask"`
+	HistoryAccess              historyAccessViewState `json:"history_access"`
 }
 
 type settingsPrivacyStateInput struct {
@@ -31,7 +32,8 @@ func buildSettingsPrivacyViewState(translator *i18n.Translator, input settingsPr
 	}
 	return settingsPrivacyViewState{
 		Online: online, SendWindow: input.Privacy.SendWindow, SendClipboard: input.Privacy.SendClipboardImage,
-		KeepHistory: input.Privacy.KeepHistory, KeepAudio: input.Privacy.KeepAudio, KeepAudioEnabled: input.Privacy.KeepHistory,
+		SendClipboardWithSelection: input.Privacy.SendClipboardImageWithSelection,
+		KeepHistory:                input.Privacy.KeepHistory, KeepAudio: input.Privacy.KeepAudio, KeepAudioEnabled: input.Privacy.KeepHistory,
 		LogText: input.Privacy.LogText, ClearHistoryAsk: input.ClearHistoryAsk, HistoryAccess: input.HistoryAccess,
 	}
 }

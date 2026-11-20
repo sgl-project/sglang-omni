@@ -128,7 +128,7 @@ func TestSessionDemoRejectsInvalidSeed(t *testing.T) {
 }
 
 func TestSessionOverlayDemoMatchesProduction(t *testing.T) {
-	for _, name := range []string{"overlay-live-short", "card-conversation", "card-follow-up-selected-open", "session-problem-microphone"} {
+	for _, name := range []string{"overlay-live-short", "card-conversation", "card-follow-up-selected-open", "session-problem-microphone", "session-markdown-conversation"} {
 		t.Run(name, func(t *testing.T) {
 			scenario := sessionFixtureScenarioNamed(t, name)
 			a, generated, _ := driveSessionFixture(t, scenario, "en")

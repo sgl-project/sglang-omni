@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/hehehai/actnowkit/sounds"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"math"
@@ -55,6 +56,9 @@ func TestMain(m *testing.M) {
 	if omnitest.Enabled() {
 		omnitest.Main()
 	}
+	if dir := os.Getenv(crashDirEnv); dir != "" {
+		crashInTest(dir) // shell_crash_test.go
+	}
 	runListModels = failListModels
 	os.Exit(runIsolated(m))
 }
@@ -64,11 +68,19 @@ func TestMain(m *testing.M) {
 // in its data folder (familyConfig), and the environment points
 // elsewhere too, for what resolves the defaults.
 func runIsolated(m *testing.M) int {
+	// A Unix socket's path holds at most 104 bytes on macOS, and the tests
+	// bind sockets in their temporary folders: keep those short however
+	// long TMPDIR is.
+	short, err := os.MkdirTemp("/tmp", "vx")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(short)
+	os.Setenv("TMPDIR", short)
 	tmp, err := os.MkdirTemp("", "voxtnew-family-")
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(tmp)
 	realHub = models.Hub()
 	realCache, _ := os.UserCacheDir()
 	// LegacyHubs always considers ~/.cache/huggingface/hub; point HOME away so
@@ -78,7 +90,7 @@ func runIsolated(m *testing.M) int {
 	// mygo's sqlite plugin finds its dylib only under UserCacheDir; keep the
 	// real one so each run does not download it from GitHub again.
 	if cache, err := os.UserCacheDir(); err == nil && realCache != "" && cache != realCache {
-		if os.MkdirAll(cache, 0o755) == nil {
+		if _, err := os.Stat(filepath.Join(realCache, "mygo")); err == nil && os.MkdirAll(cache, 0o755) == nil {
 			os.Symlink(filepath.Join(realCache, "mygo"), filepath.Join(cache, "mygo"))
 		}
 	}
@@ -95,7 +107,34 @@ func runIsolated(m *testing.M) int {
 		return actnow.Config{Dir: family.At(filepath.Join(d, "ActNow")), Hub: hub,
 			BundleID: "dev.hehehai.voxtnew", Version: "0.1.0-test", System: noApps{}}
 	}
-	return m.Run()
+	code := m.Run()
+	// A test that leaves undeletable files in the tests' HOME (a read-only
+	// Go module cache, say) fills the disk one run at a time: fail the run.
+	if err := os.RemoveAll(tmp); err != nil && code == 0 {
+		fmt.Fprintln(os.Stderr, "the tests' HOME could not be removed:", err)
+		code = 1
+	}
+	return code
+}
+
+func TestIsolatedHomeDoesNotLinkAMissingMyGoCache(t *testing.T) {
+	if os.Getenv("VOXT_TEST_EMPTY_MYGO_CACHE") == "1" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(filepath.Join(cache, "mygo")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the isolated cache must not link a missing real cache: %v", err)
+		}
+		return
+	}
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestIsolatedHomeDoesNotLinkAMissingMyGoCache$")
+	cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "VOXT_TEST_EMPTY_MYGO_CACHE=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("clean-cache test run: %v\n%s", err, output)
+	}
 }
 
 // testHubs are the model libraries of test apps that use another than
