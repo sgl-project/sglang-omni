@@ -169,7 +169,7 @@ func (a *app) boxSync() {
 	}
 	if !a.box.winShown || a.box.raise {
 		// Not a floating window: it comes in front of the windows over it
-		// when it opens and each time the Rewrite shortcut asks in it,
+		// when it opens and with each press of the Rewrite shortcut on it,
 		// while the app the user was in stays active.
 		a.box.win.ShowInactive()
 		a.box.win.Show()

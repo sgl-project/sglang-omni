@@ -213,8 +213,9 @@ func TestRewriteCardDrags(t *testing.T) {
 }
 
 // TestRewriteCardIsNotAlwaysOnTop: the card stays at the windows' level,
-// so the user can put another window over it; the Rewrite shortcut
-// brings it back in front, and a refresh of what it shows does not.
+// so the user can put another window over it. Each press of the Rewrite
+// shortcut on it is a click on it and brings it in front: the press that
+// asks in it and the press that sends. A refresh of what it shows does not.
 func TestRewriteCardIsNotAlwaysOnTop(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.ov.native = true
@@ -234,5 +235,9 @@ func TestRewriteCardIsNotAlwaysOnTop(t *testing.T) {
 	a.boxSync()
 	if native.raised != 1 {
 		t.Errorf("a refresh raised the card: %d times", native.raised)
+	}
+	a.boxShortcutSend() // the shortcut again (or its hold let go): it sends
+	if native.raised != 2 {
+		t.Errorf("the shortcut's send raised the card %d times in all, want 2", native.raised)
 	}
 }
