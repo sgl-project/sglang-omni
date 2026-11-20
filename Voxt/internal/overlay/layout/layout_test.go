@@ -126,3 +126,12 @@ func TestCardSizeButtonInsideCorner(t *testing.T) {
 		}
 	}
 }
+
+// TestCardSizeStepsMatch: the settings' size count and the sizes
+// themselves move together (Features.CardSize clamps by one, the
+// layout indexes by the other).
+func TestCardSizeStepsMatch(t *testing.T) {
+	if settings.CardSizeSteps != len(CardSizes) {
+		t.Errorf("settings.CardSizeSteps = %d, but there are %d card sizes", settings.CardSizeSteps, len(CardSizes))
+	}
+}
