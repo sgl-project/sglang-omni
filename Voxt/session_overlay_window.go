@@ -187,9 +187,27 @@ func (a *app) overlayDragged() {
 	if !a.ov.shown || bounds.X == a.ov.frame.X && bounds.Y == a.ov.frame.Y {
 		return
 	}
+	a.overlayDraggedTo(bounds)
+}
+
+func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 	frame := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
 	a.ov.dragged.x, a.ov.dragged.y = bounds.X-frame.X, bounds.Y-frame.Y
-	a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
+	area := ovTestArea
+	if a.overlayNative() {
+		area = mygo.Screen.DisplayMatching(bounds).WorkArea
+	}
+	if area != a.ov.area {
+		a.ov.area = area
+		a.ov.dragged.x, a.ov.dragged.y = 0, 0
+		a.refreshSessionOverlay(time.Now())
+		width, height := a.overlayFace(a.ov.mode)
+		anchor := layout.Frame(a.ov.area, a.prefs.Overlay, width, height)
+		a.ov.dragged.x, a.ov.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
+		a.overlayRestyle()
+	} else {
+		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
+	}
 	a.syncLangMenu()
 }
 

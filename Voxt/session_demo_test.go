@@ -57,7 +57,7 @@ func TestSessionDemoImageInputGetsFixturePreview(t *testing.T) {
 func newSessionDemoActionTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 	t.Helper()
 	placement := host.sessionDemoPlacement()
-	width := max(placement.width, layout.CardSizes[len(layout.CardSizes)-1].W+2*layout.Pad)
+	width := max(placement.width, layout.CardFillW(ovTestArea, 96)+2*layout.Pad)
 	tester := ui.NewTester(func(context *ui.Context) { sessionDemoOverlayView(context, host) }, width, placement.height)
 	tester.SetLocale(host.current().locale)
 	tester.SetFontSmoothing(hudSmoothing)
@@ -146,7 +146,7 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 				t.Fatalf("bubble copy mark has %q", host.sessionUI.bubbleCopied)
 			}
 		}},
-		{name: "size cycle wraps", fixture: "en/card-short", methods: []string{"cycleOverlayCardSize"}, steps: steps("Make the card larger", "Make the card larger", "Make the card smaller"), want: []string{"cycleOverlayCardSize", "cycleOverlayCardSize", "cycleOverlayCardSize"}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+		{name: "size cycle wraps", fixture: "en/card-short", methods: []string{"cycleOverlayCardSize"}, steps: steps("Make the card larger", "Make the card larger", "Make the card larger", "Make the card smaller"), want: []string{"cycleOverlayCardSize", "cycleOverlayCardSize", "cycleOverlayCardSize", "cycleOverlayCardSize"}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 			if host.sessionState.Card.SizeStep != 0 {
 				t.Fatalf("size step %d, want wrapped step 0", host.sessionState.Card.SizeStep)
 			}
@@ -298,7 +298,7 @@ func clickSessionDemoBubbleCopy(t *testing.T, host *meetingDemoHost, tester *ui.
 	}
 	tester.Move(textBounds.X+textBounds.W/2, textBounds.Y+textBounds.H/2)
 	frames(tester)
-	text, _, _ := sessionCardBlockText(card, block)
+	text, _, _ := sessionCardBlockText(block, layout.CardSizes[card.SizeStep].Width(ovTestArea, host.sessionSeed.Overlay.Margin))
 	tester.ClickAt(textBounds.X+text.wrap+layout.BubblePadX-35, titleBounds.Y-layout.BubblePadY+19)
 	frames(tester)
 }

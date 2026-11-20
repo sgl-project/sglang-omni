@@ -198,10 +198,13 @@ const (
 	CardBtn        = 24
 	CardBtnIcon    = 15
 	// The size button sits in the card's corner, in the padding under
-	// the text (CardPadY), CardSizeBtnInset from the edges.
-	CardSizeBtn      = 16
-	CardSizeBtnIcon  = 12
-	CardSizeBtnInset = 1
+	// the text (CardPadY), CardSizeBtnInset from the edges: far enough
+	// in that the whole button stays inside the rounded corner at the
+	// widest corner radius (40: its corner's centre is 40 from each
+	// edge, and (40-12)·√2 < 40).
+	CardSizeBtn      = 20
+	CardSizeBtnIcon  = 14
+	CardSizeBtnInset = 12
 	CardLangMaxW     = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
 	CardWaveW        = 96  // a conversation's waveform
 
@@ -219,21 +222,35 @@ const (
 	ProblemGap  = 8
 )
 
-// CardSize is a size of the answer card, its width
-// (settings.Features.CardSizes); its height follows its text.
+// CardSize is a size of the answer card (settings.Features.CardSizes);
+// its height follows its text. W is the width, or 0 for fill: as wide
+// as the work area leaves room for (CardFillW).
 type CardSize struct{ W int }
 
 // CardSizes are the card's sizes, by settings.Features.CardSize: small
 // (Voxt's 440), medium and large, for long answers (#3644 FB41: an
-// explained PR was hard to read in the small one).
-var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}}
+// explained PR was hard to read in the small one), and fill, for a
+// card as wide as the screen (the large card was still narrow on a big
+// display).
+var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}, {}}
 
-// BodyW is the text's width in a card of size s.
-func (s CardSize) BodyW() int { return s.W - 2*CardPadX - CardInset }
+// CardFillW is the fill size's width in the work area wa. It never makes
+// the card narrower when the largest fixed size already fits; past that it
+// leaves the frame's margins (Overlay.Margin and the shadow's Pad on each side).
+func CardFillW(wa mygo.Rectangle, margin float64) int {
+	availableWidth := wa.Width - 2*(int(math.Round(margin))+Pad)
+	fitWidth := max(AnswerW, wa.Width-2*Pad)
+	return max(AnswerW, availableWidth, min(CardSizes[len(CardSizes)-2].W, fitWidth))
+}
 
-// BubbleW is a conversation's bubble width in a card of size s: the small
-// card's room beside a bubble, kept.
-func (s CardSize) BubbleW() int { return s.W - (AnswerW - BubbleW) }
+// Width is the size's width in the work area: the fixed one, or
+// CardFillW for fill.
+func (s CardSize) Width(wa mygo.Rectangle, margin float64) int {
+	if s.W > 0 {
+		return s.W
+	}
+	return CardFillW(wa, margin)
+}
 
 // BubbleTextWidth fits a Rewrite input's text, heading and selection widths,
 // rounded up to whole DIPs and capped at the conversation bubble's maximum.

@@ -67,6 +67,7 @@
   "Card size": "卡片大小",
   "Small": "小",
   "Large": "大",
+  "Fill": "充满",
   "Shows the text in the answer card instead of typing it.": "文字显示在答案卡片里，不直接输入。",
   "Shows translations in the answer card instead of typing them.": "译文显示在答案卡片里，不直接输入。",
   "Shows answers in the answer card, where you can follow up. When off, the answer is typed or replaces the selection.": "回答显示在答案卡片里，可以继续追问。关闭时直接输入，或替换选中的文字。",
