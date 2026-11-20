@@ -7,12 +7,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
+- **Transcribe's clean-up follows its rules better on small local models** (#4383): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 
 ### 中文
 
 #### 变更
 
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
+- **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 
 ## [2.1.2] - 2026-11-19
 
