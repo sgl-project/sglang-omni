@@ -6,21 +6,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Faster transcription for more speech models**: Qwen3-ASR 1.7B (6bit) uses the same 726 MB draft as 1.7B (8bit), downloaded once for both, and MOSS-Transcribe-Diarize has a draft of its own (262 MB).
-
-### Fixed
-
-- **Deleting a draft no longer leaves an old provider using its deleted path**: a provider obtained before deletion now starts or continues without the draft instead of launching with the missing folder. This also covers the shared Qwen3-ASR draft.
+- **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
 
 ### 中文
 
 #### 新增
 
-- **更多语音识别模型支持转录加速**：Qwen3-ASR 1.7B (6bit) 和 1.7B (8bit) 共用同一个 726 MB 的草稿模型，下载一次两个都能用；MOSS-Transcribe-Diarize 有自己的草稿模型（262 MB）。
-
-#### 修复
-
-- **删除草稿模型后，旧语音识别提供方不再使用已删除的路径**：删除前取得的提供方会改为不使用草稿模型，不再带着已删除的目录启动服务。共享的 Qwen3-ASR 草稿模型也走这条路径。
+- **Qwen3-ASR 1.7B (6bit) 支持转录加速**：卡片上有了转录加速开关，与 1.7B (8bit) 共用同一个 726 MB 的草稿模型，下载一次两个都能用。默认保持关闭：草稿是随 8bit 下载的，并没有替 6bit 答应过开启。
 
 ## [2.1.2] - 2026-11-19
 
