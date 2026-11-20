@@ -69,6 +69,7 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 logger = logging.getLogger(__name__)
 
 MTP_DEFAULT_NUM_STEPS = 7
+# note (scatyf3): SGLang resolves NEXTN to EAGLE, so both names select the same chain drafter.
 MTP_ALGORITHMS = ("EAGLE", "NEXTN")
 
 
@@ -187,29 +188,77 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         algorithm = overrides.get("speculative_algorithm")
         if algorithm is None:
             return
-        elif algorithm not in MTP_ALGORITHMS:
+        elif not isinstance(algorithm, str) or algorithm.upper() not in MTP_ALGORITHMS:
             raise ValueError(
                 "Nemotron Transcribe speculative decoding serves the checkpoint's "
-                f"native MTP layer through EAGLE or NEXTN, not {algorithm}"
+                f"native MTP layer; set speculative_algorithm NEXTN, not {algorithm}"
             )
         else:
             pass
-        draft_model_path = overrides.get("speculative_draft_model_path")
-        if draft_model_path not in (None, self.checkpoint_dir):
+        num_steps = overrides.get("speculative_num_steps")
+        if num_steps is None:
+            num_steps = MTP_DEFAULT_NUM_STEPS
+        elif (
+            isinstance(num_steps, bool)
+            or not isinstance(num_steps, int)
+            or num_steps < 1
+        ):
+            raise ValueError(
+                "Nemotron Transcribe MTP needs speculative_num_steps to be a positive "
+                f"integer, got {num_steps}"
+            )
+        else:
+            pass
+        num_draft_tokens = overrides.get("speculative_num_draft_tokens")
+        if num_draft_tokens is None:
+            num_draft_tokens = num_steps + 1
+        elif num_draft_tokens != num_steps + 1:
+            raise ValueError(
+                "Nemotron Transcribe MTP verifies its draft chain plus one bonus token; "
+                f"speculative_num_draft_tokens must be {num_steps + 1} for "
+                f"speculative_num_steps {num_steps}, got {num_draft_tokens}"
+            )
+        else:
+            pass
+        if overrides.get("speculative_draft_model_path") not in (
+            None,
+            self.checkpoint_dir,
+        ):
             raise ValueError(
                 "the Nemotron Transcribe MTP draft lives in the target checkpoint; "
                 "leave speculative_draft_model_path unset"
             )
+        elif overrides.get("speculative_draft_model_revision") not in (
+            None,
+            overrides.get("revision"),
+        ):
+            raise ValueError(
+                "the Nemotron Transcribe MTP draft loads from the target checkpoint "
+                "revision; set revision instead of speculative_draft_model_revision"
+            )
+        elif overrides.get("speculative_eagle_topk") not in (None, 1):
+            raise ValueError(
+                "Nemotron Transcribe MTP drafts a single token chain; "
+                "speculative_eagle_topk must be 1, got "
+                f"{overrides['speculative_eagle_topk']}"
+            )
+        elif overrides.get("enable_multi_layer_eagle"):
+            raise ValueError(
+                "the Nemotron Transcribe checkpoint has one MTP step; "
+                "enable_multi_layer_eagle is unsupported"
+            )
+        elif overrides.get("enable_mixed_chunk"):
+            raise ValueError("Nemotron Transcribe MTP requires enable_mixed_chunk off")
         else:
             pass
-        overrides["speculative_draft_model_path"] = self.checkpoint_dir
-        overrides["speculative_draft_model_revision"] = None
-        overrides.setdefault("speculative_eagle_topk", 1)
-        num_steps = int(
-            overrides.setdefault("speculative_num_steps", MTP_DEFAULT_NUM_STEPS)
+        overrides.update(
+            speculative_draft_model_path=self.checkpoint_dir,
+            speculative_draft_model_revision=None,
+            speculative_eagle_topk=1,
+            speculative_num_steps=num_steps,
+            speculative_num_draft_tokens=num_draft_tokens,
+            enable_mixed_chunk=False,
         )
-        overrides.setdefault("speculative_num_draft_tokens", num_steps + 1)
-        overrides["enable_mixed_chunk"] = False
         ModelRegistry.models["NemotronHForCausalLMMTP"] = NemotronTranscribeMTPDraft
         self.enable_mtp_draft = True
 
