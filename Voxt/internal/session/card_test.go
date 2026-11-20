@@ -108,7 +108,8 @@ func TestShowCard(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				first := h.rec.all()[0]
+				// Snapshots publish asynchronously: wait for the first.
+				first := h.rec.waitFor(t, "the first snapshot", func(Snapshot) bool { return true })
 				if want := on && tc.kind != store.KindRewrite; first.Card != want {
 					t.Fatalf("first snapshot card %v, want %v", first.Card, want)
 				}
