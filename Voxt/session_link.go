@@ -149,7 +149,7 @@ type sessionNotice struct {
 	action     string
 	entry      string // actionRetry's history entry
 	warn       bool   // a warning (the session went on), not an error
-	ok         bool   // done as asked (a term added), not a problem
+	ok         bool   // done as asked (a term added, a note saved), not a problem
 	seq        int    // which notice: its timer hides only itself
 	over       bool   // shows before the card that came back as its session ended (#4013)
 	// then runs when its time is up (not when a click or the next
@@ -357,7 +357,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			a.showNotice(*copied)
 		}
 	} else if s.Note && s.State == session.Done && s.Result != "" {
-		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
+		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes"), ok: true})
 	} else if copied != nil {
 		a.showNotice(*copied)
 	}
