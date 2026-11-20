@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+# Portions derived from https://github.com/step-out/Duplex-MPE (Copyright (c) 2026 MPeval authors, MIT License; see benchmarks/duplex/mpe/LICENSE).
 """Canonical Duplex-MPE semantic judging prompt templates and SHA-256 hashing."""
 
 from __future__ import annotations

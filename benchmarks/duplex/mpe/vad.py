@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+# Portions derived from https://github.com/step-out/Duplex-MPE (Copyright (c) 2026 MPeval authors, MIT License; see benchmarks/duplex/mpe/LICENSE).
 """Causal Silero voice activity detection with Duplex-MPE hysteresis and hangover."""
 
 from __future__ import annotations

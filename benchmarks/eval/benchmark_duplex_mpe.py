@@ -10,11 +10,13 @@ import json
 import logging
 import re
 import shlex
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
+import httpx
+import websockets
 from pydantic import JsonValue
 
 from benchmarks.dataset.duplex_mpe import (
@@ -46,9 +48,11 @@ from benchmarks.duplex.mpe.protocol import (
 from benchmarks.duplex.mpe.realtime_session import (
     DEFAULT_SESSION_TIMEOUT_SECONDS,
     SEED_POLICY_METADATA_ONLY,
+    ProtocolSessionError,
     RealtimeProtocolSelection,
     negotiate_realtime_endpoint,
     run_realtime_scenario,
+    summarize_transport_exception,
     validate_realtime_base_url,
 )
 from benchmarks.duplex.mpe.semantic import (
@@ -247,7 +251,17 @@ SHELL_WRAPPER_NAMES: frozenset[str] = frozenset(
     {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}
 )
 SAFE_SERVER_EXECUTABLES: frozenset[str] = frozenset(
-    {"env", "uv", "python", "python3", "sglang_omni", "sglang", "vllm", "torchrun"}
+    {
+        "env",
+        "uv",
+        "python",
+        "python3",
+        "sgl-omni",
+        "sglang_omni",
+        "sglang",
+        "vllm",
+        "torchrun",
+    }
 )
 SAFE_SUBCOMMANDS: frozenset[str] = frozenset({"run", "serve", "launch"})
 SAFE_BOOLEAN_FLAGS: frozenset[str] = frozenset(
@@ -260,6 +274,7 @@ SAFE_BOOLEAN_FLAGS: frozenset[str] = frozenset(
         "--disable-radix-cache",
         "--enable-metrics",
         "--enable-torch-compile",
+        "--skip-server-warmup",
     }
 )
 SAFE_VALUE_FLAGS: frozenset[str] = frozenset(
@@ -285,16 +300,67 @@ SAFE_VALUE_FLAGS: frozenset[str] = frozenset(
         "--max-seq-len",
         "--context-length",
         "--attention-backend",
+        "--sampling-backend",
+        "--reasoning-parser",
         "--device",
         "--seed",
         "--log-level",
         "--chat-template",
+        "--config",
         "--config-path",
         "--profile",
-        "--preprocessing.factory.max_seq_len",
-        "--thinker.factory.max_seq_len",
+        "--max-sessions",
+        "--max_sessions",
+        "--voice",
+        "--timeout-s",
+        "--timeout_s",
+        "--realtime-idle-timeout-s",
+        "--realtime_idle_timeout_s",
+        "--realtime-session-update-timeout-s",
+        "--realtime_session_update_timeout_s",
     }
 )
+SAFE_DOTTED_CONFIG_PREFIXES: frozenset[str] = frozenset(
+    {
+        "sampling",
+        "vision",
+        "speech",
+        "window",
+        "preprocessing",
+        "perception",
+        "thinker",
+        "talker",
+        "talker_ar",
+        "code2wav",
+        "mimi_encode",
+        "lm",
+        "asr",
+        "tts",
+        "vad",
+        "turn_detection",
+        "session_nodes",
+        "services",
+        "stages",
+        "engine",
+    }
+)
+SAFE_URL_OPTION_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".base_url",
+        ".alignment_url",
+        ".heard_asr_url",
+    }
+)
+SAFE_EMPTY_VALUE_OPTION_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".alignment_url",
+        ".heard_asr_url",
+    }
+)
+SAFE_DOTTED_CONFIG_FLAG_RE = re.compile(
+    r"^--[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)+$"
+)
+SAFE_PLAIN_LONG_FLAG_RE = re.compile(r"^--[A-Za-z_][A-Za-z0-9_-]*$")
 BLOCKED_LONG_CODE_FLAGS: frozenset[str] = frozenset(
     {"c", "e", "eval", "command", "exec", "code", "script"}
 )
@@ -326,19 +392,151 @@ def is_safe_executable_token(raw_token: str) -> bool:
         return is_allowed_server_executable(Path(raw_token).name.lower())
 
 
+def is_safe_dotted_config_flag(flag_token: str) -> bool:
+    if SAFE_DOTTED_CONFIG_FLAG_RE.fullmatch(flag_token) is None:
+        return False
+    elif KNOWN_TOKEN_PREFIX_RE.search(flag_token) is not None:
+        return False
+    elif is_sensitive_cli_flag(flag_token):
+        return False
+    else:
+        dotted_parts = flag_token.lstrip("-").split(".")
+        if len(dotted_parts) > 5:
+            return False
+        elif not all(
+            SAFE_DOTTED_PATH_COMPONENT_RE.fullmatch(part) is not None
+            for part in dotted_parts
+        ):
+            return False
+        else:
+            top_namespace = dotted_parts[0].lower()
+            segments = [
+                part.lower()
+                for part in split_identifier_segments(flag_token.lstrip("-"))
+            ]
+            return top_namespace in SAFE_DOTTED_CONFIG_PREFIXES and not any(
+                part in BLOCKED_LONG_CODE_FLAGS for part in segments
+            )
+
+
 def is_safe_value_flag(flag_token: str) -> bool:
-    return flag_token.lower() in SAFE_VALUE_FLAGS
+    return flag_token.lower() in SAFE_VALUE_FLAGS or is_safe_dotted_config_flag(
+        flag_token
+    )
 
 
-def is_safe_flag_scalar_value(flag_token: str, value_token: str) -> bool:
+def is_safe_http_endpoint_value(value_token: str) -> bool:
     if has_url_userinfo(value_token) or contains_embedded_credential_syntax(
         value_token
     ):
         return False
-    elif flag_token.lower() == "--host":
+    else:
+        try:
+            parsed = urlsplit(value_token)
+            return (
+                parsed.scheme in ("http", "https")
+                and bool(parsed.hostname)
+                and (parsed.port is None or 1 <= parsed.port <= 65535)
+                and parsed.username is None
+                and parsed.password is None
+                and not parsed.query
+                and not parsed.fragment
+                and bool(re.fullmatch(r"^[A-Za-z0-9_./-]*$", parsed.path))
+            )
+        except ValueError:
+            return False
+
+
+SAFE_DOTTED_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+KNOWN_TOKEN_PREFIX_RE = re.compile(
+    r"(?:sk-[A-Za-z0-9_-]{8,}|hf_[A-Za-z0-9]{8,}|ghp_[A-Za-z0-9]{8,}|"
+    r"github_pat_[A-Za-z0-9_]{8,}|xox[bp]-[A-Za-z0-9-]{8,}|"
+    r"AKIA[0-9A-Z]{12,}|ASIA[0-9A-Z]{12,}|eyJ[A-Za-z0-9_-]{10,}\.)"
+)
+CANONICAL_SENSITIVE_LEAF_NAMES: frozenset[str] = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "openai_api_key",
+        "anthropic_api_key",
+        "hf_token",
+        "token",
+        "access_token",
+        "auth_token",
+        "bearer_token",
+        "secret",
+        "client_secret",
+        "password",
+        "passwd",
+        "pass",
+        "passphrase",
+        "credential",
+        "credentials",
+        "authorization",
+        "header",
+        "headers",
+        "cookie",
+        "cookies",
+        "user",
+        "username",
+        "proxy_user",
+        "cert",
+    }
+)
+
+
+def is_well_formed_sensitive_flag_name(flag_token: str) -> bool:
+    if (
+        has_url_userinfo(flag_token)
+        or KNOWN_TOKEN_PREFIX_RE.search(flag_token) is not None
+    ):
+        return False
+    elif SAFE_PLAIN_LONG_FLAG_RE.fullmatch(flag_token) is not None:
+        normalized_plain = flag_token.lstrip("-").lower().replace("-", "_")
+        return normalized_plain in CANONICAL_SENSITIVE_LEAF_NAMES
+    elif SAFE_DOTTED_CONFIG_FLAG_RE.fullmatch(flag_token) is not None:
+        dotted_parts = flag_token.lstrip("-").split(".")
+        if len(dotted_parts) > 5:
+            return False
+        else:
+            leaf_normalized = dotted_parts[-1].lower().replace("-", "_")
+            non_leaf_parts = dotted_parts[:-1]
+            return (
+                leaf_normalized in CANONICAL_SENSITIVE_LEAF_NAMES
+                and all(
+                    SAFE_DOTTED_PATH_COMPONENT_RE.fullmatch(part) is not None
+                    for part in non_leaf_parts
+                )
+                and not any(
+                    is_sensitive_cli_flag(f"--{part}") for part in non_leaf_parts
+                )
+            )
+    else:
+        return False
+
+
+def is_safe_flag_scalar_value(flag_token: str, value_token: str) -> bool:
+    lowered_flag = flag_token.lower()
+    if value_token == "" and any(
+        lowered_flag.endswith(suffix) for suffix in SAFE_EMPTY_VALUE_OPTION_SUFFIXES
+    ):
+        return True
+    elif has_url_userinfo(value_token) or contains_embedded_credential_syntax(
+        value_token
+    ):
+        return False
+    elif lowered_flag == "--host":
         return "://" not in value_token and bool(
             SAFE_HOST_VALUE_RE.fullmatch(value_token)
         )
+    elif lowered_flag == "--device":
+        return bool(
+            re.fullmatch(
+                r"^(?:cpu|cuda(?::\d+)?|xpu(?::\d+)?|npu(?::\d+)?)$", value_token
+            )
+        )
+    elif any(lowered_flag.endswith(suffix) for suffix in SAFE_URL_OPTION_SUFFIXES):
+        return is_safe_http_endpoint_value(value_token)
     else:
         return bool(SAFE_SCALAR_VALUE_RE.fullmatch(value_token))
 
@@ -597,9 +795,28 @@ def sanitize_launch_command(
                         "Inline code option is not permitted in --launch-command"
                     )
                 elif "." in normalized_flag and not is_safe_value_flag(flag_part):
-                    raise ValueError("Unsupported dotted option in --launch-command")
+                    if (
+                        is_sensitive_cli_flag(flag_part)
+                        and is_well_formed_sensitive_flag_name(flag_part)
+                        and (
+                            normalized_flag.split(".", 1)[0]
+                            in SAFE_DOTTED_CONFIG_PREFIXES
+                        )
+                    ):
+                        sanitized_tokens.append(f"{flag_part}=<REDACTED>")
+                        index += 1
+                        continue
+                    else:
+                        raise ValueError(
+                            "Unsupported dotted option in --launch-command"
+                        )
                 elif is_sensitive_cli_flag(flag_part):
-                    sanitized_tokens.append(f"{flag_part}=<REDACTED>")
+                    if not is_well_formed_sensitive_flag_name(flag_part):
+                        raise ValueError(
+                            "Malformed sensitive option name in --launch-command"
+                        )
+                    else:
+                        sanitized_tokens.append(f"{flag_part}=<REDACTED>")
                 elif is_safe_value_flag(flag_part) and is_safe_flag_scalar_value(
                     flag_part, value_part
                 ):
@@ -616,11 +833,36 @@ def sanitize_launch_command(
                         "Inline code option is not permitted in --launch-command"
                     )
                 elif "." in normalized_flag and not is_safe_value_flag(token):
-                    raise ValueError("Unsupported dotted option in --launch-command")
-                elif is_sensitive_cli_flag(token):
-                    if index + 1 >= len(raw_tokens) or raw_tokens[index + 1].startswith(
-                        "-"
+                    if (
+                        is_sensitive_cli_flag(token)
+                        and is_well_formed_sensitive_flag_name(token)
+                        and (
+                            normalized_flag.split(".", 1)[0]
+                            in SAFE_DOTTED_CONFIG_PREFIXES
+                        )
                     ):
+                        if index + 1 >= len(raw_tokens) or raw_tokens[
+                            index + 1
+                        ].startswith("-"):
+                            raise ValueError(
+                                "Sensitive option requires a non-flag value in --launch-command"
+                            )
+                        else:
+                            sanitized_tokens.extend([token, "<REDACTED>"])
+                            index += 2
+                            continue
+                    else:
+                        raise ValueError(
+                            "Unsupported dotted option in --launch-command"
+                        )
+                elif is_sensitive_cli_flag(token):
+                    if not is_well_formed_sensitive_flag_name(token):
+                        raise ValueError(
+                            "Malformed sensitive option name in --launch-command"
+                        )
+                    elif index + 1 >= len(raw_tokens) or raw_tokens[
+                        index + 1
+                    ].startswith("-"):
                         raise ValueError(
                             "Sensitive option requires a non-flag value in --launch-command"
                         )
@@ -888,6 +1130,67 @@ def verify_retained_assistant_audio(
                 pass
 
 
+@dataclass(frozen=True, kw_only=True)
+class GeneratePhaseResult:
+    reports_by_id: dict[str, dict[str, JsonValue]]
+    failed_scenarios: dict[str, str] = field(default_factory=dict)
+
+    def __len__(self) -> int:
+        return len(self.reports_by_id)
+
+    def __contains__(self, scenario_id: str) -> bool:
+        return scenario_id in self.reports_by_id
+
+    def __getitem__(self, scenario_id: str) -> dict[str, JsonValue]:
+        return self.reports_by_id[scenario_id]
+
+
+def load_validated_failure_ledger(ledger_path: Path) -> dict[str, str]:
+    if not ledger_path.is_file():
+        return {}
+    else:
+        raw_ledger = read_json_file(ledger_path)
+        if not isinstance(raw_ledger, dict):
+            raise ValueError(f"{ledger_path} must contain a JSON object")
+        else:
+            validated_ledger: dict[str, str] = {}
+            for entry_key, entry_value in raw_ledger.items():
+                if not isinstance(entry_key, str) or not isinstance(entry_value, str):
+                    raise ValueError(
+                        f"{ledger_path} entries must map string keys to string reasons"
+                    )
+                else:
+                    validated_ledger[entry_key] = entry_value
+            return validated_ledger
+
+
+def is_compatible_saved_run_manifest(
+    saved_manifest: dict[str, JsonValue],
+    current_manifest: dict[str, JsonValue],
+) -> bool:
+    if set(saved_manifest) != set(current_manifest):
+        return False
+    else:
+        for field_name, current_value in current_manifest.items():
+            saved_value = saved_manifest.get(field_name)
+            if field_name == "session_timeout_seconds":
+                if (
+                    not isinstance(saved_value, (int, float))
+                    or type(saved_value) is bool
+                    or not isinstance(current_value, (int, float))
+                    or type(current_value) is bool
+                    or float(current_value) < float(saved_value)
+                ):
+                    return False
+                else:
+                    pass
+            elif saved_value != current_value:
+                return False
+            else:
+                pass
+        return True
+
+
 def load_saved_reports(report_path: Path) -> dict[str, dict[str, JsonValue]]:
     if not report_path.is_file():
         return {}
@@ -911,7 +1214,7 @@ def load_saved_reports(report_path: Path) -> dict[str, dict[str, JsonValue]]:
 async def run_generate_phase(
     config: DuplexMpeEvalConfig,
     scenarios: list[DuplexMpeScenarioRecord],
-) -> dict[str, dict[str, JsonValue]]:
+) -> GeneratePhaseResult:
     assert config.base_url is not None
     current_vad_version = silero_package_version()
     if (
@@ -945,6 +1248,7 @@ async def run_generate_phase(
     output_dir.mkdir(parents=True, exist_ok=True)
     run_manifest_path = output_dir / "run.json"
     report_path = output_dir / "report.json"
+    failures_path = output_dir / "failures.json"
     audio_directory = output_dir / "audio"
 
     if report_path.is_file() and not run_manifest_path.is_file():
@@ -1011,13 +1315,18 @@ async def run_generate_phase(
             json.dumps(seeds, sort_keys=True).encode("utf-8")
         ).hexdigest(),
     }
-    if (
-        run_manifest_path.is_file()
-        and read_json_file(run_manifest_path) != run_manifest
-    ):
-        raise ValueError(
-            f"Run configuration in {run_manifest_path} changed; choose a new --output-dir"
-        )
+    if run_manifest_path.is_file():
+        existing_manifest = read_json_file(run_manifest_path)
+        if not isinstance(
+            existing_manifest, dict
+        ) or not is_compatible_saved_run_manifest(existing_manifest, run_manifest):
+            raise ValueError(
+                f"Run configuration in {run_manifest_path} changed; choose a new --output-dir"
+            )
+        elif existing_manifest != run_manifest:
+            write_json_atomic(run_manifest_path, run_manifest)
+        else:
+            pass
     else:
         write_json_atomic(run_manifest_path, run_manifest)
 
@@ -1046,10 +1355,14 @@ async def run_generate_phase(
             pending_scenarios.append(scenario)
 
     if not pending_scenarios:
+        if failures_path.is_file():
+            failures_path.unlink()
+        else:
+            pass
         logger.info(
             f"All {len(scenarios)} scenarios already recorded in {report_path}."
         )
-        return saved_reports
+        return GeneratePhaseResult(reports_by_id=saved_reports, failed_scenarios={})
     else:
         pass
 
@@ -1081,25 +1394,69 @@ async def run_generate_phase(
 
     semaphore = asyncio.Semaphore(config.max_concurrency)
     save_lock = asyncio.Lock()
+    existing_failure_ledger = load_validated_failure_ledger(failures_path)
+    failed_scenarios: dict[str, str] = {
+        scenario_key: reason
+        for scenario_key, reason in existing_failure_ledger.items()
+        if scenario_key not in saved_reports
+    }
 
     async def record_scenario(scenario: DuplexMpeScenarioRecord) -> None:
         async with semaphore:
             wav_path = resolve_retained_scenario_audio_path(
                 audio_directory, scenario.scenario_id, must_exist=False
             )
-            scenario_report = await run_realtime_scenario(
-                scenario,
-                dataset_root=dataset_root,
-                endpoint_spec=endpoint_spec,
-                output_audio_path=wav_path,
-                session_timeout_seconds=config.session_timeout_seconds,
-                seed_mapping=seeds,
-            )
+            try:
+                scenario_report = await run_realtime_scenario(
+                    scenario,
+                    dataset_root=dataset_root,
+                    endpoint_spec=endpoint_spec,
+                    output_audio_path=wav_path,
+                    session_timeout_seconds=config.session_timeout_seconds,
+                    seed_mapping=seeds,
+                )
+            except (
+                OSError,
+                ProtocolSessionError,
+                RuntimeError,
+                TimeoutError,
+                ValueError,
+                httpx.HTTPError,
+                websockets.WebSocketException,
+            ) as exc:
+                failure_reason = (
+                    str(exc)
+                    if isinstance(
+                        exc,
+                        (ProtocolSessionError, RuntimeError, TimeoutError, ValueError),
+                    )
+                    else summarize_transport_exception(exc)
+                )
+                async with save_lock:
+                    failed_scenarios[scenario.scenario_id] = failure_reason
+                    await asyncio.to_thread(
+                        write_json_atomic, failures_path, dict(failed_scenarios)
+                    )
+                    logger.error(
+                        f"Scenario {scenario.scenario_id} failed ({failure_reason}); "
+                        "remaining pending for resume"
+                    )
+                return
+
             async with save_lock:
                 saved_reports[scenario.scenario_id] = scenario_report
+                failed_scenarios.pop(scenario.scenario_id, None)
                 await asyncio.to_thread(
                     write_json_atomic, report_path, dict(saved_reports)
                 )
+                if failed_scenarios:
+                    await asyncio.to_thread(
+                        write_json_atomic, failures_path, dict(failed_scenarios)
+                    )
+                elif failures_path.is_file():
+                    await asyncio.to_thread(failures_path.unlink)
+                else:
+                    pass
                 target_block = scenario_report.get("T")
                 outcome_label = (
                     target_block.get("outcome")
@@ -1112,7 +1469,13 @@ async def run_generate_phase(
                 )
 
     await asyncio.gather(*(record_scenario(scenario) for scenario in pending_scenarios))
-    return saved_reports
+    if not failed_scenarios and failures_path.is_file():
+        failures_path.unlink()
+    else:
+        pass
+    return GeneratePhaseResult(
+        reports_by_id=saved_reports, failed_scenarios=failed_scenarios
+    )
 
 
 async def run_duplex_mpe_evaluation(
@@ -1144,15 +1507,27 @@ async def run_duplex_mpe_evaluation(
 
     run_manifest_path = output_dir / "run.json"
     report_path = output_dir / "report.json"
+    failures_path = output_dir / "failures.json"
+    judge_failures_path = output_dir / "judge_failures.json"
     tasks_path = output_dir / "tasks.json"
     transcribed_path = output_dir / "transcribed.json"
     labels_path = output_dir / "labels.json"
     audio_directory = output_dir / "audio"
 
+    failed_scenarios: dict[str, str] = {}
+    failed_semantic_task_keys: tuple[str, ...] = ()
     allowed_unselected_task_keys: frozenset[str] = frozenset()
     if config.phase in ("all", "generate"):
-        reports_by_id = await run_generate_phase(config, scenarios)
+        generate_result = await run_generate_phase(config, scenarios)
+        reports_by_id = generate_result.reports_by_id
+        failed_scenarios = dict(generate_result.failed_scenarios)
     else:
+        raw_failures = load_validated_failure_ledger(failures_path)
+        failed_scenarios = {
+            scenario_key: reason
+            for scenario_key, reason in raw_failures.items()
+            if scenario_key in scenarios_by_id
+        }
         all_saved = load_saved_reports(report_path)
         reports_by_id = {
             scenario_id: all_saved[scenario_id]
@@ -1253,12 +1628,26 @@ async def run_duplex_mpe_evaluation(
             )
         )
 
+    missing_selected_scenarios = sorted(set(scenarios_by_id) - set(reports_by_id))
+
     if config.phase == "generate":
+        is_generate_complete = (not missing_selected_scenarios) and (
+            not failed_scenarios
+        )
         return {
-            "status": "generated",
+            "status": "complete" if is_generate_complete else "incomplete",
+            "phase": "generate",
+            "scenarios_selected": len(scenarios_by_id),
             "scenarios_recorded": len(reports_by_id),
+            "missing_scenarios": missing_selected_scenarios,
+            "failed_scenarios": dict(failed_scenarios),
             "report_path": str(report_path),
         }
+    elif not reports_by_id:
+        raise RuntimeError(
+            f"All {len(scenarios_by_id)} selected scenarios failed during generation; "
+            f"inspect {failures_path}"
+        )
     elif config.phase not in ("all", "generate") and saved_run_manifest:
         verify_saved_dataset_bindings(
             dataset_root=dataset_root,
@@ -1311,9 +1700,15 @@ async def run_duplex_mpe_evaluation(
         )
         has_transcribed_cache = True
         if config.phase == "asr":
+            is_asr_complete = (not missing_selected_scenarios) and (
+                not failed_scenarios
+            )
             return {
-                "status": "transcribed",
+                "status": "complete" if is_asr_complete else "incomplete",
+                "phase": "asr",
                 "tasks_transcribed": len(transcribed_tasks),
+                "missing_scenarios": missing_selected_scenarios,
+                "failed_scenarios": dict(failed_scenarios),
                 "transcribed_path": str(transcribed_path),
             }
         else:
@@ -1341,6 +1736,9 @@ async def run_duplex_mpe_evaluation(
     should_run_judge = config.phase == "judge" or (
         config.phase == "all" and judge_config is not None
     )
+    expected_selected_task_keys: frozenset[str] = frozenset(
+        semantic_task_key(task) for task in semantic_tasks
+    )
     if should_run_judge:
         if not has_transcribed_cache and semantic_tasks:
             raise RuntimeError(
@@ -1348,17 +1746,52 @@ async def run_duplex_mpe_evaluation(
             )
         else:
             assert judge_config is not None
-            verdicts = await judge_tasks_via_http(
+            existing_judge_failures = load_validated_failure_ledger(judge_failures_path)
+            judge_result = await judge_tasks_via_http(
                 transcribed_tasks,
                 judge_config=judge_config,
                 output_path=labels_path,
                 trust_env=config.trust_env,
                 allowed_unselected_task_keys=allowed_unselected_task_keys,
             )
+            verdicts = list(judge_result.verdicts)
+            resolved_verdict_keys = {semantic_task_key(row) for row in verdicts}
+            preserved_unselected_judge_failures = {
+                task_key: reason
+                for task_key, reason in existing_judge_failures.items()
+                if task_key not in expected_selected_task_keys
+                and task_key not in resolved_verdict_keys
+            }
+            merged_judge_failures = {
+                **preserved_unselected_judge_failures,
+                **judge_result.failure_reasons,
+            }
+            if merged_judge_failures:
+                write_json_atomic(judge_failures_path, merged_judge_failures)
+            elif judge_failures_path.is_file():
+                judge_failures_path.unlink()
+            else:
+                pass
+            failed_semantic_task_keys = judge_result.failed_task_keys
         if config.phase == "judge":
+            unresolved_selected_task_keys = sorted(
+                expected_selected_task_keys
+                - {semantic_task_key(row) for row in verdicts}
+            )
+            is_judge_complete = (
+                (not missing_selected_scenarios)
+                and (not failed_scenarios)
+                and (not failed_semantic_task_keys)
+                and (not unresolved_selected_task_keys)
+            )
             return {
-                "status": "judged",
+                "status": "complete" if is_judge_complete else "incomplete",
+                "phase": "judge",
                 "verdicts_written": len(verdicts),
+                "missing_scenarios": missing_selected_scenarios,
+                "failed_scenarios": dict(failed_scenarios),
+                "failed_semantic_tasks": len(failed_semantic_task_keys),
+                "failed_task_keys": list(failed_semantic_task_keys),
                 "labels_path": str(labels_path),
             }
         else:
@@ -1390,22 +1823,33 @@ async def run_duplex_mpe_evaluation(
                     validated_verdicts = load_validated_existing_verdicts(
                         indexed_transcribed,
                         raw_verdict_rows,
-                        expected_judge_model=(
-                            judge_config.model if judge_config is not None else None
-                        ),
-                        expected_enable_thinking=(
-                            judge_config.enable_thinking
-                            if judge_config is not None
-                            else None
-                        ),
+                        judge_config=judge_config,
                         expected_endpoint_sha256=expected_judge_endpoint_sha256,
                         allowed_unselected_task_keys=allowed_unselected_task_keys,
                     )
                     verdicts = list(validated_verdicts.values())
             else:
                 verdicts = []
+        persisted_judge_failures = load_validated_failure_ledger(judge_failures_path)
+        resolved_verdict_keys = {semantic_task_key(row) for row in verdicts}
+        failed_semantic_task_keys = tuple(
+            sorted(
+                task_key
+                for task_key in persisted_judge_failures
+                if task_key in expected_selected_task_keys
+                and task_key not in resolved_verdict_keys
+            )
+        )
     else:
         verdicts = []
+        persisted_judge_failures = load_validated_failure_ledger(judge_failures_path)
+        failed_semantic_task_keys = tuple(
+            sorted(
+                task_key
+                for task_key in persisted_judge_failures
+                if task_key in expected_selected_task_keys
+            )
+        )
 
     if transcribed_tasks:
         validated_transcribed = validate_transcribed_against_tasks(
@@ -1450,32 +1894,115 @@ async def run_duplex_mpe_evaluation(
     recorded_vad_version = (
         first_aed.get("silero_vad_version") if isinstance(first_aed, dict) else None
     )
-    scored_metrics = score_scenario_reports(reports_by_id, scenarios_by_id, verdicts)
+    observed_report_protocols = {
+        str(report.get("realtime_protocol"))
+        for report in reports_by_id.values()
+        if isinstance(report.get("realtime_protocol"), str)
+        and report.get("realtime_protocol")
+    }
+    valid_protocols = {"native", "turn_based", "legacy"}
+    unknown_protocols = observed_report_protocols - valid_protocols
+    if unknown_protocols:
+        raise ValueError(
+            f"Unsupported realtime_protocol values in {report_path}: {sorted(unknown_protocols)}"
+        )
+    elif len(observed_report_protocols) > 1:
+        raise ValueError(
+            f"Mixed realtime_protocol values in {report_path}: {sorted(observed_report_protocols)}"
+        )
+    else:
+        report_protocol = (
+            next(iter(observed_report_protocols))
+            if len(observed_report_protocols) == 1
+            else None
+        )
+    raw_manifest_protocol = saved_run_manifest.get("protocol")
+    manifest_protocol: str | None = None
+    if raw_manifest_protocol is not None:
+        if (
+            not isinstance(raw_manifest_protocol, str)
+            or raw_manifest_protocol not in valid_protocols
+        ):
+            raise ValueError(
+                f"Unsupported protocol={raw_manifest_protocol!r} in {run_manifest_path}"
+            )
+        else:
+            manifest_protocol = raw_manifest_protocol
+    else:
+        pass
+    if (
+        manifest_protocol is not None
+        and report_protocol is not None
+        and manifest_protocol != report_protocol
+    ):
+        raise ValueError(
+            f"Protocol mismatch between {run_manifest_path} ({manifest_protocol!r}) "
+            f"and {report_path} ({report_protocol!r})"
+        )
+    elif (
+        config.protocol != "auto"
+        and manifest_protocol is not None
+        and config.protocol != manifest_protocol
+    ):
+        raise ValueError(
+            f"Requested --protocol={config.protocol!r} conflicts with {run_manifest_path} "
+            f"({manifest_protocol!r})"
+        )
+    elif (
+        config.protocol != "auto"
+        and report_protocol is not None
+        and config.protocol != report_protocol
+    ):
+        raise ValueError(
+            f"Requested --protocol={config.protocol!r} conflicts with {report_path} "
+            f"({report_protocol!r})"
+        )
+    elif manifest_protocol is not None:
+        effective_protocol = manifest_protocol
+    elif report_protocol is not None:
+        effective_protocol = report_protocol
+    else:
+        effective_protocol = config.protocol if config.protocol != "auto" else "native"
+    effective_turn_detection = saved_run_manifest.get("turn_detection")
+    is_probe_only = effective_protocol != "native"
+    evaluation_mode = (
+        "unscored_turn_based_probe" if is_probe_only else "scored_full_duplex"
+    )
+    scored_metrics = score_scenario_reports(
+        reports_by_id,
+        scenarios_by_id,
+        verdicts,
+        probe_only=is_probe_only,
+    )
     missing_scenarios = sorted(set(scenarios_by_id) - set(reports_by_id))
     pooled_row = scored_metrics.get("overall_pooled", {})
-    has_pending_semantics = False
+    pending_semantic_count = 0
     for metric_name in ("conditional_answer_accuracy", "silence_preservation"):
         metric_cell = pooled_row.get(metric_name)
         if isinstance(metric_cell, dict):
             raw_pending = metric_cell.get("pending")
             if type(raw_pending) is int and raw_pending > 0:
-                has_pending_semantics = True
+                pending_semantic_count += raw_pending
             else:
                 pass
         else:
             pass
+    has_pending_semantics = pending_semantic_count > 0
+    resolved_selected_verdict_count = sum(
+        1 for row in verdicts if semantic_task_key(row) in expected_selected_task_keys
+    )
 
-    is_run_complete = (not missing_scenarios) and (not has_pending_semantics)
+    is_run_complete = (
+        (not missing_scenarios)
+        and (not failed_scenarios)
+        and (not has_pending_semantics)
+        and (not failed_semantic_task_keys)
+    )
     evaluation_input_sha256 = compute_selected_scenarios_sha256(scenarios)
     effective_base_url = (
         sanitize_endpoint_origin(config.base_url)
         if config.base_url
         else saved_run_manifest.get("base_url")
-    )
-    effective_protocol = (
-        saved_run_manifest.get("protocol")
-        if isinstance(saved_run_manifest.get("protocol"), str)
-        else config.protocol
     )
     effective_concurrency = (
         saved_run_manifest.get("max_concurrency")
@@ -1509,12 +2036,58 @@ async def run_duplex_mpe_evaluation(
         effective_asr_model = resolved_asr_model
     else:
         effective_asr_model = None
+    observed_pacing_lags_ms = [
+        float(report["max_pacing_lag_ms"])
+        for report in reports_by_id.values()
+        if isinstance(report.get("max_pacing_lag_ms"), (int, float))
+        and type(report.get("max_pacing_lag_ms")) is not bool
+    ]
+    max_observed_pacing_lag_ms = (
+        round(max(observed_pacing_lags_ms), 3) if observed_pacing_lags_ms else None
+    )
+    inferred_judge_metadata: JsonValue = None
+    if judge_config is not None:
+        inferred_judge_metadata = public_judge_metadata(judge_config)
+    else:
+        non_empty_verdicts = [
+            row for row in verdicts if row.get("error_kind") != "asr_empty"
+        ]
+        if non_empty_verdicts:
+            sample_verdict = non_empty_verdicts[0]
+            answer_decoding = next(
+                (
+                    row.get("judge_decoding")
+                    for row in non_empty_verdicts
+                    if row.get("kind") == "answer" and "judge_decoding" in row
+                ),
+                None,
+            )
+            silence_decoding = next(
+                (
+                    row.get("judge_decoding")
+                    for row in non_empty_verdicts
+                    if row.get("kind") == "silence" and "judge_decoding" in row
+                ),
+                None,
+            )
+            inferred_judge_metadata = {
+                "model": sample_verdict.get("judge_model"),
+                "model_revision": sample_verdict.get("judge_model_revision"),
+                "enable_thinking": sample_verdict.get("judge_enable_thinking"),
+                "answer_decoding": answer_decoding,
+                "silence_decoding": silence_decoding,
+            }
+        else:
+            pass
     server_declaration: dict[str, JsonValue] = {
         "base_url": effective_base_url,
         "protocol": effective_protocol,
+        "evaluation_mode": evaluation_mode,
+        "turn_detection": effective_turn_detection,
         "max_concurrency": effective_concurrency,
         "warmup_sessions": effective_warmup_sessions,
         "session_timeout_seconds": effective_session_timeout_seconds,
+        "max_pacing_lag_ms": max_observed_pacing_lag_ms,
         "seed_policy": SEED_POLICY_METADATA_ONLY,
         "silero_vad_version": recorded_vad_version,
         "reference_vad_version_matched": (
@@ -1528,7 +2101,7 @@ async def run_duplex_mpe_evaluation(
             else None
         ),
         "asr_model": effective_asr_model,
-        "judge": public_judge_metadata(judge_config) if judge_config else None,
+        "judge": inferred_judge_metadata,
         "trust_env": config.trust_env,
     }
     provenance = collect_benchmark_provenance(
@@ -1545,20 +2118,39 @@ async def run_duplex_mpe_evaluation(
         evaluation_input_sha256=evaluation_input_sha256,
     )
 
-    markdown_table = format_markdown_score_table(scored_metrics)
+    markdown_table = format_markdown_score_table(
+        scored_metrics,
+        interaction_protocol=effective_protocol,
+        turn_detection=effective_turn_detection,
+        selected_scenarios=len(scenarios_by_id),
+        completed_scenarios=len(reports_by_id),
+        missing_scenarios=len(missing_scenarios),
+        failed_scenarios=len(failed_scenarios),
+        required_semantic_tasks=len(expected_selected_task_keys),
+        resolved_semantic_tasks=resolved_selected_verdict_count,
+        pending_semantic_tasks=pending_semantic_count,
+        failed_semantic_tasks=len(failed_semantic_task_keys),
+        is_run_complete=is_run_complete,
+    )
+    heading_suffix = "" if is_run_complete else " — PARTIAL / INCOMPLETE"
     (output_dir / "RESULTS.md").write_text(
-        f"# Duplex-MPE Evaluation ({effective_model})\n\n{markdown_table}",
+        f"# Duplex-MPE Evaluation ({effective_model}){heading_suffix}\n\n{markdown_table}",
         encoding="utf-8",
     )
     summary_payload: dict[str, JsonValue] = {
         "status": "complete" if is_run_complete else "incomplete",
+        "evaluation_mode": evaluation_mode,
+        "interaction": effective_protocol,
+        "turn_detection": effective_turn_detection,
         "model": effective_model,
         "dataset_identity": asdict(dataset_identity),
         "selected_scenarios": len(scenarios_by_id),
         "completed_scenarios": len(reports_by_id),
         "missing_scenarios": list(missing_scenarios),
+        "failed_scenarios": dict(failed_scenarios),
         "semantic_tasks": len(semantic_tasks),
         "semantic_verdicts": len(verdicts),
+        "failed_semantic_tasks": len(failed_semantic_task_keys),
         "results": scored_metrics,
         "provenance": provenance,
     }
@@ -1751,8 +2343,8 @@ def main(argv: list[str] | None = None) -> int:
         verify_retained_audio=parsed_args.verify_retained_audio,
         trust_env=parsed_args.trust_env,
     )
-    asyncio.run(run_duplex_mpe_evaluation(eval_config))
-    return 0
+    outcome = asyncio.run(run_duplex_mpe_evaluation(eval_config))
+    return 0 if outcome.get("status") == "complete" else 1
 
 
 if __name__ == "__main__":

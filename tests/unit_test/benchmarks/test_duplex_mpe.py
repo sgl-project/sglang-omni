@@ -5,15 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import dataclasses
 import http.server
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
-import time
 import traceback
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from numpy.typing import NDArray
 from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
 
+import benchmarks.duplex.mpe.realtime_session as realtime_session_module
 import benchmarks.duplex.mpe.vad as duplex_mpe_vad
 from benchmarks.dataset.duplex_mpe import (
     DUPLEX_MPE_DATASET_ID,
@@ -44,6 +46,7 @@ from benchmarks.dataset.duplex_mpe import (
 )
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.duplex.mpe.metrics import (
+    format_markdown_score_table,
     score_scenario_reports,
     validate_scenario_reports,
 )
@@ -62,6 +65,7 @@ from benchmarks.duplex.mpe.realtime_session import (
     PlaybackTimelineBuffer,
     RealtimeEndpointSpec,
     RealtimeProtocolMode,
+    compute_effective_scenario_timeout_seconds,
     decode_pcm16_base64_to_float32,
     encode_float32_to_pcm16_base64,
     negotiate_realtime_endpoint,
@@ -70,8 +74,11 @@ from benchmarks.duplex.mpe.realtime_session import (
 )
 from benchmarks.duplex.mpe.semantic import (
     JudgeEndpointConfig,
+    JudgeTaskDecodingConfig,
     build_semantic_tasks,
     judge_tasks_via_http,
+    load_judge_endpoint_config,
+    load_validated_existing_verdicts,
     public_judge_metadata,
     transcribe_tasks_via_http,
 )
@@ -596,15 +603,20 @@ def test_realtime_websocket_session_contracts_and_drain_tail(
                             "turn_detection": {"type": "server_vad"},
                         }
                     else:
+                        input_section: dict[str, JsonValue] = {
+                            "format": {
+                                "type": "audio/pcm",
+                                "rate": input_rate_hz,
+                            },
+                            "turn_detection": (
+                                None
+                                if protocol_mode == "native"
+                                else {"type": "server_vad"}
+                            ),
+                        }
                         echoed_session = {
                             "audio": {
-                                "input": {
-                                    "format": {
-                                        "type": "audio/pcm",
-                                        "rate": input_rate_hz,
-                                    },
-                                    "turn_detection": {"type": "server_vad"},
-                                },
+                                "input": input_section,
                                 "output": {
                                     "format": {
                                         "type": "audio/pcm",
@@ -629,6 +641,20 @@ def test_realtime_websocket_session_contracts_and_drain_tail(
                 elif event_type == "input_audio_buffer.append":
                     pcm_samples = decode_pcm16_base64_to_float32(client_event["audio"])
                     accumulated_input_seconds += len(pcm_samples) / input_rate_hz
+                    if protocol_mode != "legacy":
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.accepted",
+                                    "event_id": f"evt_acc_{client_event['sglang']['seq']}",
+                                    "seq": client_event["sglang"]["seq"],
+                                    "accepted_end_ms": accumulated_input_seconds
+                                    * 1000.0,
+                                }
+                            )
+                        )
+                    else:
+                        pass
                     if not replied_to_target and accumulated_input_seconds >= 2.10:
                         replied_to_target = True
                         tone_count = int(round(0.48 * output_rate_hz))
@@ -677,6 +703,17 @@ def test_realtime_websocket_session_contracts_and_drain_tail(
                     else:
                         pass
                 elif event_type == "sglang.input_audio.end":
+                    expected_total_ms = accumulated_input_seconds * 1000.0
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.ended",
+                                "event_id": "evt_ended",
+                                "accepted_end_ms": expected_total_ms,
+                                "tail_policy": "flush",
+                            }
+                        )
+                    )
                     tail_tone = np.full(
                         int(round(0.10 * output_rate_hz)), 0.20, dtype=np.float32
                     )
@@ -694,6 +731,9 @@ def test_realtime_websocket_session_contracts_and_drain_tail(
                             {
                                 "type": "sglang.input_audio.drained",
                                 "event_id": "evt_drained",
+                                "accepted_end_ms": expected_total_ms,
+                                "consumed_ms": expected_total_ms,
+                                "discarded_ms": 0.0,
                             }
                         )
                     )
@@ -1045,7 +1085,8 @@ def test_semantic_checkpointing_resume_guards_and_cli_completeness(
             )
         )
     )
-    assert asr_subset_result["status"] == "transcribed"
+    assert asr_subset_result["status"] == "complete"
+    assert asr_subset_result["phase"] == "asr"
     preserved_transcribed = json.loads(
         (tmp_path / "run" / "transcribed.json").read_text(encoding="utf-8")
     )
@@ -1062,7 +1103,8 @@ def test_semantic_checkpointing_resume_guards_and_cli_completeness(
             )
         )
     )
-    assert judge_subset_result["status"] == "judged"
+    assert judge_subset_result["status"] == "complete"
+    assert judge_subset_result["phase"] == "judge"
     preserved_labels = json.loads(
         (tmp_path / "run" / "labels.json").read_text(encoding="utf-8")
     )
@@ -1129,7 +1171,7 @@ def test_semantic_checkpointing_resume_guards_and_cli_completeness(
                 )
             )
         )
-    write_json_atomic(tmp_path / "run" / "labels.json", verdicts)
+    write_json_atomic(tmp_path / "run" / "labels.json", list(verdicts))
 
     # note (machengqian): Offline subset scoring succeeds when the selected subset has zero semantic tasks while another scenario has cached transcripts/labels.
     zero_task_dir = tmp_path / "zero_task_subset"
@@ -1490,7 +1532,10 @@ def test_generate_resume_rejects_orphan_report_and_revision_change(
                     output_path=tmp_path / "judge_401_labels.json",
                 )
             )
-            assert judge_401_verdicts == []
+            assert list(judge_401_verdicts) == []
+            assert judge_401_verdicts.failed_task_keys == (
+                f"{selected[0].scenario_id}:1:answer",
+            )
             assert "AUDIT_SENTINEL" not in "\n".join(captured_log_records)
         finally:
             logging.getLogger("benchmarks.duplex.mpe").removeHandler(mem_handler)
@@ -2219,6 +2264,7 @@ def test_terminal_receipts_idle_cancel_and_cache_integrity_guards(
                     )
                 )
                 seen_configure = False
+                accepted_samples = 0
                 async for raw_frame in connection:
                     message = json.loads(raw_frame)
                     message_type = message["type"]
@@ -2238,7 +2284,11 @@ def test_terminal_receipts_idle_cancel_and_cache_integrity_guards(
                                                 "type": "audio/pcm",
                                                 "rate": 16000,
                                             },
-                                            "turn_detection": {"type": "server_vad"},
+                                            "turn_detection": (
+                                                None
+                                                if selected_mode == "native"
+                                                else {"type": "server_vad"}
+                                            ),
                                         },
                                         "output": {
                                             "format": {
@@ -2261,12 +2311,45 @@ def test_terminal_receipts_idle_cancel_and_cache_integrity_guards(
                         else:
                             await connection.close(1000, "closed without echo")
                             return
+                    elif message_type == "input_audio_buffer.append":
+                        accepted_samples += len(
+                            decode_pcm16_base64_to_float32(message["audio"])
+                        )
+                        if selected_mode != "legacy":
+                            await connection.send(
+                                json.dumps(
+                                    {
+                                        "type": "sglang.input_audio.accepted",
+                                        "event_id": f"evt_acc_{message['sglang']['seq']}",
+                                        "seq": message["sglang"]["seq"],
+                                        "accepted_end_ms": accepted_samples
+                                        * 1000.0
+                                        / 16000,
+                                    }
+                                )
+                            )
+                        else:
+                            pass
                     elif message_type == "sglang.input_audio.end":
+                        expected_ms = accepted_samples * 1000.0 / 16000
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.ended",
+                                    "event_id": "evt_ended",
+                                    "accepted_end_ms": expected_ms,
+                                    "tail_policy": "flush",
+                                }
+                            )
+                        )
                         await connection.send(
                             json.dumps(
                                 {
                                     "type": "sglang.input_audio.drained",
                                     "event_id": "evt_drained",
+                                    "accepted_end_ms": expected_ms,
+                                    "consumed_ms": expected_ms,
+                                    "discarded_ms": 0.0,
                                 }
                             )
                         )
@@ -3057,9 +3140,8 @@ def test_terminal_receipts_idle_cancel_and_cache_integrity_guards(
 def test_concurrent_realtime_pacing_thread_offload_and_lag_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Overlapping session preparation/persistence runs off the pacing loop, and excessive loop stalls fail closed."""
-    dataset_root = build_synthetic_dataset(tmp_path / "ds_paced", pair_count=1)
-    # note (machengqian): Shorten synthetic clips to 80 ms so two real-time paced sessions finish in ~0.8 s.
+    """Session preparation, step advancement, and persistence run off the event loop, and pacing lag is enforced deterministically."""
+    dataset_root = build_synthetic_dataset(tmp_path / "ds_paced", pair_count=2)
     tiny_clip = np.zeros(1280, dtype=np.float32)
     for wav_candidate in (dataset_root / "audio").rglob("*.wav"):
         soundfile.write(
@@ -3075,14 +3157,150 @@ def test_concurrent_realtime_pacing_thread_offload_and_lag_guard(
         "benchmarks.duplex.mpe.realtime_session.TARGET_ONSET_DEADLINE_SECONDS", 0.16
     )
 
-    class SlowInitVadModel(EnvelopeVadModel):
-        def __init__(self) -> None:
-            super().__init__()
-            # note (machengqian): Simulate 180 ms blocking model load; if executed on the event loop, active peer pacing would lag >180 ms.
-            time.sleep(0.18)
+    original_prepare = realtime_session_module.prepare_scenario_schedule_sync
+    original_advance = realtime_session_module.advance_schedule_step_sync
+    original_persist = realtime_session_module.persist_captured_waveform_sync
+    observed_prepare_threads: list[int] = []
+    observed_advance_threads: list[int] = []
+    observed_persist_threads: list[int] = []
+    session_b_entered_prepare = threading.Event()
+    session_b_entered_async = asyncio.Event()
+    release_session_b_prepare = threading.Event()
+    session_a_progressed_during_b_init = False
+    event_loop_reference: list[asyncio.AbstractEventLoop] = []
+
+    def tracked_prepare(
+        scenario: DuplexMpeScenarioRecord,
+        *,
+        dataset_root: Path,
+        input_sample_rate_hz: int,
+        output_sample_rate_hz: int,
+        vad_config: SileroActivityConfig | None,
+        vad_model: duplex_mpe_vad.SileroVadModel | None,
+        chunk_milliseconds: float,
+    ) -> tuple[
+        realtime_session_module.Generator[
+            NDArray[np.float32],
+            NDArray[np.float32],
+            realtime_session_module.ScenarioScheduleResult,
+        ],
+        NDArray[np.float32] | None,
+        realtime_session_module.ScenarioScheduleResult | None,
+        float,
+    ]:
+        observed_prepare_threads.append(threading.get_ident())
+        if scenario.scenario_id == scenarios[1].scenario_id:
+            session_b_entered_prepare.set()
+            if event_loop_reference:
+                event_loop_reference[0].call_soon_threadsafe(
+                    session_b_entered_async.set
+                )
+            else:
+                pass
+            assert release_session_b_prepare.wait(timeout=5.0)
+        else:
+            pass
+        return original_prepare(
+            scenario,
+            dataset_root=dataset_root,
+            input_sample_rate_hz=input_sample_rate_hz,
+            output_sample_rate_hz=output_sample_rate_hz,
+            vad_config=vad_config,
+            vad_model=vad_model,
+            chunk_milliseconds=chunk_milliseconds,
+        )
+
+    def tracked_advance(
+        schedule: realtime_session_module.Generator[
+            NDArray[np.float32],
+            NDArray[np.float32],
+            realtime_session_module.ScenarioScheduleResult,
+        ],
+        rendered_chunk: NDArray[np.float32],
+    ) -> tuple[
+        NDArray[np.float32] | None,
+        realtime_session_module.ScenarioScheduleResult | None,
+    ]:
+        observed_advance_threads.append(threading.get_ident())
+        return original_advance(schedule, rendered_chunk)
+
+    def tracked_persist(
+        output_audio_path: Path,
+        waveform_samples: NDArray[np.float32],
+        sample_rate_hz: int,
+    ) -> str:
+        observed_persist_threads.append(threading.get_ident())
+        return original_persist(output_audio_path, waveform_samples, sample_rate_hz)
+
+    monkeypatch.setattr(
+        realtime_session_module, "prepare_scenario_schedule_sync", tracked_prepare
+    )
+    monkeypatch.setattr(
+        realtime_session_module, "advance_schedule_step_sync", tracked_advance
+    )
+    monkeypatch.setattr(
+        realtime_session_module, "persist_captured_waveform_sync", tracked_persist
+    )
+
+    active_clock_var: contextvars.ContextVar[ControlledClock | None] = (
+        contextvars.ContextVar("active_clock_var", default=None)
+    )
+
+    class ControlledClock:
+        def __init__(
+            self,
+            *,
+            spike_on_append_index: int | None = None,
+            spike_seconds: float = 0.0,
+            await_event_on_append_index: tuple[int, asyncio.Event] | None = None,
+        ) -> None:
+            self.now_seconds = 100.0
+            self.append_index = 0
+            self.spike_on_append_index = spike_on_append_index
+            self.spike_seconds = spike_seconds
+            self.await_event_on_append_index = await_event_on_append_index
+
+        def __call__(self) -> float:
+            return self.now_seconds
+
+    REAL_ASYNCIO_SLEEP = asyncio.sleep
+
+    async def context_aware_sleep(delay_seconds: float) -> None:
+        bound_clock = active_clock_var.get()
+        if bound_clock is not None:
+            bound_clock.now_seconds += max(0.0, delay_seconds)
+            bound_clock.append_index += 1
+            if (
+                bound_clock.await_event_on_append_index is not None
+                and bound_clock.append_index
+                == bound_clock.await_event_on_append_index[0]
+            ):
+                await asyncio.wait_for(
+                    bound_clock.await_event_on_append_index[1].wait(), timeout=5.0
+                )
+            else:
+                pass
+            if (
+                bound_clock.spike_on_append_index is not None
+                and bound_clock.append_index == bound_clock.spike_on_append_index
+            ):
+                bound_clock.now_seconds += bound_clock.spike_seconds
+            else:
+                pass
+            await REAL_ASYNCIO_SLEEP(0.002 if delay_seconds > 0 else 0)
+        else:
+            await REAL_ASYNCIO_SLEEP(delay_seconds)
 
     async def exercise_parallel_paced_sessions() -> None:
+        nonlocal session_a_progressed_during_b_init
+        event_loop_reference.append(asyncio.get_running_loop())
+        loop_thread_id = threading.get_ident()
+        session_a_first_append = asyncio.Event()
+
         async def paced_peer(connection: ServerConnection) -> None:
+            nonlocal session_a_progressed_during_b_init
+            accepted_samples = 0
+            appends_seen = 0
             await connection.send(
                 json.dumps(
                     {
@@ -3119,12 +3337,53 @@ def test_concurrent_realtime_pacing_thread_offload_and_lag_guard(
                             }
                         )
                     )
+                elif message["type"] == "input_audio_buffer.append":
+                    appends_seen += 1
+                    accepted_samples += len(
+                        decode_pcm16_base64_to_float32(message["audio"])
+                    )
+                    if appends_seen == 1:
+                        session_a_first_append.set()
+                    else:
+                        pass
+                    if (
+                        session_b_entered_prepare.is_set()
+                        and not release_session_b_prepare.is_set()
+                    ):
+                        session_a_progressed_during_b_init = True
+                        release_session_b_prepare.set()
+                    else:
+                        pass
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.accepted",
+                                "event_id": f"evt_acc_{message['sglang']['seq']}",
+                                "seq": message["sglang"]["seq"],
+                                "accepted_end_ms": accepted_samples * 1000.0 / 16000,
+                            }
+                        )
+                    )
                 elif message["type"] == "sglang.input_audio.end":
+                    expected_ms = accepted_samples * 1000.0 / 16000
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.ended",
+                                "event_id": "evt_ended",
+                                "accepted_end_ms": expected_ms,
+                                "tail_policy": "flush",
+                            }
+                        )
+                    )
                     await connection.send(
                         json.dumps(
                             {
                                 "type": "sglang.input_audio.drained",
                                 "event_id": "evt_drained",
+                                "accepted_end_ms": expected_ms,
+                                "consumed_ms": expected_ms,
+                                "discarded_ms": 0.0,
                             }
                         )
                     )
@@ -3136,7 +3395,6 @@ def test_concurrent_realtime_pacing_thread_offload_and_lag_guard(
                 else:
                     pass
 
-        monkeypatch.setattr(duplex_mpe_vad, "load_silero_vad", SlowInitVadModel)
         async with websockets.serve(paced_peer, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
             spec = RealtimeEndpointSpec(
@@ -3148,78 +3406,318 @@ def test_concurrent_realtime_pacing_thread_offload_and_lag_guard(
                 turn_detection=None,
             )
 
+            monkeypatch.setattr(
+                realtime_session_module.asyncio, "sleep", context_aware_sleep
+            )
+
+            async def run_session_a() -> dict[str, JsonValue]:
+                clock_a = ControlledClock(
+                    await_event_on_append_index=(2, session_b_entered_async)
+                )
+                active_clock_var.set(clock_a)
+                return await run_realtime_scenario(
+                    scenarios[0],
+                    dataset_root=dataset_root,
+                    endpoint_spec=spec,
+                    output_audio_path=tmp_path / "paced_0.wav",
+                    vad_model=EnvelopeVadModel(),
+                    realtime_pacing=True,
+                    max_pacing_lag_seconds=0.50,
+                    session_timeout_seconds=15.0,
+                    clock_fn=clock_a,
+                )
+
             async def delayed_second_session() -> dict[str, JsonValue]:
-                await asyncio.sleep(0.10)
+                await asyncio.wait_for(session_a_first_append.wait(), timeout=5.0)
+                clock_b = ControlledClock()
+                active_clock_var.set(clock_b)
                 return await run_realtime_scenario(
                     scenarios[1],
                     dataset_root=dataset_root,
                     endpoint_spec=spec,
                     output_audio_path=tmp_path / "paced_1.wav",
+                    vad_model=EnvelopeVadModel(),
                     realtime_pacing=True,
-                    max_pacing_lag_seconds=0.14,
+                    max_pacing_lag_seconds=0.50,
                     session_timeout_seconds=15.0,
+                    clock_fn=clock_b,
                 )
 
             report_a, report_b = await asyncio.gather(
-                run_realtime_scenario(
+                run_session_a(),
+                delayed_second_session(),
+            )
+            assert session_a_progressed_during_b_init is True
+            assert observed_prepare_threads and all(
+                thread_id != loop_thread_id for thread_id in observed_prepare_threads
+            )
+            assert observed_advance_threads and all(
+                thread_id != loop_thread_id for thread_id in observed_advance_threads
+            )
+            assert observed_persist_threads and all(
+                thread_id != loop_thread_id for thread_id in observed_persist_threads
+            )
+            assert report_a["max_pacing_lag_ms"] == 0.0
+            assert report_b["max_pacing_lag_ms"] == 0.0
+
+            # Deterministic mid-scenario pacing lag exceeding max_pacing_lag_seconds fails closed.
+            mid_lag_clock = ControlledClock(spike_on_append_index=3, spike_seconds=0.22)
+            active_clock_var.set(mid_lag_clock)
+            with pytest.raises(RuntimeError, match="pacing lagged"):
+                await run_realtime_scenario(
                     scenarios[0],
                     dataset_root=dataset_root,
                     endpoint_spec=spec,
-                    output_audio_path=tmp_path / "paced_0.wav",
+                    output_audio_path=tmp_path / "stalled.wav",
+                    vad_model=EnvelopeVadModel(),
                     realtime_pacing=True,
-                    max_pacing_lag_seconds=0.14,
+                    max_pacing_lag_seconds=0.08,
                     session_timeout_seconds=15.0,
-                ),
-                delayed_second_session(),
-            )
-            lag_a = report_a["max_pacing_lag_ms"]
-            lag_b = report_b["max_pacing_lag_ms"]
-            assert isinstance(lag_a, (int, float)) and float(lag_a) < 140.0
-            assert isinstance(lag_b, (int, float)) and float(lag_b) < 140.0
-
-            # note (machengqian): Genuine event-loop stalls exceeding max_pacing_lag_seconds must raise RuntimeError rather than silently catching up.
-            async def inject_event_loop_stall() -> None:
-                await asyncio.sleep(0.24)
-                time.sleep(0.18)
-
-            with pytest.raises(RuntimeError, match="pacing lagged"):
-                await asyncio.gather(
-                    run_realtime_scenario(
-                        scenarios[0],
-                        dataset_root=dataset_root,
-                        endpoint_spec=spec,
-                        output_audio_path=tmp_path / "stalled.wav",
-                        vad_model=EnvelopeVadModel(),
-                        realtime_pacing=True,
-                        max_pacing_lag_seconds=0.08,
-                        session_timeout_seconds=15.0,
-                    ),
-                    inject_event_loop_stall(),
+                    clock_fn=mid_lag_clock,
                 )
             assert not (tmp_path / "stalled.wav").exists()
 
-        # note (machengqian): A stall synchronized to the very last input_audio_buffer.append must also fail closed without persisting artifacts.
-        final_append_seen = asyncio.Event()
+            # Deterministic lag synchronized to the final append packet before sglang.input_audio.end fails closed without persisting audio.
+            final_append_reached = asyncio.Event()
+            final_lag_clock = ControlledClock(
+                await_event_on_append_index=(11, final_append_reached)
+            )
 
-        async def final_stall_peer(connection: ServerConnection) -> None:
-            append_count = 0
+            async def final_append_peer(connection: ServerConnection) -> None:
+                accepted_samples = 0
+                appends_seen = 0
+                await connection.send(
+                    json.dumps(
+                        {
+                            "type": "session.created",
+                            "event_id": "evt_created",
+                            "session": {"id": "sess_final_lag"},
+                        }
+                    )
+                )
+                async for raw_frame in connection:
+                    message = json.loads(raw_frame)
+                    if message["type"] == "session.update":
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "session.updated",
+                                    "event_id": "evt_updated",
+                                    "session": {
+                                        "audio": {
+                                            "input": {
+                                                "format": {
+                                                    "type": "audio/pcm",
+                                                    "rate": 16000,
+                                                }
+                                            },
+                                            "output": {
+                                                "format": {
+                                                    "type": "audio/pcm",
+                                                    "rate": 24000,
+                                                }
+                                            },
+                                        }
+                                    },
+                                }
+                            )
+                        )
+                    elif message["type"] == "input_audio_buffer.append":
+                        appends_seen += 1
+                        accepted_samples += len(
+                            decode_pcm16_base64_to_float32(message["audio"])
+                        )
+                        if appends_seen == 11:
+                            final_lag_clock.now_seconds += 0.22
+                            final_append_reached.set()
+                        else:
+                            pass
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.accepted",
+                                    "event_id": f"evt_acc_{message['sglang']['seq']}",
+                                    "seq": message["sglang"]["seq"],
+                                    "accepted_end_ms": accepted_samples
+                                    * 1000.0
+                                    / 16000,
+                                }
+                            )
+                        )
+                    elif message["type"] == "sglang.input_audio.end":
+                        final_append_reached.set()
+                        expected_ms = accepted_samples * 1000.0 / 16000
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.ended",
+                                    "event_id": "evt_ended",
+                                    "accepted_end_ms": expected_ms,
+                                    "tail_policy": "flush",
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.drained",
+                                    "event_id": "evt_drained",
+                                    "accepted_end_ms": expected_ms,
+                                    "consumed_ms": expected_ms,
+                                    "discarded_ms": 0.0,
+                                }
+                            )
+                        )
+                    elif message["type"] == "session.close":
+                        await connection.send(
+                            json.dumps(
+                                {"type": "session.closed", "event_id": "evt_closed"}
+                            )
+                        )
+                        return
+                    else:
+                        pass
+
+            async with websockets.serve(
+                final_append_peer, "127.0.0.1", 0
+            ) as final_server:
+                final_port = final_server.sockets[0].getsockname()[1]
+                final_spec = RealtimeEndpointSpec(
+                    websocket_url=f"ws://127.0.0.1:{final_port}/v1/realtime",
+                    capabilities_url=f"http://127.0.0.1:{final_port}/v1/realtime/capabilities",
+                    protocol="native",
+                    input_sample_rate_hz=16000,
+                    output_sample_rate_hz=24000,
+                    turn_detection=None,
+                )
+                active_clock_var.set(final_lag_clock)
+                with pytest.raises(RuntimeError, match="pacing lagged"):
+                    await asyncio.gather(
+                        run_realtime_scenario(
+                            scenarios[0],
+                            dataset_root=dataset_root,
+                            endpoint_spec=final_spec,
+                            output_audio_path=tmp_path / "stalled_final.wav",
+                            vad_model=EnvelopeVadModel(),
+                            realtime_pacing=True,
+                            max_pacing_lag_seconds=0.08,
+                            session_timeout_seconds=15.0,
+                            clock_fn=final_lag_clock,
+                        ),
+                        asyncio.wait_for(final_append_reached.wait(), timeout=5.0),
+                    )
+                assert not (tmp_path / "stalled_final.wav").exists()
+            active_clock_var.set(None)
+
+    asyncio.run(exercise_parallel_paced_sessions())
+
+
+def test_review_contracts_timeout_isolation_probe_receipts_and_exit_codes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify dynamic long-clip timeout, larger-timeout resume, concurrent failure isolation, turn-based probe scoring, unified admission budget, drained receipt validation, judge decoding/revision/non-retryable 4xx, and non-zero incomplete exit codes."""
+    # 1. Long scenario (like duplex_mpe_1808 at ~386s max schedule) expands effective timeout past default 230s.
+    effective_long_timeout = compute_effective_scenario_timeout_seconds(
+        configured_timeout_seconds=230.0,
+        maximum_schedule_duration_seconds=386.8,
+    )
+    assert effective_long_timeout >= 446.8
+
+    dataset_root = build_synthetic_dataset(tmp_path / "ds_review", pair_count=1)
+    tiny_clip = np.zeros(1280, dtype=np.float32)
+    for wav_candidate in (dataset_root / "audio").rglob("*.wav"):
+        soundfile.write(
+            str(wav_candidate), tiny_clip, 16000, format="WAV", subtype="FLOAT"
+        )
+    scenarios = load_duplex_mpe_scenarios(dataset_root, addressing="all")
+
+    # 2. Shared unified 3-retry admission budget across HTTP 503 and session admission_rejected, plus drained receipt mismatch rejection.
+    async def exercise_admission_and_drained_receipts() -> None:
+        http_503_count = 0
+
+        async def process_request(
+            connection: ServerConnection, request: websockets.Request
+        ) -> websockets.Response | None:
+            nonlocal http_503_count
+            if http_503_count < 2:
+                http_503_count += 1
+                return connection.respond(503, "busy\n")
+            else:
+                return None
+
+        async def combined_rejection_peer(connection: ServerConnection) -> None:
+            session_rejections = 0
             await connection.send(
                 json.dumps(
                     {
                         "type": "session.created",
-                        "event_id": "evt_created",
-                        "session": {"id": "sess_final_stall"},
+                        "event_id": "evt_c",
+                        "session": {"id": "s_comb"},
                     }
                 )
             )
             async for raw_frame in connection:
-                message = json.loads(raw_frame)
-                if message["type"] == "session.update":
+                msg = json.loads(raw_frame)
+                if msg["type"] == "session.update":
+                    session_rejections += 1
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "event_id": f"err_{session_rejections}",
+                                "error": {"code": "admission_rejected"},
+                                "sglang": {"fatal": False},
+                            }
+                        )
+                    )
+                else:
+                    pass
+
+        async with websockets.serve(
+            combined_rejection_peer,
+            "127.0.0.1",
+            0,
+            process_request=process_request,
+        ) as server:
+            port = server.sockets[0].getsockname()[1]
+            spec = RealtimeEndpointSpec(
+                websocket_url=f"ws://127.0.0.1:{port}/v1/realtime",
+                capabilities_url=f"http://127.0.0.1:{port}/v1/realtime/capabilities",
+                protocol="native",
+                input_sample_rate_hz=16000,
+                output_sample_rate_hz=24000,
+                turn_detection=None,
+            )
+            # 2 HTTP 503 denials + 2 session rejections = 4 denials > ADMISSION_RETRIES (3).
+            with pytest.raises(RuntimeError, match="combined admission denials"):
+                await run_realtime_scenario(
+                    scenarios[0],
+                    dataset_root=dataset_root,
+                    endpoint_spec=spec,
+                    output_audio_path=tmp_path / "rejected.wav",
+                    vad_model=EnvelopeVadModel(),
+                    realtime_pacing=False,
+                )
+
+        async def bad_drained_peer(connection: ServerConnection) -> None:
+            accepted_samples = 0
+            await connection.send(
+                json.dumps(
+                    {
+                        "type": "session.created",
+                        "event_id": "evt_c",
+                        "session": {"id": "s_drain"},
+                    }
+                )
+            )
+            async for raw_frame in connection:
+                msg = json.loads(raw_frame)
+                if msg["type"] == "session.update":
                     await connection.send(
                         json.dumps(
                             {
                                 "type": "session.updated",
-                                "event_id": "evt_updated",
+                                "event_id": "evt_u",
                                 "session": {
                                     "audio": {
                                         "input": {
@@ -3239,58 +3737,641 @@ def test_concurrent_realtime_pacing_thread_offload_and_lag_guard(
                             }
                         )
                     )
-                elif message["type"] == "input_audio_buffer.append":
-                    append_count += 1
-                    # 1 preamble + 1 gap + 4*(1 turn + gap/deadline) = 11 total 80 ms packets.
-                    if append_count == 11:
-                        final_append_seen.set()
-                    else:
-                        pass
-                elif message["type"] == "sglang.input_audio.end":
+                elif msg["type"] == "input_audio_buffer.append":
+                    accepted_samples += len(
+                        decode_pcm16_base64_to_float32(msg["audio"])
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.accepted",
+                                "event_id": f"acc_{msg['sglang']['seq']}",
+                                "seq": msg["sglang"]["seq"],
+                                "accepted_end_ms": accepted_samples * 1000.0 / 16000,
+                            }
+                        )
+                    )
+                elif msg["type"] == "sglang.input_audio.end":
+                    expected_ms = accepted_samples * 1000.0 / 16000
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.ended",
+                                "event_id": "evt_ended",
+                                "accepted_end_ms": expected_ms,
+                                "tail_policy": "flush",
+                            }
+                        )
+                    )
                     await connection.send(
                         json.dumps(
                             {
                                 "type": "sglang.input_audio.drained",
                                 "event_id": "evt_drained",
+                                "accepted_end_ms": expected_ms,
+                                "consumed_ms": expected_ms - 80.0,
+                                "discarded_ms": 80.0,
                             }
                         )
                     )
-                elif message["type"] == "session.close":
-                    await connection.send(
-                        json.dumps({"type": "session.closed", "event_id": "evt_closed"})
-                    )
-                    return
                 else:
                     pass
 
-        async def stall_on_final_append() -> None:
-            await final_append_seen.wait()
-            time.sleep(0.18)
-
-        async with websockets.serve(final_stall_peer, "127.0.0.1", 0) as final_server:
-            final_port = final_server.sockets[0].getsockname()[1]
-            final_spec = RealtimeEndpointSpec(
-                websocket_url=f"ws://127.0.0.1:{final_port}/v1/realtime",
-                capabilities_url=f"http://127.0.0.1:{final_port}/v1/realtime/capabilities",
+        async with websockets.serve(bad_drained_peer, "127.0.0.1", 0) as drain_server:
+            drain_port = drain_server.sockets[0].getsockname()[1]
+            drain_spec = RealtimeEndpointSpec(
+                websocket_url=f"ws://127.0.0.1:{drain_port}/v1/realtime",
+                capabilities_url=f"http://127.0.0.1:{drain_port}/v1/realtime/capabilities",
                 protocol="native",
                 input_sample_rate_hz=16000,
                 output_sample_rate_hz=24000,
                 turn_detection=None,
             )
-            with pytest.raises(RuntimeError, match="pacing lagged"):
-                await asyncio.gather(
-                    run_realtime_scenario(
-                        scenarios[0],
-                        dataset_root=dataset_root,
-                        endpoint_spec=final_spec,
-                        output_audio_path=tmp_path / "stalled_final.wav",
-                        vad_model=EnvelopeVadModel(),
-                        realtime_pacing=True,
-                        max_pacing_lag_seconds=0.08,
-                        session_timeout_seconds=15.0,
-                    ),
-                    stall_on_final_append(),
+            with pytest.raises(RuntimeError, match="consumed_ms mismatch"):
+                await run_realtime_scenario(
+                    scenarios[0],
+                    dataset_root=dataset_root,
+                    endpoint_spec=drain_spec,
+                    output_audio_path=tmp_path / "bad_drain.wav",
+                    vad_model=EnvelopeVadModel(),
+                    realtime_pacing=False,
                 )
-            assert not (tmp_path / "stalled_final.wav").exists()
+            assert not (tmp_path / "bad_drain.wav").exists()
 
-    asyncio.run(exercise_parallel_paced_sessions())
+    asyncio.run(exercise_admission_and_drained_receipts())
+
+    # 3. Concurrent scenario failure isolation + larger session_timeout_seconds resume + non-zero CLI exit on incomplete generate.
+    iso_dir = tmp_path / "isolated_gen"
+    turn_based_spec = RealtimeEndpointSpec(
+        websocket_url="ws://127.0.0.1:9999/v1/realtime",
+        capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
+        protocol="turn_based",
+        input_sample_rate_hz=16000,
+        output_sample_rate_hz=24000,
+        turn_detection={"type": "server_vad", "silence_duration_ms": 500},
+    )
+
+    async def fake_negotiate_tb(
+        base_url: str,
+        *,
+        protocol_selection: str = "auto",
+        input_sample_rate_hz: int | None = None,
+        output_sample_rate_hz: int | None = None,
+        turn_detection: dict[str, JsonValue] | None = None,
+        timeout_seconds: float = 30.0,
+        trust_env: bool = False,
+    ) -> RealtimeEndpointSpec:
+        return turn_based_spec
+
+    fail_once = {"triggered": False}
+
+    async def fake_record_one_fails(
+        scenario: DuplexMpeScenarioRecord,
+        *,
+        dataset_root: Path,
+        endpoint_spec: RealtimeEndpointSpec,
+        output_audio_path: Path,
+        session_timeout_seconds: float = 230.0,
+        seed_mapping: dict[str, int] | None = None,
+    ) -> dict[str, JsonValue]:
+        if (
+            scenario.scenario_id == scenarios[1].scenario_id
+            and not fail_once["triggered"]
+        ):
+            fail_once["triggered"] = True
+            raise RuntimeError("Simulated single-session capacity rejection")
+        else:
+            output_audio_path.parent.mkdir(parents=True, exist_ok=True)
+            soundfile.write(
+                str(output_audio_path),
+                np.zeros(24000, dtype=np.float32),
+                24000,
+                format="WAV",
+                subtype="FLOAT",
+            )
+            return {
+                "protocol_id": "mpeval.unified.v3",
+                "aed_config": SileroActivityConfig().to_report_dict(),
+                "realtime_protocol": "turn_based",
+                "total_duration_s": 1.0,
+                "assistant_speech_segments": [[0.22, 0.38]],
+                "assistant_audio_sha256": compute_file_sha256(output_audio_path),
+                "T": {
+                    "outcome": TARGET_HIT_OUTCOME,
+                    "t_end_s": 0.20,
+                    "onset_s": 0.22,
+                },
+                "rows": [
+                    {
+                        "turn_index": turn.turn_index,
+                        "event_type": turn.event_type,
+                        "speaker": turn.speaker,
+                        "turn_start": 0.0,
+                        "turn_end": 0.2,
+                        "win_start": 0.0,
+                        "win_end": 0.4,
+                    }
+                    for turn in scenario.turns
+                ],
+            }
+
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_duplex_mpe.negotiate_realtime_endpoint",
+        fake_negotiate_tb,
+    )
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_duplex_mpe.run_realtime_scenario",
+        fake_record_one_fails,
+    )
+
+    first_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "generate",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(iso_dir),
+            "--base-url",
+            "http://127.0.0.1:9999",
+            "--model",
+            "Qwen/Qwen3-Omni",
+            "--max-concurrency",
+            "2",
+            "--warmup",
+            "0",
+            "--session-timeout-s",
+            "230",
+        ]
+    )
+    assert first_exit_code == 1
+    saved_after_fail = json.loads((iso_dir / "report.json").read_text(encoding="utf-8"))
+    assert set(saved_after_fail) == {scenarios[0].scenario_id}
+    assert (iso_dir / "failures.json").is_file()
+
+    # Resuming with a larger --session-timeout-s succeeds and clears failures.json.
+    second_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "generate",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(iso_dir),
+            "--base-url",
+            "http://127.0.0.1:9999",
+            "--model",
+            "Qwen/Qwen3-Omni",
+            "--max-concurrency",
+            "2",
+            "--warmup",
+            "0",
+            "--session-timeout-s",
+            "480",
+        ]
+    )
+    assert second_exit_code == 0
+    assert not (iso_dir / "failures.json").exists()
+
+    # 4. Turn-based score phase emits unscored_turn_based_probe with TR/AY None and non-zero exit when semantic tasks are pending.
+    probe_score_exit = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "score",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(iso_dir),
+        ]
+    )
+    assert probe_score_exit == 1
+    probe_summary = json.loads(
+        (iso_dir / "duplex_mpe_results.json").read_text(encoding="utf-8")
+    )
+    assert probe_summary["evaluation_mode"] == "unscored_turn_based_probe"
+    assert probe_summary["interaction"] == "turn_based"
+    assert probe_summary["turn_detection"] == {
+        "type": "server_vad",
+        "silence_duration_ms": 500,
+    }
+    pooled_probe = probe_summary["results"]["overall_pooled"]
+    assert pooled_probe["fresh_onset_response_rate"] is None
+    assert pooled_probe["answering_window_yield"] is None
+    assert "unconditional_window_yield" not in pooled_probe
+    probe_md = format_markdown_score_table(
+        probe_summary["results"],
+        interaction_protocol="turn_based",
+        turn_detection=probe_summary["turn_detection"],
+    )
+    assert "Unscored Turn-Based Probe" in probe_md
+    probe_results_md = (iso_dir / "RESULTS.md").read_text(encoding="utf-8")
+    assert "PARTIAL / INCOMPLETE" in probe_results_md
+    assert (
+        f"**Scenario coverage**: selected `{len(scenarios)}`; completed `{len(scenarios)}`; missing `0`; failed `0`."
+        in probe_results_md
+    )
+    assert "**Semantic coverage**:" in probe_results_md
+    assert "[PARTIAL]" in probe_results_md
+
+    # Documented launch commands (sgl-omni, --config, --max_sessions, --skip-server-warmup, cascade URL/service/timeout overrides, empty alignment_url, talker_ar) are accepted while sensitive dotted flags are redacted and secret-bearing flag names are rejected.
+    doc_cmd = (
+        "sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --variant session "
+        "--enable-realtime --max_sessions 8 --skip-server-warmup "
+        "--sampling.greedy true --thinker.engine.disable_cuda_graph true "
+        "--talker_ar.factory.continuation_aware_admission false "
+        "--session_nodes.llm.base_url http://127.0.0.1:9000/v1 "
+        "--services.tts.env.CUDA_VISIBLE_DEVICES 1 "
+        '--session_nodes.aligner.alignment_url "" '
+        "--timeout_s 60 --realtime-idle-timeout-s 300 "
+        "--realtime-session-update-timeout-s 60 "
+        "--session_nodes.llm.api_key sk-secret1234567890"
+    )
+    sanitized_doc_cmd = sanitize_launch_command(doc_cmd)
+    assert sanitized_doc_cmd is not None
+    assert "sgl-omni serve" in sanitized_doc_cmd
+    assert "--sampling.greedy true" in sanitized_doc_cmd
+    assert "--skip-server-warmup" in sanitized_doc_cmd
+    assert "--session_nodes.llm.base_url http://127.0.0.1:9000/v1" in sanitized_doc_cmd
+    assert "--services.tts.env.CUDA_VISIBLE_DEVICES 1" in sanitized_doc_cmd
+    assert "--timeout_s 60" in sanitized_doc_cmd
+    assert "sk-secret1234567890" not in sanitized_doc_cmd
+    assert "--session_nodes.llm.api_key '<REDACTED>'" in sanitized_doc_cmd
+    for malformed_sensitive_cmd in (
+        "sgl-omni serve --session_nodes.llm.api_key.sk-secret1234567890=unused",
+        "sgl-omni serve --session_nodes.llm.api_key.x_sk-secret1234567890=unused",
+        "sgl-omni serve --session_nodes.llm.api_key.x_sk-secret1234567890 unused",
+        "sgl-omni serve --session_nodes.llm.xsk-0123456789abcdef.api_key=unused",
+        "sgl-omni serve --session_nodes.llm.xsk-0123456789abcdef.api_key unused",
+        "sgl-omni serve --services.sk-0123456789abcdef.env.CUDA_VISIBLE_DEVICES 1",
+        "sgl-omni serve --api_key_x_sk-secret1234567890=unused",
+        "sgl-omni serve --api_key_x_sk-secret1234567890 unused",
+    ):
+        with pytest.raises(ValueError):
+            sanitize_launch_command(malformed_sensitive_cmd)
+    with pytest.raises(ValueError):
+        sanitize_launch_command(
+            "sgl-omni serve --session_nodes.llm.base_url http://alice:secret@127.0.0.1:9000/v1"
+        )
+
+    # Malformed non-object failures.json is rejected rather than silently ignored.
+    (iso_dir / "failures.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="JSON object"):
+        run_duplex_mpe_cli(
+            [
+                "--phase",
+                "score",
+                "--dataset-root",
+                str(dataset_root),
+                "--output-dir",
+                str(iso_dir),
+            ]
+        )
+    (iso_dir / "failures.json").unlink()
+
+    # 5. Judge config model_revision, omitted enable_thinking=None, per-task decoding, and non-retryable HTTP 404.
+    judge_json_path = tmp_path / "judge_custom.json"
+    write_json_atomic(
+        judge_json_path,
+        {
+            "model": "qwen3.8-27b",
+            "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            "base_url": "http://127.0.0.1:30000/v1",
+            "answer_decoding": {"temperature": 0.0, "seed": 7, "max_tokens": 1024},
+            "silence_decoding": {"temperature": 0.0, "seed": 7, "max_tokens": 512},
+        },
+    )
+    loaded_judge_cfg = load_judge_endpoint_config(judge_json_path)
+    assert loaded_judge_cfg.enable_thinking is None
+    assert loaded_judge_cfg.model_revision == "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    assert loaded_judge_cfg.answer_decoding == JudgeTaskDecodingConfig(
+        temperature=0.0, seed=7, max_tokens=1024
+    )
+
+    observed_http_bodies: list[dict[str, JsonValue]] = []
+    attempt_counter = {" judge_404": 0}
+
+    class JudgeInspectionHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            observed_http_bodies.append(body)
+            if self.path.endswith("/missing/v1/chat/completions"):
+                attempt_counter[" judge_404"] += 1
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b'{"error":"not found"}')
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps(
+                        {
+                            "choices": [
+                                {
+                                    "finish_reason": "stop",
+                                    "message": {"content": '{"correct": true}'},
+                                }
+                            ]
+                        }
+                    ).encode("utf-8")
+                )
+
+        def log_message(self, format_str: str, *args: str | int) -> None:
+            return
+
+    http_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), JudgeInspectionHandler)
+    srv_thread = threading.Thread(target=http_srv.serve_forever, daemon=True)
+    srv_thread.start()
+    try:
+        srv_port = http_srv.server_address[1]
+        sample_task: dict[str, JsonValue] = {
+            "scenario_id": scenarios[0].scenario_id,
+            "turn_index": 1,
+            "kind": "answer",
+            "context": "(none)",
+            "request": "What time?",
+            "gold": "Three PM.",
+            "hyp": "Three PM.",
+        }
+        # Non-retryable 404 makes exactly 1 request, not 4.
+        res_404 = asyncio.run(
+            judge_tasks_via_http(
+                [sample_task],
+                judge_config=JudgeEndpointConfig(
+                    model="qwen3.8-27b",
+                    base_url=f"http://127.0.0.1:{srv_port}/missing/v1",
+                ),
+                output_path=tmp_path / "labels_404.json",
+            )
+        )
+        assert attempt_counter[" judge_404"] == 1
+        assert len(res_404.failed_task_keys) == 1
+
+        observed_http_bodies.clear()
+        good_cfg = JudgeEndpointConfig(
+            model="qwen3.8-27b",
+            model_revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            base_url=f"http://127.0.0.1:{srv_port}/v1",
+            enable_thinking=None,
+            answer_decoding=JudgeTaskDecodingConfig(
+                temperature=0.0, seed=7, max_tokens=1024
+            ),
+        )
+        res_ok = asyncio.run(
+            judge_tasks_via_http(
+                [sample_task],
+                judge_config=good_cfg,
+                output_path=tmp_path / "labels_ok.json",
+            )
+        )
+        assert not res_ok.failed_task_keys
+        assert len(observed_http_bodies) == 1
+        sent_body = observed_http_bodies[0]
+        assert "chat_template_kwargs" not in sent_body
+        assert sent_body["temperature"] == 0.0
+        assert sent_body["seed"] == 7
+        assert sent_body["max_tokens"] == 1024
+
+        # Changing answer_decoding or model_revision on resume raises ValueError.
+        saved_ok = json.loads((tmp_path / "labels_ok.json").read_text(encoding="utf-8"))
+        with pytest.raises(ValueError, match="judge_decoding"):
+            load_validated_existing_verdicts(
+                {f"{scenarios[0].scenario_id}:1:answer": sample_task},
+                saved_ok,
+                judge_config=good_cfg.model_copy(
+                    update={
+                        "answer_decoding": JudgeTaskDecodingConfig(
+                            temperature=0.2, seed=7, max_tokens=1024
+                        )
+                    }
+                ),
+            )
+        with pytest.raises(ValueError, match="judge_model_revision"):
+            load_validated_existing_verdicts(
+                {f"{scenarios[0].scenario_id}:1:answer": sample_task},
+                saved_ok,
+                judge_config=good_cfg.model_copy(
+                    update={
+                        "model_revision": "0000000000000000000000000000000000000000"
+                    }
+                ),
+            )
+
+        # Boolean values in JudgeTaskDecodingConfig are rejected without coercion.
+        for field_name in ("temperature", "top_p", "top_k", "seed", "max_tokens"):
+            for bool_val in (True, False):
+                with pytest.raises(ValueError):
+                    JudgeTaskDecodingConfig.model_validate({field_name: bool_val})
+
+        # Config-free cached verdict validation rejects mixed judge identities across tasks.
+        second_task = {
+            **sample_task,
+            "scenario_id": scenarios[1].scenario_id,
+        }
+        second_verdict = {
+            **saved_ok[0],
+            "scenario_id": scenarios[1].scenario_id,
+            "prompt_sha256": compute_prompt_sha256(second_task),
+            "judge_model": "other-judge",
+        }
+        with pytest.raises(ValueError, match="Mixed judge provenance"):
+            load_validated_existing_verdicts(
+                {
+                    f"{scenarios[0].scenario_id}:1:answer": sample_task,
+                    f"{scenarios[1].scenario_id}:1:answer": second_task,
+                },
+                [*saved_ok, second_verdict],
+            )
+    finally:
+        http_srv.shutdown()
+        http_srv.server_close()
+
+    # 6. Premature ended/drained before EOS, manifest/report protocol mismatch, and ASR/judge incomplete exit on missing scenarios.
+    async def exercise_premature_drained_rejection() -> None:
+        async def premature_peer(connection: ServerConnection) -> None:
+            await connection.send(
+                json.dumps(
+                    {
+                        "type": "session.created",
+                        "event_id": "evt_c",
+                        "session": {"id": "s_prem"},
+                    }
+                )
+            )
+            async for raw_frame in connection:
+                msg = json.loads(raw_frame)
+                if msg["type"] == "session.update":
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "session.updated",
+                                "event_id": "evt_u",
+                                "session": {
+                                    "audio": {
+                                        "input": {
+                                            "format": {
+                                                "type": "audio/pcm",
+                                                "rate": 16000,
+                                            }
+                                        },
+                                        "output": {
+                                            "format": {
+                                                "type": "audio/pcm",
+                                                "rate": 24000,
+                                            }
+                                        },
+                                    }
+                                },
+                            }
+                        )
+                    )
+                elif msg["type"] == "input_audio_buffer.append":
+                    if msg["sglang"]["seq"] == 0:
+                        samples = len(decode_pcm16_base64_to_float32(msg["audio"]))
+                        end_ms = samples * 1000.0 / 16000
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.accepted",
+                                    "event_id": "acc_0",
+                                    "seq": 0,
+                                    "accepted_end_ms": end_ms,
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.ended",
+                                    "event_id": "prem_ended",
+                                    "accepted_end_ms": end_ms,
+                                    "tail_policy": "flush",
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "sglang.input_audio.drained",
+                                    "event_id": "prem_drained",
+                                    "accepted_end_ms": end_ms,
+                                    "consumed_ms": end_ms,
+                                    "discarded_ms": 0.0,
+                                }
+                            )
+                        )
+                    else:
+                        pass
+                else:
+                    pass
+
+        async with websockets.serve(premature_peer, "127.0.0.1", 0) as p_srv:
+            p_port = p_srv.sockets[0].getsockname()[1]
+            p_spec = RealtimeEndpointSpec(
+                websocket_url=f"ws://127.0.0.1:{p_port}/v1/realtime",
+                capabilities_url=f"http://127.0.0.1:{p_port}/v1/realtime/capabilities",
+                protocol="native",
+                input_sample_rate_hz=16000,
+                output_sample_rate_hz=24000,
+                turn_detection=None,
+            )
+            with pytest.raises(RuntimeError, match="before sglang.input_audio.end"):
+                await run_realtime_scenario(
+                    scenarios[0],
+                    dataset_root=dataset_root,
+                    endpoint_spec=p_spec,
+                    output_audio_path=tmp_path / "premature.wav",
+                    vad_model=EnvelopeVadModel(),
+                    realtime_pacing=False,
+                )
+            assert not (tmp_path / "premature.wav").exists()
+
+    asyncio.run(exercise_premature_drained_rejection())
+
+    # Protocol mismatch between run.json ("native") and report.json ("turn_based") is rejected.
+    mismatch_dir = tmp_path / "proto_mismatch"
+    (mismatch_dir / "audio").mkdir(parents=True)
+    shutil.copy2(
+        iso_dir / "audio" / f"{scenarios[0].scenario_id}.wav",
+        mismatch_dir / "audio" / f"{scenarios[0].scenario_id}.wav",
+    )
+    saved_iso_reports = json.loads(
+        (iso_dir / "report.json").read_text(encoding="utf-8")
+    )
+    write_json_atomic(
+        mismatch_dir / "report.json",
+        {scenarios[0].scenario_id: saved_iso_reports[scenarios[0].scenario_id]},
+    )
+    write_json_atomic(mismatch_dir / "run.json", {"model": "m", "protocol": "native"})
+    with pytest.raises(ValueError, match="Protocol mismatch"):
+        run_duplex_mpe_cli(
+            [
+                "--phase",
+                "score",
+                "--dataset-root",
+                str(dataset_root),
+                "--output-dir",
+                str(mismatch_dir),
+            ]
+        )
+
+    # Explicit --protocol native against a turn-based capability endpoint or turn-based session.updated is rejected.
+    class TurnBasedCapHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "interaction": "turn_based",
+                        "turn_control": ["server_vad"],
+                        "input_audio_format": {"type": "audio/pcm", "rate": 16000},
+                        "output_audio_format": {"type": "audio/pcm", "rate": 24000},
+                    }
+                ).encode("utf-8")
+            )
+
+        def log_message(self, format_str: str, *args: str | int) -> None:
+            return
+
+    tb_http = http.server.ThreadingHTTPServer(("127.0.0.1", 0), TurnBasedCapHandler)
+    tb_thread = threading.Thread(target=tb_http.serve_forever, daemon=True)
+    tb_thread.start()
+    try:
+        tb_port = tb_http.server_address[1]
+        with pytest.raises(
+            ValueError, match="conflicts with server capability protocol"
+        ):
+            asyncio.run(
+                negotiate_realtime_endpoint(
+                    f"http://127.0.0.1:{tb_port}",
+                    protocol_selection="native",
+                )
+            )
+    finally:
+        tb_http.shutdown()
+        tb_http.server_close()
+
+    with pytest.raises(RuntimeError, match="non-native interaction"):
+        validate_accepted_session(
+            {
+                "type": "session.updated",
+                "session": {
+                    "audio": {
+                        "input": {"format": {"type": "audio/pcm", "rate": 16000}},
+                        "output": {"format": {"type": "audio/pcm", "rate": 24000}},
+                    },
+                    "sglang": {"granted": {"interaction": "turn_based"}},
+                },
+            },
+            RealtimeEndpointSpec(
+                websocket_url="ws://127.0.0.1:9999/v1/realtime",
+                capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
+                protocol="native",
+                input_sample_rate_hz=16000,
+                output_sample_rate_hz=24000,
+                turn_detection=None,
+            ),
+        )

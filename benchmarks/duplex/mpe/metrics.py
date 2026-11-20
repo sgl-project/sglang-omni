@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+# Portions derived from https://github.com/step-out/Duplex-MPE (Copyright (c) 2026 MPeval authors, MIT License; see benchmarks/duplex/mpe/LICENSE).
 """Duplex-MPE metric computation, window episode extraction, and report validation."""
 
 from __future__ import annotations
@@ -499,34 +500,59 @@ def format_ratio(
     }
 
 
-def build_condition_metrics(counts: dict[str, int]) -> dict[str, JsonValue]:
-    return {
-        "scenarios": counts["scenarios"],
-        "fresh_onset_response_rate": format_ratio(counts["fresh"], counts["scenarios"]),
-        "conditional_answer_accuracy": format_ratio(
-            counts["correct"], counts["responded"], counts["answer_pending"]
-        ),
-        "unconditional_answer_accuracy": format_ratio(
-            counts["correct"], counts["scenarios"], counts["answer_pending"]
-        ),
-        "silence_preservation": format_ratio(
-            counts["silence_ok"], counts["silence_n"], counts["silence_pending"]
-        ),
-        "answering_window_yield": format_ratio(counts["yielded"], counts["eligible"]),
-        "unconditional_window_yield": format_ratio(
-            counts["yielded"], counts["windows"]
-        ),
-        "response_presence": format_ratio(counts["responded"], counts["scenarios"]),
-        "window_response": format_ratio(counts["window_hits"], counts["windows"]),
-    }
+def build_condition_metrics(
+    counts: dict[str, int], *, probe_only: bool = False
+) -> dict[str, JsonValue]:
+    if probe_only:
+        return {
+            "scenarios": counts["scenarios"],
+            "evaluation_mode": "unscored_turn_based_probe",
+            "fresh_onset_response_rate": None,
+            "conditional_answer_accuracy": format_ratio(
+                counts["correct"], counts["responded"], counts["answer_pending"]
+            ),
+            "unconditional_answer_accuracy": format_ratio(
+                counts["correct"], counts["scenarios"], counts["answer_pending"]
+            ),
+            "silence_preservation": format_ratio(
+                counts["silence_ok"], counts["silence_n"], counts["silence_pending"]
+            ),
+            "answering_window_yield": None,
+            "response_presence": format_ratio(counts["responded"], counts["scenarios"]),
+            "window_response": format_ratio(counts["window_hits"], counts["windows"]),
+        }
+    else:
+        return {
+            "scenarios": counts["scenarios"],
+            "evaluation_mode": "scored_full_duplex",
+            "fresh_onset_response_rate": format_ratio(
+                counts["fresh"], counts["scenarios"]
+            ),
+            "conditional_answer_accuracy": format_ratio(
+                counts["correct"], counts["responded"], counts["answer_pending"]
+            ),
+            "unconditional_answer_accuracy": format_ratio(
+                counts["correct"], counts["scenarios"], counts["answer_pending"]
+            ),
+            "silence_preservation": format_ratio(
+                counts["silence_ok"], counts["silence_n"], counts["silence_pending"]
+            ),
+            "answering_window_yield": format_ratio(
+                counts["yielded"], counts["eligible"]
+            ),
+            "response_presence": format_ratio(counts["responded"], counts["scenarios"]),
+            "window_response": format_ratio(counts["window_hits"], counts["windows"]),
+        }
 
 
 def score_scenario_reports(
     reports_by_id: dict[str, dict[str, JsonValue]],
     scenarios_by_id: dict[str, DuplexMpeScenarioRecord],
     verdicts: list[dict[str, JsonValue]],
+    *,
+    probe_only: bool = False,
 ) -> dict[str, dict[str, JsonValue]]:
-    """Compute Duplex-MPE conditional, unconditional, and diagnostic metrics by condition."""
+    """Compute Duplex-MPE capabilities and coverage diagnostics by condition."""
     indexed_verdicts: dict[tuple[str, int, str], dict[str, JsonValue]] = {}
     seen_verdict_keys: set[tuple[str, int, str]] = set()
     for verdict in verdicts:
@@ -686,7 +712,7 @@ def score_scenario_reports(
         counts["yielded"] += n4_summary.yielded
 
     results: dict[str, dict[str, JsonValue]] = {
-        condition: build_condition_metrics(counts)
+        condition: build_condition_metrics(counts, probe_only=probe_only)
         for condition, counts in condition_counts.items()
     }
     if condition_counts:
@@ -694,7 +720,9 @@ def score_scenario_reports(
             metric_key: sum(counts[metric_key] for counts in condition_counts.values())
             for metric_key in next(iter(condition_counts.values()))
         }
-        results["overall_pooled"] = build_condition_metrics(pooled_counts)
+        results["overall_pooled"] = build_condition_metrics(
+            pooled_counts, probe_only=probe_only
+        )
     else:
         pass
     return results
@@ -843,8 +871,10 @@ def validate_scenario_reports(
         pass
 
 
-def format_percent_cell(metric_entry: JsonValue) -> str:
-    if not isinstance(metric_entry, dict):
+def format_percent_cell(metric_entry: JsonValue, *, is_probe_na: bool = False) -> str:
+    if is_probe_na and metric_entry is None:
+        return "n/a (probe)"
+    elif not isinstance(metric_entry, dict):
         return "n/a"
     else:
         raw_value = metric_entry.get("value")
@@ -859,16 +889,90 @@ def format_percent_cell(metric_entry: JsonValue) -> str:
             return f"pending ({pending} unresolved; {numerator}/{denominator})"
 
 
+def format_turn_detection_summary(turn_detection: JsonValue) -> str:
+    if not isinstance(turn_detection, dict):
+        return "none"
+    else:
+        detector_type = turn_detection.get("type")
+        parts: list[str] = [
+            str(detector_type) if detector_type is not None else "custom"
+        ]
+        for key in sorted(turn_detection):
+            if key == "type":
+                continue
+            else:
+                parts.append(f"{key}={turn_detection[key]}")
+        return ", ".join(parts)
+
+
 def format_markdown_score_table(
     scored_results: dict[str, dict[str, JsonValue]],
+    *,
+    interaction_protocol: str = "native",
+    turn_detection: JsonValue = None,
+    selected_scenarios: int | None = None,
+    completed_scenarios: int | None = None,
+    missing_scenarios: int = 0,
+    failed_scenarios: int = 0,
+    required_semantic_tasks: int | None = None,
+    resolved_semantic_tasks: int | None = None,
+    pending_semantic_tasks: int = 0,
+    failed_semantic_tasks: int = 0,
+    is_run_complete: bool = True,
 ) -> str:
     """Render a concise Markdown summary table across explicit, implicit, and pooled splits."""
+    is_probe = interaction_protocol != "native"
+    lines: list[str] = []
+    if selected_scenarios is not None and completed_scenarios is not None:
+        scenario_coverage_line = (
+            f"**Scenario coverage**: selected `{selected_scenarios}`; "
+            f"completed `{completed_scenarios}`; missing `{missing_scenarios}`; "
+            f"failed `{failed_scenarios}`."
+        )
+        lines.append(f"{scenario_coverage_line}\n")
+    else:
+        pass
+    if required_semantic_tasks is not None and resolved_semantic_tasks is not None:
+        semantic_coverage_line = (
+            f"**Semantic coverage**: required `{required_semantic_tasks}`; "
+            f"resolved `{resolved_semantic_tasks}`; "
+            f"missing/pending `{pending_semantic_tasks}`; "
+            f"failed `{failed_semantic_tasks}`."
+        )
+        lines.append(f"{semantic_coverage_line}\n")
+    else:
+        pass
+    if not is_run_complete:
+        lines.append(
+            "> **PARTIAL / INCOMPLETE RUN**: Run coverage or semantic grading is "
+            "incomplete; metric denominators reflect only completed scenarios and "
+            "scores below are partial.\n"
+        )
+    else:
+        pass
+    if is_probe:
+        turn_detection_summary = format_turn_detection_summary(turn_detection)
+        lines.append(
+            f"> **Unscored Turn-Based Probe** (`interaction={interaction_protocol}`, "
+            f"`turn_detection={turn_detection_summary}`): Duplex-MPE Section 3.4 "
+            "restricts scored evaluation to native full-duplex systems; `TR` and `AY` "
+            "are undefined under server turn segmentation and omitted below.\n"
+        )
+    else:
+        lines.append(
+            f"**Protocol**: `interaction={interaction_protocol}`, "
+            "`turn_detection=null` (`evaluation_mode=scored_full_duplex`).\n"
+        )
     header = (
-        "| Split | Scenarios | TR (Fresh Onset) | AA (Cond.) | AA (Uncond.) | "
-        "SP (Silence) | AY (Cond.) | AY (Uncond.) | RP | WR |\n"
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "| Split | Scenarios | Mode | TR (Fresh Onset) | AA (Cond.) | AA (Uncond.) | "
+        "SP (Silence) | AY (Cond.) | RP | WR |\n"
+        "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|"
     )
-    lines = [header]
+    lines.append(header)
+    base_mode_cell = (
+        f"probe ({interaction_protocol})" if is_probe else "scored (native)"
+    )
+    mode_cell = f"{base_mode_cell} [PARTIAL]" if not is_run_complete else base_mode_cell
     for split_name in ("explicit", "implicit", "overall_pooled"):
         if split_name not in scored_results:
             continue
@@ -876,13 +980,12 @@ def format_markdown_score_table(
             pass
         row = scored_results[split_name]
         lines.append(
-            f"| {split_name} | {row['scenarios']} | "
-            f"{format_percent_cell(row['fresh_onset_response_rate'])} | "
+            f"| {split_name} | {row['scenarios']} | {mode_cell} | "
+            f"{format_percent_cell(row['fresh_onset_response_rate'], is_probe_na=is_probe)} | "
             f"{format_percent_cell(row['conditional_answer_accuracy'])} | "
             f"{format_percent_cell(row['unconditional_answer_accuracy'])} | "
             f"{format_percent_cell(row['silence_preservation'])} | "
-            f"{format_percent_cell(row['answering_window_yield'])} | "
-            f"{format_percent_cell(row['unconditional_window_yield'])} | "
+            f"{format_percent_cell(row['answering_window_yield'], is_probe_na=is_probe)} | "
             f"{format_percent_cell(row['response_presence'])} | "
             f"{format_percent_cell(row['window_response'])} |"
         )

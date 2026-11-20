@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+# Portions derived from https://github.com/step-out/Duplex-MPE (Copyright (c) 2026 MPeval authors, MIT License; see benchmarks/duplex/mpe/LICENSE).
 """ASR window transcription and OpenAI-compatible semantic judging for Duplex-MPE."""
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ import logging
 import math
 import os
 import re
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -42,6 +45,8 @@ from benchmarks.duplex.mpe.protocol import resample_linear_mono
 __all__ = [
     "DEFAULT_ASR_MODEL_ID",
     "JudgeEndpointConfig",
+    "JudgeRunResult",
+    "JudgeTaskDecodingConfig",
     "build_semantic_tasks",
     "judge_tasks_via_http",
     "load_judge_endpoint_config",
@@ -65,10 +70,14 @@ ASR_TARGET_SAMPLE_RATE_HZ = 16000
 TIMELINE_ROUNDING_TOLERANCE_SECONDS = 0.04
 JUDGE_MAX_OUTPUT_TOKENS = 4096
 JUDGE_MAX_ATTEMPTS = 3
-RETRYABLE_HTTP_STATUS_CODES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
+RETRYABLE_CLIENT_STATUS_CODES: frozenset[int] = frozenset({408, 429})
 UNFINISHED_STOP_REASONS: frozenset[str] = frozenset(
     {"max_tokens", "length", "refusal", "content_filter"}
 )
+
+
+def is_retryable_http_status(status_code: int) -> bool:
+    return status_code in RETRYABLE_CLIENT_STATUS_CODES or 500 <= status_code < 600
 
 
 def validate_http_endpoint_url(base_url: str) -> None:
@@ -93,21 +102,75 @@ def validate_http_endpoint_url(base_url: str) -> None:
         pass
 
 
+class JudgeTaskDecodingConfig(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", strict=True, frozen=True, hide_input_in_errors=True
+    )
+
+    temperature: float | int | None = Field(default=None, ge=0.0)
+    top_p: float | int | None = Field(default=None, gt=0.0, le=1.0)
+    top_k: int | None = None
+    seed: int | None = None
+    max_tokens: int = Field(default=JUDGE_MAX_OUTPUT_TOKENS, ge=1)
+
+    @model_validator(mode="after")
+    def validate_decoding_fields(self) -> "JudgeTaskDecodingConfig":
+        if self.temperature is not None and not math.isfinite(float(self.temperature)):
+            raise ValueError(
+                "Judge decoding temperature must be a finite number or null"
+            )
+        elif self.top_p is not None and not math.isfinite(float(self.top_p)):
+            raise ValueError("Judge decoding top_p must be a finite number or null")
+        elif self.top_k is not None and (self.top_k == 0 or self.top_k < -1):
+            raise ValueError("Judge decoding top_k must be -1 or >= 1")
+        else:
+            return self
+
+    def to_metadata_dict(self) -> dict[str, JsonValue]:
+        return {
+            "temperature": (
+                float(self.temperature) if self.temperature is not None else None
+            ),
+            "top_p": float(self.top_p) if self.top_p is not None else None,
+            "top_k": self.top_k,
+            "seed": self.seed,
+            "max_tokens": self.max_tokens,
+        }
+
+
+DEFAULT_ANSWER_DECODING = JudgeTaskDecodingConfig(
+    temperature=None, max_tokens=JUDGE_MAX_OUTPUT_TOKENS
+)
+DEFAULT_SILENCE_DECODING = JudgeTaskDecodingConfig(
+    temperature=0.0, max_tokens=JUDGE_MAX_OUTPUT_TOKENS
+)
+
+
 class JudgeEndpointConfig(BaseModel):
     model_config = ConfigDict(
         extra="forbid", strict=True, frozen=True, hide_input_in_errors=True
     )
 
     model: str = Field(min_length=1)
+    model_revision: str | None = None
     base_url: str = Field(min_length=1)
     api_key_env: str | None = None
     max_concurrency: int = Field(default=8, ge=1)
-    enable_thinking: bool = False
+    enable_thinking: bool | None = None
+    answer_decoding: JudgeTaskDecodingConfig = DEFAULT_ANSWER_DECODING
+    silence_decoding: JudgeTaskDecodingConfig = DEFAULT_SILENCE_DECODING
 
     @model_validator(mode="after")
     def validate_endpoint_fields(self) -> "JudgeEndpointConfig":
         if not self.model.strip():
             raise ValueError("Judge config model must be non-empty")
+        elif self.model_revision is not None and (
+            not self.model_revision.strip()
+            or self.model_revision != self.model_revision.strip()
+        ):
+            raise ValueError(
+                "Judge config model_revision must be null or a trimmed identifier"
+            )
         elif not self.base_url.strip():
             raise ValueError("Judge config base_url must be non-empty")
         else:
@@ -120,6 +183,28 @@ class JudgeEndpointConfig(BaseModel):
             )
         else:
             return self
+
+    def decoding_for_kind(self, kind: SemanticTaskKind) -> JudgeTaskDecodingConfig:
+        if kind == "answer":
+            return self.answer_decoding
+        else:
+            return self.silence_decoding
+
+
+@dataclass(frozen=True, kw_only=True)
+class JudgeRunResult:
+    verdicts: list[dict[str, JsonValue]]
+    failed_task_keys: tuple[str, ...]
+    failure_reasons: dict[str, str]
+
+    def __iter__(self) -> Iterator[dict[str, JsonValue]]:
+        return iter(self.verdicts)
+
+    def __len__(self) -> int:
+        return len(self.verdicts)
+
+    def __getitem__(self, index: int) -> dict[str, JsonValue]:
+        return self.verdicts[index]
 
 
 def sanitize_endpoint_origin(base_url: str) -> str:
@@ -155,10 +240,13 @@ def summarize_http_exception(exc: BaseException) -> str:
 def public_judge_metadata(judge_config: JudgeEndpointConfig) -> dict[str, JsonValue]:
     return {
         "model": judge_config.model,
+        "model_revision": judge_config.model_revision,
         "base_url": sanitize_endpoint_origin(judge_config.base_url),
         "api_key_env": judge_config.api_key_env,
         "max_concurrency": judge_config.max_concurrency,
         "enable_thinking": judge_config.enable_thinking,
+        "answer_decoding": judge_config.answer_decoding.to_metadata_dict(),
+        "silence_decoding": judge_config.silence_decoding.to_metadata_dict(),
     }
 
 
@@ -709,12 +797,16 @@ async def transcribe_tasks_via_http(
                                     "file": ("window.wav", wav_payload, "audio/wav")
                                 },
                             )
-                            if response.status_code in RETRYABLE_HTTP_STATUS_CODES:
+                            if is_retryable_http_status(response.status_code):
                                 last_error = f"HTTP {response.status_code}"
                                 await asyncio.sleep(0.5 * (attempt_index + 1))
                                 continue
+                            elif response.status_code >= 400:
+                                raise RuntimeError(
+                                    f"ASR transcription rejected for {job_key}: "
+                                    f"HTTPStatusError(status={response.status_code})"
+                                )
                             else:
-                                response.raise_for_status()
                                 payload = response.json()
                                 if not isinstance(payload, dict) or not isinstance(
                                     payload.get("text"), str
@@ -762,17 +854,125 @@ async def transcribe_tasks_via_http(
     return ordered_output
 
 
+def validate_verdict_against_judge_config(
+    verdict: dict[str, JsonValue],
+    *,
+    task_key: str,
+    kind: SemanticTaskKind,
+    judge_config: JudgeEndpointConfig | None,
+    expected_judge_model: str | None,
+    expected_model_revision: str | None,
+    expected_enable_thinking: bool | None,
+    check_enable_thinking: bool,
+    expected_endpoint_sha256: str | None,
+) -> None:
+    effective_model = (
+        judge_config.model if judge_config is not None else expected_judge_model
+    )
+    if effective_model is not None and verdict.get("judge_model") != effective_model:
+        raise ValueError(
+            f"Existing verdict on {task_key} was produced by judge "
+            f"{verdict.get('judge_model')!r}, not {effective_model!r}; "
+            "use a new output path"
+        )
+    else:
+        pass
+    effective_revision = (
+        judge_config.model_revision
+        if judge_config is not None
+        else expected_model_revision
+    )
+    has_revision_check = judge_config is not None or expected_model_revision is not None
+    if has_revision_check and "judge_model_revision" in verdict:
+        if verdict.get("judge_model_revision") != effective_revision:
+            raise ValueError(
+                f"Existing verdict on {task_key} used judge_model_revision="
+                f"{verdict.get('judge_model_revision')!r}, not {effective_revision!r}; "
+                "use a new output path"
+            )
+        else:
+            pass
+    elif effective_revision is not None and "judge_model_revision" not in verdict:
+        raise ValueError(
+            f"Existing verdict on {task_key} lacks declared judge_model_revision; "
+            "use a new output path"
+        )
+    else:
+        pass
+    effective_thinking = (
+        judge_config.enable_thinking
+        if judge_config is not None
+        else expected_enable_thinking
+    )
+    should_check_thinking = judge_config is not None or check_enable_thinking
+    if should_check_thinking and "judge_enable_thinking" in verdict:
+        if verdict.get("judge_enable_thinking") != effective_thinking:
+            raise ValueError(
+                f"Existing verdict on {task_key} used enable_thinking="
+                f"{verdict.get('judge_enable_thinking')!r}, not "
+                f"{effective_thinking!r}; use a new output path"
+            )
+        else:
+            pass
+    elif effective_thinking is not None and "judge_enable_thinking" not in verdict:
+        raise ValueError(
+            f"Existing verdict on {task_key} lacks judge_enable_thinking; "
+            "use a new output path"
+        )
+    else:
+        pass
+    if (
+        expected_endpoint_sha256 is not None
+        and verdict.get("judge_endpoint_sha256") != expected_endpoint_sha256
+    ):
+        raise ValueError(
+            f"Existing verdict on {task_key} used a different judge endpoint; "
+            "use a new output path"
+        )
+    else:
+        pass
+    if judge_config is not None:
+        expected_decoding = judge_config.decoding_for_kind(kind).to_metadata_dict()
+        default_decoding = (
+            DEFAULT_ANSWER_DECODING.to_metadata_dict()
+            if kind == "answer"
+            else DEFAULT_SILENCE_DECODING.to_metadata_dict()
+        )
+        if "judge_decoding" in verdict:
+            if verdict.get("judge_decoding") != expected_decoding:
+                raise ValueError(
+                    f"Existing verdict on {task_key} used judge_decoding="
+                    f"{verdict.get('judge_decoding')!r}, not {expected_decoding!r}; "
+                    "use a new output path"
+                )
+            else:
+                pass
+        elif expected_decoding != default_decoding:
+            raise ValueError(
+                f"Existing verdict on {task_key} lacks judge_decoding for custom decoding; "
+                "use a new output path"
+            )
+        else:
+            pass
+    else:
+        pass
+
+
 def load_validated_existing_verdicts(
     indexed_tasks: dict[str, dict[str, JsonValue]],
     existing_verdicts: list[dict[str, JsonValue]] | None,
     *,
+    judge_config: JudgeEndpointConfig | None = None,
     expected_judge_model: str | None = None,
+    expected_model_revision: str | None = None,
     expected_enable_thinking: bool | None = None,
     expected_endpoint_sha256: str | None = None,
     allowed_unselected_task_keys: frozenset[str] | None = None,
 ) -> dict[str, dict[str, JsonValue]]:
     validated: dict[str, dict[str, JsonValue]] = {}
     seen_keys: set[str] = set()
+    inferred_identity: tuple[JsonValue, JsonValue, JsonValue, JsonValue] | None = None
+    inferred_decoding_by_kind: dict[SemanticTaskKind, JsonValue] = {}
     for raw_verdict in existing_verdicts or []:
         task_key = semantic_task_key(raw_verdict)
         if task_key in seen_keys:
@@ -809,33 +1009,47 @@ def load_validated_existing_verdicts(
                 continue
         else:
             pass
-        if (
-            expected_judge_model is not None
-            and bound_verdict.get("judge_model") != expected_judge_model
-        ):
-            raise ValueError(
-                f"Existing verdict on {task_key} was produced by judge "
-                f"{bound_verdict.get('judge_model')!r}, not {expected_judge_model!r}; "
-                "use a new output path"
+        kind: SemanticTaskKind = "answer" if task["kind"] == "answer" else "silence"
+        if judge_config is None:
+            row_identity = (
+                bound_verdict.get("judge_model"),
+                bound_verdict.get("judge_model_revision"),
+                bound_verdict.get("judge_enable_thinking"),
+                bound_verdict.get("judge_endpoint_sha256"),
             )
-        elif (
-            expected_enable_thinking is not None
-            and bound_verdict.get("judge_enable_thinking") != expected_enable_thinking
-        ):
-            raise ValueError(
-                f"Existing verdict on {task_key} used enable_thinking="
-                f"{bound_verdict.get('judge_enable_thinking')!r}, not "
-                f"{expected_enable_thinking!r}; use a new output path"
-            )
-        elif (
-            expected_endpoint_sha256 is not None
-            and bound_verdict.get("judge_endpoint_sha256") != expected_endpoint_sha256
-        ):
-            raise ValueError(
-                f"Existing verdict on {task_key} used a different judge endpoint; "
-                "use a new output path"
-            )
-        elif bound_verdict.get("prompt_sha256") != compute_prompt_sha256(task):
+            if inferred_identity is None:
+                inferred_identity = row_identity
+            elif row_identity != inferred_identity:
+                raise ValueError(
+                    f"Mixed judge provenance across cached verdicts on {task_key}; "
+                    "use a new output path"
+                )
+            else:
+                pass
+            row_decoding = bound_verdict.get("judge_decoding")
+            if kind not in inferred_decoding_by_kind:
+                inferred_decoding_by_kind[kind] = row_decoding
+            elif inferred_decoding_by_kind[kind] != row_decoding:
+                raise ValueError(
+                    f"Mixed judge_decoding across cached {kind} verdicts on {task_key}; "
+                    "use a new output path"
+                )
+            else:
+                pass
+        else:
+            pass
+        validate_verdict_against_judge_config(
+            bound_verdict,
+            task_key=task_key,
+            kind=kind,
+            judge_config=judge_config,
+            expected_judge_model=expected_judge_model,
+            expected_model_revision=expected_model_revision,
+            expected_enable_thinking=expected_enable_thinking,
+            check_enable_thinking=(expected_enable_thinking is not None),
+            expected_endpoint_sha256=expected_endpoint_sha256,
+        )
+        if bound_verdict.get("prompt_sha256") != compute_prompt_sha256(task):
             raise ValueError(f"Prompt SHA-256 mismatch on existing verdict {task_key}")
         elif any(
             bound_verdict.get(reason_key) in UNFINISHED_STOP_REASONS
@@ -866,7 +1080,7 @@ async def judge_tasks_via_http(
     timeout_seconds: float = 180.0,
     trust_env: bool = False,
     allowed_unselected_task_keys: frozenset[str] | None = None,
-) -> list[dict[str, JsonValue]]:
+) -> JudgeRunResult:
     """Grade transcribed answer and silence tasks via an OpenAI-compatible judge."""
     endpoint_url = resolve_chat_completions_url(judge_config.base_url)
     endpoint_sha256 = hashlib.sha256(endpoint_url.encode("utf-8")).hexdigest()
@@ -897,8 +1111,7 @@ async def judge_tasks_via_http(
     verdicts_by_key = load_validated_existing_verdicts(
         indexed_tasks,
         existing_verdicts,
-        expected_judge_model=judge_config.model,
-        expected_enable_thinking=judge_config.enable_thinking,
+        judge_config=judge_config,
         expected_endpoint_sha256=endpoint_sha256,
         allowed_unselected_task_keys=allowed_unselected_task_keys,
     )
@@ -908,22 +1121,32 @@ async def judge_tasks_via_http(
             verdict_key = semantic_task_key(raw_verdict)
             if verdict_key in indexed_tasks:
                 continue
-            elif raw_verdict.get("error_kind") != "asr_empty" and (
-                raw_verdict.get("judge_model") != judge_config.model
-                or (
-                    raw_verdict.get("judge_enable_thinking") is not None
-                    and raw_verdict.get("judge_enable_thinking")
-                    != judge_config.enable_thinking
+            elif raw_verdict.get("error_kind") != "asr_empty":
+                unselected_kind: SemanticTaskKind = (
+                    "answer" if raw_verdict.get("kind") == "answer" else "silence"
                 )
-                or (
-                    raw_verdict.get("judge_endpoint_sha256") is not None
-                    and raw_verdict.get("judge_endpoint_sha256") != endpoint_sha256
-                )
-            ):
-                raise ValueError(
-                    f"Subset judge configuration conflicts with unselected verdict {verdict_key}; "
-                    "use a new output path"
-                )
+                try:
+                    validate_verdict_against_judge_config(
+                        raw_verdict,
+                        task_key=verdict_key,
+                        kind=unselected_kind,
+                        judge_config=judge_config,
+                        expected_judge_model=judge_config.model,
+                        expected_model_revision=judge_config.model_revision,
+                        expected_enable_thinking=judge_config.enable_thinking,
+                        check_enable_thinking=True,
+                        expected_endpoint_sha256=(
+                            endpoint_sha256
+                            if raw_verdict.get("judge_endpoint_sha256") is not None
+                            else None
+                        ),
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Subset judge configuration conflicts with unselected verdict "
+                        f"{verdict_key}; use a new output path"
+                    ) from exc
+                preserved_unselected_verdicts.append(raw_verdict)
             else:
                 preserved_unselected_verdicts.append(raw_verdict)
     else:
@@ -937,6 +1160,7 @@ async def judge_tasks_via_http(
         else:
             pass
 
+    failed_reasons: dict[str, str] = {}
     if pending_tasks:
         semaphore = asyncio.Semaphore(judge_config.max_concurrency)
         checkpoint_lock = asyncio.Lock()
@@ -952,21 +1176,36 @@ async def judge_tasks_via_http(
                 )
                 prompt_text = render_judge_prompt(task)
                 prompt_sha256 = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+                decoding = judge_config.decoding_for_kind(kind)
                 request_body: dict[str, JsonValue] = {
                     "model": judge_config.model,
                     "messages": [{"role": "user", "content": prompt_text}],
-                    "max_tokens": JUDGE_MAX_OUTPUT_TOKENS,
+                    "max_tokens": decoding.max_tokens,
                 }
-                # note (machengqian): Reference Duplex-MPE sets temperature=0.0 on silence tasks and leaves answer tasks at model default.
-                if kind == "silence":
-                    request_body["temperature"] = 0.0
+                if decoding.temperature is not None:
+                    request_body["temperature"] = decoding.temperature
                 else:
                     pass
-                if not judge_config.enable_thinking:
-                    request_body["chat_template_kwargs"] = {"enable_thinking": False}
+                if decoding.top_p is not None:
+                    request_body["top_p"] = decoding.top_p
+                else:
+                    pass
+                if decoding.top_k is not None:
+                    request_body["top_k"] = decoding.top_k
+                else:
+                    pass
+                if decoding.seed is not None:
+                    request_body["seed"] = decoding.seed
+                else:
+                    pass
+                if judge_config.enable_thinking is not None:
+                    request_body["chat_template_kwargs"] = {
+                        "enable_thinking": judge_config.enable_thinking
+                    }
                 else:
                     pass
 
+                last_failure_reason = "no_valid_verdict"
                 async with semaphore:
                     for attempt_index in range(JUDGE_MAX_ATTEMPTS):
                         try:
@@ -975,22 +1214,35 @@ async def judge_tasks_via_http(
                                 headers=request_headers,
                                 json=request_body,
                             )
-                            if response.status_code in RETRYABLE_HTTP_STATUS_CODES:
+                            if is_retryable_http_status(response.status_code):
+                                last_failure_reason = (
+                                    f"HTTPStatusError(status={response.status_code})"
+                                )
                                 await asyncio.sleep(0.5 * (attempt_index + 1))
                                 continue
+                            elif response.status_code >= 400:
+                                last_failure_reason = (
+                                    f"HTTPStatusError(status={response.status_code})"
+                                )
+                                logger.error(
+                                    f"Judge non-retryable HTTP failure on {task_key}: "
+                                    f"{last_failure_reason}"
+                                )
+                                break
                             else:
-                                response.raise_for_status()
-                            payload = response.json()
+                                payload = response.json()
                             choices = (
                                 payload.get("choices")
                                 if isinstance(payload, dict)
                                 else None
                             )
                             if not isinstance(choices, list) or not choices:
+                                last_failure_reason = "missing_choices"
                                 continue
                             else:
                                 first_choice = choices[0]
                             if not isinstance(first_choice, dict):
+                                last_failure_reason = "malformed_choice"
                                 continue
                             else:
                                 finish_reason = first_choice.get("finish_reason")
@@ -1008,6 +1260,7 @@ async def judge_tasks_via_http(
                                     top_stop_reason,
                                 )
                             ):
+                                last_failure_reason = "unfinished_stop_reason"
                                 continue
                             else:
                                 message = first_choice.get("message")
@@ -1017,10 +1270,12 @@ async def judge_tasks_via_http(
                                 else None
                             )
                             if not isinstance(content, str):
+                                last_failure_reason = "missing_message_content"
                                 continue
                             else:
                                 parsed_verdict = parse_judge_verdict_json(content, kind)
                             if parsed_verdict is None:
+                                last_failure_reason = "invalid_verdict_json"
                                 continue
                             else:
                                 decision: dict[str, JsonValue] = (
@@ -1034,9 +1289,11 @@ async def judge_tasks_via_http(
                                     "kind": kind,
                                     **decision,
                                     "judge_model": judge_config.model,
+                                    "judge_model_revision": judge_config.model_revision,
                                     "judge_enable_thinking": (
                                         judge_config.enable_thinking
                                     ),
+                                    "judge_decoding": decoding.to_metadata_dict(),
                                     "judge_endpoint_sha256": endpoint_sha256,
                                     "prompt_sha256": prompt_sha256,
                                 }
@@ -1066,12 +1323,15 @@ async def judge_tasks_via_http(
                                     )
                                 return (task_key, bound_record)
                         except (httpx.HTTPError, ValueError) as exc:
+                            last_failure_reason = summarize_http_exception(exc)
                             logger.warning(
                                 f"Judge attempt {attempt_index + 1} failed on {task_key}: "
-                                f"{summarize_http_exception(exc)}"
+                                f"{last_failure_reason}"
                             )
                             await asyncio.sleep(0.5 * (attempt_index + 1))
-                    return (task_key, None)
+                async with checkpoint_lock:
+                    failed_reasons[task_key] = last_failure_reason
+                return (task_key, None)
 
             await asyncio.gather(
                 *(judge_one(task_key, task) for task_key, task in pending_tasks)
@@ -1091,4 +1351,11 @@ async def judge_tasks_via_http(
             key=canonical_semantic_sort_key,
         ),
     )
-    return ordered_verdicts
+    ordered_failed_keys = tuple(
+        task_key for task_key in indexed_tasks if task_key in failed_reasons
+    )
+    return JudgeRunResult(
+        verdicts=ordered_verdicts,
+        failed_task_keys=ordered_failed_keys,
+        failure_reasons={key: failed_reasons[key] for key in ordered_failed_keys},
+    )

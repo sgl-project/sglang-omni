@@ -85,9 +85,6 @@ def download_dataset(
     local_dir: str | None = None,
 ) -> None:
     """Download dataset files or pre-warm the HuggingFace datasets cache."""
-    from datasets import get_dataset_config_names, load_dataset
-    from huggingface_hub import hf_hub_download
-
     dataset_id, separator, split = repo_id.partition(":")
     if dataset_id == DUPLEX_MPE_DATASET_ID:
         if revision not in (None, DUPLEX_MPE_DATASET_REVISION):
@@ -129,6 +126,10 @@ def download_dataset(
         revision = LONGLIBRIHEAVY_DATASET_REVISION
     elif revision is None and dataset_id == MEANWHILE_DATASET_ID:
         revision = MEANWHILE_DATASET_REVISION
+
+    from datasets import get_dataset_config_names, load_dataset
+    from huggingface_hub import hf_hub_download
+
     revision_kwargs = {"revision": revision} if revision else {}
     if dataset_id == SOCIALOMNI_DATASET_ID:
         from huggingface_hub import snapshot_download

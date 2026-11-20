@@ -670,7 +670,7 @@ python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini --local-dir bench
 python -m benchmarks.dataset.prepare --dataset duplex-mpe --local-dir benchmarks/cache/duplex_mpe
 ```
 
-`benchmark_duplex_mpe.py` inspects `/v1/realtime/capabilities` to negotiate native full-duplex (`MiniCPM-o 4.5` at 16 kHz in / 24 kHz out, `PersonaPlex` at 24 kHz in / 24 kHz out, `Nemotron VoiceChat` at 16 kHz in / 22.05 kHz out) as well as `turn_based` (`Qwen3-Omni`, `Streaming Cascade`) and `legacy` sessions automatically. Each scenario opens with the spoken duty preamble (`audio/aria_duty_preamble.wav`), so models that reject text `session.instructions` remain directly comparable.
+`benchmark_duplex_mpe.py` inspects `/v1/realtime/capabilities` to negotiate native full-duplex (`MiniCPM-o 4.5` at 16 kHz in / 24 kHz out, `PersonaPlex` at 24 kHz in / 24 kHz out, `Nemotron VoiceChat` at 16 kHz in / 22.05 kHz out) as well as `turn_based` (`Qwen3-Omni`, `Streaming Cascade`) and `legacy` sessions automatically. Following Section 3.4 of the Duplex-MPE paper, scored full-duplex evaluation applies only to native full-duplex endpoints (`evaluation_mode="scored_full_duplex"`); turn-based and legacy runs execute as separate unscored probes (`evaluation_mode="unscored_turn_based_probe"`), reporting `interaction` and `turn_detection` while omitting `TR` and `AY`. Each scenario opens with the spoken duty preamble (`audio/aria_duty_preamble.wav`), so models that reject text `session.instructions` remain directly comparable.
 
 ```bash
 # 1. Serve the /v1/realtime model under test (e.g., MiniCPM-o 4.5 on port 8000)
@@ -683,7 +683,7 @@ python -m sglang_omni.cli serve \
     --model-path Qwen/Qwen3-ASR-1.7B --port 8001
 
 # 3. Configure an OpenAI-compatible semantic judge (e.g., SGLang Qwen3.8-27B on port 30000)
-#    See benchmarks/configs/duplex_mpe_judge.example.json (stores api_key_env name, never raw keys)
+#    See benchmarks/configs/duplex_mpe_judge.example.json (declares model, optional model_revision, enable_thinking, and per-task decoding; stores api_key_env name, never raw keys)
 
 # 4. Run end-to-end on the 40-scenario smoke set (or omit --mini for all 4,000 scenarios)
 python -m benchmarks.eval.benchmark_duplex_mpe \
@@ -696,7 +696,7 @@ python -m benchmarks.eval.benchmark_duplex_mpe \
     --judge-config benchmarks/configs/duplex_mpe_judge.example.json
 ```
 
-Phases can also run independently via `--phase {generate,asr,judge,score}` against the same `--output-dir` so model, ASR, and judge servers do not need to hold GPU memory simultaneously (`generate` writes `report.json`, `asr` writes `transcribed.json`, `judge` writes `labels.json`, and `--phase all` or `--phase score` emits `RESULTS.md` and `duplex_mpe_results.json`). Scoring covers the four capabilities — `TR` (`fresh_onset_response_rate`), `AA` (`conditional_answer_accuracy` and `unconditional_answer_accuracy`), `SP` (`silence_preservation` across `N1`–`N3` bystander turns), and `AY` (`answering_window_yield` and `unconditional_window_yield` when another human resolves `N4_Q` via `N4_R`) — alongside coverage diagnostics `RP` (`response_presence`) and `WR` (`window_response`). The public dataset is released under CC BY 4.0; cite:
+Phases can also run independently via `--phase {generate,asr,judge,score}` against the same `--output-dir` so model, ASR, and judge servers do not need to hold GPU memory simultaneously (`generate` writes `report.json`, `asr` writes `transcribed.json`, `judge` writes `labels.json`, and `--phase all` or `--phase score` emits `RESULTS.md` and `duplex_mpe_results.json` with selected/completed/missing coverage counts and a partial-run banner whenever coverage is incomplete, exiting non-zero whenever any scenario or semantic task fails or remains incomplete). Scoring covers the four capabilities — `TR` (`fresh_onset_response_rate`), `AA` (`conditional_answer_accuracy` and `unconditional_answer_accuracy`), `SP` (`silence_preservation` across `N1`–`N3` bystander turns), and `AY` (`answering_window_yield` when another human resolves `N4_Q` via `N4_R`) — alongside coverage diagnostics `RP` (`response_presence`) and `WR` (`window_response`). The public dataset is released under CC BY 4.0; cite:
 
 ```bibtex
 @article{ma2026duplexmpe,

@@ -6,15 +6,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import inspect
 import json
 import logging
+import math
 import time
 import uuid
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from typing import Protocol as TypingProtocol
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -29,6 +30,14 @@ from benchmarks.dataset.duplex_mpe import (
     DuplexMpeScenarioRecord,
     compute_file_sha256,
     resolve_dataset_audio_path,
+)
+from benchmarks.duplex.client import (
+    ADMISSION_BACKOFF_S,
+    ADMISSION_RETRIES,
+    SERVER_EVENT_DECODER,
+    AdmissionState,
+    connect_realtime_websocket,
+    negotiate_session_admission,
 )
 from benchmarks.duplex.mpe.protocol import (
     N4_PAUSE_SECONDS,
@@ -53,15 +62,14 @@ RealtimeProtocolSelection = Literal["auto", "native", "turn_based", "legacy"]
 DEFAULT_INPUT_SAMPLE_RATE_HZ = 16000
 DEFAULT_OUTPUT_SAMPLE_RATE_HZ = 24000
 PACKET_DURATION_MILLISECONDS = 80.0
-MAX_WEBSOCKET_MESSAGE_BYTES = 8 * 1024 * 1024
-ADMISSION_DENIED_HTTP_STATUS = 503
-ADMISSION_MAX_RETRIES = 4
-ADMISSION_BACKOFF_SECONDS = 0.25
 LEGACY_TAIL_WAIT_SECONDS = 1.0
-DEFAULT_SESSION_TIMEOUT_SECONDS = 230.0
+DEFAULT_SESSION_TIMEOUT_SECONDS = 420.0
 DEFAULT_MAX_PACING_LAG_SECONDS = 0.5
 HANDSHAKE_TIMEOUT_SECONDS = 30.0
+SCENARIO_DRAIN_MARGIN_SECONDS = 60.0
+RECEIPT_DURATION_TOLERANCE_MILLISECONDS = 1e-3
 RETRYABLE_CAPABILITIES_STATUS_CODES: frozenset[int] = frozenset({502, 503, 504})
+CAPABILITIES_MAX_ATTEMPTS = ADMISSION_RETRIES + 1
 SEED_POLICY_METADATA_ONLY = "reference_seed_metadata_only"
 KNOWN_SAFE_ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -80,9 +88,10 @@ class ProtocolSessionError(RuntimeError):
     """Sanitized protocol-level session error safe to surface in diagnostics."""
 
 
-WEBSOCKET_SUPPORTS_PROXY: bool = (
-    "proxy" in inspect.signature(websockets.connect).parameters
-)
+class MonotonicClock(TypingProtocol):
+    def __call__(self) -> float: ...
+
+
 DEFAULT_TURN_DETECTION: dict[str, JsonValue] = {
     "type": "server_vad",
     "silence_duration_ms": 500,
@@ -276,11 +285,48 @@ def extract_session_created_capabilities(
         raise ValueError("session.created lacks recognizable realtime capabilities")
 
 
+async def open_websocket_with_admission_state(
+    websocket_url: str,
+    *,
+    admission_state: AdmissionState,
+    trust_env: bool = False,
+) -> websockets.ClientConnection:
+    origin = sanitize_realtime_origin(websocket_url)
+    try:
+        connection = await connect_realtime_websocket(
+            websocket_url,
+            admission_state=admission_state,
+            max_retries=ADMISSION_RETRIES,
+            backoff_seconds=ADMISSION_BACKOFF_S,
+            trust_env=trust_env,
+        )
+    except websockets.InvalidStatus as exc:
+        raise RuntimeError(
+            f"WebSocket handshake at {origin} rejected: "
+            f"{summarize_transport_exception(exc)}"
+        ) from None
+    except (OSError, websockets.WebSocketException) as exc:
+        raise RuntimeError(
+            f"WebSocket connection to {origin} failed: "
+            f"{summarize_transport_exception(exc)}"
+        ) from None
+    if connection is None:
+        raise RuntimeError(
+            f"WebSocket handshake at {origin} rejected after {ADMISSION_RETRIES} "
+            f"HTTP 503 admission retries"
+        )
+    else:
+        return connection
+
+
 async def probe_session_created_over_websocket(
     websocket_url: str, *, timeout_seconds: float, trust_env: bool = False
 ) -> tuple[RealtimeProtocolMode, int | None, int | None, str | None]:
+    admission_state = AdmissionState()
     connection = await asyncio.wait_for(
-        open_websocket_with_retries(websocket_url, trust_env=trust_env),
+        open_websocket_with_admission_state(
+            websocket_url, admission_state=admission_state, trust_env=trust_env
+        ),
         timeout=timeout_seconds,
     )
     async with connection as websocket:
@@ -289,7 +335,7 @@ async def probe_session_created_over_websocket(
             raw_frame if isinstance(raw_frame, str) else raw_frame.decode("utf-8")
         )
         try:
-            parsed_event = json.loads(frame_text)
+            parsed_event = SERVER_EVENT_DECODER.decode(frame_text)
         except ValueError:
             raise ValueError(
                 "Malformed JSON frame received during capability probe"
@@ -333,13 +379,13 @@ async def negotiate_realtime_endpoint(
     async with httpx.AsyncClient(
         timeout=timeout_seconds, trust_env=trust_env
     ) as http_client:
-        for attempt_index in range(ADMISSION_MAX_RETRIES):
+        for attempt_index in range(CAPABILITIES_MAX_ATTEMPTS):
             try:
                 response = await http_client.get(capabilities_url)
                 http_status = response.status_code
                 if http_status in RETRYABLE_CAPABILITIES_STATUS_CODES:
                     last_http_error = f"HTTP {http_status}"
-                    await asyncio.sleep(ADMISSION_BACKOFF_SECONDS * (attempt_index + 1))
+                    await asyncio.sleep(ADMISSION_BACKOFF_S * (attempt_index + 1))
                     continue
                 elif http_status == 200:
                     try:
@@ -360,7 +406,7 @@ async def negotiate_realtime_endpoint(
                     break
             except httpx.HTTPError as exc:
                 last_http_error = summarize_transport_exception(exc)
-                await asyncio.sleep(ADMISSION_BACKOFF_SECONDS * (attempt_index + 1))
+                await asyncio.sleep(ADMISSION_BACKOFF_S * (attempt_index + 1))
 
     detected_protocol: RealtimeProtocolMode | None = None
     detected_input_rate: int | None = None
@@ -438,7 +484,13 @@ async def negotiate_realtime_endpoint(
         )
 
     if protocol_selection != "auto":
-        resolved_protocol: RealtimeProtocolMode = protocol_selection
+        if detected_protocol is not None and protocol_selection != detected_protocol:
+            raise ValueError(
+                f"Requested --protocol={protocol_selection!r} conflicts with server "
+                f"capability protocol {detected_protocol!r} at {endpoint_origin}"
+            )
+        else:
+            resolved_protocol: RealtimeProtocolMode = protocol_selection
     elif detected_protocol is not None:
         resolved_protocol = detected_protocol
     else:
@@ -693,6 +745,31 @@ def validate_accepted_session(
         if isinstance(sglang_extension, dict)
         else None
     )
+    if endpoint_spec.protocol == "native":
+        if turn_detection_type(session_payload, "turn_based") is not None or (
+            turn_detection_type(session_payload, "legacy") is not None
+        ):
+            raise RuntimeError(
+                "session.updated enabled turn_detection on a native full-duplex session"
+            )
+        elif isinstance(sglang_granted, dict) and (
+            sglang_granted.get("native_full_duplex") is False
+            or sglang_granted.get("interaction") not in (None, "native")
+        ):
+            raise RuntimeError(
+                "session.updated granted non-native interaction for a native session"
+            )
+        else:
+            pass
+    elif isinstance(sglang_granted, dict) and (
+        sglang_granted.get("native_full_duplex") is True
+        or sglang_granted.get("interaction") == "native"
+    ):
+        raise RuntimeError(
+            f"session.updated granted native interaction for a {endpoint_spec.protocol} session"
+        )
+    else:
+        pass
     for direction_key, granted_key, expected_rate_hz in (
         ("input", "input_audio_format", endpoint_spec.input_sample_rate_hz),
         ("output", "output_audio_format", endpoint_spec.output_sample_rate_hz),
@@ -746,44 +823,22 @@ def validate_accepted_session(
             pass
 
 
-async def open_websocket_with_retries(
-    websocket_url: str, *, trust_env: bool = False
-) -> websockets.ClientConnection:
-    denials = 0
-    while True:
-        try:
-            if WEBSOCKET_SUPPORTS_PROXY:
-                return await websockets.connect(
-                    websocket_url,
-                    max_size=MAX_WEBSOCKET_MESSAGE_BYTES,
-                    compression=None,
-                    ping_interval=None,
-                    proxy=True if trust_env else None,
-                )
-            else:
-                return await websockets.connect(
-                    websocket_url,
-                    max_size=MAX_WEBSOCKET_MESSAGE_BYTES,
-                    compression=None,
-                    ping_interval=None,
-                )
-        except websockets.InvalidStatus as exc:
-            if (
-                exc.response.status_code != ADMISSION_DENIED_HTTP_STATUS
-                or denials >= ADMISSION_MAX_RETRIES
-            ):
-                raise RuntimeError(
-                    f"WebSocket handshake at {sanitize_realtime_origin(websocket_url)} "
-                    f"rejected: {summarize_transport_exception(exc)}"
-                ) from None
-            else:
-                denials += 1
-                await asyncio.sleep(ADMISSION_BACKOFF_SECONDS * denials)
-        except (OSError, websockets.WebSocketException) as exc:
-            raise RuntimeError(
-                f"WebSocket connection to {sanitize_realtime_origin(websocket_url)} "
-                f"failed: {summarize_transport_exception(exc)}"
-            ) from None
+def compute_effective_scenario_timeout_seconds(
+    *,
+    configured_timeout_seconds: float,
+    maximum_schedule_duration_seconds: float,
+) -> float:
+    """Ensure long Duplex-MPE clips (e.g., duplex_mpe_1808 at 292.4s) never expire mid-exchange."""
+    if (
+        not math.isfinite(configured_timeout_seconds)
+        or configured_timeout_seconds <= 0.0
+    ):
+        raise ValueError("session_timeout_seconds must be finite and positive")
+    else:
+        required_budget_seconds = (
+            maximum_schedule_duration_seconds + SCENARIO_DRAIN_MARGIN_SECONDS
+        )
+        return max(configured_timeout_seconds, required_budget_seconds)
 
 
 def prepare_scenario_schedule_sync(
@@ -799,6 +854,7 @@ def prepare_scenario_schedule_sync(
     Generator[NDArray[np.float32], NDArray[np.float32], ScenarioScheduleResult],
     NDArray[np.float32] | None,
     ScenarioScheduleResult | None,
+    float,
 ]:
     preamble_path = resolve_dataset_audio_path(
         dataset_root, DUPLEX_MPE_DUTY_PREAMBLE_RELATIVE_PATH
@@ -818,6 +874,25 @@ def prepare_scenario_schedule_sync(
         )
         for turn in scenario.turns
     ]
+    maximum_schedule_duration_seconds = 0.0
+    if len(preamble_samples) > 0:
+        maximum_schedule_duration_seconds += (
+            len(preamble_samples) / input_sample_rate_hz + ORDINARY_GAP_SECONDS
+        )
+    else:
+        pass
+    for turn_input in turn_inputs:
+        assert turn_input.waveform_samples is not None
+        maximum_schedule_duration_seconds += (
+            len(turn_input.waveform_samples) / input_sample_rate_hz
+        )
+        if turn_input.event_type == "T":
+            maximum_schedule_duration_seconds += TARGET_MAX_RESPONSE_SECONDS
+        elif turn_input.event_type == "N4_Q":
+            maximum_schedule_duration_seconds += N4_PAUSE_SECONDS
+        else:
+            maximum_schedule_duration_seconds += ORDINARY_GAP_SECONDS
+
     schedule = iter_scenario_schedule(
         turn_inputs,
         input_sample_rate_hz=input_sample_rate_hz,
@@ -834,9 +909,9 @@ def prepare_scenario_schedule_sync(
     )
     try:
         first_chunk = next(schedule)
-        return schedule, first_chunk, None
+        return schedule, first_chunk, None, maximum_schedule_duration_seconds
     except StopIteration as finished_empty:
-        return schedule, None, finished_empty.value
+        return schedule, None, finished_empty.value, maximum_schedule_duration_seconds
 
 
 def advance_schedule_step_sync(
@@ -870,6 +945,20 @@ def persist_captured_waveform_sync(
     return compute_file_sha256(output_audio_path)
 
 
+def extract_numeric_receipt_field(
+    event: dict[str, JsonValue], field_name: str, event_type: str
+) -> float:
+    raw_value = event.get(field_name)
+    if not isinstance(raw_value, (int, float)) or type(raw_value) is bool:
+        raise ProtocolSessionError(f"{event_type} missing numeric {field_name} field")
+    elif not math.isfinite(float(raw_value)):
+        raise ProtocolSessionError(
+            f"{event_type} carried non-finite {field_name} field"
+        )
+    else:
+        return float(raw_value)
+
+
 async def run_realtime_scenario(
     scenario: DuplexMpeScenarioRecord,
     *,
@@ -884,15 +973,24 @@ async def run_realtime_scenario(
     realtime_pacing: bool = True,
     max_pacing_lag_seconds: float | None = DEFAULT_MAX_PACING_LAG_SECONDS,
     trust_env: bool | None = None,
+    clock_fn: MonotonicClock | None = None,
 ) -> dict[str, JsonValue]:
     """Stream one Duplex-MPE scenario over /v1/realtime and return its mpeval.unified.v3 report."""
     if max_pacing_lag_seconds is not None and max_pacing_lag_seconds <= 0.0:
         raise ValueError("max_pacing_lag_seconds must be positive when set")
     else:
         pass
+    monotonic_clock: MonotonicClock = (
+        clock_fn if clock_fn is not None else time.perf_counter
+    )
     scenario_seed = resolve_scenario_seed(scenario.scenario_id, seed_mapping)
     # note (machengqian): Offload waveform loading, resampling, and cold Silero VAD initialization off the event loop so concurrent sessions never stall active pacing.
-    schedule, initial_input_chunk, immediate_result = await asyncio.to_thread(
+    (
+        schedule,
+        initial_input_chunk,
+        immediate_result,
+        maximum_schedule_duration_seconds,
+    ) = await asyncio.to_thread(
         prepare_scenario_schedule_sync,
         scenario,
         dataset_root=dataset_root,
@@ -901,6 +999,10 @@ async def run_realtime_scenario(
         vad_config=vad_config,
         vad_model=vad_model,
         chunk_milliseconds=chunk_milliseconds,
+    )
+    effective_timeout_seconds = compute_effective_scenario_timeout_seconds(
+        configured_timeout_seconds=session_timeout_seconds,
+        maximum_schedule_duration_seconds=maximum_schedule_duration_seconds,
     )
 
     playback_buffer = PlaybackTimelineBuffer(endpoint_spec.output_sample_rate_hz)
@@ -920,19 +1022,29 @@ async def run_realtime_scenario(
     async def execute_exchange() -> (
         tuple[ScenarioScheduleResult, float, float, NDArray[np.float32]]
     ):
-        connection = await open_websocket_with_retries(
-            endpoint_spec.websocket_url, trust_env=effective_trust_env
+        admission_state = AdmissionState()
+        connection = await open_websocket_with_admission_state(
+            endpoint_spec.websocket_url,
+            admission_state=admission_state,
+            trust_env=effective_trust_env,
         )
         async with connection as websocket:
             event_waiters: dict[str, asyncio.Event] = {}
             latest_events: dict[str, dict[str, JsonValue]] = {}
             receiver_failure: list[BaseException] = []
             admission_rejected_event = asyncio.Event()
+            aborted_event = asyncio.Event()
             receiver_done_event = asyncio.Event()
             awaiting_legacy_terminal_echo = False
             is_closing_expected = False
             stream_epoch_seconds: float | None = None
             total_input_samples = 0
+            expected_accepted_end_milliseconds_by_sequence: dict[int, float] = {}
+            next_expected_accepted_sequence = 0
+            eos_requested = False
+            frozen_final_input_samples: int | None = None
+            input_ended_receipt_seen = False
+            input_drained_receipt_seen = False
 
             async def send_client_event(
                 event_type: str,
@@ -1012,10 +1124,10 @@ async def run_realtime_scenario(
                     pass
 
             async def receive_server_frames() -> None:
-                nonlocal is_closing_expected
+                nonlocal is_closing_expected, next_expected_accepted_sequence, input_ended_receipt_seen, input_drained_receipt_seen
                 try:
                     async for raw_frame in websocket:
-                        received_perf_seconds = time.perf_counter()
+                        received_perf_seconds = monotonic_clock()
                         if not realtime_pacing:
                             arrival_seconds = (
                                 total_input_samples / endpoint_spec.input_sample_rate_hz
@@ -1032,7 +1144,7 @@ async def run_realtime_scenario(
                             else raw_frame.decode("utf-8")
                         )
                         try:
-                            parsed_event = json.loads(frame_text)
+                            parsed_event = SERVER_EVENT_DECODER.decode(frame_text)
                         except ValueError:
                             raise ProtocolSessionError(
                                 "Malformed JSON frame on /v1/realtime"
@@ -1054,8 +1166,10 @@ async def run_realtime_scenario(
                         else:
                             pass
                         if is_retryable_session_rejection(parsed_event):
+                            admission_state.denials += 1
                             admission_rejected_event.set()
                         elif event_type == "error":
+                            aborted_event.set()
                             raise ProtocolSessionError(
                                 format_server_error_event(parsed_event)
                             )
@@ -1072,6 +1186,155 @@ async def run_realtime_scenario(
                                 )
                             else:
                                 pass
+                        elif event_type == "sglang.input_audio.accepted":
+                            raw_sequence = parsed_event.get("seq")
+                            if input_drained_receipt_seen:
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.accepted arrived after sglang.input_audio.drained"
+                                )
+                            elif type(raw_sequence) is not int:
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.accepted missing integer seq"
+                                )
+                            elif raw_sequence != next_expected_accepted_sequence:
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.accepted sequence mismatch"
+                                )
+                            elif (
+                                raw_sequence
+                                not in expected_accepted_end_milliseconds_by_sequence
+                            ):
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.accepted exceeded sent sequence"
+                                )
+                            else:
+                                expected_end_milliseconds = (
+                                    expected_accepted_end_milliseconds_by_sequence.pop(
+                                        raw_sequence
+                                    )
+                                )
+                                accepted_end_milliseconds = (
+                                    extract_numeric_receipt_field(
+                                        parsed_event,
+                                        "accepted_end_ms",
+                                        "sglang.input_audio.accepted",
+                                    )
+                                )
+                                if not math.isclose(
+                                    accepted_end_milliseconds,
+                                    expected_end_milliseconds,
+                                    rel_tol=0.0,
+                                    abs_tol=RECEIPT_DURATION_TOLERANCE_MILLISECONDS,
+                                ):
+                                    raise ProtocolSessionError(
+                                        "sglang.input_audio.accepted duration mismatch"
+                                    )
+                                else:
+                                    next_expected_accepted_sequence += 1
+                        elif event_type == "sglang.input_audio.ended":
+                            if not eos_requested or frozen_final_input_samples is None:
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.ended arrived before sglang.input_audio.end"
+                                )
+                            elif input_ended_receipt_seen:
+                                raise ProtocolSessionError(
+                                    "Duplicate sglang.input_audio.ended receipt"
+                                )
+                            else:
+                                expected_total_milliseconds = (
+                                    frozen_final_input_samples
+                                    * 1000.0
+                                    / endpoint_spec.input_sample_rate_hz
+                                )
+                                ended_end_milliseconds = extract_numeric_receipt_field(
+                                    parsed_event,
+                                    "accepted_end_ms",
+                                    "sglang.input_audio.ended",
+                                )
+                                if not math.isclose(
+                                    ended_end_milliseconds,
+                                    expected_total_milliseconds,
+                                    rel_tol=0.0,
+                                    abs_tol=RECEIPT_DURATION_TOLERANCE_MILLISECONDS,
+                                ):
+                                    raise ProtocolSessionError(
+                                        "sglang.input_audio.ended duration mismatch"
+                                    )
+                                else:
+                                    input_ended_receipt_seen = True
+                        elif event_type == "sglang.input_audio.drained":
+                            if not eos_requested or frozen_final_input_samples is None:
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.drained arrived before sglang.input_audio.end"
+                                )
+                            elif input_drained_receipt_seen:
+                                raise ProtocolSessionError(
+                                    "Duplicate sglang.input_audio.drained receipt"
+                                )
+                            elif not input_ended_receipt_seen:
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.drained arrived before sglang.input_audio.ended"
+                                )
+                            elif expected_accepted_end_milliseconds_by_sequence:
+                                raise ProtocolSessionError(
+                                    "sglang.input_audio.drained arrived with unacknowledged input packets"
+                                )
+                            else:
+                                expected_total_milliseconds = (
+                                    frozen_final_input_samples
+                                    * 1000.0
+                                    / endpoint_spec.input_sample_rate_hz
+                                )
+                                drained_accepted_milliseconds = (
+                                    extract_numeric_receipt_field(
+                                        parsed_event,
+                                        "accepted_end_ms",
+                                        "sglang.input_audio.drained",
+                                    )
+                                )
+                                drained_consumed_milliseconds = (
+                                    extract_numeric_receipt_field(
+                                        parsed_event,
+                                        "consumed_ms",
+                                        "sglang.input_audio.drained",
+                                    )
+                                )
+                                drained_discarded_milliseconds = (
+                                    extract_numeric_receipt_field(
+                                        parsed_event,
+                                        "discarded_ms",
+                                        "sglang.input_audio.drained",
+                                    )
+                                )
+                                if not math.isclose(
+                                    drained_accepted_milliseconds,
+                                    expected_total_milliseconds,
+                                    rel_tol=0.0,
+                                    abs_tol=RECEIPT_DURATION_TOLERANCE_MILLISECONDS,
+                                ):
+                                    raise ProtocolSessionError(
+                                        "sglang.input_audio.drained accepted_end_ms mismatch"
+                                    )
+                                elif not math.isclose(
+                                    drained_consumed_milliseconds,
+                                    expected_total_milliseconds,
+                                    rel_tol=0.0,
+                                    abs_tol=RECEIPT_DURATION_TOLERANCE_MILLISECONDS,
+                                ):
+                                    raise ProtocolSessionError(
+                                        "sglang.input_audio.drained consumed_ms mismatch"
+                                    )
+                                elif not math.isclose(
+                                    drained_discarded_milliseconds,
+                                    0.0,
+                                    rel_tol=0.0,
+                                    abs_tol=RECEIPT_DURATION_TOLERANCE_MILLISECONDS,
+                                ):
+                                    raise ProtocolSessionError(
+                                        "sglang.input_audio.drained reported discarded input audio"
+                                    )
+                                else:
+                                    input_drained_receipt_seen = True
                         elif event_type == "response.done":
                             response_payload = parsed_event.get("response")
                             if not isinstance(response_payload, dict):
@@ -1101,6 +1364,7 @@ async def run_realtime_scenario(
                             pass
                         event_waiters.setdefault(event_type, asyncio.Event()).set()
                     if not is_closing_expected:
+                        aborted_event.set()
                         receiver_failure.append(
                             ProtocolSessionError(
                                 "WebSocket connection closed before session completion"
@@ -1112,6 +1376,7 @@ async def run_realtime_scenario(
                     raise
                 except websockets.ConnectionClosed as exc:
                     if not is_closing_expected:
+                        aborted_event.set()
                         receiver_failure.append(
                             ProtocolSessionError(
                                 f"WebSocket connection closed prematurely: "
@@ -1121,6 +1386,7 @@ async def run_realtime_scenario(
                     else:
                         pass
                 except BaseException as exc:
+                    aborted_event.set()
                     receiver_failure.append(exc)
                 finally:
                     receiver_done_event.set()
@@ -1131,22 +1397,25 @@ async def run_realtime_scenario(
                     "session.created", HANDSHAKE_TIMEOUT_SECONDS
                 )
                 configure_payload = build_session_update_payload(endpoint_spec)
-                rejection_attempts = 0
-                while True:
+
+                async def send_session_update() -> None:
                     event_waiters.setdefault("session.updated", asyncio.Event()).clear()
-                    admission_rejected_event.clear()
                     await send_client_event(
                         "session.update", session_payload=configure_payload
                     )
+
+                async def settle_session_updated() -> bool:
                     updated_waiter = asyncio.create_task(
-                        event_waiters["session.updated"].wait()
+                        event_waiters.setdefault(
+                            "session.updated", asyncio.Event()
+                        ).wait()
                     )
                     rejected_waiter = asyncio.create_task(
                         admission_rejected_event.wait()
                     )
                     done_waiter = asyncio.create_task(receiver_done_event.wait())
                     try:
-                        await asyncio.wait(
+                        completed, _ = await asyncio.wait(
                             {updated_waiter, rejected_waiter, done_waiter},
                             timeout=HANDSHAKE_TIMEOUT_SECONDS,
                             return_when=asyncio.FIRST_COMPLETED,
@@ -1167,26 +1436,41 @@ async def run_realtime_scenario(
                             f"{summarize_transport_exception(receiver_failure[0])}"
                         ) from None
                     elif event_waiters["session.updated"].is_set():
-                        validate_accepted_session(
-                            latest_events["session.updated"], endpoint_spec
-                        )
-                        break
-                    elif receiver_done_event.is_set():
-                        raise RuntimeError(
-                            "WebSocket connection closed before session.updated arrived"
-                        )
-                    elif (
-                        admission_rejected_event.is_set()
-                        and rejection_attempts < ADMISSION_MAX_RETRIES
-                    ):
-                        rejection_attempts += 1
-                        await asyncio.sleep(
-                            ADMISSION_BACKOFF_SECONDS * rejection_attempts
+                        return True
+                    elif admission_rejected_event.is_set():
+                        return False
+                    elif not completed:
+                        raise TimeoutError(
+                            f"Timed out after {HANDSHAKE_TIMEOUT_SECONDS}s awaiting session.updated"
                         )
                     else:
                         raise RuntimeError(
-                            f"Session admission rejected after {rejection_attempts} retries"
+                            "WebSocket connection closed before session.updated arrived"
                         )
+
+                admitted = await negotiate_session_admission(
+                    send_session_update=send_session_update,
+                    settle_session_updated=settle_session_updated,
+                    rejected=admission_rejected_event,
+                    aborted=aborted_event,
+                    admission_state=admission_state,
+                    max_retries=ADMISSION_RETRIES,
+                    backoff_seconds=ADMISSION_BACKOFF_S,
+                )
+                if receiver_failure:
+                    raise RuntimeError(
+                        f"Realtime session aborted during session.update: "
+                        f"{summarize_transport_exception(receiver_failure[0])}"
+                    ) from None
+                elif not admitted:
+                    raise RuntimeError(
+                        f"Session admission rejected after {admission_state.denials} "
+                        f"combined admission denials (budget {ADMISSION_RETRIES} retries)"
+                    )
+                else:
+                    validate_accepted_session(
+                        latest_events["session.updated"], endpoint_spec
+                    )
 
                 rendered_output_samples = 0
                 packet_sequence = 0
@@ -1197,7 +1481,7 @@ async def run_realtime_scenario(
                 ) -> None:
                     nonlocal max_observed_pacing_lag_seconds
                     observed_lag_seconds = max(
-                        0.0, time.perf_counter() - nominal_deadline_seconds
+                        0.0, monotonic_clock() - nominal_deadline_seconds
                     )
                     max_observed_pacing_lag_seconds = max(
                         max_observed_pacing_lag_seconds, observed_lag_seconds
@@ -1218,7 +1502,7 @@ async def run_realtime_scenario(
                 else:
                     assert initial_input_chunk is not None
                     next_input_chunk: NDArray[np.float32] | None = initial_input_chunk
-                    stream_epoch_seconds = time.perf_counter()
+                    stream_epoch_seconds = monotonic_clock()
                     completed_schedule_result: ScenarioScheduleResult | None = None
                     while next_input_chunk is not None:
                         if receiver_failure:
@@ -1241,6 +1525,15 @@ async def run_realtime_scenario(
                             * 1000.0
                             / endpoint_spec.input_sample_rate_hz
                         )
+                        next_total_samples = total_input_samples + len(next_input_chunk)
+                        expected_accepted_end_milliseconds_by_sequence[
+                            packet_sequence
+                        ] = (
+                            next_total_samples
+                            * 1000.0
+                            / endpoint_spec.input_sample_rate_hz
+                        )
+                        total_input_samples = next_total_samples
                         await send_client_event(
                             "input_audio_buffer.append",
                             audio_base64=encode_float32_to_pcm16_base64(
@@ -1248,18 +1541,17 @@ async def run_realtime_scenario(
                             ),
                             sglang_metadata={
                                 "seq": packet_sequence,
-                                "t_start_ms": round(chunk_start_milliseconds, 3),
+                                "t_start_ms": chunk_start_milliseconds,
                             },
                         )
                         packet_sequence += 1
-                        total_input_samples += len(next_input_chunk)
                         target_perf_deadline = (
                             stream_epoch_seconds
                             + total_input_samples / endpoint_spec.input_sample_rate_hz
                         )
                         if realtime_pacing:
                             await asyncio.sleep(
-                                max(0.0, target_perf_deadline - time.perf_counter())
+                                max(0.0, target_perf_deadline - monotonic_clock())
                             )
                             record_and_validate_pacing_lag(target_perf_deadline)
                         else:
@@ -1307,7 +1599,7 @@ async def run_realtime_scenario(
                 elapsed_wall_seconds = (
                     0.0
                     if stream_epoch_seconds is None
-                    else time.perf_counter() - stream_epoch_seconds
+                    else monotonic_clock() - stream_epoch_seconds
                 )
                 if endpoint_spec.protocol == "legacy":
                     if realtime_pacing:
@@ -1319,6 +1611,11 @@ async def run_realtime_scenario(
                     await send_client_event("session.update", session_payload={})
                     await wait_for_server_event("session.updated")
                 else:
+                    event_waiters.setdefault(
+                        "sglang.input_audio.drained", asyncio.Event()
+                    ).clear()
+                    frozen_final_input_samples = total_input_samples
+                    eos_requested = True
                     await send_client_event("sglang.input_audio.end")
                     await wait_for_server_event("sglang.input_audio.drained")
                     closed_waiter = event_waiters.setdefault(
@@ -1351,7 +1648,7 @@ async def run_realtime_scenario(
         elapsed_wall_seconds,
         max_observed_pacing_lag_seconds,
         drain_tail_waveform,
-    ) = await asyncio.wait_for(execute_exchange(), timeout=session_timeout_seconds)
+    ) = await asyncio.wait_for(execute_exchange(), timeout=effective_timeout_seconds)
     assert schedule_result.assistant_waveform is not None
     full_captured_waveform = (
         np.concatenate([schedule_result.assistant_waveform, drain_tail_waveform])
@@ -1385,6 +1682,7 @@ async def run_realtime_scenario(
             "realtime_protocol": endpoint_spec.protocol,
             "elapsed_wall_s": round(elapsed_wall_seconds, 4),
             "max_pacing_lag_ms": round(max_observed_pacing_lag_seconds * 1000.0, 3),
+            "effective_session_timeout_s": round(effective_timeout_seconds, 4),
             "cancelled_unplayed_samples": playback_buffer.cancelled_unplayed_samples,
             "drain_tail_samples": int(len(drain_tail_waveform)),
             "assistant_audio_sha256": audio_sha256,
