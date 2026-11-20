@@ -52,7 +52,7 @@ sgl-omni serve \
 
 Multimodal preprocessing (tokenization, image/video/audio feature extraction) runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to run it on a thread pool when CPU preprocessing is the bottleneck under concurrent load. Threaded preprocessing changes how requests arrive at the thinker, so greedy outputs of the bf16 MoE can differ from the serial default; keep the default when comparing accuracy across runs.
 
-Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+For video decoder thread allocation and overrides, see [Video Decoding](../basic_usage/omni.md#video-decoding).
 
 For MMSU-style audio-input / text-output benchmarks with short requests, use the fused text-path config so the full text path stays inside one worker process:
 
@@ -128,14 +128,7 @@ sgl-omni serve \
   --thinker.engine.max_running_requests 16
 ```
 
-To configure the thinker through a pipeline YAML file instead, set the same path under the stage entry:
-
-```yaml
-stages:
-  thinker:
-    engine:
-      max_running_requests: 16
-```
+For the equivalent YAML layout, see [Memory and Concurrency](../basic_usage/omni.md#memory-and-concurrency).
 
 ### Codec Coalescing and First-Audio Latency
 
@@ -314,7 +307,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-- **Acceptance length.** Set `return_spec_tokens_details: true` to receive `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the prefill-sampled token, so it can exceed scheduler `accept len`), `spec_accept_rate`, draft counts, and a per-verify histogram. Streaming sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are omitted when no drafts were proposed or draft width is adaptive. Only thinker drafts are reported; per-stage reporting can follow when Talker supports drafts.
+- **Acceptance statistics.** See [Speculative Decoding Statistics](../basic_usage/omni.md#speculative-decoding-statistics) for the request flag and response fields. Qwen3-Omni reports thinker drafts only.
 - **Context.** These drafts have an 8,192-token context; the prompt, output budget, and speculative reservations must fit. Set `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
 - **Sampling.** Use `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`; disable logprobs and `return_hidden_states`. For `/generate`, set `return_logprob: false`.
 - **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to overlap work. With `--thinker.factory.async_decode_min_batch_size` set above 1, a decode batch smaller than it, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions, and weight updates are unsupported with a draft.
@@ -322,8 +315,6 @@ sgl-omni serve \
 - **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost; decode rounds still follow `async_decode_min_batch_size`.
 - **Execution failure.** A failure during speculative overlap stops the pipeline and fails pending requests.
 - **Speech output.** Drafts do not support speech generation; use `--text-only`.
-
-Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
 
 ## Known Limitations
 

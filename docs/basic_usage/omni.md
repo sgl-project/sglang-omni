@@ -91,6 +91,12 @@ Where top-level media land in the prompt depends on the model. Qwen3-Omni places
 
 When every part of the question comes from audio, video, or image input, set `"content": ""` on the user message. Leaving a text question in `content` alongside the media makes the model read both.
 
+### Video Decoding
+
+The following thread allocation applies to pipelines using the shared video loader and automatic CPU-based budget, including Qwen3-Omni. Available preprocessing factory options depend on the model.
+
+Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
 ### Image and Text Input
 
 The examples below show the curl form. In Python, send the same JSON body as in Text Output and read the answer from `choices[0].message.content`.
@@ -321,6 +327,15 @@ sgl-omni serve \
 
 Set `engine.max_running_requests` on a stage to control how many requests it admits concurrently. Stage names and default limits depend on the pipeline; see the model cookbook for defaults and YAML examples.
 
+The same stage setting can be supplied through a pipeline YAML file. For example, a pipeline with a thinker stage can set its concurrency limit as follows:
+
+```yaml
+stages:
+  thinker:
+    engine:
+      max_running_requests: 16
+```
+
 ## Server Readiness
 
 Startup warmup depends on the pipeline and realtime deployment. When a pipeline configures request warmup, the server sends its warmup request once per replica of its most replicated process, sequentially, before reporting ready. `/health` returns HTTP 503 with status `starting` until warmup has passed through every stage; a failed warmup stops startup. `SGLANG_OMNI_WARMUP_TIMEOUT` bounds each warmup request in seconds (default 600), and `--skip-server-warmup` reports ready without running these requests.
@@ -361,6 +376,14 @@ Fields accepted by `/v1/chat/completions`. Model support and defaults vary; the 
 | `return_spec_tokens_details` | bool | `false` | With speculative decoding, return acceptance statistics in `sglext.spec_tokens_details` |
 
 Limiting `video_max_frames` or the pixel budget keeps video latency predictable.
+
+## Speculative Decoding Statistics
+
+These fields apply when the deployment supports speculative decoding and has a compatible draft configured. Draft checkpoints, context budgets, sampling restrictions, and scheduling controls depend on the model; see [Qwen3-Omni Speculative Decoding](../cookbook/qwen3_omni.md#speculative-decoding) for that deployment.
+
+Set `return_spec_tokens_details: true` to receive `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the prefill-sampled token, so it can exceed scheduler `accept len`), `spec_accept_rate`, draft counts, and a per-verify histogram. Streaming sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are omitted when no drafts were proposed or draft width is adaptive.
+
+Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
 
 ## Known Limitations
 
