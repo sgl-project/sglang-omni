@@ -97,7 +97,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     prefill_coalesce_wait_ms: float = 12.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
-    prefill_coalesce_after_builds_during_decode: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool | None = None,
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
