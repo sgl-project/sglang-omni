@@ -2,6 +2,12 @@
 
 Qwen3-TTS is a multi-codebook text-to-speech model family that streams 24 kHz speech in 10 languages. The `12Hz` checkpoint name refers to the codec frame rate. SGLang-Omni serves [Base](#voice-cloning) for voice cloning, [CustomVoice](#customvoice) for built-in speakers, and [VoiceDesign](#voicedesign) for voices described in natural language through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
+![Qwen3-TTS architecture](../_static/image/qwen3-tts-architecture.png)
+
+Qwen3-TTS is one Qwen3 LM with two tracks. The text track carries an instruction, such as "Please speak with a warm and encouraging voice.", beside the words to speak. The other track is 12 Hz multi-codebook codec tokens, with a speaker embedding on that track. An MTP module predicts the residual codebooks and sums them into codec embeddings, and a streaming codec decoder turns those embeddings into the waveform. CustomVoice instructions, VoiceDesign descriptions, and Base reference clips are three ways of filling the speaker and instruction side of this same stack.
+
+Adapted from the Model Architecture figure in the [Qwen3-TTS repository](https://github.com/QwenLM/Qwen3-TTS#model-architecture) ([technical report](https://arxiv.org/abs/2601.15621)).
+
 <span id="quick-start"></span>
 
 ## Prerequisites
@@ -41,20 +47,7 @@ curl -i http://localhost:8000/health
 
 ## Synthesizing Speech
 
-```bash
-curl --fail-with-body http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "input": "Hello! This is Qwen3-TTS running with SGLang-Omni.",
-    "voice": "Ryan",
-    "language": "English",
-    "instructions": "Speak clearly and calmly."
-  }' \
-  --output output.wav
-```
-
-Open `output.wav` in an audio player. The response is WAV audio by default. For Python or the OpenAI SDK, use the [TTS client examples](../basic_usage/tts.md#python).
+With the 1.7B CustomVoice server running, use the [cURL example](../basic_usage/tts.md#curl) in TTS Model Usage to generate `output.wav`. The same guide includes [Python and OpenAI SDK examples](../basic_usage/tts.md#python).
 
 ## Choose a model
 
@@ -108,25 +101,7 @@ Use the full checkpoint ID in `--model-path` and the request's `model` field.
 
 ## Streaming
 
-With the CustomVoice server running, send a streaming request:
-
-```bash
-curl --fail-with-body -N http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "input": "Hello! This is Qwen3-TTS running with SGLang-Omni.",
-    "voice": "Ryan",
-    "language": "English",
-    "stream": true,
-    "response_format": "wav"
-  }' \
-  --output streaming.wav
-```
-
-This saves the streamed audio to `streaming.wav`.
-
-All three voice modes support streaming. For detailed examples, see [TTS streaming examples](../basic_usage/tts.md#raw-wav-and-pcm), [SSE](../basic_usage/tts.md#sse-event-framing), and [WebSocket](../basic_usage/tts.md#websocket-speech-streaming).
+All three voice modes support streaming. With the CustomVoice server running, use the [raw WAV and PCM examples](../basic_usage/tts.md#raw-wav-and-pcm) in TTS Model Usage. The guide also includes [SSE](../basic_usage/tts.md#sse-event-framing) and [WebSocket](../basic_usage/tts.md#websocket-speech-streaming) clients.
 
 The default chunk schedule favors early audio. If playback stalls under load, see [first-audio chunk tuning](qwen3_tts/tuning.md#first-audio-chunk-ramp).
 
@@ -135,22 +110,7 @@ The default chunk schedule favors early audio. If playback stalls under load, se
 
 ## Common options
 
-With the 1.7B CustomVoice server running, customize the language, speaking style, generation limit, and sampling seed:
-
-```bash
-curl --fail-with-body http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "input": "你好，欢迎使用 SGLang-Omni。",
-    "voice": "Vivian",
-    "language": "Chinese",
-    "instructions": "用平静、自然的语气说话。",
-    "max_new_tokens": 512,
-    "seed": 42
-  }' \
-  --output chinese-speech.wav
-```
+The 1.7B CustomVoice checkpoint supports speaking-style control through `instructions`; see [CustomVoice](#customvoice) for checkpoint differences.
 
 Reaching `max_new_tokens` can truncate speech. A fixed `seed` does not guarantee byte-identical audio; see [deterministic inference](qwen3_tts/tuning.md#deterministic-inference).
 

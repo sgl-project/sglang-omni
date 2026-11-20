@@ -11,6 +11,7 @@ import httpx
 import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
+from sglang.srt.speculative.dflash_worker_v2 import DFlashWorkerV2
 
 from sglang_omni.models.moss_transcribe_diarize import (
     engine_builder,
@@ -36,6 +37,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
 from sglang_omni.speculative.dflash_draft import (
     DRAFT_ARCHITECTURE,
+    SELECTOR_DRAFT_ARCHITECTURE,
     ReducedVocabularyDFlashWorker,
 )
 from sglang_omni.utils.imports import import_string
@@ -477,7 +479,19 @@ def test_factory_context_length_override_uses_final_server_value(
     assert adapter_kwargs["speculative_reserve_tokens"] == 0
 
 
-def write_speculators_config(directory: Path) -> None:
+SELECTOR_DRAFT_FIELDS = {
+    "speculators_model_type": "dflash2",
+    "draft_vocab_size": 151936,
+    "conv_kernel_size": 2,
+    "conv_group_size": 16,
+    "selector_rank": 256,
+    "selector_top_k": 16,
+}
+
+
+def write_speculators_config(
+    directory: Path, draft_fields: dict[str, str | int] | None = None
+) -> None:
     (directory / "config.json").write_text(
         json.dumps(
             {
@@ -490,14 +504,34 @@ def write_speculators_config(directory: Path) -> None:
                 "mask_token_id": 151705,
                 "block_size": 8,
                 "transformer_layer_config": {"hidden_size": 1024},
+                **(draft_fields or {}),
             }
         )
     )
 
 
+@pytest.mark.parametrize(
+    ("draft_fields", "draft_architecture", "worker_class"),
+    [
+        pytest.param(
+            None, DRAFT_ARCHITECTURE, ReducedVocabularyDFlashWorker, id="dflash"
+        ),
+        pytest.param(
+            SELECTOR_DRAFT_FIELDS,
+            SELECTOR_DRAFT_ARCHITECTURE,
+            DFlashWorkerV2,
+            id="dflash2",
+        ),
+    ],
+)
 @pytest.mark.parametrize("enable_plain_fallback", [False, True])
 def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enable_plain_fallback: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    enable_plain_fallback: bool,
+    draft_fields: dict[str, str | int] | None,
+    draft_architecture: str,
+    worker_class: type[DFlashWorkerV2],
 ) -> None:
     """Unset, async decode stays off under a draft, where it means speculative overlap;
     SGLang cannot read the speculators config, so the worker class and the flat copy must
@@ -547,7 +581,7 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
         "make_moss_transcribe_diarize_scheduler_adapters",
         capture_adapters,
     )
-    write_speculators_config(tmp_path)
+    write_speculators_config(tmp_path, draft_fields)
 
     create_sglang_moss_transcribe_diarize_executor(
         "OpenMOSS-Team/MOSS-Transcribe-Diarize",
@@ -560,14 +594,11 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
         },
     )
 
-    assert draft_configs[0]["architectures"] == [DRAFT_ARCHITECTURE]
+    assert draft_configs[0]["architectures"] == [draft_architecture]
     assert not Path(str(server_args_kwargs["speculative_draft_model_path"])).exists()
     assert server_args_kwargs["speculative_draft_model_revision"] is None
     assert infrastructure_kwargs["supports_speculative_decoding"] is True
-    assert (
-        infrastructure_kwargs["speculative_worker_class"]
-        is ReducedVocabularyDFlashWorker
-    )
+    assert infrastructure_kwargs["speculative_worker_class"] is worker_class
     assert server_args_kwargs["enable_torch_compile"] is False
     assert infrastructure_kwargs["enable_async_decode"] is False
     assert server_args_kwargs["disable_overlap_schedule"] is True
@@ -578,6 +609,10 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_prefill"] is False
     assert scheduler_kwargs["model_runner"].speculative_ignores_request_seed is True
+    assert (
+        scheduler_kwargs["model_runner"].speculative_repetition_penalty_owner
+        == "verify_logits"
+    )
 
 
 def test_a_failed_build_leaves_no_draft_copy_behind(

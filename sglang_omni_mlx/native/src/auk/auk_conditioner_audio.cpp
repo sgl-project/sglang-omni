@@ -69,8 +69,8 @@ mx::array Conditioner::EncodeAudio(const mx::array &features) const {
     };
     const mx::array attended = mx::fast::scaled_dot_product_attention(
         project("q_proj"), project("k_proj"), project("v_proj"),
-        static_cast<float>(std::pow(static_cast<double>(head_size), -0.5)), "",
-        mask);
+        static_cast<float>(std::pow(static_cast<double>(head_size), -0.5)),
+        /*window_size=*/-1, "", mask);
     hidden = mx::add(
         hidden,
         checkpoint_.Linear(

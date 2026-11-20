@@ -18,17 +18,18 @@ import (
 // SpeechName is a remote speech service's name: its brand, untranslated,
 // but in Chinese for the Chinese services (as PresetName).
 func SpeechName(id string) string {
+	translator := i18n.CurrentTranslator()
 	switch id {
 	case "doubao":
-		return i18n.T("Doubao (Volcengine)")
+		return translator.T("Doubao (Volcengine)")
 	case providers.ZhipuASR:
-		return i18n.T("Zhipu GLM-ASR")
+		return translator.T("Zhipu GLM-ASR")
 	case "aliyun":
-		return i18n.T("Aliyun Bailian ASR")
+		return translator.T("Aliyun Bailian ASR")
 	case providers.StepFunASR:
-		return i18n.T("StepFun")
+		return translator.T("StepFun")
 	case "mimo":
-		return i18n.T("Xiaomi MiMo")
+		return translator.T("Xiaomi MiMo")
 	}
 	if pr, ok := providers.LookupSpeech(id); ok {
 		return pr.Name
@@ -50,73 +51,80 @@ func RemoteSpeech(err error) bool {
 // ModelErrorText says what went wrong with a model, and its detail
 // (the error itself, for the ⓘ).
 func ModelErrorText(err error) (msg, more string) {
+	return ModelErrorTextFor(i18n.CurrentTranslator(), err)
+}
+
+// ModelErrorTextFor is ModelErrorText with an explicit locale.
+func ModelErrorTextFor(translator *i18n.Translator, err error) (msg, more string) {
 	if err == nil {
 		return "", ""
 	}
 	more = err.Error()
 	if errors.Is(err, local.ErrNotInstalled) {
-		return i18n.T("The model is not installed."), more
+		return translator.T("The model is not installed."), more
 	}
 	if errors.Is(err, local.ErrNoRuntime) {
-		return i18n.T("This version of Voxt cannot run the model yet."), more
+		return translator.T("This version of Voxt cannot run the model yet."), more
 	}
 	if errors.Is(err, dictation.ErrNotAllowed) {
-		return i18n.T("Voxt does not have Speech Recognition access. Allow it in Settings → Permissions."), more
+		return translator.T("Voxt does not have Speech Recognition access. Allow it in Settings → Permissions."), more
 	}
 	if errors.Is(err, dictation.ErrNoLanguage) {
-		return i18n.T("macOS cannot recognise your main language on this Mac. Add it in System Settings → Keyboard → Dictation, or choose another speech model."), more
+		return translator.T("macOS cannot recognise your main language on this Mac. Add it in System Settings → Keyboard → Dictation, or choose another speech model."), more
 	}
 	var ae *asr.Error
 	if errors.As(err, &ae) {
 		switch remote := RemoteSpeech(err); {
 		case remote && ae.Kind == asr.KindAuth:
-			return i18n.T("The remote service refused the API key."), more
+			return translator.T("The remote service refused the API key."), more
 		case remote && ae.Kind == asr.KindQuota:
-			return i18n.T("The remote service refused the request. It may be busy, the account may be out of credit, or the model is not enabled for it."), more
+			return translator.T("The remote service refused the request. It may be busy, the account may be out of credit, or the model is not enabled for it."), more
 		}
 		switch ae.Kind {
 		case asr.KindNetwork, asr.KindServer:
-			return i18n.T("The speech model stopped or did not answer. Try again in a moment."), more
+			return translator.T("The speech model stopped or did not answer. Try again in a moment."), more
 		case asr.KindTimeout:
-			return i18n.T("The speech model took too long."), more
+			return translator.T("The speech model took too long."), more
 		case asr.KindAudio:
-			return i18n.T("The speech model did not accept the audio."), more
+			return translator.T("The speech model did not accept the audio."), more
 		case asr.KindCancelled:
-			return i18n.T("Cancelled."), more
+			return translator.T("Cancelled."), more
 		case asr.KindConfig:
-			return i18n.T("The speech model is not set up correctly. Check it on the Speech models page."), more
+			return translator.T("The speech model is not set up correctly. Check it in Settings → Speech models."), more
 		}
-		return i18n.T("The speech model answered something Voxt does not understand."), more
+		return translator.T("The speech model answered something Voxt does not understand."), more
 	}
 	var le *llm.Error
 	if errors.As(err, &le) {
 		switch le.Code {
 		case llm.CodeSignIn:
-			return i18n.T("Your ChatGPT sign-in has expired. Sign in again on the Language models page."), more
+			return translator.T("Your ChatGPT sign-in has expired. Sign in again in Settings → Language models."), more
 		case llm.CodeUsageLimit:
-			return i18n.T("You have reached your ChatGPT plan's usage limit for now."), more
+			return translator.T("You have reached your ChatGPT plan's usage limit for now."), more
 		case llm.CodeNotEligible:
-			return i18n.T("ChatGPT refused this account. Its plan, workspace or region cannot use Codex."), more
+			return translator.T("ChatGPT refused this account. Its plan, workspace or region cannot use Codex."), more
 		case llm.CodeNoKey:
-			return i18n.T("No API key is saved for the remote model. Add one on the Language models page."), more
+			return translator.T("No API key is saved for the remote model. Add one in Settings → Language models."), more
 		case llm.CodeAuth:
-			return i18n.T("The remote service refused the API key."), more
+			return translator.T("The remote service refused the API key."), more
 		case llm.CodeModelNotFound:
-			return i18n.T("The remote service does not have this model."), more
+			return translator.T("The remote service does not have this model."), more
+		case llm.CodeAddress:
+			return translator.T("Nothing answers at the remote model's address. Check the address in Settings → Language models."), more
 		case llm.CodeConfig:
-			return i18n.T("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac."), more
+			return translator.T("The remote model's address is not allowed. Use http:// or https:// without a user name or password."), more
 		case llm.CodeTimeout:
-			return i18n.T("The language model did not answer in time."), more
+			return translator.T("The language model did not answer in time."), more
 		case llm.CodeNetwork, llm.CodeServer, llm.CodeOverloaded, llm.CodeRateLimited:
-			return i18n.T("The language model stopped or did not answer. Try again in a moment."), more
+			return translator.T("The language model stopped or did not answer. Try again in a moment."), more
 		case llm.CodeResponsesOnly:
-			return i18n.T("This model needs the Responses API. For OpenAI and custom services, choose it under API format in Advanced."), more
+			return translator.T("This model needs the Responses API. For OpenAI and custom services, choose it under API format in Advanced."), more
 		case llm.CodeContextLength:
-			return i18n.T("The text is too long for the language model."), more
+			return translator.T("The text is too long for the language model."), more
 		case llm.CodeCancelled:
-			return i18n.T("Cancelled."), more
+			return translator.T("Cancelled."), more
 		}
-		return i18n.T("The language model answered something Voxt does not understand."), more
+		return translator.T("The language model answered something Voxt does not understand."), more
 	}
-	return i18n.T("The model stopped or did not answer. Try again in a moment."), more
+	return translator.T("The model stopped or did not answer. Try again in a moment."), more
 }

@@ -4,3 +4,7 @@
 {"to":"app","msg":{"id":"s2","result":{}}}
 {"to":"helper","msg":{"id":"s3","method":"screen.window","params":{"pid":812}}}
 {"to":"app","msg":{"id":"s3","error":{"code":"permission_denied","message":"Voxt may not record the screen","data":{"permission":"screenRecording"}}}}
+{"to":"helper","msg":{"id":"s4","method":"clipboard.image","params":{"maxSide":1600}}}
+{"to":"app","msg":{"id":"s4","result":{"jpeg":"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q=="}}}
+{"to":"helper","msg":{"id":"s5","method":"clipboard.image","params":{}}}
+{"to":"app","msg":{"id":"s5","result":{}}}

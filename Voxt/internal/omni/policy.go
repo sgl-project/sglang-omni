@@ -1,8 +1,10 @@
 package omni
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -96,6 +98,50 @@ func (t *ASRTuning) contextBias(hints []string, prompt string) bias {
 type chunk struct {
 	pcm    []byte
 	offset time.Duration
+}
+
+const whisperWindowBytes = 30 * sampleRate * 2
+
+// trimWhisperSilenceTail drops fully zero windows after the last window
+// with audio. Whisper can hallucinate words from an all-padding window.
+func trimWhisperSilenceTail(chunks []chunk) []chunk {
+	for {
+		tail := &chunks[len(chunks)-1]
+		audioBytes := len(bytes.TrimRight(tail.pcm, "\x00"))
+		if audioBytes == 0 && len(chunks) > 1 {
+			chunks = chunks[:len(chunks)-1]
+			continue
+		}
+		windows := max(1, (audioBytes+whisperWindowBytes-1)/whisperWindowBytes)
+		tail.pcm = tail.pcm[:min(len(tail.pcm), windows*whisperWindowBytes)]
+		return chunks
+	}
+}
+
+// packWhisperChunks puts the quiet cuts on the runtime's 30 s window
+// boundaries so that a batch decodes the same audio as separate requests.
+func packWhisperChunks(chunks []chunk) ([]byte, []int) {
+	const maxBatchWindows = 4
+	var counts []int
+	windows := 0
+	for _, chunk := range chunks {
+		count := (len(chunk.pcm) + whisperWindowBytes - 1) / whisperWindowBytes
+		if windows+count > maxBatchWindows {
+			break
+		}
+		windows += count
+		counts = append(counts, count)
+	}
+	if len(counts) < 2 {
+		return nil, nil
+	}
+	pcm := make([]byte, windows*whisperWindowBytes)
+	offset := 0
+	for i, count := range counts {
+		copy(pcm[offset:], chunks[i].pcm)
+		offset += count * whisperWindowBytes
+	}
+	return pcm, counts
 }
 
 // splitChunks cuts PCM16 mono at 16 kHz into requests of at most
@@ -208,6 +254,30 @@ func joinParts(parts []string) string {
 		b.WriteString(p)
 	}
 	return b.String()
+}
+
+// mossTag is a timestamp ([12.34]) or speaker label ([S01]): MOSS writes
+// them even when its instruction asks for plain text. A bare integer
+// ([1]) stays: a reference, not a timestamp.
+var mossTag = regexp.MustCompile(`\[(?:\d+[.,]\d+|S\d+)\]`)
+
+// mossTail is a tag's end at the text's start (0.00], S01]): MOSS also
+// writes it bare, and a piece's text can begin with it. Mid-text it
+// stays: a real 3.5] is the user's.
+var mossTail = regexp.MustCompile(`^\s*(?:\d+[.,]\d+|S\d+)\]`)
+
+// plainText is MOSS's text without those tags when it was asked for
+// plain text; other models', and MOSS's other tasks', as it is.
+func (a *ASR) plainText(text string) string {
+	if a.spec.Kind != kindMoss || a.spec.ASR.Instruction != mossPlain {
+		return text
+	}
+	return stripTags(text)
+}
+
+// stripTags is text without MOSS's tags.
+func stripTags(text string) string {
+	return joinParts(mossTag.Split(mossTail.ReplaceAllString(text, ""), -1))
 }
 
 func itoa(v int) string { return strconv.Itoa(v) }

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -13,9 +14,13 @@ import (
 // Translate's and Rewrite's requests; Automatic keeps the session's own.
 func TestLLMWaitSetting(t *testing.T) {
 	for _, kind := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
-		for _, wait := range []string{settings.WaitAuto, settings.Wait5Min} {
+		for wait, want := range map[string]time.Duration{settings.WaitAuto: 0, settings.Wait5Min: 5 * time.Minute, "20m": 20 * time.Minute} { // 20m: a custom wait (#3941)
 			t.Run(string(kind)+"/"+wait, func(t *testing.T) {
-				model := &fakeLLM{text: "Hello."}
+				answer := "Hello."
+				if kind == store.KindTranslate {
+					answer = "你好"
+				}
+				model := &fakeLLM{text: answer}
 				h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
 					c.Select = &fakeSelector{text: map[store.Kind]string{store.KindRewrite: "Dear Ann"}[kind]}
 					s.Models.LLMWait = wait
@@ -33,7 +38,7 @@ func TestLLMWaitSetting(t *testing.T) {
 					t.Fatal("no request")
 				}
 				got := reqs[0].Timeout
-				if wait == settings.Wait5Min && got != 5*time.Minute || wait == settings.WaitAuto && got >= 5*time.Minute {
+				if want > 0 && got != want || want == 0 && got >= 5*time.Minute {
 					t.Errorf("deadline %v with %q", got, wait)
 				}
 			})
@@ -109,4 +114,181 @@ func TestTranslateTimeoutKeepsSpeech(t *testing.T) {
 	if p := h.text.pastes(); len(p) != 1 || p[0] != "hello" {
 		t.Errorf("pasted %q", p)
 	}
+}
+
+// TestRethink (#3940): while the language model cleans up Transcribe's
+// text, Rethink asks again at the level chosen in the preview: the
+// request so far ends, the next one carries the level, its answer is
+// inserted once, and the snapshot says the level. Translate's step is
+// left alone (its card has its own menu).
+func TestRethink(t *testing.T) {
+	off := &llm.Thinking{Mode: llm.ThinkOff}
+	t.Run("transcribe", func(t *testing.T) {
+		model := &fakeLLM{text: "Hello, VoxtNew.", hang: true, hangOn: 1}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		id, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.Rethink(id, off)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "Hello, VoxtNew." || end.Thinking == nil || *end.Thinking != *off {
+			t.Errorf("end %s %+v %q %+v", end.State, end.Problem, end.Result, end.Thinking)
+		}
+		if r := model.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+			t.Errorf("requests %d: %+v", len(r), r)
+		}
+		if p := h.text.pastes(); len(p) != 1 || p[0] != "Hello, VoxtNew." {
+			t.Errorf("pasted %q", p)
+		}
+	})
+	t.Run("then skip", func(t *testing.T) {
+		model := &fakeLLM{hang: true}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		id, _ := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.Rethink(id, off)
+		h.rec.waitFor(t, "the second answer", func(Snapshot) bool { return len(model.requests()) == 2 })
+		h.m.SkipLLM(id)
+		if end := h.rec.wait(t); end.State != Done || end.Problem != nil || end.Result != "hello VoxtNew" {
+			t.Errorf("end %s %+v %q", end.State, end.Problem, end.Result)
+		}
+		if p := h.text.pastes(); len(p) != 1 {
+			t.Errorf("pasted %q", p)
+		}
+	})
+	// Translate's and Rewrite's preview take the same menu (#3957): the
+	// answer under way stops, only the new one goes in.
+	for _, tc := range []struct {
+		name string
+		kind store.Kind
+		sel  Selector
+	}{
+		{"translate", store.KindTranslate, &fakeSelector{}},
+		{"rewrite", store.KindRewrite, &fakeSelector{text: "the selected text"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "你好。", hang: true, hangOn: 1}
+			h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, _ *settings.Settings) { c.Select = tc.sel })
+			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 3)
+			h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+			h.m.Rethink(id, off)
+			end := h.rec.wait(t)
+			if end.State != Done || end.Problem != nil || end.Result != "你好。" || end.Thinking == nil || *end.Thinking != *off {
+				t.Errorf("end %s %+v %q %+v", end.State, end.Problem, end.Result, end.Thinking)
+			}
+			if r := model.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+				t.Errorf("requests %d: %+v", len(r), r)
+			}
+		})
+	}
+	t.Run("after stop", func(t *testing.T) {
+		model := &fakeLLM{hang: true}
+		h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{text: "the selected text"} })
+		id, _ := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.StopLLM(id)
+		h.m.Rethink(id, off)
+		if end := h.rec.wait(t); end.State != Done || end.Thinking != nil || len(model.requests()) != 1 {
+			t.Errorf("Rethink after Stop asked again: %s %+v, %d requests", end.State, end.Thinking, len(model.requests()))
+		}
+	})
+}
+
+// TestInputChars (#3951): each request says how long the user's input
+// is, for the service's "Off for short inputs": Transcribe's text, and
+// Translate's selection.
+func TestInputChars(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind store.Kind
+		sel  Selector
+		want int
+	}{
+		{"transcribe", store.KindTranscribe, nil, len("hello VoxtNew")},
+		{"translate a selection", store.KindTranslate, &fakeSelector{text: "Voxt translates the selected text"}, len("Voxt translates the selected text")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "好的。"}
+			h := newHarness(t, &fakeFile{text: "hello aura link"}, model, func(c *Config, _ *settings.Settings) { c.Select = tc.sel })
+			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.sel == nil {
+				h.speak(id, 3)
+			}
+			h.rec.wait(t)
+			if r := model.requests(); len(r) != 1 || r[0].InputChars != tc.want {
+				t.Fatalf("requests %+v; want one with InputChars %d", r, tc.want)
+			}
+		})
+	}
+}
+
+// TestLLMWaitNoLimit (#3978): with No limit, an answer that streams for
+// longer than every deadline Automatic sets is not cut off (Automatic
+// does cut the same answer), the stall check still holds the request,
+// and SkipLLM still ends the wait.
+func TestLLMWaitNoLimit(t *testing.T) {
+	short := func(c *Config) { // Automatic's deadlines, all well under the answer's 0.4 s
+		c.LLMTimeout, c.WriteTimeout, c.LLMBase, c.LLMPerChar = 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, time.Microsecond
+	}
+	for _, kind := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
+		for _, wait := range []string{settings.WaitAuto, settings.WaitNoLimit} {
+			t.Run(string(kind)+"/"+wait, func(t *testing.T) {
+				answer := "Hello there."
+				if kind == store.KindTranslate {
+					answer = "你好。"
+				}
+				model := &fakeLLM{text: answer, chunk: 3, pause: 100 * time.Millisecond}
+				h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
+					short(c)
+					c.Select = &fakeSelector{text: map[store.Kind]string{store.KindRewrite: "Dear Ann"}[kind]}
+					s.Models.LLMWait = wait
+				})
+				id, err := h.m.Start(StartRequest{Kind: kind, Target: slack})
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.speak(id, 3)
+				end := h.rec.wait(t)
+				reqs := model.requests()
+				if len(reqs) == 0 {
+					t.Fatal("no request")
+				}
+				if reqs[0].StallTimeout != h.m.cfg.LLMStall || reqs[0].StallTimeout <= 0 {
+					t.Errorf("stall check %v", reqs[0].StallTimeout)
+				}
+				timedOut := end.Problem != nil || end.State != Done || end.Result != answer
+				if wait == settings.WaitNoLimit && timedOut {
+					t.Errorf("No limit cut the answer: %s %+v %q", end.State, end.Problem, end.Result)
+				}
+				if wait == settings.WaitAuto && !timedOut {
+					t.Errorf("Automatic waited out the slow answer: the test proves nothing")
+				}
+			})
+		}
+	}
+	t.Run("skip", func(t *testing.T) {
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+			c.Select = &fakeSelector{}
+			s.Models.LLMWait = settings.WaitNoLimit
+		})
+		id, _ := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.CanSkip })
+		h.m.SkipLLM(id)
+		if end := h.rec.wait(t); end.State != Done || end.Result != "hello VoxtNew" {
+			t.Errorf("end %s %+v %q", end.State, end.Problem, end.Result)
+		}
+	})
 }

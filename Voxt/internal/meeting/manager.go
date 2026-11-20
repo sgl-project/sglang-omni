@@ -91,8 +91,8 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	m.timeline = newTimeline(m.cfg.Now, started)
 	m.snap = Snapshot{
 		ID: id, Mode: req.Mode, State: StateStarting, Started: started,
-		Level: map[Source]float64{SourceMic: -120, SourceSystem: -120},
-		Live:  map[Source]string{},
+		Levels: map[Source][]float64{},
+		Live:   map[Source]string{},
 	}
 	m.segIdx = 0
 	m.initTranslator()
@@ -189,6 +189,8 @@ func (m *Manager) Pause(_ context.Context, id string) error {
 	}
 	m.stopAllTracksLocked()
 	m.timeline.NotePause()
+	// A pause is not evidence that the system track stayed silent.
+	m.problems.systemQuietSince = time.Time{}
 	m.state = StatePaused
 	m.snap.State = StatePaused
 	m.snap.Elapsed = m.timeline.Elapsed()
@@ -468,8 +470,8 @@ func (m *Manager) resetIdle() {
 	m.seq = 0
 	m.state = StateIdle
 	m.snap = Snapshot{
-		State: StateIdle,
-		Level: map[Source]float64{}, Live: map[Source]string{},
+		State:  StateIdle,
+		Levels: map[Source][]float64{}, Live: map[Source]string{},
 	}
 	m.timeline = nil
 	m.archive = nil

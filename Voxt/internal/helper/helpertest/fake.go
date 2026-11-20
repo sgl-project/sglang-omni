@@ -57,6 +57,7 @@ package helpertest
 //	press=ID         once the tap is installed, binding ID fires (a trigger, with Front)
 //	front=BUNDLE     the app in front (default com.tinyspeck.slackmacgap, Slack, pid 812)
 //	selection=TEXT   textio.selection reads TEXT through Accessibility
+//	                 (a TEXT of only whitespace is not read, as in the helper)
 //	copy-selection=TEXT  textio.selection reads TEXT only with allowCopy (via copy)
 //	selection-file=PATH  textio.selection reads PATH's text at each call ("" or no
 //	                 file: nothing selected): the user selects something else
@@ -88,10 +89,14 @@ package helpertest
 //	                 "hello from system dictation"), a word more for each speech.audio
 //	                 with audio (speech.partial), in SpeechLangs only; without it
 //	                 speech.* are method_not_found, as in an older helper
+//	speech-empty     speech.recognize hears nothing: no speech.partial, and its result
+//	                 is the empty text
 //	speech-perm=STATE  Speech Recognition, as mic=
 //	no-screen        no Screen Recording until permissions.request asks for it:
 //	                 screen.window fails with permission_denied (else it answers
 //	                 Shot(pid) for any pid but 0)
+//	clipboard-image  clipboard.image answers ClipImage (else no picture)
+//	clipboard-error  clipboard.image fails
 //
 // A capture.start whose first device is "crash" exits 3 after its first
 // frame; one whose first device is "gone" fails with device_unavailable;
@@ -210,6 +215,8 @@ type fake struct {
 	installed  bool
 	scripted   bool // the events= script and press= ran
 	hkActive   bool
+	hkGen      int64                    // the hotkey.configure generation in effect
+	hkBindings []proto.HotkeyBinding    // its bindings
 	hkCancel   bool                     // hotkey.configure's cancel is set (the tap installs for it alone too)
 	manual     []string                 // app.configure's manualAccessibility
 	running    map[string]string        // capture jobs: their method (one of each at a time)
@@ -408,7 +415,7 @@ func (f *fake) serve(m proto.Message) {
 				f.mic = proto.PermGranted
 			}
 			f.mu.Unlock()
-		case proto.PermissionAccessibility:
+		case proto.PermissionAccessibility, proto.PermissionSystemAudio:
 		case proto.PermissionScreenRecording:
 			f.mu.Lock()
 			f.screen = true
@@ -505,6 +512,16 @@ func (f *fake) serve(m proto.Message) {
 		default:
 			f.result(m.ID, proto.ScreenWindowResult{JPEG: Shot(p.PID)})
 		}
+	case proto.MethodClipboardImage:
+		if f.has("clipboard-error") {
+			f.fail(m.ID, proto.CodeInternal, "clipboard.image failed")
+			return
+		}
+		var r proto.ClipboardImageResult
+		if f.has("clipboard-image") {
+			r.JPEG = ClipImage
+		}
+		f.result(m.ID, r)
 	case proto.MethodAppIcons:
 		var p proto.AppIconsParams
 		m.DecodeParams(&p)

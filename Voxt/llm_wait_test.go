@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,16 @@ func TestLLMWaitRow(t *testing.T) {
 	if got := a.settings.Get().Models.LLMWait; got != settings.Wait5Min {
 		t.Errorf("saved %q", got)
 	}
+	click(t, tt, "5 minutes")
+	click(t, tt, "30 minutes")
+	if got := a.settings.Get().Models.LLMWait; got != "30m" {
+		t.Errorf("saved 30 minutes as %q", got)
+	}
+	click(t, tt, "30 minutes")
+	click(t, tt, "60 minutes")
+	if got := a.settings.Get().Models.LLMWait; got != "60m" {
+		t.Errorf("saved 60 minutes as %q", got)
+	}
 	a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = settings.Wait10Min })
 	if frames(tt); !hasExact(tt, "10 minutes") {
 		t.Errorf("a choice made elsewhere: %q", firstTexts(tt))
@@ -50,6 +61,61 @@ func TestLLMWaitRow(t *testing.T) {
 		t.Errorf("in Chinese: %q", firstTexts(tt))
 	}
 	inView("zh-Hans", "10 分钟")
+}
+
+// TestLLMWaitSavedCustom (#3941): every custom wait an earlier version
+// could save keeps its value and duration and shows as what it is, not
+// as the nearest preset.
+func TestLLMWaitSavedCustom(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	for minutes := 1; minutes <= settings.WaitMaxMinutes; minutes++ {
+		value := settings.WaitMinutes(minutes)
+		label := fmt.Sprintf("%d minutes", minutes)
+		if minutes == 1 {
+			label = "1 minute"
+		}
+		t.Run(value, func(t *testing.T) {
+			loaded, err := settings.Migrate([]byte(`{"version":4,"models":{"llmWait":"` + value + `"}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := time.Duration(minutes) * time.Minute
+			if got := loaded.Models.LLMWaitFor(); got != want {
+				t.Fatalf("loaded wait %v, want %v", got, want)
+			}
+			a.updateSettings(func(s *settings.Settings) { s.Models = loaded.Models })
+			frames(tt)
+			if got := a.settings.Get().Models.LLMWait; got != value {
+				t.Errorf("showing the wait changed the saved wait to %q", got)
+			}
+			if got := a.settings.Get().Models.LLMWaitFor(); got != want {
+				t.Errorf("wait %v, want %v", got, want)
+			}
+			if !hasExact(tt, label) {
+				t.Errorf("the wait shows %q, not its own %q: texts %q", firstTexts(tt), label, firstTexts(tt))
+			}
+		})
+	}
+}
+
+// TestLLMWaitNoLimit (#3978): No limit on the wait select saves a wait
+// with no deadline and shows in Chinese.
+func TestLLMWaitNoLimit(t *testing.T) {
+	t.Cleanup(func() { i18n.SetLocale("en") })
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	click(t, tt, "Automatic")
+	click(t, tt, "No limit")
+	if got := a.settings.Get().Models.LLMWait; got != settings.WaitNoLimit {
+		t.Fatalf("saved %q", got)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if frames(tt); !hasExact(tt, "不限") {
+		t.Errorf("in Chinese: %q", firstTexts(tt))
+	}
 }
 
 // TestSkipLLMPill (#3821): while the language model works on speech that

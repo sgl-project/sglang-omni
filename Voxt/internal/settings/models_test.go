@@ -51,32 +51,45 @@ func TestKeepLoadedDocument(t *testing.T) {
 	}
 }
 
-// TestLLMWait (#3821): each choice of Models.LLMWait is the least wait for
-// a language model; empty and unknown values are Automatic (0). Older
-// documents have none (no migration); a choice survives a save and a read.
+// TestLLMWait (#3821, #3941, #3978): each choice of Models.LLMWait, and
+// every custom whole number of minutes up to WaitMaxMinutes, is the least
+// wait for a language model, No limit the longest; empty and unknown values
+// are Automatic (0). Older documents have none (no migration); choices and
+// custom values survive a save and a read.
 func TestLLMWait(t *testing.T) {
 	for _, c := range []struct {
 		v string
 		d time.Duration
 	}{
 		{WaitAuto, 0}, {Wait1Min, time.Minute}, {Wait2Min, 2 * time.Minute},
-		{Wait5Min, 5 * time.Minute}, {Wait10Min, 10 * time.Minute}, {"1h", 0},
+		{Wait5Min, 5 * time.Minute}, {Wait10Min, 10 * time.Minute},
+		{Wait30Min, 30 * time.Minute}, {Wait60Min, 60 * time.Minute}, {"1h", 0},
+		{WaitNoLimit, NoLimit}, {"None", 0}, {"0", 0}, // #3978
+		{"0m", 0}, {"-5m", 0}, {"61m", 0}, {"+5m", 0}, {"05m", 0}, {"1.5m", 0}, {"m", 0}, {"5", 0}, {"九m", 0},
 	} {
 		if d := (Models{LLMWait: c.v}).LLMWaitFor(); d != c.d {
 			t.Errorf("%q: %v, want %v", c.v, d, c.d)
+		}
+	}
+	for minutes := 1; minutes <= WaitMaxMinutes; minutes++ {
+		value := WaitMinutes(minutes)
+		if got := (Models{LLMWait: value}).LLMWaitFor(); got != time.Duration(minutes)*time.Minute {
+			t.Errorf("%q: %v, want %d minutes", value, got, minutes)
 		}
 	}
 	s, err := Migrate([]byte(`{"version":4,"models":{"keepLoaded":"5m"}}`))
 	if err != nil || s.Models.LLMWait != WaitAuto || s.Models.KeepLoaded != Keep5Min {
 		t.Fatalf("an older document: %+v %v", s.Models, err)
 	}
-	s.Models.LLMWait = Wait5Min
-	data, err := json.Marshal(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if back, err := Migrate(data); err != nil || back.Models.LLMWait != Wait5Min {
-		t.Errorf("read back %+v %v", back.Models, err)
+	for _, v := range append([]string{"20m"}, WaitChoices...) {
+		s.Models.LLMWait = v
+		data, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back, err := Migrate(data); err != nil || back.Models.LLMWait != v {
+			t.Errorf("read back %+v %v", back.Models, err)
+		}
 	}
 }
 

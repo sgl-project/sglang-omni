@@ -6,8 +6,9 @@ name: Voxt Release
 # ID of the voxt-release environment, notarized, checked by
 # scripts/release-verify.sh, and uploaded with the app's ZIP (for Voxt 1.x's
 # in-app update and Homebrew, voxt-appcast.yaml) and their SHA-256 to a draft
-# release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
-# silicon only. The nightly from main (voxt-nightly.yaml, version
+# release whose notes are the version's section of Voxt/CHANGELOG.md. Tagged
+# releases and betas also carry Voxt 2's signed MyGo archive and channel manifest.
+# Apple silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
 # (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N with Z one past mygo.json's
 # patch), or either run by hand from any branch, are signed and notarized
@@ -52,6 +53,8 @@ jobs:
     name: Voxt release package
     runs-on: macos-26
     timeout-minutes: 150
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
     # A release, or a nightly or a beta from main or run by hand. A run by hand from a branch the environment does not let in fails here.
     environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'))) && 'voxt-release' || '' }}
     permissions:
@@ -77,7 +80,24 @@ jobs:
           # The build runs third-party code, and only the draft release needs the write token.
           persist-credentials: false
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Stable behavior regression tests
+        if: env.IS_RELEASE == 'true' || github.event_name == 'pull_request'
+        env:
+          # Under the runner's TMPDIR (/var/folders/…) the socket tests' paths come within a few bytes of macOS's 104-byte Unix socket limit.
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          CGO_ENABLED=0 go test -count=1 ./...
+          swift test --package-path helper
+
       - name: Resolve the version
+        id: resolve
         run: |
           set -euo pipefail
           if [[ "$IS_RELEASE" == "true" ]]; then
@@ -115,15 +135,24 @@ jobs:
           else
             :
           fi
+          # MyGo signs a beta's update only with notes under its version, which no CHANGELOG.md names.
+          if [[ "$IS_BETA" == "true" ]]; then
+            scripts/release-appcast.sh beta-changelog "$version" "$GITHUB_SHA" < CHANGELOG.md > CHANGELOG.md.tmp
+            mv CHANGELOG.md.tmp CHANGELOG.md
+          else
+            :
+          fi
+          if [[ "$IS_RELEASE" == "true" || "$IS_BETA" == "true" ]]; then
+            feed_base="$(scripts/release-appcast.sh feed-base)"
+            jq -n --arg url "$feed_base" --arg publicKey "PPX1glcG71+Xyk/V2veU1p0QeyX1RKRFPeAG2++lUEE=" \
+              '{updates: {url: $url, publicKey: $publicKey, prereleases: true}}' > release/mygo.release.json
+            echo "HAS_UPDATE_FEED=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_UPDATE_FEED=false" >> "$GITHUB_ENV"
+          fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Voxt $version, release: $IS_RELEASE"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: Voxt/go.mod
-          cache-dependency-path: Voxt/go.sum
-
-      - uses: astral-sh/setup-uv@v6
 
       - name: Import the signing identity
         if: env.IS_SIGNED == 'true'
@@ -186,8 +215,13 @@ jobs:
           # Reads hehehai/actnow-sounds, the sound library of official builds;
           # without it the app plays macOS's system sounds.
           ACTNOW_SOUNDS_TOKEN: ${{ secrets.ACTNOW_SOUNDS_TOKEN }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+          if [[ "$HAS_UPDATE_FEED" == "true" && "$IS_SIGNED" == "true" && -z "${MYGO_UPDATER_PRIVATE_KEY:-}" ]]; then
+            echo "::error::MYGO_UPDATER_PRIVATE_KEY is required to sign the Voxt 2 update archive"
+            exit 1
+          fi
           if [[ -n "${ACTNOW_SOUNDS_TOKEN:-}" ]]; then
             auth="$(printf 'x-access-token:%s' "$ACTNOW_SOUNDS_TOKEN" | base64)"
             git -c http.extraheader="Authorization: Basic $auth" \
@@ -252,6 +286,22 @@ jobs:
           else
             :
           fi
+          if [[ "$HAS_UPDATE_FEED" == "true" && "$IS_SIGNED" == "true" ]]; then
+            manifest="build/darwin-arm64/update-darwin-arm64.json"
+            if [[ ! -f "$manifest" ]]; then
+              echo "::error::The signed Voxt 2 build has no update manifest"
+              exit 1
+            fi
+            scripts/release-appcast.sh github-manifest "$VERSION" "$GITHUB_REPOSITORY" \
+              < "$manifest" > "$out/update-darwin-arm64.json"
+            (cd "$out" && shasum -a 256 update-darwin-arm64.json > update-darwin-arm64.json.sha256)
+            for update in build/darwin-arm64/*.tar.gz build/darwin-arm64/*.delta; do
+              [[ -f "$update" ]] || continue
+              name="${update##*/}"
+              cp "$update" "$out/$name"
+              (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
+            done
+          fi
           echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
           ls -l "$out"
 
@@ -295,7 +345,7 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           # The version's section of CHANGELOG.md, else Unreleased (a tag on a commit that did not name the version).
           section="$(awk -v v="$VERSION" '/^## /{f = index($0, "[" v "]") || $2 == v; next} f' CHANGELOG.md)"
-          if [[ -z "${section//[[:space:]]/}" ]]; then
+          if [[ ! "$section" =~ [^[:space:]] ]]; then
             section="$(awk '/^## /{f = index($0, "[Unreleased]") > 0; next} f' CHANGELOG.md)"
           else
             :
@@ -308,7 +358,7 @@ jobs:
           ### Install
 
           - Open Voxt-$VERSION-arm64.dmg and drag Voxt to Applications. It replaces Voxt 1.x there.
-          - This version does not update itself: install a newer one the same way.
+          - Later versions install inside Voxt: choose Check for Updates… in the Voxt menu, then Install Update and Relaunch.
 
           $section
 
@@ -318,3 +368,14 @@ jobs:
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --latest \
             --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*
+
+  voxt2-beta-feed:
+    name: Publish the beta update manifest
+    # A prerelease created by GITHUB_TOKEN emits no release event for another workflow.
+    if: inputs.beta == true && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: release
+    uses: ./.github/workflows/voxt-appcast.yaml
+    with:
+      tag: voxt-v${{ needs.release.outputs.version }}
+      channel: beta
+    secrets: inherit

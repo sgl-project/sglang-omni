@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
+from sglang_omni.platforms import current_platform
 from tests.unit_test.fixtures.accelerator import require_device_streams
 
 LLM_HIDDEN = 48
@@ -391,7 +392,10 @@ def test_validate_request_batched_gates_prompt_and_span_budget() -> None:
     )
 
 
-def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> None:
+@pytest.mark.parametrize("cuda_alias", [False, True])
+def test_flow_matching_checkpoint_runs_the_single_request_solver(
+    tmp_path, monkeypatch, cuda_alias: bool
+) -> None:
     torch.save(
         {"mean": torch.zeros(LATENT_DIM), "var": torch.ones(LATENT_DIM)},
         tmp_path / "latent_stats.pt",
@@ -446,17 +450,42 @@ def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> No
         rng=None,
     )
     flow.append_hidden(state, torch.randn(1, 1, LLM_HIDDEN))
-    step = flow.decode_next(
-        state,
-        hidden_states=torch.randn(1, 1, LLM_HIDDEN),
-        num_steps=2,
-        ode_method="euler",
-        guidance_scale=1.2,
-        eos_threshold=0.8,
-    )
-    assert step.latent_patch.shape == (1, PATCH_SIZE, LATENT_DIM)
-    assert torch.isfinite(step.latent_patch).all()
-    assert torch.isfinite(step.feedback_embedding).all()
+    state.suppress_first_eos_check = False
+    if cuda_alias:
+        monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
+    for eos_threshold, expected_finished in ((2.0, False), (-1.0, True)):
+        step = flow.decode_next(
+            state,
+            hidden_states=torch.randn(1, 1, LLM_HIDDEN),
+            num_steps=2,
+            ode_method="euler",
+            guidance_scale=1.2,
+            eos_threshold=eos_threshold,
+        )
+        assert step.latent_patch.shape == (1, PATCH_SIZE, LATENT_DIM)
+        assert torch.isfinite(step.latent_patch).all()
+        assert torch.isfinite(step.feedback_embedding).all()
+        assert step.finished is expected_finished
+
+
+def test_batched_eos_ignores_cuda_compatibility_alias(tmp_path, monkeypatch) -> None:
+    flow = flow_head(tmp_path)
+    flow.prepare_batched_eos_staging(2, torch.device("cpu"))
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
+    for flags in ([True, False], [False, True]):
+        flow.stage_batched_eos(torch.tensor(flags))
+        assert flow.resolve_batched_eos() == flags
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires NPU")
+def test_batched_eos_staging_on_npu(tmp_path) -> None:
+    flow = flow_head(tmp_path)
+    device = torch.device("npu")
+    flow.prepare_batched_eos_staging(2, device)
+    for flags in ([True, False], [False, True]):
+        flow.stage_batched_eos(torch.tensor(flags, device=device))
+        assert flow.resolve_batched_eos() == flags
 
 
 def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
