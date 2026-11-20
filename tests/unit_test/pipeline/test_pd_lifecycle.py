@@ -478,6 +478,37 @@ def test_deferred_admission_abort_frees_committed_pages_once():
     assert scheduler.waiting_queue == []
 
 
+def test_transfer_abort_holds_lifecycle_lock_through_slot_release() -> None:
+    scheduler = decode_scheduler()
+    receiver = scheduler.pd_receiver
+    message = make_message()
+    destination = receiver.reserve(message)
+    allocator = scheduler.token_to_kv_pool_allocator
+    free_slots = allocator.free
+
+    def can_enter_lifecycle() -> bool:
+        if not receiver.lock.acquire(blocking=False):
+            return False
+        else:
+            pass
+        receiver.lock.release()
+        return True
+
+    with ThreadPoolExecutor(1) as observer:
+
+        def free(slots: torch.Tensor) -> None:
+            assert not observer.submit(can_enter_lifecycle).result(timeout=5)
+            free_slots(slots)
+
+        allocator.free = free
+        receiver.abort(message, destination, RuntimeError("copy failed"))
+        receiver.abort(message, destination, RuntimeError("duplicate abort"))
+    assert [slots.tolist() for slots in allocator.freed] == [
+        list(destination.page_indices)
+    ]
+    assert not receiver.has_reservations()
+
+
 def test_stop_string_requires_and_uses_model_tokenizer():
     req = prefill_req()
     req.sampling_params.stop_strs = ["END"]
