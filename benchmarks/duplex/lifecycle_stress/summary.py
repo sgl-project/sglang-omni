@@ -71,6 +71,8 @@ class StressSummary(BaseModel):
     cancel_ms: Distribution
     cancel_statuses: dict[str, int]
     late_outputs: int | None
+    drops_mid_reply: int | None
+    drops_after_reply: int | None
     interrupted_replies: int | None
     interrupted_sessions: int | None
     server_log: ServerLog | None
@@ -182,6 +184,11 @@ def summarize(samples: StressSamples) -> StressSummary:
         for session in sessions
         if session.interrupted_replies is not None
     ]
+    reply_leaves = [
+        session.is_left_mid_reply
+        for session in sessions
+        if session.is_left_mid_reply is not None
+    ]
     reconnected = [session for session in sessions if session.readmit_ms is not None]
     errored = [session for session in sessions if session.outcome == "errored"]
 
@@ -280,6 +287,10 @@ def summarize(samples: StressSamples) -> StressSummary:
             Counter(str(session.cancel_status) for session in cancelled)
         ),
         late_outputs=sum(late_output_counts) if late_output_counts else None,
+        drops_mid_reply=sum(reply_leaves) if reply_leaves else None,
+        drops_after_reply=(
+            len(reply_leaves) - sum(reply_leaves) if reply_leaves else None
+        ),
         interrupted_replies=sum(interruption_counts) if interruption_counts else None,
         interrupted_sessions=(
             sum(count > 0 for count in interruption_counts)

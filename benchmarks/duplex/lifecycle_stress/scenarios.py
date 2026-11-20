@@ -57,8 +57,6 @@ HTTP_TIMEOUT_S = 5.0
 CLEANUP_POLL_INTERVAL_S = 0.005
 RECOVERY_POLL_INTERVAL_S = 0.1
 RECONNECT_RETRY_INTERVAL_S = 0.02
-# note (Yi Zhao): a capacity probe's own sessions need to leave before the next cycle when no debug route can confirm it.
-PROBE_SETTLE_S = 0.5
 TRACEBACK_MARKER = "Traceback (most recent call last)"
 ERROR_LEVEL_MARKER = "ERROR"
 # note (Yi Zhao): numbers and ids differ from one line to the next of the same error; without them the same error counts as one kind.
@@ -307,7 +305,28 @@ async def run_cycle(
             time.perf_counter(), time.perf_counter() + settings.cleanup_wait_s
         )
         if probe_cleanup_ms is None:
-            await asyncio.sleep(PROBE_SETTLE_S)
+            # note (Yi Zhao): with no session count, only another probe shows that the last probe's sessions have left, and that one leaves sessions of its own. So the wait is the time the server was just seen to need: probe again after a growing wait until every slot is back, then give the sessions of that last probe as long as the ones before it were seen to take. Without this the next cycle is denied by the probe's sessions on a server that releases slowly.
+            release_deadline_s = time.perf_counter() + settings.cleanup_wait_s
+            probe_closed_s = time.perf_counter()
+            retry_interval_s = RECOVERY_POLL_INTERVAL_S
+            is_released = False
+            while not is_released and time.perf_counter() < release_deadline_s:
+                await asyncio.sleep(retry_interval_s)
+                check_started_s = time.perf_counter()
+                check = await probe_capacity(
+                    settings.url, settings.max_connections, settings.cleanup_wait_s
+                )
+                if check.admitted == settings.max_connections:
+                    is_released = True
+                    await asyncio.sleep(check_started_s - probe_closed_s)
+                else:
+                    if check.admitted > 0:
+                        probe_closed_s = time.perf_counter()
+                    else:
+                        pass
+                    retry_interval_s = min(
+                        2 * retry_interval_s, MAX_RECOVERY_POLL_INTERVAL_S
+                    )
         else:
             pass
         if snapshot_after is None:

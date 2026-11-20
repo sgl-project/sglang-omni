@@ -48,6 +48,9 @@ from sglang_omni.serve.realtime import turn_detector as turn_detector_module
 CLEANUP_WAIT_S = 5.0
 PACKETS_PER_SESSION = 2
 SHORT_TIMEOUT_S = 0.3
+# note (Yi Zhao): enough packets for several whole units, so a reply has started and ended while packets remain, and the events of one session outnumber a default receive queue.
+MANY_PACKETS = 16
+SLOW_CLOSE_MS = 600.0
 STAND_IN_PID = 4242
 # note (Yi Zhao): any nonzero sample is speech to the stand-in pipeline.
 SPEECH_PACKET = b"\x01\x00" * (PACKET_BYTES // 2)
@@ -70,8 +73,9 @@ async def stress_against_mock(
     has_device_memory: bool = False,
     pcm: bytes = bytes(PACKETS_PER_SESSION * PACKET_BYTES),
     server_log: Path | None = None,
+    cycles: int = 1,
 ) -> StressSamples:
-    """One cycle of the given scenario against a mock served on this event loop."""
+    """The given scenario against a mock served on this event loop; one cycle unless told otherwise."""
     async with serve_in_process(mock, "127.0.0.1", 0) as url:
         return await run_stress(
             RunSettings(
@@ -80,7 +84,7 @@ async def stress_against_mock(
                 scenario=scenario,
                 protocol=mock.protocol,
                 concurrency=concurrency,
-                cycles=1,
+                cycles=cycles,
                 pcm=pcm,
                 is_input_silence=True,
                 audio_file=None,
@@ -152,6 +156,66 @@ def test_a_client_that_leaves_early_is_released_by_the_shared_session(
     assert cycle.snapshot_after is not None
     assert cycle.snapshot_after.active_sessions == 0
     assert samples.final_session.outcome == "completed"
+
+
+def test_a_close_frame_after_many_unread_events_still_closes_in_good_order(
+    tmp_path: Path,
+) -> None:
+    """A client that leaves after many packets has more server events unread than a bounded receive queue holds; turns red if the client's sockets go back to the bounded queue, where the server's close frame stays unread and the close ends as 1006 after its whole timeout."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2),
+            tmp_path,
+            scenario="drop",
+            leave_point="append",
+            leave_style="close_frame",
+            pcm=bytes(MANY_PACKETS * PACKET_BYTES),
+        )
+    )
+    sessions = samples.cycles[0].sessions
+    assert [session.outcome for session in sessions] == ["dropped"] * 2
+    assert [session.close_code for session in sessions] == [1000, 1000]
+
+
+@pytest.mark.parametrize("held_first_replies", [2, 0])
+def test_a_leave_at_the_reply_says_whether_the_reply_was_still_in_progress(
+    tmp_path: Path, held_first_replies: int
+) -> None:
+    """The mock either holds the first reply, so the client leaves in the middle of it, or ends it at once, so the reply is over by the next packet; turns red if the client stops reading after response.created, which reports both as mid-reply."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2, held_first_replies=held_first_replies),
+            tmp_path,
+            scenario="drop",
+            leave_point="reply",
+            leave_style="reset",
+            pcm=bytes(MANY_PACKETS * PACKET_BYTES),
+        )
+    )
+    summary = summarize(samples)
+    assert summary.session_outcomes == {"dropped": 2}
+    assert (summary.drops_mid_reply, summary.drops_after_reply) == (
+        held_first_replies,
+        2 - held_first_replies,
+    )
+
+
+def test_a_probe_whose_sessions_leave_slowly_does_not_deny_the_next_cycle(
+    tmp_path: Path,
+) -> None:
+    """The mock takes longer to release a closed session than any fixed wait this client used to have, and shows no session count; turns red if the next cycle starts before the probe's own sessions are seen to be gone, because it is then denied by them."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2, close_delay_ms=SLOW_CLOSE_MS),
+            tmp_path,
+            max_connections=2,
+            has_debug_route=False,
+            cycles=2,
+        )
+    )
+    summary = summarize(samples)
+    assert summary.session_outcomes == {"completed": 4}
+    assert summary.failed_checks == []
 
 
 def test_cancel_ends_the_reply_in_progress_and_nothing_of_it_arrives_later(

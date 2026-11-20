@@ -40,6 +40,8 @@ from benchmarks.duplex.oracle_models import is_admission_rejection
 NORMAL_CLOSE_CODE = 1000
 POLICY_CLOSE_CODE = 1008
 CANCEL_REFUSAL_CODE = "not_supported"
+# note (Yi Zhao): a client that leaves early stops reading; past a bounded receive queue the socket is no longer read either, the server's close frame stays unread and the close waits out its whole timeout.
+RECEIVE_QUEUE_FRAMES = None
 # note (Yi Zhao): the recorder's profile for a server that takes turns by its own voice detection, and how such a server marks a reply the user talked over.
 TURN_BASED_PROFILE = "turn-based"
 INTERRUPTED_REASON = "interrupted"
@@ -173,7 +175,7 @@ async def leave_early(connection: ClientConnection, leave_style: LeaveStyle) -> 
 async def send_packets(
     connection: ClientConnection,
     plan: SessionPlan,
-    reply_task: asyncio.Task[None] | None,
+    reply_started: asyncio.Event,
     last_sent_s: float,
 ) -> float:
     """Send the plan's packets at their pace and return when the last one went out; a plan that leaves mid-reply stops at the first packet after the reply has started."""
@@ -181,7 +183,7 @@ async def send_packets(
     for packet_index in range(plan.packets):
         due_s = first_packet_s + packet_index * PACKET_MS / MS_PER_SECOND
         await asyncio.sleep(max(0.0, due_s - time.perf_counter()))
-        if plan.leave_point == "reply" and reply_task is not None and reply_task.done():
+        if plan.leave_point == "reply" and reply_started.is_set():
             break
         else:
             pass
@@ -214,6 +216,7 @@ async def drive_session(
     cancel_ms: float | None = None
     cancel_status: str | None = None
     late_outputs: int | None = None
+    is_left_mid_reply: bool | None = None
 
     def ended(outcome: Outcome) -> SessionOutcome:
         return SessionOutcome(
@@ -225,6 +228,7 @@ async def drive_session(
             cancel_ms=cancel_ms,
             cancel_status=cancel_status,
             late_outputs=late_outputs,
+            is_left_mid_reply=is_left_mid_reply,
         )
 
     await receive_until(connection, "session.created")
@@ -247,18 +251,29 @@ async def drive_session(
         await receive_until(connection, "session.updated")
 
     cancelled_response_id: str | None = None
+    reply_started = asyncio.Event()
+    is_reply_over = False
 
     async def act_on_reply() -> None:
         """Wait for the first reply and cancel it if the plan says so; the packets keep going meanwhile."""
-        nonlocal cancel_ms, cancel_status, cancelled_response_id
+        nonlocal cancel_ms, cancel_status, cancelled_response_id, is_reply_over
         created = await receive_response(connection, "response.created")
-        if not plan.should_cancel_reply:
-            return
+        reply_started.set()
+        cancel_sent_s = time.perf_counter()
+        if plan.should_cancel_reply:
+            await connection.send(client_event("response.cancel", {}))
         else:
             pass
-        cancel_sent_s = time.perf_counter()
-        await connection.send(client_event("response.cancel", {}))
         if plan.leave_point == "reply":
+            # note (Yi Zhao): a reply that is short or quick is over before the client gets to leave, and such a session did not leave mid-reply; reading on until the leave is what tells the two apart. An error event is no end of the reply, so it is read past.
+            while not is_reply_over:
+                event = ServerEvent.model_validate_json(await connection.recv())
+                is_reply_over = (
+                    event.type == "response.done"
+                    and EventResponse.model_validate(event.response).id == created.id
+                )
+            return
+        elif not plan.should_cancel_reply:
             return
         elif plan.supports_cancel:
             cancelled_response_id = created.id
@@ -284,9 +299,21 @@ async def drive_session(
         else None
     )
     try:
-        last_sent_s = await send_packets(connection, plan, reply_task, last_sent_s)
+        last_sent_s = await send_packets(connection, plan, reply_started, last_sent_s)
         if reply_task is None:
             pass
+        elif plan.leave_point == "reply":
+            # note (Yi Zhao): the client leaves once the reply has started; the task goes on reading, so it is awaited only if it ended, to raise what it failed on.
+            started_task = asyncio.create_task(reply_started.wait())
+            await asyncio.wait(
+                {reply_task, started_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            started_task.cancel()
+            if reply_task.done():
+                await reply_task
+            else:
+                pass
+            is_left_mid_reply = not is_reply_over
         else:
             await reply_task
     finally:
@@ -334,6 +361,7 @@ async def run_lifecycle_session(url: str, plan: SessionPlan) -> SessionOutcome:
                 max_size=MAX_MESSAGE_BYTES,
                 compression=None,
                 ping_interval=None,
+                max_queue=RECEIVE_QUEUE_FRAMES,
                 open_timeout=plan.timeout_s,
             ) as connection:
                 return await drive_session(connection, plan, started_s)
@@ -445,7 +473,11 @@ async def take_slot(
     try:
         async with asyncio.timeout(timeout_s):
             connection = await connect(
-                url, max_size=MAX_MESSAGE_BYTES, compression=None, ping_interval=None
+                url,
+                max_size=MAX_MESSAGE_BYTES,
+                compression=None,
+                ping_interval=None,
+                max_queue=RECEIVE_QUEUE_FRAMES,
             )
     except InvalidStatus as exc:
         if exc.response.status_code == ADMISSION_DENIED_STATUS:

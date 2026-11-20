@@ -46,6 +46,8 @@ class SessionOutcome(BaseModel):
     cancel_ms: float | None = None
     cancel_status: str | None = None
     late_outputs: int | None = None
+    # note (Yi Zhao): of a session that left at the reply: whether the client had not yet read the end of that reply when it left. False means the reply was already over and the session did not test a leave mid-reply.
+    is_left_mid_reply: bool | None = None
     interrupted_replies: int | None = None
     reconnect_denials: int | None = None
     readmit_ms: float | None = None
