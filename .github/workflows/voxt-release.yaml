@@ -88,7 +88,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Stable behavior regression tests
-        if: env.IS_RELEASE == 'true'
+        if: env.IS_RELEASE == 'true' || github.event_name == 'pull_request'
         env:
           # Under the runner's TMPDIR (/var/folders/…) the socket tests' paths come within a few bytes of macOS's 104-byte Unix socket limit.
           TMPDIR: ${{ runner.temp }}
