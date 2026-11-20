@@ -7,10 +7,12 @@ import Foundation
 public enum SelectionRead {
     /// Whether an Accessibility reading holds the selection's text. A
     /// block selection in a web editor (Lark docs in Chrome) reads as one
-    /// blank space: a selection the element could not flatten, not text.
-    /// The read goes on (to ⌘C) instead of answering with it.
+    /// blank space, an image-only block selection as the object
+    /// replacement character U+FFFC: a selection the element could not
+    /// flatten, not text. The read goes on (to ⌘C) instead of answering
+    /// with it.
     public static func hasText(_ s: String) -> Bool {
-        s.contains { !$0.isWhitespace }
+        s.contains { !$0.isWhitespace && $0 != "\u{FFFC}" }
     }
 
     /// Whether an empty selected range ends the read before ⌘C: only in a
