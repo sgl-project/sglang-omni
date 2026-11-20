@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -81,7 +81,9 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
         )
     ]
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, int]:
+    def stage_factory_kwargs(
+        self, stage_name: str
+    ) -> dict[str, int | Literal["prefill", "decode"]]:
         if stage_name == "asr":
             return {"encoder_cache_size_bytes": _ENCODER_CACHE_SIZE_BYTES}
         else:
@@ -118,4 +120,55 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
         return {**derived, **self.env_defaults}
 
 
+def moss_td_pd_stages() -> list[StageConfig]:
+    prefill = (
+        MossTranscribeDiarizePipelineConfig.model_fields["stages"]
+        .default[0]
+        .model_copy(deep=True)
+    )
+    prefill.next = "asr_decode"
+    prefill.terminal = False
+    prefill.engine = prefill.engine.model_copy(
+        update={
+            "disable_radix_cache": True,
+            "page_size": 1,
+            "disable_speculative_decoding": True,
+            "disable_decode_cuda_graph": True,
+        }
+    )
+    decode = MossTDStageConfig(
+        name="asr_decode",
+        process="asr_decode",
+        factory_path=prefill.factory_path,
+        engine=prefill.engine.model_copy(
+            update={
+                "disable_decode_cuda_graph": False,
+                "cuda_graph_backend_prefill": "disabled",
+            }
+        ),
+        gpu=1,
+        terminal=True,
+    )
+    return [prefill, decode]
+
+
+class MossTranscribeDiarizePDPipelineConfig(MossTranscribeDiarizePipelineConfig):
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "asr": MossTDStageConfig,
+        "asr_decode": MossTDStageConfig,
+    }
+    stages: list[StageConfig] = Field(default_factory=moss_td_pd_stages)
+
+    def stage_factory_kwargs(
+        self, stage_name: str
+    ) -> dict[str, int | Literal["prefill", "decode"]]:
+        if stage_name == "asr":
+            return {**super().stage_factory_kwargs(stage_name), "pd_role": "prefill"}
+        elif stage_name == "asr_decode":
+            return {"pd_role": "decode"}
+        else:
+            return super().stage_factory_kwargs(stage_name)
+
+
 EntryClass = MossTranscribeDiarizePipelineConfig
+Variants = {"pd": MossTranscribeDiarizePDPipelineConfig}

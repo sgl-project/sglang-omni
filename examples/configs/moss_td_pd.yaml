@@ -1,0 +1,15 @@
+config_cls: MossTranscribeDiarizePDPipelineConfig
+model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize
+name: moss-td-pd
+stages:
+  asr:
+    gpu_memory_fraction: 0.85
+    engine:
+      max_running_requests: 8
+      enable_torch_compile: false
+  asr_decode:
+    gpu_memory_fraction: 0.85
+    engine:
+      max_running_requests: 16
+      cuda_graph_max_bs: 16
+      enable_torch_compile: false

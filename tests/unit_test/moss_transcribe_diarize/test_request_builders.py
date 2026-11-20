@@ -8,19 +8,31 @@ import wave
 import numpy as np
 import pytest
 import torch
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 
 import sglang_omni.models.moss_transcribe_diarize.request_builders as request_builders
 import sglang_omni.preprocessing.transcription as transcription
 from sglang_omni.models.moss_transcribe_diarize import request_builders
+from sglang_omni.models.moss_transcribe_diarize.pd import (
+    build_prefill_state,
+    restore_decode_state,
+)
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
     DEFAULT_TOP_P,
     DEFAULT_TRANSCRIBE_DIARIZE_PROMPT,
     audio_feature_lengths_from_waveform,
+    make_moss_td_result_adapter,
     make_moss_transcribe_diarize_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.pd_utils import (
+    DecodeContinuation,
+    ReservedKV,
+    continuation_from_req,
+    req_from_continuation,
+)
 
 
 def wav_bytes(num_samples: int = 1600, sample_rate: int = 16000) -> bytes:
@@ -215,6 +227,44 @@ def make_request_builder(
         audio_encoder_service=audio_encoder_service,
     )
     return request_builder
+
+
+def test_pd_continuation_preserves_moss_transcription_state() -> None:
+    processor = FakeProcessor()
+    prefill_data = make_request_builder(processor)(
+        payload(
+            params={"language": "en", "max_new_tokens": 9},
+            metadata={"audio": wav_bytes(), "model": "moss-transcribe-diarize"},
+        )
+    )
+    request = prefill_data.req
+    request.omni_data = prefill_data
+    request.output_ids.append(10)
+    continuation = DecodeContinuation.decode(
+        continuation_from_req(request, "kv-transfer", build_prefill_state).encode()
+    )
+    prompt_tokens = len(request.origin_input_ids)
+    page_indices = tuple(range(1, prompt_tokens + 1))
+    pool = ReqToTokenPool(1, prompt_tokens, "cpu", enable_memory_saver=False)
+    resumed = req_from_continuation(
+        continuation,
+        ReservedKV(
+            slots=torch.tensor(page_indices, dtype=torch.int32),
+            page_indices=page_indices,
+            seq_len=prompt_tokens,
+        ),
+        req_to_token_pool=pool,
+        state_restorer=restore_decode_state,
+    )
+    resumed.output_ids.append(11)
+    result = make_moss_td_result_adapter(processor.tokenizer)(resumed.omni_data)
+    assert result.request.inputs is None
+    assert result.request.metadata == {"model": "moss-transcribe-diarize"}
+    assert result.data["token_ids"] == [10, 11]
+    assert result.data["duration_s"] == prefill_data.audio_duration_s
+    assert result.data["language"] == "en"
+    assert result.data["prompt_tokens"] == prompt_tokens
+    assert resumed.sampling_params.max_new_tokens == 9
 
 
 def test_streamlined_request_builder_preserves_exact_input_ids() -> None:

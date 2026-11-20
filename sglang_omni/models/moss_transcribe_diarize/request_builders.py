@@ -663,6 +663,12 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             stage_payload=payload,
         )
 
+    return request_builder, make_moss_td_result_adapter(tokenizer)
+
+
+def make_moss_td_result_adapter(
+    tokenizer: PreTrainedTokenizerBase,
+) -> Callable[[MossTranscribeDiarizeRequestData], StagePayload]:
     def result_adapter(data: MossTranscribeDiarizeRequestData) -> StagePayload:
         payload = data.stage_payload
         output_ids = list(data.output_ids or [])
@@ -694,7 +700,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             },
         )
 
-    return request_builder, result_adapter
+    return result_adapter
 
 
 def make_moss_transcribe_diarize_stream_output_builder(

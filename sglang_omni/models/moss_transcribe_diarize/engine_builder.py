@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+from functools import partial
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Literal
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.server_args import ServerArgs
@@ -18,6 +20,11 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
+)
+from sglang_omni.models.moss_transcribe_diarize.pd import (
+    RESUME_SCHEMA,
+    build_prefill_state,
+    restore_decode_state,
 )
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     MossTranscribeDiarizeRequestData,
@@ -35,6 +42,11 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphConfig,
     build_default_prefill_cuda_graph_bs,
     get_prefill_cuda_graph_backend,
+)
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
@@ -96,7 +108,13 @@ class MossTranscribeDiarizeEngineBuilder(
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
         enable_trimmed_fbank: bool = True,
+        pd_role: Literal["prefill", "decode"] | None = None,
     ) -> None:
+        if pd_role not in (None, "prefill", "decode"):
+            raise ValueError(f"Invalid MOSS-TD PD role: {pd_role!r}")
+        else:
+            pass
+        self.pd_role = pd_role
         self.max_running_requests = max_running_requests
         self.requested_max_new_tokens = max_new_tokens
         self.requested_context_length = context_length
@@ -214,7 +232,14 @@ class MossTranscribeDiarizeEngineBuilder(
         speculative_algorithm = SpeculativeAlgorithm.from_string(
             overrides.get("speculative_algorithm")
         )
-        if speculative_algorithm.is_none():
+        if self.pd_role is not None:
+            if not speculative_algorithm.is_none() or draft_model_path is not None:
+                raise ValueError("MOSS-TD PD requires speculative decoding disabled")
+            elif self.enable_async_decode or not overrides["disable_overlap_schedule"]:
+                raise ValueError("MOSS-TD PD requires synchronous scheduling")
+            else:
+                self.enable_async_decode = False
+        elif speculative_algorithm.is_none():
             if draft_model_path is not None:
                 raise ValueError(
                     "speculative_draft_model_path needs a speculative_algorithm"
@@ -260,6 +285,15 @@ class MossTranscribeDiarizeEngineBuilder(
             # note (wilsonzheng0327): on SGLang 0.5.23 the compiled path makes each DFlash verify step about four times slower, while decode without a draft still gains from it.
             overrides["enable_torch_compile"] = False
 
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        if self.pd_role is not None and (
+            not current_platform.is_cuda() or resolved_view(server_args).tp_size != 1
+        ):
+            raise ValueError("MOSS-TD PD requires CUDA and TP=1")
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
+
     def customize_server_args(self, server_args: ServerArgs) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
         # ServerArgs, matching the pre-refactor factory behavior.
@@ -296,6 +330,10 @@ class MossTranscribeDiarizeEngineBuilder(
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
+        if self.pd_role == "decode":
+            return
+        else:
+            pass
         self.full_prefill_enabled = (
             generation_cuda_graph_enabled
             and current_platform.is_cuda()
@@ -317,16 +355,23 @@ class MossTranscribeDiarizeEngineBuilder(
         server_args: ServerArgs,
     ) -> None:
         del server_args
-        self.audio_encoder_service = BatchedAudioEncoderService(
-            model,
-            max_batch_size=self.encoder_max_batch_size,
-        )
+        if self.pd_role != "decode":
+            self.audio_encoder_service = BatchedAudioEncoderService(
+                model,
+                max_batch_size=self.encoder_max_batch_size,
+            )
+        else:
+            pass
 
     def make_adapters(self, model: object) -> tuple[
-        Callable[[StagePayload], MossTranscribeDiarizeRequestData],
+        Callable[[StagePayload], MossTranscribeDiarizeRequestData] | None,
         Callable[[MossTranscribeDiarizeRequestData], StagePayload],
     ]:
         del model
+        if self.pd_role == "decode":
+            return None, request_builders.make_moss_td_result_adapter(self.tokenizer)
+        else:
+            pass
         return request_builders.make_moss_transcribe_diarize_scheduler_adapters(
             processor=self.processor,
             tokenizer=self.tokenizer,
@@ -342,12 +387,38 @@ class MossTranscribeDiarizeEngineBuilder(
             ),
         )
 
+    def scheduler_factory(
+        self,
+    ) -> (
+        type[OmniScheduler[MossTranscribeDiarizeRequestData]]
+        | partial[OmniScheduler[MossTranscribeDiarizeRequestData]]
+    ):
+        if self.pd_role == "prefill":
+            return partial(
+                OmniPrefillScheduler,
+                stage_name="asr",
+                partner_stage="asr_decode",
+                state_builder=build_prefill_state,
+            )
+        elif self.pd_role == "decode":
+            return partial(
+                OmniDecodeScheduler,
+                stage_name="asr_decode",
+                state_restorer=restore_decode_state,
+                resume_schema=RESUME_SCHEMA,
+                emit_transferred_token=True,
+            )
+        else:
+            return super().scheduler_factory()
+
     def extra_scheduler_kwargs(
         self,
     ) -> SchedulerExtras[MossTranscribeDiarizeRequestData]:
         scheduler_kwargs: SchedulerExtras[MossTranscribeDiarizeRequestData] = {
             "stream_output_builder": (
-                request_builders.make_moss_transcribe_diarize_stream_output_builder(
+                None
+                if self.pd_role == "prefill"
+                else request_builders.make_moss_transcribe_diarize_stream_output_builder(
                     tokenizer=self.tokenizer,
                     min_emit_interval_s=self.stream_emit_interval_s,
                 )
