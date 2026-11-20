@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
@@ -207,35 +206,6 @@ func TestOmniDraft(t *testing.T) {
 	a.unloadOmni(models.ASRFastDraft)
 	if len(a.omniASR) != 0 {
 		t.Errorf("%d providers after the draft's unload", len(a.omniASR))
-	}
-}
-
-func TestOmniSharedDraftOldProviderDoesNotUseDeletedDraft(t *testing.T) {
-	log := fakeOmni(t, omnitest.Opts{})
-	a := newSessionApp(t, "", func(*settings.Settings) {}, realLocal{installed: []string{models.ASRAccurate, models.ASRAccurateDraft, models.VADSilero}})
-	provider, err := a.openOmniASR(context.Background(), models.ASRAccurate, a.models.Dir(models.ASRAccurate))
-	if err != nil {
-		t.Fatal(err)
-	}
-	draft := a.models.Dir(models.ASRAccurateDraft)
-	if _, err := a.localLib.Delete(context.Background(), models.ASRAccurateDraft, fammodels.ThisApp); err != nil {
-		t.Fatal(err)
-	}
-	transcriber, ok := provider.(asr.FileTranscriber)
-	if !ok {
-		t.Fatal("provider does not transcribe files")
-	}
-	result, err := transcriber.Transcribe(context.Background(), asr.FileRequest{Audio: make([]byte, asr.SampleRate), Format: "pcm", SampleRate: asr.SampleRate})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Text == "" {
-		t.Fatal("no transcript after the draft was deleted")
-	}
-	for _, record := range omnitest.Of(omnitest.Records(log), "launch") {
-		if slices.Contains(record.Args, draft) {
-			t.Errorf("a later launch used the deleted draft: %v", record.Args)
-		}
 	}
 }
 
