@@ -69,6 +69,88 @@ def state() -> MiniCPMOPerceptionState:
     )
 
 
+def consumed_units(
+    state: MiniCPMOPerceptionState, units: list[np.ndarray]
+) -> list[np.ndarray]:
+    """The samples the mel buffer and the carry-over hold for each unit, after the first unit's front padding."""
+    for unit in units:
+        state.prepare_audio(unit)
+        state.audio_chunk_index += 1
+    consumed = np.concatenate(
+        [state.mel_samples[: state.mel_length], state.audio_buffer]
+    )
+    padding = consumed.size - UNIT_SAMPLES * len(units)
+    return np.split(consumed[padding:], len(units))
+
+
+def tone(frame_rms: float) -> np.ndarray:
+    """One unit of silence whose third 100 ms frame is a square wave of the given RMS."""
+    unit = np.zeros(UNIT_SAMPLES, dtype=np.float32)
+    unit[3200:4800] = frame_rms * np.tile(np.float32([1, -1]), 800)
+    return unit
+
+
+def noise(sigma: float) -> np.ndarray:
+    return np.random.default_rng(0).normal(0, sigma, UNIT_SAMPLES).astype(np.float32)
+
+
+@pytest.mark.parametrize(
+    ("gain_limit", "earlier", "unit", "expected_gain"),
+    [
+        # A quiet unit above the floor reaches the level of normal speech.
+        (30.0, [tone(0.0)], tone(0.022), 10.0),
+        # The limit caps the gain of a unit too quiet to reach it.
+        (4.0, [tone(0.0)], tone(0.022), 4.0),
+        # A unit already at the level of normal speech is never turned down.
+        (30.0, [tone(0.0)], tone(0.44), 1.0),
+        # The default limit leaves the input as it arrives.
+        (1.0, [tone(0.0)], tone(0.022), 1.0),
+        # A session's first unit has no floor to stand above.
+        (30.0, [], tone(0.022), 1.0),
+        # Steady noise stays at its own floor, so it is not raised.
+        (30.0, [noise(0.003)], noise(0.003), 1.0),
+        # Speech under three times the floor is left with the noise.
+        (30.0, [noise(0.01)], noise(0.01) + tone(0.02), 1.0),
+        # Sound under the smallest floor counts as silence.
+        (30.0, [tone(0.0)], tone(0.0002), 1.0),
+    ],
+)
+def test_quiet_unit_gain_raises_only_units_above_the_noise_floor(
+    state: MiniCPMOPerceptionState,
+    gain_limit: float,
+    earlier: list[np.ndarray],
+    unit: np.ndarray,
+    expected_gain: float,
+) -> None:
+    state.quiet_unit_gain_limit = gain_limit
+    consumed = consumed_units(state, [*earlier, unit])
+    for earlier_unit, consumed_unit in zip(earlier, consumed, strict=False):
+        np.testing.assert_array_equal(consumed_unit, earlier_unit)
+    np.testing.assert_allclose(consumed[-1], unit * expected_gain, rtol=1e-5)
+
+
+def test_quiet_unit_gain_clips_a_raised_unit_to_full_scale(
+    state: MiniCPMOPerceptionState,
+) -> None:
+    state.quiet_unit_gain_limit = 30.0
+    unit = tone(0.022)
+    # A click far above the 100 ms level it sits in would pass full scale once the unit is raised.
+    unit[3200] = 0.5
+    consumed = consumed_units(state, [tone(0.0), unit])
+    assert consumed[-1].max() == 1.0
+    assert consumed[-1][3202] > 5 * unit[3202]
+
+
+def test_quiet_unit_gain_forgets_levels_older_than_five_seconds(
+    state: MiniCPMOPerceptionState,
+) -> None:
+    state.quiet_unit_gain_limit = 30.0
+    # Five seconds of loud noise push the earlier silence out of the floor, so the quiet tone no longer stands above it.
+    units = [tone(0.0), *[noise(0.05)] * 5, tone(0.022)]
+    consumed = consumed_units(state, units)
+    np.testing.assert_array_equal(consumed[-1], units[-1])
+
+
 @pytest.mark.parametrize(
     ("chunk_index", "reference_audio"), [(1, False), (1, True), (2, True)]
 )
@@ -544,7 +626,12 @@ def test_sessions_share_one_encoding_per_reference_audio() -> None:
             SessionIdentity(name),
             OmniRequest(
                 None,
-                params={"instructions": "", "max_slice_nums": 1, **params},
+                params={
+                    "instructions": "",
+                    "max_slice_nums": 1,
+                    "quiet_unit_gain_limit": 1.0,
+                    **params,
+                },
             ),
         )
     states = {identity.id: state for identity, state in hooks.states.items()}

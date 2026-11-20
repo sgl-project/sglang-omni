@@ -149,6 +149,7 @@ class PerceptionHooks(BatchedSessionHooks):
             image_encoder=self.image_encoder,
             max_slice_nums=request.params["max_slice_nums"],
             mel_filter_bank=self.mel_filter_bank,
+            quiet_unit_gain_limit=request.params["quiet_unit_gain_limit"],
         )
 
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
