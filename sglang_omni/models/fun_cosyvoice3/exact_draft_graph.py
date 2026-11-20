@@ -74,13 +74,6 @@ class ExactDraftGraphSampler(DsparkDraftSampler):
         self.greedy[:request_count].copy_(state.greedy)
         fill_draft_block_noise(self.exponential_noise[:request_count], state)
 
-    def __call__(self, hidden_states: torch.Tensor, input_ids: torch.Tensor) -> None:
-        # note (yaourt): a graph above the folded batch size captures no tail, so its proposal stays eager.
-        if hidden_states.shape[0] // self.query_token_num > self.max_bs:
-            pass
-        else:
-            super().__call__(hidden_states, input_ids)
-
     def _markov_block(  # noqa: leading-underscore  # inherited sampler hook
         self,
         model_hidden: torch.Tensor,

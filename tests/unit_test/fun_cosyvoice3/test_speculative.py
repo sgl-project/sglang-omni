@@ -1097,20 +1097,14 @@ def decode_step_worker(
     draft_model: SimpleNamespace | dspark_draft.FunCosyVoice3DSparkDraftModel,
     draft_sampler: SimpleNamespace | ExactDraftGraphSampler,
     device: torch.device,
-) -> tuple[FunCosyVoice3DSparkWorker, SimpleNamespace, list[object]]:
-    """A worker reduced to its decode step, its batch, and the samplers it attaches."""
+) -> tuple[FunCosyVoice3DSparkWorker, SimpleNamespace]:
+    """A worker reduced to its decode step, and the batch it steps."""
     worker = FunCosyVoice3DSparkWorker.__new__(FunCosyVoice3DSparkWorker)
     worker.draft_model = draft_model
     worker.request_histories = RequestHistories(slot_count=1, device=device)
     worker.exact_verify_executor = SimpleNamespace(step_state=None)
-    attached_samplers: list[object] = []
     worker._draft_sampler = (
         draft_sampler  # noqa: leading-underscore  # inherited sampler slot under test
-    )
-    worker._proposer = (
-        SimpleNamespace(  # noqa: leading-underscore  # inherited proposer under test
-            attach_draft_sampler=attached_samplers.append
-        )
     )
     batch = SimpleNamespace(
         forward_mode=ForwardMode.DECODE,
@@ -1124,16 +1118,16 @@ def decode_step_worker(
             has_custom_logit_processor=False,
         ),
     )
-    return worker, batch, attached_samplers
+    return worker, batch
 
 
-def test_worker_restages_every_folded_step_and_keeps_larger_batches_eager(
+def test_worker_restages_every_step_a_captured_graph_can_hold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Consecutive decodes reused stale history when sampling tensor identities matched."""
     staged_states: list[int] = []
     sampler = SimpleNamespace(max_bs=2, stage_step_state=staged_states.append)
-    worker, batch, attached_samplers = decode_step_worker(
+    worker, batch = decode_step_worker(
         SimpleNamespace(markov_head=SimpleNamespace(sampling_state=None)),
         sampler,
         torch.device("cpu"),
@@ -1151,7 +1145,6 @@ def test_worker_restages_every_folded_step_and_keeps_larger_batches_eager(
         assert worker.exact_verify_executor.step_state is state_builder.return_value
 
     assert staged_states == [7, 14, 0]
-    assert attached_samplers == [sampler, sampler, None, sampler]
 
 
 @pytest.mark.accelerator
@@ -1191,9 +1184,7 @@ def test_exact_draft_graph_refreshes_history_and_noise(
         tp_sync=SpecTpSync(SimpleNamespace(world_size=1)),
     )
     model.markov_head.block_sampler = sampler.compiled_sampler
-    worker, batch, attached_samplers = decode_step_worker(
-        model, sampler, torch.device("cuda")
-    )
+    worker, batch = decode_step_worker(model, sampler, torch.device("cuda"))
     state_builder = Mock()
     monkeypatch.setattr(dspark_worker, "build_step_sampling_state", state_builder)
 
@@ -1269,11 +1260,3 @@ def test_exact_draft_graph_refreshes_history_and_noise(
             torch.testing.assert_close(
                 actual_logits, expected_logits, rtol=1e-5, atol=1e-5
             )
-        assert attached_samplers == [sampler] * 5
-        # A graph above the folded batch size must capture no tail.
-        folded_tokens = sampler.out.clone()
-        sampler(
-            torch.randn((graph_rows + 1) * 8, 32, device="cuda", dtype=torch.bfloat16),
-            torch.randint(0, VOCAB_SIZE, ((graph_rows + 1) * 8,), device="cuda"),
-        )
-        assert torch.equal(sampler.out, folded_tokens)

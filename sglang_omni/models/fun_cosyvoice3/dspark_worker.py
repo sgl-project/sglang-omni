@@ -305,9 +305,6 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         )
 
 
-# note (yaourt): measured on an H100 NVL, where folding the proposal into the draft graph raised throughput up to four running requests and changed it by about 1% beyond.
-FOLDED_PROPOSAL_MAX_BATCH_SIZE = 4
-
 MIRRORED_DRAFT_SAMPLING_LOCK = Lock()
 mirrored_draft_sampling_installed = False
 
@@ -528,17 +525,11 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
     def _maybe_build_draft_sampler(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self,
     ) -> ExactDraftGraphSampler:
-        """Capture the exact sampler in the draft graphs of small batches."""
+        """Capture the exact sampler in every draft graph."""
         return ExactDraftGraphSampler(
             draft_model=self.draft_model,
             gamma=self.gamma,
-            # A running batch replays the smallest captured size that holds it, so the
-            # folded sizes end on a captured one.
-            max_batch_size=max(
-                batch_size
-                for batch_size in get_exec().graph.cuda_graph_config.decode.bs
-                if batch_size <= FOLDED_PROPOSAL_MAX_BATCH_SIZE
-            ),
+            max_batch_size=max(get_exec().graph.cuda_graph_config.decode.bs),
             device=self.device,
             draft_noise=self._proposer.noise,  # noqa: leading-underscore  # inherited proposer
             tp_sync=self._tp_sync,  # noqa: leading-underscore  # inherited synchronization context
@@ -578,16 +569,12 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
             draft_sampler = (
                 self._draft_sampler
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            # A batch above every captured graph size runs eager and reads no staged buffer.
             if draft_sampler is None or len(batch.reqs) > draft_sampler.max_bs:
-                self._proposer.attach_draft_sampler(  # noqa: leading-underscore  # inherited proposer
-                    None
-                )
+                pass
             else:
                 # note (yaourt): committed history changes every step, while the proposer restages only when the sampling tensors are rebound.
                 draft_sampler.stage_step_state(state.draft)
-                self._proposer.attach_draft_sampler(  # noqa: leading-underscore  # inherited proposer
-                    draft_sampler
-                )
         else:
             pass
         return super().forward_batch_generation(
