@@ -76,5 +76,41 @@ class TextHashGateTests(unittest.TestCase):
         self.assertEqual(loop.distinct_text_hashes(rows), sorted({same, "c" * 64}))
 
 
+class ShortOpenGateTests(unittest.TestCase):
+    def observation(self, kept=True, scenario_hashes=None) -> dict[str, object]:
+        rows = [
+            row(scenario="cold", text_sha256=(scenario_hashes or ["a" * 64])[0]),
+            row(scenario="warm", text_sha256=(scenario_hashes or ["a" * 64, "a" * 64])[-1]),
+        ]
+        return {"kept": kept, "rows": rows}
+
+    def test_attempt_gates(self):
+        rows = self.observation()["rows"]
+        self.assertTrue(loop.short_open_attempt_kept(0, [], "normal", rows))
+        self.assertFalse(loop.short_open_attempt_kept(1, [], "normal", rows))
+        self.assertFalse(loop.short_open_attempt_kept(0, ["load"], "normal", rows))
+        self.assertFalse(loop.short_open_attempt_kept(0, [], "warning", rows))
+        self.assertFalse(loop.short_open_attempt_kept(0, [], "normal", rows[:1]))
+        self.assertFalse(
+            loop.short_open_attempt_kept(
+                0, [], "normal", [row(scenario="cold"), row(scenario="cold")]
+            )
+        )
+
+    def test_group_complete_requires_every_kept(self):
+        observations = [self.observation() for _ in range(2)]
+        observations.append(self.observation(kept=False))
+        # A third invalid attempt stops the group: no medians.
+        self.assertFalse(loop.short_open_group_complete(observations))
+        self.assertFalse(loop.short_open_group_complete(observations[:2][:1] + observations[2:]))
+        complete = [self.observation() for _ in range(3)]
+        self.assertTrue(loop.short_open_group_complete(complete))
+
+    def test_group_complete_rejects_empty_hash(self):
+        bad = self.observation()
+        bad["rows"][1]["text_sha256"] = ""
+        self.assertFalse(loop.short_open_group_complete([bad, self.observation()]))
+
+
 if __name__ == "__main__":
     unittest.main()

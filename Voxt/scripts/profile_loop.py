@@ -261,6 +261,37 @@ def latency_rows_valid(rows: list[dict[str, object]]) -> bool:
     )
 
 
+SHORT_OPEN_SCENARIOS = ["cold", "warm"]
+
+
+def short_open_attempt_kept(
+    returncode: int,
+    environment_reasons: list[str],
+    peak_pressure: str,
+    rows: list[dict[str, object]],
+    scenarios: list[str] | None = None,
+) -> bool:
+    """One short-open attempt counts only with a clean process, a clean
+    environment, exactly the expected scenarios and the evidence gates."""
+    return (
+        returncode == 0
+        and not environment_reasons
+        and peak_pressure == "normal"
+        and [str(row.get("scenario")) for row in rows] == (scenarios or SHORT_OPEN_SCENARIOS)
+        and latency_rows_valid(rows)
+    )
+
+
+def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
+    """A group is complete only when every attempt was kept; observations
+    carry {kept, rows} and the caller writes text-consistency.json with
+    distinct_text_hashes before calling this."""
+    if not observations or not all(obs.get("kept") for obs in observations):
+        return False
+    rows = [row for obs in observations for row in obs.get("rows", [])]
+    return bool(rows) and "" not in distinct_text_hashes(rows)
+
+
 def report_fast_profile_pressure_recorded(report: dict[str, object]) -> bool:
     pressure = report_peak_memory_pressure(report)
     return pressure == "warning" or pressure == "critical"
