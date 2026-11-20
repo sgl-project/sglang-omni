@@ -4,6 +4,22 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **The opening plays after each update** (#4172): the few seconds of Voxt's mark now play on the first start of each new version, upgrades included, not only on a new install. Starting the same version again, or Reduce Motion (Voxt's or the system's), skips it.
+- **One microphone across the app** (#4172): the menu bar, Transcribe (in the sidebar, the overlay and Settings → Shortcuts), the audio settings and the meeting overlay use the same star-free Voxt microphone; the app icon is unchanged. Meetings has its own conversation icon, and the meeting overlay's controls are aligned and compact, with a timer that no longer shifts them.
+- **The setup guide goes back by its headings** (#4172): click an earlier step's heading to return to it; what you set up and tried is kept, and the headings are locked during a try.
+- **Fewer repeated labels** (#4172): Home numbers the setup steps still to do and leaves out the shortcut line while Accessibility is itself a step; Rewrite's input bubbles drop the "You" heading; language model cards drop the "On this Mac" / "Remote" tag their group heading already says; notifications no longer show their time on hover.
+
+### 中文
+
+#### 变更
+
+- **每次更新后播放开场**（#4172）：Voxt 的开场动画在每个新版本第一次启动时播放（包括升级），不再只在新安装时播放。同一版本再次启动，或开启了“减少动态效果”（Voxt 或系统设置）时不播放。
+- **全应用统一的麦克风图标**（#4172）：菜单栏、转录（侧边栏、浮窗和“设置 → 快捷键”）、音频设置和会议浮窗都使用同一个不带星星的 Voxt 麦克风；App 图标不变。会议有了自己的对话图标，会议浮窗的控件对齐、更紧凑，计时不再推动按钮。
+- **设置引导可以点标题返回**（#4172）：点击前面步骤的标题即可回到那一步，已经设置和试用的内容会保留；试用进行中标题不可点击。
+- **去掉重复的标签**（#4172）：首页给待完成的设置步骤编号，辅助功能本身还是待办步骤时不再单独显示快捷键那一行；改写的输入气泡去掉“你”标题；语言模型卡片去掉与分组标题重复的“本机”/“远程”标签；通知不再在悬停时显示时间。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

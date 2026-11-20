@@ -30,7 +30,6 @@ type noticeViewState struct {
 	// Summary is an announcement's short lines, shown instead of Body.
 	Summary     []string `json:"summary,omitempty"`
 	ActionLabel string   `json:"action_label,omitempty"`
-	TimeHint    string   `json:"time_hint"`
 }
 
 // noticeSeverity is the code of a notification's severity.
@@ -47,14 +46,13 @@ func noticeSeverity(severity core.Severity) string {
 }
 
 // buildNoticeViewState decides how a notification shows: its action's
-// label from its link and its time's tooltip (a relative year needs now).
+// label from its link.
 func buildNoticeViewState(translator *i18n.Translator, n core.Notification, now time.Time) noticeViewState {
 	state := noticeViewState{
 		ID:       n.ID,
 		Severity: noticeSeverity(n.Severity),
 		Title:    n.Title,
 		Body:     n.Body,
-		TimeHint: translator.DateTimeAt(n.Time, now),
 	}
 	if n.Link == linkAnnouncement {
 		state.Summary = announcementSummary(n.Body)
