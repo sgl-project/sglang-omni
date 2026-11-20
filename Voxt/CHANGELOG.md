@@ -4,11 +4,27 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
+
+### Changed
+
+- **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
+
 ### Fixed
 
 - **Rewrite is one card from the shortcut to the last follow-up** (#4375): the Rewrite card no longer hands over to a preview at the screen's edge and then to a separate answer card. It stays while your speech is recognised and the language model works, and says what it is doing; the answer is written in that same card, above the text box, with Insert and Copy in its header. The text box stays at the foot of the card: type there and press Enter to follow up (no recording needed), or press the Rewrite shortcut to say it, and the conversation scrolls above. The card keeps one height and follows Rewrite's card size for its width (Fill included), with the size button in its corner. Typed text alone is now enough: nothing has to be said. With Rewrite's card switched off, the card closes once the result is inserted. Sending again after a failure keeps the card too.
 
 ### 中文
+
+#### 新增
+
+- **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
+
+#### 变更
+
+- **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 
 #### 修复
 
