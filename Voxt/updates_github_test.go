@@ -412,6 +412,13 @@ func (s *ghServer) url() string {
 	return "http://" + s.requests[0].Host + s.requests[0].URL.RequestURI()
 }
 
+func releaseAboutDiagnostic(t *testing.T, a *app, tt *ui.Tester, stage string) {
+	t.Helper()
+	switchRect, _ := tt.Find("Check for updates automatically")
+	t.Logf("%s: texts=%q updKnown=%v updLoading=%v updPrefs=%+v settings=%+v settingsOpen=%v path=%q relOpen=%v autoCheck=%v switch=%+v", stage,
+		tt.Texts(), a.updKnown, a.updLoading, a.updPrefs, a.settings.Get().Updates, a.settingsOpen, a.shownPath(), a.updUI.relOpen, a.updUI.autoCheck, switchRect)
+}
+
 // TestReleaseAbout: Settings → About without an update feed: the last
 // check, Check for Updates…, the automatic check and Beta updates, no
 // Install updates automatically, and how to install a new version; the
@@ -433,9 +440,17 @@ func TestReleaseAbout(t *testing.T) {
 	if !hasPrefix(tt, "Last checked") || has(tt, "Not checked yet.") {
 		t.Errorf("last check: %q", firstTexts(tt))
 	}
+	// A larger interface scale puts this switch below the fold. Scroll to
+	// it so the click changes the setting instead of dismissing the dialog.
+	a.prefs.Appearance.Scale = 1.25
+	see(t, tt, "Check for updates automatically")
 	click(t, tt, "Check for updates automatically")
 	if !a.settings.Get().Updates.NoAutoCheck {
+		releaseAboutDiagnostic(t, a, tt, "automatic check")
 		t.Error("the switch did not turn the check off")
+	}
+	if _, ok := tt.Find("Get beta versions"); !ok {
+		releaseAboutDiagnostic(t, a, tt, "beta row")
 	}
 	see(t, tt, "Get beta versions")
 	click(t, tt, "Get beta versions")

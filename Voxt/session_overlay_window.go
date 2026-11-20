@@ -139,6 +139,7 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 }
 
 func (a *app) overlaySync() {
+	defer a.syncHotkeys()
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
 	mode := a.overlayModeNow()
@@ -306,6 +307,7 @@ func (a *app) overlayFadeOut() {
 		if a.ov.win != nil {
 			a.ov.win.Hide()
 		}
+		a.closeOverlayPreviews()
 	}
 	if a.prefs.Appearance.ReduceMotion {
 		hide()
@@ -373,6 +375,8 @@ func (a *app) closeOverlay() {
 		a.ov.win.Destroy()
 		a.ov.win = nil
 	}
+	a.overlayTranscript = transcriptPreview{}
+	a.bubbleTranscripts = nil
 	a.ov.shown, a.ov.visible = false, false
 }
 

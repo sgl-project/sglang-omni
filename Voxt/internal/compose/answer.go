@@ -3,7 +3,6 @@ package compose
 import (
 	"encoding/json"
 	"strings"
-	"unicode/utf8"
 )
 
 // Answer is Rewrite's structured answer: a title for the answer card and
@@ -75,6 +74,248 @@ func unwrappedOutput(s string) string {
 	}
 }
 
+var thinkingTags = [][2]string{{"<think>", "</think>"}, {"<|channel>", "<channel|>"}}
+
+const assistantAnswerPrefix = "<|im_start|>assistant"
+
+var controlTokens = []string{
+	"<|tool_call|>", "<|/tool_call|>", "<|tool_call_begin|>", "<|tool_call_end|>",
+	"<|tool_calls_section_begin|>", "<|tool_calls_section_end|>",
+	"<|im_end|>", "<|im_start|>", "<|start|>", "<|end|>", "<|message|>",
+	"<|channel>", "<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "</think>",
+}
+
+func preservedControlToken(token, input string) bool {
+	for _, tag := range thinkingTags {
+		if (token == tag[0] || token == tag[1]) && (strings.Contains(input, tag[0]) || strings.Contains(input, tag[1])) {
+			return true
+		}
+	}
+	return strings.Contains(input, token)
+}
+
+func partialControlToken(s, input string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for _, token := range controlTokens {
+		if len(s) < len(token) && strings.HasPrefix(token, s) && !preservedControlToken(token, input) {
+			return true
+		}
+	}
+	return false
+}
+
+func trailingControlToken(token string) bool {
+	switch token {
+	case "<|/tool_call|>", "<|tool_call_end|>", "<|tool_calls_section_end|>", "<|im_end|>", "<|end|>",
+		"<|channel|>", "<channel|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "</think>":
+		return true
+	default:
+		return false
+	}
+}
+
+// onlyControlMarkup reports whether s is a control-only ending. A block
+// token makes the rest its payload, including braces and plain text.
+func onlyControlMarkup(s, input string, previous ...string) bool {
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		if s == "" {
+			return true
+		}
+		if partialControlToken(s, input) {
+			return true
+		}
+		matched := false
+		for _, tag := range thinkingTags {
+			if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
+				continue
+			}
+			if strings.HasPrefix(s, tag[0]) {
+				rest := s[len(tag[0]):]
+				if previousControlToken(tag[0], previous) && proseTokenMention(s, 0, tag[0], append([]string{input}, previous...)...) {
+					return false
+				}
+				j := strings.Index(rest, tag[1])
+				if j < 0 {
+					return !proseTokenMention(s, 0, tag[0], append([]string{input}, previous...)...)
+				}
+				s = rest[j+len(tag[1]):]
+				matched = true
+				break
+			}
+			if strings.HasPrefix(s, tag[1]) {
+				s = s[len(tag[1]):]
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		for _, token := range controlTokens {
+			if preservedControlToken(token, input) || !strings.HasPrefix(s, token) {
+				continue
+			}
+			if !trailingControlToken(token) {
+				if previousControlToken(token, previous) && proseTokenMention(s, 0, token, append([]string{input}, previous...)...) {
+					return false
+				}
+				return true
+			}
+			s = strings.TrimPrefix(s, token)
+			matched = true
+			break
+		}
+		if !matched {
+			return false
+		}
+	}
+}
+
+// stripControlMarkup removes model control blocks, including an opening
+// marker whose block has not closed. Ordinary angle-bracket text and
+// control markup that occurred in the user's input stay.
+func stripControlMarkup(s string, inputs ...string) string {
+	input, previous := "", []string(nil)
+	if len(inputs) > 0 {
+		input, previous = inputs[0], inputs[1:]
+	}
+	literalMarker, literalPairOpen := "", false
+	trimmed := strings.TrimLeft(s, " \t\r\n")
+	if strings.HasPrefix(trimmed, assistantAnswerPrefix) {
+		s = strings.TrimLeft(trimmed[len(assistantAnswerPrefix):], " \t\r\n")
+		if end := strings.TrimSpace(s); strings.HasSuffix(end, "<|im_end|>") {
+			s = strings.TrimSpace(strings.TrimSuffix(end, "<|im_end|>"))
+		}
+	}
+	for _, tag := range thinkingTags {
+		openSearchFrom, closeSearchFrom := 0, 0
+		literalOpen := -1
+		for {
+			i := strings.Index(s[openSearchFrom:], tag[0])
+			if i >= 0 {
+				i += openSearchFrom
+			}
+			j := strings.Index(s[closeSearchFrom:], tag[1])
+			if j >= 0 {
+				j += closeSearchFrom
+			}
+			if j >= 0 && (i < 0 || j < i) {
+				if proseTokenMention(s, j, tag[1], inputs...) {
+					literalOpen = -1
+					closeSearchFrom = j + len(tag[1])
+					continue
+				}
+				if literalOpen >= 0 {
+					after := j + len(tag[1])
+					s = s[:j] + s[after:]
+					openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
+					continue
+				}
+				if tag[1] != "</think>" && inlineLiteral(s, j, tag[1]) {
+					closeSearchFrom = j + len(tag[1])
+					continue
+				}
+				after := j + len(tag[1])
+				if onlyControlMarkup(s[after:], input, previous...) {
+					s = s[:j]
+				} else {
+					s = s[after:]
+				}
+				openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
+				continue
+			}
+			if i < 0 {
+				break
+			}
+			rest := s[i+len(tag[0]):]
+			j = strings.Index(rest, tag[1])
+			if nested := strings.Index(rest, tag[0]); nested >= 0 && (j < 0 || nested < j) {
+				markLiteral(s, &literalMarker, i, tag[0])
+				openSearchFrom = i + len(tag[0]) + nested
+				closeSearchFrom = openSearchFrom
+				continue
+			}
+			if i > 0 && literalOpen < 0 && j >= 0 {
+				after := rest[j+len(tag[1]):]
+				end := i + len(tag[0]) + j + len(tag[1])
+				pair := s[i:end]
+				if strings.TrimSpace(after) != "" && lowerOrHan(rest) && proseContinuation(after) && literalThinkingContext(s, i, tag[0], input, previous) {
+					openSearchFrom, closeSearchFrom = end, end
+					continue
+				}
+				if exactThinkingPair(pair, input, previous) || !strings.ContainsAny(pair, " \t") && literalThinkingPair(pair, tag, input, previous) {
+					openSearchFrom, closeSearchFrom = end, end
+					continue
+				}
+				if literalThinkingPair(pair, tag, input, previous) {
+					literalPairOpen = true
+					markLiteral(s, &literalMarker, i, tag[0])
+					s = s[:i+len(tag[0])] + rest[:j]
+					openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
+					continue
+				}
+			}
+			if proseTokenMention(s, i, tag[0], inputs...) {
+				markLiteral(s, &literalMarker, i, tag[0])
+				literalOpen = i
+				openSearchFrom = i + len(tag[0])
+				closeSearchFrom = openSearchFrom
+				continue
+			}
+			if j < 0 {
+				if literalPairOpen && literalMarker != "" && strings.HasPrefix(s[i:], literalMarker) && strings.Index(s, literalMarker) == i {
+					break
+				}
+				s = s[:i]
+				break
+			}
+			s = s[:i] + rest[j+len(tag[1]):]
+			openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
+		}
+	}
+	if i := controlTokenStartSkipping(s, literalMarker, inputs...); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// stripPartialControlMarkup also holds back a suffix that may still
+// become a control marker, so no marker fragment shows while streaming.
+func stripPartialControlMarkup(s string, inputs ...string) string {
+	s = stripControlMarkup(s, inputs...)
+	input := ""
+	if len(inputs) > 0 {
+		input = inputs[0]
+	}
+	start := -1
+	for _, token := range controlTokens {
+		if n := partialTagSuffix(s, token); n > 1 {
+			i := len(s) - n
+			if i == 0 && preservedControlToken(token, input) {
+				continue
+			}
+			if start < 0 || i < start {
+				start = i
+			}
+		}
+	}
+	for _, tag := range thinkingTags {
+		if n := partialTagSuffix(s, tag[0]); n > 0 {
+			if i := len(s) - n; start < 0 || i < start {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		s = s[:start]
+	}
+	return s
+}
+
 // PartialOutput is a streaming clean-up answer's text so far, for the
 // card: without the contract's <output> tags, whole or as far as they
 // came, and nothing of the commentary around them. A closing tag only
@@ -83,7 +324,7 @@ func unwrappedOutput(s string) string {
 // input itself has the tags, one outermost wrapper pair goes, as in
 // CleanOutput.
 func PartialOutput(s, input string) string {
-	t := strings.TrimLeft(s, " \t\r\n")
+	t := strings.TrimLeft(stripPartialControlMarkup(s, input), " \t\r\n")
 	if strings.Contains(input, outputOpen) {
 		return unwrappedOutput(t)
 	}
@@ -112,6 +353,73 @@ func PartialOutput(s, input string) string {
 	return t
 }
 
+// CleanOutput tidies a Transcribe clean-up's answer to input: the
+// content of the <output> tags the clean-up's contract asks for when
+// they are there and the input did not have them (never the model's
+// commentary outside them, #4086); when the input itself has the tags,
+// one outermost pair the model wrapped its whole answer in goes and the
+// text keeps its own tags. Then Clean's tidy. Only the Transcribe
+// clean-up asks for the tags: Rewrite's and Translate's answers go to
+// Clean, so tags their text itself has (HTML they were asked for) stay.
+func CleanOutput(out, input string) string {
+	s := strings.TrimSpace(out)
+	if strings.Contains(input, outputOpen) {
+		s = unwrappedOutput(s)
+	} else if content, ok := taggedOutput(s); ok {
+		s = strings.TrimSpace(content)
+	}
+	return Clean(s, input)
+}
+
+// Clean tidies a model's answer to input: without the <input> tags a
+// model echoed, or the quotes it wrapped the whole answer in (unless
+// the input was quoted so itself). quoteSource can select the unmerged
+// source when input also carries an instruction for control-markup context.
+func Clean(out, input string, quoteSource ...string) string {
+	return clean(out, []string{input}, false, quoteSource...)
+}
+
+// CleanWithInputs is Clean with the current input first and earlier turns after it.
+func CleanWithInputs(out string, inputs []string, quoteSource ...string) string {
+	return clean(out, inputs, false, quoteSource...)
+}
+
+// PartialClean is Clean for a streaming answer: possible control-marker
+// fragments stay hidden until more text arrives.
+func PartialClean(out, input string, quoteSource ...string) string {
+	return clean(out, []string{input}, true, quoteSource...)
+}
+
+// PartialCleanWithInputs is PartialClean with the current input first and earlier turns after it.
+func PartialCleanWithInputs(out string, inputs []string, quoteSource ...string) string {
+	return clean(out, inputs, true, quoteSource...)
+}
+
+func clean(out string, inputs []string, partial bool, quoteSource ...string) string {
+	s := strings.TrimSpace(out)
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
+	quoteInput := ""
+	if len(inputs) > 0 {
+		quoteInput = strings.TrimSpace(inputs[0])
+	}
+	if len(quoteSource) > 0 {
+		quoteInput = strings.TrimSpace(quoteSource[0])
+	}
+	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}} {
+		wrapped := func(t string) bool {
+			return len(t) > len(q[0])+len(q[1]) && strings.HasPrefix(t, q[0]) && strings.HasSuffix(t, q[1]) &&
+				!strings.Contains(t[len(q[0]):len(t)-len(q[1])], q[0])
+		}
+		if wrapped(s) && !wrapped(quoteInput) {
+			s = strings.TrimSpace(s[len(q[0]) : len(s)-len(q[1])])
+		}
+	}
+	if partial {
+		return strings.TrimSpace(stripPartialControlMarkup(s, inputs...))
+	}
+	return strings.TrimSpace(stripControlMarkup(s, inputs...))
+}
+
 // partialTagSuffix is the length of s's suffix that is a proper prefix
 // of tag (the tag's first characters, the rest still coming); 0 for
 // none.
@@ -128,7 +436,8 @@ func partialTagSuffix(s, tag string) int {
 // may sit in a code fence or among other text. ok is false when there is
 // no such object; the caller then takes the text as it is (Clean),
 // without a title. An object whose content is empty is an empty answer.
-func ParseAnswer(text string) (Answer, bool) {
+// Input is the user's source text and instruction, whose own markers stay.
+func ParseAnswer(text string, input ...string) (Answer, bool) {
 	raw := extractObject(text)
 	if raw == "" {
 		return Answer{}, false
@@ -141,78 +450,9 @@ func ParseAnswer(text string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(StripControl(a.Title)), `"“”#*`))
-	a.Content = strings.TrimSpace(StripControl(a.Content))
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Title, input...), input...)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Content, input...), input...))
 	return a, true
-}
-
-// StripControl removes a model's internal control blocks (<|...|>:
-// tool-call and thinking scaffolding some backends emit as plain text,
-// #4085). They are markup, never answer text: a <|..._begin|> block goes
-// with what it wraps, through its <|..._end|>, and a block cut off by
-// the end of the stream goes too.
-func StripControl(s string) string {
-	for at := 0; ; {
-		k := strings.Index(s[at:], "<|")
-		if k < 0 {
-			return s
-		}
-		i := at + k
-		j := strings.Index(s[i+2:], "|>")
-		if j < 0 {
-			// Only a cut-off tag's tail goes with the stream's end; text
-			// after a real <| (F#'s, a user's) stays.
-			if controlTag(s[i+2:]) {
-				return strings.TrimRight(s[:i], " \t\r\n")
-			}
-			return s
-		}
-		name := s[i+2 : i+2+j]
-		rest := s[i+2+j+2:]
-		// A wrapper goes with what it wraps: <|..._begin|> through its
-		// <|..._end|>, a thought <|channel|> through <channel|> (Gemma 4's
-		// channel, llm's thinkTags). Anything else is text.
-		close := ""
-		if controlTag(name) {
-			switch {
-			case strings.HasSuffix(name, "_begin"):
-				close = "<|" + strings.TrimSuffix(name, "_begin") + "_end|>"
-			case strings.HasSuffix(name, "_end"):
-				s = s[:i] + rest
-				at = i
-				continue
-			case name == "channel":
-				close = "<channel|>"
-			}
-		}
-		if close == "" {
-			at = i + 2
-			continue
-		}
-		e := strings.Index(rest, close)
-		if e < 0 {
-			return strings.TrimRight(s[:i], " \t\r\n")
-		}
-		s = s[:i] + rest[e+len(close):]
-		at = i
-	}
-}
-
-// controlTag reports whether tail is a control tag's name, whole or
-// cut off by the stream's end: channel (Gemma 4's thought channel), or
-// an identifier of _-joined parts whose last part starts begin or end,
-// as tool_call_be is tool_call_begin cut short. A plain word is none of
-// these: F#'s <|x and the tags a user writes stay text.
-func controlTag(tail string) bool {
-	if strings.HasPrefix("channel", tail) {
-		return tail != ""
-	}
-	i := strings.LastIndexByte(tail, '_')
-	if i < 0 || !tagName(tail) {
-		return false
-	}
-	last := tail[i+1:]
-	return strings.HasPrefix("begin", last) || strings.HasPrefix("end", last)
 }
 
 // tagName reports whether tail has a tag name's shape: a letter, then
@@ -266,8 +506,9 @@ func extractObject(text string) string {
 
 // PartialAnswer reads what a streaming answer holds so far: the title and
 // the content of a JSON answer as far as they came, or, when the model
-// writes plain text instead, the text itself as content.
-func PartialAnswer(text string) Answer {
+// writes plain text instead, the text itself as content. Input is the
+// user's source text and instruction, whose own markers stay.
+func PartialAnswer(text string, input ...string) Answer {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return Answer{}
@@ -280,86 +521,12 @@ func PartialAnswer(text string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		return Answer{Content: strings.TrimSpace(StripControl(strings.TrimSuffix(t, "```")))}
+		t = strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(t, input...), input...))
+		if !strings.HasPrefix(t, "{") {
+			return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
+		}
 	}
-	return Answer{Title: strings.TrimSpace(StripControl(partialField(t, "title"))), Content: strings.TrimLeft(StripControl(partialField(t, "content")), " \n")}
-}
-
-// partialField is the string value of key in a JSON object that may be
-// cut short, decoded as far as it goes ("" when the key has not come).
-func partialField(obj, key string) string {
-	k := `"` + key + `"`
-	i := strings.Index(obj, k)
-	for i >= 0 {
-		rest := strings.TrimLeft(obj[i+len(k):], " \t\r\n")
-		if strings.HasPrefix(rest, ":") {
-			rest = strings.TrimLeft(rest[1:], " \t\r\n")
-			if !strings.HasPrefix(rest, `"`) {
-				return ""
-			}
-			return decodePartialString(rest[1:])
-		}
-		next := strings.Index(obj[i+1:], k)
-		if next < 0 {
-			return ""
-		}
-		i += 1 + next
-	}
-	return ""
-}
-
-// decodePartialString decodes a JSON string's body up to its closing
-// quote or the end of s, dropping an escape cut in half.
-func decodePartialString(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		c := s[i]
-		switch {
-		case c == '"':
-			return b.String()
-		case c != '\\':
-			r, n := utf8.DecodeRuneInString(s[i:])
-			if r == utf8.RuneError && n == 1 && !utf8.FullRuneInString(s[i:]) {
-				return b.String()
-			}
-			b.WriteString(s[i : i+n])
-			i += n
-			continue
-		}
-		if i+1 >= len(s) {
-			return b.String()
-		}
-		switch e := s[i+1]; e {
-		case 'n':
-			b.WriteByte('\n')
-		case 't':
-			b.WriteByte('\t')
-		case 'r':
-		case 'b', 'f':
-		case 'u':
-			// \uXXXX, or a surrogate pair of two.
-			var out string
-			adv := 0
-			if i+12 <= len(s) && s[i+6] == '\\' && s[i+7] == 'u' &&
-				json.Unmarshal([]byte(`"`+s[i:i+12]+`"`), &out) == nil && !strings.ContainsRune(out, utf8.RuneError) {
-				adv = 12
-			} else {
-				if i+6 > len(s) {
-					return b.String()
-				}
-				out = ""
-				if json.Unmarshal([]byte(`"`+s[i:i+6]+`"`), &out) == nil && strings.ContainsRune(out, utf8.RuneError) && i+12 > len(s) {
-					return b.String() // a pair's second half is still coming
-				}
-				adv = 6
-			}
-			b.WriteString(out)
-			i += adv
-			continue
-		default:
-			b.WriteByte(e) // \" \\ \/
-		}
-		i += 2
-	}
-	return b.String()
+	title := strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "title"), input...), input...))
+	content := strings.TrimLeft(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "content"), input...), input...), " \n")
+	return Answer{Title: title, Content: content}
 }

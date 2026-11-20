@@ -95,6 +95,14 @@ type run struct {
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
+	// svcResolved is closed when the session's services are resolved
+	// (useServices): the early clean-up's worker waits for it (and r.ctx).
+	svcResolved chan struct{}
+	// early cleans the stretches the speech model finalised while the
+	// recording went on (asr.EventPiece), so Stop leaves only the tail
+	// (earlyclean.go); the Once makes it on the first stretch or use.
+	earlyOnce sync.Once
+	early     *earlyClean
 }
 
 type capResult struct {

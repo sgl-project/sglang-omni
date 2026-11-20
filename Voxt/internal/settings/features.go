@@ -98,6 +98,9 @@ type Transcribe struct {
 	Structure bool `json:"structure,omitempty"`
 	// ShowCard shows the text in the answer card instead of typing it.
 	ShowCard bool `json:"showCard,omitempty"`
+	// ReturnFinishes stops a Transcribe recording when Return is pressed.
+	// The key is consumed, not sent after the text is inserted.
+	ReturnFinishes bool `json:"returnFinishes"`
 }
 
 // Translate: speech or selected text → a translation.

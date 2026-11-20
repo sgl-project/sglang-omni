@@ -141,7 +141,20 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 	if kind == local.LLM {
 		want = f.LLM
 	}
-	return local.Choose(local.ForFeature(installed, feature), want)
+	want = strings.TrimSpace(want)
+	ready := local.ForFeature(installed, feature)
+	selected, ok := local.Choose(ready, want)
+	if kind != local.LLM || !ok || want == "" || selected.ID == want {
+		return selected, ok
+	}
+	if kind == local.LLM && feature == hotkey.Translate {
+		fallback := strings.TrimSpace(prefs.Features.Translate.Fallback)
+		selected, ok = local.Choose(ready, fallback)
+		if fallback != "" && ok && selected.ID == fallback {
+			return selected, true
+		}
+	}
+	return local.Model{}, false
 }
 
 // usedBy says which features use model id of kind now, as Voxt 1.x's

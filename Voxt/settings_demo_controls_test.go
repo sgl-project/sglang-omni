@@ -98,6 +98,7 @@ func settingsDemoControlCases() []settingsDemoCase {
 		{name: "notes shortcut", fixture: "en/settings-shortcuts-normal", scroll: "Notes Right ⌘", steps: historySteps("Notes Right ⌘"), want: []string{"openShortcutFeature /notes"}},
 		{name: "send window", fixture: "en/settings-privacy-normal", scroll: "Send a screenshot", steps: historySteps("Send the window to the language model"), want: []string{"setSendWindow false"}},
 		{name: "send clipboard", fixture: "en/settings-privacy-normal", scroll: "Send a copied image", steps: historySteps("Send the copied image with Rewrite"), want: []string{"setSendClipboardImage false"}},
+		{name: "send clipboard with selection", fixture: "en/settings-privacy-normal", scroll: "Text and a copied image together", steps: historySteps("Send both with Rewrite"), want: []string{"setSendClipboardImageWithSelection true"}},
 		{name: "keep history", fixture: "en/settings-privacy-normal", scroll: "Keep a history", steps: historySteps("Save each result"), want: []string{"setKeepHistory false"}},
 		{name: "keep audio", fixture: "en/settings-privacy-normal", scroll: "Keep recordings", steps: historySteps("Save each recording"), want: []string{"setKeepAudio false"}},
 		{name: "privacy history settings", fixture: "en/settings-privacy-normal", scroll: "History settings", steps: historySteps("Open…"), want: []string{"showHistorySettings"}},

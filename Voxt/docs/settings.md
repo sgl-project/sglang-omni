@@ -116,6 +116,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `privacy.logText` | bool | `false` | | Write text to the log |
 | `privacy.sendWindow` | bool | `false` | | Send a screenshot |
 | `privacy.sendClipboardImage` | bool | `false` | | Send a copied image |
+| `privacy.sendClipboardImageWithSelection` | bool | `false` | | Text and a copied image together |
 | `privacy.historyAccess` | bool | `false` | | Let programs on this Mac read the history ([history-access.md](history-access.md)) |
 | `privacy.historySelection` | bool | `false` | | Also include the text you selected |
 
@@ -213,6 +214,7 @@ And their own fields:
 | `features.transcribe.enhance` | bool | `true` | | Clean up with a language model |
 | `features.transcribe.cleanup` | bool | `true` | | Basic clean-up |
 | `features.transcribe.structure` | bool | `false` | | Structure |
+| `features.transcribe.returnFinishes` | bool | `true` | | Return finishes dictation |
 | `features.endWord` | string | `""` | a word that ends the recording; `""` = off (streaming speech models only) | Transcribe → End with a word |
 | `features.translate.target` | string | `""` | a language code; `""` = English, or Chinese when the main language is English | Target language |
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |

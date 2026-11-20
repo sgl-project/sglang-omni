@@ -156,11 +156,14 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
 			actions.insertAnswer()
 		}
-		copyIcon, copyLabel := icons.Copy, i18n.T("Copy")
+		copyIcon, copyLabel, copyTip := icons.Copy, i18n.T("Copy"), card.CopyTooltip
 		if card.Copied {
-			copyIcon, copyLabel = icons.CopyCheck, i18n.T("Copied")
+			copyIcon, copyLabel, copyTip = icons.CopyCheck, i18n.T("Copied"), i18n.T("Copied")
 		}
-		if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyLabel, copyIcon, card.CanCopy) {
+		if copyTip == "" {
+			copyTip = copyLabel
+		}
+		if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyTip, copyIcon, card.CanCopy) {
 			actions.copyAnswer()
 		}
 	}

@@ -29,7 +29,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		if privacy := state.Privacy; privacy != nil {
 			host.settingsForm.settingsPrivacyLocalUI = settingsPrivacyLocalUI{
 				keepHistory: privacy.KeepHistory, keepAudio: privacy.KeepAudio, logText: privacy.LogText,
-				sendWindow: privacy.SendWindow, sendClipboard: privacy.SendClipboard, clearHistoryAsk: privacy.ClearHistoryAsk,
+				sendWindow: privacy.SendWindow, sendClipboard: privacy.SendClipboard, sendClipboardWithSelection: privacy.SendClipboardWithSelection, clearHistoryAsk: privacy.ClearHistoryAsk,
 			}
 			access := privacy.HistoryAccess
 			host.historyAccessUI = historyAccessLocalUI{
@@ -159,6 +159,9 @@ func (host *meetingDemoHost) setStrictShortcuts(on bool) { host.record("setStric
 func (host *meetingDemoHost) setSendWindow(on bool) { host.record("setSendWindow %t", on) }
 func (host *meetingDemoHost) setSendClipboardImage(on bool) {
 	host.record("setSendClipboardImage %t", on)
+}
+func (host *meetingDemoHost) setSendClipboardImageWithSelection(on bool) {
+	host.record("setSendClipboardImageWithSelection %t", on)
 }
 func (host *meetingDemoHost) setKeepHistory(on bool) { host.record("setKeepHistory %t", on) }
 func (host *meetingDemoHost) setKeepAudio(on bool)   { host.record("setKeepAudio %t", on) }

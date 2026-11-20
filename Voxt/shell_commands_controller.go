@@ -236,6 +236,9 @@ func (a *app) buildMenu() {
 			if p.path == settingsPath {
 				continue // the app menu's Settings… (⌘,)
 			}
+			if a.pageHidden(p.path) {
+				continue // as in the sidebar and ⌘K
+			}
 			acc := ""
 			if k := pageKeys(p.path); k != "" {
 				acc = "CmdOrCtrl+" + k[len("⌘"):]

@@ -44,7 +44,11 @@ func TimedOut(err error) bool {
 // own (only those, the user's own), else the picture the user copied,
 // else the window's.
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
-	ctx, cancel := context.WithTimeout(r.llmCtx, req.Timeout)
+	return r.llmChatContext(r.llmCtx, req)
+}
+
+func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Response, error) {
+	ctx, cancel := context.WithTimeout(parent, req.Timeout)
 	defer cancel()
 	hint := ""
 	switch {

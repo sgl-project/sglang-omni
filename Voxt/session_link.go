@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -83,11 +84,20 @@ type sessionState struct {
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
 	noticeSeq int
-	// hotkeysSent is the hotkey.configure last sent (as JSON), so the
-	// same one is not sent again; carbon the accelerators registered
-	// with MyGo while the event tap is missing.
-	hotkeysSent string
-	carbon      []string
+	// hotkeysSent is the newest hotkey.configure requested, so the same
+	// one is not sent again. Sequence numbers let a newer close supersede
+	// an older open even after a timeout. carbon is the accelerators
+	// registered with MyGo while the event tap is missing.
+	hotkeysSent             string
+	hotkeyConfigureSequence uint64
+	hotkeyStatusSequence    uint64
+	hotkeyCardIdentity      string
+	hotkeyCardGeneration    uint64
+	carbon                  []string
+	// hotkeyGen numbers the hotkey.configure requests sent (1 on the
+	// first). The helper applies only a newer one and reports it on the
+	// events it decides under it; hotkeyFired drops the rest.
+	hotkeyGen int64
 	// keysListening: a shortcut field takes pressed keys (key_recorder.go),
 	// and the shortcuts are off meanwhile; keysHeard is this frame's.
 	keysListening, keysHeard bool
@@ -165,7 +175,7 @@ type sessionNotice struct {
 	action     string
 	entry      string // actionRetry's history entry
 	warn       bool   // a warning (the session went on), not an error
-	ok         bool   // done as asked (a term added), not a problem
+	ok         bool   // done as asked (a term added, a note saved), not a problem
 	seq        int    // which notice: its timer hides only itself
 	over       bool   // shows before the card that came back as its session ended (#4013)
 	// then runs when its time is up (not when a click or the next
@@ -255,20 +265,28 @@ func resolver(lm local.Services) session.Resolver {
 		// A model that serves the feature (the translation model only
 		// translates).
 		ready := local.ForFeature(lm.Installed(local.LLM), string(kind))
-		m, ok := local.Choose(ready, f.LLM)
+		want := strings.TrimSpace(f.LLM)
+		m, ok := local.Choose(ready, want)
 		if !ok {
 			return svc, nil
 		}
+		// An unavailable explicit choice stays unavailable; only Translate's
+		// own fallback may stand in.
+		if want != "" && m.ID != want {
+			m = local.Model{}
+		}
 		// When it does not open, there is no language model: the text goes
 		// on as recognised.
-		if c, ml, err := lm.LLM(ctx, m.ID); err == nil {
-			svc.LLM, svc.LLMInfo = c, sessionModel(ml)
+		if m.ID != "" {
+			if c, ml, err := lm.LLM(ctx, m.ID); err == nil && ml.ID == m.ID {
+				svc.LLM, svc.LLMInfo = c, sessionModel(ml)
+			}
 		}
 		// The fallback model, or the model when that one did not open: the
 		// first candidate that opens.
 		for _, id := range fallbackCandidates(kind, s, ready, m.ID) {
 			c, ml, err := lm.LLM(ctx, id)
-			if err != nil {
+			if err != nil || ml.ID != id {
 				continue
 			}
 			if svc.LLM == nil {
@@ -350,7 +368,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	if s.State.Ended() && !was.State.Ended() {
 		a.sessionEnded(s)
 	}
-	if s.State.Live() != was.State.Live() {
+	if s.State.Live() != was.State.Live() || (s.State == session.Recording) != (was.State == session.Recording) {
 		a.syncHotkeys()
 	}
 	for _, fn := range a.afterSession { // events.go: the menu bar, the overlay
@@ -451,13 +469,11 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			a.showNotice(*copied)
 		}
 	} else if s.Note && s.State == session.Done && s.Result != "" {
-		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
+		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes"), ok: true})
 	} else if copied != nil {
 		a.showNotice(*copied)
 	}
-	if s.State != session.Cancelled {
-		a.historyChanged()
-	}
+	a.historyChanged()
 }
 
 // showNotice shows a notice in the overlay; it hides by itself.

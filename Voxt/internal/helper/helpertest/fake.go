@@ -215,6 +215,8 @@ type fake struct {
 	installed  bool
 	scripted   bool // the events= script and press= ran
 	hkActive   bool
+	hkGen      int64                    // the hotkey.configure generation in effect
+	hkBindings []proto.HotkeyBinding    // its bindings
 	hkCancel   bool                     // hotkey.configure's cancel is set (the tap installs for it alone too)
 	manual     []string                 // app.configure's manualAccessibility
 	running    map[string]string        // capture jobs: their method (one of each at a time)
