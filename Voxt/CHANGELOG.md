@@ -4,22 +4,105 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-11-19
+
 ### Added
 
-- **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
-
-### 中文
-
-#### 新增
-
-- **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
+- **Apply a model to several features** (#4276): model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
+- **Rewrite can deliberately send selected text and a copied image together**: the new Settings → Privacy → Text and a copied image together switch sends both when you mean it. It defaults off — on fresh installs and on upgraded settings that never touched it — so an earlier copied image cannot take over a text Rewrite; an explicit choice is kept.
+- **Single-letter keys on the answer card** (#4127): while the answer card shows, press c to copy the answer and r to insert it over the selection, as the card's Copy and Insert buttons do. The keys bind from the first streaming draft and only while the card is actually visible; a notice or an insertion unbinds them, and a late event cannot act on a newer card. During IME composition bare keys go to the editor, while modified shortcuts and mouse bindings still work. If your cancel shortcut is c or r, it keeps priority and only the other card key is advertised. A stalled or timed-out open cannot reinstall c/r after a newer close unbinds them. Without Accessibility the card keys do not work, like the cancel shortcut.
+- **Return finishes dictation**: while Transcribe records, press Return to stop recording and finish through the same path as the stop shortcut. Voxt consumes that Return instead of sending it again after insertion. The Transcribe page has a Return finishes dictation switch, on by default, for users who need Return for a newline while recording.
+- **Long dictations are cleaned up while you speak**: once a recording passes a minute, the speech model finishes stretch after stretch while you keep talking, and Voxt can send each finished stretch to the language model right away. When you stop, only the remaining text is left, so the cleaned text arrives sooner. Voxt waits until Stop instead when the short-input thinking threshold has not been reached, or glossary prompting is on and your dictionary has more than 30 enabled terms. The original recognised text stays in History.
+- **Switch models when one fails**: a new switch on the Language models page, off by default. When it is on and the language model a feature uses fails or does not open, Transcribe, Translate and Rewrite ask the next language-model server on this Mac you set up, once, even one chosen for another feature, and that session and its history entry keep the new one. Translate's own fallback model goes first. The switch never moves to an external API you did not choose for that feature. A used-up plan does not switch, so Voxt never spends another paid service without asking.
+- **Choose a meeting transcript's correction style** (#4134): Meeting settings now include an editable correction style. Your style replaces the built-in correction rules, while Voxt still corrects each line in place with your dictionary and Speech context and keeps the summary prompt separate. Reset to default prompt, or save a blank style, to restore the previous behavior.
+- **Rewrite opens one card with the microphone and an input box** (#4085): the Rewrite shortcut starts the microphone and opens the Rewrite card at once; there is no switch and no separate recording window any more. The text selected at the press goes into the card as the input; while you speak, you can type more text and paste or drop up to 4 images (thumbnails, each with a remove button). Press the shortcut again (or Enter) to finish and send; Shift+Enter is a new line, Esc closes without sending. What the language model gets is in one fixed order: the selected text, then the typed text and images, then what you said, with the same Rewrite prompt and the same shortcut as before. With nothing selected, typed or pasted, Rewrite works as before with speech alone. Images you put in the box are sent because you put them there (the Privacy switches do not gate them); a model that takes no images gets an error and the card keeps your text and images, and sending again uses the same image bytes in the same position, so the server's prefix cache can reuse them. A request can carry several images, in one order everywhere: the box's images, else the copied image, else the window screenshot; the card says which one went ("Screenshot" / "Copied image" / the box's thumbnails), and a screenshot that would not be sent is no longer taken. Settings → Privacy says under the two switches that with both on, the copied image goes, not the screenshot. Answers no longer show a model's internal tool or thinking markers when no image reached it.
+- **Preview Rewrite inputs**: pasted text over three lines collapses into a removable block with its character and line counts and a Show all view. Images show their source and pixel size, and clicking one opens a full-size preview in the same card. Clipboard images and window screenshots appear too and can be removed before sending, and the answer card lists inputs as chips that open their originals when the request had more than one input kind.
+- **Explain the Rewrite input card**: a live subtitle and recording level say whether to speak changes to selected text or what to write. The card uses the answer card's surface, shows selected text in a two-line expandable block, and keeps one Enter/Esc/images footer with a shorter editor placeholder. A dismissible tip appears on the first three opens and persists across restarts, and onboarding explains the same flow. Answer cards show input chips only when at least two input kinds were sent.
+- **Add files to the Rewrite box**: the Add menu chooses images, a text, Markdown or PDF file, or pastes the clipboard. Text PDFs import their text layer. A scanned PDF adds its first pages as images within the existing four-image cap and says how many pages were skipped.
+- **Hide Notes and Meetings** (#4224): Settings → General → Shown features now lists Notes and Meetings. Unchecked, their pages leave the sidebar and the command palette, and Notes' shortcut stops; their settings, notes and meetings are kept.
+
+### Changed
+
+- **Settings → Privacy and the README explain local and API data paths** (#4159): they list the text and optional images a language-model request can contain, distinguish requests that stay on this Mac from those sent to an external provider, and cover Translate's fallback. The README gives the same local-versus-API breakdown for speech recognition.
+- **The personal dictionary no longer points to where each feature shows its whole request**: the caption under the Markdown notes is removed; the feature pages still show the request itself.
+
+### Fixed
+
+- **Deleting a speech model's draft no longer leaves an old provider using its missing path**: Qwen3-ASR, MOSS-Transcribe-Diarize and Whisper Large v3 continue without the draft.
+- **Translate does not silently deliver an untranslated answer** (#4153): after a strict retry, Voxt rejects an answer with clear script or vocabulary evidence of no translation and shows a localized failure with Try again. Parenthesized original names, language-neutral names, numbers, same-language text, and shared vocabulary still count as valid results.
+- **History and Home refresh after a cancelled session**: cancelling a recording that kept a history entry now updates an open History page and refreshes Home instead of leaving them stale until restart or another session.
+- **A shortcut pressed on Home after your first result keeps its result** (#4199): with Voxt's window in front on Home, a Transcribe, Translate or Rewrite shortcut still ran as a Try after Home had stopped offering its Try area. The result showed nowhere and History kept no entry, so History could list fewer sessions than you ran. Once Home has no Try area, the shortcut now runs a normal session, as on History or Settings: the result shows, and History keeps it. Before your first result, Home's Try area works as before, and so do the Try areas on the Transcribe, Translate and Rewrite pages.
+- **A text selection no longer takes the copied image with it** (#4152): with Settings → Privacy → Send the copied image with Rewrite on, an image copied earlier stayed on the clipboard and went to the language model even when you had selected text, so a summarize or rewrite of the selection was handled as an image task. Now a text selection takes the text path and the image stays out, including when the same selection stays in place for a follow-up. A copied `[Image]` placeholder sends the actual image selected through ⌘C before the old clipboard is restored, not the earlier clipboard image; literal `[Image]` text without an image stays text-only.
+- **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
+- **Paste last on Return honours the opt-out**: with Paste last on Return and Return finishes dictation off, pressing Return while Transcribe records no longer stops the recording, and it never stops a Translate, Rewrite or note recording. A queued Return also does nothing after the setting or session kind changes, and one a finished dictation's replaced configuration reported on its way out never stops the next dictation, whichever shortcut Return is.
+- **Recording shortcuts keep their roles**: Paste last on a key other than Return no longer stops dictation. A timed-out hotkey configuration is retried, and with Return finishes dictation on, binding Cancel to Return no longer cancels the recording instead.
+- **The answer card lets go of a formula preview it no longer shows**: hiding or closing the card closes its previews; an answer that ends up as plain text drops the preview and the height it had measured, so the card no longer keeps a gap or a stale formula, and a finished stream measures its final height instead of keeping the half-rendered one.
+- **Rewrite answers no longer show echoed input tags** (#4313): when the language model repeats `<selected_text>` or `<instruction>` around your selection or instruction, the answer card removes those tags and keeps the text inside them. Only a pair that wraps the whole answer or exactly your selection or instruction goes; tags that belong in the answer, such as a prompt template you asked for, stay.
+- **Recording time keeps seconds after ten minutes**: the recording preview sizes its timer to the full duration, so times such as 10:59 and 61:05 no longer lose their seconds.
+- **Paused toasts no longer wake Voxt while it is in the background**: a toast's fade-out now starts only after its paused display lifetime resumes and ends. Plain toasts and toasts with an action stay visible in the background and expire after you return.
+- **Rewrite keeps crowded warnings visible and bounds file reads**: image-limit and error messages stay outside scrolling previews. Text and Markdown files over 1 MiB are rejected before reading, and one trailing newline no longer counts as an extra pasted line.
+- **Rewrite resend and oversized inputs stay safe**: with Send the window on, Enter after a failed send keeps the screenshot visible and allows confirmation before the request; Esc cancels the resend, and repeated Enter cannot pre-approve the next screenshot. A new box no longer keeps earlier removed automatic inputs. Images over 32 MiB or 40 megapixels and pasted text over 32 MiB are refused with an error instead of being read or decoded.
+- **Rewrite honors cleared resend text and bounds clipboard image reads**: clearing the input during a resend's screenshot review removes it from the request. Clipboard PNGs use the helper conversion path instead of a raw MyGo read, and oversized clipboard results are rejected before they enter the box.
+- **Rewrite keeps imported files separate and clears stale errors**: imported files start on a new line instead of fusing with the next block, and a successful import clears the previous file error. PDF text over 1 MiB is rejected after extraction. A scanned PDF with only page numbers or other thin text keeps that text and adds its page images too.
+- **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first. An image that finishes early still reserves its slot until it lands, so later drops cannot use that slot to exceed the limit.
+- **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
+- **Rewrite keeps typed text and waits for image conversion**: stopping the box with its shortcut, a hold release, the recording length limit or the end word waits for pasted images just like Enter. An unreadable image keeps the box open until you confirm the remaining content. Typed text is saved with the conversation and restored after a restart for redo and follow-ups, and History details and the typed history export now read that stored value. History search also finds words that appear only in the typed text. Full model close markers no longer leak into answers.
+- **Rewrite accepts pasted and dropped images**: ⌘V and dragging an image onto the input box attach it instead of doing nothing, including native drops offered only as file URLs or with AppKit's generic drag operation. A clipboard with HTML and PNG but no plain text pastes the image. If the clipboard image cannot be read, the box says so instead of failing silently. Images over the four-image limit are refused before conversion.
+- **Rewrite bounds oversized inputs and keeps legacy copy text**: clipboard PNGs use the helper conversion path, dropped images and pasted text have 32 MiB limits, and oversized inputs leave existing content unchanged. Failed legacy Rewrite entries still copy their recognised text.
+- **Rewrite keeps the text editor and image-limit message visible with several previews**: earlier pasted blocks and images scroll while the trailing editor and image-limit message stay in view. Immediate consecutive pastes keep their order and caret.
+- **Rewrite previews stay removable and accurate**: selections of three lines or fewer have a remove button too. A window screenshot captured after recording stays in the box for removal or confirmation before the request. Redo drops an automatic image that was not resent, and reopening a card restores its text input chips.
+- **Stop bounds early cleanup**: a matching final cancels unfinished early requests instead of waiting for the whole backlog, then cleans the uncovered tail. The early-clean tests use channel-controlled request order instead of multi-second sleeps.
 
 ### 中文
 
 #### 新增
 
+- **将模型批量应用到功能**（#4276）：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+- **改写可以明确同时发送选中文字和复制的图片**：设置 → 隐私 →“同时发送选中文字和复制的图片”打开后，两者一起发送。默认关闭——新安装和升级前没碰过这个开关的设置都一样——避免早前复制的图片取代选中文字成为改写输入；明确选过的值保留。
+- **答案卡片的单字母键**（#4127）：答案卡片显示时，按 c 复制回答、按 r 把回答插入选中的位置，和卡片上的“复制”“插入”按钮一样。第一段流式文字出现时就绑定，卡片实际可见才有效；通知盖住卡片或插入时解绑，迟到的按键事件不会作用于新卡片。中文输入法有组合文字时，裸键先给编辑器，带修饰键的快捷键和鼠标绑定仍照常触发。取消键如果也是 c 或 r，取消键优先，只提示另一个卡片键。旧 open 卡住或超时后，新 close 仍会解绑，旧请求完成时不会把 c/r 装回去。没有辅助功能时，卡片键和取消键一样不生效。
+- **按回车完成转录**：转录录音时，按回车停止录音，走和停止快捷键相同的后续流程。这个回车会被消费，插入结果后不会再发送一次。转录页新增“按回车完成转录”开关，默认打开；录音时需要回车换行的用户可以关闭。
+- **长口述边录边整理**：录音超过一分钟后，语音识别模型每整理好一段语音，Voxt 可以立即把这一段发给语言模型整理；你停下时只剩剩余文字需要整理，整理好的文字到得更快。还没到“短输入不思考”的门槛，或语言模型使用术语表且启用词条超过 30 条时，Voxt 会等到停止后再整理全文。识别原文照常保留在历史里。
+- **模型出错时自动换一个**：语言模型页新增一个开关，默认关闭。打开后，如果某个功能所用的语言模型出错或打不开，转录、翻译和改写会改问你在这台 Mac 上设置的下一个语言模型服务，只换一次，即使它是给别的功能选的，这次会话和它的历史记录都改用新模型。翻译自己设的备用模型优先。这个开关不会换到你没给这个功能选的外部 API。套餐额度用完时不换，免得 Voxt 不经你同意就花另一家付费服务的钱。
+- **可以隐藏笔记和会议**（#4224）：设置 → 通用 → 显示的功能里新增了笔记和会议。取消勾选后，它们的页面会从侧边栏和命令面板中移除，笔记的快捷键也会停用；相关设置、笔记和会议记录都会保留。
+- **会议转录稿可以自定义校对风格**（#4134）：会议设置新增可编辑的校对风格。你的风格会替换内置校对规则；Voxt 仍逐行校对，使用词典和识别上下文，总结提示词保持独立。点“恢复默认提示词”或保存空白风格，即可恢复原来的行为。
+- **改写同时打开麦克风和一个带输入框的卡片**（#4085）：按改写快捷键会立刻开始录音并打开改写卡片，不再有开关，也不再有单独的录音窗口。按下快捷键时选中的文字会自动进入卡片作为原文；说话的同时可以补充输入文字，粘贴或拖入最多 4 张图片（缩略图带删除按钮）。再按一次快捷键（或按 Enter）结束录音并发送；Shift+Enter 换行，Esc 关闭不发送。发给语言模型的内容顺序固定：先是选中的文字，然后是输入的文字和图片，最后是说出的指令；改写 prompt 和快捷键都不变。没有选中、没有输入、没有图片时，改写和以前一样只用语音。放进卡片的图片是你主动放的，不需要隐私开关；模型不收图片时会报错，卡片里的文字和图片都保留，再次发送时图片的字节和位置完全相同，服务器的前缀缓存可以复用。一次请求可以带多张图片，顺序统一为：卡片的图片 > 复制的图片 > 窗口截图；卡片上写明这次发的是哪一种（“截图”/“复制的图片”/缩略图），不会被发送的截图不再截取。设置 → 隐私的两个开关下面写明：两个都打开时，发送复制的图片，不发送截图。模型没有收到图片时，回答里不再出现它的内部工具或思考标记。
+- **预览改写输入内容**：粘贴超过三行的文字会折叠成可删除的块，显示字符数、行数和“展开”视图；图片显示来源和像素尺寸，点击后在同一卡片里查看原图。复制的图片和窗口截图也会显示，并可在发送前移除；答案卡片在请求包含多类输入时用小标签列出它们，点击标签可查看原始内容。
+- **说明改写输入卡片在做什么**：实时副标题和录音音量会提示你是要说出如何修改选中的文字，还是要说出想写的内容。卡片与答案卡片使用相同的外观，选中的文字以两行折叠块显示，底部只保留一行 Enter、Esc 和图片输入提示，编辑器占位文字也更短。前三次打开会显示可关闭的提示，重启后仍会记住；新手引导也补充了同样的用法。答案卡片只在发送了至少两类输入时显示输入标签。
+- **向改写输入框添加文件**：通过“添加”菜单选择图片、TXT/Markdown/PDF 文件，或粘贴剪贴板内容。文字版 PDF 导入文字层；扫描版 PDF 在现有 4 张图片上限内按页序加入页面图片，并说明跳过了多少页。
+
+#### 变更
+
+- **“设置 → 隐私”和 README 说明本机与 API 两条数据路径**（#4159）：列出语言模型请求可能包含的文字和可选图片，区分留在本机的请求和发给外部服务商的请求，并说明翻译使用备用模型时的数据去向。README 也分别说明了语音识别在本机和通过 API 运行时的数据路径。
+- **个人词典不再说明各功能在哪里显示完整请求**：Markdown 笔记下方的说明文字已删除，各功能页面仍会显示完整请求。
+
+#### 修复
+
+- **删除语音识别模型的草稿模型后，旧提供方不再使用已删除的路径**：Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 会不使用草稿模型继续转录。
+- **翻译不会再静默交付未翻译的回答**（#4153）：严格重试后，如果回答仍有明确的文字系统或常见词汇证据表明没有翻译，Voxt 会显示对应语言的失败提示，可以重试。括号中的原名、语言中立名称、数字、同语言文本和共享词仍算有效结果。
+- **取消录音后历史和首页会立即刷新**：取消一段已写入历史的录音后，当前打开的历史记录页和首页会立即刷新，不再需要重启或等下一次会话才看到变化。
+- **得到第一个结果后，在首页按快捷键的结果不再丢失**（#4199）：Voxt 窗口在前台、停在首页时，首页已经不显示「试一试」了，按转录、翻译或改写的快捷键却仍按试一试处理。结果哪里都不显示，历史里也没有记录，所以历史的条数会比实际用的次数少。现在首页没有试一试区域时，按快捷键和在历史、设置页一样走正常流程：结果照常显示，历史也会记下。第一次得到结果之前，首页的试一试不变；转录、翻译、改写页上的试一试也不变。
+- **选中文字时不再带上剪贴板里早前复制的图片**（#4152）：打开设置 → 隐私 →“改写时发送复制的图片”后，早前复制的图片留在剪贴板里，即使选中了文字也会发给语言模型，对选中内容的总结或改写被当成看图任务。现在选中文字时只走文字，图片不跟着发，追问时选区没变也一样。⌘C 回退返回 `[Image]` 占位时，发送恢复旧剪贴板之前实际选中的新图片，不是早前那张；只有 `[Image]` 文字而没有图片时仍只走文字。
+- **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
+- **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。设置或会话类型变化后，排队中的旧回车事件同样不再停止录音；上一段听写结束后来送到的旧配置回车事件，无论回车绑定在哪个快捷键上，都不会停止下一段听写。
+- **录音快捷键不再串用动作**：“粘贴最近结果”绑定回车以外的键时，不再停止转录录音；快捷键配置超时后会重试；打开“按回车完成转录”时，即使取消快捷键也设为回车，按回车仍会完成录音而不会取消。
+- **回答卡片释放不再显示的公式预览**：隐藏或关闭卡片时关闭预览；回答最终是纯文本时丢掉预览和它量出的高度，卡片不再留空白或显示过时的公式；流式输出结束后按最终渲染重新测量高度。
+- **改写回答不再显示重复的输入标签**（#4313）：语言模型重复输出 `<selected_text>` 或 `<instruction>` 标签时，答案卡片会去掉标签，保留标签内的文字。只去掉包住整段回答、或正好包住你的选中文字或指令的那一对；回答本身需要的标签（比如你要的提示词模板）保留。
+- **录音超过 10 分钟仍显示秒数**：录音预览按完整时长调整计时文字的宽度，10:59、61:05 等时长不再丢失秒数。
+- **暂停的提示不再让后台的 Voxt 反复唤醒**：提示只会在暂停的显示计时恢复并结束后淡出。普通提示和带按钮的提示在后台保留，回到前台后继续计时并消失。
+- **改写拥挤时仍显示提示，并限制文件读取量**：图片数量和错误提示固定在滚动预览之外；TXT/Markdown 文件超过 1 MiB 时先报错，不读取；末尾一个规范化换行不再多算一行粘贴文字。
+- **改写重发和超大输入更安全**：开启“发送窗口”后，发送失败再按 Enter 会保留窗口截图，确认后才发请求；Esc 会取消重发，重复按 Enter 不会预先批准下一张截图。新打开的输入框不再沿用上一次被移除的自动输入。超过 32 MiB 或 4000 万像素的图片、超过 32 MiB 的粘贴文字会报错拒绝，不再直接读取或解码。
+- **改写重发时清空文字不再发旧内容，并限制剪贴板图片读取**：重发等待窗口截图确认时清空输入，发送请求不会再带上旧文字。剪贴板 PNG 改走辅助进程的转换路径，不再先经 MyGo 读取原始数据；超大的剪贴板图片结果在进入输入框前就会被拒绝。
+- **改写导入的文件保持分行，并清除过期错误**：导入的文件与前文分行，不再和下一块文字粘连；后续导入成功后清除之前的文件错误。PDF 提取文字超过 1 MiB 时拒绝发送。只有页码等少量文字的扫描版 PDF 保留这些文字，同时加入页面图片。
+- **改写分批拖入图片时保持顺序**：先拖入的大图不会再排到后拖入的小图后面，输入框和发给语言模型的请求都按拖入顺序排列。提前完成转换但还在等待按序入箱的图片继续占用位置，后续拖入不会因此超过 4 张上限。
+- **改写保留代码末尾的竖线，旧输入框排队的 Enter 不会发送新录音**：代码里竖线后紧跟单词且没有空格时（例如 F# 的 `<|x`），不会再丢掉竖线后面的内容；只有真正的模型控制标记才会被移除。粘贴图片仍在转换时按下 Enter，再按 Esc 和快捷键，旧图片转换完成不会再停止并发送新录音；只有新输入框里的 Enter 才发送。
+- **改写保留补充输入的文字，并等待图片转换**：按快捷键、松开按住、达到录音时长上限或听到结束词而停止输入框时，都和按 Enter 一样等待粘贴的图片转换完成。图片读不出来时保留输入框和错误，确认剩余内容后才发送。补充输入的文字随对话保存，重启后重做和追问仍使用原文，历史详情和 typed 导出也读取这份保存的内容，历史搜索也能找到只出现在补充输入里的文字；完整的模型结束标记也不再漏进回答。
+- **改写可以粘贴和拖入图片**：按 ⌘V 或把图片拖到输入框会添加图片，不再没有反应，包括只提供文件网址或仅声明通用操作的原生拖放。剪贴板只有 HTML 和 PNG、没有纯文本时也会粘贴 PNG。剪贴板图片读取失败时，输入框会显示错误，不再静默失败。超过 4 张的图片会在转换前拒绝。
+- **改写限制超大输入并保留旧记录的文字**：剪贴板 PNG 改走辅助进程的转换路径，拖入的图片和粘贴的文字都有 32 MiB 上限，超大输入不会改变已有内容。旧版改写失败的记录仍能复制识别出的文字。
+- **多个预览块不再遮住改写输入框和图片数量提示**：较早的粘贴块和图片可以滚动，末尾的文字输入框和图片数量提示保持可见；连续快速粘贴仍保持顺序和光标位置。
+- **改写预览可以移除，并与实际发送一致**：三行以内的选中文本也有删除按钮。空框结束录音后截取的窗口图片先留在输入框里，移除或再次确认后才发送请求。重做时没有重发的自动图片会从标签里去掉，从历史重新打开卡片会恢复文字标签。
+- **停止时的提前整理有明确上限**：最终文本匹配时，未完成的提前请求会取消，不再等完整 backlog，随后整理未覆盖的尾段。提前整理测试改用 channel 控制请求顺序，不再依赖数秒真实等待。
 
 ## [2.1.1] - 2026-11-17
 
