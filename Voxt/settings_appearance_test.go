@@ -312,6 +312,17 @@ func TestWindowTransparencyDragPreviewsBeforeSaving(t *testing.T) {
 	}
 }
 
+func TestSemanticMarksUseSecondaryGrey(t *testing.T) {
+	for _, palette := range []string{settings.DefaultPalette, "#b25280"} {
+		for _, dark := range []bool{false, true} {
+			k := paletteTokens(palette, dark)
+			if k.Success != k.Text2 || k.Warning != k.Text2 {
+				t.Errorf("%s dark=%t: success and warning marks should use the secondary grey", palette, dark)
+			}
+		}
+	}
+}
+
 func TestPaletteTokens(t *testing.T) {
 	for _, seed := range []string{settings.DefaultPalette, "#000000", "#ffffff", "#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff", "#b25280", "#002fa7"} {
 		for _, dark := range []bool{false, true} {
