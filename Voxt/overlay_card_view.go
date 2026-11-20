@@ -20,15 +20,16 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 	if card.Message != "" {
 		messageHeight = layout.CardMsgGap + layout.CardMsgH
 	}
-	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-messageHeight, 0))
+	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-sessionCardAttachmentHeight(card)-messageHeight, 0))
 	ui.Column(context).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).DragWindow().Children(func() {
 		ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
-		cardBody(context, state.SessionID, card, bodyHeight, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
+		cardAttachView(context, card, local)
+		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
 		if card.Message != "" {
-			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(card.Message).Children(func() {
+			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
 				icon, color := icons.InfoCircle, ovText2
 				if card.Failed {
 					icon, color = icons.DangerCircle, tok(context.Theme()).Danger
@@ -52,6 +53,40 @@ func cardSizeStep(context *ui.Context, step, steps int) (next int, clicked bool)
 	return next, cardIconButton(context, label, label, icon, true)
 }
 
+// cardAttachView says which picture went to the language model.
+func cardAttachView(context *ui.Context, card *sessionCardViewState, local sessionOverlayLocal) {
+	if card.InputCount > 0 && len(local.Overlay.cardPreviews) > 0 {
+		cardInputChips(context, local)
+		return
+	}
+	thumbnails := local.Overlay.cardThumbs
+	if card.Attachment == "box" && len(thumbnails) > 0 {
+		ui.Row(context).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(i18n.T("Images sent with the instruction")).Children(func() {
+			for index, bitmap := range thumbnails {
+				if bitmap != nil {
+					ui.Image(context.Key(index), bitmap).Size(layout.CardAttachThumb, layout.CardAttachThumb).Fit(ui.Cover).Radius(4).Shrink(0)
+				}
+			}
+		})
+		return
+	}
+	var label string
+	var icon icons.Icon
+	switch card.Attachment {
+	case "clipboard":
+		label, icon = i18n.T("Copied image"), icons.ClipboardList
+	case "window":
+		label, icon = i18n.T("Screenshot"), icons.WindowFrame
+	}
+	if label == "" {
+		return
+	}
+	ui.Row(context).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(label).Children(func() {
+		ui.Icon(context, icon.Linear).Size(14, 14).TextColor(ovText2).Shrink(0)
+		ui.Text(context, label).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
+	})
+}
+
 func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actions sessionOverlayActions, local sessionOverlayLocal, animation sessionOverlayAnimation) {
 	icon := icons.VoxtAnswer
 	if card.Conversation {
@@ -62,7 +97,7 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	}
 	if card.Conversation {
 		kind()
-		cardWave(context, card, animation.Motion, animation.Phase)
+		cardWave(context, card.Levels[:], card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
 	} else {
 		// The icon, title and spinner share one growing item, which pushes
@@ -122,11 +157,14 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 			if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
 				actions.insertAnswer()
 			}
-			copyIcon, copyLabel := icons.Copy, i18n.T("Copy")
+			copyIcon, copyLabel, copyTip := icons.Copy, i18n.T("Copy"), card.CopyTooltip
 			if card.Copied {
-				copyIcon, copyLabel = icons.CopyCheck, i18n.T("Copied")
+				copyIcon, copyLabel, copyTip = icons.CopyCheck, i18n.T("Copied"), i18n.T("Copied")
 			}
-			if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyLabel, copyIcon, card.CanCopy) {
+			if copyTip == "" {
+				copyTip = copyLabel
+			}
+			if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyTip, copyIcon, card.CanCopy) {
 				actions.copyAnswer()
 			}
 		}
@@ -232,15 +270,15 @@ func cardLanguage(context *ui.Context, card *sessionCardViewState, actions sessi
 	})
 }
 
-func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phase float64) {
+func cardWave(context *ui.Context, levels []float64, recording, heard, motion bool, phase float64) {
 	const scaleX, scaleY = 0.84, 0.82
-	bars := layout.WaveBars(card.Levels[:])
+	bars := layout.WaveBars(levels)
 	quiet := [...]float32{3.2, 3.9, 4.6, 5.1, 4.2, 3.5, 4.4, 4.9}
 	label := i18n.T("Input level")
 	ui.Row(context.Key("ov-card-wave")).Width(layout.CardWaveW).Height(layout.CardIcon).Shrink(0).Gap(layout.WaveBarGap * scaleX).AlignItems(ui.Center).Label(label).Children(func() {
 		for index, level := range bars {
 			height := quiet[index%len(quiet)] * scaleY
-			if card.Recording && card.Heard {
+			if recording && heard {
 				height = (layout.WaveBarMinH + (layout.WaveBarMaxH-layout.WaveBarMinH)*float32(level)) * scaleY
 				if motion {
 					height += float32(layout.WaveIdle(index, level, phase)) * scaleY
@@ -251,10 +289,13 @@ func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phas
 	})
 }
 
-func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, scrolls bool, faceAlpha float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, width int, scrolls bool, faceAlpha float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+	if cardInputOriginal(context, card, local, bodyHeight) {
+		return
+	}
 	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
 		block := sessionCardBlockAt(card, 0)
-		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight)
+		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight, width)
 		// The page is as translucent as the card's face, over the same
 		// material: an opaque page drew a darker box (#3836 feedback).
 		request.background = tok(context.Theme()).OverlayFace.Alpha(faceAlpha)
@@ -284,7 +325,7 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 		// The scroller's room is in the card's padding, right of the text.
 		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
 			for index := 0; index < sessionCardBlockCount(card); index++ {
-				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, actions, local, onMeasured)
+				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, width, actions, local, onMeasured)
 			}
 		})
 	}
@@ -302,12 +343,12 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0).TrackScroll(scroll).Children(blocks)
 }
 
-func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
-	text, _, _ := sessionCardBlockText(card, block)
+func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+	text, _, _ := sessionCardBlockText(block, width)
 	gap := sessionCardBlockGap(block, index)
 	switch {
 	case block.Kind == sessionCardBubble:
-		cardBubbleView(context, sessionID, card, block, index, gap, actions, local, onMeasured)
+		cardBubbleView(context, sessionID, card, block, index, gap, width, actions, local, onMeasured)
 	case block.Markdown:
 		cardMarkdown(context, local.Overlay, text, ovCardText, block.Live, onMeasured).Margin(gap, 0, 0, 0)
 	case block.Kind == sessionCardProblem:
@@ -334,8 +375,8 @@ func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewS
 // RewriteConversationBubble): the user's input fits its text on the right,
 // up to 340 wide in the small card; an answer takes that width and shows
 // Copy under the pointer.
-func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
-	text, title, quote := sessionCardBlockText(card, block)
+func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+	text, title, quote := sessionCardBlockText(block, width)
 	justify := ui.Start
 	background, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
 	titleAlpha, textAlpha := float32(0.64), float32(0.92)
@@ -368,7 +409,7 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 				ui.Text(context, block.Title).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleAlpha)).SingleLine().Ellipsis("…").MaxWidth(text.wrap)
 			}
 			textColor := ui.RGBA(255, 255, 255, textAlpha)
-			request := newSessionOverlayPreviewRequest(context, sessionID, card, block, index, textColor, 0)
+			request := newSessionOverlayPreviewRequest(context, sessionID, card, block, index, textColor, 0, width)
 			switch {
 			case !block.User && actions.overlayTranscriptResult(context.Key("preview"), request):
 			case block.Markdown:

@@ -19,6 +19,7 @@ import (
 	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/trayicon"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -203,17 +204,19 @@ func (a *app) trayItems() []*mygo.MenuItem {
 		items = append(items, mygo.Separator())
 		items = append(items, reopen...)
 	}
-	mt := i18n.T("Start meeting")
-	if a.meetingActive() {
-		mt = i18n.T("End meeting")
-	}
-	items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
+	if !f.IsHidden(settings.HideMeetings) || a.meetingActive() {
+		mt := i18n.T("Start meeting")
 		if a.meetingActive() {
-			a.meetingFinish()
-		} else {
-			a.startMeeting()
+			mt = i18n.T("End meeting")
 		}
-	})})
+		items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
+			if a.meetingActive() {
+				a.meetingFinish()
+			} else {
+				a.startMeeting()
+			}
+		})})
+	}
 	if len(a.recent) > 0 {
 		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
 		for _, text := range a.recent {

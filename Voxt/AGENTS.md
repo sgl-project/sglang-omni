@@ -22,11 +22,44 @@ These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its codi
 - **The Mac (`mac-air`) is shared and short of disk** (about 32 GB free): build in `code/VoxtNew` (`scripts/mac.sh`), delete large build trees and models you downloaded for a test, and never touch `~/code/Auralink*`. The six catalogue models are in the real `$HUB` (`~/Library/Application Support/SGLang Omni/models` once VoxtNew 2.0.1 or later has started, hard links of those in `~/Library/Application Support/ActNow/models/hub`, which the user's AudioSmith and Dicta use; claimed as `dev.hehehai.voxtnew`) and the Omni runtime in `~/voxtnew-runtime/omni/` for every thread (its README says how to refresh it): use them instead of downloading or building again, never delete or move anything in the HF cache, and test deletions with a scratch `ACTNOW_FAMILY_DIR` + `HF_HUB_CACHE`. Do not sync (`scripts/mac.sh`) into a checkout while it builds, nor before pulling back files the Mac made (`--pull`): the sync deletes what the Linux side lacks.
 - Code comments and commit messages in English. Keep the MyGo lifetime rules (`.agents/skills/mygo-maintenance`).
 
+## Quality rules
+
+For every change, by a person or an agent. A rule here comes with a number measured in this repository and names an automatic check when one exists. Otherwise, the PR's verification says how a reviewer checked it. Once a test or a CI step enforces a rule, the rule shrinks to the name of that check.
+
+Code:
+
+- **The app calls every function.** A test calls the function the app calls. Delete a wrapper that only its own test reaches and move that test to the real function; keep shared fakes and helpers. Compare `deadcode -tags=meetingdemo,updatecheck ./...` with `deadcode -test -tags=meetingdemo,updatecheck ./...` and review the functions only the first command lists.
+- **A removal is complete in one PR**: the callers, helpers, strings and translations, doc links and environment switches of what is removed go with it.
+- **An unchecked error is written down**: `_ = f()` with a one-line reason. On a path that moves or deletes the user's data, each error is handled or logged.
+- **Every `VOXTNEW_*` environment switch is documented** by the PR that adds it: what it does and who sets it (`docs/development.md`, or the doc of its area).
+- **The helper builds without compiler warnings.** Mac CI's Helper builds without warnings step fails on any `warning:` in the helper build log.
+
+Tests:
+
+- **A test fails when the behaviour it names breaks.** The PR of a fix names the test that fails with the fix reverted.
+- **Tests are tight**: a fake clock or an event instead of `time.Sleep`, the running test binary instead of the `go` tool, loopback instead of the network.
+- **A test restores the globals it sets** (`t.Cleanup`). New code takes the translator and the clock as parameters, as the `...For(translator, ...)` functions do.
+- **A test that fails with no change behind it is a bug**: open an issue with the log before the rerun, and fix or remove the test.
+- **A skipped test has a runner**: a test behind an environment switch says in the docs who runs it and when (nightly, before a release, by hand).
+- **A failure found on a real Mac becomes a test.** The PR that fixes it adds a check that fails with the fix reverted, at the first level that can show the failure: a test on every pull request (fake models, fake helper), then a Mac script (`scripts/mac-e2e.sh`), then a step in `docs/manual-test.md`. When only a Mac or a person can show it, the PR adds or updates the feature's row in `testdata/behaviours.tsv` and gives the reason in the gap column.
+- **A fix for a reported problem lists its check**: one row in `testdata/reports.tsv` with the issue, the pull request that made the fix (also when it landed inside a combined pull request), the symptom in one sentence, the level as in `testdata/behaviours.tsv`, and the check that shows the symptom with the fix reverted (`TestReports`). A check that fails with the fix reverted is the reproduction; a check that covers part of the report gets a row whose symptom names that part. A report without an issue gets one first; the reporter's name and chat text stay out of the repository. A report with no such check gets no row and is not closed as fixed.
+- **A real-Mac result names the commit and the features**: the comment that reports it gives the head it ran on and the `testdata/behaviours.tsv` features it exercised. A result on an older head does not count for the current one.
+- **A test that closes a gap sets the gap to `none`** in the same PR. The rows left are the hand checks of a release: `awk -F'\t' 'NR>1 && ($2!="L" || $4!="none")' testdata/behaviours.tsv`.
+- **One more fact about a flow is an assertion in the test that drives the flow.** Add a test only for a flow that no test drives.
+
+Pull requests:
+
+- **One PR, one change, named in the title.** Over about 600 changed lines (fixtures, goldens and vendored files apart), the body says why it cannot be split. A bundle lists the PRs it carries.
+- **Check the open PRs first.** `scripts/overlap.py` only screens them by file category; compare the changed file names or search by file before saying in the body that none touches the same code.
+- **Fill in the PR template, with what was not run.** Report only the checks that ran.
+- **Allowlist entries and numeric ceilings are different**: `view-allowlist.txt` loses lines and never gains one. In `allowlist.txt`, add a file or raise its numeric line ceiling only for a fix that cannot wait, and say why in the commit; lower the ceiling when the file shrinks. Other numeric allowances only go down.
+
 ## Commands
 
-Run from `Voxt/`; Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it).
+Run from `Voxt/`; Go 1.27.4 (`GOTOOLCHAIN=auto` fetches it).
 
 ```sh
+scripts/check.sh                                             # the fast checks CI runs: gofmt, MyGo vet, archtest
 CGO_ENABLED=0 go test ./...                                  # all tests (Linux and Mac)
 go tool mygo vet .                                           # vet + MyGo's UI checks
 CGO_ENABLED=1 go test -race ./...                            # needs cgo
@@ -42,14 +75,17 @@ scripts/mac.sh 'cd helper && swift test'                     # the helper's test
 MAC_DIR=code/VoxtNew-mt scripts/mac.sh scripts/mac-e2e.sh    # headless Mac tests: real helper, fake models, no window or key
 scripts/mac-latency.sh ACCURATE_DIR FAST_DIR [ROUNDS [SETTLE]]   # on the Mac: the first transcription's stages after a launch and a change of model, real speech models, fake helper (TestMacE2EFirstLatency)
 MAC_DIR=code/VoxtNew-logsel scripts/mac.sh scripts/mac-logs-shots.sh  # the logs' selection worked with the real pointer and captured (only while nobody uses the Mac; VOXTNEW_SHOTS_DRY=1: the window only)
-MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real models ($HUB, ~/voxtnew-runtime): Swift tests, omni, LLM, quick eval, app smoke
+MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real speech models ($HUB, ~/voxtnew-runtime): Swift tests, omni, quick eval, app smoke
 scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni go test -run TestEval -v .'  # the eval (docs/eval.md)
 scripts/vendor-mygo.sh --check                               # third_party/mygo is MyGo + our patches
+scripts/release-preflight.sh 2.1.2                           # before a stable tag, read-only: versions, CHANGELOG section, download links, unnamed pull requests, certificate date
 scripts/snapshots.sh check                                   # every snapshot, pixel for pixel, against the merge base
 GOMAXPROCS=1 scripts/w0-snapshots.sh check                   # the same comparison, accepting the measured PNG noise in scripts/w0-snapshots-noisy.list (docs/architecture.md, Testing)
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .  # regenerate meeting, history, session, updates, home, onboarding, app enhancement, dictionary, remote, models, feature, settings and shell fixtures in English and Chinese
 VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDemoScreenshots$' .  # every meeting, history, session, updates, home, onboarding, app enhancement, dictionary, remote, models, feature, settings and shell fixture as PNG
 go test -count=1 -run '^Test(MeetingFixtureCoverage|HistoryFixtureCoverage|SessionFixtureCoverage|UpdatesFixtureCoverage|HomeFixtureCoverage|OnboardingFixtureCoverage|AppEnhancementFixtureCoverage|DictionaryFixtureCoverage|RemoteFixtureCoverage|ModelsFixtureCoverage|FeatureFixtureCoverage|SettingsFixtureCoverage|ShellFixtureCoverage)$' .  # required states and fixture files in both languages
+go test -count=1 -run '^TestBehaviours$' .  # testdata/behaviours.tsv: each user-facing feature and the test, script or page that checks it; add a row with a new feature
+go test -count=1 -run '^TestReports$' .     # testdata/reports.tsv: each reported problem and the check that fails with its fix reverted; add a row with the fix
 go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction|UpdatesDemoActionControls|HomeDemoActionControls|OnboardingDemo|AppEnhancementDemoActionControls|DictionaryDemoActionControls|RemoteDemoActionControls|ModelsDemo|FeatureDemoActionControls|SettingsDemoActionControls|ShellDemoActionControls)$' .  # fixture switching, production/JSON pixels and exact action records for the controls covered by the demo suites
 MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo  # fixture demo with hot reload, no helper or models
 GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo  # build the fixture demo without opening a window

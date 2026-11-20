@@ -2,7 +2,9 @@
   "%d tokens": "%d 个 token",
   "Follow up by voice. Text you select first goes with it.": "语音追问。先选中的文字会一起加进对话。",
   "Follow up by voice (%s). Text you select first goes with it.": "语音追问（%s）。先选中的文字会一起加进对话。",
+  "Copy (C)": "复制（C）",
   "Insert into %s": "插入到 %s",
+  "Insert into %s (R)": "插入到 %s（R）",
   "Insert the recognised text without waiting for the language model": "不等语言模型，直接插入识别原文",
   "Not inserted. Copied: press ⌘V to paste.": "没有插入，已复制，按 ⌘V 粘贴",
   "Not translated into %s: %s": "没有翻译成%s：%s",
@@ -15,6 +17,7 @@
   "Saved to Notes": "已存到笔记",
   "The language model failed, so the recognised text was saved to Notes.": "语言模型出错了，已把识别原文存到笔记。",
   "The language model did not answer in time, so the recognised text was saved to Notes.": "语言模型没有及时响应，已把识别原文存到笔记。",
+  "The language model did not translate the text. Try again.": "语言模型没有翻译这段文字，请重试。",
   "Could not save the note, so the card shows it.": "笔记没能保存，内容显示在答案卡片里。",
   "Your ChatGPT plan has no usage left, so the recognised text was saved to Notes.": "ChatGPT 套餐的额度用完了，已把识别原文存到笔记。",
   "The length limit stops the recording in %s": "%s 后到达时长上限，录音会停止",
@@ -22,5 +25,8 @@
   "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音",
   "Reopen card": "重新打开卡片",
   "Thinking level: %s (default)": "思考强度：%s（默认）",
-  "Thinking level: %s": "思考强度：%s"
+  "Thinking level: %s": "思考强度：%s",
+  "AI answer": "AI 回答",
+  "Transcription": "转录结果",
+  "Text": "文字"
 }

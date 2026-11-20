@@ -32,6 +32,7 @@ func TestRemoteDemoActionControls(t *testing.T) {
 		{name: "dismiss onboarding", fixture: "en/remote-onboarding-back", steps: remoteSteps(remoteDemoStep{label: "Dismiss"}), want: []string{"dismissOnboardingBack"}},
 		{name: "wait preset", fixture: "en/remote-wait-automatic", steps: remoteSteps(remoteDemoStep{label: "Automatic", click: true}, remoteDemoStep{label: "5 minutes", click: true}), want: []string{`chooseLLMWait "5m"`}},
 		{name: "wait 60 minutes", fixture: "en/remote-wait-automatic", steps: remoteSteps(remoteDemoStep{label: "Automatic", click: true}, remoteDemoStep{label: "60 minutes", click: true}), want: []string{`chooseLLMWait "60m"`}},
+		{name: "model switch", fixture: "en/remote-page-normal", steps: remoteSteps(remoteDemoStep{label: "Switch models when one fails"}), want: []string{"setLLMSwitch true"}},
 		{name: "wait saved custom", fixture: "en/remote-wait-custom", steps: remoteSteps(remoteDemoStep{label: "45 minutes", click: true}), check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 			if tester.HasText("Custom…") || tester.HasText("Wait for the language model in minutes") {
 				t.Fatal("the select still offers a custom wait")
@@ -68,7 +69,7 @@ func TestRemoteDemoActionControls(t *testing.T) {
 			}
 		}},
 		{name: "dismiss dialog error", fixture: "en/remote-dialog-error", steps: remoteSteps(remoteDemoStep{at: func(tester *ui.Tester) {
-			row, rowOK := tester.Find("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac.")
+			row, rowOK := tester.Find("The remote model's address is not allowed. Use http:// or https:// without a user name or password.")
 			close, closeOK := tester.Find("Dismiss")
 			if rowOK && closeOK {
 				tester.ClickAt(close.X+close.W/2, row.Y+row.H/2)

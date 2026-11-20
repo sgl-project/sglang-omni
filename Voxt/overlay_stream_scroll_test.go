@@ -93,6 +93,7 @@ func cardTextHeight(a *app, card *sessionCardViewState) (int, bool) {
 		return measured.h, ok
 	}
 	view := &a.ov.projection.view
-	height, _, exact := sessionOverlayCardBodyHeight(view.SessionID, &whole, measure, a.sessionOverlayPreviewHeights(view), 1<<20, 0)
+	width := max(layout.CardSizes[whole.SizeStep].W, layout.AnswerW) // the test's fixed sizes
+	height, _, exact := sessionOverlayCardBodyHeight(view.SessionID, &whole, measure, a.sessionOverlayPreviewHeights(view), 1<<20, 0, width)
 	return height, exact
 }
