@@ -368,7 +368,7 @@ func (a *app) boxPaste(svc uiServices) bool {
 			switch {
 			case err != nil:
 				res.JPEG, errText = nil, i18n.T("This image could not be read.")
-			case len(res.JPEG) > imgconv.MaxFileBytes:
+			case len(res.JPEG) == 0 || len(res.JPEG) > imgconv.MaxFileBytes:
 				res.JPEG, errText = nil, i18n.T("This image is too large.")
 			}
 			a.boxConverted(gen, seq, res.JPEG, errText, i18n.T("Clipboard"))
