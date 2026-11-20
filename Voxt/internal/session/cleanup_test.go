@@ -82,7 +82,7 @@ func TestComposingSpoken(t *testing.T) {
 var longZH = strings.Repeat("嗯，那个，我们下周二，呃不对，下周三下午三点开个会，讨论一下预算。", 16)
 
 // TestLongDictation: a long dictation is cleaned up in pieces, every
-// request with the same system prompt and example turn, the answers
+// request with the same system prompt and no example turn, the answers
 // streaming into the draft in order; a piece that fails keeps its text as
 // recognised, with a warning.
 func TestLongDictation(t *testing.T) {
@@ -103,7 +103,7 @@ func TestLongDictation(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: longZH}, c.llm, nil)
 			h.speak(h.start(), 5)
 			end := h.rec.wait(t)
-			if end.Result != c.result || end.Raw != longZH || end.Profile != "transcribe:glossary" {
+			if end.Result != c.result || end.Raw != longZH || end.Profile != "transcribe:cleanup+glossary" {
 				t.Errorf("result %q, raw %q, profile %q", end.Result, end.Raw, end.Profile)
 			}
 			if (end.Problem == nil) != (c.problem == "") || end.Problem != nil && (end.Problem.Code != c.problem || !end.Problem.Degraded) {
@@ -115,8 +115,8 @@ func TestLongDictation(t *testing.T) {
 			}
 			for i, req := range reqs {
 				m := req.Messages
-				if len(m) != 4 || m[0] != reqs[0].Messages[0] || m[1] != reqs[0].Messages[1] || m[2] != reqs[0].Messages[2] ||
-					m[3].Content != compose.UserMessage(pieces[i].Text) || req.OnDelta == nil {
+				if len(m) != 2 || m[0] != reqs[0].Messages[0] ||
+					m[1].Content != compose.UserMessage(pieces[i].Text) || req.OnDelta == nil {
 					t.Errorf("request %d: %+v", i, m)
 				}
 			}
@@ -133,8 +133,8 @@ func TestLongDictation(t *testing.T) {
 // TestOnlyTheCleanedText (#4086): the model wraps the cleaned text in
 // the <output> tags the contract asks for and adds its own commentary
 // about the edits outside them; only the tags' content is streamed into
-// the card, shown and inserted. The request asks for the tags and the
-// example turn answers with them.
+// the card, shown and inserted. The request asks for the tags without showing
+// an example answer that the model could repeat.
 func TestOnlyTheCleanedText(t *testing.T) {
 	text := "算计算量，就是说，用 bf16 单元算和 int8 有区别吗"
 	cleaned := "算计算量（FLOPs）—— 用 bf16 单元算和 int8 有区别吗？"
@@ -156,8 +156,44 @@ func TestOnlyTheCleanedText(t *testing.T) {
 		t.Fatalf("%d requests", len(reqs))
 	}
 	m := reqs[0].Messages
-	if !strings.Contains(m[0].Content, "<output>") || len(m) != 4 || !strings.Contains(m[2].Content, "<output>") {
-		t.Errorf("the contract or the example lacks the tags: %d messages", len(m))
+	if !strings.Contains(m[0].Content, "<output>") || len(m) != 2 {
+		t.Errorf("the output contract is missing or an example remains: %d messages", len(m))
+	}
+}
+
+// TestCleanupHasNoExampleTurn (#4228): Transcribe does not send a built-in
+// example that a model can mistake for the text to clean. A model that copies
+// an earlier assistant answer has no example to copy in either prompt path.
+func TestCleanupHasNoExampleTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, text, prompt, example, cleanup string
+	}{
+		{"layered Chinese", "zh", "简洁", "", "周报发给小李", "基础清理"},
+		{"custom English", "en", "be concise", "Clean the text.", "weekly report to Anna", "Basic cleanup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: tc.text, copyExample: true}
+			h := newHarness(t, &fakeFile{text: tc.text}, model, func(_ *Config, s *settings.Settings) {
+				s.General.MainLanguage, s.Features.Transcribe.Prompt = tc.main, tc.prompt
+			})
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			if end.Result != tc.text {
+				t.Errorf("result %q, want the transcript %q", end.Result, tc.text)
+			}
+			reqs := model.requests()
+			if len(reqs) != 1 || len(reqs[0].Messages) != 2 {
+				t.Fatalf("requests %+v", reqs)
+			}
+			for _, message := range reqs[0].Messages {
+				if strings.Contains(message.Content, tc.example) || message.Role == "assistant" {
+					t.Errorf("an example remains in the request: %+v", message)
+				}
+			}
+			if !strings.Contains(reqs[0].Messages[0].Content, tc.cleanup) {
+				t.Error("removing the example also removed the cleanup rules")
+			}
+		})
 	}
 }
 
@@ -177,6 +213,142 @@ func TestLongTranslate(t *testing.T) {
 	if end.Result != "我们周四上午发布。" || len(reqs) != 1 || reqs[0].Messages[len(reqs[0].Messages)-1].Content != compose.UserMessage(strings.TrimSpace(en)) {
 		t.Errorf("result %q, %d requests", end.Result, len(reqs))
 	}
+}
+
+// TestTranscribeFallback: when Transcribe's language model fails and a
+// fallback model is there (the Language models page's switch), the
+// clean-up is asked of the fallback once, which then is the session's
+// model: the snapshot and the entry name it. When both fail, the text
+// goes on as recognised, degraded.
+func TestTranscribeFallback(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	for _, tc := range []struct {
+		name             string
+		main, fallback   *fakeLLM
+		result, model    string
+		mainN, fallbackN int
+	}{
+		{"the model fails", &fakeLLM{err: boom}, &fakeLLM{text: "Hello, VoxtNew."}, "Hello, VoxtNew.", "ollama", 1, 1},
+		{"both fail", &fakeLLM{err: boom}, &fakeLLM{err: boom}, "hello VoxtNew", "ollama", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: " hello aura link "}, tc.main, func(_ *Config, s *settings.Settings) {
+				s.Features.Transcribe.Prompt = "Be brief."
+			})
+			h.fallback = tc.fallback
+			id := h.start()
+			h.speak(id, 5)
+			end := h.rec.wait(t)
+			if end.State != Done || end.Result != tc.result || end.LLM.ID != tc.model {
+				t.Errorf("end %s %q by %q, want %s %q by %q (problem %+v)", end.State, end.Result, end.LLM.ID, Done, tc.result, tc.model, end.Problem)
+			}
+			if failed := tc.main.err != nil && tc.fallback.err != nil; failed != (end.Problem != nil && end.Problem.Code == ProblemLLM && end.Problem.Degraded) {
+				t.Errorf("problem %+v", end.Problem)
+			}
+			if n, m := len(tc.main.requests()), len(tc.fallback.requests()); n != tc.mainN || m != tc.fallbackN {
+				t.Errorf("%d requests to the model, %d to the fallback; want %d, %d", n, m, tc.mainN, tc.fallbackN)
+			}
+			if es := h.hist.all(); len(es) != 1 || es[0].LLMProvider != tc.model || es[0].LLMModel != end.LLM.Model {
+				t.Errorf("entries %+v", es)
+			}
+		})
+	}
+
+	// The guard's exits hold in Transcribe's loop too: a used-up plan is
+	// the user's to manage, and a cancel or Skip ends the step — in each
+	// the fallback is never asked.
+	t.Run("a used-up plan is not fallen back from", func(t *testing.T) {
+		main, fallback := &fakeLLM{err: &llm.Error{Code: llm.CodeUsageLimit}}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, main, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 5)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Result != "hello VoxtNew" || end.Problem == nil || llm.Code(end.Problem.Err) != llm.CodeUsageLimit {
+			t.Errorf("end %s %q (problem %+v)", end.State, end.Result, end.Problem)
+		}
+		if n := len(fallback.requests()); n != 0 {
+			t.Errorf("%d requests to the fallback", n)
+		}
+	})
+	t.Run("a cancel is not fallen back from", func(t *testing.T) {
+		main, fallback := &fakeLLM{hang: true}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, main, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing })
+		h.m.Cancel(id)
+		if end := h.rec.wait(t); end.State != Cancelled || len(h.text.pastes()) != 0 {
+			t.Errorf("end %+v, pasted %q", end, h.text.pastes())
+		}
+		if n := len(fallback.requests()); n != 0 {
+			t.Errorf("%d requests to the fallback", n)
+		}
+	})
+	t.Run("a skip is not fallen back from", func(t *testing.T) {
+		main, fallback := &fakeLLM{hang: true}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, main, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.CanSkip })
+		h.m.SkipLLM(id)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "hello VoxtNew" {
+			t.Errorf("end %s %+v %q", end.State, end.Problem, end.Result)
+		}
+		if n := len(fallback.requests()); n != 0 {
+			t.Errorf("%d requests to the fallback", n)
+		}
+	})
+}
+
+// TestTranscribeFallbackRethink: the fallback joins Transcribe's re-ask
+// loop. A level chosen in the preview (Rethink) still holds for the
+// fallback's request, and a Rethink while the fallback streams asks it
+// again, as it would the first model: only the new answer goes in.
+func TestTranscribeFallbackRethink(t *testing.T) {
+	boom := errors.New("503 overloaded")
+	off := &llm.Thinking{Mode: llm.ThinkOff}
+	t.Run("the fallback keeps the level chosen", func(t *testing.T) {
+		model, fallback := &fakeLLM{text: "unused", hang: true, hangOn: 1, err: boom, failOn: 2}, &fakeLLM{text: "Hello, VoxtNew."}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.Rethink(id, off)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "Hello, VoxtNew." || end.LLM.ID != "ollama" {
+			t.Errorf("end %s %q by %q (problem %+v)", end.State, end.Result, end.LLM.ID, end.Problem)
+		}
+		if r := model.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+			t.Errorf("requests to the model %+v", r)
+		}
+		if r := fallback.requests(); len(r) != 1 || r[0].Thinking == nil || *r[0].Thinking != *off {
+			t.Errorf("requests to the fallback %+v", r)
+		}
+	})
+	t.Run("rethink during the fallback asks it again", func(t *testing.T) {
+		model, fallback := &fakeLLM{err: boom}, &fakeLLM{text: "Again, VoxtNew.", hang: true, hangOn: 1}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		h.fallback = fallback
+		id := h.start()
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the fallback's answer", func(s Snapshot) bool { return s.State == Composing && s.LLM.ID == "ollama" && s.Draft != "" })
+		h.m.Rethink(id, off)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "Again, VoxtNew." || end.LLM.ID != "ollama" || end.Thinking == nil || *end.Thinking != *off {
+			t.Errorf("end %s %q by %q %+v (problem %+v)", end.State, end.Result, end.LLM.ID, end.Thinking, end.Problem)
+		}
+		if r := fallback.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+			t.Errorf("requests to the fallback %+v", r)
+		}
+		if p := h.text.pastes(); len(p) != 1 || p[0] != "Again, VoxtNew." {
+			t.Errorf("pasted %q", p)
+		}
+	})
 }
 
 type cleanupBackend struct{ *fakeLLM }

@@ -231,7 +231,7 @@ func (h *windowHandler) SurfaceEvent(ev platform.SurfaceEvent) bool {
 		case platform.DataDragLeave:
 			c.Event(platform.SurfaceEvent{Kind: platform.FileDragLeave})
 		case platform.DataDragOver, platform.DataDrop:
-			if d.HasFiles || slices.Contains(d.Offer.Formats, transfer.FileList) {
+			if d.HasFiles || slices.Contains(d.Offer.Formats, transfer.FileList) || slices.Contains(d.Offer.Formats, transfer.URIList) {
 				d.Operation = transfer.Negotiate(d.Offer.Operations, transfer.Copy, d.Offer.Suggested)
 				if d.Operation == transfer.None {
 					return false
@@ -249,7 +249,7 @@ func (h *windowHandler) SurfaceEvent(ev platform.SurfaceEvent) bool {
 					}
 					fileEvent.Files = paths
 				}
-				d.Formats = []transfer.Format{transfer.FileList}
+				d.Formats = []transfer.Format{transfer.FileList, transfer.URIList}
 				if h.SurfaceEvent(fileEvent) {
 					return true
 				}

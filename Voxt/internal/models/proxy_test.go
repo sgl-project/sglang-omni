@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/hehehai/actnowkit/hfhub"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 )
 
 // testProxy is a systemProxy with no environment's proxy, the given
@@ -100,6 +102,49 @@ func TestSystemProxy(t *testing.T) {
 		if got := bypassProxy(host, local); got != want {
 			t.Errorf("%s: bypass %v", host, got)
 		}
+	}
+}
+
+// TestBypassProxyThisMac: a host goes direct, with no exceptions, exactly
+// when the local-only checks (core.IsLoopback) call it this Mac.
+func TestBypassProxyThisMac(t *testing.T) {
+	proxies := SystemProxies{HTTPS: "127.0.0.1:7897"}
+	for _, host := range []string{"localhost", "localhost.", "LocalHost", "ollama.localhost", "Ollama.LocalHost.", "127.0.0.2", "::1",
+		"localhost.example.com", "foolocalhost", "huggingface.co", "10.0.0.2"} {
+		if got, want := bypassProxy(host, proxies), core.IsLoopback(host); got != want {
+			t.Errorf("%s: bypass %v, IsLoopback %v", host, got, want)
+		}
+	}
+}
+
+func TestProxyForNeverProxiesLoopback(t *testing.T) {
+	proxyURL, _ := url.Parse("http://proxy.example:3128")
+	system := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+	for _, mode := range []string{"", "direct", "http://proxy.example:3128"} {
+		t.Run(mode, func(t *testing.T) {
+			proxy := ProxyFor(mode, url.UserPassword("name", "password"), system)
+			for _, rawURL := range []string{"http://ollama.localhost", "http://localhost", "http://127.0.0.1"} {
+				request, _ := http.NewRequest("GET", rawURL, nil)
+				got, err := proxy(request)
+				if err != nil || got != nil {
+					t.Errorf("%s proxy = %v, %v; want direct", rawURL, got, err)
+				}
+			}
+			request, _ := http.NewRequest("GET", "https://example.com", nil)
+			got, err := proxy(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "direct" && got != nil {
+				t.Errorf("direct mode proxied an external URL: %v", got)
+			}
+			if mode != "direct" && got == nil {
+				t.Error("external URL did not use the configured proxy")
+			}
+			if strings.HasPrefix(mode, "http://") && got != nil && got.User == nil {
+				t.Errorf("custom proxy lost its credentials: %v", got)
+			}
+		})
 	}
 }
 

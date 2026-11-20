@@ -124,6 +124,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 					meetingCaptureSettings(c, state, host, &host.settingsMeetingUI)
 					meetingASRSettings(c, state, host)
 					meetingLLMSettings(c, state, host)
+					meetingCorrectionStyleSettings(c, state, host, &host.settingsMeetingUI)
 					meetingConsent(c)
 				}, func() {
 					ui.Spacer(c)

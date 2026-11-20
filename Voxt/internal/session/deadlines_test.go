@@ -202,8 +202,9 @@ func TestFollowUpDeadlines(t *testing.T) {
 	long := strings.Repeat("a long selection ", 1250)
 	model := &pacedLLM{scripts: []script{{text: "Shorter."}}}
 	h := newHarness(t, &fakeFile{text: "make it shorter"}, &llm.Client{Backend: model}, nil)
+	h.m.cfg.LLMBase, h.m.cfg.LLMPerChar, h.m.cfg.WriteTimeout = 0, 0, 0
 	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack,
-		Previous: []compose.Turn{{Instruction: "summarise this", Selection: long, Answer: compose.Answer{Content: "A summary."}}}})
+		Previous: []compose.Turn{{Instruction: "summarise this", Selection: long, Typed: "and this", Answer: compose.Answer{Content: "A summary."}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +214,12 @@ func TestFollowUpDeadlines(t *testing.T) {
 	}
 	model.mu.Lock()
 	defer model.mu.Unlock()
-	want := h.m.cfg.LLMBase + time.Duration(len(long))*llmPrefillPerChar
+	want := time.Duration(len("make it shorter")+len(long)+len("and this")+len("summarise this")+len("A summary.")) * llmPrefillPerChar
 	if len(model.reqs) != 1 || model.reqs[0].Timeout < want {
 		t.Fatalf("deadline %v, want at least %v", model.reqs[0].Timeout, want)
+	}
+	wantChars := len("make it shorter")
+	if model.reqs[0].InputChars != wantChars {
+		t.Errorf("input chars %d, want %d", model.reqs[0].InputChars, wantChars)
 	}
 }
