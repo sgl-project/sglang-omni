@@ -643,8 +643,9 @@ func chatMessages(req map[string]any) [][2]string {
 // TestSessionSystemDictation: with no speech model downloaded, Transcribe
 // hears through System dictation (the helper's speech.*) in the user's
 // main language: its partial shows while recording and its text is
-// pasted. A main language macOS has no on-device model for fails the
-// session with words that say so.
+// pasted. When it hears nothing, Voxt says so and pastes nothing. A main
+// language macOS has no on-device model for fails the session with words
+// that say so.
 func TestSessionSystemDictation(t *testing.T) {
 	keys := func(t *testing.T) string {
 		return script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(600, "transcribe/0", proto.PhaseTrigger))
@@ -663,6 +664,23 @@ func TestSessionSystemDictation(t *testing.T) {
 			t.Fatalf("end %+v, a partial while recording: %v", end, partial)
 		}
 		if es := a.history(); len(es) != 1 || es[0].ASRProvider != dictation.ModelID {
+			t.Errorf("history %+v", es)
+		}
+	})
+	t.Run("nothing heard", func(t *testing.T) {
+		a := newSessionApp(t, "speech,speech-empty,"+keys(t), func(s *settings.Settings) { s.Features.Transcribe.Enhance = false }, nil)
+		a.pump("the end", func() bool { return a.sess.State.Ended() })
+		if end := a.sess; end.State != session.Done || end.Result != "" || end.Inserted || end.Problem == nil || end.Problem.Code != session.ProblemNoSpeech {
+			t.Fatalf("end %+v", end)
+		}
+		if p := a.pasted(); len(p) != 0 {
+			t.Errorf("pasted %+v", p)
+		}
+		if a.notice == nil || !a.notice.warn || a.ov.mode != ovNotice || a.notice.text != "Nothing was heard." {
+			t.Errorf("notice %+v, overlay %s", a.notice, a.ov.mode)
+		}
+		// The recording stays, for Retry.
+		if es := a.history(); len(es) != 1 || es[0].Result != "" || es[0].Audio == "" {
 			t.Errorf("history %+v", es)
 		}
 	})

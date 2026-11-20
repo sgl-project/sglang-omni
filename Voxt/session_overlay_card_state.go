@@ -20,7 +20,6 @@ const (
 	sessionCardProblemMore   = "problem-more"
 	sessionCardSource        = "source"
 	sessionCardBubble        = "bubble"
-	sessionCardLiveUserKey   = "live-user"
 	sessionCardLiveAnswerKey = "live-answer"
 )
 

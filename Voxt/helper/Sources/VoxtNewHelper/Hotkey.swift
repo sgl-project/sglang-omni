@@ -46,10 +46,13 @@ final class HotkeyTap: @unchecked Sendable {
 
     func configure(_ p: HotkeyConfigureParams) -> HotkeyStatus {
         configureCoordinator.configure(p) { current in
+            // A sequence is authoritative; generation orders legacy requests
+            // without one and never vetoes a newer sequence.
+            let generation = current.sequence == nil ? current.generation ?? 0 : lock.withLock { max(recognizer.config.generation, current.generation ?? 0) }
             let c = HotkeyConfig(bindings: current.bindings, doubleTapMs: current.doubleTapMs ?? systemDoubleClickMs(),
                                  longPressMs: current.longPressMs ?? 300, tapMaxMs: current.tapMaxMs ?? 1500,
                                  swallowFn: current.swallowFn ?? false, active: current.active ?? false, cancel: current.cancel,
-                                 generation: current.generation ?? 0)
+                                 generation: generation)
             // Requests run on their own tasks, so they can land out of order;
             // a configuration older than the one in effect changes nothing.
             guard lock.withLock({ recognizer.configure(c) }) else { return }

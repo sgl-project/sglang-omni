@@ -82,6 +82,19 @@ final class HotkeyGenerationTests: XCTestCase {
         XCTAssertEqual(e.generation, 1, "the event took the configuration that landed after its decision")
     }
 
+    func testSequenceIsAuthoritativeOverGeneration() {
+        let (tap, _) = makeTap()
+        _ = tap.configure(HotkeyConfigureParams(sequence: 1, bindings: [], active: false, generation: 7))
+        _ = tap.configure(HotkeyConfigureParams(sequence: 2, bindings: [
+            Binding(id: "card.copy/1", modifiers: [:], key: 8, behavior: .tap),
+        ], active: true))
+        XCTAssertEqual(tap.status().bindings, 1, "a newer sequence without generation was vetoed by generation 7")
+        _ = tap.configure(HotkeyConfigureParams(bindings: [], active: false, generation: 6))
+        XCTAssertEqual(tap.status().bindings, 1, "an older generation-only request replaced the sequenced configuration")
+        _ = tap.configure(HotkeyConfigureParams(sequence: 3, bindings: [], active: false, generation: 1))
+        XCTAssertEqual(tap.status().bindings, 0, "the latest sequence did not win over the higher old generation")
+    }
+
     /// The deferred-tap timer's event is tagged with the configuration in
     /// effect at its tick, not one landing between the tick and the send.
     func testTimerEventKeepsTheDecisionGeneration() throws {

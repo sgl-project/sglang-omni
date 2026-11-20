@@ -570,10 +570,10 @@ func CleanOutput(out, input string) string {
 	return Clean(s, input)
 }
 
-// CleanRewrite applies Clean and removes Rewrite's echoed <instruction>
-// and <selected_text> pairs. Translate and Transcribe keep those tags.
+// CleanRewrite tidies a Rewrite answer, including echoed input tags and
+// any unclosed pair or tag fragment left by a stopped stream.
 func CleanRewrite(out string, input ...string) string {
-	return Clean(stripInputTags(strings.TrimSpace(out), input...), input...)
+	return Clean(stripPartialInputTags(out, input...), input...)
 }
 
 // Clean tidies a model's answer to input: without the <input> tags a

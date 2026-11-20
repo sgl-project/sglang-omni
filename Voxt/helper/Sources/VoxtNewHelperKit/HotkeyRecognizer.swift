@@ -100,11 +100,9 @@ public enum RawFlags {
 /// Virtual key codes the recognizer knows (Carbon kVK_*).
 public enum KeyCode {
     public static let function: UInt16 = 63
-    public static let escape: UInt16 = 53
     public static let capsLock: UInt16 = 57
     /// The 🌐 key's key down/up after fn (seen on macOS 26 with an Apple keyboard).
     public static let globe: UInt16 = 179
-    public static let modifiers: Set<UInt16> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
     /// Keys whose events macOS marks with fn's flag whether fn is held or
     /// not (a laptop reaches them through fn): F1–F20, Help, Home, Page Up,
     /// Forward Delete, End, Page Down and the arrows.
