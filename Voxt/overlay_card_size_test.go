@@ -1,6 +1,6 @@
 package main
 
-// The answer card’s sizes: the feature page’s setting, the header
+// The answer card’s sizes: the feature page’s setting, the corner
 // button’s cycle, and the fill size’s work-area clamp.
 
 import (
@@ -126,7 +126,7 @@ func TestCardFillSize(t *testing.T) {
 }
 
 // TestCardFillInk: the fill card passes the same pixel geometry checks as
-// the fixed widths, including its text.
+// the fixed widths, including its text and the resized corner control.
 func TestCardFillInk(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.updateSettings(func(s *settings.Settings) { s.Features.CardSizes = map[string]int{hotkey.Rewrite: 3} })
@@ -147,7 +147,7 @@ func TestCardMessageLeavesRoomForResizeButton(t *testing.T) {
 	a.overlaySync()
 	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 	frames(tt)
-	m, ok := tt.Find(message)
+	messageBounds, ok := tt.Find(message)
 	if !ok {
 		t.Fatalf("no status message in %q", firstTexts(tt))
 	}
@@ -155,8 +155,8 @@ func TestCardMessageLeavesRoomForResizeButton(t *testing.T) {
 	if !ok {
 		t.Fatal("no resize control")
 	}
-	if m.X < button.X+button.W && button.X < m.X+m.W && m.Y < button.Y+button.H && button.Y < m.Y+m.H {
-		t.Errorf("status message %+v overlaps resize control %+v", m, button)
+	if messageBounds.X+messageBounds.W > button.X && messageBounds.Y+messageBounds.H > button.Y {
+		t.Errorf("status message %+v overlaps resize control %+v", messageBounds, button)
 	}
 }
 
@@ -189,30 +189,21 @@ func TestCardFillFollowsDraggedDisplay(t *testing.T) {
 }
 
 // TestCardSizeButtonVisible: the size button is visible without a
-// hover (#4100: a 16 pt corner button with a 12 pt icon at 42 % opacity
-// was effectively invisible). It sits in the header beside Close, as
-// large and as bright as the card's other buttons.
+// hover (#4100: a 16 pt button with a 12 pt icon at 42 % opacity was
+// effectively invisible): a 20 pt hit area with a 14 pt icon, drawn at
+// 0.6 alpha resting (about 170 over the dark face; 0.42 blends to
+// about 128), CardSizeBtnInset from the card's bottom-right corner.
 func TestCardSizeButtonVisible(t *testing.T) {
+	if layout.CardSizeBtn < 20 || layout.CardSizeBtnIcon < 14 {
+		t.Fatalf("the size button is %d pt with a %d pt icon; 16/12 was invisible", layout.CardSizeBtn, layout.CardSizeBtnIcon)
+	}
 	a, _, _ := newTestApp(t)
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
 	a.overlaySync()
-	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
-	frames(tt)
-	button, ok := tt.Find(i18n.T("Make the card larger"))
-	if !ok {
-		t.Fatalf("no size button in %q", tt.AccessLabels())
-	}
-	closeButton, ok := tt.Find(i18n.T("Close"))
-	if !ok {
-		t.Fatal("no Close button")
-	}
-	if button.W != closeButton.W || button.H != closeButton.H || button.Y != closeButton.Y || button.X >= closeButton.X {
-		t.Errorf("the size button %+v is not a header button left of Close %+v", button, closeButton)
-	}
 	img := renderOverlay(t, a)
 	bright := 0
-	for y := int(2 * button.Y); y < int(2*(button.Y+button.H)); y++ {
-		for x := int(2 * button.X); x < int(2*(button.X+button.W)); x++ {
+	for y := 2 * (layout.Pad + a.ov.h - layout.CardSizeBtnInset - layout.CardSizeBtn); y < 2*(layout.Pad+a.ov.h-layout.CardSizeBtnInset); y++ {
+		for x := 2 * (layout.Pad + a.ov.w - layout.CardSizeBtnInset - layout.CardSizeBtn); x < 2*(layout.Pad+a.ov.w-layout.CardSizeBtnInset); x++ {
 			o := img.PixOffset(x, y)
 			if v := (int(img.Pix[o]) + int(img.Pix[o+1]) + int(img.Pix[o+2])) / 3; v > 150 {
 				bright++
@@ -220,7 +211,7 @@ func TestCardSizeButtonVisible(t *testing.T) {
 		}
 	}
 	if bright == 0 {
-		t.Errorf("nothing brighter than 150 in the size button's area: its icon does not show")
+		t.Errorf("nothing brighter than 150 in the size button's area: the resting alpha does not show")
 	}
 }
 

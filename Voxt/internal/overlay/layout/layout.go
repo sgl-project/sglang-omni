@@ -194,9 +194,8 @@ const (
 	CardTextSize   = 14
 	CardTextWeight = 500
 	CardBtn        = 24
-	CardBtnGap     = 6 // between the header's icon buttons (CardTools)
 	CardBtnIcon    = 15
-	// The meeting card's size button sits in its corner, in the padding under
+	// The size button sits in the card's corner, in the padding under
 	// the text (CardPadY), CardSizeBtnInset from the edges: far enough
 	// in that the whole button stays inside the rounded corner at the
 	// widest corner radius (40: its corner's centre is 40 from each
@@ -372,7 +371,3 @@ const (
 func FaceAlpha(o settings.Overlay) float32 {
 	return float32(min(max(o.Opacity, 0.5), 1))
 }
-
-// CardTools is how wide n of a card header's icon buttons are, side by
-// side.
-func CardTools(n int) int { return n*CardBtn + (n-1)*CardBtnGap }

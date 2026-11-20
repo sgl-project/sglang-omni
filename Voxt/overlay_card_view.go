@@ -28,8 +28,9 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		cardAttachView(context, card, local)
 		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
+		cardSizeButton(context, card, actions)
 		if card.Message != "" {
-			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Padding(0, layout.CardSizeBtn+layout.CardSizeBtnInset-layout.CardPadX+layout.CardHeadGap, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
 				icon, color := icons.InfoCircle, ovText2
 				if card.Failed {
 					icon, color = icons.DangerCircle, tok(context.Theme()).Danger
@@ -41,16 +42,10 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 	})
 }
 
-// cardSizeStep is a card's size button, in its header beside the card's
-// other buttons (#3644 FB41): it steps the card through its widths, from
-// the largest back to the first. It returns the step a click chose. It
-// sat in the card's bottom corner, 16 pt and faint, hard to see and hit.
-func cardSizeStep(context *ui.Context, step, steps int) (next int, clicked bool) {
-	label, icon, next := i18n.T("Make the card larger"), icons.Maximize, step+1
-	if next >= steps {
-		label, icon, next = i18n.T("Make the card smaller"), icons.Minimize, 0
+func cardSizeButton(context *ui.Context, card *sessionCardViewState, actions sessionOverlayActions) {
+	if sizeStepButton(context.Key("ov-card-size"), card.SizeStep) {
+		actions.cycleOverlayCardSize()
 	}
-	return next, cardIconButton(context, label, label, icon, true)
 }
 
 // cardAttachView says which picture went to the language model.
@@ -87,39 +82,47 @@ func cardAttachView(context *ui.Context, card *sessionCardViewState, local sessi
 	})
 }
 
+func sizeStepButton(context *ui.Context, step int) bool {
+	label, icon := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic
+	if step+1 == len(layout.CardSizes) {
+		label, icon = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic
+	}
+	button := ui.ButtonBase(context).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
+		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
+	alpha := float32(0.6)
+	if button.Hovered() {
+		alpha = 0.95
+	}
+	return button.Children(func() {
+		ui.Icon(context, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
+	}).Clicked()
+}
+
 func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actions sessionOverlayActions, local sessionOverlayLocal, animation sessionOverlayAnimation) {
 	icon := icons.VoxtAnswer
 	if card.Conversation {
 		icon = icons.VoxtTranscribe
 	}
-	kind := func() {
-		ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
-	}
+	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
 	if card.Conversation {
-		kind()
 		cardWave(context, card.Levels[:], card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
 	} else {
-		// The icon, title and spinner share one growing item, which pushes
-		// the actions right: a spacer of its own cost the header a gap the
-		// size button needs on a small Translate card.
-		ui.Row(context.Key("ov-card-lead")).Grow(1).MinWidth(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
-			kind()
-			if !sessionCardLanguageCapsule(card) {
-				ui.Text(context, card.Title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		if !sessionCardLanguageCapsule(card) {
+			ui.Text(context, card.Title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		}
+		if card.Busy {
+			busy := i18n.T("Translating…")
+			switch {
+			case card.Writing && card.Kind == "transcribe":
+				busy = i18n.T("Cleaning up…")
+			case card.Writing && card.Kind == "rewrite":
+				busy = i18n.T("Writing…")
 			}
-			if card.Busy {
-				busy := i18n.T("Translating…")
-				switch {
-				case card.Writing && card.Kind == "transcribe":
-					busy = i18n.T("Cleaning up…")
-				case card.Writing && card.Kind == "rewrite":
-					busy = i18n.T("Writing…")
-				}
-				ui.Icon(context, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
-					Rotate(float32(math.Mod(animation.Phase*400, 360))).Label(busy)
-			}
-		})
+			ui.Icon(context, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
+				Rotate(float32(math.Mod(animation.Phase*400, 360))).Label(busy)
+		}
+		ui.Box(context).Grow(1).MinWidth(0)
 	}
 	if sessionCardLanguageCapsule(card) {
 		cardLanguage(context, card, actions, local, top)
@@ -146,35 +149,27 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 			actions.retryAnswer("")
 		}
 	}
-	// The icon buttons sit closer together than the header's items, as a
-	// toolbar's: the size button joined them and a small Translate card
-	// with the widest language name still fits.
-	ui.Row(context.Key("ov-card-tools")).Gap(layout.CardBtnGap).AlignItems(ui.Center).Shrink(0).Children(func() {
-		if card.ShowThinking && cardIconButton(context.Key("ov-card-think"), i18n.T("Thinking level"), card.ThinkingLabel, icons.Tuning2, card.CanThink) {
-			actions.toggleThinkMenu()
+	if card.ShowThinking && cardIconButton(context.Key("ov-card-think"), i18n.T("Thinking level"), card.ThinkingLabel, icons.Tuning2, card.CanThink) {
+		actions.toggleThinkMenu()
+	}
+	if !card.Failed {
+		if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
+			actions.insertAnswer()
 		}
-		if !card.Failed {
-			if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
-				actions.insertAnswer()
-			}
-			copyIcon, copyLabel, copyTip := icons.Copy, i18n.T("Copy"), card.CopyTooltip
-			if card.Copied {
-				copyIcon, copyLabel, copyTip = icons.CopyCheck, i18n.T("Copied"), i18n.T("Copied")
-			}
-			if copyTip == "" {
-				copyTip = copyLabel
-			}
-			if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyTip, copyIcon, card.CanCopy) {
-				actions.copyAnswer()
-			}
+		copyIcon, copyLabel, copyTip := icons.Copy, i18n.T("Copy"), card.CopyTooltip
+		if card.Copied {
+			copyIcon, copyLabel, copyTip = icons.CopyCheck, i18n.T("Copied"), i18n.T("Copied")
 		}
-		if _, ok := cardSizeStep(context.Key("ov-card-size"), card.SizeStep, len(layout.CardSizes)); ok {
-			actions.cycleOverlayCardSize()
+		if copyTip == "" {
+			copyTip = copyLabel
 		}
-		if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
-			actions.closeAnswer()
+		if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyTip, copyIcon, card.CanCopy) {
+			actions.copyAnswer()
 		}
-	})
+	}
+	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
+		actions.closeAnswer()
+	}
 }
 
 func sessionCardKindLabel(kind string) string {
