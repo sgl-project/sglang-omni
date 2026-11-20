@@ -56,7 +56,10 @@ public enum ClipboardPicture {
         var rejectedTooLarge = false
         for type in imageTypes where types.contains(type) {
             if let bytes = await dataForType(type) {
-                if bytes.count > maxSourceBytes { return (nil, true) }
+                if bytes.count > maxSourceBytes {
+                    rejectedTooLarge = true
+                    continue
+                }
                 let result = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil), maxSide: maxSide)
                 if result.tooLarge {
                     rejectedTooLarge = true
@@ -103,7 +106,7 @@ public enum ClipboardPicture {
         let withoutPlaceholder = types.filter { $0 != UTType.utf8PlainText.identifier }
         for type in imageTypes where withoutPlaceholder.contains(type) {
             if let bytes = data[type] {
-                if bytes.count > maxSourceBytes { return nil }
+                if bytes.count > maxSourceBytes { continue }
                 let result = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil), maxSide: maxSide)
                 if result.tooLarge { continue }
                 if let image = result.image {

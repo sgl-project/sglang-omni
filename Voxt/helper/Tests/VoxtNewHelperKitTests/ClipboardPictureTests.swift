@@ -61,6 +61,23 @@ final class ClipboardPictureTests: XCTestCase {
         XCTAssertEqual(selection.map { [$0.width, $0.height] }, [30, 60])
     }
 
+    func testFallsBackFromByteOversizeTIFFToWebP() async {
+        let tiff = UTType.tiff.identifier, webp = UTType.webP.identifier
+        let oversizedTIFF = imageData(6000, 4000, type: .tiff)
+        XCTAssertGreaterThan(oversizedTIFF.count, 32 << 20)
+        let validWebP = Data(base64Encoded: "UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==")!
+        let result = await ClipboardPicture.image(types: [tiff, webp], file: nil, maxSide: 1600) { type in
+            type == tiff ? oversizedTIFF : validWebP
+        }
+        XCTAssertEqual(result.image.map { [$0.width, $0.height] }, [1, 1])
+        XCTAssertFalse(result.tooLarge)
+        let selection = ClipboardPicture.imageForCopiedSelection(
+            types: [text, tiff, webp], data: [tiff: oversizedTIFF, webp: validWebP],
+            file: nil, maxSide: 1600, text: "caption [Image]"
+        )
+        XCTAssertEqual(selection.map { [$0.width, $0.height] }, [1, 1])
+    }
+
     func testImageSelectionPlaceholderUsesCopiedImageOnlyWhenPresent() {
         let image = ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: imageData(12, 8)], file: nil, maxSide: 1600, text: "[Image]")
         XCTAssertEqual(image.map { [$0.width, $0.height] }, [12, 8])
