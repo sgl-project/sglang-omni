@@ -225,3 +225,24 @@ func TestRewriteFollowUpSelectionRetry(t *testing.T) {
 		t.Errorf("retry moved the card: %+v, want the position and width of %+v", frame, moved)
 	}
 }
+
+func TestRewriteInitialFailureRetryKeepsCardPosition(t *testing.T) {
+	chat := &fakeChat{status: 503}
+	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	if a.answer.problem == nil || len(a.answer.turns) != 0 {
+		t.Fatalf("initial failure has previous turns: %+v", a.answer)
+	}
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
+	failed := a.sess.ID
+	chat.set("recovered", 0)
+	a.retryAnswer("")
+	a.pump("the retry", func() bool { return a.sess.ID != failed && a.sess.State.Ended() })
+	if a.answer.text != "recovered" {
+		t.Fatalf("retry answer %+v", a.answer)
+	}
+	if frame := a.ov.frame; frame.X != moved.X || frame.Y+frame.Height != moved.Y+moved.Height || frame.Width != moved.Width {
+		t.Errorf("initial retry moved the card: %+v, want the position and width of %+v", frame, moved)
+	}
+}

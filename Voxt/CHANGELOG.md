@@ -10,7 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Reopened answer cards keep their moved position**: closing and reopening a card, including from Reopen card or after a retry, now restores its previous position instead of centering it. The position also survives app restarts through the saved overlay window state; the chosen card width still follows the feature setting, and the height still follows the answer.
+- **Reopened answer cards keep their moved position**: closing and reopening a card, including from Reopen card or after a retry, now restores its previous position instead of centering it. The position also survives recording-first app restarts and a failed automatic insertion that falls back to a card; the chosen card width still follows the feature setting, and the height still follows the answer.
 - **Transcribe works while a Rewrite answer streams, and the card stays put**: pressing the Transcribe shortcut while a Rewrite or Translate answer was still streaming into its card did nothing, and a transcription after it finished closed the card and reopened it at the screen's center when done. The answer now keeps streaming into the unmoved card, the recording window shows beside it in its own window, and the card is never closed or recreated by a transcription. The answer's Stop and the cancel shortcut still work on it while it finishes.
 
 ### 中文
@@ -21,7 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **重新打开的答案卡片保留拖动后的位置**：关闭再打开卡片，包括从「重新打开卡片」恢复或重试后，现在会回到之前的位置，不再回到屏幕中央。保存的浮窗窗口状态也会在重启 App 后恢复这个位置；卡片宽度仍按各功能的设置，高度仍随回答内容变化。
+- **重新打开的答案卡片保留拖动后的位置**：关闭再打开卡片，包括从「重新打开卡片」恢复或重试后，现在会回到之前的位置，不再回到屏幕中央。重启后先录音，或自动插入失败后回落到卡片，也会保留这个位置；卡片宽度仍按各功能的设置，高度仍随回答内容变化。
 - **改写的回答还在写时也能转录，卡片不再被关掉**：改写或翻译的回答还在流进卡片时按转录快捷键以前没有反应，回答写完后再转录又会把卡片关掉、转录完在屏幕中央重新打开。现在回答在原地不动的卡片里继续写完，录音浮窗显示在它旁边自己的窗口里，转录不再关闭或重建卡片；回答写完前，它的“停止”和取消快捷键照旧可用。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 

@@ -226,6 +226,7 @@ func TestRestoredOverlayPositionSurvivesRecordingFirst(t *testing.T) {
 	}
 	assertSavedPosition(ovRecording)
 	a.sess = session.Snapshot{}
+	a.overlaySync()
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
 	a.overlaySync()
 	assertSavedPosition(ovAnswer)

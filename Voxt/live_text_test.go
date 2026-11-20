@@ -242,6 +242,8 @@ func TestFirstCardKeepsLiveDrag(t *testing.T) {
 	a.sess = session.Snapshot{ID: "s1", State: session.Recording}
 	a.overlaySync()
 	a.ov.dragged.x, a.ov.dragged.y = -200, -100
+	a.sess = session.Snapshot{ID: "s1", State: session.Delivering}
+	a.overlaySync()
 	a.sess = session.Snapshot{}
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
 	a.overlaySync()

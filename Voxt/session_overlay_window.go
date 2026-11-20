@@ -150,6 +150,9 @@ func (a *app) overlaySync() {
 		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
 	}
 	if mode == ovHidden {
+		if a.ov.mode != ovAnswer {
+			a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
+		}
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
 		a.ov.dragged.x, a.ov.dragged.y = 0, 0
