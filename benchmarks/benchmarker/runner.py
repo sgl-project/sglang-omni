@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import itertools
 import logging
 import time
@@ -75,26 +77,48 @@ class BenchmarkRunner:
         send_fn: SendFn,
         *,
         after_send: AfterSendFn | None = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> list[RequestResult]:
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
-        # note (Zhang Yiyang): The semaphore bounds concurrency; the HTTP pool must not impose another cap.
-        connector = aiohttp.TCPConnector(limit=0)
-        async with aiohttp.ClientSession(
-            timeout=timeout, connector=connector, trust_env=self.config.trust_env
-        ) as session:
+        async with contextlib.AsyncExitStack() as stack:
+            if session is None:
+                timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
+                # note (Zhang Yiyang): The semaphore bounds concurrency; the HTTP pool must not impose another cap.
+                connector = aiohttp.TCPConnector(limit=0)
+                active_session = await stack.enter_async_context(
+                    aiohttp.ClientSession(
+                        timeout=timeout,
+                        connector=connector,
+                        trust_env=self.config.trust_env,
+                    )
+                )
+            else:
+                active_session = session
+
             if self.config.effective_warmup > 0:
-                await self._warmup(session, samples, send_fn)
+                await self._warmup(active_session, samples, send_fn)
+            else:
+                pass
 
             logger.info(
                 "Benchmarking %d requests (max_concurrency=%s)...",
                 len(samples),
                 self.config.max_concurrency,
             )
+            # note (evanderfff123-boop): collect prior-pass garbage and pause cyclic GC across the timed pass so a client Gen-2 sweep cannot freeze the opening burst.
+            gc.collect()
+            gc_was_enabled = gc.isenabled()
+            gc.disable()
             t0 = time.perf_counter()
-            results, follow_up_tasks = await self._dispatch(
-                session, samples, send_fn, after_send
-            )
-            self.wall_clock_s = time.perf_counter() - t0
+            try:
+                results, follow_up_tasks = await self._dispatch(
+                    active_session, samples, send_fn, after_send
+                )
+                self.wall_clock_s = time.perf_counter() - t0
+            finally:
+                if gc_was_enabled:
+                    gc.enable()
+                else:
+                    pass
             # note (Yucheng Hu): only the final collection drain is outside the timed window.
             await asyncio.gather(*follow_up_tasks)
         return results
@@ -142,14 +166,39 @@ class BenchmarkRunner:
         after_send: AfterSendFn | None,
     ) -> tuple[list[RequestResult], list[asyncio.Task[None]]]:
         follow_up_tasks: list[asyncio.Task[None]] = []
+        pbar = tqdm(total=len(samples), disable=self.config.disable_tqdm)
+        open_loop = self.config.request_rate != float("inf")
+        if not open_loop and self.config.max_concurrency > 0:
+            # note (evanderfff123-boop): run one worker per slot instead of creating one task per sample up front so opening bursts start sending without allocating the whole pass first.
+            slot_results: list[RequestResult | None] = [None] * len(samples)
+            sample_iter = iter(enumerate(samples))
+            worker_count = min(self.config.max_concurrency, len(samples))
+            async def run_slot_worker() -> None:
+                for index, sample in sample_iter:
+                    result = await send_fn(session, sample)
+                    result.waited_for_slot = index >= self.config.max_concurrency
+                    slot_results[index] = result
+                    if after_send is not None:
+                        follow_up_tasks.append(asyncio.create_task(after_send(result)))
+                    else:
+                        pass
+                    pbar.update(1)
+            try:
+                await asyncio.gather(*(run_slot_worker() for _ in range(worker_count)))
+            finally:
+                pbar.close()
+            return [
+                result for result in slot_results if result is not None
+            ], follow_up_tasks
+        else:
+            pass
+
         semaphore = (
             asyncio.Semaphore(self.config.max_concurrency)
             if self.config.max_concurrency
             else None
         )
-        pbar = tqdm(total=len(samples), disable=self.config.disable_tqdm)
         loop = asyncio.get_running_loop()
-        open_loop = self.config.request_rate != float("inf")
         # note (luojiaxuan): arrivals are planned as offsets from the dispatch
         # start and each request waits for its own offset, so one late send
         # does not push every later arrival back.
@@ -253,6 +302,7 @@ async def run_fixed_duration(
                 pass
         else:
             pass
+        gc.collect()
         window_start_s = time.perf_counter() + settle_s
         deadline_s = window_start_s + duration_s
 
