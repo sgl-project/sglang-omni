@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import functools
+import importlib.util
 import logging
 import os
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -12,6 +15,33 @@ from sglang.srt.platforms.xpu import XpuDeviceMixin
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
+
+VIDEO_DECODE_ENV = "SGLANG_OMNI_XPU_VIDEO_DECODE"
+
+
+@functools.cache
+def video_decode_device() -> str | None:
+    """The XPU device SGLANG_OMNI_XPU_VIDEO_DECODE names, or None to decode request videos on the CPU."""
+    # note (Rahul): off by default, since full-size frames on a card the thinker has filled slow the thinker.
+    setting = os.environ.get(VIDEO_DECODE_ENV, "0").strip().lower()
+    if setting in ("0", "false", "no", "off"):
+        return None
+    elif not (
+        setting in ("1", "true", "yes", "on") or re.fullmatch(r"xpu:\d+", setting)
+    ):
+        raise ValueError(
+            f'"{setting}" is not a valid {VIDEO_DECODE_ENV} value: use a boolean or xpu:N'
+        )
+    elif importlib.util.find_spec("torchcodec_xpu") is None:
+        logger.warning(
+            f"{VIDEO_DECODE_ENV}={setting} is ignored: torchcodec-xpu is not installed, so request videos decode on the CPU"
+        )
+        return None
+    elif setting.startswith("xpu:"):
+        return setting
+    else:
+        return "xpu"
+
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -36,6 +66,10 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # note (jianan): intel_xpu requires graphs disabled for encoder-decoder
         # models; torch_native makes SGLang disable both graph phases.
         return "torch_native"
+
+    def get_video_decode_device(self) -> str | None:
+        """The card whose media engine torchcodec decodes on, through the torchcodec-xpu plugin; opt-in."""
+        return video_decode_device()
 
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:

@@ -9,6 +9,7 @@ import bisect
 import logging
 import os
 import tempfile
+import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
@@ -20,6 +21,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 from qwen_vl_utils import vision_process as qwen_vision
+from sglang.utils import LazyImport
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
@@ -38,6 +40,16 @@ except (ImportError, OSError, RuntimeError):
 # note (ratish): qwen-vl-utils' torchcodec reader decodes with 8 ffmpeg threads when TORCHCODEC_NUM_THREADS is unset.
 READER_FFMPEG_THREADS = 8
 FFMPEG_MAX_DECODER_THREADS = 16
+
+current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
+DEVICE_DECODE_MAX_FRAMES_PER_BATCH = 32
+# note (Rahul): bounds one batch's full-size frames on the card, which may be a thinker card.
+DEVICE_DECODE_BATCH_BUDGET_BYTES = 1 << 30
+# note (Rahul): measured on Arc Pro B60, 720p to 4K: the RGB frames plus the bicubic resize's float32 buffers.
+RESIZED_DECODE_BYTES_PER_PIXEL = 29
+# note (Rahul): WORKAROUND(torchcodec-xpu) two device decoders in one process fail, so device decodes run one at a time.
+DEVICE_DECODE_LOCK = threading.Lock()
+DEVICE_DECODE_FALLBACK_LOGGED = threading.Event()
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +467,25 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
         return False
 
 
+def sampled_frame_indices(
+    video_options: Mapping[str, str | float | int],
+    *,
+    frame_total: int,
+    video_fps: float,
+) -> tuple[list[int], float]:
+    """The qwen-vl-utils torchcodec reader's sampled frame indices and sample fps."""
+    start_frame, end_frame, total_frames = qwen_vision.calculate_video_frame_range(
+        video_options, frame_total, video_fps
+    )
+    frame_count = qwen_vision.smart_nframes(
+        video_options, total_frames=total_frames, video_fps=video_fps
+    )
+    frame_indices = (
+        torch.linspace(start_frame, end_frame, frame_count).round().long().tolist()
+    )
+    return frame_indices, frame_count / max(total_frames, 1e-6) * video_fps
+
+
 def read_video_torchcodec(
     video_options: dict[str, str | float | int], decode_threads: int
 ) -> tuple[torch.Tensor, float]:
@@ -464,17 +495,11 @@ def read_video_torchcodec(
         os.environ.get("TORCHCODEC_NUM_THREADS", READER_FFMPEG_THREADS)
     )
     first_decoder = VideoDecoder(video_path, num_ffmpeg_threads=reader_thread_count)
-    video_fps = first_decoder.metadata.average_fps
-    start_frame, end_frame, total_frames = qwen_vision.calculate_video_frame_range(
-        video_options, first_decoder.metadata.num_frames, video_fps
+    frame_indices, sample_fps = sampled_frame_indices(
+        video_options,
+        frame_total=first_decoder.metadata.num_frames,
+        video_fps=first_decoder.metadata.average_fps,
     )
-    frame_count = qwen_vision.smart_nframes(
-        video_options, total_frames=total_frames, video_fps=video_fps
-    )
-    frame_indices = (
-        torch.linspace(start_frame, end_frame, frame_count).round().long().tolist()
-    )
-    sample_fps = frame_count / max(total_frames, 1e-6) * video_fps
     if decode_threads > reader_thread_count:
         # note (ratish): frames after a keyframe decode in order from it, so each keyframe group stays on one decoder; torchcodec exposes the keyframe indices only through this method.
         keyframe_indices = (
@@ -538,6 +563,111 @@ def read_video_torchcodec(
     return frames, sample_fps
 
 
+def warn_device_decode_fallback(decode_device: str, device_failure: str) -> None:
+    """Log the first device decode failure in this process; later videos fall back silently."""
+    if not DEVICE_DECODE_FALLBACK_LOGGED.is_set():
+        DEVICE_DECODE_FALLBACK_LOGGED.set()
+        logger.warning(
+            f"Video decode on {decode_device} failed, decoding on the CPU: {device_failure}"
+        )
+    else:
+        pass
+
+
+def device_decode_frames_per_batch(
+    decoder: VideoDecoder, device_bytes_per_pixel: int
+) -> int:
+    """Frames per device decode batch that keep the batch within DEVICE_DECODE_BATCH_BUDGET_BYTES."""
+    if decoder.metadata.width is None or decoder.metadata.height is None:
+        raise RuntimeError("Video stream metadata has no frame size")
+    else:
+        pass
+    frame_bytes = (
+        decoder.metadata.width * decoder.metadata.height * device_bytes_per_pixel
+    )
+    return max(
+        1,
+        min(
+            DEVICE_DECODE_MAX_FRAMES_PER_BATCH,
+            DEVICE_DECODE_BATCH_BUDGET_BYTES // frame_bytes,
+        ),
+    )
+
+
+def resized_frame_size(
+    video_options: Mapping[str, str | float | int],
+    frame_count: int,
+    height: int,
+    width: int,
+) -> tuple[int, int]:
+    """Frame height and width after the Qwen-VL pixel budget for a clip of frame_count frames."""
+    min_pixels = video_options.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
+    total_pixels = video_options.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
+    max_pixels = max(
+        min(
+            qwen_vision.VIDEO_MAX_PIXELS,
+            total_pixels / frame_count * qwen_vision.FRAME_FACTOR,
+        ),
+        int(min_pixels * 1.05),
+    )
+    max_pixels_supposed = video_options.get("max_pixels", max_pixels)
+    max_pixels = min(max_pixels_supposed, max_pixels)
+    if "resized_height" in video_options and "resized_width" in video_options:
+        return qwen_vision.smart_resize(
+            video_options["resized_height"],
+            video_options["resized_width"],
+            factor=qwen_vision.IMAGE_FACTOR,
+        )
+    else:
+        return qwen_vision.smart_resize(
+            height,
+            width,
+            factor=qwen_vision.IMAGE_FACTOR,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+
+
+def decode_video_on_device(
+    path: Path, video_options: Mapping[str, str | float | int], decode_device: str
+) -> tuple[torch.Tensor, float]:
+    """The CPU reader's frames, decoded and resized on decode_device in batches and returned on the CPU."""
+    with DEVICE_DECODE_LOCK:
+        decoder = VideoDecoder(str(path), device=decode_device)
+        frame_indices, sample_fps = sampled_frame_indices(
+            video_options,
+            frame_total=decoder.metadata.num_frames,
+            video_fps=decoder.metadata.average_fps,
+        )
+        frames_per_batch = device_decode_frames_per_batch(
+            decoder, RESIZED_DECODE_BYTES_PER_PIXEL
+        )
+        resized_size: tuple[int, int] | None = None
+        resized_batches: list[torch.Tensor] = []
+        for batch_start in range(0, len(frame_indices), frames_per_batch):
+            frames = decoder.get_frames_at(
+                indices=frame_indices[batch_start : batch_start + frames_per_batch]
+            ).data
+            if resized_size is None:
+                resized_size = resized_frame_size(
+                    video_options,
+                    len(frame_indices),
+                    frames.shape[-2],
+                    frames.shape[-1],
+                )
+            else:
+                pass
+            resized_batches.append(
+                tv_f.resize(
+                    frames,
+                    list(resized_size),
+                    interpolation=InterpolationMode.BICUBIC,
+                    antialias=True,
+                ).cpu()
+            )
+    return torch.cat(resized_batches).float(), sample_fps
+
+
 def load_video_path(
     path: str | Path,
     fps: float | None = None,
@@ -569,6 +699,19 @@ def load_video_path(
         pass
     if total_pixels is not None:
         ele["total_pixels"] = int(total_pixels)
+    else:
+        pass
+    decode_device = current_platform.get_video_decode_device()
+    device_failure: str | None = None
+    if decode_device is not None and VideoDecoder is not None:
+        try:
+            return decode_video_on_device(path, ele, decode_device)
+        except (RuntimeError, ValueError) as device_exc:
+            # note (Rahul): the CPU reader below decodes the same frames and classifies invalid media.
+            device_failure = f"{type(device_exc).__name__}: {device_exc}"
+        finally:
+            # note (Rahul): the caching allocator would otherwise keep the decode's peak reserved on the card.
+            current_platform.empty_cache()
     else:
         pass
     backend = qwen_vision.get_video_reader_backend()
@@ -614,37 +757,18 @@ def load_video_path(
         )
     else:
         pass
-    min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
-    total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
-    max_pixels = max(
-        min(
-            qwen_vision.VIDEO_MAX_PIXELS,
-            total_pixels / nframes * qwen_vision.FRAME_FACTOR,
-        ),
-        int(min_pixels * 1.05),
-    )
-    max_pixels_supposed = ele.get("max_pixels", max_pixels)
-    max_pixels = min(max_pixels_supposed, max_pixels)
-    if "resized_height" in ele and "resized_width" in ele:
-        resized_height, resized_width = qwen_vision.smart_resize(
-            ele["resized_height"],
-            ele["resized_width"],
-            factor=qwen_vision.IMAGE_FACTOR,
-        )
-    else:
-        resized_height, resized_width = qwen_vision.smart_resize(
-            height,
-            width,
-            factor=qwen_vision.IMAGE_FACTOR,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-        )
+    resized_height, resized_width = resized_frame_size(ele, nframes, height, width)
     video = tv_f.resize(
         video,
         [resized_height, resized_width],
         interpolation=InterpolationMode.BICUBIC,
         antialias=True,
     ).float()
+    if decode_device is not None and device_failure is not None:
+        # note (Rahul): logged only once the CPU path accepted the video, so a bad upload is not blamed on the card.
+        warn_device_decode_fallback(decode_device, device_failure)
+    else:
+        pass
     return video, sample_fps
 
 

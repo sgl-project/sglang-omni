@@ -7,6 +7,8 @@ the test to the accelerator CI job (see tests/README.md).
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 import torch
 
@@ -19,6 +21,15 @@ def require_cuda(min_devices: int = 1) -> None:
         pytest.skip("CUDA is unavailable")
     if torch.cuda.device_count() < min_devices:
         pytest.skip(f"requires {min_devices} visible CUDA devices")
+
+
+def require_xpu_media_engine() -> None:
+    if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
+        pytest.skip("XPU is unavailable")
+    elif importlib.util.find_spec("torchcodec_xpu") is None:
+        pytest.skip("the torchcodec-xpu plugin is not installed")
+    else:
+        pass
 
 
 def require_device_streams() -> torch.device:
