@@ -269,7 +269,7 @@
   "The model is not installed.": "模型未安装。",
   "The model stopped or did not answer. Try again in a moment.": "模型已停止或没有响应。请稍后再试。",
   "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
-  "The remote model's address is not allowed. Use https://, or http:// for an address on this Mac.": "远程模型的地址不能用，请用 https://，或者指向本机的 http://。",
+  "The remote model's address is not allowed. Use http:// or https:// without a user name or password.": "远程模型的地址不能用。请使用 http:// 或 https://，且不要在地址中填写用户名或密码。",
   "The remote service does not have this model.": "远程服务没有这个模型。",
   "The remote service refused the API key.": "远程服务拒绝了这个 API Key。",
   "The remote service refused the request. It may be busy, the account may be out of credit, or the model is not enabled for it.": "远程服务拒绝了请求，可能是服务繁忙、账户余额不足，或者这个账户没有开通这个模型。",

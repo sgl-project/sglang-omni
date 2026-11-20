@@ -69,7 +69,7 @@ func TestRemoteDemoActionControls(t *testing.T) {
 			}
 		}},
 		{name: "dismiss dialog error", fixture: "en/remote-dialog-error", steps: remoteSteps(remoteDemoStep{at: func(tester *ui.Tester) {
-			row, rowOK := tester.Find("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac.")
+			row, rowOK := tester.Find("The remote model's address is not allowed. Use http:// or https:// without a user name or password.")
 			close, closeOK := tester.Find("Dismiss")
 			if rowOK && closeOK {
 				tester.ClickAt(close.X+close.W/2, row.Y+row.H/2)

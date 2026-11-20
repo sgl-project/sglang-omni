@@ -33,6 +33,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Rewrite keeps the text editor and image-limit message visible with several previews**: earlier pasted blocks and images scroll while the trailing editor and image-limit message stay in view. Immediate consecutive pastes keep their order and caret.
 - **Rewrite previews stay removable and accurate**: selections of three lines or fewer have a remove button too. A window screenshot captured after recording stays in the box for removal or confirmation before the request. Redo drops an automatic image that was not resent, and reopening a card restores its text input chips.
 
+### Fixed
+
+- **Language models can use an HTTP gateway**: API-key services now accept HTTP addresses on other hosts, including a private-network gateway. HTTP sends the key and text without encryption, which the Address tip in the service's set-up dialog says; ChatGPT sign-in still requires HTTPS for remote addresses.
+
 ### 中文
 
 #### 新增
@@ -63,6 +67,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **改写预览和备用模型状态保持一致**：长单行粘贴也使用有界折叠块，扫描版 PDF 的跳页提示不再遮住模型失败，重做会跟随实际回答的模型，本机模型地址始终绕过自定义或环境代理。
 - **多个预览块不再遮住改写输入框和图片数量提示**：较早的粘贴块和图片可以滚动，末尾的文字输入框和图片数量提示保持可见；连续快速粘贴仍保持顺序和光标位置。
 - **改写预览可以移除，并与实际发送一致**：三行以内的选中文本也有删除按钮。空框结束录音后截取的窗口图片先留在输入框里，移除或再次确认后才发送请求。重做时没有重发的自动图片会从标签里去掉，从历史重新打开卡片会恢复文字标签。
+
+#### 修复
+
+- **语言模型可使用 HTTP 网关**：使用 API Key 的服务现在可以连接其他主机上的 HTTP 地址，包括局域网网关。HTTP 会明文传输密钥和文本，服务设置对话框里“地址”旁的提示写了这一点；ChatGPT 登录仍要求远程地址使用 HTTPS。
 
 ## [2.1.1] - 2026-11-17
 
