@@ -20,8 +20,9 @@ package main
 // live text (long sessions: memory, the live text's pace, the Final).
 // VOXTNEW_LATENCY_OUT appends one JSON object per session with separate
 // ASR Final, helper-paste and whole-session completion times and a text hash.
-// VOXTNEW_LATENCY_ATTEMPT labels a run when several independent processes
-// each use VOXTNEW_LATENCY_ROUNDS=1, so their JSON objects stay distinct:
+// VOXTNEW_LATENCY_ATTEMPT and VOXTNEW_LATENCY_ARM label a run when several
+// independent processes each use VOXTNEW_LATENCY_ROUNDS=1 for an A/B comparison.
+// The native preview timing event supplies its actual min_preview_samples:
 //
 //	VOXTNEW_LATENCY=1 VOXTNEW_OMNI_RUNTIME=… VOXTNEW_OMNI_MODELS="asr.accurate=…;asr.fast=…;vad.silero=…" \
 //	  go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m .
@@ -55,12 +56,16 @@ import (
 // shortcut (warmed), zero when it ran already before this scenario.
 type latencyStages struct {
 	appReady, heard, ready, load, partial, final, insert, done time.Duration
+	minPreviewSamples                                          int
 }
 
 type latencyResult struct {
 	MainSHA            string  `json:"main_sha"`
 	Scenario           string  `json:"scenario"`
 	Round              int     `json:"round"`
+	Attempt            int     `json:"attempt"`
+	Arm                string  `json:"arm"`
+	MinPreviewSamples  int     `json:"min_preview_samples"`
 	Model              string  `json:"model"`
 	ASRCold            bool    `json:"asr_cold"`
 	VADCold            bool    `json:"vad_cold"`
@@ -81,11 +86,14 @@ type latencyResult struct {
 // readyLine is the runtime's line about a server that became ready.
 var readyLine = regexp.MustCompile(`omni: (\S+) ready on \S+ after (\S+) \(pid`)
 
+var minPreviewLine = regexp.MustCompile(`"min_preview_samples"\s*:\s*(\d+)`)
+
 // latencyLog keeps when each model's server became ready and how long
 // its start took.
 type latencyLog struct {
-	mu    sync.Mutex
-	ready map[string][]readyAt
+	mu                sync.Mutex
+	ready             map[string][]readyAt
+	minPreviewSamples int
 }
 
 type readyAt struct {
@@ -94,17 +102,26 @@ type readyAt struct {
 }
 
 func (l *latencyLog) add(msg string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if m := minPreviewLine.FindStringSubmatch(msg); m != nil {
+		l.minPreviewSamples, _ = strconv.Atoi(m[1])
+	}
 	m := readyLine.FindStringSubmatch(msg)
 	if m == nil {
 		return
 	}
 	load, _ := time.ParseDuration(m[2])
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.ready == nil {
 		l.ready = map[string][]readyAt{}
 	}
 	l.ready[m[1]] = append(l.ready[m[1]], readyAt{time.Now(), load})
+}
+
+func (l *latencyLog) minPreview() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.minPreviewSamples
 }
 
 // since is the newest start of model id's server after t.
@@ -317,6 +334,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	t.Logf("MEASURE latency %s %s: first audio %v, server ready %v (its start %v), first partial %v, %d live updates in %v (longest wait %v), Final %v / insert %v / done %v after Stop: %d characters %q", name, id,
 		st.heard.Round(time.Millisecond), st.ready.Round(time.Millisecond), st.load.Round(time.Millisecond),
 		st.partial.Round(time.Millisecond), updates, speak, gap.Round(time.Millisecond), st.final.Round(time.Millisecond), st.insert.Round(time.Millisecond), st.done.Round(time.Millisecond), len([]rune(a.sess.Raw)), firstRunes(a.sess.Raw, 40))
+	st.minPreviewSamples = lg.minPreview()
 	writeLatencyResult(t, name, id, round, st, updates, gap, a.sess.Raw)
 	return st
 }
@@ -329,7 +347,8 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 	}
 	milliseconds := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	result := latencyResult{
-		MainSHA: latencyMainSHA(), Scenario: name, Round: round, Model: id,
+		MainSHA: latencyMainSHA(), Scenario: name, Round: round, Attempt: round,
+		Arm: os.Getenv("VOXTNEW_LATENCY_ARM"), MinPreviewSamples: st.minPreviewSamples, Model: id,
 		ASRCold: name != "warm", VADCold: name == "cold",
 		AppReadyMS:   milliseconds(st.appReady),
 		FirstAudioMS: milliseconds(st.heard), ServerReadyMS: milliseconds(st.ready), ModelLoadMS: milliseconds(st.load),
@@ -354,7 +373,9 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 func TestLatencyResultJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "latency.jsonl")
 	t.Setenv("VOXTNEW_LATENCY_OUT", path)
-	stages := latencyStages{appReady: 1500 * time.Millisecond, final: 1200 * time.Millisecond, insert: 1250 * time.Millisecond, done: 1300 * time.Millisecond}
+	t.Setenv("VOXTNEW_LATENCY_ARM", "A")
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	stages := latencyStages{appReady: 1500 * time.Millisecond, final: 1200 * time.Millisecond, insert: 1250 * time.Millisecond, done: 1300 * time.Millisecond, minPreviewSamples: 20000}
 	writeLatencyResult(t, "cold", "asr.test", 2, stages, 4, 275*time.Millisecond, "fixed text")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -370,8 +391,19 @@ func TestLatencyResultJSON(t *testing.T) {
 	if !got.ASRCold || !got.VADCold || got.Round != 2 || got.LiveUpdates != 4 || got.LongestUpdateGapMS != 275 {
 		t.Fatalf("scenario metadata: %+v", got)
 	}
+	if got.MainSHA != "49f60636411e24ce4f7441878c9333d68e649a83" || got.Attempt != 2 || got.Arm != "A" || got.MinPreviewSamples != 20000 {
+		t.Fatalf("run identity: %+v", got)
+	}
 	if got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
 		t.Fatalf("text hash: %+v", got)
+	}
+}
+
+func TestLatencyLogReadsNativePreviewConfig(t *testing.T) {
+	var log latencyLog
+	log.add(`omni: native {"event":"moss_preview_timing","min_preview_samples":12000}`)
+	if got := log.minPreview(); got != 12000 {
+		t.Fatalf("min_preview_samples = %d, want 12000", got)
 	}
 }
 
