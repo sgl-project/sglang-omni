@@ -74,7 +74,17 @@ func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
 }
 
 func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
-	id := a.prefs.Features.Meeting.ASR
+	id := strings.TrimSpace(a.prefs.Features.Meeting.ASR)
+	if id == "" {
+		// Automatic follows the features' rule (session_link.go's
+		// resolver): a model the language gate keeps, so a meeting in a
+		// language MTD does not know never lands on it (#4067).
+		m, ok := local.Choose(automaticSpeech(a.prefs, a.local.Installed(local.ASR)), "")
+		if !ok {
+			return meeting.TrackASR{}, local.NotInstalledError(local.ASR, id)
+		}
+		id = m.ID
+	}
 	p, _, err := a.local.ASR(ctx, id)
 	if err != nil {
 		return meeting.TrackASR{}, err

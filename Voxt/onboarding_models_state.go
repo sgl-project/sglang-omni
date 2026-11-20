@@ -71,6 +71,18 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 	alternative, hasAlternative := onboardingModelAlternative(modelInput)
 	ready := onboardingReadySpeech(modelInput)
 	speechStatus := modelInput.Status[modelInput.SpeechID]
+	// draftLeft is the pack draft's size when the pack's speech model
+	// needs no download (installed or already on this Mac) but the draft
+	// does: offer it, or Faster transcription never starts (#4067).
+	draftLeft := ""
+	if m, ok := models.Lookup(modelInput.SpeechID); ok && m.Draft != "" {
+		draft, dk := models.Lookup(m.Draft)
+		_, speechOnDisk := onboardingModelFound(modelInput, modelInput.SpeechID)
+		_, draftOnDisk := onboardingModelFound(modelInput, m.Draft)
+		if st := modelInput.Status[m.Draft]; dk && (modelInput.Status[modelInput.SpeechID].Installed || speechOnDisk) && !draftOnDisk && !st.Installed && !st.Downloading {
+			draftLeft = uitext.HumanBytes(draft.Size() - st.Done)
+		}
+	}
 	state := onboardingModelsViewState{
 		ReuseShown: len(reuse) > 0, LanguageReady: modelInput.LanguageReady,
 		LanguageName: modelInput.Language.Name, NeedsDownload: len(ready) == 0 && !hasAlternative && !speechStatus.Downloading && !speechStatus.OnDisk,
@@ -81,6 +93,12 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 	}
 	if len(ready) > 0 {
 		state.Speech.ID, state.Speech.Name, state.Speech.Ready = ready[0].ID, ready[0].Name, true
+		if draftLeft != "" {
+			state.NeedsDownload = true
+			state.DownloadLeft = draftLeft
+			state.Speech.ShowDownload = true
+			state.Speech.DownloadLabel = translator.T("Download (%s)", draftLeft)
+		}
 	} else {
 		state.Speech.Downloading = speechStatus.Downloading
 		model, _ := models.Lookup(modelInput.SpeechID)
@@ -101,6 +119,10 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 			state.Speech.SizeLabel = translator.T("%s still to download", state.DownloadLeft)
 			state.Speech.ShowDownload = !speechStatus.Downloading && !onDisk && !hasAlternative
 			state.Speech.DownloadLabel = translator.T("Download (%s)", state.DownloadLeft)
+		}
+		if draftLeft != "" {
+			state.Speech.ShowDownload = true
+			state.Speech.DownloadLabel = translator.T("Download (%s)", draftLeft)
 		}
 		if speechStatus.Total > 0 {
 			state.Speech.DownloadFraction = float64(speechStatus.Done) / float64(speechStatus.Total)

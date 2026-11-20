@@ -119,7 +119,9 @@ func TestOnboardingReuse(t *testing.T) {
 			t.Errorf("%s: claim %+v %v", id, c, ok)
 		}
 	}
-	if has(tt, "Use them") || !has(tt, "Ready: MOSS-Transcribe-Diarize") || !has(tt, "Set up a language model") || hasPrefix(tt, "Download (") {
+	// The pack's draft is not on this Mac, so the guide offers its
+	// download (TestGuidePackDraftLeft drives it); nothing downloads yet.
+	if has(tt, "Use them") || !has(tt, "Ready: MOSS-Transcribe-Diarize") || !has(tt, "Set up a language model") || !has(tt, "Download (262.5 MB)") || !hasPrefix(tt, "Download and continue (262.5 MB)") {
 		t.Errorf("after Use them: %q", tt.Texts())
 	}
 	for _, m := range models.Catalog() {

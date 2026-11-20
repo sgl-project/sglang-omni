@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -147,4 +148,76 @@ func TestMeetingDiarizerLanguageGate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// meetingGateLocal lists MTD and Qwen3-ASR 1.7B and keeps the id it
+// opened, for the Automatic language-gate tests.
+type meetingGateLocal struct {
+	local.NotInstalled
+	opened string
+}
+
+func (l *meetingGateLocal) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		return []local.Model{
+			{Kind: local.ASR, ID: models.ASRMoss, Name: "MOSS-Transcribe-Diarize", Stream: true},
+			{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Stream: true},
+		}
+	}
+	return nil
+}
+
+func (l *meetingGateLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	m, ok := local.Choose(l.Installed(local.ASR), id)
+	if !ok {
+		return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+	}
+	l.opened = m.ID
+	return &fakeTranscriptions{}, m, nil
+}
+
+// A meeting on Automatic follows the features' language gate (#4067):
+// MTD knows only zh and en, so a Japanese meeting opens Qwen3-ASR and a
+// meeting in a language no installed model knows opens nothing instead
+// of the wrong-language model. An explicit choice is untouched, and an
+// unknown language keeps the first installed, as before.
+func TestMeetingTrackASRLanguageGate(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, explicit, want string
+	}{
+		{"automatic picks the model that knows the language", "ja", "", models.ASRAccurate},
+		{"automatic keeps MTD for Chinese", "zh", "", models.ASRMoss},
+		{"unknown language keeps the first installed", "", "", models.ASRMoss},
+		{"explicit MTD is untouched", "ja", models.ASRMoss, models.ASRMoss},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &meetingGateLocal{}
+			a, _, _ := newTestApp(t)
+			a.local = l
+			a.prefs.General.MainLanguage = tc.main
+			a.prefs.Features.Meeting.ASR = tc.explicit
+			if _, err := a.meetingTrackASR(context.Background(), meeting.SourceMic); err != nil {
+				t.Fatal(err)
+			}
+			if l.opened != tc.want {
+				t.Errorf("opened %s, want %s", l.opened, tc.want)
+			}
+			if tc.explicit == "" {
+				if id, _ := a.firstOmniASR(); id != tc.want {
+					t.Errorf("firstOmniASR %s, want %s", id, tc.want)
+				}
+			}
+		})
+	}
+	t.Run("a language no installed model knows opens nothing", func(t *testing.T) {
+		a, _, _ := newTestApp(t)
+		a.local = &meetingGateLocal{}
+		a.prefs.General.MainLanguage = "zz"
+		if _, err := a.meetingTrackASR(context.Background(), meeting.SourceMic); !errors.Is(err, local.ErrNotInstalled) {
+			t.Fatalf("err %v, want not installed", err)
+		}
+		if id, _ := a.firstOmniASR(); id != "" {
+			t.Errorf("firstOmniASR %s, want none", id)
+		}
+	})
 }

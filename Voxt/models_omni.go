@@ -278,12 +278,13 @@ func (a *app) omniMeetingHold() (release func()) {
 }
 
 // firstOmniASR is the speech model a meeting on Automatic uses: the
-// first of Installed, the recommended one first.
+// first of Installed the language gate keeps (meetingTrackASR's rule),
+// the recommended one first.
 func (a *app) firstOmniASR() (id, dir string) {
 	if a.models == nil || a.local == nil {
 		return "", ""
 	}
-	for _, m := range a.local.Installed(local.ASR) {
+	for _, m := range automaticSpeech(a.prefs, a.local.Installed(local.ASR)) {
 		if m.Stream { // an Omni model
 			return m.ID, a.models.Dir(m.ID)
 		}

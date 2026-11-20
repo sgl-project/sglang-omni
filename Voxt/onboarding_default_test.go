@@ -179,6 +179,36 @@ func TestObPackMainLanguageGate(t *testing.T) {
 	}
 }
 
+// TestGuidePackDraftLeft: with the recommended speech model and the VAD
+// on this Mac but its catalogue draft missing, the guide offers the
+// draft's download — the pack's Faster transcription would never start
+// otherwise (#4067) — and once the models are claimed the click
+// downloads the draft alone.
+func TestGuidePackDraftLeft(t *testing.T) {
+	countingHub(t)
+	a, tt := obTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	a.obGo(obModels)
+	drain()
+	frames(tt)
+	if !has(tt, "Use them") || !has(tt, "Download (262.5 MB)") || hasPrefix(tt, "Download and continue") {
+		t.Fatalf("on disk: %q", tt.Texts())
+	}
+	click(t, tt, "Use them")
+	drain()
+	frames(tt)
+	if !has(tt, "Ready: MOSS-Transcribe-Diarize") || !hasPrefix(tt, "Download and continue (262.5 MB)") {
+		t.Fatalf("claimed: %q", tt.Texts())
+	}
+	click(t, tt, findPrefix(t, tt, "Download and continue"))
+	downloadAsked(t, a, drain, models.ASRMossDraft)
+	if s := a.models.Status(models.ASRMoss); s.Err != nil {
+		t.Errorf("the speech model downloaded again: %+v", s)
+	}
+}
+
 // findPrefix is the text on screen that starts with s.
 func findPrefix(t *testing.T, tt *ui.Tester, s string) string {
 	t.Helper()
@@ -234,7 +264,9 @@ func TestGuideAlternativeNoDownloadButton(t *testing.T) {
 }
 
 // TestGuideReuseUnchanged: with the recommended model on this Mac the
-// reuse card's Use them stays the step's primary button.
+// reuse card's Use them stays the step's primary button. Its catalogue
+// draft is not on this Mac, so the body offers the draft's download
+// (TestGuidePackDraftLeft drives it).
 func TestGuideReuseUnchanged(t *testing.T) {
 	asked := countingHub(t)
 	a, tt := obTester(t)
@@ -245,7 +277,7 @@ func TestGuideReuseUnchanged(t *testing.T) {
 	a.familyFound(a.fam.Discover())
 	a.models.Refresh()
 	a.obGo(obModels)
-	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || hasPrefix(tt, "Download (") {
+	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || !has(tt, "Download (262.5 MB)") {
 		t.Fatalf("%q", tt.Texts())
 	}
 	click(t, tt, "Continue")
