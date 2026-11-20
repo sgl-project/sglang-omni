@@ -281,3 +281,232 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
         )
         rows = torch.cat((next_text.unsqueeze(1), next_audio), dim=1)
         return DelaySamplingOutput(rows=rows, next_delay_state=next_delay_state)
+
+
+class MossTTSDelayMixedGraphSampler(nn.Module):
+    """Capture full-vocabulary sampling and masked per-row Delay transitions."""
+
+    def __init__(self, config: PretrainedConfig) -> None:
+        super().__init__()
+        self.n_vq = int(config.n_vq)
+        self.num_channels = self.n_vq + 1
+        self.pad_token_id = int(config.pad_token_id)
+        self.gen_slot_token_id = int(config.audio_assistant_gen_slot_token_id)
+        self.delay_slot_token_id = int(config.audio_assistant_delay_slot_token_id)
+        self.audio_start_token_id = int(config.audio_start_token_id)
+        self.audio_end_token_id = int(config.audio_end_token_id)
+        self.im_end_token_id = int(config.im_end_token_id)
+        self.audio_pad_code = int(config.audio_pad_code)
+        text_vocab = int(config.vocab_size_list[0])
+        audio_vocab = int(config.vocab_size_list[1])
+
+        text_excluded = torch.zeros(text_vocab, dtype=torch.bool)
+        for token_id in (
+            self.pad_token_id,
+            self.gen_slot_token_id,
+            self.delay_slot_token_id,
+            self.audio_end_token_id,
+        ):
+            if 0 <= token_id < text_vocab:
+                text_excluded[token_id] = True
+            else:
+                pass
+        text_audio_only = torch.ones(text_vocab, dtype=torch.bool)
+        for token_id in (self.gen_slot_token_id, self.delay_slot_token_id):
+            if 0 <= token_id < text_vocab:
+                text_audio_only[token_id] = False
+            else:
+                pass
+        token_ids = torch.arange(text_vocab, dtype=torch.long)
+        self.register_buffer("text_excluded_mask", text_excluded, persistent=False)
+        self.register_buffer("text_audio_only_mask", text_audio_only, persistent=False)
+        self.register_buffer(
+            "text_delay_slot_mask",
+            token_ids == self.delay_slot_token_id,
+            persistent=False,
+        )
+        self.register_buffer(
+            "text_im_end_mask", token_ids == self.im_end_token_id, persistent=False
+        )
+        self.register_buffer(
+            "audio_invalid_mask",
+            torch.arange(audio_vocab) >= self.audio_pad_code,
+            persistent=False,
+        )
+        self.register_buffer(
+            "channel_indices",
+            torch.arange(self.n_vq, dtype=torch.long).view(1, -1),
+            persistent=False,
+        )
+
+    def forward(
+        self,
+        text_logits: torch.Tensor,
+        audio_logits: torch.Tensor,
+        batch: DelayGraphBatch,
+    ) -> DelaySamplingOutput:
+        batch_size = int(text_logits.shape[0])
+        seeds = batch.seeds
+        generation_steps = batch.generation_steps
+        audio_lengths, delayed, is_audio = batch.delay_state.unbind(dim=1)
+        is_audio = is_audio.bool()
+
+        next_text = torch.full(
+            (batch_size,),
+            self.pad_token_id,
+            dtype=torch.long,
+            device=text_logits.device,
+        )
+        next_text = torch.where(
+            delayed < self.n_vq,
+            torch.full_like(next_text, self.delay_slot_token_id),
+            next_text,
+        )
+        is_audio_eos = delayed == self.n_vq
+        next_text = torch.where(
+            is_audio_eos,
+            torch.full_like(next_text, self.audio_end_token_id),
+            next_text,
+        )
+        is_audio = is_audio & ~is_audio_eos
+        sampling_text_mask = delayed > self.n_vq
+
+        text_logits = text_logits.float()
+        text_logits = text_logits.masked_fill(
+            (~is_audio).unsqueeze(1) & self.text_excluded_mask, _NEG_INF
+        )
+        text_logits = text_logits.masked_fill(
+            is_audio.unsqueeze(1) & self.text_audio_only_mask, _NEG_INF
+        )
+        text_logits = text_logits.masked_fill(
+            (generation_steps == 0).unsqueeze(1) & self.text_delay_slot_mask,
+            _NEG_INF,
+        )
+        text_logits = text_logits.masked_fill(
+            (generation_steps <= self.n_vq).unsqueeze(1) & self.text_im_end_mask,
+            _NEG_INF,
+        )
+        sampled_text = sample_default_text_tokens(
+            text_logits,
+            seeds=seeds,
+            positions=generation_steps * self.num_channels,
+        )
+        next_text = torch.where(sampling_text_mask, sampled_text, next_text)
+        is_audio = (is_audio | (next_text == self.audio_start_token_id)) & (
+            next_text != self.im_end_token_id
+        )
+
+        pre_audio = audio_lengths.unsqueeze(1) > self.channel_indices
+        post_audio = self.channel_indices > (delayed.unsqueeze(1) - 1)
+        post_audio = post_audio | (delayed == _INT64_MAX).unsqueeze(1)
+        sampling_audio_mask = pre_audio & post_audio
+
+        masked_audio_logits = audio_logits.float().masked_fill(
+            self.audio_invalid_mask.view(1, 1, -1), _NEG_INF
+        )
+        flat_audio_logits = masked_audio_logits.reshape(batch_size * self.n_vq, -1)
+        audio_positions = generation_steps.unsqueeze(1) * self.num_channels
+        audio_positions = (
+            (audio_positions + self.channel_indices + 1).reshape(-1).contiguous()
+        )
+        audio_seeds = seeds.unsqueeze(1).expand(batch_size, self.n_vq).reshape(-1)
+        sampled_audio = sample_default_audio_tokens_with_fallback(
+            flat_audio_logits,
+            seeds=audio_seeds,
+            positions=audio_positions,
+        ).view(batch_size, self.n_vq)
+        next_audio = torch.where(
+            sampling_audio_mask,
+            sampled_audio,
+            torch.full_like(sampled_audio, self.audio_pad_code),
+        )
+
+        increment = (
+            (next_text == self.audio_start_token_id)
+            | (next_text == self.gen_slot_token_id)
+            | (next_text == self.delay_slot_token_id)
+        )
+        next_audio_lengths = audio_lengths + increment.long()
+        next_audio_lengths = torch.where(
+            next_text == self.audio_end_token_id,
+            torch.zeros_like(next_audio_lengths),
+            next_audio_lengths,
+        )
+        next_delayed = torch.where(
+            (delayed == _INT64_MAX) & (next_text == self.delay_slot_token_id),
+            torch.zeros_like(delayed),
+            delayed,
+        )
+        next_delayed = torch.where(
+            next_delayed != _INT64_MAX,
+            next_delayed + 1,
+            next_delayed,
+        )
+        next_delayed = torch.where(
+            next_delayed > self.n_vq,
+            torch.full_like(next_delayed, _INT64_MAX),
+            next_delayed,
+        )
+        next_delay_state = torch.stack(
+            (next_audio_lengths, next_delayed, is_audio.long()), dim=1
+        )
+        rows = torch.cat((next_text.unsqueeze(1), next_audio), dim=1)
+        return DelaySamplingOutput(rows=rows, next_delay_state=next_delay_state)
+
+
+def sample_default_text_tokens(
+    logits: torch.Tensor,
+    *,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    """Match eager default text sampling, including its fully masked fallback."""
+
+    temperature = torch.full_like(logits[:, 0], TEXT_SAMPLING.temperature)
+    scores = logits / temperature.unsqueeze(1)
+    vocab = int(scores.shape[-1])
+    if 0 < TEXT_SAMPLING.top_k < vocab:
+        kth = torch.topk(scores, k=TEXT_SAMPLING.top_k, dim=-1).values[:, -1:]
+        scores = scores.masked_fill(scores < kth, _NEG_INF)
+    else:
+        pass
+    probs = torch.softmax(scores, dim=-1)
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
+    fallback = probs.sum(dim=-1) <= 0
+    return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)
+
+
+def sample_default_audio_tokens_with_fallback(
+    logits: torch.Tensor,
+    *,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    """Checkpoint-default audio sampling with the eager greedy fallback."""
+
+    temperature = torch.full_like(logits[:, 0], AUDIO_SAMPLING.temperature)
+    scores = logits / temperature.unsqueeze(1)
+    vocab = int(scores.shape[-1])
+    if 0 < AUDIO_SAMPLING.top_k < vocab:
+        kth = torch.topk(scores, k=AUDIO_SAMPLING.top_k, dim=-1).values[:, -1:]
+        scores = scores.masked_fill(scores < kth, _NEG_INF)
+    else:
+        pass
+    sorted_scores, sorted_indices = torch.sort(
+        scores, descending=True, dim=-1, stable=True
+    )
+    probs_sorted = torch.softmax(sorted_scores, dim=-1)
+    cumulative = torch.cumsum(probs_sorted, dim=-1)
+    remove = cumulative > AUDIO_SAMPLING.top_p
+    remove[..., 1:] = remove[..., :-1].clone()
+    remove[..., 0] = False
+    remove_scattered = torch.zeros_like(scores, dtype=torch.bool).scatter_(
+        -1, sorted_indices, remove
+    )
+    scores = scores.masked_fill(remove_scattered, _NEG_INF)
+    probs = torch.softmax(scores, dim=-1)
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
+    fallback = probs.sum(dim=-1) <= 0
+    return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)

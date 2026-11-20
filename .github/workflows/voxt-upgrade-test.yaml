@@ -1,0 +1,97 @@
+name: Voxt Upgrade Test
+
+# Voxt 1.x (the sandboxed Swift app, com.voxt.Voxt) updates itself with its
+# own Sparkle from the beta appcast to Voxt 2 (dev.hehehai.voxtnew) on a
+# fresh GitHub macOS runner; then the installed app's identity, signature
+# and notarization are checked, and Voxt 2 imports 1.x's data without
+# asking (--smoke with VOXTNEW_SMOKE_LEGACY=1). It runs here, not on a
+# developer's Mac, because 1.x keeps its data in
+# ~/Library/Containers/com.voxt.Voxt, which no fake HOME keeps apart from
+# the real one. Run it by hand once Voxt Appcast has put the version on
+# the beta channel; Voxt/docs/release.md says how to read the results.
+# The steps are Voxt/scripts/upgrade-test.sh's.
+#
+# Not known before the first run, so step 3 tries two ways and its rows
+# say which one installed and where the other stopped:
+# - Way 1 (automatic updates): quit Voxt 1.x, and Sparkle installs on quit.
+#   An AppleScript quit may need the Automation permission on the runner;
+#   SIGTERM, the fallback, may not count as a quit for Sparkle.
+# - Way 2: click Install Update, then Install and Relaunch, in Sparkle's
+#   window through System Events, which needs Accessibility for the
+#   runner's osascript (the step checks it first).
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_tag:
+        description: "Voxt 1.x release to start from"
+        required: true
+        default: voxt-v1.16.3
+      to_version:
+        description: "Voxt 2 version the beta appcast offers (X.Y.Z)"
+        required: true
+
+concurrency:
+  group: voxt-upgrade-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    name: Voxt 1.x to Voxt 2
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      FROM_TAG: ${{ inputs.from_tag }}
+      TO_VERSION: ${{ inputs.to_version }}
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start
+        run: |
+          set -euo pipefail
+          if [[ "$FROM_TAG" =~ ^voxt-v1\.[0-9]+\.[0-9]+$ && "$TO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            :
+          else
+            echo "::error::from_tag is voxt-v1.Y.Z and to_version X.Y.Z, got '$FROM_TAG' and '$TO_VERSION'"
+            exit 1
+          fi
+          echo "OUT=$RUNNER_TEMP/voxt-upgrade-test" >> "$GITHUB_ENV"
+          OUT="$RUNNER_TEMP/voxt-upgrade-test" scripts/upgrade-test.sh start
+
+      - name: 1. Install Voxt 1.x
+        run: scripts/upgrade-test.sh install
+
+      - name: 2. Put the test data in Voxt 1.x's container
+        run: scripts/upgrade-test.sh prepare
+
+      - name: 3. Let Voxt 1.x update itself from the beta appcast
+        id: update
+        timeout-minutes: 50
+        run: scripts/upgrade-test.sh update
+
+      - name: 4. Check the installed app
+        if: ${{ !cancelled() && steps.update.outcome == 'success' }}
+        run: scripts/upgrade-test.sh check-app
+
+      - name: 5. Check the import of Voxt 1.x's data
+        if: ${{ !cancelled() && steps.update.outcome == 'success' }}
+        run: scripts/upgrade-test.sh check-import
+
+      - name: 6. Collect the evidence
+        if: ${{ always() && env.OUT != '' }}
+        run: scripts/upgrade-test.sh evidence
+
+      - name: Upload the evidence
+        if: ${{ always() && env.OUT != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxt-upgrade-test
+          path: ${{ env.OUT }}
+          retention-days: 30

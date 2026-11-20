@@ -2,12 +2,24 @@
 #include "qwen3_asr/realtime.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
-#include <random>
 
 #include "common/audio.h"
+#include "common/generation.h"
+#include "common/text.h"
+#include "common/transcription.h"
 
 namespace qwen3_asr {
+
+using omni_common::CodePoints;
+using omni_common::FinishReason;
+using omni_common::GenerationCancelled;
+using omni_common::IsUnicodeSpace;
+using omni_common::StripUnicodeWhitespace;
+using omni_common::TranscriptionResult;
+using omni_server::Transcription;
+using omni_server::TranscriptionWorker;
 
 namespace {
 
@@ -15,8 +27,12 @@ namespace {
 // shown text minus its last tokens, which may still change.
 constexpr int kPrefixAfterRefreshCount = 2;
 constexpr int kPrefixRollbackTokenCount = 5;
+// A decode with a prefix has tokens for the rolled-back ones and for the
+// audio after the transcript's decode, at the offline default's rate, plus
+// slack; speech uses half of that at most.
+constexpr double kPrefixedTokensPerNewSecond = 10.0;
+constexpr int kPrefixedTokenSlack = 8;
 constexpr float kSilentPeak = 1e-3f;
-constexpr float kPcm16FullScale = 32768.0f;
 
 constexpr std::pair<uint32_t, uint32_t> kUnspacedScriptRanges[] = {
     {0x0E00, 0x0EFF}, {0x1000, 0x109F}, {0x1780, 0x17FF},
@@ -38,69 +54,14 @@ bool IsSpacedScript(uint32_t code_point) {
   return true;
 }
 
-std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
-  // Note (Jiaxin Deng): matches Python's b64decode(validate=False), which
-  // drops characters outside the alphabet but still checks the padding.
-  std::string clean;
-  for (const char c : text) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-        (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=') {
-      clean.push_back(c);
-    } else {
-    }
-  }
-  size_t padding = 0;
-  while (!clean.empty() && clean.back() == '=') {
-    clean.pop_back();
-    ++padding;
-  }
-  const size_t remainder = clean.size() % 4;
-  if (clean.find('=') != std::string::npos || remainder == 1 ||
-      (remainder != 0 && padding < 4 - remainder)) {
-    return std::nullopt;
-  } else {
-  }
-  const auto value = [](char c) -> uint32_t {
-    if (c >= 'A' && c <= 'Z')
-      return c - 'A';
-    if (c >= 'a' && c <= 'z')
-      return c - 'a' + 26;
-    if (c >= '0' && c <= '9')
-      return c - '0' + 52;
-    return c == '+' ? 62 : 63;
-  };
-  std::vector<uint8_t> bytes;
-  uint32_t buffer = 0;
-  int bits = 0;
-  for (const char c : clean) {
-    buffer = (buffer << 6) | value(c);
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes.push_back(static_cast<uint8_t>((buffer >> bits) & 0xFF));
-    } else {
-    }
-  }
-  return bytes;
-}
-
-std::string NewEventId() {
-  static thread_local std::mt19937_64 generator{std::random_device{}()};
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string id = "evt_";
-  for (int i = 0; i < 32; ++i)
-    id.push_back(kHex[generator() % 16]);
-  return id;
-}
-
 } // namespace
 
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds) {
-  return {decode_interval_ms * kSampleRate / 1000,
-          first_decode_ms * kSampleRate / 1000,
-          static_cast<int>(max_segment_seconds * kSampleRate)};
+  return {decode_interval_ms * omni_common::kSampleRate / 1000,
+          first_decode_ms * omni_common::kSampleRate / 1000,
+          static_cast<int>(max_segment_seconds * omni_common::kSampleRate)};
 }
 
 std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
@@ -117,84 +78,6 @@ std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
     }
   }
   return joined;
-}
-
-RealtimeConnection::RealtimeConnection(Sender sender)
-    : sender_(std::move(sender)) {}
-
-void RealtimeConnection::Send(nlohmann::ordered_json event) {
-  std::lock_guard<std::mutex> lock(send_mutex_);
-  if (closed_) {
-    return;
-  } else {
-  }
-  event_index_ += 1;
-  event["event_id"] = NewEventId();
-  event["event_index"] = event_index_;
-  if (!sender_(event.dump())) {
-    closed_ = true;
-  } else {
-  }
-}
-
-void RealtimeConnection::SendError(const std::string &type,
-                                   const std::string &code,
-                                   const std::string &message) {
-  Send({{"type", "error"},
-        {"error", {{"type", type}, {"code", code}, {"message", message}}}});
-}
-
-void RealtimeConnection::Close() {
-  cancel_->store(true);
-  std::lock_guard<std::mutex> lock(send_mutex_);
-  closed_ = true;
-}
-
-std::optional<std::vector<float>>
-RealtimeConnection::AppendedSamples(const nlohmann::json &audio) {
-  const std::optional<std::vector<uint8_t>> pcm =
-      audio.is_string() ? DecodeBase64(audio.get<std::string>()) : std::nullopt;
-  if (!pcm.has_value() || pcm->empty() || pcm->size() % 2 != 0) {
-    SendError("invalid_request_error", "invalid_audio",
-              "Audio must be base64 PCM16.");
-    return std::nullopt;
-  } else {
-  }
-  std::vector<float> samples;
-  samples.reserve(pcm->size() / 2);
-  for (size_t i = 0; i + 1 < pcm->size(); i += 2) {
-    const int16_t value =
-        static_cast<int16_t>((*pcm)[i] | ((*pcm)[i + 1] << 8));
-    samples.push_back(static_cast<float>(value) / kPcm16FullScale);
-  }
-  return samples;
-}
-
-std::optional<nlohmann::json>
-RealtimeConnection::ManualTurnSession(const nlohmann::json &message) {
-  const nlohmann::json session = message.value("session", nlohmann::json());
-  if (!session.is_object() || (session.contains("turn_detection") &&
-                               !session["turn_detection"].is_null())) {
-    SendError("invalid_request_error", "unsupported_session",
-              "Only manual turns are supported.");
-    return std::nullopt;
-  } else {
-    return session;
-  }
-}
-
-void RealtimeConnection::ReportDecodeFailure(std::exception_ptr error) {
-  try {
-    std::rethrow_exception(error);
-  } catch (const TranscriptionCancelled &) {
-    return;
-  } catch (const std::exception &failure) {
-    // Note (Jiaxin Deng): log the type alone, never the audio or text.
-    std::cerr << "realtime decode failed: " << typeid(failure).name() << "\n";
-  } catch (...) {
-    std::cerr << "realtime decode failed\n";
-  }
-  SendError("server_error", "transcription_failed", "Transcription failed.");
 }
 
 RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
@@ -289,6 +172,7 @@ void RealtimeSession::StartSegment(long start_sample) {
   segment.start_sample = start_sample;
   segment.next_refresh_sample = start_sample + settings_.first_decode_samples;
   segment.language = language_;
+  segment.reuse = std::make_shared<RefreshReuse>();
   segment_ = std::move(segment);
 }
 
@@ -299,44 +183,77 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
   return std::vector<float>(samples_.begin() + begin, samples_.begin() + end);
 }
 
-TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment) {
+TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
+                                                    bool is_refresh,
+                                                    long end_sample) {
   TranscriptionOptions options;
   options.language = segment.language;
+  // Note (XXXXRT666): on as for HTTP requests; the prefix would carry a loop
+  // into every later decode of the segment.
+  options.stop_on_token_loop = true;
   const bool use_prefix = segment.decode_count >= kPrefixAfterRefreshCount &&
                           !segment.transcript.empty() &&
-                          segment.language.has_value();
+                          segment.language.has_value() &&
+                          !segment.ran_out_of_tokens;
   if (use_prefix) {
-    auto [ids, text] = transcriber_.RetainedPrefix(segment.transcript,
-                                                   kPrefixRollbackTokenCount);
-    options.prefix_token_ids = std::move(ids);
-    options.prefix_text = std::move(text);
+    RetainedText retained = transcriber_.RetainedPrefix(
+        segment.transcript, kPrefixRollbackTokenCount);
+    options.prefix_token_ids = std::move(retained.prefix_ids);
+    options.prefix_text = std::move(retained.prefix_text);
+    // Note (XXXXRT666): greedy decoding can repeat the prefix's last sentence
+    // and still stop; the budget makes that run out of tokens instead.
+    options.max_new_tokens =
+        static_cast<int>(retained.rest_ids.size()) +
+        static_cast<int>(std::ceil(
+            static_cast<double>(end_sample - segment.transcript_end_sample) /
+            omni_common::kSampleRate * kPrefixedTokensPerNewSecond)) +
+        kPrefixedTokenSlack;
+    // Note (XXXXRT666): a refresh checks the rolled-back tokens as guesses;
+    // the final decode decodes them as before.
+    if (is_refresh) {
+      options.guessed_token_ids = std::move(retained.rest_ids);
+    } else {
+    }
   } else {
   }
   segment.decode_count += 1;
   return options;
 }
 
-Transcription RealtimeSession::Decode(std::vector<float> samples,
-                                      TranscriptionOptions options) const {
+Transcription
+RealtimeSession::Decode(std::vector<float> samples,
+                        TranscriptionOptions options,
+                        std::shared_ptr<RefreshReuse> reuse) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
-          options = std::move(options)](const std::atomic<bool> &cancel) {
-    return transcriber.Transcribe(samples, options, cancel);
+          options = std::move(options),
+          reuse = std::move(reuse)](const std::atomic<bool> &cancel) {
+    return transcriber.Transcribe(samples, options, cancel, reuse.get());
   };
 }
 
 void RealtimeSession::ApplyResult(Segment &segment,
-                                  const TranscriptionResult &result) {
+                                  const TranscriptionResult &result,
+                                  long end_sample) {
   if (result.language.has_value() && !result.language->empty()) {
     segment.language = result.language;
   } else {
   }
-  segment.transcript = result.text;
+  // Note (XXXXRT666): speech never fills the token budget, so a decode that
+  // does repeats itself, often a whole sentence the loop guard does not see.
+  segment.ran_out_of_tokens = result.finish_reason == FinishReason::kLength;
+  if (!segment.ran_out_of_tokens) {
+    segment.transcript = result.text;
+    segment.transcript_end_sample = end_sample;
+  } else {
+  }
 }
 
 void RealtimeSession::MaybeStartRefresh() {
   std::vector<float> samples;
   TranscriptionOptions options;
+  std::shared_ptr<RefreshReuse> reuse;
   int segment_id = 0;
+  long end_sample = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (refreshing_ || finalizing_ || !segment_.has_value() ||
@@ -345,10 +262,10 @@ void RealtimeSession::MaybeStartRefresh() {
     } else {
     }
     Segment &segment = *segment_;
-    const long end_sample = EndSample();
+    end_sample = EndSample();
     samples = SegmentSamples(segment, end_sample);
     const bool silent =
-        PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
+        omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
     // Note (Jiaxin Deng): leading silence keeps the early first decode for the
     // first audible audio.
     if (!(silent && segment.decode_count == 0)) {
@@ -360,16 +277,17 @@ void RealtimeSession::MaybeStartRefresh() {
       return;
     } else {
     }
-    options = DecodeOptions(segment);
+    options = DecodeOptions(segment, true, end_sample);
+    reuse = segment.reuse;
     segment_id = segment.segment_id;
     refreshing_ = true;
   }
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      Decode(std::move(samples), std::move(options)), cancel_,
-      [weak_self, segment_id](std::optional<TranscriptionResult> result,
-                              std::exception_ptr error) {
+      Decode(std::move(samples), std::move(options), std::move(reuse)), cancel_,
+      [weak_self, segment_id, end_sample](
+          std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
@@ -381,10 +299,11 @@ void RealtimeSession::MaybeStartRefresh() {
           self->refreshing_ = false;
           if (result.has_value() && self->segment_.has_value() &&
               self->segment_->segment_id == segment_id) {
-            self->ApplyResult(*self->segment_, *result);
-            if (result->text != self->segment_->last_text) {
-              self->segment_->last_text = result->text;
-              preview = result->text;
+            Segment &segment = *self->segment_;
+            self->ApplyResult(segment, *result, end_sample);
+            if (segment.transcript != segment.last_text) {
+              segment.last_text = segment.transcript;
+              preview = segment.transcript;
             } else {
             }
           } else {
@@ -432,18 +351,30 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       samples = SegmentSamples(segment, cut_sample);
     }
     std::optional<std::string> text;
-    if (PeakIsSilent(samples.data(), samples.size(), kSilentPeak)) {
+    if (omni_common::PeakIsSilent(samples.data(), samples.size(),
+                                  kSilentPeak)) {
       text = std::string();
     } else {
       TranscriptionOptions options;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        options = DecodeOptions(segment);
+        options = DecodeOptions(segment, false, cut_sample);
       }
       try {
-        const TranscriptionResult result = worker_.Transcribe(
-            Decode(std::move(samples), std::move(options)), cancel_);
-        ApplyResult(segment, result);
+        TranscriptionResult result =
+            worker_.Transcribe(Decode(samples, options, nullptr), cancel_);
+        // A final that ran out of tokens on the prefix decodes the segment
+        // again without it, as the next refresh would have.
+        if (result.finish_reason == FinishReason::kLength &&
+            !options.prefix_token_ids.empty()) {
+          options.prefix_token_ids.clear();
+          options.prefix_text.clear();
+          options.max_new_tokens.reset();
+          result = worker_.Transcribe(
+              Decode(std::move(samples), std::move(options), nullptr), cancel_);
+        } else {
+        }
+        ApplyResult(segment, result, cut_sample);
         text = result.text;
       } catch (...) {
         ReportDecodeFailure(std::current_exception());

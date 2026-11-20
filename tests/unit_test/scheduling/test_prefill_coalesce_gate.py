@@ -13,6 +13,7 @@ patched to a sentinel.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from types import SimpleNamespace, TracebackType
 from unittest import mock
 
@@ -21,6 +22,7 @@ import pytest
 pytest.importorskip("sglang")
 
 from sglang.srt.managers.schedule_batch import NextBatchPlan  # noqa: E402
+from sglang.srt.model_executor.forward_batch_info import ForwardMode  # noqa: E402
 
 from sglang_omni.scheduling import omni_scheduler  # noqa: E402
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler  # noqa: E402
@@ -36,6 +38,9 @@ def make_req(enqueue_t: float | None):
 
 class StubScheduler:
     """The attribute surface get_new_batch_prefill touches."""
+
+    enable_plain_fallback = False
+    get_coalesced_batch_prefill = OmniScheduler.get_coalesced_batch_prefill
 
     def __init__(
         self,
@@ -53,9 +58,12 @@ class StubScheduler:
         self.prefill_coalesce_after_builds_during_decode = (
             coalesce_after_builds_during_decode
         )
+        self.async_prefill = False
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
+        self.last_batch = None
+        self.batch_is_decode = OmniScheduler.batch_is_decode
         self.request_admission_lock = threading.RLock()
         self.pending_request_builds: dict = {}
         self.pending_request_admissions: dict = {}
@@ -271,6 +279,26 @@ def test_idle_decode_still_releases_after_build_work_drains(upstream, clock):
     assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
+def test_the_step_that_emptied_the_batch_still_holds_a_small_prefill(upstream, clock):
+    """Admission filtering finished rows first released a partial batch before its last requests returned."""
+    sched = StubScheduler(
+        coalesce_requests=8,
+        wait_ms=6.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+    )
+    sched.running_batch = SimpleNamespace(is_empty=lambda: True)
+    sched.last_batch = SimpleNamespace(forward_mode=ForwardMode.DECODE)
+    sched.waiting_queue = [make_req(100.0)]
+
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+    sched.last_batch = None
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
+
+
 def test_real_partial_admission_cycle_releases_leftovers_immediately(clock):
     # Note: (Jiaxin Deng) real admit cycle: upstream pops only the head of an
     # expired wave; the leftover keeps its stamp and releases on the next pass.
@@ -415,6 +443,8 @@ def test_the_hold_predicate_stamps_nothing_and_agrees_with_the_gate(
 
 
 class DecodingStubScheduler(StubScheduler):
+    running_batch_admits_prefill = OmniScheduler.running_batch_admits_prefill
+
     def __init__(self, *, request_admission_lock: CountingLock) -> None:
         super().__init__(coalesce_requests=8, requires_pending_builds=True)
         self.is_mixed_chunk = False
@@ -427,7 +457,9 @@ class DecodingStubScheduler(StubScheduler):
         self.enable_hisparse = False
         self.min_free_slots_delayer = None
         self.running_batch = SimpleNamespace(
-            is_empty=lambda: False, reqs=[object()], batch_is_full=False
+            is_empty=lambda: False,
+            reqs=[SimpleNamespace(finished=lambda: False)],
+            batch_is_full=False,
         )
         self.request_admission_lock = request_admission_lock
         self.pending_request_builds = {"build": object()}
@@ -452,3 +484,99 @@ def test_the_prefill_expectation_reads_the_clock_before_the_pending_builds(
     assert clock.return_value == 100.060001
     assert is_expected is False
     assert enqueue_stamps(sched) == [100.0]
+
+
+@pytest.mark.parametrize("async_prefill", [False, True])
+def test_build_admission_preserves_fifo_unless_async_prefill_is_enabled(
+    async_prefill: bool,
+) -> None:
+    """A later completed build may bypass the first only on the opt-in path."""
+    first = Future()
+    second = Future()
+    second.set_result("second-result")
+    scheduler = SimpleNamespace(
+        async_prefill=async_prefill,
+        request_admission_lock=threading.RLock(),
+        pending_request_builds={
+            "first": ("first-payload", False, first),
+            "second": ("second-payload", False, second),
+        },
+        aborted_request_ids=set(),
+        admit_or_defer_built_request=mock.Mock(),
+    )
+    OmniScheduler.drain_request_build_results(scheduler)
+    assert scheduler.admit_or_defer_built_request.call_count == int(async_prefill)
+    if async_prefill:
+        assert (
+            scheduler.admit_or_defer_built_request.call_args.args[0] == "second-payload"
+        )
+    first.set_result("first-result")
+    OmniScheduler.drain_request_build_results(scheduler)
+    expected = (
+        ["second-payload", "first-payload"]
+        if async_prefill
+        else ["first-payload", "second-payload"]
+    )
+    assert [
+        call.args[0] for call in scheduler.admit_or_defer_built_request.call_args_list
+    ] == expected
+    assert not scheduler.pending_request_builds
+
+
+@pytest.mark.parametrize(
+    "batch_full,available_slots", [(True, 4), (False, 0), (False, 4)]
+)
+def test_expired_coalescing_does_not_repeat_wait_when_admission_is_blocked(
+    upstream: mock.MagicMock,
+    clock: mock.MagicMock,
+    batch_full: bool,
+    available_slots: int,
+) -> None:
+    """A full running batch must keep decoding without waiting for request builds."""
+    clock.return_value = 101.0
+    scheduler = DecodingStubScheduler(request_admission_lock=threading.RLock())
+    scheduler.async_prefill = True
+    scheduler.running_batch.batch_is_full = batch_full
+    scheduler.get_num_allocatable_reqs = lambda *args, **kwargs: available_slots
+    scheduler.is_prefill_expected = lambda: OmniScheduler.is_prefill_expected(scheduler)
+    scheduler.admit_imminent_request_builds = mock.Mock()
+    for _ in range(3):
+        assert scheduler.get_new_batch_prefill() is UPSTREAM_BATCH
+    assert scheduler.admit_imminent_request_builds.call_count == (
+        3 if not batch_full and available_slots else 0
+    )
+
+
+@pytest.mark.parametrize("async_prefill", [False, True])
+def test_drain_admits_a_build_that_finishes_during_another_admission(
+    async_prefill: bool,
+) -> None:
+    """Opt-out admission must retain same-iteration completion collection."""
+    first = Future()
+    second = Future()
+    first.set_result("first-result")
+    admitted = []
+
+    def admit(payload, pending_stream_done, result, *, request_admission_lock_held):
+        assert not pending_stream_done
+        assert request_admission_lock_held
+        admitted.append((payload, result))
+        if payload == "first-payload":
+            second.set_result("second-result")
+
+    scheduler = SimpleNamespace(
+        async_prefill=async_prefill,
+        request_admission_lock=threading.RLock(),
+        pending_request_builds={
+            "first": ("first-payload", False, first),
+            "second": ("second-payload", False, second),
+        },
+        aborted_request_ids=set(),
+        admit_or_defer_built_request=admit,
+    )
+    OmniScheduler.drain_request_build_results(scheduler)
+    assert admitted == [
+        ("first-payload", "first-result"),
+        ("second-payload", "second-result"),
+    ]
+    assert not scheduler.pending_request_builds

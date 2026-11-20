@@ -4,15 +4,20 @@
 #pragma once
 
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "common/realtime_connection.h"
+#include "common/transcription.h"
+#include "common/worker.h"
 #include "nlohmann/json.hpp"
-#include "qwen3_asr/worker.h"
+#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace qwen3_asr {
 
@@ -29,52 +34,11 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
 // Join segment texts, with a space only between two spaced scripts.
 std::string JoinTranscriptParts(const std::vector<std::string> &parts);
 
-// One realtime socket's session: numbered events out, client events in.
-// Handle runs on the socket's thread; decodes run on the worker and report
-// back through the sender.
-class RealtimeConnection
-    : public std::enable_shared_from_this<RealtimeConnection> {
-public:
-  // Writes one serialized event; false once the socket is gone.
-  using Sender = std::function<bool(const std::string &)>;
-
-  explicit RealtimeConnection(Sender sender);
-  virtual ~RealtimeConnection() = default;
-
-  // Applies one client event; false once the session has completed.
-  virtual bool Handle(const nlohmann::json &message) = 0;
-  void SendError(const std::string &type, const std::string &code,
-                 const std::string &message);
-  // The client left: stop any decode in flight and send nothing more.
-  void Close();
-
-protected:
-  void Send(nlohmann::ordered_json event);
-  // The samples of an append event's base64 PCM16 audio; reports anything
-  // else to the client and returns nothing.
-  std::optional<std::vector<float>>
-  AppendedSamples(const nlohmann::json &audio);
-  // A session.update's session object when it asks for manual turns; reports
-  // anything else to the client and returns nothing.
-  std::optional<nlohmann::json>
-  ManualTurnSession(const nlohmann::json &message);
-  // Reports a failed decode; a cancelled one ended with the client.
-  void ReportDecodeFailure(std::exception_ptr error);
-
-  CancelFlag cancel_ = NewCancelFlag();
-
-private:
-  Sender sender_;
-  std::mutex send_mutex_;
-  int event_index_ = 0;
-  bool closed_ = false;
-};
-
 // Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
 // segment length, with preview decodes on a cadence.
-class RealtimeSession : public RealtimeConnection {
+class RealtimeSession : public omni_server::RealtimeConnection {
 public:
-  RealtimeSession(TranscriptionWorker &worker,
+  RealtimeSession(omni_server::TranscriptionWorker &worker,
                   const Qwen3ASRTranscriber &transcriber,
                   RealtimeSettings settings, Sender sender);
 
@@ -89,6 +53,13 @@ private:
     int decode_count = 0;
     std::string transcript;
     std::string last_text;
+    // The last decode ran out of tokens, a loop the guard missed, likely on
+    // the prefix: its text was not kept, and the next decode has no prefix.
+    bool ran_out_of_tokens = false;
+    // Where the audio of the decode the transcript came from ended.
+    long transcript_end_sample = 0;
+    // What the segment's refreshes reuse.
+    std::shared_ptr<RefreshReuse> reuse;
   };
 
   void Append(const nlohmann::json &audio);
@@ -99,15 +70,21 @@ private:
   long LockedEndSample();
   std::vector<float> SegmentSamples(const Segment &segment,
                                     long end_sample) const;
-  // Builds the request for a decode of segment and counts it.
-  TranscriptionOptions DecodeOptions(Segment &segment);
-  Transcription Decode(std::vector<float> samples,
-                       TranscriptionOptions options) const;
-  void ApplyResult(Segment &segment, const TranscriptionResult &result);
+  // Builds the request for a decode of segment through end_sample, a refresh
+  // or its final decode, and counts it.
+  TranscriptionOptions DecodeOptions(Segment &segment, bool is_refresh,
+                                     long end_sample);
+  // A refresh passes its segment's reuse; the final decode passes none.
+  omni_server::Transcription Decode(std::vector<float> samples,
+                                    TranscriptionOptions options,
+                                    std::shared_ptr<RefreshReuse> reuse) const;
+  void ApplyResult(Segment &segment,
+                   const omni_common::TranscriptionResult &result,
+                   long end_sample);
   void MaybeStartRefresh();
   void FinalizeThrough(long end_sample);
 
-  TranscriptionWorker &worker_;
+  omni_server::TranscriptionWorker &worker_;
   const Qwen3ASRTranscriber &transcriber_;
   const RealtimeSettings settings_;
 

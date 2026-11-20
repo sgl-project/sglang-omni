@@ -83,6 +83,8 @@ class HookState:
     # Seconds after an append completes at which the control is emitted on the session's output stream.
     emit_after_s: float
     reply_ms: float
+    # note (luojiaxuan): Seconds between the reply's turn.started and its audio, the reply's first-audio latency.
+    reply_after_s: float
 
 
 def number_param(params: Mapping[str, object], key: str, default: float) -> float:
@@ -133,6 +135,7 @@ def read_hook_state(
         emit_control=text_param(params, "emit_control"),
         emit_after_s=number_param(params, "emit_after", 0),
         reply_ms=number_param(params, "emit_reply_ms", 0),
+        reply_after_s=number_param(params, "emit_reply_after", 0),
     )
 
 
@@ -202,7 +205,10 @@ class Hooks(SessionHooks):
             else:
                 pass
             if state.reply_ms and state.count == 1:
-                for emitted in reply_chunks(state.reply_ms):
+                started, *reply = reply_chunks(state.reply_ms)
+                context.emit(started)
+                time.sleep(state.reply_after_s)
+                for emitted in reply:
                     context.emit(emitted)
                 payload.data = {"count": state.count}
                 return payload

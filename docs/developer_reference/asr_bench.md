@@ -6,12 +6,12 @@ The workloads are the ones in the ASR CI (`.github/workflows/test-asr-ci.yaml`).
 
 ## What is Measured
 
-| CI stage | Model | Data | Concurrency |
+| CI job | Model | Data | Concurrency |
 |---|---|---|---|
-| 1 | MOSS-Transcribe-Diarize, multiple speakers | `movies800times` (800 samples, run once without and once with streaming), `aishell4_long` (20), `googletime` (25) | 16 |
-| 2 | Qwen3-ASR-1.7B, Whisper-large-v3 or Fun-ASR-Nano | SeedTTS EN (1088) and ZH (2020) | 32 |
+| MOSS-TD multi-speaker | MOSS-Transcribe-Diarize, multiple speakers | `movies800times` (800 samples, run once without and once with streaming), `aishell4_long` (20), `googletime` (25) | 16 |
+| SeedTTS ASR | Qwen3-ASR-1.7B, Whisper-large-v3 or Fun-ASR-Nano | SeedTTS EN (1088) and ZH (2020) | 32 |
 
-CI stage 1 also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). CI stage 2 runs one of the three models per CI run, picked at random unless a `run-asr-fun-asr-nano-2512`, `run-asr-qwen3-asr-1.7b` or `run-asr-whisper-large-v3` label is set with `run-asr-ci` or `run-all-ci`.
+The MOSS-TD multi-speaker job also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). The SeedTTS ASR job runs one of the three models per CI run, picked at random unless a `run-fun-asr-nano-2512`, `run-qwen3-asr-1.7b` or `run-whisper-large-v3` label pins it; that label alone also runs SeedTTS ASR without the MOSS-TD job.
 
 This page uses one server on one GPU, with the same datasets, concurrency and request settings as CI.
 
@@ -22,7 +22,7 @@ Run the host block on the host before Step 1, and again in every new host shell.
 ```bash
 export GPU=0
 export HF_TOKEN=hf_your_token_here
-export IMAGE=hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+export IMAGE=hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
 export CPUSET=$(cat /sys/bus/pci/devices/$(nvidia-smi -i $GPU --query-gpu=pci.bus_id --format=csv,noheader | tail -c 13 | tr A-F a-f)/local_cpulist)
 echo $CPUSET
 ```
@@ -225,7 +225,7 @@ timeout 600 bash -c 'until [ $(nvidia-smi --query-gpu=memory.used --format=csv,n
 
 The server arguments and request settings match the CI test (`tests/test_model/test_asr_ci_multi_speaker.py`). Like CI, one server serves all four datasets. The checks are the same as in Step 5. Each client line must also print `CLIENT_OK`. The client exits with code 0, and so prints `CLIENT_OK`, only when every request succeeded. Otherwise it prints an error or an `Evaluation failed` line.
 
-For `movies800times` CI sends no `max_new_tokens`, so the server picks a budget scaled to the audio length, and the request timeout is 300 s. The client CLI always sends `--max-new-tokens` (default 65536) and has no flag to send none. So the two `movies800times` lines below call the client with that default set to `None`. The `aishell4_long` and `googletime` lines use the CLI defaults (65536 tokens, 1800 s), as CI does.
+For `movies800times` CI sends no `max_new_tokens`, so the server picks a budget scaled to the audio length, and the request timeout is 300 s. The client's dataset presets match CI: no budget for `movies800times`, and 65536 tokens with an 1800 s timeout for `aishell4_long` and `googletime`.
 
 ```bash
 mkdir -p $OUT/moss_td
@@ -235,10 +235,10 @@ setsid bash -c 'echo $$ > "$1"; shift; exec "$@"' _ $OUT/moss_td/server.pid \
     --asr.engine.max_running_requests 16 --asr.engine.cuda_graph_max_bs 16 --mem-fraction-static 0.8 \
     > $OUT/moss_td/server.log 2>&1 &
 timeout 1800 bash -c 'until curl -sf localhost:8000/health > /dev/null; do sleep 5; grep -q "^State:[[:space:]]*[A-Y]" /proc/$(cat "$1")/status 2>/dev/null || exit 1; done' _ $OUT/moss_td/server.pid && echo SERVER_READY || tail -n 20 $OUT/moss_td/server.log
-python -c 'import sys, benchmarks.eval.benchmark_asr_transcribe_diarize as b; b.DEFAULT_MAX_NEW_TOKENS = None; sys.exit(b.main(sys.argv[1:]))' \
+python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
     --use-existing-server --port 8000 --dataset movies800times --max-concurrency 16 --request-timeout-s 300 \
     --output-dir $OUT/moss_td/movies800times && echo CLIENT_OK
-python -c 'import sys, benchmarks.eval.benchmark_asr_transcribe_diarize as b; b.DEFAULT_MAX_NEW_TOKENS = None; sys.exit(b.main(sys.argv[1:]))' \
+python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
     --use-existing-server --port 8000 --dataset movies800times --stream --max-concurrency 16 --request-timeout-s 300 \
     --output-dir $OUT/moss_td/movies800times_stream && echo CLIENT_OK
 python -m benchmarks.eval.benchmark_asr_transcribe_diarize --use-existing-server --port 8000 \
@@ -390,9 +390,9 @@ python -m pytest tests/test_model/test_asr_ci_multi_speaker.py -v -s -x
 ## Caveats
 
 - **Private datasets.** `movies800time`, `AISHELL4` and `googletime` are private and cannot be pinned by the client. Compare the loaded fingerprints and remote heads in `moss_dataset_revisions.txt` before comparing MOSS-Transcribe-Diarize numbers from different machines or dates.
-- **Known flaky stage.** On 2026-10-09, 5 sampled CI stage 1 jobs reached only 43.2 to 44.7 req/s on `movies800times` in their first pytest attempt. After the server restarted for the second attempt, they reached 57.0 to 59.1 req/s. The cause is not known. A compile or file cache on disk is the likely suspect. CI sets `TORCHINDUCTOR_CACHE_DIR` to `$OMNI_CI_HOME/.torchinductor`. Outside CI, SGLang-Omni uses `~/.cache/sglang-omni/torchinductor` unless `TORCHINDUCTOR_CACHE_DIR` is set, as Step 4 does.
+- **Known flaky job.** On 2026-10-09, 5 sampled MOSS-TD multi-speaker CI jobs reached only 43.2 to 44.7 req/s on `movies800times` in their first pytest attempt. After the server restarted for the second attempt, they reached 57.0 to 59.1 req/s. The cause is not known. A compile or file cache on disk is the likely suspect. CI sets `TORCHINDUCTOR_CACHE_DIR` to `$OMNI_CI_HOME/.torchinductor`. Outside CI, SGLang-Omni uses `~/.cache/sglang-omni/torchinductor` unless `TORCHINDUCTOR_CACHE_DIR` is set, as Step 4 does.
 - **Token budget on movies800times.** Sending a fixed 65536 token budget instead of none lets a clip that loops run far past the duration scaled budget. That changes throughput and latency a lot. Check `config.max_new_tokens` in `transcribe_diarize_speed_results.json` before comparing with CI.
 - **Warmup sees the scored audio.** `--warmup` sends the same audio as the timed pass. Any cache keyed on audio content, file path or sample ID would hit on every timed request and make throughput meaningless.
-- **Stage 2 is one model per CI run.** A CI run measures only the model it picked. Run all three blocks of Step 5 here to see all of them.
+- **SeedTTS ASR is one model per CI run.** A CI run measures only the model it picked. Run all three blocks of Step 5 here to see all of them.
 
 For a profile of where the time goes, see the model profiling skill in `.claude/skills/model-profiling/`.

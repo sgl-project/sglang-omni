@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar, Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -179,7 +179,25 @@ class RealtimeTranscriptionRecognizerConfig(ComponentConfig):
     api_key_env: str = "OPENAI_API_KEY"
 
 
-async def probe_realtime_service(config: RealtimeTranscriptionRecognizerConfig) -> None:
+class StreamingTranscriptionRecognizerConfig(ComponentConfig):
+    """Streaming transcription over an sglang-omni /v1/realtime?intent=transcription deployment.
+
+    The node already cuts utterances, so each session runs without server VAD. decode_interval_ms is the audio between partial transcripts; None keeps the service default, and the service enforces its own minimum.
+    """
+
+    kind: Literal["streaming_transcription"] = "streaming_transcription"
+    base_url: str = Field(pattern=r"^wss?://[^/]+")
+    model: str
+    language: str = ""
+    decode_interval_ms: int | None = Field(default=None, gt=0)
+    api_key_env: str = "OPENAI_API_KEY"
+
+
+async def probe_realtime_service(
+    config: (
+        RealtimeTranscriptionRecognizerConfig | StreamingTranscriptionRecognizerConfig
+    ),
+) -> None:
     http_url = re.sub(r"^ws", "http", config.base_url.rstrip("/"))
     await probe_models(f"{http_url}/v1/models", config.timeout_s, config.api_key_env)
 
@@ -241,6 +259,18 @@ class RealtimeError(BaseModel):
     error: RealtimeErrorDetail
 
 
+class TranscriptionSegmentEvent(BaseModel):
+    type: Literal["transcription.segment"]
+    text: str
+    is_final: bool
+
+
+class TranscriptionCompletedEvent(BaseModel):
+    type: Literal["transcription.completed"]
+    text: str
+    language: str | None = None
+
+
 @dataclass
 class RealtimeExchange:
     """One utterance's WebSocket: the pending receive, the audio sender once configured, and the transcript so far."""
@@ -253,10 +283,19 @@ class RealtimeExchange:
     is_finished: bool = False
 
 
-class RealtimeTranscriptionRecognizer(UtteranceRecognizer):
-    """Native `/v1/realtime` streaming transcription; one WebSocket per utterance."""
+class RealtimeWebSocketRecognizer(UtteranceRecognizer):
+    """Base class for recognizers"""
 
-    def __init__(self, config: RealtimeTranscriptionRecognizerConfig) -> None:
+    intent_query: ClassVar[dict[str, str]]
+    audio_end_event: ClassVar[str]
+
+    def __init__(
+        self,
+        config: (
+            RealtimeTranscriptionRecognizerConfig
+            | StreamingTranscriptionRecognizerConfig
+        ),
+    ) -> None:
         super().__init__()
         self.config = config
 
@@ -264,7 +303,7 @@ class RealtimeTranscriptionRecognizer(UtteranceRecognizer):
         self, audio: AsyncIterator[TimedChunk]
     ) -> AsyncIterator[TimedChunk]:
         deadline = asyncio.get_running_loop().time() + self.config.timeout_s
-        query = urlencode({"model": self.config.model})
+        query = urlencode({**self.intent_query, "model": self.config.model})
         uri = f"{self.config.base_url.rstrip('/')}/v1/realtime?{query}"
         async with connect(
             uri,
@@ -329,6 +368,44 @@ class RealtimeTranscriptionRecognizer(UtteranceRecognizer):
         audio: AsyncIterator[TimedChunk],
     ) -> list[TimedChunk]:
         """Act on one server event; the transcripts it carries."""
+        raise NotImplementedError
+
+    async def send_event(
+        self, websocket: object, event_id: str, event_type: str, **fields: object
+    ) -> None:
+        await websocket.send(
+            json.dumps({"event_id": event_id, "type": event_type, **fields})
+        )
+
+    async def send_audio(
+        self, websocket: object, chunks: AsyncIterator[TimedChunk]
+    ) -> None:
+        seq = 0
+        async for chunk in chunks:
+            await self.send_event(
+                websocket,
+                f"audio-{seq}",
+                "input_audio_buffer.append",
+                audio=base64.b64encode(audio_bytes(chunk)).decode(),
+                sglang={"seq": seq},
+            )
+            seq += 1
+        await self.send_event(websocket, "audio-end", self.audio_end_event)
+
+
+class RealtimeTranscriptionRecognizer(RealtimeWebSocketRecognizer):
+    """Native /v1/realtime streaming transcription; one WebSocket per utterance."""
+
+    intent_query = {}
+    audio_end_event = "sglang.input_audio.end"
+
+    async def handle_event(
+        self,
+        websocket: object,
+        exchange: RealtimeExchange,
+        event: dict[str, object],
+        audio: AsyncIterator[TimedChunk],
+    ) -> list[TimedChunk]:
         event_type = event["type"]
         if event_type == "error":
             message = RealtimeError.model_validate(event).error.message
@@ -361,24 +438,50 @@ class RealtimeTranscriptionRecognizer(UtteranceRecognizer):
             pass
         return []
 
-    async def send_event(
-        self, websocket: object, event_id: str, event_type: str, **fields: object
-    ) -> None:
-        await websocket.send(
-            json.dumps({"event_id": event_id, "type": event_type, **fields})
-        )
 
-    async def send_audio(
-        self, websocket: object, chunks: AsyncIterator[TimedChunk]
-    ) -> None:
-        seq = 0
-        async for chunk in chunks:
+class StreamingTranscriptionRecognizer(RealtimeWebSocketRecognizer):
+
+    intent_query = {"intent": "transcription"}
+    audio_end_event = "transcription.done"
+
+    async def handle_event(
+        self,
+        websocket: object,
+        exchange: RealtimeExchange,
+        event: dict[str, object],
+        audio: AsyncIterator[TimedChunk],
+    ) -> list[TimedChunk]:
+        event_type = event["type"]
+        if event_type == "error":
+            message = RealtimeError.model_validate(event).error.message
+            raise RuntimeError(f"transcription failed: {message}")
+        elif event_type == "session.created":
+            session: dict[str, str | int | None] = {"turn_detection": None}
+            if self.config.language:
+                session["language"] = self.config.language
+            else:
+                pass
+            if self.config.decode_interval_ms is not None:
+                session["decode_interval_ms"] = self.config.decode_interval_ms
+            else:
+                pass
             await self.send_event(
-                websocket,
-                f"audio-{seq}",
-                "input_audio_buffer.append",
-                audio=base64.b64encode(audio_bytes(chunk)).decode(),
-                sglang={"seq": seq},
+                websocket, "session-update", "session.update", session=session
             )
-            seq += 1
-        await self.send_event(websocket, "audio-end", "sglang.input_audio.end")
+        elif event_type == "session.updated" and not exchange.is_configured:
+            exchange.is_configured = True
+            exchange.sender = asyncio.ensure_future(self.send_audio(websocket, audio))
+        elif event_type == "transcription.segment":
+            segment = TranscriptionSegmentEvent.model_validate(event)
+            if not segment.is_final:
+                return [transcript_chunk(segment.text, False)]
+            else:
+                pass
+        elif event_type == "transcription.completed":
+            completed = TranscriptionCompletedEvent.model_validate(event)
+            exchange.final_text = completed.text
+            exchange.is_finished = True
+            return [transcript_chunk(completed.text.strip(), True, completed.language)]
+        else:
+            pass
+        return []

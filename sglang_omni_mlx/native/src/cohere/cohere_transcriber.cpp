@@ -4,11 +4,18 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
+#include "common/generation.h"
+#include "common/layers.h"
 #include "common/swift_port.h"
+#include "common/text.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 
 namespace cohere_transcribe {
@@ -19,18 +26,10 @@ namespace {
 
 // The energy-cut search around a chunk end and its smallest window.
 constexpr float kChunkSearchSeconds = 5.0f;
+// Note (XXXXRT666): chunks decoded together; each row keeps its cross- and
+// self-attention keys, about 20 MB a row at 24 s and a few hundred tokens.
+constexpr size_t kBatchChunks = 8;
 constexpr float kChunkEnergyWindowMilliseconds = 100.0f;
-
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
 
 // The code of a language code or English name; English when unknown.
 std::string LanguageCode(const std::string &language) {
@@ -44,9 +43,7 @@ std::string LanguageCode(const std::string &language) {
       {"vietnamese", "vi"}, {"vi", "vi"}, {"korean", "ko"},     {"ko", "ko"},
   };
   std::string key = language;
-  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
+  key = omni_common::AsciiLowercase(key);
   const auto found = table.find(key);
   return found == table.end() ? "en" : found->second;
 }
@@ -56,7 +53,7 @@ std::string LanguageCode(const std::string &language) {
 std::vector<std::pair<size_t, size_t>>
 EnergyCutChunks(const std::vector<float> &samples, float chunk_seconds) {
   const size_t total = samples.size();
-  const float sample_rate = static_cast<float>(qwen3_asr::kSampleRate);
+  const float sample_rate = static_cast<float>(omni_common::kSampleRate);
   if (static_cast<float>(total) / sample_rate <= chunk_seconds) {
     return {{0, total}};
   } else {
@@ -79,33 +76,11 @@ EnergyCutChunks(const std::vector<float> &samples, float chunk_seconds) {
     const size_t search_end = std::min(total, end + search);
     size_t cut = end;
     if (search_end - search_start > energy_window) {
-      const size_t energy_count = search_end - search_start - energy_window + 1;
-      const float inverse_window = 1.0f / static_cast<float>(energy_window);
-      float window_sum = 0.0f;
-      for (size_t i = 0; i < energy_window; ++i) {
-        const float square =
-            samples[search_start + i] * samples[search_start + i];
-        window_sum += square;
-      }
-      float minimum_energy = window_sum * inverse_window;
-      size_t minimum_index = 0;
-      for (size_t i = 1; i < energy_count; ++i) {
-        const float leaving = samples[search_start + i - 1];
-        const float entering = samples[search_start + i + energy_window - 1];
-        const float entering_square = entering * entering;
-        const float leaving_square = leaving * leaving;
-        window_sum += entering_square - leaving_square;
-        const float energy = window_sum * inverse_window;
-        if (energy < minimum_energy) {
-          minimum_energy = energy;
-          minimum_index = i;
-        } else {
-        }
-      }
-      cut = search_start + minimum_index + energy_window / 2;
+      cut = omni_common::QuietestAudioPosition(samples, search_start,
+                                               search_end, energy_window);
     } else {
     }
-    cut = std::max(cut, start + static_cast<size_t>(qwen3_asr::kSampleRate));
+    cut = std::max(cut, start + static_cast<size_t>(omni_common::kSampleRate));
     chunks.emplace_back(start, std::min(cut, total));
     start = cut;
   }
@@ -119,7 +94,7 @@ CohereTranscriber::CohereTranscriber(
     : model_(model_directory),
       vocabulary_(model_directory / "tokenizer.model") {
   const nlohmann::json tokenizer_config = nlohmann::json::parse(
-      ReadFile(model_directory / "tokenizer_config.json"));
+      omni_common::ReadFile(model_directory / "tokenizer_config.json"));
   for (const auto &[id_text, token] :
        tokenizer_config.at("added_tokens_decoder").items()) {
     const int id = std::stoi(id_text);
@@ -134,68 +109,149 @@ CohereTranscriber::DecodeText(const std::vector<int> &token_ids) const {
   return vocabulary_.Decode(token_ids, special_ids_);
 }
 
-CohereTranscriber::ChunkResult
-CohereTranscriber::TranscribeChunk(const std::vector<float> &samples,
-                                   const std::vector<int> &prompt_ids,
-                                   int max_new_tokens, float temperature,
-                                   const std::atomic<bool> &cancel) const {
-  const mx::array encoder_states = model_.Encode(samples);
+std::vector<CohereTranscriber::ChunkResult> CohereTranscriber::TranscribeChunks(
+    const std::vector<std::vector<float>> &chunks,
+    const std::vector<int> &prompt_ids, int max_new_tokens, float temperature,
+    const std::atomic<bool> &cancel) const {
+  const int rows = static_cast<int>(chunks.size());
+  std::vector<ChunkResult> results(rows);
+  const int prompt_length = static_cast<int>(prompt_ids.size());
+  const int token_budget =
+      std::min(max_new_tokens, std::max(0, model_.config().max_sequence_length -
+                                               prompt_length));
+  if (token_budget <= 0) {
+    return results;
+  } else {
+  }
+  // Note (XXXXRT666): one chunk's encoder is queued while the one before it
+  // finishes, so a cancel waits for at most one more chunk.
+  std::vector<mx::array> states;
+  std::vector<int> frame_counts;
+  for (const std::vector<float> &samples : chunks) {
+    states.push_back(model_.Encode(samples));
+    mx::async_eval(states.back());
+    frame_counts.push_back(states.back().shape(1));
+    if (states.size() > 1) {
+      mx::eval(states[states.size() - 2]);
+    } else {
+    }
+    if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
+    } else {
+    }
+  }
+  // Note (XXXXRT666): the chunks decode as rows of one batch: encoder states
+  // padded to the longest, the padding hidden from cross-attention.
+  const int frames =
+      *std::max_element(frame_counts.begin(), frame_counts.end());
+  std::optional<mx::array> encoder_mask;
+  if (*std::min_element(frame_counts.begin(), frame_counts.end()) < frames) {
+    for (int row = 0; row < rows; ++row) {
+      states[row] = mx::pad(states[row],
+                            {{0, 0}, {0, frames - frame_counts[row]}, {0, 0}});
+    }
+    const mx::array lengths = mx::reshape(
+        mx::array(frame_counts.data(), {rows}, mx::int32), {rows, 1, 1, 1});
+    encoder_mask = mx::astype(
+        mx::where(mx::less(mx::reshape(mx::arange(frames, mx::int32),
+                                       {1, 1, 1, frames}),
+                           lengths),
+                  mx::array(0.0f),
+                  mx::array(-std::numeric_limits<float>::infinity())),
+        states.front().dtype());
+  } else {
+  }
+  mx::array encoder_states =
+      rows == 1 ? states.front() : mx::concatenate(states, 0);
   std::vector<DecoderLayerCache> caches(model_.config().decoder_layer_count);
   const auto next_token = [&](const mx::array &logits) {
     if (temperature == 0.0f) {
       return mx::argmax(logits, -1);
     } else {
-      return mx::reshape(
-          mx::random::categorical(mx::expand_dims(
-              mx::divide(logits, mx::array(temperature, logits.dtype())), 0)),
-          {});
+      return mx::random::categorical(
+          mx::divide(logits, mx::array(temperature, logits.dtype())));
     }
   };
-  const int prompt_length = static_cast<int>(prompt_ids.size());
-  const int token_budget =
-      std::min(max_new_tokens, std::max(0, model_.config().max_sequence_length -
-                                               prompt_length));
-  ChunkResult result;
-  if (token_budget <= 0) {
-    return result;
-  } else {
+  std::vector<int32_t> prompt_rows;
+  for (int row = 0; row < rows; ++row) {
+    prompt_rows.insert(prompt_rows.end(), prompt_ids.begin(), prompt_ids.end());
   }
-  const mx::array prompt(prompt_ids.data(), {1, prompt_length}, mx::int32);
-  mx::array token =
-      next_token(model_.Decode(prompt, 0, encoder_states, caches));
+  const mx::array prompt(prompt_rows.data(), {rows, prompt_length}, mx::int32);
+  mx::array token = next_token(
+      model_.Decode(prompt, 0, encoder_states, encoder_mask, caches));
   mx::async_eval({token});
-  std::vector<int> generated_ids;
-  for (int step = 0;; ++step) {
+  std::vector<std::vector<int>> generated_ids(rows);
+  // Note (XXXXRT666): the batch rows still decoding, by chunk; a finished row
+  // leaves the batch, so the others stop paying for it.
+  std::vector<int> active(rows);
+  for (int row = 0; row < rows; ++row) {
+    active[row] = row;
+  }
+  for (int step = 0; !active.empty(); ++step) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else if (step == token_budget) {
-      result.reached_token_limit = true;
+      for (const int row : active) {
+        results[row].reached_token_limit = true;
+      }
       break;
     } else {
     }
+    const int batch = static_cast<int>(active.size());
     const mx::array current = token;
     // Note (khazic): queue the next step before reading this token, so the GPU
     // decodes while the end of text is checked.
     if (step + 1 < token_budget) {
-      token = next_token(model_.Decode(mx::reshape(current, {1, 1}),
+      token = next_token(model_.Decode(mx::reshape(current, {batch, 1}),
                                        prompt_length + step, encoder_states,
-                                       caches));
+                                       encoder_mask, caches));
       mx::async_eval({token});
     } else {
     }
-    const int token_id = static_cast<int>(current.item<uint32_t>());
-    if (token_id == end_of_text_id_) {
-      break;
+    mx::eval(current);
+    const uint32_t *token_ids = current.data<uint32_t>();
+    std::vector<int32_t> kept;
+    for (int position = 0; position < batch; ++position) {
+      if (static_cast<int>(token_ids[position]) == end_of_text_id_) {
+        continue;
+      } else {
+      }
+      generated_ids[active[position]].push_back(
+          static_cast<int>(token_ids[position]));
+      kept.push_back(position);
+    }
+    if (static_cast<int>(kept.size()) < batch && !kept.empty()) {
+      const mx::array keep(kept.data(), {static_cast<int>(kept.size())},
+                           mx::int32);
+      token = mx::take(token, keep, 0);
+      encoder_states = mx::take(encoder_states, keep, 0);
+      if (encoder_mask.has_value()) {
+        encoder_mask = mx::take(*encoder_mask, keep, 0);
+      } else {
+      }
+      for (DecoderLayerCache &cache : caches) {
+        cache.self_attention.KeepRows(keep);
+        cache.cross_keys = mx::take(*cache.cross_keys, keep, 0);
+        cache.cross_values = mx::take(*cache.cross_values, keep, 0);
+      }
+      // Note (XXXXRT666): the smaller batch's buffers fit none of the larger
+      // one's, which would otherwise stay cached.
+      mx::clear_cache();
     } else {
     }
-    generated_ids.push_back(token_id);
+    std::vector<int> still_active;
+    for (const int position : kept) {
+      still_active.push_back(active[position]);
+    }
+    active = std::move(still_active);
   }
-  result.text = swift_port::TrimWhitespace(DecodeText(generated_ids), true);
-  result.generated_token_count = static_cast<int>(generated_ids.size());
-  return result;
+  for (int row = 0; row < rows; ++row) {
+    results[row].token_ids = std::move(generated_ids[row]);
+  }
+  return results;
 }
 
-qwen3_asr::TranscriptionResult
+omni_common::TranscriptionResult
 CohereTranscriber::Transcribe(const std::vector<float> &samples,
                               const CohereOptions &options,
                               const std::atomic<bool> &cancel) const {
@@ -222,44 +278,64 @@ CohereTranscriber::Transcribe(const std::vector<float> &samples,
                              : model_.config().max_sequence_length;
   const size_t min_chunk_samples =
       static_cast<size_t>(options.min_chunk_duration_seconds *
-                          static_cast<float>(qwen3_asr::kSampleRate));
-  qwen3_asr::TranscriptionResult result;
+                          static_cast<float>(omni_common::kSampleRate));
+  omni_common::TranscriptionResult result;
   // Note (khazic): the language actually decoded: an unknown one decodes as
   // English.
   result.language = language;
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  result.finish_reason = omni_common::FinishReason::kStop;
   const bool cuts_at_speech = options.voice_activity_detector != nullptr;
   const std::vector<std::pair<size_t, size_t>> chunks =
       cuts_at_speech
           ? silero_vad::SegmentSpeech(*options.voice_activity_detector, samples,
                                       options.speech_segments)
           : EnergyCutChunks(samples, options.chunk_duration_seconds);
-  for (const auto &[start, end] : chunks) {
-    if (remaining_tokens <= 0) {
-      break;
-    } else {
+  // Note (XXXXRT666): chunks decode a batch at a time, each row with the
+  // budget left when its batch starts; greedy decoding stops a row's tokens
+  // where a smaller budget would, so the budget is then spent in chunk order.
+  for (size_t first = 0; first < chunks.size() && remaining_tokens > 0;
+       first += kBatchChunks) {
+    std::vector<std::vector<float>> batch;
+    for (size_t index = first;
+         index < std::min(chunks.size(), first + kBatchChunks); ++index) {
+      // Note (khazic): of several energy-cut chunks, one shorter than the
+      // minimum is padded with silence; speech segments and a single chunk
+      // are decoded as cut.
+      std::vector<float> chunk(samples.begin() + chunks[index].first,
+                               samples.begin() + chunks[index].second);
+      if (!cuts_at_speech && chunks.size() > 1 &&
+          chunk.size() < min_chunk_samples) {
+        chunk.resize(min_chunk_samples, 0.0f);
+      } else {
+      }
+      batch.push_back(std::move(chunk));
     }
-    // Note (khazic): of several energy-cut chunks, one shorter than the minimum
-    // is padded with silence; speech segments and a single chunk are decoded as
-    // cut.
-    std::vector<float> chunk(samples.begin() + start, samples.begin() + end);
-    if (!cuts_at_speech && chunks.size() > 1 &&
-        chunk.size() < min_chunk_samples) {
-      chunk.resize(min_chunk_samples, 0.0f);
-    } else {
-    }
-    const ChunkResult chunk_result = TranscribeChunk(
-        chunk, prompt_ids, remaining_tokens, options.temperature, cancel);
-    remaining_tokens =
-        std::max(0, remaining_tokens - chunk_result.generated_token_count);
-    result.generated_token_count += chunk_result.generated_token_count;
-    if (chunk_result.reached_token_limit) {
-      result.finish_reason = qwen3_asr::FinishReason::kLength;
-    } else {
-    }
-    if (!chunk_result.text.empty()) {
-      result.text += (result.text.empty() ? "" : "\n") + chunk_result.text;
-    } else {
+    for (ChunkResult &chunk_result :
+         TranscribeChunks(batch, prompt_ids, remaining_tokens,
+                          options.temperature, cancel)) {
+      if (remaining_tokens <= 0) {
+        break;
+      } else {
+      }
+      std::vector<int> &token_ids = chunk_result.token_ids;
+      if (static_cast<int>(token_ids.size()) >= remaining_tokens) {
+        token_ids.resize(remaining_tokens);
+        chunk_result.reached_token_limit = true;
+      } else {
+      }
+      const int generated_token_count = static_cast<int>(token_ids.size());
+      remaining_tokens = std::max(0, remaining_tokens - generated_token_count);
+      result.generated_token_count += generated_token_count;
+      if (chunk_result.reached_token_limit) {
+        result.finish_reason = omni_common::FinishReason::kLength;
+      } else {
+      }
+      const std::string text =
+          swift_port::TrimWhitespace(DecodeText(token_ids), true);
+      if (!text.empty()) {
+        result.text += (result.text.empty() ? "" : "\n") + text;
+      } else {
+      }
     }
   }
   return result;

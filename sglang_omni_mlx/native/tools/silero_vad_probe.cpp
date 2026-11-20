@@ -57,13 +57,13 @@ int main(int argc, char **argv) {
     std::ifstream stream(file, std::ios::binary);
     std::ostringstream bytes;
     bytes << stream.rdbuf();
-    const std::vector<float> samples = qwen3_asr::DecodeWav(bytes.str());
+    const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
     silero_vad::StreamState state;
     std::vector<float> streamed;
     for (size_t offset = 0;
          offset + silero_vad::kChunkSamples <= samples.size();
          offset += silero_vad::kChunkSamples) {
-      streamed.push_back(vad.Feed(samples.data() + offset, state));
+      streamed.push_back(vad.Feed(samples.data() + offset, 1, state)[0]);
     }
     const std::string stem = std::filesystem::path(file).stem().string();
     Write(streamed, out / (stem + ".stream.f32"));

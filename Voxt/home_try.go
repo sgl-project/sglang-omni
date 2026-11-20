@@ -1,0 +1,97 @@
+package main
+
+// Where a try runs (home_page.go): a shortcut pressed while VoxtNew is in
+// front starts a try on the page it shows, unless the user types in one of
+// its fields. Home offers its Try area until the first result; after it,
+// a shortcut on Home is a session as in another app.
+
+import (
+	"os"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+)
+
+// ---- Try places ----
+
+// tryPlace is where a shortcut pressed while VoxtNew is in front runs
+// as a try.
+type tryPlace int
+
+const (
+	placeNone       tryPlace = iota // not a try: a session as anywhere else
+	placeIgnore                     // the setup guide waits for another feature's shortcut
+	placeHome                       // Home's Try area
+	placeFeature                    // the feature page's Try area
+	placeOnboarding                 // the setup guide's step
+)
+
+// tryPlace decides where a shortcut of kind, pressed with target in
+// front, runs: a try when target is VoxtNew and what shows has a Try
+// area for it (the setup guide's step, Home while it offers one, the
+// feature's page), and no text field of the window has the focus: then a
+// session types into that field, as in another app (Voxt 1.x; FB10, a
+// feature's rules being edited).
+func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
+	if target.PID == 0 || target.PID != os.Getpid() {
+		return placeNone
+	}
+	if a.ob.open {
+		if k, ok := obStepKind(a.ob.step); ok && k == kind {
+			return placeOnboarding
+		}
+		return placeIgnore
+	}
+	if a.settingsOpen || a.textFocused() {
+		return placeNone
+	}
+	switch a.router.Path() {
+	case "/home":
+		if !a.homeShowsTry(a.homeTrySession()) {
+			return placeNone // no Try area to show a try's result in (#4199)
+		}
+		return placeHome
+	case "/" + string(kind):
+		return placeFeature
+	}
+	return placeNone
+}
+
+// tryStarted keeps a try a shortcut started (id, "" when it did not:
+// then n says why) for the place that shows it.
+func (a *app) tryStarted(place tryPlace, kind store.Kind, id string, n *sessionNotice) {
+	switch place {
+	case placeHome:
+		a.homeUI.block = n
+	case placeFeature:
+		a.fui(string(kind)).block = n
+	case placeOnboarding:
+		a.obTryStarted(id, n) // onboarding.go
+	}
+}
+
+// homeShowsTry says whether Home offers its Try area: until VoxtNew has
+// given a result once (Setup.Tried, or a result in the history, read
+// before the flag existed). Once shown, it stays through this visit to
+// Home while its try runs or shows a result, or says why it did not
+// start, so a finished try does not take its result away.
+func (a *app) homeShowsTry(mine bool) bool {
+	if !a.prefs.Setup.Tried && len(a.hm.recent) == 0 {
+		a.homeUI.tryOn = true
+		return true
+	}
+	return a.homeUI.tryOn && (mine || a.homeUI.block != nil)
+}
+
+// markTried records that VoxtNew has given a result (Home's Try area
+// goes for good, the history cleared or not).
+func (a *app) markTried() {
+	if !a.prefs.Setup.Tried {
+		a.updateSettings(func(s *settings.Settings) { s.Setup.Tried = true })
+	}
+}
+
+// textFocused says whether the user types in a field of the main window
+// (MyGo patch 0010).
+func (a *app) textFocused() bool { return a.mainUI.TextFocused() }

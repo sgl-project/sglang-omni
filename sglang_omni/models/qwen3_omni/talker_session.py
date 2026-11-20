@@ -24,16 +24,24 @@ from sglang_omni.models.qwen3_omni.request_builders import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import TEXT, TEXT_DELTA
+from sglang_omni.proto.streams import REPLY_TRUNCATED, TEXT, TEXT_DELTA
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
     SessionUnit,
 )
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    FINISH_LENGTH_KIND,
+    SGLangARRequestData,
+)
 
 CODE2WAV_STAGE = "code2wav"
+
+
+def is_thinker_truncation(item: StreamItem) -> bool:
+    """The item the thinker streams ahead of its end when it stopped at its token budget; it carries no text."""
+    return item.metadata.get(REPLY_TRUNCATED) is True
 
 
 def code2wav_payload(payload: StagePayload) -> StagePayload:
@@ -106,6 +114,7 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
         chunk: TimedChunk,
         payload: StagePayload,
     ) -> SGLangARRequestData:
+        is_truncated = self.take_thinker_truncation(payload)
         request_data = build_talker_request_data(
             payload,
             prefill_builder=self.prefill_builder,
@@ -124,6 +133,10 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
         self.replies[payload.request_id] = reply
         for item in payload.prefetched_chunks:
             self.relay_text(payload.request_id, reply, item)
+        if is_truncated:
+            self.relay_truncation(payload.request_id)
+        else:
+            pass
         return request_data
 
     def complete_without_generation(
@@ -136,6 +149,14 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
         for item in payload.prefetched_chunks:
             self.relay_text(payload.request_id, reply, item)
         return code2wav_payload(payload)
+
+    def take_thinker_truncation(self, payload: StagePayload) -> bool:
+        """Take the thinker's truncation item out of the prefetched text; True when the thinker stopped at its token budget."""
+        chunks = payload.prefetched_chunks
+        payload.prefetched_chunks = [
+            item for item in chunks if not is_thinker_truncation(item)
+        ]
+        return len(payload.prefetched_chunks) < len(chunks)
 
     def bind_request(
         self,
@@ -161,8 +182,13 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
     def append_text_chunk(
         self, request_data: SGLangARRequestData, item: StreamItem
     ) -> None:
-        self.prefill_builder.append_text_chunk(request_data, item)
         request_id = request_data.stage_payload.request_id
+        if is_thinker_truncation(item):
+            self.relay_truncation(request_id)
+            return
+        else:
+            pass
+        self.prefill_builder.append_text_chunk(request_data, item)
         reply = self.replies.get(request_id)
         if reply is None:
             return
@@ -210,5 +236,23 @@ class QwenTalkerSessionAdapter(ARSessionAdapter):
     def result(
         self, session_identity: SessionIdentity, request_data: SGLangARRequestData
     ) -> StagePayload:
-        self.replies.pop(request_data.stage_payload.request_id, None)
+        request_id = request_data.stage_payload.request_id
+        self.replies.pop(request_id, None)
+        if request_data.finish_reason == FINISH_LENGTH_KIND:
+            self.relay_truncation(request_id)
+        else:
+            pass
         return request_data.stage_payload
+
+    def relay_truncation(self, request_id: str) -> None:
+        """Flag a reply that stopped at the talker's or the thinker's token budget, ahead of the talker's result, so code2wav ends its turn as truncated."""
+        assert self.outbox is not None
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=torch.empty(0, dtype=torch.long),
+                target=CODE2WAV_STAGE,
+                metadata={"modality": TEXT, "stream": True, REPLY_TRUNCATED: True},
+            )
+        )

@@ -10,10 +10,7 @@ from numbers import Integral
 from typing import TYPE_CHECKING, ClassVar, Generic
 
 import torch
-from sglang.srt.arg_groups.model_override_base import (
-    attention_backends_of,
-    resolved_view,
-)
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from typing_extensions import TypedDict
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -21,10 +18,10 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
-    FULL_PREFILL_ATTENTION_BACKENDS,
     CudaGraphBackend,
     GenerationStageDefaults,
     build_generation_batch_overrides,
+    falls_back_to_breakable_prefill,
     get_prefill_cuda_graph_backend,
     operator_selected_prefill_backend,
     validate_generation_batch_policy,
@@ -80,11 +77,14 @@ class GenerationDefaults(GenerationBatchSizeCaps):
 
 
 class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
+    enable_plain_fallback: bool
     stream_output_builder: StreamOutputBuilder[RequestDataT] | None
     enable_async_decode: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
+    async_prefill: bool
     should_run_top_priority_stream: bool
+    request_build_admission_wait_s: float
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -232,13 +232,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             # note (luojiaxuan): full is only the model's default here, so a
             # prefill attention backend that cannot capture it keeps the
             # breakable graph; an operator's explicit full fails validation.
-            attention_backend = attention_backends_of(resolved_view(server_args))[0]
-            if attention_backend not in FULL_PREFILL_ATTENTION_BACKENDS:
-                logger.info(
-                    f"{self.model_name}: prefill attention backend "
-                    f"{attention_backend!r} cannot capture a full prefill graph; "
-                    "using the breakable prefill graph"
-                )
+            if falls_back_to_breakable_prefill(server_args, self.model_name):
                 overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
                 server_args = resolve_server_args()
             else:

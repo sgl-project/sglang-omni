@@ -1,0 +1,229 @@
+package session
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+)
+
+// spoken is the recognised text with the dictionary's aliases replaced
+// by their terms (dict.Replace), when the dictionary is on: before the
+// clean-up, so it holds without a language model too. The snapshot's
+// Raw, and the history's, stay as recognised.
+func (r *run) spoken(raw string) string {
+	if !r.settings.Dictionary.Enabled {
+		return raw
+	}
+	text := dict.Replace(raw, r.terms)
+	if text != raw {
+		r.logf("info", "the dictionary's aliases replaced: %s", r.logText(text))
+	}
+	return text
+}
+
+// transcribe cleans up text with the language model (unless the feature
+// has it off or no model is ready) and delivers it. A long dictation is
+// cleaned up in pieces (compose.BuildParts); where the model fails, the
+// text goes on as recognised, with a warning.
+func (r *run) transcribe(text string) {
+	result := text
+	var problem *Problem
+	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
+		card := f.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
+		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
+		llmStart := r.now()
+		cleaned, profile, err := r.cleanUpFirst(text)
+		for {
+			if r.askAgain() {
+				cleaned, profile, err = r.cleanUp(text, r.thinking())
+				continue
+			}
+			if !r.useFallback(err) {
+				break
+			}
+			// The fallback joins the re-ask loop: it keeps the level
+			// chosen, and a Rethink while it streams asks it again.
+			r.swapFallback(err)
+			cleaned, profile, err = r.cleanUp(text, r.thinking())
+		}
+		llmTime := r.now().Sub(llmStart)
+		if r.cancelled.Load() {
+			r.endCancelled(nil)
+			return
+		}
+		r.m.update(r, func(s *Snapshot) { s.Profile, s.Timings.LLM = profile, llmTime })
+		result = cleaned
+		switch {
+		case r.skipped.Load():
+			r.logf("info", "the language model was skipped after %v: the text goes on as recognised", llmTime.Round(time.Millisecond))
+			result = text
+		case err != nil:
+			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
+			problem = &Problem{Code: ProblemLLM, Err: err, Degraded: true}
+		case result == "":
+			r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})
+			return
+		default:
+			r.logf("info", "composed %s in %v", r.logText(result), llmTime.Round(time.Millisecond))
+		}
+	}
+	var o finishOpts
+	if r.settings.Features.Transcribe.ShowCard {
+		o.card = deliver.ReasonCard
+	}
+	r.finish(Done, problem, result, o)
+}
+
+// cleanUpFirst is a dictation's first clean-up: what the early clean-up
+// finished while the recording went on is not asked again, only the
+// tail left at Stop is (earlyclean.go). A Rethink reruns cleanUp on the
+// whole text instead.
+func (r *run) cleanUpFirst(text string) (string, string, error) {
+	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
+	parts, answers, tail, failed, ok := r.early.drain(text)
+	if !ok {
+		return r.cleanUp(text, nil)
+	}
+	if len(answers) > 0 {
+		r.logf("info", "%d characters were cleaned while the recording went on", len([]rune(text))-len([]rune(tail)))
+	}
+	if strings.TrimSpace(tail) == "" {
+		return compose.JoinParts(parts, answers), parts[0].Profile(), failed
+	}
+	tailParts, err := compose.BuildParts(r.transcribeInput(tail))
+	if err != nil {
+		return text, "", err
+	}
+	result, profile, err := r.cleanParts(text, append(parts, tailParts...), answers, nil)
+	if err == nil {
+		err = failed
+	}
+	return result, profile, err
+}
+
+// cleanUp runs the language model over text, a request per part, each
+// answer streaming into the snapshot's Draft after those before it. A
+// part that fails keeps its text as recognised; err is the first
+// failure (the text itself when the request could not be composed).
+// think overrides the service's thinking (nil: its setting).
+func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) {
+	parts, err := compose.BuildParts(r.transcribeInput(text))
+	if err != nil {
+		return text, "", err
+	}
+	if len(parts) > 1 {
+		r.logf("info", "cleaning up %d characters in %d pieces", len([]rune(text)), len(parts))
+	}
+	return r.cleanParts(text, parts, nil, think)
+}
+
+// cleanParts runs the requests of the parts after len(answers) (those
+// before are answered already, by the early clean-up), each answer
+// streaming into the snapshot's Draft after those before it, and joins
+// them all. err is the first failure (the text itself when the request
+// could not be composed). think overrides the service's thinking (nil:
+// its setting).
+func (r *run) cleanParts(text string, parts []compose.Part, answers []string, think *llm.Thinking) (string, string, error) {
+	var failed error
+	for i := len(answers); i < len(parts); i++ {
+		p := parts[i]
+		draft := newDrafter(r, parts[:i+1], answers)
+		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
+		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
+		switch {
+		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
+			return text, p.Profile(), err
+		case err != nil:
+			if len(parts) > 1 {
+				err = fmt.Errorf("piece %d of %d: %w", i+1, len(parts), err)
+				r.logf("warning", "%v: kept as recognised", err)
+			}
+			if failed == nil {
+				failed = err
+			}
+			answers = append(answers, p.Text)
+		default:
+			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
+		}
+		draft.done(answers)
+	}
+	return compose.JoinParts(parts, answers), parts[0].Profile(), failed
+}
+
+// llmMessages are a composed request's messages for the model.
+func llmMessages(out compose.Output) []llm.Message {
+	msgs := make([]llm.Message, 0, len(out.History)+2)
+	for _, m := range out.Messages() {
+		msgs = append(msgs, llm.Message{Role: llm.Role(m.Role), Content: m.Content})
+	}
+	return msgs
+}
+
+// drafter streams the clean-up of a part into the snapshot's Draft,
+// after the answers of the parts before it, every draftEvery at most.
+type drafter struct {
+	r       *run
+	parts   []compose.Part
+	answers []string
+	buf     strings.Builder
+	last    time.Time
+}
+
+func newDrafter(r *run, parts []compose.Part, answers []string) *drafter {
+	return &drafter{r: r, parts: parts, answers: answers[:len(answers):len(answers)]}
+}
+
+func (d *drafter) add(delta string) {
+	d.buf.WriteString(delta)
+	if now := time.Now(); now.Sub(d.last) >= draftEvery {
+		d.last = now
+		d.publish()
+	}
+}
+
+// publish puts the draft so far in the snapshot, without the contract's
+// <output> tags (PartialOutput, with the part's own text as CleanOutput
+// gets it).
+func (d *drafter) publish() {
+	part := d.parts[len(d.parts)-1]
+	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
+	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
+}
+
+// done puts the answers of the parts so far in the snapshot.
+func (d *drafter) done(answers []string) {
+	draft := compose.JoinParts(d.parts, answers)
+	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
+}
+
+// askAgain says whether Rethink chose another level for the answer under
+// way (and nothing ended it since), and readies its request: a new
+// llmCtx, an empty draft.
+func (r *run) askAgain() bool {
+	if !r.rethink.Load() || r.cancelled.Load() || r.skipped.Load() || r.stopped.Load() {
+		return false
+	}
+	r.m.mu.Lock()
+	r.rethink.Store(false)
+	think := r.think
+	r.llmCtx, r.llmStop = context.WithCancel(r.ctx)
+	r.m.mu.Unlock()
+	r.logf("info", "asking the language model again at the thinking level chosen: %+v", think)
+	r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = "", "" })
+	return true
+}
+
+// thinking is the level the requests ask with: Rethink's, else the
+// session's (StartRequest.Thinking; nil: the service's setting).
+func (r *run) thinking() *llm.Thinking {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.think
+}

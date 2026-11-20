@@ -11,6 +11,7 @@ buckets only need to track total token count.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -154,19 +155,16 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         h = tower.act(h)
         return tower.proj2(h)[0]
 
-    def capture(self, bucket_size: int) -> CapturedGraph:
-        """Record one graph for a bucket-sized packed input."""
-        device, dtype = self.device, self.dtype
-        d_model = self.tower.ln_post.normalized_shape[0]
-        static_hs = torch.zeros(bucket_size, d_model, device=device, dtype=dtype)
-
+    def capture_boundaries(
+        self, bucket_size: int
+    ) -> tuple[torch.Tensor, VisionAttentionMetadata | None]:
         max_windows = self.max_windows_for(bucket_size)
         base, rem = divmod(bucket_size, max_windows)
         sizes = [base + 1] * rem + [base] * (max_windows - rem)
         bounds = [0]
         for size in sizes:
             bounds.append(bounds[-1] + size)
-        static_cu = torch.tensor(bounds, dtype=torch.int32, device=device)
+        static_cu = torch.tensor(bounds, dtype=torch.int32, device=self.device)
         attention_metadata = None
         if current_platform.is_rocm():
             # VisionAiterAttention otherwise recomputes max_seqlen with
@@ -180,6 +178,16 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             )
         else:
             pass
+        return static_cu, attention_metadata
+
+    def capture(self, bucket_size: int) -> CapturedGraph:
+        """Record one graph for a bucket-sized packed input."""
+        device, dtype = self.device, self.dtype
+        d_model = self.tower.ln_post.normalized_shape[0]
+        static_hs = torch.zeros(bucket_size, d_model, device=device, dtype=dtype)
+
+        static_cu, attention_metadata = self.capture_boundaries(bucket_size)
+        max_windows = static_cu.numel() - 1
         self.capture_attention_metadata = attention_metadata
 
         def run_once() -> torch.Tensor:
@@ -195,11 +203,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         device_module.current_stream(device).wait_stream(side)
         device_module.synchronize(device)
 
-        # Note (siju): each bucket keeps its own pool. Sharing one is only safe
-        # for graphs replayed in capture order, and a request picks its bucket
-        # from the clip length, so any order is possible.
-        with self.graph_backend.capture(thread_local_errors=True) as graph:
-            static_out = run_once()
+        graph, static_out = self.record_graph(bucket_size, run_once)
         logger.info(
             "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",
             bucket_size,
@@ -213,6 +217,16 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             attention_metadata=attention_metadata,
             output=static_out,
         )
+
+    def record_graph(
+        self, bucket_size: int, run_once: Callable[[], torch.Tensor]
+    ) -> tuple[ReplayableGraph, torch.Tensor]:
+        # Note (siju): each bucket keeps its own pool. Sharing one is only safe
+        # for graphs replayed in capture order, and a request picks its bucket
+        # from the clip length, so any order is possible.
+        with self.graph_backend.capture(thread_local_errors=True) as graph:
+            static_out = run_once()
+        return graph, static_out
 
     def run(
         self, hidden_states: torch.Tensor, window_lens: list[int]
@@ -262,18 +276,21 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         cu = torch.tensor(bounds, dtype=torch.int32)
 
         entry.hidden_states[:total].copy_(hidden_states)
-        entry.cu_seqlens.copy_(cu, non_blocking=True)
-        if entry.attention_metadata is not None:
-            entry.attention_metadata.seq_lens.copy_(cu[1:] - cu[:-1], non_blocking=True)
-        else:
-            pass
-        entry.graph.replay()
+        self.replay(entry, cu)
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]
             out = out.squeeze(0)
         else:
             pass
         return out[:total].clone()
+
+    def replay(self, entry: CapturedGraph, cu: torch.Tensor) -> None:
+        entry.cu_seqlens.copy_(cu, non_blocking=True)
+        if entry.attention_metadata is not None:
+            entry.attention_metadata.seq_lens.copy_(cu[1:] - cu[:-1], non_blocking=True)
+        else:
+            pass
+        entry.graph.replay()
 
     def plan(self, total: int, real_windows: int) -> tuple[int, list[int]] | None:
         """Pick a bucket and the dummy-window sizes that absorb its padding."""

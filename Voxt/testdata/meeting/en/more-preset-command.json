@@ -1,0 +1,82 @@
+{
+  "name": "more-preset-command",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 6,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "More to explore",
+    "subtitle": "Voxt is ready. Two more things make it yours.",
+    "recording": false,
+    "more": {
+      "preset_options": [
+        {
+          "id": "option",
+          "label": "Right ⌥ (default)"
+        },
+        {
+          "id": "fn",
+          "label": "fn (Auralink's keys)"
+        },
+        {
+          "id": "command",
+          "label": "⌘ combination"
+        },
+        {
+          "id": "mouseMiddle",
+          "label": "Middle mouse + fn⇧"
+        }
+      ],
+      "preset_selected": "⌘ combination",
+      "preset_about": "⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.",
+      "preset_warnings": null,
+      "shortcuts": [
+        {
+          "title": "Transcribe",
+          "keys": "Right ⌘",
+          "problems": null
+        },
+        {
+          "title": "Translate",
+          "keys": "⇧ Right ⌘",
+          "problems": null
+        },
+        {
+          "title": "Rewrite",
+          "keys": "⌥ Right ⌘",
+          "problems": null
+        },
+        {
+          "title": "Paste the last result",
+          "keys": "⌃⌘V",
+          "problems": null
+        }
+      ]
+    },
+    "footer": {
+      "mode": "finish",
+      "busy": false,
+      "back": true,
+      "continue_label": "Start using Voxt",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

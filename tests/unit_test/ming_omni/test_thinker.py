@@ -162,7 +162,7 @@ def test_ming_preprocessor_uses_config_image_patch_token_id(monkeypatch) -> None
         tokenizer=tokenizer,
     )
 
-    processor = module.MingPreprocessor("fake-model")
+    processor = module.MingPreprocessor("fake-model", video_decode_threads=16)
 
     assert processor.image_patch_id == 222
 

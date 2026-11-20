@@ -16,6 +16,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
+    try_resolve_arch_from_zonos3_layout,
     try_resolve_ming3_dense_tts,
 )
 
@@ -39,7 +40,10 @@ def resolve_config_cls_for_model_path(model_path: str):
     hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
+        # Checkpoints with custom code fall through to the config.json readers below, so transformers never prompts.
+        hf_config = AutoConfig.from_pretrained(
+            repo_id, trust_remote_code=False, **hf_kwargs
+        )
     except (OSError, ValueError, KeyError):
         hf_config = None
 
@@ -66,6 +70,10 @@ def resolve_config_cls_for_model_path(model_path: str):
         pass
     if arch is None:
         arch = try_resolve_arch_from_personaplex_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_zonos3_layout(repo_id, revision=revision)
     else:
         pass
     if arch is None:
@@ -146,9 +154,6 @@ class ConfigManager:
         else:
             pass
         resolved = ConfigResolver(self.config).resolve(patches)
-        validate_dotted_gpu_override_conflicts(
-            resolved.config, {patch.key for patch in patches.ordered()}
-        )
         return resolved.config
 
     @staticmethod
@@ -175,55 +180,19 @@ class ConfigManager:
         return ConfigManager(config)
 
     @staticmethod
-    def from_file(file_path: str) -> "ConfigManager":
-        """
-        Load the configuration from the file path.
-
-        The file's stages: mapping entries are folded into the
-        configuration that comes back, so callers holding a ConfigManager
-        see one settled config rather than a config plus a pile of pending
-        overrides. sgl-omni config explain wants the opposite and calls
-        sources_from_config_file directly.
-        """
-        config, patches = sources_from_config_file(file_path)
+    def from_file(
+        file_path: str, *, model_path_override: str | None = None
+    ) -> "ConfigManager":
+        """Load the file with stage settings and any model path override applied."""
+        config, patches = sources_from_config_file(
+            file_path, model_path_override=model_path_override
+        )
         if not patches:
             return ConfigManager(config)
         else:
             pass
         resolved = ConfigResolver(config).resolve(patches)
         return ConfigManager(resolved.config)
-
-
-def validate_dotted_gpu_override_conflicts(
-    config: PipelineConfig,
-    override_keys: set[str],
-) -> None:
-    """Reject stage GPU overrides shadowed by process replica placement."""
-    stage_by_name = {stage.name: stage for stage in config.stages}
-    for key in sorted(override_keys):
-        parts = key.split(".")
-        if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
-            continue
-        else:
-            pass
-
-        stage = stage_by_name.get(parts[1])
-        if stage is None:
-            continue
-        else:
-            pass
-        process_name = stage.process or stage.name
-        process_config = config.processes.get(process_name)
-        if process_config is None or process_config.replica_devices is None:
-            continue
-        else:
-            pass
-
-        raise ValueError(
-            f"{key} cannot override GPU placement for stage {stage.name!r} "
-            f"because process {process_name!r} declares replica_devices; update "
-            f"processes.{process_name}.replica_devices instead"
-        )
 
 
 def normalize_flag_key(key: str) -> str:

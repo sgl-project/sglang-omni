@@ -18,7 +18,7 @@ from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import EvictParams, MatchPrefixParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.mem_cache.common import release_kv_cache
+from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
 from sglang.srt.runtime_context import get_context
@@ -26,7 +26,90 @@ from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+if current_platform.is_npu():
+    from sgl_kernel_npu.mem_cache import allocator as allocator_kernels
+    from sglang.srt.hardware_backend.npu.allocator_npu import (
+        NPUPagedTokenToKVPoolAllocator,
+    )
+
+    from sglang_omni.models.qwen3_tts import engine_builder as qwen3_engine_builder
+else:
+    pass
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="Requires an NPU")
+@pytest.mark.parametrize("page_size", [16, 128])
+def test_npu_allocator_preparation_preserves_pool_and_page_mapping(
+    page_size: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Warmup must not consume real KV pages or change partial-page allocation."""
+    allocator = NPUPagedTokenToKVPoolAllocator(
+        size=8192,
+        page_size=page_size,
+        dtype=torch.float16,
+        device="npu:0",
+        kvcache=None,
+        need_sort=False,
+    )
+    free_pages_before = allocator.free_pages.clone()
+    dependency_kernel = allocator_kernels.alloc_extend_kernel
+    monkeypatch.setattr(allocator_kernels, "alloc_extend_kernel", dependency_kernel)
+    dependency_function = dependency_kernel.fn
+    dependency_annotations = dict(dependency_function.__annotations__)
+    sampling_shapes: list[tuple[int, int]] = []
+    original_sampler = qwen3_engine_builder.multinomial_with_seed
+
+    def sample(
+        logprobs: torch.Tensor, seed: torch.Tensor, positions: torch.Tensor
+    ) -> torch.Tensor:
+        sampling_shapes.append(tuple(logprobs.shape))
+        return original_sampler(logprobs, seed, positions)
+
+    monkeypatch.setattr(qwen3_engine_builder, "multinomial_with_seed", sample)
+    qwen3_engine_builder.prepare_npu_kernels(allocator, 3, 3072)
+    prepared_kernel = allocator_kernels.alloc_extend_kernel
+    qwen3_engine_builder.prepare_npu_kernels(allocator, 3, 3072)
+
+    assert sampling_shapes == [(1, 3072), (2, 3072), (4, 3072)] * 2
+    assert allocator_kernels.alloc_extend_kernel is prepared_kernel
+    assert (
+        prepared_kernel.arg_names.index("max_num_extend_tokens")
+        not in prepared_kernel.constexprs
+    )
+    assert dependency_function.__annotations__ == dependency_annotations
+    torch.testing.assert_close(allocator.free_pages, free_pages_before, rtol=0, atol=0)
+
+    allocator.alloc(3 * page_size)
+    free_pages = allocator.free_pages.cpu().tolist()
+    prefixes_cpu = torch.tensor([0, 1, page_size], dtype=torch.int64)
+    sequences_cpu = torch.tensor(
+        [page_size + 3, page_size + 5, page_size + 2], dtype=torch.int64
+    )
+    last_positions = torch.tensor(
+        [-1, 2 * page_size, 4 * page_size - 1], dtype=torch.int64, device="npu:0"
+    )
+    expected = [
+        *range(free_pages[0] * page_size, (free_pages[0] + 1) * page_size),
+        *range(free_pages[1] * page_size, free_pages[1] * page_size + 3),
+        *range(2 * page_size + 1, 3 * page_size),
+        *range(free_pages[2] * page_size, free_pages[2] * page_size + 5),
+        *range(free_pages[3] * page_size, free_pages[3] * page_size + 2),
+    ]
+    actual = allocator.alloc_extend(
+        prefixes_cpu.to("npu:0"),
+        prefixes_cpu,
+        sequences_cpu.to("npu:0"),
+        sequences_cpu,
+        last_positions,
+        extend_num_tokens=int((sequences_cpu - prefixes_cpu).sum()),
+    )
+
+    assert actual.cpu().tolist() == expected
+    assert allocator.free_pages.cpu().tolist() == free_pages[4:]
 
 
 class TinyModel(torch.nn.Module):
@@ -55,8 +138,8 @@ def make_sched_req(
         data=SimpleNamespace(
             req=SimpleNamespace(
                 rid=rid,
-                prefix_indices=list(range(prefix_len)),
-                extend_range=SimpleNamespace(length=extend_len),
+                prefix_len=prefix_len,
+                extend_len=extend_len,
             ),
             prompt_input_embeds=prompt,
             prefill_input_embeds=prompt,
@@ -352,8 +435,8 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
     assert len(sched_req.data.decode_input_embeds) == n_decode
     assert len(sched_req.data.pending_feedback_queue) == 1
 
-    sched_req.data.req.prefix_indices = []
-    sched_req.data.req.extend_range = SimpleNamespace(length=prompt_len + generated)
+    sched_req.data.req.prefix_len = 0
+    sched_req.data.req.extend_len = prompt_len + generated
     prefill_batch = SimpleNamespace(
         input_ids=torch.zeros(prompt_len + generated, dtype=torch.long)
     )
@@ -457,7 +540,8 @@ def write_slots(state: RadixChunkState, req: Req, start: int, end: int) -> None:
 
 
 def compute_chunk(state: RadixChunkState, req: Req, start: int, end: int) -> None:
-    req.set_extend_range(start, end)
+    req.prefix_len = start
+    req.extend_end = end
     req.kv.kv_committed_len = req.kv.kv_allocated_len = end
 
 
@@ -491,7 +575,7 @@ def test_a_retracted_reprefill_advances_past_its_private_chunk(
     req = prompt_only_req(state, prompt_len=20)
     write_slots(state, req, 0, 16)
     compute_chunk(state, req, 0, 16)
-    state.cache.cache_unfinished_req(req, chunked=True)
+    checkpoint_kv_cache(req, state.cache)
     req.output_ids.extend(range(30, 51))
     req.init_next_round_input()
     req.skip_radix_cache_insert = True
@@ -501,17 +585,17 @@ def test_a_retracted_reprefill_advances_past_its_private_chunk(
     state.scheduler.stash_chunked_request(req)
     admit_next_chunk(state, req)
 
-    assert (req.extend_range.start, req.extend_range.end) == (33, 41)
+    assert (req.prefix_len, req.extend_end) == (33, 41)
     assert req.kv.cache_protected_len == 16
     if release_at_middle:
         pass
     else:
         req.kv.kv_committed_len = req.kv.kv_allocated_len = 41
-    release_kv_cache(req, state.cache)
+    release_kv_cache(req, state.cache, checkpoint=True)
     match = state.cache.match_prefix(
         MatchPrefixParams(key=RadixKey(req.origin_input_ids + req.output_ids))
     )
-    assert len(match.device_indices) == 16
+    assert match.device_prefix_len == 16
     assert_every_slot_returns_once(state, total)
 
 
@@ -527,7 +611,7 @@ def test_a_fresh_prompt_chunk_enters_the_radix_tree(
     state.scheduler.stash_chunked_request(req)
     admit_next_chunk(state, req)
 
-    assert (req.extend_range.start, req.extend_range.end) == (32, 41)
+    assert (req.prefix_len, req.extend_end) == (32, 41)
     assert state.cache.total_size() == 32
-    release_kv_cache(req, state.cache)
+    release_kv_cache(req, state.cache, checkpoint=True)
     assert_every_slot_returns_once(state, total)

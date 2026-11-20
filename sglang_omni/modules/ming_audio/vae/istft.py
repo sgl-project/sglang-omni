@@ -210,7 +210,10 @@ class ISTFTHead(FourierHead):
         x_pred = self.out(x).transpose(1, 2)
         mag, phase = x_pred.chunk(2, dim=1)
         mag = torch.clip(torch.exp(mag), max=1e2)
-        spectrum = mag * (torch.cos(phase) + 1j * torch.sin(phase))
+        # note (Chenchen Hong): BF16 complex arithmetic is unsupported; keep the spectrum in complex64 for ISTFT.
+        spectrum = mag * torch.complex(
+            torch.cos(phase).float(), torch.sin(phase).float()
+        )
         return spectrum, x_pred
 
     def forward(

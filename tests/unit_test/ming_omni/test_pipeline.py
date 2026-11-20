@@ -1005,6 +1005,7 @@ def test_ming_media_cache_keys_track_decoded_content(
     )
     pre = mod.MingPreprocessor.__new__(mod.MingPreprocessor)
     pre.audio_config = SimpleNamespace()
+    pre.video_decode_threads = 16
     pre.process_images = lambda _: (torch.ones(1, 2), torch.tensor([[1, 2, 2]]), [1])
     pre.process_videos = lambda _: (torch.ones(1, 2), torch.tensor([[1, 2, 2]]), [1])
     pre.build_prompt = lambda messages, **counts: ("prompt", [1, 2, 3], [1])

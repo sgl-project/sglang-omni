@@ -6,9 +6,12 @@
 #include <iterator>
 #include <stdexcept>
 
-#include <CoreFoundation/CoreFoundation.h>
-
+#include "common/audio.h"
+#include "common/audio_chunks.h"
+#include "common/generation.h"
 #include "common/swift_port.h"
+#include "common/text.h"
+#include "common/transcription.h"
 
 namespace parakeet {
 
@@ -17,33 +20,32 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr const char *kWordMarker = "\xE2\x96\x81"; // U+2581
-// The Swift port's chunking: 5 s chunks for a whole-recording request,
-// never shorter than 0.5 s, each overlapping the last by 1 s.
+// Note (Jiaxin Deng): chunks overlap by 1 s, so a shorter request advances a
+// sample at a time, and the encoder's attention grows with the square of a
+// longer one; automatic mode bounds chunks to 30 s at quiet boundaries.
+constexpr double kMinRequestedWindowSeconds = 2.0;
+constexpr double kMaxRequestedWindowSeconds = 300.0;
 constexpr double kWholeRecordingChunkSeconds = 1199.0;
-constexpr double kWholeRecordingChunkReplacementSeconds = 5.0;
+// Note (Mengwei Liu): quiet cuts and a useful final tail reduce blank
+// predictions on short crops without unbounded encoder attention.
+constexpr double kAutomaticChunkSeconds = 30.0;
+// Note (Mengwei Liu): these bounded settings recover the frozen short-tail
+// and seed-2888 blank-chunk regressions; they are not universal optima.
+constexpr double kAutomaticMinimumTailSeconds = 10.0;
+constexpr double kRecoveryPaddingSeconds = 0.25;
+constexpr double kRecoveryGapSeconds = 3.0;
+constexpr int kRecoveryAttemptCount = 2;
+// Encoder frames joined with one prediction per read-back.
+constexpr int kDecisionWindowFrames = 16;
+// Note (XXXXRT666): audio decoded in lockstep at once, sixteen 30 s chunks,
+// whose joint frames are all that stays resident; a longer chunk goes alone.
+constexpr double kLockstepSeconds = 480.0;
+// Note (Mengwei Liu): the -50 dBFS RMS gate excludes silence, not noise.
+constexpr double kRecoveryMinimumMeanSquaredAmplitude = 1e-5;
+constexpr double kChunkSearchSeconds = 5.0;
+constexpr double kChunkEnergyWindowSeconds = 0.1;
 constexpr double kMinChunkSeconds = 0.5;
 constexpr double kChunkOverlapSeconds = 1.0;
-
-bool Contains(const std::string &text, const char *needle) {
-  return text.find(needle) != std::string::npos;
-}
-
-// Note (Dayuxiaoshui): Swift's String.contains(" ") compares grapheme
-// clusters, so a space that a combining mark attaches to is not a space.
-bool ContainsStandaloneSpace(const std::string &text) {
-  const std::vector<uint32_t> code_points = qwen3_asr::CodePoints(text);
-  const CFCharacterSetRef combining =
-      CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
-  for (size_t index = 0; index < code_points.size(); ++index) {
-    if (code_points[index] == ' ' && (index + 1 == code_points.size() ||
-                                      !CFCharacterSetIsLongCharacterMember(
-                                          combining, code_points[index + 1]))) {
-      return true;
-    } else {
-    }
-  }
-  return false;
-}
 
 struct Sentence {
   std::string text;
@@ -71,12 +73,14 @@ TokensToSentences(const std::vector<AlignedToken> &tokens) {
     const AlignedToken &token = tokens[index];
     current.tokens.push_back(token);
     const std::string &text = token.text;
-    const bool closes =
-        Contains(text, "!") || Contains(text, "?") ||
-        Contains(text, "\xE3\x80\x82") || Contains(text, "\xEF\xBC\x9F") ||
-        Contains(text, "\xEF\xBC\x81") ||
-        (Contains(text, ".") && (index + 1 == tokens.size() ||
-                                 tokens[index + 1].has_standalone_space));
+    const bool closes = omni_common::Contains(text, "!") ||
+                        omni_common::Contains(text, "?") ||
+                        omni_common::Contains(text, "\xE3\x80\x82") ||
+                        omni_common::Contains(text, "\xEF\xBC\x9F") ||
+                        omni_common::Contains(text, "\xEF\xBC\x81") ||
+                        (omni_common::Contains(text, ".") &&
+                         (index + 1 == tokens.size() ||
+                          tokens[index + 1].has_standalone_space));
     if (closes) {
       close();
     } else {
@@ -226,6 +230,21 @@ std::vector<AlignedToken> MergeTokens(const std::vector<AlignedToken> &a,
 
 } // namespace
 
+ParakeetOptions ChunkDurationOptions(double chunk_duration_seconds) {
+  if (!std::isfinite(chunk_duration_seconds) ||
+      chunk_duration_seconds < kMinRequestedWindowSeconds ||
+      (chunk_duration_seconds > kMaxRequestedWindowSeconds &&
+       chunk_duration_seconds < kWholeRecordingChunkSeconds)) {
+    throw std::invalid_argument(
+        "chunk_duration must be 2 to 300 seconds, or 1199 or more for a "
+        "whole recording");
+  } else if (chunk_duration_seconds >= kWholeRecordingChunkSeconds) {
+    return ParakeetOptions();
+  } else {
+    return ParakeetOptions{chunk_duration_seconds};
+  }
+}
+
 ParakeetTranscriber::ParakeetTranscriber(
     const std::filesystem::path &model_directory)
     : model_(model_directory) {
@@ -235,7 +254,7 @@ ParakeetTranscriber::ParakeetTranscriber(
          marker = text.find(kWordMarker, marker + 1)) {
       text.replace(marker, std::string(kWordMarker).size(), " ");
     }
-    standalone_spaces_.push_back(ContainsStandaloneSpace(text));
+    standalone_spaces_.push_back(omni_common::ContainsStandaloneSpace(text));
     token_texts_.push_back(text);
     special_tokens_.push_back((piece.size() >= 4 && piece.rfind("<|", 0) == 0 &&
                                piece.compare(piece.size() - 2, 2, "|>") == 0) ||
@@ -243,109 +262,368 @@ ParakeetTranscriber::ParakeetTranscriber(
   }
 }
 
-std::vector<AlignedToken>
-ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
-                                 const std::atomic<bool> &cancel) const {
+std::vector<std::vector<AlignedToken>>
+ParakeetTranscriber::DecodeChunks(const std::vector<std::vector<float>> &chunks,
+                                  const std::atomic<bool> &cancel) const {
+  if (cancel.load()) {
+    throw omni_common::GenerationCancelled();
+  } else {
+  }
   const ParakeetConfig &config = model_.config();
-  const mx::array encoded = model_.Encode(model_.Features(samples));
-  mx::eval(encoded);
-  const int frame_count = encoded.shape(1);
-  const int blank = model_.blank_id();
-  auto [hidden, cell] = model_.InitialState();
-  int last_token = blank;
-  int new_symbols = 0;
-  std::vector<AlignedToken> tokens;
-  for (int frame = 0; frame < frame_count;) {
+  const int rows = static_cast<int>(chunks.size());
+  std::vector<mx::array> projected;
+  std::vector<int> frame_counts;
+  // Note (XXXXRT666): one chunk's encoder is queued while the one before it
+  // finishes, so a cancel waits for at most one more chunk.
+  for (const std::vector<float> &samples : chunks) {
+    projected.push_back(
+        model_.ProjectFrames(model_.Encode(model_.Features(samples))));
+    mx::async_eval(projected.back());
+    frame_counts.push_back(projected.back().shape(1));
+    if (projected.size() > 1) {
+      mx::eval(projected[projected.size() - 2]);
+    } else {
+    }
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
-    } else {
-    }
-    const DecoderStep step = model_.Decode(
-        mx::slice(encoded, {0, frame, 0}, {1, frame + 1, config.model_width}),
-        last_token, hidden, cell);
-    // Note (Dayuxiaoshui): NemoDecodingLogic.tdtStep; an unknown duration
-    // class advances one frame.
-    const int jump =
-        step.duration_index >= 0 &&
-                step.duration_index < static_cast<int>(config.durations.size())
-            ? config.durations[step.duration_index]
-            : 1;
-    const int symbol_frame = frame;
-    frame += jump;
-    if (jump != 0) {
-      new_symbols = 0;
-    } else if (++new_symbols >= config.max_symbols_per_frame) {
-      frame += 1;
-      new_symbols = 0;
-    } else {
-    }
-    if (step.token != blank) {
-      last_token = step.token;
-      hidden = step.hidden;
-      cell = step.cell;
-      if (step.token >= 0 && step.token < blank &&
-          !special_tokens_[step.token]) {
-        tokens.push_back({step.token, token_texts_[step.token],
-                          model_.FrameSeconds(symbol_frame),
-                          model_.FrameSeconds(jump),
-                          standalone_spaces_[step.token]});
-      } else {
-      }
+      throw omni_common::GenerationCancelled();
     } else {
     }
   }
-  std::vector<AlignedToken> ordered;
-  for (Sentence &sentence : TokensToSentences(tokens)) {
-    ordered.insert(ordered.end(), sentence.tokens.begin(),
-                   sentence.tokens.end());
+  // Note (XXXXRT666): every row is padded by a window past the longest, so
+  // each row's window is a gather at its own frame.
+  const int padded_frames =
+      *std::max_element(frame_counts.begin(), frame_counts.end()) +
+      kDecisionWindowFrames;
+  for (int row = 0; row < rows; ++row) {
+    projected[row] =
+        mx::pad(projected[row],
+                {{0, 0}, {0, padded_frames - frame_counts[row]}, {0, 0}});
+  }
+  const mx::array frames =
+      rows == 1 ? projected.front() : mx::concatenate(projected, 0);
+  const int joint_width = frames.shape(2);
+  const mx::array window_offsets =
+      mx::reshape(mx::arange(kDecisionWindowFrames, mx::int32),
+                  {1, kDecisionWindowFrames, 1});
+  const int blank = model_.blank_id();
+  const auto [initial_hidden, initial_cell] = model_.InitialState(rows);
+  Prediction prediction = model_.Predict(mx::full({rows, 1}, blank, mx::int32),
+                                         initial_hidden, initial_cell);
+  std::vector<int> row_frames(rows, 0);
+  std::vector<int> new_symbols(rows, 0);
+  std::vector<int> emitted(rows, blank);
+  std::vector<std::vector<AlignedToken>> tokens(rows);
+  std::vector<int32_t> window_starts(rows, 0);
+  std::vector<int32_t> predicted(rows, 0);
+  // Note (XXXXRT666): the chunks are decoded in lockstep: each round joins
+  // every row's next window of frames with its prediction in one read-back,
+  // after re-predicting the rows that emitted a token, so a recording takes
+  // about one chunk's read-backs rather than all of theirs.
+  while (true) {
+    bool pending = false;
+    bool active = false;
+    for (int row = 0; row < rows; ++row) {
+      const bool running = row_frames[row] < frame_counts[row];
+      active = active || running;
+      predicted[row] = running && emitted[row] != blank;
+      pending = pending || predicted[row];
+      window_starts[row] = std::min(row_frames[row], frame_counts[row] - 1);
+    }
+    if (!active) {
+      break;
+    } else if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
+    } else {
+    }
+    if (pending) {
+      const mx::array next = mx::array(emitted.data(), {rows, 1}, mx::int32);
+      const Prediction updated =
+          model_.Predict(next, prediction.hidden, prediction.cell);
+      const mx::array selected =
+          mx::astype(mx::array(predicted.data(), {rows}, mx::int32), mx::bool_);
+      prediction = {mx::where(mx::reshape(selected, {rows, 1, 1}),
+                              updated.projection, prediction.projection),
+                    mx::where(mx::reshape(selected, {1, rows, 1}),
+                              updated.hidden, prediction.hidden),
+                    mx::where(mx::reshape(selected, {1, rows, 1}), updated.cell,
+                              prediction.cell)};
+    } else {
+    }
+    std::fill(emitted.begin(), emitted.end(), blank);
+    const mx::array frame_index =
+        mx::add(mx::reshape(mx::array(window_starts.data(), {rows}, mx::int32),
+                            {rows, 1, 1}),
+                window_offsets);
+    const mx::array window_decisions = model_.Decisions(
+        mx::take_along_axis(
+            frames,
+            mx::broadcast_to(frame_index,
+                             {rows, kDecisionWindowFrames, joint_width}),
+            1),
+        prediction);
+    mx::eval(window_decisions);
+    const int32_t *decisions = window_decisions.data<int32_t>();
+    for (int row = 0; row < rows; ++row) {
+      const int window_start = window_starts[row];
+      const int window_end =
+          std::min(frame_counts[row], window_start + kDecisionWindowFrames);
+      int &frame = row_frames[row];
+      while (frame >= window_start && frame < window_end) {
+        const int offset = row * kDecisionWindowFrames + frame - window_start;
+        const int token = decisions[offset];
+        const int duration_index =
+            decisions[rows * kDecisionWindowFrames + offset];
+        // Note (Dayuxiaoshui): NemoDecodingLogic.tdtStep; an unknown duration
+        // class advances one frame.
+        const int jump =
+            duration_index >= 0 &&
+                    duration_index < static_cast<int>(config.durations.size())
+                ? config.durations[duration_index]
+                : 1;
+        const int symbol_frame = frame;
+        frame += jump;
+        if (jump != 0) {
+          new_symbols[row] = 0;
+        } else if (++new_symbols[row] >= config.max_symbols_per_frame) {
+          frame += 1;
+          new_symbols[row] = 0;
+        } else {
+        }
+        if (token != blank) {
+          emitted[row] = token;
+          if (token >= 0 && token < blank && !special_tokens_[token]) {
+            tokens[row].push_back(
+                {token, token_texts_[token], model_.FrameSeconds(symbol_frame),
+                 model_.FrameSeconds(jump), standalone_spaces_[token]});
+          } else {
+          }
+          break;
+        } else {
+        }
+      }
+    }
+  }
+  std::vector<std::vector<AlignedToken>> ordered(rows);
+  for (int row = 0; row < rows; ++row) {
+    for (Sentence &sentence : TokensToSentences(tokens[row])) {
+      ordered[row].insert(ordered[row].end(), sentence.tokens.begin(),
+                          sentence.tokens.end());
+    }
   }
   return ordered;
 }
 
-qwen3_asr::TranscriptionResult
+void ParakeetTranscriber::RecoverBlankTails(
+    const std::vector<std::vector<float>> &chunks,
+    std::vector<std::vector<AlignedToken>> &tokens, size_t max_chunk_samples,
+    const std::atomic<bool> &cancel) const {
+  const size_t sample_rate_hertz = omni_common::kSampleRate;
+  const size_t padding_samples =
+      static_cast<size_t>(kRecoveryPaddingSeconds * sample_rate_hertz);
+  const size_t recovery_context_samples =
+      static_cast<size_t>(kChunkOverlapSeconds * sample_rate_hertz);
+  const size_t chunk_count = chunks.size();
+  std::vector<size_t> decoded_start_samples(chunk_count, 0);
+  std::vector<size_t> decoded_padding_samples(chunk_count, 0);
+  std::vector<bool> finished(chunk_count, false);
+  // Note (XXXXRT666): each attempt retries every chunk that needs it, in
+  // lockstep; a chunk's attempts still follow one another.
+  for (int attempt = 0; attempt < kRecoveryAttemptCount; ++attempt) {
+    struct Retry {
+      size_t chunk = 0;
+      size_t start_sample = 0;
+      size_t padding_samples = 0;
+      double decoded_end_seconds = 0.0;
+    };
+    std::vector<Retry> retries;
+    std::vector<std::vector<float>> retry_samples;
+    for (size_t chunk = 0; chunk < chunk_count; ++chunk) {
+      const std::vector<float> &samples = chunks[chunk];
+      if (finished[chunk]) {
+        continue;
+      } else {
+      }
+      const double decoded_end_seconds =
+          tokens[chunk].empty() ? 0.0 : tokens[chunk].back().end_seconds();
+      const size_t decoded_end_sample =
+          std::min(samples.size(), static_cast<size_t>(decoded_end_seconds *
+                                                       sample_rate_hertz));
+      if (samples.size() - decoded_end_sample <
+          static_cast<size_t>(kRecoveryGapSeconds * sample_rate_hertz)) {
+        finished[chunk] = true;
+        continue;
+      } else {
+      }
+      double tail_squared_amplitude_sum = 0.0;
+      for (size_t i = decoded_end_sample; i < samples.size(); ++i) {
+        tail_squared_amplitude_sum +=
+            static_cast<double>(samples[i]) * samples[i];
+      }
+      if (tail_squared_amplitude_sum / (samples.size() - decoded_end_sample) <
+          kRecoveryMinimumMeanSquaredAmplitude) {
+        finished[chunk] = true;
+        continue;
+      } else {
+      }
+      const size_t start_sample =
+          decoded_end_sample > recovery_context_samples
+              ? decoded_end_sample - recovery_context_samples
+              : 0;
+      // Note (XXXXRT666): a blank chunk grows its leading silence each
+      // attempt; a partly decoded one restarts a second before its end, then
+      // pads.
+      size_t requested_padding_samples = 0;
+      if (tokens[chunk].empty()) {
+        requested_padding_samples = (attempt + 1) * padding_samples;
+      } else if (attempt > 0) {
+        requested_padding_samples = padding_samples;
+      } else {
+      }
+      // Note (Mengwei Liu): padding uses spare encoder capacity, never space
+      // obtained by discarding the source tail.
+      const size_t leading_padding_samples =
+          std::min(requested_padding_samples,
+                   max_chunk_samples - (samples.size() - start_sample));
+      // Note (XXXXRT666): clamped padding can repeat the previous decode's
+      // input, which greedy decoding would only answer with the same tokens.
+      if (start_sample == decoded_start_samples[chunk] &&
+          leading_padding_samples == decoded_padding_samples[chunk]) {
+        continue;
+      } else {
+      }
+      decoded_start_samples[chunk] = start_sample;
+      decoded_padding_samples[chunk] = leading_padding_samples;
+      std::vector<float> retry(leading_padding_samples, 0.0f);
+      retry.insert(retry.end(), samples.begin() + start_sample, samples.end());
+      retries.push_back(
+          {chunk, start_sample, leading_padding_samples, decoded_end_seconds});
+      retry_samples.push_back(std::move(retry));
+    }
+    if (retries.empty()) {
+      continue;
+    } else {
+    }
+    std::vector<std::vector<AlignedToken>> retry_tokens =
+        DecodeChunks(retry_samples, cancel);
+    for (size_t index = 0; index < retries.size(); ++index) {
+      const Retry &retry = retries[index];
+      const double shift_seconds =
+          (static_cast<double>(retry.start_sample) - retry.padding_samples) /
+          sample_rate_hertz;
+      const double chunk_seconds =
+          static_cast<double>(chunks[retry.chunk].size()) / sample_rate_hertz;
+      for (AlignedToken &token : retry_tokens[index]) {
+        const double end_seconds =
+            std::clamp(token.end_seconds() + shift_seconds, 0.0, chunk_seconds);
+        token.start_seconds =
+            std::clamp(token.start_seconds + shift_seconds, 0.0, end_seconds);
+        token.duration_seconds = end_seconds - token.start_seconds;
+      }
+      // Note (Mengwei Liu): empty or nonadvancing retries keep the original.
+      // A successful retry may revise tokens in the one-second overlap.
+      if (!retry_tokens[index].empty() &&
+          retry_tokens[index].back().end_seconds() >
+              retry.decoded_end_seconds) {
+        tokens[retry.chunk] = MergeTokens(
+            tokens[retry.chunk], retry_tokens[index], kChunkOverlapSeconds);
+      } else {
+      }
+    }
+  }
+}
+
+omni_common::TranscriptionResult
 ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                                 const ParakeetOptions &options,
                                 const std::atomic<bool> &cancel) const {
-  const double sample_rate = qwen3_asr::kSampleRate;
+  const double sample_rate = omni_common::kSampleRate;
+  const bool automatic = !options.window_seconds.has_value();
   const double chunk_seconds =
-      options.chunk_duration_seconds >= kWholeRecordingChunkSeconds
-          ? kWholeRecordingChunkReplacementSeconds
-          : std::max(kMinChunkSeconds, options.chunk_duration_seconds);
+      automatic ? kAutomaticChunkSeconds
+                : std::max(kMinChunkSeconds, *options.window_seconds);
   const size_t chunk_samples =
       std::max<size_t>(1, static_cast<size_t>(chunk_seconds * sample_rate));
   const size_t overlap_samples =
       std::min(chunk_samples - 1,
                static_cast<size_t>(kChunkOverlapSeconds * sample_rate));
-  const size_t step_samples =
-      std::max<size_t>(1, chunk_samples - overlap_samples);
+  std::vector<std::pair<size_t, size_t>> chunks;
+  if (automatic) {
+    chunks = omni_common::BoundedEnergyCutChunks(
+        samples, chunk_samples,
+        static_cast<size_t>(kChunkSearchSeconds * sample_rate),
+        static_cast<size_t>(kChunkEnergyWindowSeconds * sample_rate),
+        static_cast<size_t>(kAutomaticMinimumTailSeconds * sample_rate));
+  } else {
+    const size_t step_samples = chunk_samples - overlap_samples;
+    for (size_t start = 0; start < samples.size(); start += step_samples) {
+      const size_t end = std::min(start + chunk_samples, samples.size());
+      chunks.emplace_back(start, end);
+      if (end >= samples.size()) {
+        break;
+      } else {
+      }
+    }
+  }
+  // Note (XXXXRT666): the chunks are decoded and their blank tails retried in
+  // lockstep, a group at a time; merging then goes chunk by chunk.
+  std::vector<std::vector<AlignedToken>> decoded(chunks.size());
+  const size_t lockstep_samples =
+      static_cast<size_t>(kLockstepSeconds * sample_rate);
+  for (size_t index = 0; index < chunks.size();) {
+    std::vector<size_t> indices;
+    std::vector<std::vector<float>> group_samples;
+    size_t group_size = 0;
+    for (; index < chunks.size(); ++index) {
+      const auto [start, end] = chunks[index];
+      if (!indices.empty() && group_size + end - start > lockstep_samples) {
+        break;
+      } else {
+      }
+      group_size += end - start;
+      // Note (Dayuxiaoshui): the front end's preemphasis needs two samples;
+      // a shorter chunk has no speech to decode.
+      if (end - start >= 2) {
+        indices.push_back(index);
+        group_samples.emplace_back(samples.begin() + start,
+                                   samples.begin() + end);
+      } else {
+      }
+    }
+    if (indices.empty()) {
+      continue;
+    } else {
+    }
+    std::vector<std::vector<AlignedToken>> group_tokens =
+        DecodeChunks(group_samples, cancel);
+    if (automatic) {
+      RecoverBlankTails(group_samples, group_tokens, chunk_samples, cancel);
+    } else {
+    }
+    for (size_t position = 0; position < indices.size(); ++position) {
+      decoded[indices[position]] = std::move(group_tokens[position]);
+    }
+  }
   std::vector<AlignedToken> tokens;
-  for (size_t start = 0; start < samples.size(); start += step_samples) {
-    const size_t end = std::min(start + chunk_samples, samples.size());
-    // Note (Dayuxiaoshui): the front end's preemphasis needs two samples;
-    // a shorter chunk has no speech to decode.
-    std::vector<AlignedToken> chunk_tokens =
-        end - start < 2
-            ? std::vector<AlignedToken>()
-            : DecodeChunk(std::vector<float>(samples.begin() + start,
-                                             samples.begin() + end),
-                          cancel);
+  for (size_t index = 0; index < chunks.size(); ++index) {
+    const auto [start, end] = chunks[index];
+    std::vector<AlignedToken> chunk_tokens = std::move(decoded[index]);
     for (AlignedToken &token : chunk_tokens) {
       token.start_seconds += static_cast<double>(start) / sample_rate;
     }
-    tokens = MergeTokens(tokens, chunk_tokens, kChunkOverlapSeconds);
-    if (end >= samples.size()) {
-      break;
+    if (automatic) {
+      tokens.insert(tokens.end(), chunk_tokens.begin(), chunk_tokens.end());
     } else {
+      tokens = MergeTokens(tokens, chunk_tokens, kChunkOverlapSeconds);
     }
   }
 
-  qwen3_asr::TranscriptionResult result;
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::TranscriptionResult result;
+  result.finish_reason = omni_common::FinishReason::kStop;
   result.generated_token_count = static_cast<int>(tokens.size());
   std::string text;
   for (const Sentence &sentence : TokensToSentences(tokens)) {
     text += sentence.text;
-    qwen3_asr::SpeakerSegment segment;
+    omni_common::SpeakerSegment segment;
     segment.start_seconds = sentence.tokens.front().start_seconds;
     segment.end_seconds = sentence.tokens.back().end_seconds();
     segment.text = sentence.text;

@@ -26,6 +26,8 @@ from sglang_omni.models.streaming_cascade.recognizers import (
     OpenAITranscriptionRecognizerConfig,
     RealtimeTranscriptionRecognizer,
     RealtimeTranscriptionRecognizerConfig,
+    StreamingTranscriptionRecognizer,
+    StreamingTranscriptionRecognizerConfig,
     probe_realtime_service,
 )
 from sglang_omni.models.streaming_cascade.running_transcript import (
@@ -41,6 +43,7 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     RUNNING_TEXT,
     SESSION_CONTROL,
     TEXT_DELTA,
@@ -162,6 +165,13 @@ COMPONENTS.register(
     probe=probe_realtime_service,
 )
 COMPONENTS.register(
+    StreamingTranscriptionRecognizerConfig,
+    StreamingTranscriptionRecognizer,
+    consumes=RECOGNIZER_INPUTS,
+    produces=frozenset({TRANSCRIPT_FORMAT}),
+    probe=probe_realtime_service,
+)
+COMPONENTS.register(
     OpenAITranscriptionRecognizerConfig,
     OpenAITranscriptionRecognizer,
     consumes=RECOGNIZER_INPUTS,
@@ -200,5 +210,5 @@ COMPONENTS.register(
     consumes=frozenset({TEXT_DELTA, PCM_F32, SESSION_CONTROL}),
     produces=frozenset({SESSION_CONTROL}),
     probe=probe_alignment_worker,
-    reads_events=frozenset({REPLY_PROGRESS, REPLY_DELIVERED, TRUNCATE}),
+    reads_events=frozenset({REPLY_PROGRESS, REPLY_DELIVERED, REPLY_SENTENCE, TRUNCATE}),
 )

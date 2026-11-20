@@ -108,6 +108,45 @@ def make_request(
     )
 
 
+def scheduled(request, output_ids=(), prefix_len: int = 0) -> SimpleNamespace:
+    """The scheduler's Req for request: prompt ids, generated ids, cached prefix."""
+    return SimpleNamespace(
+        origin_input_ids=list(request.data.req.origin_input_ids),
+        output_ids=list(output_ids),
+        prefix_len=prefix_len,
+    )
+
+
+def prefill(runner, request, req) -> torch.Tensor:
+    extend_len = len(req.origin_input_ids) + len(req.output_ids)
+    forward_batch = SimpleNamespace(
+        replace_embeds=None,
+        input_ids=torch.zeros(extend_len - req.prefix_len),
+    )
+    runner.before_prefill(forward_batch, SimpleNamespace(reqs=[req]), [request])
+    return get_omni_prefill_inputs(forward_batch).input_embeds
+
+
+def generate(runner, request, tokens: list[int]) -> None:
+    """Prefill, then decode, sampling tokens in order."""
+    prefill(runner, request, scheduled(request))
+    runner.post_prefill(
+        SimpleNamespace(next_token_ids=torch.tensor(tokens[:1])), None, None, [request]
+    )
+    for step in range(1, len(tokens)):
+        runner.before_decode(
+            None,
+            SimpleNamespace(reqs=[scheduled(request, tokens[:step])]),
+            [request],
+        )
+        runner.post_decode(
+            SimpleNamespace(next_token_ids=torch.tensor(tokens[step : step + 1])),
+            None,
+            None,
+            [request],
+        )
+
+
 def test_prefill_uses_stored_voice_rows_and_embeds_the_rest():
     runner = make_runner(FakeModel())
     with_voice, without_voice = make_request(3, voice=True), make_request(2)
@@ -116,10 +155,9 @@ def test_prefill_uses_stored_voice_rows_and_embeds_the_rest():
     total = voice_timeline.num_prompt_positions + plain_timeline.num_prompt_positions
     forward_batch = SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(total))
 
-    fresh = SimpleNamespace(output_ids=[])
     runner.before_prefill(
         forward_batch,
-        SimpleNamespace(reqs=[fresh, fresh]),
+        SimpleNamespace(reqs=[scheduled(with_voice), scheduled(without_voice)]),
         [with_voice, without_voice],
     )
 
@@ -142,11 +180,7 @@ def test_decode_rows_chain_text_agent_codes_and_caller_frames():
     data = request.data
     timeline = data.talker_model_inputs["timeline"]
     first_position = timeline.num_prompt_positions
-    runner.before_prefill(
-        SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(first_position)),
-        SimpleNamespace(reqs=[SimpleNamespace(output_ids=[])]),
-        [request],
-    )
+    prefill(runner, request, scheduled(request))
 
     runner.post_prefill(
         SimpleNamespace(next_token_ids=torch.tensor([77])), None, None, [request]
@@ -161,7 +195,7 @@ def test_decode_rows_chain_text_agent_codes_and_caller_frames():
     )
 
     runner.before_decode(
-        None, SimpleNamespace(reqs=[SimpleNamespace(output_ids=[77])]), [request]
+        None, SimpleNamespace(reqs=[scheduled(request, [77])]), [request]
     )
     row = model.fusion_buffer[0].long()
     assert row[0].item() == 77
@@ -183,7 +217,7 @@ def test_decode_rows_chain_text_agent_codes_and_caller_frames():
     assert len(data.talker_model_inputs["pending_frames"]) == 2
 
     runner.before_decode(
-        None, SimpleNamespace(reqs=[SimpleNamespace(output_ids=[77, 78])]), [request]
+        None, SimpleNamespace(reqs=[scheduled(request, [77, 78])]), [request]
     )
     row = model.fusion_buffer[0].long()
     assert row[0].item() == 78
@@ -200,7 +234,7 @@ def run_prefill(runner, requests, text_token_ids) -> None:
     )
     runner.before_prefill(
         SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(prompt_positions)),
-        SimpleNamespace(reqs=[SimpleNamespace(output_ids=[]) for _ in requests]),
+        SimpleNamespace(reqs=[scheduled(request) for request in requests]),
         requests,
     )
     runner.post_prefill(
@@ -348,21 +382,13 @@ def test_resume_after_a_retract_replays_the_generated_positions() -> None:
     timeline = data.talker_model_inputs["timeline"]
     prompt_positions = timeline.num_prompt_positions
 
-    runner.before_prefill(
-        SimpleNamespace(replace_embeds=None, input_ids=torch.zeros(prompt_positions)),
-        SimpleNamespace(reqs=[SimpleNamespace(output_ids=[])]),
-        [request],
-    )
-    runner.post_prefill(
-        SimpleNamespace(next_token_ids=torch.tensor([77])), None, None, [request]
-    )
-    for token, before in ((78, [77]), (79, [77, 78])):
-        runner.before_decode(
-            None, SimpleNamespace(reqs=[SimpleNamespace(output_ids=before)]), [request]
-        )
-        runner.post_decode(
-            SimpleNamespace(next_token_ids=torch.tensor([token])), None, None, [request]
-        )
+    generate(runner, request, [77, 78, 79])
+    previous_feedback = runner.decode_feedback(data).user_rows
+    previous_copy = previous_feedback.clone()
+    timeline.append_caller_frames(torch.arange(1024).view(128, 8))
+    expanded_feedback = runner.decode_feedback(data).user_rows
+    assert expanded_feedback.shape == timeline.user_rows.shape
+    assert torch.equal(previous_feedback, previous_copy)
 
     generated = [77, 78, 79]
     agent_rows = list(data.talker_model_inputs["agent_rows"])
@@ -378,9 +404,7 @@ def test_resume_after_a_retract_replays_the_generated_positions() -> None:
     )
     runner.before_prefill(
         forward_batch,
-        SimpleNamespace(
-            reqs=[SimpleNamespace(output_ids=generated), SimpleNamespace(output_ids=[])]
-        ),
+        SimpleNamespace(reqs=[scheduled(request, generated), scheduled(fresh)]),
         [request, fresh],
     )
 
@@ -651,7 +675,7 @@ def test_retract_discards_uncommitted_audio_draw_and_replays_it() -> None:
                 request.data.talker_model_inputs["timeline"].num_prompt_positions + 2
             ),
         ),
-        SimpleNamespace(reqs=[SimpleNamespace(output_ids=[77, 78])]),
+        SimpleNamespace(reqs=[scheduled(request, [77, 78])]),
         [request],
     )
     runner.post_prefill(
@@ -729,3 +753,71 @@ def test_resolve_cuda_copy_while_next_forward_is_slow() -> None:
         )
     finally:
         next_completed.synchronize()
+
+
+@pytest.mark.parametrize(
+    "cached", ["none", "inside the prompt", "prompt", "all but one"]
+)
+def test_prefill_from_a_cached_prefix_embeds_only_the_missing_rows(cached: str):
+    model = FakeModel()
+    runner = make_runner(model)
+    request = make_request(5)
+    generated = [77, 78, 79]
+    generate(runner, request, generated)
+    prompt = request.data.talker_model_inputs["timeline"].num_prompt_positions
+    agent_rows = request.data.talker_model_inputs["agent_rows"]
+    full = prefill(runner, request, scheduled(request, generated))
+
+    prefix_len = {
+        "none": 0,
+        "inside the prompt": prompt - 2,
+        "prompt": prompt,
+        "all but one": prompt + len(generated) - 1,
+    }[cached]
+    rows = prefill(runner, request, scheduled(request, generated, prefix_len))
+    assert torch.equal(rows, full[prefix_len:])
+    feedback = request.data.talker_model_inputs["decode_feedback"]
+    assert torch.equal(feedback.agent_row, agent_rows[-1])
+    assert (request.data.talker_model_inputs["prefill_forced"] == -1).all()
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available(), reason="requires CUDA"
+                ),
+            ],
+        ),
+    ],
+)
+def test_feedback_appends_only_valid_history_and_preserves_old_views(device):
+    model = FakeModel()
+    model.fusion_buffer = model.fusion_buffer.to(device)
+    runner = make_runner(model)
+    request = make_request(1)
+    timeline = request.data.talker_model_inputs["timeline"]
+    feedback = runner.decode_feedback(request.data)
+    saved_views = []
+    for added_frames in [1, 1, 64, 1, 200, 1]:
+        old_rows = feedback.user_rows
+        old_storage = feedback.user_rows_storage
+        saved_views.append((old_rows, old_rows.clone()))
+        timeline.append_caller_frames(
+            torch.arange(added_frames * 8).view(added_frames, 8)
+        )
+        assert runner.decode_feedback(request.data) is feedback
+        assert torch.equal(feedback.user_rows.cpu(), timeline.user_rows)
+        if timeline.user_rows.shape[0] <= old_storage.shape[0]:
+            assert feedback.user_rows_storage is old_storage
+        else:
+            assert feedback.user_rows_storage is not old_storage
+        unchanged_rows = feedback.user_rows
+        assert runner.decode_feedback(request.data).user_rows is unchanged_rows
+    for old_rows, old_copy in saved_views:
+        assert torch.equal(old_rows, old_copy)

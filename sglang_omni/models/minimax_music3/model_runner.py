@@ -170,11 +170,11 @@ class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
             else:
                 pass
             prompt_ids = data.prompt_token_ids.to(device=device)
-            extend_length = int(data.req.extend_range.length)
-            if len(data.req.prefix_indices) or extend_length != prompt_ids.numel():
+            extend_length = data.req.extend_len
+            if data.req.prefix_len or extend_length != prompt_ids.numel():
                 raise RuntimeError(
                     "MiniMax Music 3 prefill must cover the whole prompt exactly "
-                    f"once (prefix={len(data.req.prefix_indices)} "
+                    f"once (prefix={data.req.prefix_len} "
                     f"extend={extend_length} prompt={prompt_ids.numel()}); "
                     "radix reuse and retract/replay are not supported"
                 )

@@ -11,13 +11,16 @@ from collections import Counter
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeAlias
 
 import torch
-from sglang.srt.utils.common import is_pin_memory_available
+from sglang.srt.utils.common import async_h2d, is_pin_memory_available
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.model_runner.prefill_inputs import clear_omni_prefill_inputs
+from sglang_omni.model_runner.prefill_inputs import (
+    clear_omni_prefill_inputs,
+    get_omni_prefill_inputs,
+)
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
 from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import (
@@ -32,6 +35,11 @@ from sglang_omni.scheduling.types import (
     SchedulerOutput,
     SchedulerRequest,
     sampled_logprobs_to_list,
+)
+from sglang_omni.speculative.repetition_penalty import (
+    apply_verify_repetition_penalty,
+    record_committed_tokens,
+    verify_penalty_temporary_bytes,
 )
 
 if TYPE_CHECKING:
@@ -147,6 +155,10 @@ class PendingStep:
     )
 
 
+# Bounds the verify penalty's temporaries per chunk of requests.
+SPECULATIVE_PENALTY_CHUNK_BYTES = 64 << 20
+
+
 class ModelRunner(Generic[RequestDataInput]):
     """Base AR model runner.
 
@@ -154,6 +166,24 @@ class ModelRunner(Generic[RequestDataInput]):
       - prefill hooks for extend/prompt processing
       - decode hooks for single-step autoregressive decode processing
     """
+
+    # note(YzXiao): opt in when next-round inputs are ready before CPU result collection and pending outputs retain their own storage.
+    supports_speculative_async_decode: bool = False
+
+    # What applies repetition_penalty exactly in speculative verify: the model's own draft worker, or apply_speculative_repetition_penalty on SGLang's verify rows. None refuses a request that sets it.
+    speculative_repetition_penalty_owner: (
+        Literal["draft_worker", "verify_logits"] | None
+    ) = None
+    # True when every verify row takes this runner's logits hooks, as its plain decode row would.
+    speculative_verify_takes_logits_hooks: bool = False
+    # True when the model's sampled DFlash or DSpark verify draws without the request seed.
+    speculative_ignores_request_seed: bool = False
+    # An EAGLE draft extends on the embeddings the target prefilled with, which a
+    # runner composing multimodal inputs keeps here for one prefill.
+    retain_prefill_input_embeds: bool = False
+    retained_prefill_input_embeds: torch.Tensor | None = None
+    # [request slots, vocab + 1] bool, made on the first request whose repetition_penalty a verify applies.
+    committed_token_presence: torch.Tensor | None = None
 
     def __init__(
         self,
@@ -179,9 +209,13 @@ class ModelRunner(Generic[RequestDataInput]):
         self.async_query_miss: int = 0
         self.token_id_host_bufs: list[torch.Tensor] | None = None
         self.token_id_host_slot: int = 0
+        self.token_id_events: list[torch.cuda.Event] = []
+        self.token_id_event_slot: int = 0
         self.suppress_tensor_cache: dict[
             tuple[tuple[int, ...], int, str], torch.Tensor | None
         ] = {}
+        self.sampling_seed_batch_key: tuple[tuple[str | None, int | None], ...] = ()
+        self.sampling_seed_batch_tensor: torch.Tensor | None = None
 
     def stage_token_ids(self, result: GenerationBatchResult, ids: torch.Tensor) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
@@ -195,7 +229,7 @@ class ModelRunner(Generic[RequestDataInput]):
         n = ids.shape[0]
         buf = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
-        event = torch.cuda.Event()
+        event = self.next_token_id_event()
         event.record()
         result._host_token_ids = buf[
             :n
@@ -212,6 +246,17 @@ class ModelRunner(Generic[RequestDataInput]):
             like.dtype,
             realloc_on_grow=True,
         )
+
+    def next_token_id_event(self) -> torch.cuda.Event:
+        # note (ratish): a new event is created at its first record, which waits while
+        # another thread of the process is inside the CUDA runtime; two, as the buffers.
+        if not self.token_id_events:
+            self.token_id_events = [torch.cuda.Event() for _ in range(2)]
+        else:
+            pass
+        event = self.token_id_events[self.token_id_event_slot]
+        self.token_id_event_slot ^= 1
+        return event
 
     def pinned_pingpong(
         self,
@@ -443,10 +488,10 @@ class ModelRunner(Generic[RequestDataInput]):
         )
 
     def execute_launch(self, scheduler_output: SchedulerOutput) -> "PendingStep | None":
-        """Enqueue a decode step's forward + on-GPU sample, call
+        """Enqueue a decode or supported whole-prompt prefill step, call
         ``post_decode_launch`` to publish a model-specific resolve payload
         (returned as launch_buf), and record a device event right after
-        publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
+        publication. Does NOT wait on the GPU. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next
         forward, and ``event.query()`` proves the launched step's GPU work is
@@ -470,7 +515,6 @@ class ModelRunner(Generic[RequestDataInput]):
             else:
                 pass
             forward_batch, schedule_batch, is_prefill = built
-            assert not is_prefill, "async lookahead launch is decode-only"
             batch_result = self.prepare_and_forward(
                 forward_batch,
                 schedule_batch,
@@ -478,6 +522,15 @@ class ModelRunner(Generic[RequestDataInput]):
                 is_prefill,
                 is_lookahead=True,
             )
+            if is_prefill:
+                self.post_prefill(
+                    batch_result,
+                    forward_batch,
+                    schedule_batch,
+                    scheduler_output.requests,
+                )
+            else:
+                pass
             launch_buf = self.post_decode_launch(
                 batch_result, forward_batch, scheduler_output.requests
             )
@@ -611,6 +664,7 @@ class ModelRunner(Generic[RequestDataInput]):
         block. Returns ``batch_result``."""
         try:
             if is_prefill:
+                self.retained_prefill_input_embeds = None
                 self.before_prefill(forward_batch, schedule_batch, requests)
                 batch_result = self.custom_prefill_forward(
                     forward_batch, schedule_batch, requests
@@ -651,13 +705,203 @@ class ModelRunner(Generic[RequestDataInput]):
                 )
             else:
                 pass
+            # The sidecar stays attached until cleanup, so a prefill that got this far
+            # can still hand its composed embeddings to the draft.
+            if is_prefill and self.retain_prefill_input_embeds:
+                prefill_inputs = get_omni_prefill_inputs(forward_batch)
+                if prefill_inputs is not None:
+                    self.retained_prefill_input_embeds = prefill_inputs.input_embeds
+                elif forward_batch.input_embeds is not None:
+                    self.retained_prefill_input_embeds = forward_batch.input_embeds
+                else:
+                    # A runner forwarding composed embeddings itself retains them.
+                    pass
+            else:
+                pass
             return batch_result
+        except BaseException:
+            # note (wilsonzheng0327): the target adapter releases the retained
+            # embeddings only from a returned result, so a failed forward, an OOM
+            # among them, must not keep its GPU tensor alive until the next prefill.
+            self.retained_prefill_input_embeds = None
+            raise
         finally:
             if is_prefill:
                 clear_omni_prefill_inputs(forward_batch)
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
             else:
                 pass
+
+    def apply_speculative_verify_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+        rows_per_request: int,
+    ) -> None:
+        """Give every verify row the logits hooks its plain decode row would take.
+
+        Speculative verify samples outside sample_next_token_ids. The codec suppress
+        set and process_sampling_logits depend on the request but not the position,
+        so applying them to each of a request's rows is exact.
+        """
+        rows = [request for request in requests for _ in range(rows_per_request)]
+        self.apply_codec_suppress_tokens(logits_output, rows)
+        self.process_sampling_logits(logits_output, rows)
+
+    def speculative_penalized_rows(self, requests: list[Req]) -> list[int]:
+        """Batch rows whose repetition_penalty this runner applies in speculative verify."""
+        if self.speculative_repetition_penalty_owner == "verify_logits":
+            return [
+                index
+                for index, request in enumerate(requests)
+                if request.sampling_params.repetition_penalty != 1.0
+            ]
+        else:
+            return []
+
+    def apply_speculative_repetition_penalty(
+        self,
+        verify_logits: torch.Tensor,
+        verify_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Penalize each verify row over its committed output and the drafts before it.
+
+        Args:
+            verify_logits: [requests, block, vocab], scaled in place.
+        """
+        penalized_rows = self.speculative_penalized_rows(
+            [request.data.req for request in requests]
+        )
+        if not penalized_rows:
+            return
+        else:
+            pass
+        committed_token_presence = self.committed_token_presence
+        assert committed_token_presence is not None
+        _, block_size, vocab_size = verify_logits.shape
+        assert vocab_size == committed_token_presence.shape[1] - 1
+        verify_input_ids = verify_batch.input_ids.view(-1, block_size)
+        pin_memory = is_pin_memory_available(self.device)
+        requests_per_chunk = max(
+            1,
+            SPECULATIVE_PENALTY_CHUNK_BYTES
+            // verify_penalty_temporary_bytes(block_size, vocab_size),
+        )
+        # Each chunk is a run of adjacent penalized rows, scaled in place as a view.
+        chunks: list[range] = []
+        for row in penalized_rows:
+            if (
+                chunks
+                and chunks[-1].stop == row
+                and len(chunks[-1]) < requests_per_chunk
+            ):
+                chunks[-1] = range(chunks[-1].start, row + 1)
+            else:
+                chunks.append(range(row, row + 1))
+        for chunk in chunks:
+            repetition_penalties = torch.tensor(
+                [
+                    requests[row].data.req.sampling_params.repetition_penalty
+                    for row in chunk
+                ],
+                dtype=torch.float32,
+                pin_memory=pin_memory,
+            ).to(self.device, non_blocking=True)
+            apply_verify_repetition_penalty(
+                verify_logits[chunk.start : chunk.stop],
+                verify_input_ids[chunk.start : chunk.stop].long(),
+                committed_token_presence[
+                    verify_batch.req_pool_indices[chunk.start : chunk.stop], :-1
+                ],
+                repetition_penalties,
+            )
+
+    def record_speculative_output(
+        self, batch: ScheduleBatch, result: GenerationBatchResult, *, is_prefill: bool
+    ) -> None:
+        """Mark the tokens a speculative step committed, for the rows apply_speculative_repetition_penalty scales.
+
+        A prefill restarts a request's history from the output it kept through a retraction.
+        """
+        penalized_rows = self.speculative_penalized_rows(batch.reqs)
+        if not penalized_rows:
+            return
+        elif self.committed_token_presence is None:
+            self.committed_token_presence = torch.zeros(
+                (
+                    self.tp_worker.model_runner.req_to_token_pool.req_to_token.shape[0],
+                    self.tp_worker.model_config.vocab_size + 1,
+                ),
+                dtype=torch.bool,
+                device=self.device,
+            )
+        else:
+            pass
+        committed_token_presence = self.committed_token_presence
+        pin_memory = is_pin_memory_available(self.device)
+        row_index = torch.tensor(
+            penalized_rows, dtype=torch.int64, pin_memory=pin_memory
+        ).to(self.device, non_blocking=True)
+        request_slots = batch.req_pool_indices.index_select(0, row_index)
+        if is_prefill:
+            committed_token_presence[request_slots] = False
+            histories = [batch.reqs[row].output_ids for row in penalized_rows]
+            if any(histories):
+                longest_history = max(len(history) for history in histories)
+                history_ids = torch.tensor(
+                    [
+                        history + [0] * (longest_history - len(history))
+                        for history in histories
+                    ],
+                    dtype=torch.int64,
+                    pin_memory=pin_memory,
+                )
+                history_lengths = torch.tensor(
+                    [len(history) for history in histories],
+                    dtype=torch.int64,
+                    pin_memory=pin_memory,
+                )
+                record_committed_tokens(
+                    committed_token_presence,
+                    request_slots,
+                    history_ids.to(self.device, non_blocking=True),
+                    history_lengths.to(self.device, non_blocking=True),
+                )
+            else:
+                pass
+            committed_token_presence[
+                request_slots, result.next_token_ids.index_select(0, row_index).long()
+            ] = True
+        else:
+            record_committed_tokens(
+                committed_token_presence,
+                request_slots,
+                result.next_token_ids.view(len(batch.reqs), -1).index_select(
+                    0, row_index
+                ),
+                result.accept_lens.index_select(0, row_index),
+            )
+
+    def after_speculative_step(
+        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+    ) -> None:
+        """Hook right after a speculative step, before its tokens are emitted."""
+        return None
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Hook for the tokens one speculative step committed for a request.
+
+        Speculative decoding bypasses execute, so a runner collecting outputs in
+        post_decode collects them here; they end at the stop, before the result.
+        """
+        return None
+
+    def on_request_retracted(self, request_id: str) -> None:
+        """Hook when a request is retracted and requeued."""
+        return None
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Request ids whose ``generation_steps`` must NOT advance this step.
@@ -1070,14 +1314,31 @@ class ModelRunner(Generic[RequestDataInput]):
         else:
             pass
         self.validate_seeded_sampling_supported(sampling_info)
+        for sp in sampling_params:
+            if sp.sampling_seed is not None and not (
+                0 <= sp.sampling_seed <= SAMPLING_SEED_MASK
+            ):
+                sp.sampling_seed = resolve_row_seed(sp.sampling_seed)
+            else:
+                pass
+        # note (YifanLi3): the per-step sampling_info is a copy, so reuse the
+        # device tensor while the batch composition is unchanged instead of
+        # paying a host-to-device copy every decode step. The key holds the
+        # normalized seeds so an out-of-range user seed does not miss once.
+        batch_key = tuple(
+            (request.request_id, sp.sampling_seed)
+            for sp, request in zip(sampling_params, requests)
+        )
+        if batch_key == self.sampling_seed_batch_key:
+            sampling_info.sampling_seed = self.sampling_seed_batch_tensor
+            return
+        else:
+            pass
         row_seeds: list[int] = []
         for row_idx, (sp, request) in enumerate(zip(sampling_params, requests)):
             seed = sp.sampling_seed
             if seed is None:
                 seed = rank_shared_unseeded_sampling_seed(request, row_idx)
-            elif not (0 <= seed <= SAMPLING_SEED_MASK):
-                seed = resolve_row_seed(seed)  # mask and cache user seed
-                sp.sampling_seed = seed
             else:
                 pass
             row_seeds.append(seed)
@@ -1086,6 +1347,8 @@ class ModelRunner(Generic[RequestDataInput]):
             dtype=torch.long,
             pin_memory=is_pin_memory_available(sampling_info.device),
         ).to(sampling_info.device, non_blocking=True)
+        self.sampling_seed_batch_key = batch_key
+        self.sampling_seed_batch_tensor = sampling_info.sampling_seed
 
     @staticmethod
     def validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:
@@ -1224,9 +1487,13 @@ class ModelRunner(Generic[RequestDataInput]):
                 row_groups[key] = (toks_t, [row_idx])
             else:
                 group[1].append(row_idx)
+        # note (ratish): an indexed assignment of a Python scalar copies it to the device and waits for the stream, here the whole prefill forward; index_fill_ takes it as a kernel argument.
         for toks_t, rows in row_groups.values():
             if len(rows) == logits.shape[0]:
-                logits[:, toks_t] = float("-inf")
+                logits.index_fill_(1, toks_t, float("-inf"))
             else:
-                rows_t = torch.tensor(rows, dtype=torch.long, device=device)
-                logits[rows_t[:, None], toks_t[None, :]] = float("-inf")
+                rows_t = async_h2d(rows, dtype=torch.long, device=device)
+                logits.index_put_(
+                    (rows_t[:, None], toks_t[None, :]),
+                    torch.full((), float("-inf"), dtype=logits.dtype, device=device),
+                )

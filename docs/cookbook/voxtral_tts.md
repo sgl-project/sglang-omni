@@ -155,6 +155,48 @@ also quotes ~70 ms first-audio latency at concurrency 1; the table above is a th
 run at concurrency 16, so its RTF reflects batched load rather than the latency-optimized
 single-stream figure. Output is 24 kHz.
 
+## Apple Silicon (Native MLX)
+
+`voxtral_tts_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same
+`/v1/audio/speech` API on an Apple Silicon Mac, from the 4-bit
+[`mlx-community/Voxtral-4B-TTS-2603-mlx-4bit`](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-4bit)
+checkpoint, as one C++ process without CUDA, PyTorch or Python.
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download mlx-community/Voxtral-4B-TTS-2603-mlx-4bit \
+  --revision f98fc91b9cb5adc7dab56102c690458276c14c6a --local-dir voxtral-4b-tts-mlx-4bit
+
+~/omni-runtime/bin/voxtral_tts_server --model-path voxtral-4b-tts-mlx-4bit \
+  --model-name mistralai/Voxtral-4B-TTS-2603 --port 8000
+```
+
+The requests above work unchanged. The native server differs from the CUDA server in that:
+
+- `response_format` is `wav` or `pcm`; `speed` must be `1.0`; `stream_format` must be `audio`.
+- `max_new_tokens` is at most `4096` audio frames (12.5 per second, about 5.5 minutes).
+- An unknown `voice` returns 400 with the list of the checkpoint's 20 preset voices.
+- Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model`
+  is ignored, as on CUDA.
+- Errors are `{"detail": "..."}`.
+- Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get
+  503, and `/health` shows the queue.
+- A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in
+  the queue included, is cancelled: it returns 504, or its stream ends early.
+- A request body over 1 MiB returns 413.
+- Output varies between requests: the acoustic head samples flow-matching noise.
+
+Measured on an M4 MacBook Air (16 GB), warm: 3.3 s load, 0.55–0.85 s to the first streamed
+audio, real-time factor 0.72 (mean of 18 utterances), about 3.4 GB peak MLX memory. Transcribed
+back with Qwen3-ASR-0.6B, 10 English sentences give 2.6% WER and one sentence in each of the
+other 8 supported languages gives 5.3% WER. With the same seed and MLX version, its audio codes
+are bit-identical to the Python MLX port in
+[#2788](https://github.com/sgl-project/sglang-omni/pull/2788), and so is its 16-bit PCM after
+the first 10 ms, which it fades in float32 as the CUDA vocoder does. Mac CI checks five seeded
+requests' codes (English, French, German, Hindi, and a `max_new_tokens` cap) against
+`sglang_omni_mlx/native/ci/model_golden/voxtral-4b-tts-2603.json`.
+
 ## Known Limitations
 
 - **Preset voices only.** Voxtral selects from named voices baked into the checkpoint; it does

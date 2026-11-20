@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from sglang.srt.layers.attention.base_attn_backend import SharedReadEnds
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
@@ -17,10 +18,12 @@ class RequestIdPrefillCudaGraphRunner(PrefillCudaGraphRunner):
         self,
         forward_batch: ForwardBatch,
         **kwargs: Unpack[PrefillReplayKwargs],
-    ) -> ForwardBatch:
-        static_forward_batch = super().load_batch(forward_batch, **kwargs)
+    ) -> tuple[ForwardBatch, SharedReadEnds]:
+        static_forward_batch, shared_read_ends = super().load_batch(
+            forward_batch, **kwargs
+        )
         static_forward_batch.rids = forward_batch.rids
-        return static_forward_batch
+        return static_forward_batch, shared_read_ends
 
 
 __all__ = ["RequestIdPrefillCudaGraphRunner"]

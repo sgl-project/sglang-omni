@@ -4,9 +4,10 @@
 #include <algorithm>
 #include <cmath>
 
-#include <CoreFoundation/CoreFoundation.h>
-
+#include "common/generation.h"
 #include "common/swift_port.h"
+#include "common/text.h"
+#include "common/transcription.h"
 
 namespace nemotron {
 
@@ -22,34 +23,24 @@ constexpr const char *kWordMarker = "\xE2\x96\x81"; // U+2581
 // Note (Dayuxiaoshui): the front end needs two samples for preemphasis; one
 // sample alone (which Swift decodes as one mel frame) gives no text here.
 constexpr int kMinFrontEndSamples = 2;
+// Note (XXXXRT666): whole chunks are encoded up to this many at once (about
+// 18 s at the native chunk), so a recording's layers run once per block, not
+// once per 1.12 s chunk, while memory stays bounded by the block.
+constexpr int kBlockChunks = 16;
+// Note (XXXXRT666): chunks subsampled together; their mel frames all go
+// through one pass of the 2-D convolutions.
+constexpr int kSubsampleChunks = 4;
+// Note (XXXXRT666): frames one prediction is joined with per read; a
+// block's joint over all its frames would cost a 13k-class projection of
+// each frame left for every emitted token.
+constexpr int kJointFrames = 16;
 
-bool Contains(const std::string &text, const char *needle) {
-  return text.find(needle) != std::string::npos;
-}
-
-// Note (Dayuxiaoshui): Swift's String.contains(" ") compares grapheme
-// clusters, so a space that a combining mark attaches to is not a space; a
-// word marker before a Thai vowel sign is one such piece.
-bool ContainsStandaloneSpace(const std::string &text) {
-  const std::vector<uint32_t> code_points = qwen3_asr::CodePoints(text);
-  const CFCharacterSetRef combining =
-      CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
-  for (size_t index = 0; index < code_points.size(); ++index) {
-    if (code_points[index] == ' ' && (index + 1 == code_points.size() ||
-                                      !CFCharacterSetIsLongCharacterMember(
-                                          combining, code_points[index + 1]))) {
-      return true;
-    } else {
-    }
-  }
-  return false;
-}
-
-sortformer::ProcessorConfig FrontEnd(const std::filesystem::path &directory) {
+omni_common::NemoProcessorConfig
+FrontEnd(const std::filesystem::path &directory) {
   const nlohmann::json config =
-      qwen3_asr::ReadJson(directory / "config.json").at("preprocessor");
+      omni_common::ReadJson(directory / "config.json").at("preprocessor");
   const int sample_rate = config.at("sample_rate").get<int>();
-  sortformer::ProcessorConfig front_end;
+  omni_common::NemoProcessorConfig front_end;
   front_end.feature_size = config.at("features").get<int>();
   front_end.sampling_rate = sample_rate;
   front_end.fft_size = config.at("n_fft").get<int>();
@@ -73,10 +64,11 @@ NemotronTranscriber::NemotronTranscriber(
          marker = text.find(kWordMarker, marker + 1)) {
       text.replace(marker, std::string(kWordMarker).size(), " ");
     }
-    standalone_spaces_.push_back(ContainsStandaloneSpace(text));
+    standalone_spaces_.push_back(omni_common::ContainsStandaloneSpace(text));
     token_texts_.push_back(text);
     const bool language_tag = piece.size() > 1 && piece.front() == '<' &&
-                              piece.back() == '>' && Contains(piece, "-");
+                              piece.back() == '>' &&
+                              omni_common::Contains(piece, "-");
     const bool control = piece.size() > 3 && piece.rfind("<|", 0) == 0 &&
                          piece.compare(piece.size() - 2, 2, "|>") == 0;
     special_tokens_.push_back(language_tag || control || piece == "<unk>" ||
@@ -103,7 +95,7 @@ bool NemotronTranscriber::HasStandaloneSpace(int token_id) const {
   return standalone_spaces_.at(token_id);
 }
 
-qwen3_asr::TranscriptionResult
+omni_common::TranscriptionResult
 NemotronTranscriber::Transcribe(const std::vector<float> &samples,
                                 const NemotronOptions &options,
                                 const std::atomic<bool> &cancel) const {
@@ -130,16 +122,16 @@ void NemotronStream::Append(const std::vector<float> &samples,
                             const std::atomic<bool> &cancel) {
   const int half_window = transcriber_.front_end().fft_size / 2;
   const int hop = transcriber_.front_end().hop_length;
-  // Note (Jiaxin Deng): one chunk of audio at a time, so however much one call
-  // brings, the mel and its FFT frames cover about a chunk, not all of it.
-  const size_t chunk_samples =
-      static_cast<size_t>(chunk_frames_) *
+  // Note (Jiaxin Deng): one block of audio at a time, so however much one call
+  // brings, the mel and its FFT frames cover about a block, not all of it.
+  const size_t block_samples =
+      static_cast<size_t>(kBlockChunks) * chunk_frames_ *
       transcriber_.model().config().subsampling_factor * hop;
-  for (size_t start = 0; start < samples.size(); start += chunk_samples) {
+  for (size_t start = 0; start < samples.size(); start += block_samples) {
     const auto first = samples.begin() + static_cast<std::ptrdiff_t>(start);
     samples_.insert(samples_.end(), first,
                     first + static_cast<std::ptrdiff_t>(std::min(
-                                chunk_samples, samples.size() - start)));
+                                block_samples, samples.size() - start)));
     const int sample_count = sample_offset_ + static_cast<int>(samples_.size());
     // Note (Dayuxiaoshui): mel frame m reads samples up to m * hop + n_fft / 2,
     // so frames below this limit no longer change as audio arrives.
@@ -183,49 +175,49 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
                  mx::bfloat16);
   while (consumed_mel_frames_ < limit) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
-    const int end = std::min(consumed_mel_frames_ + chunk_mel_frames, limit);
-    if (!flush && end - consumed_mel_frames_ < chunk_mel_frames) {
+    // Note (XXXXRT666): the whole chunks before the stream's last go through
+    // together; the last chunk of a flush, which keeps the subsampling's
+    // extra frame, goes alone.
+    const int available = limit - consumed_mel_frames_;
+    int chunks = std::min(kBlockChunks, available / chunk_mel_frames);
+    if (flush && chunks * chunk_mel_frames >= available) {
+      --chunks;
+    } else {
+    }
+    if (!flush && chunks < 1) {
       break;
     } else {
     }
-    const mx::array chunk =
-        mx::slice(mel, {0, consumed_mel_frames_ - first_frame, 0},
-                  {1, end - first_frame, config.feature_count});
-    const int cached_frames = mel_cache_.has_value() ? mel_cache_->shape(1) : 0;
-    const mx::array window = mel_cache_.has_value()
-                                 ? mx::concatenate({*mel_cache_, chunk}, 1)
-                                 : chunk;
-    const mx::array subsampled = model.Subsample(window);
-    const int window_frames = window.shape(1);
-    const bool last_chunk = flush && end >= limit;
-    const int base = (consumed_mel_frames_ - cached_frames) / factor;
-    const int low = emitted_frames_ - base;
-    const int high = last_chunk ? subsampled.shape(1) : end / factor - base;
-    consumed_mel_frames_ = end;
-    mel_cache_ =
-        mx::slice(window, {0, std::max(0, window_frames - kMelCacheFrames), 0},
-                  {1, window_frames, config.feature_count});
-    if (high <= low) {
-      emitted_frames_ = base + std::max(low, high);
+    const bool last_chunk = chunks < 1;
+    const int end =
+        last_chunk ? limit : consumed_mel_frames_ + chunks * chunk_mel_frames;
+    // Note (XXXXRT666): the subsampling goes a few chunks at a time, each
+    // queued as it is built, since its activations over a whole block's mel
+    // would take hundreds of MB.
+    std::vector<mx::array> pieces;
+    while (consumed_mel_frames_ < end) {
+      std::optional<mx::array> piece =
+          SubsampleTo(mel, first_frame,
+                      std::min(end, consumed_mel_frames_ +
+                                        kSubsampleChunks * chunk_mel_frames),
+                      last_chunk);
+      if (piece.has_value()) {
+        mx::async_eval(*piece);
+        pieces.push_back(std::move(*piece));
+      } else {
+      }
+    }
+    if (pieces.empty()) {
       continue;
     } else {
     }
-    emitted_frames_ = base + high;
-    mx::array hidden =
-        mx::slice(subsampled, {0, low, 0}, {1, high, config.model_width});
-    const int attention_frames =
-        layer_caches_[0].attention_inputs.has_value()
-            ? layer_caches_[0].attention_inputs->shape(1)
-            : 0;
-    const mx::array positions =
-        model.RelativePositions(attention_frames + high - low, hidden.dtype());
-    for (int layer = 0; layer < config.layer_count; ++layer) {
-      hidden =
-          model.StreamLayer(hidden, layer, positions, layer_caches_[layer]);
-    }
+    const mx::array frames =
+        pieces.size() == 1 ? pieces.front() : mx::concatenate(pieces, 1);
+    const mx::array hidden = model.Encode(
+        frames, last_chunk ? frames.shape(1) : chunk_frames_, layer_caches_);
     DecodeChunk(model.ApplyPrompt(hidden, prompt_index_));
   }
   std::vector<mx::array> carried;
@@ -257,15 +249,51 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
   mx::clear_cache();
 }
 
+std::optional<mx::array> NemotronStream::SubsampleTo(const mx::array &mel,
+                                                     int first_frame, int end,
+                                                     bool last_chunk) {
+  const NemotronModel &model = transcriber_.model();
+  const NemotronConfig &config = model.config();
+  const int factor = config.subsampling_factor;
+  const mx::array chunk =
+      mx::slice(mel, {0, consumed_mel_frames_ - first_frame, 0},
+                {1, end - first_frame, config.feature_count});
+  const int cached_frames = mel_cache_.has_value() ? mel_cache_->shape(1) : 0;
+  const mx::array window =
+      mel_cache_.has_value() ? mx::concatenate({*mel_cache_, chunk}, 1) : chunk;
+  const mx::array subsampled = model.Subsample(window);
+  const int window_frames = window.shape(1);
+  const int base = (consumed_mel_frames_ - cached_frames) / factor;
+  const int low = emitted_frames_ - base;
+  const int high = last_chunk ? subsampled.shape(1) : end / factor - base;
+  consumed_mel_frames_ = end;
+  mel_cache_ =
+      mx::slice(window, {0, std::max(0, window_frames - kMelCacheFrames), 0},
+                {1, window_frames, config.feature_count});
+  if (high <= low) {
+    emitted_frames_ = base + std::max(low, high);
+    return std::nullopt;
+  } else {
+  }
+  emitted_frames_ = base + high;
+  return mx::slice(subsampled, {0, low, 0}, {1, high, config.model_width});
+}
+
 void NemotronStream::DecodeChunk(const mx::array &prompted) {
   const NemotronModel &model = transcriber_.model();
   const int blank = model.blank_id();
-  const int width = prompted.shape(2);
+  const mx::array projected_frames = model.ProjectFrames(prompted);
+  const int joint_width = projected_frames.shape(2);
   const int frame_count = prompted.shape(1);
   const double frame_seconds = transcriber_.frame_seconds();
   // Note (Dayuxiaoshui): the prediction only changes when a token is emitted,
   // so it is reused across blanks; Swift reruns it to the same values.
+  // Note (XXXXRT666): each prediction is joined with up to kJointFrames
+  // frames at once, read back together, until a token is emitted.
   std::optional<std::pair<mx::array, LstmState>> prediction;
+  std::vector<int32_t> frame_tokens;
+  int tokens_start = 0;
+  int tokens_end = 0;
   int frame = 0;
   int symbols_this_frame = 0;
   while (frame < frame_count) {
@@ -279,13 +307,22 @@ void NemotronStream::DecodeChunk(const mx::array &prompted) {
         state.cell[layer] = mx::astype(state.cell[layer], dtype);
       }
       prediction.emplace(mx::astype(output, dtype), std::move(state));
+      tokens_end = frame;
     } else {
     }
-    const mx::array encoder_frame =
-        mx::slice(prompted, {0, frame, 0}, {1, frame + 1, width});
-    const int token = static_cast<int>(
-        mx::argmax(model.JointLogits(encoder_frame, prediction->first), -1)
-            .item<uint32_t>());
+    if (frame >= tokens_end) {
+      tokens_start = frame;
+      tokens_end = std::min(frame + kJointFrames, frame_count);
+      const mx::array tokens =
+          model.JointTokens(mx::slice(projected_frames, {0, tokens_start, 0},
+                                      {1, tokens_end, joint_width}),
+                            prediction->first);
+      mx::eval(tokens);
+      frame_tokens.assign(tokens.data<int32_t>(),
+                          tokens.data<int32_t>() + tokens.size());
+    } else {
+    }
+    const int token = frame_tokens[frame - tokens_start];
     if (token == blank) {
       ++frame;
       symbols_this_frame = 0;
@@ -320,13 +357,13 @@ std::string NemotronStream::Text() const {
   return swift_port::TrimWhitespace(text, true);
 }
 
-qwen3_asr::TranscriptionResult NemotronStream::Result() const {
+omni_common::TranscriptionResult NemotronStream::Result() const {
   const double frame_seconds = transcriber_.frame_seconds();
-  qwen3_asr::TranscriptionResult result;
+  omni_common::TranscriptionResult result;
   result.text = Text();
   result.language = language_;
   result.generated_token_count = static_cast<int>(tokens_.size());
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  result.finish_reason = omni_common::FinishReason::kStop;
   // Note (Dayuxiaoshui): a sentence closes on ! ? and their CJK forms, or on a
   // period that ends the transcript or precedes a word boundary.
   std::string sentence;
@@ -338,14 +375,15 @@ qwen3_asr::TranscriptionResult NemotronStream::Result() const {
     } else {
     }
     sentence += token.text;
-    const bool closes = Contains(token.text, "!") ||
-                        Contains(token.text, "?") ||
-                        Contains(token.text, "\xE3\x80\x82") || // 。
-                        Contains(token.text, "\xEF\xBC\x9F") || // ？
-                        Contains(token.text, "\xEF\xBC\x81") || // ！
-                        (Contains(token.text, ".") &&
-                         (index + 1 == tokens_.size() ||
-                          tokens_[index + 1].has_standalone_space));
+    const bool closes =
+        omni_common::Contains(token.text, "!") ||
+        omni_common::Contains(token.text, "?") ||
+        omni_common::Contains(token.text, "\xE3\x80\x82") || // 。
+        omni_common::Contains(token.text, "\xEF\xBC\x9F") || // ？
+        omni_common::Contains(token.text, "\xEF\xBC\x81") || // ！
+        (omni_common::Contains(token.text, ".") &&
+         (index + 1 == tokens_.size() ||
+          tokens_[index + 1].has_standalone_space));
     if (closes || index + 1 == tokens_.size()) {
       result.segments.push_back(
           {sentence_start, token.start_seconds + frame_seconds, "", sentence});

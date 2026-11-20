@@ -21,6 +21,10 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
+from sglang_omni.models.llada2_uni.interleaved import (
+    SYSTEM_PROMPT_INTERLEAVED,
+    InterleavedGenerationParams,
+)
 from sglang_omni.models.llada2_uni.payload_types import (
     ImageEncoderInputs,
     LLaDA2UniPipelineState,
@@ -28,6 +32,7 @@ from sglang_omni.models.llada2_uni.payload_types import (
     SkippedEncoderInputs,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.pipeline.umm import UMMRequestError
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
@@ -40,6 +45,9 @@ ROLE_ASSISTANT = "<role>ASSISTANT</role>"
 ROLE_SYSTEM = "<role>SYSTEM</role>"
 DEFAULT_SYSTEM_PROMPT = "You are a multimodal understanding assistant."
 SYSTEM_PROMPT_T2I = "You are a text-to-image generation assistant."
+SYSTEM_PROMPT_T2I_THINKING = (
+    "You are a text-to-image generation assistant with a thinking process."
+)
 EDIT_SYSTEM_PROMPT = "You are an image editing assistant."
 UNCOND_TEXT = "<uncondition>"
 DEFAULT_T2I_IMAGE_H = 1024
@@ -283,8 +291,14 @@ def edit_image_pixel_values(
 class LLaDA2Preprocessor:
     """Preprocessor for LLaDA2-Uni model (text + image)."""
 
-    def __init__(self, model_path: str, max_seq_len: int | None = None):
+    def __init__(
+        self,
+        model_path: str,
+        max_seq_len: int | None = None,
+        interleaved: bool = False,
+    ):
         self.max_seq_len = max_seq_len
+        self.interleaved = interleaved
         self.model_dir = resolve_local_model_dir(model_path)
         self.tokenizer = load_llada2_tokenizer(model_path)
 
@@ -346,11 +360,32 @@ class LLaDA2Preprocessor:
         else:
             pass
         task_kind = "chat"
-        if isinstance(image_generation, dict):
+        stage_params = request.params.get("stage_params")
+        wants_interleaved = (
+            isinstance(image_generation, dict)
+            and image_generation.get("mode") == "interleaved"
+        )
+        if (
+            wants_interleaved
+            or isinstance(stage_params, dict)
+            and "orchestrator" in stage_params
+        ) and not self.interleaved:
+            raise UMMRequestError(
+                "Interleaved generation needs the interleaved pipeline, "
+                "sgl-omni serve --variant interleaved"
+            )
+        elif wants_interleaved:
+            config = InterleavedGenerationParams.model_validate(image_generation)
+            task_kind = "interleaved"
+        elif isinstance(image_generation, dict):
             task_kind = "edit" if raw_images else "t2i"
         else:
             pass
         if task_kind == "edit":
+            if image_generation.get("mode") == "thinking":
+                raise ValueError("Thinking mode only supports text-to-image generation")
+            else:
+                pass
             self.require_edit_instruction(messages)
         else:
             pass
@@ -410,10 +445,13 @@ class LLaDA2Preprocessor:
         else:
             encoder_inputs[IMAGE_STAGE] = {"_skip": True, "_result": {}}
 
+        thinking_mode = (
+            task_kind == "t2i" and image_generation.get("mode") == "thinking"
+        )
         text_prompt = self.build_prompt(
             messages,
             image_parts_by_msg=image_parts_by_msg,
-            task_kind=task_kind,
+            task_kind="t2i_thinking" if thinking_mode else task_kind,
         )
         input_ids = self.tokenizer.encode(text_prompt, add_special_tokens=False)
 
@@ -426,6 +464,27 @@ class LLaDA2Preprocessor:
         max_new_tokens = request.params.get(
             "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
         )
+        if task_kind == "interleaved":
+            max_seq_len = self.max_seq_len
+            if max_seq_len is None:
+                raise ValueError("Interleaved generation requires max_seq_len")
+            else:
+                pass
+            stream_state["image_token_offset"] = IMAGE_TOKEN_OFFSET
+            stream_state["interleaved"] = {
+                **config.model_dump(),
+                "phase": "text",
+                "frame_index": 0,
+                "segment_start": len(input_ids),
+                "prompt_length": len(input_ids),
+                "max_seq_len": max_seq_len,
+                "segments": [],
+            }
+            max_new_tokens = min(
+                config.text_max_new_tokens, max_seq_len - len(input_ids)
+            )
+        else:
+            pass
         if task_kind == "t2i":
             ig = image_generation
             image_h = int(ig.get("image_h", DEFAULT_T2I_IMAGE_H))
@@ -446,7 +505,9 @@ class LLaDA2Preprocessor:
             stream_state["cfg_scale"] = cfg_scale
             stream_state["cfg_rescale"] = float(ig.get("cfg_rescale", 0.7))
             mode = ig.get("mode", "normal")
-            if mode == "normal":
+            if mode == "thinking":
+                max_new_tokens = DEFAULT_THINKER_MAX_NEW_TOKENS + grid_h * grid_w
+            elif mode == "normal":
                 input_ids.extend(self.build_t2i_header_ids(grid_h, grid_w))
                 max_new_tokens = grid_h * grid_w
                 if cfg_scale > 1.0:
@@ -481,10 +542,11 @@ class LLaDA2Preprocessor:
             request_metadata=metadata,
             task_kind=task_kind,
             stream_state=stream_state,
+            thinking_phase="text" if thinking_mode else None,
         )
         return StagePayload(
             request_id=payload.request_id,
-            request=payload.request,
+            request=request,
             data=state.to_dict(),
         )
 
@@ -559,7 +621,9 @@ class LLaDA2Preprocessor:
 
         system_prompt = {
             "t2i": SYSTEM_PROMPT_T2I,
+            "t2i_thinking": SYSTEM_PROMPT_T2I_THINKING,
             "edit": EDIT_SYSTEM_PROMPT,
+            "interleaved": SYSTEM_PROMPT_INTERLEAVED,
         }.get(task_kind, DEFAULT_SYSTEM_PROMPT)
         parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
 

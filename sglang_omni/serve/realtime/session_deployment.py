@@ -3,7 +3,10 @@
 
 from sglang_omni.client.client import Client
 from sglang_omni.config.session_audio import AudioSessionPipelineConfig
-from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.manager import (
+    RealtimeDeployment,
+    runtime_limits_for_pipeline,
+)
 from sglang_omni.serve.realtime.session_bridge import SessionBridge, capabilities_of
 
 
@@ -15,5 +18,6 @@ def build_realtime_deployment(
     return RealtimeDeployment(
         capabilities=capabilities_of(ports),
         adapter_factory=lambda: SessionBridge(client, ports, limits=limits),
+        limits=runtime_limits_for_pipeline(pipeline_config),
         session_limits=limits,
     )

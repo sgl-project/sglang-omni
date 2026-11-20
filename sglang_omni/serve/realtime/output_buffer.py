@@ -9,7 +9,6 @@ from sglang_omni.serve.realtime.control import Closed, Failure
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
-    ContextLimitError,
     InputTranscription,
     OutputEvent,
     ResponseEvent,
@@ -22,7 +21,9 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.types import (
     PCM16_BYTES_PER_SAMPLE,
+    ContextLimitError,
     Envelope,
+    OutputBudgetError,
     RuntimeLimits,
     Unit,
 )
@@ -75,7 +76,7 @@ class OutputBuffer:
     def enqueue(self, envelope: Envelope) -> None:
         size_bytes = envelope_size_bytes(envelope)
         if self.queued_bytes + size_bytes > self.limits.max_output_bytes:
-            raise RuntimeError("outbound event budget exhausted")
+            raise OutputBudgetError()
         else:
             pass
         self.append_unbounded(envelope, size_bytes)
@@ -145,7 +146,7 @@ class OutputBuffer:
                     else event.text
                 )
                 if len(response_text) > self.limits.max_history_chars:
-                    raise ContextLimitError("response text context limit")
+                    raise ContextLimitError()
                 else:
                     pass
                 response_state.text = response_text
@@ -155,6 +156,21 @@ class OutputBuffer:
                 raise RuntimeError("producer emitted invalid PCM16")
             elif isinstance(event, ResponseFinished):
                 response_state.is_terminal = True
+                if event.status == "cancelled":
+                    # Note (ruoyu): The listener stopped this reply, so its audio still waiting for a slow socket must not leave; the socket can hold seconds of it.
+                    self.queued_envelopes = deque(
+                        (envelope, size_bytes)
+                        for envelope, size_bytes in self.queued_envelopes
+                        if not (
+                            isinstance(envelope.event, AudioDelta)
+                            and envelope.event.response_id == event.response_id
+                        )
+                    )
+                    self.queued_bytes = sum(
+                        size_bytes for _, size_bytes in self.queued_envelopes
+                    )
+                else:
+                    pass
             else:
                 pass
         else:

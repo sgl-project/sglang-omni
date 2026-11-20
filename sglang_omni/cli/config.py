@@ -10,7 +10,8 @@ import typer
 import yaml
 
 from sglang_omni.cli.serve import (
-    apply_tensor_parallel_engine_overrides,
+    apply_engine_writes,
+    default_draft_engine_writes,
     patches_from_broadcast_flags,
     resolve_variant,
     tensor_parallel_engine_writes,
@@ -29,9 +30,10 @@ from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import (
     dump_user_config,
     patches_from_dotted_cli,
-    patches_from_model_path_flag,
     sources_from_config_file,
 )
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.pipeline.replicas import warn_replica_device_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -149,15 +151,9 @@ def resolve_sources(
 
     try:
         if config_file:
-            baseline, patches = sources_from_config_file(config_file)
-            if model_path is not None:
-                # `serve` semantics: given both, the flag is a command line
-                # source and outranks the file's own model_path.
-                patches = patches.merge(
-                    patches_from_model_path_flag(model_path, baseline)
-                )
-            else:
-                pass
+            baseline, patches = sources_from_config_file(
+                config_file, model_path_override=model_path
+            )
         else:
             manager = ConfigManager.from_model_path(
                 str(model_path), variant=selected_variant
@@ -174,10 +170,19 @@ def resolve_sources(
             patches_from_dotted_cli(extra_args, baseline, origin="command line")
         )
         resolved = ConfigResolver(baseline).resolve(patches)
-        # The same post-merge derivation `serve` runs; it only fills engine
+        if config_file and model_path is not None:
+            # note (kermit): The checkpoint selected at construction is a CLI value, so it has no model default.
+            resolved.provenance.baseline.pop("model_path", None)
+        else:
+            pass
+        logical_plan, logical_stages = compile_logical_processes(resolved.config)
+        warn_replica_device_overrides(logical_stages, logical_plan)
+        # The same post-merge derivations serve runs; they only fill engine
         # keys no source set, so the previewed config is the launched one.
-        derivation_writes = tensor_parallel_engine_writes(resolved.config)
-        derived = apply_tensor_parallel_engine_overrides(resolved.config)
+        draft_writes = default_draft_engine_writes(resolved.config)
+        drafted = apply_engine_writes(resolved.config, draft_writes)
+        derivation_writes = tensor_parallel_engine_writes(drafted)
+        derived = apply_engine_writes(drafted, derivation_writes)
         # The derivation may fill a key a source explicitly cleared (an
         # engine key set to none is unset again, and unset keys are the
         # derivation's to fill). Re-record what the launched config holds so
@@ -187,22 +192,35 @@ def resolve_sources(
             resolved.provenance.record_resolved(patch.key, patch.path.read(derived))
         # A purely derived key has no patch; give it an entry of its own so
         # explain names the derivation instead of claiming a model default.
-        derivation_source = ConfigSource(
-            SourceKind.MODEL_DEFAULT,
-            detail="derived from the resolved TP settings at launch",
+        derivation_sources = (
+            (
+                draft_writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="the model's default draft, added at launch",
+                ),
+            ),
+            (
+                derivation_writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="derived from the resolved TP settings at launch",
+                ),
+            ),
         )
-        for path_text, value in derivation_writes.items():
-            if resolved.provenance.touched(path_text):
-                continue
-            else:
-                pass
-            derivation_patch = ConfigPatch.create(
-                path_text, value, derivation_source, root=type(baseline)
-            )
-            resolved.provenance.record(derivation_patch, winning=True)
-            resolved.provenance.record_resolved(
-                path_text, derivation_patch.path.read(derived)
-            )
+        for writes, derivation_source in derivation_sources:
+            for path_text, value in writes.items():
+                if resolved.provenance.touched(path_text):
+                    continue
+                else:
+                    pass
+                derivation_patch = ConfigPatch.create(
+                    path_text, value, derivation_source, root=type(baseline)
+                )
+                resolved.provenance.record(derivation_patch, winning=True)
+                resolved.provenance.record_resolved(
+                    path_text, derivation_patch.path.read(derived)
+                )
         return Resolution(baseline, replace(resolved, config=derived))
     except (ConfigPathError, ValueError) as exc:
         # An unknown path, a path the schema will not let a user write, two
@@ -265,7 +283,25 @@ def resolve(
     if show is ResolveOutput.diff:
         # Against the baseline config rather than against the recorded patches,
         # so that a field an alias carried along is shown as changed too.
-        changes = diff_configs(resolution.baseline, resolution.resolved.config)
+        baseline_values = resolution.baseline.model_dump()
+        file_model_path = next(
+            (
+                entry.value
+                for entry in provenance.entries.get("model_path", [])
+                if entry.source.kind is SourceKind.YAML_FILE and not entry.winning
+            ),
+            None,
+        )
+        if model_path is not None and isinstance(file_model_path, str):
+            # note (kermit): Preserve the diff against the YAML path without loading that checkpoint.
+            baseline_values["model_path"] = file_model_path
+            if resolution.baseline.name == resolution.baseline.model_path:
+                baseline_values["name"] = file_model_path
+            else:
+                pass
+        else:
+            pass
+        changes = diff_configs(baseline_values, resolution.resolved.config)
         if not changes:
             print("No configuration source changed the pipeline's defaults.")
             return

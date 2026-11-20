@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal
@@ -17,8 +19,18 @@ from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
 from sglang.srt.model_loader.utils import set_default_torch_dtype
 
-from sglang_omni.models.fishaudio_drama3.audio_decoder import AudioDecoder
+from sglang_omni.models.fishaudio_drama3 import decoder_layers
+from sglang_omni.models.fishaudio_drama3.audio_decoder import (
+    CODEBOOK_TOP_K,
+    AudioDecoder,
+)
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.request_builders import MAXIMUM_TOP_K
+from sglang_omni.models.fishaudio_drama3.sampling import (
+    sample_semantic_with_ras,
+    sample_top_k_top_p,
+)
+from sglang_omni.models.fishaudio_drama3.sampling_kernels import CodebookSampler
 from sglang_omni.models.fishaudio_drama3.weights import (
     checkpoint_part,
     expected_parameter_shards,
@@ -416,6 +428,7 @@ def run_decoder(
     prefill_hidden: torch.Tensor,
     decode_hidden: torch.Tensor,
     semantic_logits: torch.Tensor,
+    top_k: list[int],
 ) -> tuple[dict[tuple[int, str], list[int]], torch.Tensor]:
     """Prefill all requests and decode once; returns cache positions and frames."""
     device = prefill_hidden.device
@@ -442,7 +455,7 @@ def run_decoder(
         torch.tensor(input_frames, device=device),
         torch.full((row_count, WINDOW_FRAMES), EMPTY_WINDOW_TOKEN, device=device),
         torch.ones(row_count, device=device),
-        torch.ones(row_count, dtype=torch.int64, device=device),
+        torch.tensor(top_k, device=device),
         torch.ones(row_count, device=device),
         attention,
     )
@@ -509,7 +522,12 @@ def test_tower_matches_the_hand_written_formulas() -> None:
     )
 
     positions_after_prefill, frames = run_decoder(
-        decoder, attention, prefill_hidden, decode_hidden, semantic_logits
+        decoder,
+        attention,
+        prefill_hidden,
+        decode_hidden,
+        semantic_logits,
+        [1] * len(REQUEST_FRAMES),
     )
     reference, reference_frames = run_reference(
         checkpoint, prefill_hidden, decode_hidden, semantic_logits
@@ -537,6 +555,81 @@ def test_tower_matches_the_hand_written_formulas() -> None:
                 )
 
 
+@pytest.mark.parametrize("tp_size", [2, 4])
+@torch_fused_op_backend()
+def test_tensor_parallel_ranks_match_the_hand_written_formulas(
+    monkeypatch: pytest.MonkeyPatch, tp_size: int
+) -> None:
+    """Ranks holding a slice of the heads and MLP width sample the reference frames
+    and cache only their key/value head; past two ranks, ranks share a head."""
+    checkpoint = random_checkpoint(seed=0)
+    prefill_hidden, decode_hidden, semantic_logits = random_inputs(seed=1)
+    barrier = threading.Barrier(tp_size)
+    thread_state = threading.local()
+    partial_outputs: dict[int, torch.Tensor] = {}
+
+    def all_reduce(output: torch.Tensor) -> torch.Tensor:
+        partial_outputs[thread_state.tp_rank] = output
+        barrier.wait()
+        total = sum(partial_outputs[tp_rank] for tp_rank in range(tp_size))
+        barrier.wait()
+        return total
+
+    kv_head_count = max(1, KV_HEAD_COUNT // tp_size)
+    attentions = [
+        DenseAttention(
+            head_count=HEAD_COUNT // tp_size,
+            kv_head_count=kv_head_count,
+            head_dim=HEAD_DIM,
+        )
+        for _ in range(tp_size)
+    ]
+
+    def run_rank(tp_rank: int) -> torch.Tensor:
+        thread_state.tp_rank = tp_rank
+        try:
+            decoder = AudioDecoder(small_config(), tp_rank=tp_rank, tp_size=tp_size)
+            load_audio_decoder_weights(decoder, checkpoint.items())
+            _, frames = run_decoder(
+                decoder,
+                attentions[tp_rank],
+                prefill_hidden,
+                decode_hidden,
+                semantic_logits,
+                [1] * len(REQUEST_FRAMES),
+            )
+        except BaseException:
+            barrier.abort()
+            raise
+        else:
+            return frames
+
+    monkeypatch.setattr(decoder_layers, "tensor_model_parallel_all_reduce", all_reduce)
+    with ThreadPoolExecutor(max_workers=tp_size) as executor:
+        rank_frames = list(executor.map(run_rank, range(tp_size)))
+    reference, reference_frames = run_reference(
+        checkpoint, prefill_hidden, decode_hidden, semantic_logits
+    )
+
+    assert [frames.tolist() for frames in rank_frames] == [reference_frames] * tp_size
+    for tp_rank, attention in enumerate(attentions):
+        rank_heads = slice(
+            tp_rank * KV_HEAD_COUNT // tp_size,
+            tp_rank * KV_HEAD_COUNT // tp_size + kv_head_count,
+        )
+        assert attention.entries.keys() == reference.caches.keys()
+        for cache_key, entries in attention.entries.items():
+            for entry, reference_entry in zip(
+                entries, reference.caches[cache_key], strict=True
+            ):
+                torch.testing.assert_close(
+                    entry[1], reference_entry[1][rank_heads], rtol=1e-4, atol=1e-4
+                )
+                torch.testing.assert_close(
+                    entry[2], reference_entry[2][rank_heads], rtol=1e-4, atol=1e-4
+                )
+
+
 @pytest.mark.parametrize(
     "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
 )
@@ -559,6 +652,7 @@ def test_bfloat16_tower_tracks_the_fp32_formulas(device: DeviceType) -> None:
             prefill_hidden.to(device=device, dtype=torch.bfloat16),
             decode_hidden.to(device=device, dtype=torch.bfloat16),
             semantic_logits.to(device),
+            [1] * len(REQUEST_FRAMES),
         )
     reference, reference_frames = run_reference(
         checkpoint, prefill_hidden, decode_hidden, semantic_logits
@@ -584,6 +678,74 @@ def test_bfloat16_tower_tracks_the_fp32_formulas(device: DeviceType) -> None:
                 # rows drift up to ~4% in norm (measured on this fixture).
                 drift = (cached.float().cpu() - expected).norm() / expected.norm()
                 assert drift < BFLOAT16_CACHE_DRIFT
+
+
+@torch_fused_op_backend()
+def test_main_token_takes_the_request_top_k_and_codebook_heads_at_most_30(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_token_top_ks: list[list[int]] = []
+    codebook_top_ks: list[list[int]] = []
+
+    def recorded_main_token_draw(
+        semantic_logits: torch.Tensor,
+        candidate_token_ids: torch.Tensor,
+        previous_main_tokens: torch.Tensor,
+        temperature: torch.Tensor,
+        top_k: torch.Tensor,
+        top_p: torch.Tensor,
+        semantic_begin_id: int,
+        codebook_size: int,
+        sampler: CodebookSampler | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        main_token_top_ks.append(top_k.tolist())
+        return sample_semantic_with_ras(
+            semantic_logits,
+            candidate_token_ids,
+            previous_main_tokens,
+            temperature,
+            top_k,
+            top_p,
+            semantic_begin_id,
+            codebook_size,
+            sampler,
+        )
+
+    def recorded_codebook_draw(
+        logits: torch.Tensor,
+        temperature: torch.Tensor,
+        top_k: torch.Tensor,
+        top_p: torch.Tensor,
+        sampler: CodebookSampler | None,
+        stream_id: int,
+    ) -> torch.Tensor:
+        codebook_top_ks.append(top_k.tolist())
+        return sample_top_k_top_p(logits, temperature, top_k, top_p, sampler, stream_id)
+
+    monkeypatch.setattr(
+        f"{AudioDecoder.__module__}.sample_semantic_with_ras", recorded_main_token_draw
+    )
+    monkeypatch.setattr(
+        f"{AudioDecoder.__module__}.sample_top_k_top_p", recorded_codebook_draw
+    )
+    request_top_k = [MAXIMUM_TOP_K, CODEBOOK_TOP_K + 1, 5]
+    prefill_hidden, decode_hidden, semantic_logits = random_inputs(seed=1)
+
+    run_decoder(
+        loaded_decoder(random_checkpoint(seed=0), torch.float32, "cpu"),
+        DenseAttention(
+            head_count=HEAD_COUNT, kv_head_count=KV_HEAD_COUNT, head_dim=HEAD_DIM
+        ),
+        prefill_hidden,
+        decode_hidden,
+        semantic_logits,
+        request_top_k,
+    )
+
+    assert main_token_top_ks == [request_top_k]
+    assert (
+        codebook_top_ks == [[CODEBOOK_TOP_K, CODEBOOK_TOP_K, 5]] * RESIDUAL_LAYER_COUNT
+    )
 
 
 def test_frame_embeddings() -> None:

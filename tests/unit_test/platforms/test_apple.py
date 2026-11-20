@@ -6,18 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.platforms.interface import SRTPlatform
+from sglang.srt.platforms.mps import MpsSRTPlatform
 
 from sglang_omni import platforms
 from sglang_omni.platforms.apple import AppleOmniPlatform
 
 
-def test_generic_sglang_platform_resolves_to_apple_when_mps_is_available(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(platforms, "is_apple_silicon_mps_available", lambda: True)
-
-    resolved = platforms.as_omni_platform(SRTPlatform())
+def test_mps_sglang_platform_resolves_to_apple() -> None:
+    resolved = platforms.as_omni_platform(MpsSRTPlatform())
 
     assert isinstance(resolved, AppleOmniPlatform)
     assert resolved.is_mps()

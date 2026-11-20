@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
 import torch
@@ -30,6 +30,9 @@ else:
 class MingTTSLatentPatch:
     latent: torch.Tensor
     is_last: bool
+    # note (Dayuxiaoshui): Unset once latent is a completed host copy;
+    # set while the D2H may still be in flight.
+    ready: torch.Event | None = None
 
 
 @dataclass
@@ -44,7 +47,7 @@ class MingTTSSGLangRequestData(SGLangARRequestData):
     generated_latents: torch.Tensor | None = None
     stop_step: int | None = None
     is_streaming: bool = False
-    pending_stream_patch: MingTTSLatentPatch | None = None
+    pending_stream_patches: list[MingTTSLatentPatch] = field(default_factory=list)
 
 
 def make_ming_tts_scheduler_adapters(
@@ -177,27 +180,46 @@ def build_ming_tts_stream_output(
     req_output: RequestOutput,
 ) -> list[OutgoingMessage]:
     del req_output
-    patch = data.pending_stream_patch
-    if not data.is_streaming or patch is None:
+    patches = data.pending_stream_patches
+    if not data.is_streaming or not patches:
         return []
+    elif patches[-1].is_last:
+        # note (Dayuxiaoshui): No later step will drain the queue, so the terminal
+        # patch flushes everything even if a D2H still has to be waited on.
+        ready_count = len(patches)
     else:
-        pass
-
-    latent = patch.latent.detach().to(device="cpu", dtype=torch.float32).contiguous()
-    data.pending_stream_patch = None
-    return [
-        OutgoingMessage(
-            request_id=request_id,
-            type="stream",
-            data=latent,
-            target="audio_decode",
-            metadata={
-                "modality": "audio_latents",
-                "stream": True,
-                "is_last": bool(patch.is_last),
-            },
+        # note (Dayuxiaoshui): Patches stay ordered, so the first in-flight D2H
+        # holds back every patch queued behind it.
+        ready_count = next(
+            (
+                index
+                for index, patch in enumerate(patches)
+                if patch.ready is not None and not patch.ready.query()
+            ),
+            len(patches),
         )
-    ]
+
+    messages: list[OutgoingMessage] = []
+    for patch in patches[:ready_count]:
+        if patch.ready is None:
+            pass
+        else:
+            patch.ready.synchronize()
+        messages.append(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=patch.latent.to(dtype=torch.float32).contiguous(),
+                target="audio_decode",
+                metadata={
+                    "modality": "audio_latents",
+                    "stream": True,
+                    "is_last": bool(patch.is_last),
+                },
+            )
+        )
+    data.pending_stream_patches = patches[ready_count:]
+    return messages
 
 
 __all__ = [

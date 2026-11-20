@@ -358,6 +358,7 @@ def make_repeat_result(concurrency: int, repeat: int, median: float) -> dict:
         "evaluated": 10,
         "total": 10,
         "skipped": 0,
+        "failed": 0,
         "corpus_wer": 0.01,
         "per_sample_wer_max": 0.05,
         "wall_clock_s": 2.0,

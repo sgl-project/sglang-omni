@@ -8,6 +8,8 @@ import struct
 import wave
 from types import SimpleNamespace
 
+import av
+import numpy as np
 import pytest
 from fastapi import HTTPException
 
@@ -79,6 +81,72 @@ def test_assemble_uses_the_caller_probed_duration(monkeypatch) -> None:
     )
 
     assert json.loads(response.body)["usage"] == {"seconds": 3, "type": "duration"}
+    assert "finish_reason" not in json.loads(response.body)
+    assert "x-finish-reason" not in {name.lower() for name in response.headers}
+
+
+def test_assemble_surfaces_a_token_budget_stop() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="repeated sentence",
+        response_format="json",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+        duration_s=3600,
+        finish_reason="length",
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["finish_reason"] == "length"
+    assert response.headers["x-finish-reason"] == "length"
+
+
+def test_text_response_surfaces_truncation_in_a_header() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="repeated sentence",
+        response_format="text",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+        duration_s=3600,
+        finish_reason="length",
+    )
+
+    assert response.body == b"repeated sentence"
+    assert response.headers["x-finish-reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_stream_done_event_surfaces_a_token_budget_stop() -> None:
+    from sglang_omni.client import GenerateChunk
+
+    async def chunks():
+        yield GenerateChunk(request_id="req", text="hello ", modality="text")
+        yield GenerateChunk(
+            request_id="req",
+            text="hello again",
+            modality="text",
+            finish_reason="length",
+        )
+
+    events = [
+        line
+        async for line in speech_to_text.speech_to_text_stream(
+            chunks(),
+            first_chunk=None,
+            request_id="req",
+            adapter=speech_to_text.resolve_speech_to_text_adapter(None),
+            duration_s=3600,
+        )
+    ]
+
+    done = json.loads(events[-2].removeprefix("data: ").strip())
+    assert done["finish_reason"] == "length"
+    assert done["text"] == "hello again"
 
 
 def test_probe_measures_wav_without_the_av_fallback(monkeypatch) -> None:
@@ -116,6 +184,49 @@ def test_av_duration_measures_a_container_whose_tags_are_not_utf8() -> None:
     upload = b"RIFF" + struct.pack("<I", len(body)) + body
 
     assert speech_to_text.av_duration(upload) == pytest.approx(0.5)
+
+
+def test_av_duration_measures_the_audio_track_of_a_longer_video() -> None:
+    video_seconds, audio_seconds, sample_rate_hz = 45, 2, 16000
+    mp4_buffer = io.BytesIO()
+    with av.open(mp4_buffer, mode="w", format="mp4") as container:
+        video_stream = container.add_stream("mpeg4", rate=1)
+        video_stream.width, video_stream.height = 64, 64
+        video_stream.pix_fmt = "yuv420p"
+        audio_stream = container.add_stream("aac", rate=sample_rate_hz)
+        audio_stream.layout = "mono"
+        black_pixels = np.zeros((64, 64, 3), dtype=np.uint8)
+        for second in range(video_seconds):
+            video_frame = av.VideoFrame.from_ndarray(black_pixels, format="rgb24")
+            video_frame.pts = second
+            container.mux(video_stream.encode(video_frame))
+        container.mux(video_stream.encode())
+        silence = np.zeros((1, audio_seconds * sample_rate_hz), dtype=np.float32)
+        audio_frame = av.AudioFrame.from_ndarray(silence, format="fltp", layout="mono")
+        audio_frame.sample_rate, audio_frame.pts = sample_rate_hz, 0
+        container.mux(audio_stream.encode(audio_frame))
+        container.mux(audio_stream.encode())
+
+    assert speech_to_text.av_duration(mp4_buffer.getvalue()) == pytest.approx(
+        audio_seconds, abs=0.1
+    )
+
+
+def test_av_duration_falls_back_to_the_container_without_a_track_duration() -> None:
+    audio_seconds, sample_rate_hz = 3, 48000
+    webm_buffer = io.BytesIO()
+    with av.open(webm_buffer, mode="w", format="webm") as container:
+        audio_stream = container.add_stream("libopus", rate=sample_rate_hz)
+        audio_stream.layout = "mono"
+        silence = np.zeros((1, audio_seconds * sample_rate_hz), dtype=np.float32)
+        audio_frame = av.AudioFrame.from_ndarray(silence, format="fltp", layout="mono")
+        audio_frame.sample_rate, audio_frame.pts = sample_rate_hz, 0
+        container.mux(audio_stream.encode(audio_frame))
+        container.mux(audio_stream.encode())
+
+    assert speech_to_text.av_duration(webm_buffer.getvalue()) == pytest.approx(
+        audio_seconds, abs=0.1
+    )
 
 
 def test_probe_keeps_estimated_containers_on_av(monkeypatch) -> None:

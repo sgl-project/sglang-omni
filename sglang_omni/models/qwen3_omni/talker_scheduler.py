@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import replace
 
+import torch
 from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.utils import GenerationBatchResult
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils.common import async_h2d
 from typing_extensions import Unpack
 
-from sglang_omni.models.qwen3_omni.config import (
-    ENABLE_TALKER_START_TOPOLOGY,
-    MIN_PARTIAL_START_CHUNKS,
-    TALKER_START_MIN_CHUNKS,
-)
+from sglang_omni.models.qwen3_omni.config import TALKER_START_MIN_CHUNKS
 from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import StagePayload
@@ -26,10 +27,9 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
-_CHUNK_WAIT_LOG_INTERVAL_S = 10.0
-
-# Note (Junnan Li): A reply of one spoken token has no talker reference: HF fails to assemble its assistant prompt, and this talker never samples codec EOS for it.
-MIN_SPOKEN_TOKENS = 2
+# note (ratish): a reply with no spoken token has nothing to speak; a reply of one
+# token terminates.
+MIN_SPOKEN_TOKENS = 1
 
 
 def configure_talker_server_args(
@@ -56,44 +56,29 @@ def configure_talker_server_args(
 class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
     """Talker scheduler with Qwen-specific request and decode readiness."""
 
-    talker_start_topology: bool = ENABLE_TALKER_START_TOPOLOGY
-    chunk_wait_steps: int = 0
-    chunk_wait_last_log_s: float = 0.0
+    excluded_row_steps: int = 0
+    excluded_batch: ScheduleBatch | None = None
 
     def __init__(
         self,
         *args: object,
         enable_partial_start: bool = False,
-        partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
+        partial_start_min_chunks: int = TALKER_START_MIN_CHUNKS,
         im_end_token_id: int | None = None,
-        enable_talker_start_topology: bool | None = None,
         **kwargs: Unpack[OmniSchedulerArguments[SGLangARRequestData]],
     ) -> None:
         super().__init__(*args, **kwargs)
-        if partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:
+        if partial_start_min_chunks < TALKER_START_MIN_CHUNKS:
             raise ValueError(
-                f"partial_start_min_chunks must be >= {MIN_PARTIAL_START_CHUNKS}, got {partial_start_min_chunks}"
+                f"partial_start_min_chunks must be >= {TALKER_START_MIN_CHUNKS}, got {partial_start_min_chunks}"
             )
         else:
             pass
         self.enable_partial_start = bool(enable_partial_start)
         self.partial_start_min_chunks = int(partial_start_min_chunks)
         self.im_end_token_id = im_end_token_id
-        self.talker_start_topology = self.enable_partial_start and (
-            ENABLE_TALKER_START_TOPOLOGY
-            if enable_talker_start_topology is None
-            else bool(enable_talker_start_topology)
-        )
-        self.chunk_wait_steps = 0
-        self.chunk_wait_last_log_s = 0.0
-        if self.talker_start_topology:
-            logger.info(
-                "talker-start topology on: building at %d thinker chunk(s); later chunks gate decode per step (partial_start_min_chunks=%d applies to the legacy path only)",
-                TALKER_START_MIN_CHUNKS,
-                self.partial_start_min_chunks,
-            )
-        else:
-            pass
+        self.excluded_row_steps = 0
+        self.excluded_batch = None
 
     def count_usable_prefetched_chunks(self, prefetched: list[StreamItem]) -> int:
         im_end = self.im_end_token_id
@@ -121,12 +106,10 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         else:
             pass
         prefetched = getattr(payload, "prefetched_chunks", None) or []
-        usable = self.count_usable_prefetched_chunks(prefetched)
-        if self.talker_start_topology:
-            return usable >= TALKER_START_MIN_CHUNKS
-        else:
-            pass
-        return usable >= self.partial_start_min_chunks
+        return (
+            self.count_usable_prefetched_chunks(prefetched)
+            >= self.partial_start_min_chunks
+        )
 
     def complete_without_generation(
         self, payload: StagePayload, session_unit: SessionUnit | None
@@ -156,72 +139,124 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         del request_id, chunk
         return self.enable_partial_start
 
-    def is_batch_ready_to_run(self, batch: ScheduleBatch | None) -> bool:
-        if (
-            batch is not None
-            and batch.forward_mode.is_decode()
-            and (self.model_runner is not None)
-            and hasattr(self.model_runner, "is_decode_batch_ready")
-            and (not self.model_runner.is_decode_batch_ready(batch))
-        ):
-            self.note_chunk_wait(batch)
-            return False
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        """Decode the rows whose next input has arrived; the others are excluded from the step and keep their KV."""
+        ready_rows = self.model_runner.ready_decode_rows(batch)
+        if len(ready_rows) == batch.batch_size():
+            return super().update_running_batch(batch)
         else:
             pass
-        return True
-
-    def note_chunk_wait(self, batch: ScheduleBatch) -> None:
-        self.chunk_wait_steps += 1
-        logger.debug("Deferring decode batch until talker feedback/text input is ready")
-        now = time.monotonic()
-        if now - self.chunk_wait_last_log_s < _CHUNK_WAIT_LOG_INTERVAL_S:
-            return
+        ready = set(ready_rows)
+        excluded_rows: list[int] = []
+        for row_index, request in enumerate(batch.reqs):
+            if row_index in ready:
+                pass
+            elif request.to_finish is None:
+                excluded_rows.append(row_index)
+            else:
+                # note (ratish): an abort's cleanup runs at the row's next step, which a row without input never takes.
+                self.abort(request.rid, defer_running_cleanup=False)
+        if len(ready_rows) + len(excluded_rows) < batch.batch_size():
+            batch.batch_is_full = False
         else:
             pass
-        self.chunk_wait_last_log_s = now
-        logger.info(
-            "talker chunk gate: %d decode steps deferred so far (current batch rows=%d)",
-            self.chunk_wait_steps,
-            len(getattr(batch, "reqs", ()) or ()),
-        )
-
-    def get_next_batch_to_run(self) -> ScheduleBatch | None:
-        batch = super().get_next_batch_to_run()
-        if batch is not None and (not self.is_batch_ready_to_run(batch)):
-            self.rollback_decode_prep_after_skip(batch)
+        if not ready_rows:
+            batch.filter_batch(keep_indices=excluded_rows)
+            return None
+        elif excluded_rows and not batch.check_decode_mem(selected_indices=ready_rows):
+            # note (ratish): as for rows finishing in flight, the ready rows wait rather than be retracted around rows holding KV outside the step; once every row has its text, retraction runs over the whole batch.
+            batch.filter_batch(keep_indices=sorted(ready_rows + excluded_rows))
+            batch.batch_is_full = False
             return None
         else:
             pass
-        return batch
+        if excluded_rows:
+            self.excluded_batch = self.copy_rows(batch, excluded_rows)
+        else:
+            pass
+        batch.filter_batch(keep_indices=ready_rows)
+        decode_batch = super().update_running_batch(batch)
+        if decode_batch is None:
+            self.merge_excluded_rows(batch)
+        else:
+            pass
+        return decode_batch
 
-    def rollback_decode_prep_after_skip(self, batch: ScheduleBatch) -> None:
-        if not batch.forward_mode.is_decode():
-            return
+    def copy_rows(self, batch: ScheduleBatch, row_indices: list[int]) -> ScheduleBatch:
+        """A batch of these rows that keeps their KV slot, length and next input id."""
+        rows_batch = ScheduleBatch.init_new(
+            reqs=[batch.reqs[row_index] for row_index in row_indices],
+            req_to_token_pool=self.req_to_token_pool,
+            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+            tree_cache=self.tree_cache,
+            model_config=self.model_config,
+            enable_overlap=self.enable_overlap,
+            spec_algorithm=self.spec_algorithm,
+        )
+        host_indices = torch.tensor(row_indices, dtype=torch.int64)
+        device_indices = async_h2d(row_indices, dtype=torch.int64, device=batch.device)
+        rows_batch.forward_mode = ForwardMode.DECODE
+        rows_batch.req_pool_indices = batch.req_pool_indices[device_indices]
+        rows_batch.req_pool_indices_cpu = batch.req_pool_indices_cpu[host_indices]
+        rows_batch.seq_lens = batch.seq_lens[device_indices]
+        rows_batch.seq_lens_cpu = batch.seq_lens_cpu[host_indices]
+        rows_batch.orig_seq_lens = batch.orig_seq_lens[device_indices]
+        rows_batch.input_ids = (
+            None if batch.input_ids is None else batch.input_ids[device_indices]
+        )
+        rows_batch.multimodal_inputs = (
+            None
+            if batch.multimodal_inputs is None
+            else [batch.multimodal_inputs[row_index] for row_index in row_indices]
+        )
+        # note (ratish): the talker samples from its own buffers, so these rows get fresh sampling state, as a batch built for rows already holding KV does.
+        rows_batch.sampling_info = SamplingBatchInfo.from_schedule_batch(
+            rows_batch, self.model_config.vocab_size
+        )
+        return rows_batch
+
+    def pending_batches(self) -> Iterator[ScheduleBatch]:
+        """Rows excluded from the current step stay visible to request lookup and cancellation."""
+        yield from super().pending_batches()
+        if self.excluded_batch is not None:
+            yield self.excluded_batch
         else:
             pass
-        if batch.out_cache_loc is not None:
-            allocator = self.token_to_kv_pool_allocator
-            if allocator.page_size > 1:
-                # note (Richard Wang): a paged allocator frees whole pages, so only
-                # release the pages this step opened, since the rest hold earlier KV.
-                new_pages = (batch.seq_lens_cpu - 1) % allocator.page_size == 0
-                if new_pages.any():
-                    allocator.free(batch.out_cache_loc[new_pages])
-                else:
-                    pass
-            else:
-                allocator.free(batch.out_cache_loc)
-            batch.out_cache_loc = None
+
+    def merge_excluded_rows(self, batch: ScheduleBatch) -> int:
+        """Merge the rows excluded from the step back into the batch; returns how many there were."""
+        excluded_batch = self.excluded_batch
+        if excluded_batch is None:
+            return 0
         else:
             pass
-        for req in batch.reqs:
-            req.decode_batch_idx -= 1
-            req.kv.kv_committed_len -= 1
-            req.kv.kv_allocated_len -= 1
-        batch.seq_lens.sub_(1)
-        batch.seq_lens_cpu.sub_(1)
-        batch.orig_seq_lens.sub_(1)
-        batch.req_to_token_pool.req_to_token[batch.req_pool_indices, batch.seq_lens] = 0
+        self.excluded_batch = None
+        excluded_row_count = excluded_batch.batch_size()
+        batch.merge_batch(excluded_batch)
+        return excluded_row_count
+
+    def process_batch_result(
+        self, batch: ScheduleBatch, result: GenerationBatchResult
+    ) -> None:
+        super().process_batch_result(batch, result)
+        self.excluded_row_steps += self.merge_excluded_rows(batch)
+        metrics_reporter = self.metrics_reporter
+        if (
+            self.excluded_row_steps > 0
+            and metrics_reporter.forward_ct_decode
+            % metrics_reporter.decode_log_interval
+            == 0
+        ):
+            logger.info(
+                f"talker rows excluded from a decode step for thinker text: {self.excluded_row_steps} row steps in the last {metrics_reporter.decode_log_interval} decode steps"
+            )
+            self.excluded_row_steps = 0
+        else:
+            pass
+
+    def handle_batch_failure(self, batch: ScheduleBatch, error: Exception) -> None:
+        super().handle_batch_failure(batch, error)
+        self.merge_excluded_rows(batch)
 
     def self_check_during_idle(self) -> None:
         if self.running_batch is not None and (not self.running_batch.is_empty()):

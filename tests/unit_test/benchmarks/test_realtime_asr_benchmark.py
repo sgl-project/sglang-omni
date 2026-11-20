@@ -14,12 +14,20 @@ import hashlib
 import json
 import subprocess
 import sys
+import wave
 from pathlib import Path
+from typing import Literal
+from unittest.mock import patch
 
+import numpy as np
 import pytest
+import torch
+import torchaudio
 import websockets
 from pydantic import JsonValue, ValidationError
 
+import sglang_omni.utils.audio as audio_utils
+from benchmarks.eval.benchmark_asr_realtime import load_pcm16
 from benchmarks.realtime_asr.client import (
     SAMPLE_RATE,
     ReceivedEvent,
@@ -40,8 +48,143 @@ from benchmarks.realtime_asr.replay import (
     replay_trace,
     save_trace,
 )
+from benchmarks.tasks.asr import (
+    _load_wav_mono_16k,
+    _transcribe_omni_whisper,
+    load_omni_whisper_asr,
+)
 
 DECODE_INTERVAL_MS = 1000
+
+
+@pytest.fixture(params=[(16000, 1), (16000, 2), (8000, 2)])
+def input_wav(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> tuple[Path, torch.Tensor]:
+    sample_rate_hz, channel_count = request.param
+    channel_samples = np.tile(
+        np.array(
+            [[4096, 12288], [-8192, 4096], [16384, -4096], [-12288, -8192]],
+            dtype=np.int16,
+        ),
+        (sample_rate_hz // 40, 1),
+    )[:, :channel_count]
+    wav_path = tmp_path / "input.wav"
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(channel_count)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate_hz)
+        wav_file.writeframes(channel_samples.astype("<i2").tobytes())
+
+    expected_samples = torch.from_numpy(
+        channel_samples.astype(np.float32).mean(axis=1) / 32768.0
+    )
+    if sample_rate_hz != 16000:
+        expected_samples = torchaudio.functional.resample(
+            expected_samples, sample_rate_hz, 16000
+        )
+    else:
+        pass
+    return wav_path, expected_samples
+
+
+@pytest.mark.parametrize(
+    "decoder_available", [False, True], ids=["fallback", "preferred"]
+)
+def test_audio_input_decodes_wav_without_changing_samples(
+    input_wav: tuple[Path, torch.Tensor], decoder_available: bool
+) -> None:
+    """Unavailable TorchCodec prevented valid WAV input from reaching PCM preparation."""
+    if decoder_available and not audio_utils.check_torchcodec_ready():
+        pytest.skip("Preferred decoder requires a loadable TorchCodec backend")
+    else:
+        pass
+    wav_path, expected_samples = input_wav
+    decoder_failure = None if decoder_available else RuntimeError("decoder unavailable")
+    with (
+        patch.object(
+            audio_utils, "check_torchcodec_ready", return_value=decoder_available
+        ),
+        patch.object(
+            torchaudio, "load", wraps=torchaudio.load, side_effect=decoder_failure
+        ) as decode_audio,
+    ):
+        actual_samples = _load_wav_mono_16k(str(wav_path))
+        pcm_bytes = load_pcm16(str(wav_path))
+
+    assert actual_samples.shape == (1600,)
+    assert actual_samples.dtype == torch.float32
+    assert torch.isfinite(actual_samples).all()
+    torch.testing.assert_close(actual_samples, expected_samples, rtol=0, atol=0)
+    expected_pcm = np.array(
+        [int(float(sample) * 32767) for sample in expected_samples], dtype=np.int16
+    )
+    assert len(pcm_bytes) == 3200
+    np.testing.assert_array_equal(
+        np.frombuffer(pcm_bytes, dtype=np.int16), expected_pcm
+    )
+    assert decode_audio.call_count == (2 if decoder_available else 0)
+
+
+@pytest.mark.parametrize("invalid_input", ["missing", "corrupt"])
+def test_audio_input_reports_invalid_wav(
+    tmp_path: Path, invalid_input: Literal["missing", "corrupt"]
+) -> None:
+    wav_path = tmp_path / "invalid.wav"
+    if invalid_input == "corrupt":
+        wav_path.write_bytes(b"not an audio file")
+    else:
+        pass
+    with (
+        patch.object(audio_utils, "check_torchcodec_ready", return_value=False),
+        pytest.raises(audio_utils.AudioDecodeError) as decode_error,
+    ):
+        load_pcm16(str(wav_path))
+    assert decode_error.value.__cause__ is not None
+
+
+@pytest.mark.parametrize(
+    "decoder_failure",
+    [MemoryError("decoder memory exhausted"), torch.OutOfMemoryError("decoder OOM")],
+)
+def test_audio_input_preserves_decoder_memory_failure(
+    tmp_path: Path, decoder_failure: MemoryError | torch.OutOfMemoryError
+) -> None:
+    with (
+        patch.object(audio_utils, "check_torchcodec_ready", return_value=True),
+        patch.object(torchaudio, "load", side_effect=decoder_failure),
+        pytest.raises(type(decoder_failure)) as raised_error,
+    ):
+        load_pcm16(str(tmp_path / "input.wav"))
+    assert raised_error.value is decoder_failure
+
+
+def test_whisper_uploads_original_wav_when_torchcodec_is_unavailable(
+    input_wav: tuple[Path, torch.Tensor],
+) -> None:
+    """Decoder dependency failures also blocked the shared Whisper upload path."""
+    wav_path = input_wav[0]
+    with (
+        patch.object(audio_utils, "check_torchcodec_ready", return_value=False),
+        patch.object(
+            torchaudio, "load", side_effect=RuntimeError("decoder unavailable")
+        ),
+        patch(
+            "benchmarks.tasks.asr.requests.post", autospec=True
+        ) as post_transcription,
+    ):
+        post_transcription.return_value.json.return_value = {"text": "hello world"}
+        transcript = _transcribe_omni_whisper(
+            load_omni_whisper_asr(router_port=0), str(wav_path), "en"
+        )
+
+    assert transcript == "hello world"
+    post_transcription.assert_called_once()
+    assert post_transcription.call_args.kwargs["files"]["file"] == (
+        wav_path.name,
+        wav_path.read_bytes(),
+        "audio/wav",
+    )
 
 
 def pcm_seconds(seconds: float) -> bytes:

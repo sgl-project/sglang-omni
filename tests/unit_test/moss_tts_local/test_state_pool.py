@@ -496,10 +496,8 @@ def test_sync_execute_commits_sampling_position_before_next_frame(monkeypatch):
     for step in range(4):
         is_prefill = step == 2
         if is_prefill:
-            data.req.prefix_indices = []
-            data.req.extend_range = SimpleNamespace(
-                length=len(data.prompt_rows) + len(data.output_rows)
-            )
+            data.req.prefix_len = 0
+            data.req.extend_len = len(data.prompt_rows) + len(data.output_rows)
         runner.execute(scheduler_output)
         row = pool.row_for("rid")
         assert data.generation_steps == step + 1
@@ -893,7 +891,7 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     pool.audio_token_presence[row, 0, 99] = True
 
     # prompt_rows (2 frames) + already-generated output_rows (3 frames); the
-    # resume re-prefills the whole span, so extend_range.length = 2 + 3.
+    # resume re-prefills the whole span, so extend_len = 2 + 3.
     width = 13
     prompt_rows = torch.zeros((2, width), dtype=torch.long)
     generated = []
@@ -902,9 +900,7 @@ def test_resume_reprefill_overwrites_stranded_feedback():
         row_t[1:] = token
         generated.append(row_t)
     data = SimpleNamespace(
-        req=SimpleNamespace(
-            extend_range=SimpleNamespace(length=5), prefix_indices=[], rid="a"
-        ),
+        req=SimpleNamespace(extend_len=5, prefix_len=0, rid="a"),
         prompt_rows=prompt_rows,
         output_rows=generated,
         generation_steps=3,
@@ -1060,9 +1056,7 @@ def test_resume_resets_sampling_steps_to_generation_steps():
 
     width = 13
     data = SimpleNamespace(
-        req=SimpleNamespace(
-            extend_range=SimpleNamespace(length=5), prefix_indices=[], rid="a"
-        ),
+        req=SimpleNamespace(extend_len=5, prefix_len=0, rid="a"),
         prompt_rows=torch.zeros((2, width), dtype=torch.long),
         output_rows=[torch.zeros(width, dtype=torch.long) for _ in range(3)],
         generation_steps=3,
@@ -1101,9 +1095,7 @@ def test_resume_with_empty_output_rows_still_resets_sampling_steps():
 
     width = 13
     data = SimpleNamespace(
-        req=SimpleNamespace(
-            extend_range=SimpleNamespace(length=2), prefix_indices=[], rid="a"
-        ),
+        req=SimpleNamespace(extend_len=2, prefix_len=0, rid="a"),
         prompt_rows=torch.zeros((2, width), dtype=torch.long),
         output_rows=[],  # retracted before emitting any frame
         generation_steps=0,

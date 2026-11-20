@@ -113,7 +113,8 @@ def build_sglang_server_args(
         kwargs.pop("mem_fraction_static", None)
     else:
         pass
-    kwargs.setdefault("device", platform_device_type())
+    host_device_type = platform_device_type()
+    kwargs.setdefault("device", host_device_type)
     if kwargs.get("enable_torch_compile") is None:
         # note (zhaochenyang20): CI sets 0 to keep the eager baseline its speed thresholds use.
         kwargs["enable_torch_compile"] = (
@@ -123,13 +124,22 @@ def build_sglang_server_args(
         pass
     apply_torch_compile_cache_env()
     apply_platform_decode_cuda_graph_backend(kwargs)
+    if (
+        kwargs.get("enable_deterministic_inference")
+        and kwargs.get("attention_backend") is None
+        and host_device_type == "xpu"
+        and str(kwargs.get("device") or "").split(":")[0] == "xpu"
+    ):
+        kwargs["attention_backend"] = "triton"
+    else:
+        pass
     server_args = ServerArgs(**kwargs)
     server_args.resolve_once()
     resolved = resolved_view(server_args)
     # DP attention is unsupported; reject at configuration time. Mixed
     # chunked prefill stays allowed (the bridge handles it natively).
-    if resolved.enable_dp_attention:
-        raise ValueError("sglang-omni does not support enable_dp_attention")
+    if resolved.attn_dp_size > 1:
+        raise ValueError("sglang-omni does not support attention data parallelism")
     else:
         pass
     # note (ratish): NVLS is controlled through the process environment and

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import threading
 from collections import Counter, OrderedDict, defaultdict
@@ -16,6 +17,9 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+from sglang_omni.models.minicpm_o.components.token2wav.hift_cuda_graph import (
+    HiftBodyCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SpeakerPrompt,
     Token2Wav,
@@ -24,12 +28,16 @@ from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.utils.channels_last_conv import is_channels_last_conv_device
 
+logger = logging.getLogger(__name__)
+
 FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 FLOW_WARMUP_TOKENS = 32
+# note (0xtoward): dense Flow attention memory grows with rows x (reference + codec tokens)^2; a full batch of 16 rows up to 512 tokens stays one call.
+FLOW_BATCH_TOKEN_SQUARE_BUDGET = 16 * 512 * 512
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -53,11 +61,14 @@ class MiniCPMOCode2Wav(nn.Module):
         enable_flow_cuda_graph: bool,
         flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
         packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
+        hift_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (),
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
-        if resolved_device.type not in {"cuda", "xpu"}:
-            raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
+        if resolved_device.type not in {"cuda", "xpu", "npu"}:
+            raise ValueError(
+                f"Token2wav requires a CUDA, XPU, or NPU device, got {device}"
+            )
         elif reference_workers < 1 or prompt_cache_capacity < 1:
             raise ValueError(
                 "reference_workers and prompt_cache_capacity must be positive, got "
@@ -188,7 +199,10 @@ class MiniCPMOCode2Wav(nn.Module):
             hift = self.token2wav.hift
             # note (0xtoward): STFT and iSTFT stay eager; the real-valued body compiles.
             hift.decode_body = torch.compile(
-                hift.decode_body, dynamic=True, fullgraph=True
+                hift.decode_body,
+                dynamic=True,
+                fullgraph=True,
+                options={"triton.cudagraphs": False},
             )
             mel_bins = self.token2wav.flow.output_size
             mel_frames = FLOW_WARMUP_TOKENS * self.token2wav.flow.up_rate
@@ -215,6 +229,26 @@ class MiniCPMOCode2Wav(nn.Module):
                                 device=resolved_device,
                             ),
                         )
+        else:
+            pass
+
+        if hift_cuda_graph_capture_shapes and resolved_device.type == "cuda":
+            hift = self.token2wav.hift
+            runner = HiftBodyCudaGraphRunner(hift.decode_body)
+            with self.device_context:
+                self.decode_stream.wait_stream(
+                    torch.cuda.current_stream(resolved_device)
+                )
+            with self.device_context, torch.cuda.stream(self.decode_stream):
+                runner.capture(
+                    hift_cuda_graph_capture_shapes,
+                    device=self.token2wav.device,
+                    mel_channels=self.token2wav.flow.output_size,
+                    samples_per_frame=int(hift.f0_upsamp.scale_factor),
+                    fft_samples=hift.istft_params["n_fft"],
+                    hop_samples=hift.istft_params["hop_len"],
+                )
+            hift.body_graph_runner = runner
         else:
             pass
 
@@ -427,9 +461,50 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
 
         speaker_prompts = self.prepare_references(references)
+        combined_token_lengths = [
+            len(tokens) + prompt.prompt_tokens.shape[1]
+            for tokens, prompt in zip(token_sequences, speaker_prompts, strict=True)
+        ]
         device_module = torch.get_device_module(self.token2wav.device)
         with device_module.stream(self.decode_stream):
-            return self.decode_waveforms(token_sequences, speaker_prompts)
+            if (
+                len(token_sequences) == 1
+                or len(token_sequences) * max(combined_token_lengths) ** 2
+                <= FLOW_BATCH_TOKEN_SQUARE_BUDGET
+            ):
+                return self.decode_waveforms(token_sequences, speaker_prompts)
+            else:
+                row_groups: list[list[int]] = []
+                for index in sorted(
+                    range(len(combined_token_lengths)),
+                    key=combined_token_lengths.__getitem__,
+                ):
+                    if (
+                        row_groups
+                        and (len(row_groups[-1]) + 1)
+                        * combined_token_lengths[index] ** 2
+                        <= FLOW_BATCH_TOKEN_SQUARE_BUDGET
+                    ):
+                        row_groups[-1].append(index)
+                    else:
+                        row_groups.append([index])
+                logger.info(
+                    f"Code2Wav split {len(token_sequences)} rows into "
+                    f"{len(row_groups)} Flow calls; longest row "
+                    f"{max(combined_token_lengths)} tokens"
+                )
+                waveforms_by_row: dict[int, np.ndarray] = {}
+                for row_group in row_groups:
+                    group_waveforms = self.decode_waveforms(
+                        [token_sequences[index] for index in row_group],
+                        [speaker_prompts[index] for index in row_group],
+                    )
+                    waveforms_by_row.update(
+                        zip(row_group, group_waveforms, strict=True)
+                    )
+                return [
+                    waveforms_by_row[index] for index in range(len(token_sequences))
+                ]
 
     def decode_waveforms(
         self,

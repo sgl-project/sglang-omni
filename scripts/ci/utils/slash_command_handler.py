@@ -8,13 +8,16 @@ import time
 import github
 from github import Auth, Github
 from resolve_ci_labels import (
+    ASR_STAGE_LABEL,
     CI_STAGES,
-    RUN_ALL_LABEL,
+    RUN_LINT_ONLY_LABEL,
+    TTS_STAGE_LABEL,
     resolve_ci_plan,
     select_workflows,
 )
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
+SHORT_TARGET_BY_SHARED_STAGE_LABEL = {ASR_STAGE_LABEL: "asr", TTS_STAGE_LABEL: "tts"}
 
 
 def get_env_var(name):
@@ -64,20 +67,35 @@ def handle_tag_run_ci(
         print("Permission denied: can_tag_run_ci_label is false.")
         comment.create_reaction("confused")
         return False
+    elif not requested_targets:
+        pull_request.create_issue_comment(
+            "Specify CI targets, for example /tag-and-rerun-ci tts asr."
+        )
+        comment.create_reaction("confused")
+        return False
     else:
         pass
 
-    labels_by_target: dict[str, frozenset[str]] = {}
+    labels_by_target: dict[str, frozenset[str]] = {
+        "lint": frozenset({RUN_LINT_ONLY_LABEL}),
+    }
     for stage in CI_STAGES:
-        labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
+        if stage.label in SHORT_TARGET_BY_SHARED_STAGE_LABEL:
+            stage_target = SHORT_TARGET_BY_SHARED_STAGE_LABEL[stage.label]
+        else:
+            stage_target = stage.name.replace("_", "-")
+        labels_by_target[stage_target] = frozenset({stage.label})
         for label, preset in stage.preset_by_model_label.items():
-            if stage.name == "asr":
+            if stage.label == ASR_STAGE_LABEL:
                 target = f"{preset}-asr"
             elif stage.name == "mps":
                 target = f"mps-{preset}"
             else:
                 target = preset
-            labels_by_target[target] = frozenset({stage.label, label})
+            if stage.is_selected_by_model_label:
+                labels_by_target[target] = frozenset({label})
+            else:
+                labels_by_target[target] = frozenset({stage.label, label})
     unknown_targets = requested_targets - labels_by_target.keys()
     if unknown_targets:
         pull_request.create_issue_comment(
@@ -87,12 +105,9 @@ def handle_tag_run_ci(
         return False
     else:
         pass
-    if requested_targets:
-        requested_labels = frozenset(
-            label for target in requested_targets for label in labels_by_target[target]
-        )
-    else:
-        requested_labels = frozenset({RUN_ALL_LABEL})
+    requested_labels = frozenset(
+        label for target in requested_targets for label in labels_by_target[target]
+    )
     current_labels = frozenset(label.name for label in pull_request.get_labels())
     removed_labels: set[str] = set()
     for stage in CI_STAGES:
@@ -251,19 +266,8 @@ def main():
     elif command == "/rerun-failed-ci":
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
 
-    elif command in ("/tag-and-rerun-ci", "/tag-and-rerun-full-ci"):
-        if command == "/tag-and-rerun-ci" and not label_arguments:
-            pr.create_issue_comment(
-                "Specify CI targets, for example /tag-and-rerun-ci tts asr, "
-                "or use /tag-and-rerun-full-ci for all stages."
-            )
-            comment.create_reaction("confused")
-            return
-        elif command == "/tag-and-rerun-full-ci" and label_arguments:
-            pr.create_issue_comment("/tag-and-rerun-full-ci does not accept arguments.")
-            comment.create_reaction("confused")
-            return
-        elif not user_perms.get("can_rerun_failed_ci", False):
+    elif command == "/tag-and-rerun-ci":
+        if not user_perms.get("can_rerun_failed_ci", False):
             print("Permission denied: can_rerun_failed_ci is false.")
             comment.create_reaction("confused")
             return
@@ -283,13 +287,19 @@ def main():
         time.sleep(5)
         pr.update()
         labels = frozenset(label.name for label in pr.get_labels())
+        workflows_to_rerun = select_workflows(labels)
+        if not workflows_to_rerun:
+            comment.create_reaction("+1")
+            return
+        else:
+            pass
         rerun = handle_rerun_failed_ci(
             repo,
             pr,
             comment,
             user_perms,
             react_on_success=False,
-            full_rerun_workflows=select_workflows(labels),
+            full_rerun_workflows=workflows_to_rerun,
         )
         if rerun:
             comment.create_reaction("+1")

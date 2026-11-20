@@ -103,8 +103,8 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
             pending_feedback_queue=deque(),
             decoded_latent_patches=([torch.full((1, 2, 2), 5.0)] if retracted else []),
             req=SimpleNamespace(
-                prefix_indices=[],
-                extend_range=SimpleNamespace(length=4 if retracted else 3),
+                prefix_len=0,
+                extend_len=4 if retracted else 3,
                 output_ids=[3] if retracted else [],
                 is_retracted=retracted,
             ),
@@ -166,8 +166,8 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
             pending_feedback_queue=deque(),
             decoded_latent_patches=[],
             req=SimpleNamespace(
-                prefix_indices=[],
-                extend_range=SimpleNamespace(length=3),
+                prefix_len=0,
+                extend_len=3,
                 output_ids=[],
                 is_retracted=False,
             ),

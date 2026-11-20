@@ -40,7 +40,21 @@ def build_talker_request(
     thinker_out = state.thinker_out if isinstance(state.thinker_out, dict) else {}
     output_ids = [int(t) for t in (thinker_out.get("output_ids") or [])]
     extra = thinker_out.get("extra_model_outputs") or {}
-    hidden_seq = extra.get("hidden_states_seq") or []
+    hidden_states = extra.get("hidden_states_seq")
+    if hidden_states is None:
+        hidden_states = torch.empty((0, 0))
+    elif isinstance(hidden_states, list):
+        hidden_states = (
+            torch.stack(hidden_states) if hidden_states else torch.empty((0, 0))
+        )
+    elif not isinstance(hidden_states, torch.Tensor):
+        raise TypeError("hidden_states_seq must be a Tensor or a list of tensors")
+    else:
+        pass
+    if hidden_states.ndim != 2:
+        raise ValueError("hidden_states_seq must have shape [tokens, hidden_size]")
+    else:
+        pass
 
     known_tts_output_ids = prompt.get("known_tts_output_ids")
     full_sequence = (
@@ -74,7 +88,7 @@ def build_talker_request(
         )
     else:
         pass
-    end = min(end, hidden_base + len(hidden_seq))
+    end = min(end, hidden_base + hidden_states.shape[0])
     if end <= start:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
@@ -82,7 +96,7 @@ def build_talker_request(
         pass
 
     tokens = torch.tensor(full_sequence[start:end], dtype=torch.long)
-    hidden = torch.stack([hidden_seq[i - hidden_base] for i in range(start, end)])
+    hidden = hidden_states[start - hidden_base : end - hidden_base]
     return {"tts_token_ids": tokens, "tts_hidden": hidden}
 
 
@@ -194,6 +208,7 @@ def make_talker_scheduler_adapters(
 ]:
     """Build StagePayload <-> scheduler adapters for the sglang talker."""
 
+    @torch.no_grad()
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         req_data = build_sglang_talker_request(

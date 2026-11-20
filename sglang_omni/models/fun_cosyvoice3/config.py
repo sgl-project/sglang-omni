@@ -12,6 +12,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.config.schema import stage_process_name
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
 
@@ -115,9 +116,22 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(max_concurrency=8),
             next="tts_engine",
         ),
-        # note(ratish): stages in one process are built in list order; the
-        # vocoder comes before the engine so Flow, HiFT and their graphs are
-        # resident when sglang sizes the KV pool from free memory.
+        # note (ratish): stages in one process are built in list order. The engine's KV
+        # pool is max_running_requests x context_length tokens, not free memory, so it
+        # comes first and the vocoder sizes its Flow prefix pool from what is left.
+        EngineStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FactoryArgs(
+                dtype="bfloat16",
+                onnx_intra_op_threads=16,
+                token_hop_len=25,
+            ),
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
+        ),
         StageConfig(
             name="vocoder",
             process="pipeline",
@@ -143,29 +157,39 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
-                flow_prefix_cache_gb=24.0,
+                flow_prefix_cache_gb=None,
             ),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
-        EngineStageConfig(
-            name="tts_engine",
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(
-                dtype="bfloat16",
-                onnx_intra_op_threads=16,
-                token_hop_len=25,
-            ),
-            gpu=0,
-            next="vocoder",
-            stream_to=["vocoder"],
-        ),
     ]
 
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
         env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if (
+            current_platform.is_npu()
+            and type(self).stage_config_cls(stage_name).engine_stage
+            and "PER_STREAM_QUEUE" not in env_defaults
+        ):
+            # torch_npu reads its host task-queue mode once when the stage
+            # process starts. Under the shared queue, an AR decode graph
+            # replay overlaps the graph update that rebinds the sequence
+            # lengths, and a multi-row bucket stalls after its first step.
+            process_name = stage_process_name(self.stage_named(stage_name))
+            # A value written on any stage of the process wins, so a user who
+            # disables the decode graph can turn the per-stream queue off
+            # without the colocated stages disagreeing at spawn.
+            if not any(
+                "PER_STREAM_QUEUE" in stage.env
+                for stage in self.stages
+                if stage_process_name(stage) == process_name
+            ):
+                env_defaults["PER_STREAM_QUEUE"] = "1"
+            else:
+                pass
+        else:
+            pass
         if (
             type(self).stage_config_cls(stage_name).engine_stage
             and "OMP_NUM_THREADS" not in env_defaults

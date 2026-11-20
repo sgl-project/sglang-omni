@@ -8,23 +8,25 @@ from dataclasses import dataclass, field
 import torch
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
-from sglang_omni.models.nemotron_voicechat.model_runner import (
-    NemotronVoiceChatModelRunner,
-)
+from sglang_omni.models.nemotron_voicechat.model_runner import VoiceChatModelRunner
 from sglang_omni.models.nemotron_voicechat.payload_types import TOOL_CALLS
-from sglang_omni.models.nemotron_voicechat.request_builders import ar_request
+from sglang_omni.models.nemotron_voicechat.request_builders import (
+    NemotronVoiceChatRequestData,
+    ar_request,
+)
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
-    NUM_ITER,
-    NemotronVoiceChatTalkerModelRunner,
+    VoiceChatTalkerModelRunner,
 )
 from sglang_omni.models.nemotron_voicechat.tools import (
     END_OF_TOOL_CALL_TOKEN,
@@ -42,7 +44,7 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
 
 
 @dataclass(kw_only=True)
@@ -97,14 +99,21 @@ def attach_fusion_rows(
     )
 
 
-class DuplexThinkerRunner(NemotronVoiceChatModelRunner):
-    def before_prefill(
-        self,
-        forward_batch: ForwardBatch,
-        schedule_batch: ScheduleBatch,
-        requests: list[SchedulerRequest],
-    ) -> None:
-        attach_fusion_rows(forward_batch, requests)
+class UnitDecodeRunner(ModelRunner):
+    def build_forward_batch(
+        self, scheduler_output: SchedulerOutput
+    ) -> tuple[ForwardBatch | None, ScheduleBatch, bool] | None:
+        batch = scheduler_output.batch_data
+        # note (Junnan Li): one position appended to retained KV is what a decode forward computes, and sessions keep no Mamba track state.
+        if any(length != 1 for length in batch.extend_lens) or 0 in batch.prefix_lens:
+            return super().build_forward_batch(scheduler_output)
+        else:
+            pass
+        batch.forward_mode = ForwardMode.DECODE
+        forward_batch, schedule_batch, _ = super().build_forward_batch(scheduler_output)
+        # note (Junnan Li): the scheduler retires the unit as the extend it admitted.
+        batch.forward_mode = ForwardMode.EXTEND
+        return forward_batch, schedule_batch, False
 
     def before_decode(
         self,
@@ -114,10 +123,24 @@ class DuplexThinkerRunner(NemotronVoiceChatModelRunner):
         *,
         is_lookahead: bool = False,
     ) -> None:
-        raise RuntimeError("VoiceChat session units must perform exactly one forward")
+        rows = [
+            request.data.talker_model_inputs["duplex_history"].fusion_rows[-1][-1]
+            for request in requests
+        ]
+        self.model.fusion_buffer[: len(rows)] = torch.stack(rows)
 
 
-class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
+class DuplexThinkerRunner(UnitDecodeRunner, VoiceChatModelRunner):
+    def before_prefill(
+        self,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        attach_fusion_rows(forward_batch, requests)
+
+
+class DuplexTalkerRunner(UnitDecodeRunner, VoiceChatTalkerModelRunner):
     def __init__(
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
     ) -> None:
@@ -133,31 +156,14 @@ class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
             pass
         if self.sampler_graph is None:
             sampler_hidden = self.model.hidden_out[index : index + 1].float().clone()
-            iteration_fractions = torch.linspace(
-                0, 1, NUM_ITER + 1, device=sampler_hidden.device
-            )[:-1]
-            remaining_quantizers = torch.ceil(
-                (1 - iteration_fractions.pow(self.exponent)).pow(1 / self.exponent)
-                * self.model.talker.num_quantizers
-            ).long()
-            assignment_counts = tuple(
-                (
-                    remaining_quantizers
-                    - torch.cat(
-                        [remaining_quantizers[1:], remaining_quantizers.new_zeros(1)]
-                    )
-                ).tolist()
-            )
 
             def sample() -> torch.Tensor:
                 return self.model.talker.generate_codes(
                     sampler_hidden,
                     self.model.mog_head,
-                    num_iter=NUM_ITER,
-                    exponent=self.exponent,
+                    level_schedule=self.level_schedule,
                     top_p=self.top_p,
                     noise_scale=self.noise_scale,
-                    assignment_counts=assignment_counts,
                 )
 
             self.sampler_graph, self.sampler_output = capture_cuda_graph(
@@ -179,6 +185,17 @@ class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
     ) -> None:
         attach_fusion_rows(forward_batch, requests)
 
+    def before_decode(
+        self,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+        *,
+        is_lookahead: bool = False,
+    ) -> None:
+        super().before_decode(forward_batch, schedule_batch, requests)
+        self.model.fusion_mask[: len(requests)] = True
+
     def post_prefill(
         self,
         result: GenerationBatchResult,
@@ -191,15 +208,14 @@ class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
                 index
             )
 
-    def before_decode(
+    def post_decode(
         self,
+        result: GenerationBatchResult,
         forward_batch: ForwardBatch,
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
-        *,
-        is_lookahead: bool = False,
     ) -> None:
-        raise RuntimeError("VoiceChat session units must perform exactly one forward")
+        self.post_prefill(result, forward_batch, schedule_batch, requests)
 
 
 class FrameAdapter(ARSessionAdapter):
@@ -235,12 +251,16 @@ class FrameAdapter(ARSessionAdapter):
         opening_token_ids: list[int],
         fusion_rows: torch.Tensor,
         vocab_size: int,
-    ) -> SGLangARRequestData:
+    ) -> NemotronVoiceChatRequestData:
         state = self.states[session_identity]
         new_position_count = fusion_rows.shape[0]
-        if state.position_count + new_position_count + 1 > self.context_length:
-            raise ValueError(
-                "VoiceChat session context limit reached; start a new session"
+        positions = state.position_count + new_position_count + 1
+        # note (Junnan Li): SGLang holds at most context_length - 1 tokens per request.
+        if positions > self.context_length - 1:
+            raise ContextExhaustedError(
+                f"{ContextExhaustedError.CODE}: VoiceChat session needs {positions} "
+                f"positions but the context holds {self.context_length - 1}; "
+                "start a new session"
             )
         else:
             pass
@@ -252,9 +272,9 @@ class FrameAdapter(ARSessionAdapter):
             input_ids=opening_token_ids,
             max_new_tokens=1,
             vocab_size=vocab_size,
+            data_type=NemotronVoiceChatRequestData,
         )
         request_data.talker_model_inputs["duplex_history"] = state
-        request_data.pending_stream_tokens = []
         return request_data
 
 
@@ -309,7 +329,7 @@ class ThinkerAdapter(FrameAdapter):
         session_identity: SessionIdentity,
         chunk: TimedChunk,
         payload: StagePayload,
-    ) -> SGLangARRequestData:
+    ) -> NemotronVoiceChatRequestData:
         state = self.states[session_identity]
         model = self.runner.model
         embeddings = model.llm.get_input_embeddings()
@@ -356,9 +376,7 @@ class ThinkerAdapter(FrameAdapter):
     ) -> StagePayload:
         state = self.states[session_identity]
         state.previous_text_token_id = int(request_data.output_ids[-1])
-        state.previous_function_token_id = int(
-            request_data.extra_model_outputs["function_ids"][-1]
-        )
+        state.previous_function_token_id = request_data.function_ids[-1]
         tool_calls = self.collect_tool_calls(state)
         delta = ""
         if state.previous_text_token_id not in self.silent_token_ids:
@@ -422,7 +440,7 @@ class TalkerAdapter(FrameAdapter):
         previous_codes = (
             runner.pad_codes() if state.previous_codes is None else state.previous_codes
         )
-        row = runner.step_row(previous_codes, int(payload.data["text_token"]))
+        row = runner.step_rows(previous_codes, [int(payload.data["text_token"])])
         if state.position_count == 0:
             rows = torch.cat([runner.warmup(), row])
             opening_token_ids = [0] * rows.shape[0]

@@ -4,7 +4,8 @@
 The tower keeps its key/value cache in the backbone's paged pool, under the
 layer ids that follow the backbone's. One forward runs the backbone, fills the
 tower cache of the extend rows, and samples the next frame of every request.
-A decode forward reads fixed-address buffers, so a CUDA graph can replay it.
+A decode forward gathers its rows from the state pool by req_pool_indices and
+publishes its frames back, all at fixed addresses, so a CUDA graph can replay it.
 """
 
 from __future__ import annotations
@@ -39,9 +40,9 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import (
     Drama3DecodeBuffers,
+    Drama3DecodeStatePool,
     Drama3StepInputs,
     StepExchange,
-    next_frame_labels,
 )
 from sglang_omni.models.fishaudio_drama3.tower_prefill import (
     Drama3TowerPrefill,
@@ -62,7 +63,6 @@ __all__ = [
     "Drama3DecodeBuffers",
     "Drama3StepInputs",
     "StepExchange",
-    "next_frame_labels",
     "PagedTowerAttention",
     "Drama3TowerPrefill",
 ]
@@ -137,28 +137,54 @@ class Drama3ForCausalLM(nn.Module):
                 f"text_config.tower_layer_count={text_config.tower_layer_count} but "
                 f"the decoder has {tower_layer_count} tower layers"
             )
-        elif get_parallel().pp_size != 1 or get_parallel().tp_size != 1:
-            raise NotImplementedError("Drama 3 runs with one tensor and pipeline rank")
+        elif get_parallel().pp_size != 1:
+            raise NotImplementedError("Drama 3 runs with one pipeline rank")
+        elif (
+            decoder_config.n_local_heads % get_parallel().tp_size != 0
+            and get_parallel().tp_size % decoder_config.n_local_heads != 0
+        ):
+            # The tower's key/value heads share the backbone's pool and its split.
+            raise NotImplementedError(
+                f"Drama 3 splits or replicates its {decoder_config.n_local_heads} "
+                f"key/value heads across tensor-parallel ranks, so tp_size must "
+                f"divide them or be a multiple of them; got "
+                f"tp_size={get_parallel().tp_size}"
+            )
+        elif (
+            get_parallel().attn_tp_size != get_parallel().tp_size
+            or get_parallel().attn_dcp_size != 1
+        ):
+            raise NotImplementedError(
+                f"Drama 3 splits the tower's attention across all "
+                f"{get_parallel().tp_size} tensor-parallel ranks, so the backbone's "
+                f"attention cannot use data, context or decode-context parallelism; "
+                f"got attn_tp_size={get_parallel().attn_tp_size} and "
+                f"attn_dcp_size={get_parallel().attn_dcp_size}"
+            )
         else:
             pass
         self.config = config
         self.model = Drama3Backbone(
             text_config, quant_config=quant_config, prefix=add_prefix("model", prefix)
         )
+        self.audio_decoder = AudioDecoder(
+            config, tp_rank=get_parallel().tp_rank, tp_size=get_parallel().tp_size
+        )
+        tower_self_attention = self.audio_decoder.shared_layers[0].self_attn
         self.lm_head = ParallelLMHead(
-            text_config.vocab_size,
+            int(self.audio_decoder.main_token_candidate_ids.shape[0]),
             text_config.hidden_size,
+            padding_size=1,
             quant_config=quant_config,
             prefix=add_prefix("lm_head", prefix),
         )
         self.logits_processor = LogitsProcessor(text_config)
-        self.audio_decoder = AudioDecoder(config)
         self.tower_attention = nn.ModuleList(
             RadixAttention(
-                num_heads=decoder_config.n_head,
+                num_heads=tower_self_attention.head_count,
                 head_dim=decoder_config.head_dim,
                 scaling=decoder_config.head_dim**-0.5,
-                num_kv_heads=decoder_config.n_local_heads,
+                num_kv_heads=tower_self_attention.kv_head_count,
                 layer_id=text_config.num_hidden_layers + tower_index,
                 prefix=add_prefix(f"tower_attention.{tower_index}", prefix),
             )
@@ -167,6 +193,7 @@ class Drama3ForCausalLM(nn.Module):
         self.step_exchange = StepExchange()
         # The engine builder allocates these once the request pool is sized.
         self.decode_buffers: Drama3DecodeBuffers | None = None
+        self.state_pool: Drama3DecodeStatePool | None = None
         self.first_frame_graphs: Drama3FirstFrameGraphs | None = None
 
     @property
@@ -187,15 +214,21 @@ class Drama3ForCausalLM(nn.Module):
     ) -> LogitsProcessorOutput:
         forward_mode = forward_batch.forward_mode
         decode_buffers = self.decode_buffers
+        state_pool = self.state_pool
         if forward_mode == ForwardMode.EXTEND:
             return self.forward_extend(input_ids, positions, forward_batch)
         elif forward_mode != ForwardMode.DECODE:
             raise NotImplementedError(f"forward mode {forward_mode} is not supported")
-        elif decode_buffers is None:
-            raise RuntimeError("the engine allocated no Drama 3 decode buffers")
+        elif decode_buffers is None or state_pool is None:
+            raise RuntimeError(
+                "the engine allocated no Drama 3 decode buffers or state pool"
+            )
         else:
-            # A CUDA graph replays this branch with the batch padded to its size.
+            # note (Wenyao Gao): a CUDA graph replays this branch with the batch
+            # padded to its size; SGLang points every padded row at request slot 0.
             row_count = input_ids.shape[0]
+            request_slots = forward_batch.req_pool_indices.to(torch.int64)
+            self.stage_decode_rows(request_slots)
             frames = decode_buffers.frames[:row_count]
             hidden_states, logits_output = self.backbone_logits(
                 input_ids, positions, forward_batch, frames
@@ -210,9 +243,17 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.top_k[:row_count],
                 decode_buffers.top_p[:row_count],
                 PagedTowerAttention(self.tower_attention, forward_batch),
+                decode_buffers.epsilon_cutoff[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
+            state_pool.publish(request_slots, sampled_frames)
             return logits_output
+
+    def stage_decode_rows(self, request_slots: torch.Tensor) -> None:
+        decode_buffers = self.decode_buffers
+        state_pool = self.state_pool
+        assert decode_buffers is not None and state_pool is not None
+        state_pool.gather(request_slots, decode_buffers)
 
     def forward_extend(
         self,
@@ -229,9 +270,7 @@ class Drama3ForCausalLM(nn.Module):
         if tower_prefill is None:
             raise RuntimeError("the engine allocated no Drama 3 tower prefill buffers")
         else:
-            tower_prefill.stage(
-                frames, next_frame_labels(frames, last_rows, self.config.eos_token_id)
-            )
+            tower_prefill.stage(frames, step_inputs.next_frames)
         hidden_states, logits_output = self.backbone_logits(
             input_ids, positions, forward_batch, frames
         )
@@ -300,17 +339,24 @@ class Drama3ForCausalLM(nn.Module):
         top_p: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        return self.audio_decoder.decode_step(
-            semantic_logits,
-            hidden_states,
-            positions,
-            input_frames,
-            previous_main_tokens,
-            temperature,
-            top_k,
-            top_p,
-            PagedTowerAttention(self.tower_attention, forward_batch),
-        )
+        """The first frame of every request; its epsilon_cutoff rows are the ones the
+        model runner staged in the decode buffers, at addresses a CUDA graph keeps."""
+        decode_buffers = self.decode_buffers
+        if decode_buffers is None:
+            raise RuntimeError("the engine allocated no Drama 3 decode buffers")
+        else:
+            return self.audio_decoder.decode_step(
+                semantic_logits,
+                hidden_states,
+                positions,
+                input_frames,
+                previous_main_tokens,
+                temperature,
+                top_k,
+                top_p,
+                PagedTowerAttention(self.tower_attention, forward_batch),
+                decode_buffers.epsilon_cutoff[: semantic_logits.shape[0]],
+            )
 
     def backbone_logits(
         self,
@@ -320,15 +366,20 @@ class Drama3ForCausalLM(nn.Module):
         frames: torch.Tensor,
     ) -> tuple[torch.Tensor, LogitsProcessorOutput]:
         """Final-norm hidden states of every row, and the logits SGLang keeps."""
-        input_embeds = self.audio_decoder.embed_backbone(
-            frames, self.model.embed_tokens(frames[:, 0])
+        input_embeds = self.audio_decoder.backbone_input(
+            frames, self.model.embed_tokens
         )
         hidden_states = self.model(
             input_ids, positions, forward_batch, input_embeds=input_embeds
         )
-        return hidden_states, self.logits_processor(
+        logits_output = self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
+        # Tensor parallelism pads the candidate columns to a multiple of the ranks.
+        logits_output.next_token_logits = logits_output.next_token_logits[
+            :, : self.lm_head.org_vocab_size
+        ]
+        return hidden_states, logits_output
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
         decoder_weights: list[tuple[str, torch.Tensor]] = []
@@ -359,5 +410,27 @@ class Drama3ForCausalLM(nn.Module):
             )
         else:
             pass
-        self.lm_head.weight_loader(self.lm_head.weight, lm_head_weights[0])
+        loaded_lm_head = lm_head_weights[0]
+        candidate_ids = self.audio_decoder.main_token_candidate_ids.to(
+            device=loaded_lm_head.device
+        )
+        if loaded_lm_head.ndim != 2 or loaded_lm_head.shape[1] != (
+            self.lm_head.weight.shape[1]
+        ):
+            raise ValueError(
+                f"{LM_HEAD_CHECKPOINT_NAME} must have shape "
+                f"[text vocab, {self.lm_head.weight.shape[1]}]; "
+                f"got {tuple(loaded_lm_head.shape)}"
+            )
+        elif int(candidate_ids.max()) >= loaded_lm_head.shape[0]:
+            raise ValueError(
+                f"{LM_HEAD_CHECKPOINT_NAME} has {loaded_lm_head.shape[0]} rows, "
+                f"fewer than the semantic candidate id {int(candidate_ids.max())}"
+            )
+        else:
+            pass
+        self.lm_head.weight_loader(
+            self.lm_head.weight,
+            loaded_lm_head.index_select(0, candidate_ids),
+        )
         load_audio_decoder_weights(self.audio_decoder, decoder_weights)

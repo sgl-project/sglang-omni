@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import Field
 
-from sglang_omni.audio.smart_turn import SMART_TURN_MODEL_REPO
 from sglang_omni.config.schema import FactoryArgs, StageConfig
 from sglang_omni.proto.streams import (
     COMMIT,
@@ -21,6 +20,9 @@ from sglang_omni.proto.streams import (
 )
 
 TURN_DETECTION_STAGE = "turn_detection"
+# note (ratish): the stage declares its default model here so that config imports
+# stop short of the audio stack, whose silero import sets torch to one thread.
+SMART_TURN_MODEL_REPO = "pipecat-ai/smart-turn-v3"
 SESSION_PORTS = SessionPorts(
     input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
     output=None,

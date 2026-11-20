@@ -32,15 +32,24 @@ def sample_top_k_top_p(
     top_p: torch.Tensor,
     sampler: CodebookSampler | None,
     stream_id: int,
+    *,
+    keep_top_p_crossing_token: bool = False,
 ) -> torch.Tensor:
     """Sample one token per row in fp32.
 
-    Drop ranks >= top_k and tokens whose inclusive cumulative probability exceeds
-    top_p; always keep rank 0.
+    Acoustic heads exclude the top-p crossing token. Semantic draws retain it;
+    both policies respect top-k and always keep rank 0.
     """
     if sampler is not None:
         return sample_codebook_head(
-            logits, temperature, top_k, top_p, sampler, stream_id, MINIMUM_TEMPERATURE
+            logits,
+            temperature,
+            top_k,
+            top_p,
+            sampler,
+            stream_id,
+            MINIMUM_TEMPERATURE,
+            keep_top_p_crossing_token=keep_top_p_crossing_token,
         )
     else:
         pass
@@ -52,9 +61,12 @@ def sample_top_k_top_p(
         torch.softmax(sorted_logits, dim=-1), dim=-1
     )
     ranks = torch.arange(sorted_logits.shape[-1], device=logits.device).unsqueeze(0)
-    is_dropped = (cumulative_probabilities > top_p.float().unsqueeze(-1)) | (
-        ranks >= top_k.unsqueeze(-1)
-    )
+    is_dropped = cumulative_probabilities > top_p.float().unsqueeze(-1)
+    if keep_top_p_crossing_token:
+        is_dropped[:, 1:] = is_dropped[:, :-1].clone()
+    else:
+        pass
+    is_dropped |= ranks >= top_k.unsqueeze(-1)
     is_dropped[:, 0] = False
     probabilities = torch.softmax(
         sorted_logits.masked_fill(is_dropped, float("-inf")), dim=-1
@@ -86,7 +98,13 @@ def sample_semantic_with_ras(
             f"previous_main_tokens must hold the last {RAS_WINDOW_FRAMES} frames; "
             f"got shape {tuple(previous_main_tokens.shape)}"
         )
-    elif sampler is not None:
+    else:
+        pass
+    if semantic_logits.shape[-1] != candidate_token_ids.shape[0]:
+        semantic_logits = semantic_logits.index_select(-1, candidate_token_ids)
+    else:
+        pass
+    if sampler is not None:
         return sample_semantic_candidates(
             semantic_logits,
             candidate_token_ids,
@@ -104,10 +122,16 @@ def sample_semantic_with_ras(
         )
     else:
         pass
-    candidate_logits = semantic_logits.index_select(-1, candidate_token_ids).float()
+    candidate_logits = semantic_logits.float()
     first_draw = candidate_token_ids[
         sample_top_k_top_p(
-            candidate_logits, temperature, top_k, top_p, None, FIRST_DRAW_STREAM
+            candidate_logits,
+            temperature,
+            top_k,
+            top_p,
+            None,
+            FIRST_DRAW_STREAM,
+            keep_top_p_crossing_token=True,
         )
     ]
     row_count = candidate_logits.shape[0]
@@ -122,6 +146,7 @@ def sample_semantic_with_ras(
             torch.full((row_count,), RAS_TOP_P, dtype=torch.float32, device=device),
             None,
             RAS_DRAW_STREAM,
+            keep_top_p_crossing_token=True,
         )
     ]
     is_repeat = (previous_main_tokens == first_draw.unsqueeze(-1)).any(dim=-1)

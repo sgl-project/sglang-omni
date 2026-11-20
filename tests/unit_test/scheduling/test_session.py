@@ -3,27 +3,39 @@
 
 import queue
 import threading
+from array import array
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from types import MethodType, SimpleNamespace
 from typing import Literal
 from unittest.mock import Mock
 
 import msgpack
 import pytest
-from sglang.srt.managers.schedule_batch import Req
+import torch
+from sglang.srt.managers.io_struct import SessionParams, TokenizedGenerateReqInput
+from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams, MatchResult
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.srt.session.session_controller import Session
+from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
 
 from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
+    MSGPACK_BIN32_HEADER_GROWTH,
+    SESSION_METADATA_KEY,
     OutputChunk,
     ResourceUsage,
     SessionIdentity,
     SessionOperation,
     TimedChunk,
+    fragment_chunk,
     wire_size,
 )
+from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import (
@@ -34,10 +46,14 @@ from sglang_omni.scheduling.session import (
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionBridge,
+    ARSessionPreparation,
     BridgeSession,
     SessionUnit,
 )
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    EmbeddingSpan,
+    SGLangARRequestData,
+)
 from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import (
     compute_registered,
@@ -259,6 +275,109 @@ def test_binary_chunk_wire_size_matches_msgpack(size, monkeypatch):
     monkeypatch.setattr(msgpack, "packb", record)
     assert [wire_size(value) for value in values] == expected
     assert all(size == 0 for size in encoded_payloads)
+
+
+class RecordingHooks(Hooks):
+    """Records the chunk each append hands the hooks."""
+
+    def __init__(self) -> None:
+        super().__init__("source", queue.Queue())
+        self.appended: list[TimedChunk] = []
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        self.appended.append(chunk)
+        return payload
+
+
+def unit(turn: int, size: int) -> TimedChunk:
+    return TimedChunk(
+        "control",
+        0,
+        0,
+        0,
+        {"pcm": bytes(range(256)) * (size // 256), "carried_turns": []},
+        format="unit",
+        turn=turn,
+    )
+
+
+def run_operation(
+    scheduler: SessionScheduler, operation: str, chunk: TimedChunk | None = None
+) -> StagePayload:
+    request_id = f"{operation}-{chunk.seq if chunk is not None else 0}"
+    request = OmniRequest(
+        None, metadata=operation_metadata(operation, SessionIdentity("one"), chunk)
+    )
+    return compute_registered(scheduler, StagePayload(request_id, request, {}))
+
+
+def test_a_chunk_splits_into_fragments_within_max_chunk_bytes():
+    chunk = unit(1, 10_000)
+    fragments = list(fragment_chunk(chunk, 7, 1024))
+    assert [fragment.seq for fragment, _ in fragments] == list(
+        range(7, 7 + len(fragments))
+    )
+    assert [continues for _, continues in fragments] == [True] * (
+        len(fragments) - 1
+    ) + [False]
+    assert all(wire_size(fragment.to_dict()) <= 1024 for fragment, _ in fragments)
+    assert {fragment.turn for fragment, _ in fragments} == {1}
+    assert b"".join(fragment.payload for fragment, _ in fragments) == msgpack.packb(
+        chunk.to_dict(), use_bin_type=True
+    )
+
+
+def test_a_limit_with_no_room_past_the_fragment_envelope_fails():
+    """A limit no larger than a fragment's envelope split the chunk into empty fragments forever."""
+    chunk = unit(1, 10_000)
+    envelope_bytes = (
+        wire_size(replace(chunk, seq=7, payload=b"").to_dict())
+        + MSGPACK_BIN32_HEADER_GROWTH
+    )
+    with pytest.raises(ValueError, match="no room for a fragment's payload"):
+        next(fragment_chunk(chunk, 7, envelope_bytes))
+    fragment, _ = next(fragment_chunk(chunk, 7, envelope_bytes + 1))
+    assert len(fragment.payload) == 1
+
+
+def test_the_first_stage_restores_a_chunk_from_its_fragments_for_the_append():
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    run_operation(scheduler, "open")
+    chunk = unit(1, 10_000)
+    *leading, (last, _) = fragment_chunk(chunk, 0, 1024)
+    for fragment, _ in leading:
+        run_operation(scheduler, "fragment", fragment)
+    assert hooks.appended == []
+    result = run_operation(scheduler, "append", last)
+    restored = replace(chunk, seq=last.seq)
+    assert hooks.appended == [restored]
+    # note (luojiaxuan): the stages after this one read the restored chunk from the operation the append carries.
+    carried = SessionOperation.from_dict(result.request.metadata[SESSION_METADATA_KEY])
+    assert carried.chunk == restored
+    small = replace(unit(2, 256), seq=last.seq + 1)
+    run_operation(scheduler, "append", small)
+    assert hooks.appended[-1] == small
+
+
+def test_fragments_an_interrupt_cut_short_give_way_to_the_next_turn():
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    run_operation(scheduler, "open")
+    cut, _ = next(fragment_chunk(unit(1, 10_000), 0, 1024))
+    run_operation(scheduler, "fragment", cut)
+    plain = replace(unit(2, 256), seq=1)
+    run_operation(scheduler, "append", plain)
+    assert hooks.appended == [plain]
+    run_operation(scheduler, "fragment", replace(cut, seq=2))
+    chunk = unit(3, 10_000)
+    *leading, (last, _) = fragment_chunk(chunk, 3, 1024)
+    for fragment, _ in leading:
+        run_operation(scheduler, "fragment", fragment)
+    run_operation(scheduler, "append", last)
+    assert hooks.appended[-1] == replace(chunk, seq=last.seq)
 
 
 class BlockingHooks(Hooks):
@@ -519,6 +638,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
         session_request=request,
     )
     scheduler = Mock(spec=OmniScheduler)
+    scheduler.enable_overlap = False
     scheduler.scheduler_thread_id = None
     scheduler.request_admission_lock = threading.RLock()
     scheduler.deferred_request_payloads = {}
@@ -569,6 +689,141 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.session_controller.get.return_value.abort_req.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ("input_length", "requested_new_tokens", "expected_new_tokens"),
+    [
+        (7700, 2048, 474),
+        (8173, 2048, 1),
+        (8174, 2048, None),
+    ],
+)
+def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
+    monkeypatch: pytest.MonkeyPatch,
+    input_length: int,
+    requested_new_tokens: int,
+    expected_new_tokens: int | None,
+) -> None:
+    """Speculative session appends clamp max_new_tokens by the draft reserve and emit ContextExhaustedError once input plus reserve no longer fits."""
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
+    request_id = "append-spec"
+    identity = SessionIdentity("session-spec")
+    sampling_params = SamplingParams(
+        temperature=0.0,
+        max_new_tokens=requested_new_tokens,
+        min_new_tokens=0,
+    )
+    request = Req(
+        rid=request_id,
+        origin_input_text="",
+        origin_input_ids=[1] * input_length,
+        sampling_params=sampling_params,
+        vocab_size=128,
+    )
+    request.tokenizer = None
+    unit = SessionUnit(
+        request_id=request_id,
+        session_identity=identity,
+        stages=("thinker",),
+        chunk=TimedChunk("audio", 0, 1000, 0, b""),
+        session_request=request,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = False
+    scheduler.scheduler_thread_id = None
+    scheduler.is_entry_rank = True
+    scheduler.inbox = queue.Queue()
+    scheduler.outbox = queue.Queue()
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.deferred_request_payloads = {}
+    scheduler.pending_request_builds = {}
+    scheduler.pending_request_admissions = {}
+    scheduler.pending_stream_ingress = {}
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.waiting_queue = []
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler.chunked_req = None
+    scheduler._pending_chunked_abort_req = (
+        None  # noqa: leading-underscore  # upstream scheduler contract
+    )
+    scheduler.decode_batch_states = {}
+    scheduler.previous_pending_decode = None
+    scheduler.async_pending = None
+    scheduler.result_queue = deque()
+    scheduler.request_finished_callback = None
+    scheduler.abort_callback = None
+    scheduler.prompt_cache_epoch = 0
+    scheduler.max_queued_requests = None
+    scheduler.enable_priority_scheduling = False
+    scheduler.abort_on_priority_when_disabled = False
+    scheduler.sliding_window_size = None
+    scheduler.chunked_prefill_size = None
+    scheduler.max_new_tokens_limit = None
+    scheduler.max_req_len = 8191
+    scheduler.max_req_input_len = 8190
+    scheduler.page_size = 1
+    scheduler.max_total_num_tokens = 16384
+    scheduler.model_config = SimpleNamespace(context_len=8192, vocab_size=128)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.enable_plain_fallback = False
+    scheduler.model_runner = SimpleNamespace(
+        speculative_verifies_repetition_penalty=False,
+        speculative_ignores_request_seed=False,
+    )
+    kv_pool = MHATokenToKVPool(16384, 1, torch.float32, 1, 4, 1, "cpu", False)
+    scheduler.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
+        16384, torch.float32, "cpu", kv_pool, False
+    )
+    scheduler.req_to_token_pool = SimpleNamespace(free_slots=[0, 1, 2, 3])
+    scheduler.tree_cache = SimpleNamespace(
+        session_records=lambda: {}, evictable_size=lambda: 0
+    )
+    scheduler.session_controller = Mock()
+    bridge = ARSessionBridge(scheduler, Mock(), speculative_reserve_tokens=16)
+    bridge.sessions[identity.id] = BridgeSession(session_identity=identity, unit=unit)
+    bridge.units_by_request_id[request_id] = unit
+    bridge.create_session_request = Mock()
+    scheduler.session_bridge = bridge
+
+    req_data = SGLangARRequestData(
+        req=request,
+        enforce_request_limits=True,
+        max_new_tokens=requested_new_tokens,
+    )
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        StagePayload(request_id, OmniRequest(None), {}),
+        False,
+        req_data,
+    )
+
+    if expected_new_tokens is None:
+        assert not scheduler.waiting_queue
+        output = scheduler.outbox.get_nowait()
+        assert output.type == "error"
+        assert isinstance(output.data, ContextExhaustedError)
+        assert str(output.data).startswith("context_exhausted:")
+        assert "limit 8174" in str(output.data)
+        assert not bridge.units_by_request_id
+        assert bridge.sessions[identity.id].unit is None
+        scheduler.session_controller.get.return_value.abort_req.assert_called_once()
+    else:
+        assert scheduler.outbox.empty()
+        assert scheduler.waiting_queue == [request]
+        assert request.sampling_params.max_new_tokens == expected_new_tokens
+        assert req_data.max_new_tokens == expected_new_tokens
+        assert unit.is_enqueued is True
+
+
 def test_an_ar_stage_holds_the_read_takes_a_control_and_answers_the_read_at_close():
     identity = SessionIdentity("session-1")
     scheduler = Mock(spec=OmniScheduler)
@@ -576,7 +831,7 @@ def test_an_ar_stage_holds_the_read_takes_a_control_and_answers_the_read_at_clos
     scheduler.session_controller = Mock()
     scheduler.session_controller.open.return_value = SimpleNamespace(success=True)
     scheduler.session_controller.get.return_value = None
-    scheduler.tree_cache = SimpleNamespace(slots={})
+    scheduler.tree_cache = SimpleNamespace(session_records=lambda: {})
     scheduler.outbox = queue.Queue()
     scheduler.aborted_request_ids = set()
     adapter = Mock()
@@ -660,10 +915,11 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     adapter.bind_request = Mock()
     order: list[str] = []
     adapter.on_abort = Mock(side_effect=lambda identity, unit: order.append("model"))
-    scheduler = Mock()
+    scheduler = Mock(max_req_len=100)
     scheduler.model_config.vocab_size = 100
     native = scheduler.session_controller.get.return_value
     native.session_id = identity.id
+    native.req_nodes = {}
     native.abort_req.side_effect = lambda: order.append("native")
     native_request = Mock(origin_input_ids=[10, 20, 30], to_finish=None)
     native.create_req.return_value = native_request
@@ -687,3 +943,234 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     adapter.on_abort.assert_called_once_with(identity, unit)
     assert order == ["model", "native"]
     assert bridge.sessions[identity.id].unit is None
+
+
+NATIVE_SESSION_ID = "native"
+NATIVE_VOCAB_SIZE = 1000
+FIRST_UNIT_IDS = [1, 2, 3]
+FIRST_UNIT_OUTPUT_IDS = [4, 5, 6]
+SECOND_UNIT_IDS = [10, 11]
+SECOND_UNIT_OUTPUT_IDS = [20, 21, 22, 23]
+THIRD_UNIT_IDS = [30, 31]
+# The second unit's KV past its finish: committed one less than generated (the clock lag), one row over-allocated.
+COMMITTED_PAST_PROMPT = 4
+ALLOCATED_PAST_PROMPT = 5
+
+
+def tokenized_unit(request_id: str, input_ids: list[int]) -> TokenizedGenerateReqInput:
+    return TokenizedGenerateReqInput(
+        rid=request_id,
+        input_text=None,
+        input_ids=array("q", input_ids),
+        input_embeds=None,
+        mm_inputs=None,
+        token_type_ids=None,
+        sampling_params=SamplingParams(max_new_tokens=16),
+        session_params=SessionParams(id=NATIVE_SESSION_ID),
+        stream=False,
+        logprob_start_len=-1,
+        return_logprob=False,
+        return_sampling_mask=False,
+        lora_id=None,
+        custom_logit_processor=None,
+        require_reasoning=False,
+        return_hidden_states=False,
+        return_routed_experts=False,
+        routed_experts_start_len=0,
+        priority=None,
+        routing_key=None,
+        extra_key=None,
+        cache_salt=None,
+        http_worker_ipc=None,
+        top_logprobs_num=0,
+        token_ids_logprob=None,
+    )
+
+
+def finish_unit(session: Session, request: Req, output_ids: list[int]) -> None:
+    """Generate output_ids on a native request and finish it as the scheduler does, the fill ids lagging the last token."""
+    request.output_ids.extend(output_ids[:-1])
+    request.refresh_fill_ids()
+    request.output_ids.extend(output_ids[-1:])
+    request.finished_len = len(request.output_ids)
+    session.finish_req(request)
+
+
+def spoken_native_session() -> tuple[Session, int]:
+    """A streaming session after two finished units, with the second unit's prompt length."""
+    session = Session(0, NATIVE_SESSION_ID, streaming=True)
+    first = session.create_req(
+        tokenized_unit("unit-0", FIRST_UNIT_IDS), None, NATIVE_VOCAB_SIZE
+    )
+    finish_unit(session, first, FIRST_UNIT_OUTPUT_IDS)
+    second = session.create_req(
+        tokenized_unit("unit-1", SECOND_UNIT_IDS), None, NATIVE_VOCAB_SIZE
+    )
+    prompt_length = len(second.origin_input_ids)
+    finish_unit(session, second, SECOND_UNIT_OUTPUT_IDS)
+    return session, prompt_length
+
+
+def audio_span(start: int, end: int) -> EmbeddingSpan:
+    """The retained span of a unit's audio placeholders at [start, end) of the native sequence."""
+    return EmbeddingSpan(start=start, end=end, input_embeds=torch.zeros(end - start, 1))
+
+
+# The retained spans of the two units' audio: the first unit's placeholders at [1, 3), the second's at [7, 8).
+FIRST_UNIT_AUDIO_SPAN = audio_span(1, 3)
+SECOND_UNIT_AUDIO_SPAN = audio_span(7, 8)
+
+
+def rewinding_bridge(
+    session: Session,
+    record: ReqKvInfo,
+    kept_token_count: int,
+    embedding_spans: list[EmbeddingSpan],
+) -> tuple[ARSessionBridge, SessionUnit, StagePayload]:
+    """A bridge over the native session, its KV record and its retained spans, with an adapter that asks to keep kept_token_count tokens."""
+    identity = SessionIdentity(NATIVE_SESSION_ID)
+    adapter = ARSessionAdapter()
+    adapter.prepare_unit = Mock(
+        return_value=ARSessionPreparation(kept_token_count=kept_token_count)
+    )
+    scheduler = Mock()
+    scheduler.session_controller.get.return_value = session
+    scheduler.tree_cache.session_records.return_value = {identity.id: record}
+    bridge = ARSessionBridge(scheduler, adapter)
+    bridge.sessions[identity.id] = BridgeSession(
+        session_identity=identity, embedding_spans=list(embedding_spans)
+    )
+    payload = StagePayload("unit", OmniRequest(None), {})
+    unit = bridge.accept(
+        payload,
+        SessionOperation(
+            "append", identity, ("thinker",), TimedChunk("audio", 2000, 1000, 2, b"")
+        ),
+    )
+    return bridge, unit, payload
+
+
+def rewound_third_unit(
+    session: Session, record: ReqKvInfo
+) -> tuple[Req, MatchResult, list[tuple[int, int]]]:
+    """Append the third unit to the rewound native session and match its prefix on a streaming session over the record; returns the request, the match and the KV ranges the match freed."""
+    third = session.create_req(
+        tokenized_unit("unit-2", THIRD_UNIT_IDS), None, NATIVE_VOCAB_SIZE
+    )
+    third.refresh_fill_ids()
+    freed: list[tuple[int, int]] = []
+    streaming = StreamingSession(
+        SimpleNamespace(
+            page_size=1, free_kv_row=lambda kv, ranges: freed.extend(ranges)
+        )
+    )
+    streaming.slots[NATIVE_SESSION_ID] = SessionSlot(kv=record)
+    match = streaming.try_match_prefix(
+        MatchPrefixParams(key=third.full_untruncated_fill_ids[:-1], req=third)
+    )
+    return third, match, freed
+
+
+def test_ar_bridge_rewind_hands_the_next_unit_the_kept_prompt_and_frees_the_rest() -> (
+    None
+):
+    """A unit prepared with the last unit's prompt length as the kept token count: the next native request's prompt is that prompt plus the new ids, without the dropped output, its prefix match reuses exactly the kept tokens, the KV rows past them are freed, and both units' spans stay retained."""
+    session, prompt_length = spoken_native_session()
+    record = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=prompt_length + COMMITTED_PAST_PROMPT,
+        kv_allocated_len=prompt_length + ALLOCATED_PAST_PROMPT,
+    )
+    bridge, unit, payload = rewinding_bridge(
+        session,
+        record,
+        prompt_length,
+        [FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN],
+    )
+
+    assert bridge.prepare_unit(unit, payload) is False
+    third, match, freed = rewound_third_unit(session, record)
+
+    assert third.to_finish is None
+    assert list(third.origin_input_ids) == [
+        *FIRST_UNIT_IDS,
+        *FIRST_UNIT_OUTPUT_IDS,
+        *SECOND_UNIT_IDS,
+        *THIRD_UNIT_IDS,
+    ]
+    assert list(third.full_untruncated_fill_ids) == list(third.origin_input_ids)
+    assert match.device_prefix_len == prompt_length
+    assert freed == [(prompt_length, prompt_length + ALLOCATED_PAST_PROMPT)]
+    assert (record.kv_committed_len, record.kv_allocated_len) == (
+        prompt_length,
+        prompt_length,
+    )
+    bridge.bridge_scheduler.session_controller.close.assert_not_called()
+
+
+def test_ar_bridge_rewind_below_the_last_prompt_keeps_that_prefix_and_drops_the_spans_past_it() -> (
+    None
+):
+    """A unit prepared with an earlier unit's prompt length as the kept token count: the next native request's prompt is that prefix plus the new ids, without the earlier unit's output or the later unit, its prefix match reuses exactly the kept tokens and frees the rest, the session's committed lengths move to the kept count, and only the spans inside the kept prefix stay retained."""
+    session, prompt_length = spoken_native_session()
+    record = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=prompt_length + COMMITTED_PAST_PROMPT,
+        kv_allocated_len=prompt_length + ALLOCATED_PAST_PROMPT,
+    )
+    kept_token_count = len(FIRST_UNIT_IDS)
+    bridge, unit, payload = rewinding_bridge(
+        session,
+        record,
+        kept_token_count,
+        [FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN],
+    )
+
+    assert bridge.prepare_unit(unit, payload) is False
+    third, match, freed = rewound_third_unit(session, record)
+
+    assert third.to_finish is None
+    assert list(third.origin_input_ids) == [*FIRST_UNIT_IDS, *THIRD_UNIT_IDS]
+    assert list(third.full_untruncated_fill_ids) == list(third.origin_input_ids)
+    assert match.device_prefix_len == kept_token_count
+    assert freed == [(kept_token_count, prompt_length + ALLOCATED_PAST_PROMPT)]
+    assert (record.kv_committed_len, record.kv_allocated_len) == (
+        kept_token_count,
+        kept_token_count,
+    )
+    assert (
+        session.committed_origin_len,
+        session.committed_unpadded_len,
+        session.committed_fill_len,
+    ) == (kept_token_count, kept_token_count, kept_token_count)
+    assert bridge.sessions[NATIVE_SESSION_ID].embedding_spans == [FIRST_UNIT_AUDIO_SPAN]
+
+
+@pytest.mark.parametrize(
+    "kept_token_count",
+    [9, 0, 2],
+    ids=["inside_the_last_output", "nothing_kept", "inside_an_embedding_span"],
+)
+def test_ar_bridge_refuses_a_rewind_that_does_not_land_between_units(
+    kept_token_count: int,
+) -> None:
+    """A kept token count past the last unit's prompt, at zero, or inside a retained embedding span is refused, and the native session, its KV record and its spans stay as they were."""
+    session, prompt_length = spoken_native_session()
+    record = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=prompt_length + COMMITTED_PAST_PROMPT,
+        kv_allocated_len=prompt_length + ALLOCATED_PAST_PROMPT,
+    )
+    embedding_spans = [FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN]
+    bridge, unit, payload = rewinding_bridge(
+        session, record, kept_token_count, embedding_spans
+    )
+
+    with pytest.raises(ValueError):
+        bridge.prepare_unit(unit, payload)
+
+    [last_request_node] = session.req_nodes.values()
+    assert list(last_request_node.req.output_ids) == SECOND_UNIT_OUTPUT_IDS
+    assert session.committed_origin_len == prompt_length
+    assert record.kv_committed_len == prompt_length + COMMITTED_PAST_PROMPT
+    assert bridge.sessions[NATIVE_SESSION_ID].embedding_spans == embedding_spans

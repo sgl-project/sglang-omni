@@ -1,0 +1,262 @@
+{
+  "name": "card-short",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 1,
+    "session_id": "t1",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "t1",
+      "kind": "translate",
+      "title": "Translation",
+      "why": "The selection in Arc cannot be edited. Copy the result, or click where it should go and insert.",
+      "target_name": "Arc",
+      "language": "zh-Hans",
+      "language_label": "Simplified Chinese",
+      "thinking": {},
+      "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "insert_tooltip": "The selection in Arc cannot be edited. Copy the result, or click where it should go and insert.",
+      "copy_tooltip": "Copy (C)",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "answer",
+          "kind": "body",
+          "turn": 0,
+          "text": "goroutine 是由 Go 运行时管理的轻量级线程。",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": true,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    },
+    "language_menu": {
+      "kind": "language",
+      "label": "Translate into",
+      "options": [
+        {
+          "language": "en",
+          "thinking": {},
+          "label": "English",
+          "selected": false
+        },
+        {
+          "language": "zh-Hans",
+          "thinking": {},
+          "label": "Simplified Chinese",
+          "selected": true
+        },
+        {
+          "language": "zh-Hant",
+          "thinking": {},
+          "label": "Traditional Chinese",
+          "selected": false
+        },
+        {
+          "language": "ja",
+          "thinking": {},
+          "label": "Japanese",
+          "selected": false
+        },
+        {
+          "language": "ko",
+          "thinking": {},
+          "label": "Korean",
+          "selected": false
+        },
+        {
+          "language": "es",
+          "thinking": {},
+          "label": "Spanish",
+          "selected": false
+        },
+        {
+          "language": "fr",
+          "thinking": {},
+          "label": "French",
+          "selected": false
+        },
+        {
+          "language": "de",
+          "thinking": {},
+          "label": "German",
+          "selected": false
+        },
+        {
+          "language": "it",
+          "thinking": {},
+          "label": "Italian",
+          "selected": false
+        },
+        {
+          "language": "pt",
+          "thinking": {},
+          "label": "Portuguese",
+          "selected": false
+        },
+        {
+          "language": "ru",
+          "thinking": {},
+          "label": "Russian",
+          "selected": false
+        },
+        {
+          "language": "nl",
+          "thinking": {},
+          "label": "Dutch",
+          "selected": false
+        },
+        {
+          "language": "tr",
+          "thinking": {},
+          "label": "Turkish",
+          "selected": false
+        },
+        {
+          "language": "pl",
+          "thinking": {},
+          "label": "Polish",
+          "selected": false
+        },
+        {
+          "language": "uk",
+          "thinking": {},
+          "label": "Ukrainian",
+          "selected": false
+        },
+        {
+          "language": "ar",
+          "thinking": {},
+          "label": "Arabic",
+          "selected": false
+        },
+        {
+          "language": "he",
+          "thinking": {},
+          "label": "Hebrew",
+          "selected": false
+        },
+        {
+          "language": "hi",
+          "thinking": {},
+          "label": "Hindi",
+          "selected": false
+        },
+        {
+          "language": "th",
+          "thinking": {},
+          "label": "Thai",
+          "selected": false
+        },
+        {
+          "language": "vi",
+          "thinking": {},
+          "label": "Vietnamese",
+          "selected": false
+        },
+        {
+          "language": "id",
+          "thinking": {},
+          "label": "Indonesian",
+          "selected": false
+        },
+        {
+          "language": "ms",
+          "thinking": {},
+          "label": "Malay",
+          "selected": false
+        }
+      ],
+      "selected_index": 1
+    }
+  }
+}

@@ -23,7 +23,9 @@ function createPlayback(sampleRate) {
     send: (message) => processor.port.onmessage({ data: message }),
     render: (sampleCount = 128) => {
       const output = new Float32Array(sampleCount);
-      processor.process([], [[output]]);
+      for (let offset = 0; offset < sampleCount; offset += 128) {
+        processor.process([], [[output.subarray(offset, offset + 128)]]);
+      }
       return output;
     },
   };
@@ -160,4 +162,48 @@ test("reset starts a fresh generation with fresh counters and status energy", ()
   assert.equal(status.buffering, true);
   const energy = output.reduce((total, sample) => total + sample * sample, 0);
   assert.ok(Math.abs(status.outputRms - Math.sqrt(energy / output.length)) < 1e-8);
+});
+
+for (const sampleRate of [24000, 48000]) {
+  test(`turn-based cold, bursty and long replies keep every sample at ${sampleRate} Hz`, () => {
+    const playback = createPlayback(sampleRate);
+    playback.send({ type: "config", turnBased: true, nativeUnitSamples: sampleRate / 5 });
+    playback.send({ type: "open" });
+    assert.ok(playback.render(sampleRate).every((sample) => sample === 0));
+
+    const speech = Float32Array.from({ length: sampleRate * 12 }, (_, index) => (index % 1000 + 1) / 1024);
+    playback.send({ type: "push", samples: speech.slice(0, sampleRate / 10), responseId: "reply" });
+    assert.ok(playback.render().every((sample) => sample === 0));
+    playback.send({ type: "push", samples: speech.slice(sampleRate / 10, sampleRate), responseId: "reply" });
+    const rendered = new Float32Array(speech.length);
+    rendered.set(playback.render(sampleRate));
+    // The next burst arrives after playback has run dry.
+    assert.ok(playback.render(sampleRate).every((sample) => sample === 0));
+    for (let offset = sampleRate; offset < speech.length; offset += sampleRate * 2) {
+      playback.send({ type: "push", samples: speech.slice(offset, offset + sampleRate * 2), responseId: "reply" });
+    }
+    playback.send({ type: "trim", keepSamples: sampleRate / 2 });
+    playback.send({ type: "flush" });
+    for (let offset = sampleRate; offset < rendered.length; offset += 128) {
+      rendered.set(playback.render(Math.min(128, rendered.length - offset)), offset);
+    }
+    assert.equal(rendered.findIndex((sample, index) => sample !== speech[index]), -1, "playback must preserve the complete sample sequence");
+    assert.ok(playback.statuses.every((status) => status.rate === 1 && status.droppedMs === 0));
+    assert.ok(playback.render().every((sample) => sample === 0));
+  });
+}
+
+test("turn-based cancellation preserves the next reply and clear stops playback", () => {
+  const playback = createPlayback(24000);
+  playback.send({ type: "config", turnBased: true });
+  playback.send({ type: "push", samples: new Float32Array(72000).fill(0.2), responseId: "old" });
+  playback.send({ type: "push", samples: new Float32Array(48000).fill(-0.2), responseId: "new" });
+  playback.render();
+  playback.send({ type: "cancel", responseId: "old" });
+  const output = playback.render(48240);
+  assert.ok(output.subarray(240).every((sample) => sample === Math.fround(-0.2)));
+  assert.equal(playback.statuses.at(-1).droppedMs, 0);
+  playback.send({ type: "push", samples: new Float32Array(72000).fill(0.2), responseId: "new" });
+  playback.send({ type: "clear" });
+  assert.ok(playback.render(480).subarray(240).every((sample) => sample === 0));
 });

@@ -105,6 +105,11 @@ DECODER_CONFIG: dict[str, object] = {
 SEMANTIC_START_TOKEN_ID = 448
 SEMANTIC_END_TOKEN_ID = 511
 EOS_TOKEN_ID = 3
+# The lm_head scores only these main-token candidates, in this column order.
+MAIN_TOKEN_CANDIDATE_IDS = sorted(
+    {EOS_TOKEN_ID, *range(SEMANTIC_START_TOKEN_ID, SEMANTIC_END_TOKEN_ID + 1)}
+)
+EOS_CANDIDATE_COLUMN = MAIN_TOKEN_CANDIDATE_IDS.index(EOS_TOKEN_ID)
 CHECKPOINT_CONFIG: dict[str, object] = {
     "model_type": "fish_omni",
     "architectures": ["FishOmniModel"],
@@ -387,7 +392,12 @@ def write_synthetic_checkpoint(
     torch.manual_seed(0)
     backbone = TransformersBackbone(
         TransformersTextConfig(
-            **{key: value for key, value in text_config.items() if key != "model_type"}
+            **{
+                key: value
+                for key, value in text_config.items()
+                if key not in ("model_type", "mlp_layer_types")
+            },
+            mlp_layer_types=["sparse"] * text_config["num_hidden_layers"],
         )
     )
     expert_width = int(text_config["moe_intermediate_size"])

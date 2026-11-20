@@ -8,8 +8,24 @@ import logging
 import uuid
 
 from pydantic import ValidationError
+from starlette.status import (
+    WS_1000_NORMAL_CLOSURE,
+    WS_1008_POLICY_VIOLATION,
+    WS_1011_INTERNAL_ERROR,
+)
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.serve.realtime.constants import (
+    CLOSE_REASON_CLIENT_CLOSED,
+    CLOSE_REASON_CONTEXT_LIMIT,
+    CLOSE_REASON_DISCONNECT,
+    CLOSE_REASON_IDLE_TIMEOUT,
+    CLOSE_REASON_INTERNAL,
+    CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED,
+    CLOSE_REASON_SESSION_IDLE_TIMEOUT,
+    CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
+)
 from sglang_omni.serve.realtime.control import ControlEvent, Failure
 from sglang_omni.serve.realtime.projection import project_control, project_output
 from sglang_omni.serve.realtime.runtime import SessionRuntime
@@ -21,9 +37,26 @@ from sglang_omni.serve.realtime.schema import (
     ImageAppendEvent,
     SessionUpdateEvent,
 )
-from sglang_omni.serve.realtime.types import ProtocolError
+from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
+from sglang_omni.serve.realtime.types import (
+    OutputBudgetError,
+    ProtocolError,
+    failure_code,
+)
 
 logger = logging.getLogger(__name__)
+
+MAX_CLOSE_REASON_BYTES = 123
+POLICY_CLOSE_REASONS = frozenset(
+    {
+        CLOSE_REASON_SESSION_UPDATE_TIMEOUT,
+        CLOSE_REASON_IDLE_TIMEOUT,
+        CLOSE_REASON_SESSION_IDLE_TIMEOUT,
+        CLOSE_REASON_CONTEXT_LIMIT,
+        CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED,
+        ContextExhaustedError.CODE,
+    }
+)
 
 
 def reject_nonfinite_number(constant: str) -> float:
@@ -37,37 +70,42 @@ class SharedRealtimeSession:
         self.session_id = runtime.session_id
 
     async def run(self) -> None:
-        self.runtime.notify_created()
+        self.runtime.start()
         reader = asyncio.create_task(self.read())
         sender = asyncio.create_task(self.send())
+        runtime_closed = asyncio.create_task(self.runtime.closed_event.wait())
         is_disconnected = False
         try:
             finished_tasks, _ = await asyncio.wait(
-                (reader, sender), return_when=asyncio.FIRST_COMPLETED
+                (reader, sender, runtime_closed), return_when=asyncio.FIRST_COMPLETED
             )
-            for task in finished_tasks:
+            for task in finished_tasks - {runtime_closed}:
                 try:
                     has_client_left = task.result() is True
                 except WebSocketDisconnect:
                     has_client_left = True
                 is_disconnected = is_disconnected or has_client_left
         finally:
-            await self.runtime.close("disconnect")
-            if not is_disconnected and not sender.done():
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(sender), self.runtime.limits.cleanup_timeout_s
-                    )
-                except (asyncio.TimeoutError, WebSocketDisconnect):
+            try:
+                await self.runtime.close(CLOSE_REASON_DISCONNECT)
+                if not is_disconnected and not sender.done():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(sender),
+                            self.runtime.limits.cleanup_timeout_s,
+                        )
+                    except (asyncio.TimeoutError, WebSocketDisconnect):
+                        pass
+                else:
                     pass
-            else:
-                pass
-            for task in (reader, sender):
-                task.cancel()
-            await asyncio.gather(reader, sender, return_exceptions=True)
+            finally:
+                await cancel_local_tasks(
+                    (reader, sender, runtime_closed),
+                    self.runtime.limits.cleanup_timeout_s,
+                )
 
     async def teardown(self) -> None:
-        await self.runtime.close("disconnect")
+        await self.runtime.close(CLOSE_REASON_DISCONNECT)
 
     async def send(self) -> None:
         async for envelope in self.runtime.outputs():
@@ -98,8 +136,23 @@ class SharedRealtimeSession:
                 pass
             self.runtime.output_buffer.before_send(envelope)
             await self.websocket.send_text(json.dumps(server_event, allow_nan=False))
+            if not isinstance(envelope.event, ControlEvent):
+                self.runtime.mark_activity()
+            else:
+                pass
             self.runtime.output_buffer.sent(envelope)
-        await self.websocket.close()
+        close_reason = self.runtime.close_reason
+        assert close_reason is not None
+        if close_reason in (CLOSE_REASON_CLIENT_CLOSED, CLOSE_REASON_DISCONNECT):
+            close_code = WS_1000_NORMAL_CLOSURE
+        elif close_reason in POLICY_CLOSE_REASONS:
+            close_code = WS_1008_POLICY_VIOLATION
+        else:
+            close_code = WS_1011_INTERNAL_ERROR
+        close_reason = close_reason.encode("utf-8")[:MAX_CLOSE_REASON_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+        await self.websocket.close(close_code, close_reason)
 
     async def read(self) -> bool:
         """Returns whether the client disconnected."""
@@ -140,12 +193,18 @@ class SharedRealtimeSession:
                     self.runtime.notify(
                         Failure(exc.code, str(exc), False, event_id, exc.param)
                     )
-                except RuntimeError:
-                    self.runtime.fail("outbound event budget exhausted")
+                except OutputBudgetError as budget_error:
+                    self.runtime.fail(
+                        str(budget_error), CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED
+                    )
                     return False
             except Exception as exc:
-                logger.exception(f"Realtime session {self.session_id} dispatch failed")
-                self.runtime.fail(str(exc), event_id=event_id)
+                code = failure_code(exc)
+                logger.error(
+                    f"Realtime session {self.session_id} dispatch failed: {exc}",
+                    exc_info=code == CLOSE_REASON_INTERNAL,
+                )
+                self.runtime.fail(str(exc), code, event_id=event_id)
                 return False
         return False
 
@@ -205,11 +264,11 @@ class SharedRealtimeSession:
         elif event.type == "input_audio_buffer.commit":
             await self.runtime.commit()
         elif isinstance(event, ConversationItemTruncateEvent):
-            await self.runtime.truncate(event.audio_end_ms)
+            await self.runtime.truncate(event.item_id, event.audio_end_ms)
         elif event.type == "sglang.input_audio.end":
             await self.runtime.end(event.event_id)
         elif event.type == "session.close":
-            await self.runtime.close("client_closed", event.event_id)
+            await self.runtime.close(CLOSE_REASON_CLIENT_CLOSED, event.event_id)
         else:
             self.runtime.require_open()
             raise ProtocolError(

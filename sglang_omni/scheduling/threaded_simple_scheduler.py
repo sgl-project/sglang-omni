@@ -10,9 +10,10 @@ import queue as _queue_mod
 import threading
 from collections.abc import Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, Protocol, TypeVar
 
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.utils.process import name_native_thread
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,12 @@ ComputeInput = TypeVar("ComputeInput")
 ComputeResult = TypeVar("ComputeResult")
 
 
+class ThreadInitializer(Protocol):
+    """Prepare a new pool thread before it runs any compute."""
+
+    def __call__(self) -> None: ...
+
+
 class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
     """Run per-request work concurrently while preserving scheduler IO shape.
 
@@ -100,6 +107,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         max_concurrency: int | None = 8,
         abort_callback: Callable[[str], None] | None = None,
         dispatch_fn: Callable[[ComputeInput], Future[ComputeResult]] | None = None,
+        thread_initializer: ThreadInitializer | None = None,
     ):
         self.lock = threading.Lock()
         self.capacity_freed = threading.Condition(self.lock)
@@ -108,6 +116,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.requires_tp_work_fanout: bool = True
         self.fn = compute_fn
         self.dispatch_fn = dispatch_fn
+        self.thread_initializer = thread_initializer
         if dispatch_fn is None:
             if compute_fn is None:
                 raise ValueError(
@@ -127,7 +136,11 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.executor = (
             None
             if dispatch_fn is not None
-            else ThreadPoolExecutor(max_workers=self.max_concurrency)
+            else ThreadPoolExecutor(
+                max_workers=self.max_concurrency,
+                initializer=self.initialize_worker,
+                thread_name_prefix="compute-pool",
+            )
         )
         self.pending: dict[str, Future] = {}
         self.queued_aborts: set[str] = set()
@@ -135,6 +148,13 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.aborted_futures: set[Future] = set()
         self.running = False
         self.abort_callback = abort_callback
+
+    def initialize_worker(self) -> None:
+        name_native_thread()
+        if self.thread_initializer is not None:
+            self.thread_initializer()
+        else:
+            pass
 
     def warm_up_serving_thread(self) -> None:
         pass

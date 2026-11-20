@@ -139,6 +139,7 @@ if HAS_TRITON:
         top_k: tl.tensor,
         top_p: tl.tensor,
         INDEX_BITS: tl.constexpr,
+        KEEP_TOP_P_CROSSING_TOKEN: tl.constexpr = False,
     ) -> tuple[tl.tensor, ...]:
         selected_count: tl.constexpr = top_keys.shape[0]
         ranks = tl.arange(0, selected_count)
@@ -150,7 +151,13 @@ if HAS_TRITON:
             ),
             axis=0,
         )
-        is_kept = (ranks == 0) | ((ranks < top_k) & (cumulative_probabilities <= top_p))
+        if KEEP_TOP_P_CROSSING_TOKEN:
+            cut_probabilities = tl.gather(
+                cumulative_probabilities, tl.maximum(ranks - 1, 0), axis=0
+            )
+        else:
+            cut_probabilities = cumulative_probabilities
+        is_kept = (ranks == 0) | ((ranks < top_k) & (cut_probabilities <= top_p))
         last_cumulative_probability = tl.sum(
             tl.where(ranks == selected_count - 1, cumulative_probabilities, 0.0), axis=0
         )
@@ -169,6 +176,7 @@ if HAS_TRITON:
         top_p: tl.tensor,
         KEY_BITS: tl.constexpr,
         SEARCH_ROUNDS: tl.constexpr,
+        KEEP_TOP_P_CROSSING_TOKEN: tl.constexpr = False,
     ) -> tl.tensor:
         lower_key = tl.full([], 0, tl.int64)
         upper_key = tl.full([], 1, tl.int64) << KEY_BITS
@@ -179,6 +187,11 @@ if HAS_TRITON:
             above_count = tl.sum(main_is_above.to(tl.int64), axis=0) + tl.sum(
                 tail_is_above.to(tl.int64), axis=0
             )
+            if KEEP_TOP_P_CROSSING_TOKEN:
+                main_is_above = main_keys > middle_key
+                tail_is_above = tail_keys > middle_key
+            else:
+                pass
             above_probability = tl.sum(
                 tl.where(main_is_above, main_probabilities, 0.0), axis=0
             ) + tl.sum(tl.where(tail_is_above, tail_probabilities, 0.0), axis=0)
@@ -263,10 +276,17 @@ if HAS_TRITON:
         stream_id: tl.tensor,
         INDEX_BITS: tl.constexpr,
         KEY_BITS: tl.constexpr,
+        KEEP_TOP_P_CROSSING_TOKEN: tl.constexpr = False,
     ) -> tl.tensor:
         selected_indices, selected_weights, is_kept, holds_kept_set = (
             selected_candidates(
-                top_keys, row_maximum, weight_sum, top_k, top_p, INDEX_BITS
+                top_keys,
+                row_maximum,
+                weight_sum,
+                top_k,
+                top_p,
+                INDEX_BITS,
+                KEEP_TOP_P_CROSSING_TOKEN,
             )
         )
         if holds_kept_set:
@@ -287,6 +307,7 @@ if HAS_TRITON:
                 top_p,
                 KEY_BITS,
                 KEY_BITS,
+                KEEP_TOP_P_CROSSING_TOKEN,
             )
             chosen_index = race_above_threshold(
                 main_keys,

@@ -7,6 +7,12 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+    # A pull request that changes only the MLX path is tested by Mac CI and Voxt CI.
+    paths-ignore:
+      - "sglang_omni_mlx/**"
+      - "Voxt/**"
+      - ".github/workflows/mac-ci.yaml"
+      - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
 
 concurrency:
@@ -49,3 +55,19 @@ jobs:
           cd docs
           make compile
           make html
+
+  doc-style-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install documentation lint dependencies
+        run: python -m pip install -r scripts/requirements-doc-lint.txt pytest
+
+      - name: Test documentation style checker
+        run: python -m pytest tests/unit_test/scripts/test_check_doc_style*.py -q

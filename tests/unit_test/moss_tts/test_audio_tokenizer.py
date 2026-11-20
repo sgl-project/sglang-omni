@@ -569,7 +569,7 @@ def test_attention_backend_policy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     ("capability", "requires_chunks"),
-    [((8, 9), True), ((9, 0), False), ((10, 0), False)],
+    [((8, 9), True), ((9, 0), False), ((10, 0), False), ((12, 0), False)],
 )
 def test_packed_flash_query_chunk_policy_uses_sm(
     monkeypatch: pytest.MonkeyPatch,
@@ -590,51 +590,110 @@ def test_packed_flash_query_chunk_policy_uses_sm(
     )
 
 
-def test_packed_flash_policy_uses_sglang_fa3_predicate(
+@pytest.mark.parametrize(
+    ("capability", "version", "is_flash_available"),
+    [((9, 0), 3, True), ((8, 9), 3, False), ((12, 0), 4, True), ((12, 0), 4, False)],
+)
+def test_auto_backend_selects_available_flash_version(
     monkeypatch: pytest.MonkeyPatch,
+    capability: tuple[int, int],
+    version: int,
+    is_flash_available: bool,
 ) -> None:
-    calls = []
-
-    def sglang_fa3_supported() -> bool:
-        calls.append(True)
-        return True
-
-    monkeypatch.setattr(
-        attention_impl,
-        "_is_fa3_supported",
-        sglang_fa3_supported,
-    )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-
-    assert (
-        attention_impl.packed_flash_device_unavailable_reason(torch.device("cuda"))
-        is None
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: capability)
+    fa3_available = Mock(return_value=is_flash_available if version == 3 else False)
+    fa4_available = Mock(return_value=is_flash_available)
+    monkeypatch.setattr(attention_impl, "_is_fa3_supported", fa3_available)
+    monkeypatch.setattr(
+        attention_impl, "is_flash_attention_v4_available", fa4_available
     )
-    assert calls == [True]
+    attention_impl.packed_flash_version.cache_clear()
+    try:
+        attention = MossAudioTokenizerAttention.from_module(
+            FakeAttention(hidden_size=6)
+        )
+        resolution = attention.resolve_attention_backend(
+            torch.device("cuda"), torch.bfloat16
+        )
+        assert resolution.backend == (
+            "packed_flash_attention" if is_flash_available else "sdpa"
+        )
+        assert resolution.fallback_reason == (
+            None
+            if is_flash_available
+            else f"SGLang packed FlashAttention (FA{version}) is unavailable"
+        )
+        selected, unused = (
+            (fa3_available, fa4_available)
+            if version == 3
+            else (fa4_available, fa3_available)
+        )
+        selected.assert_called_once_with()
+        unused.assert_not_called()
+    finally:
+        attention_impl.packed_flash_version.cache_clear()
 
 
-def test_auto_backend_falls_back_when_sglang_fa3_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("version", [3, 4])
+def test_packed_attention_binds_kernel_after_materialization(
+    monkeypatch: pytest.MonkeyPatch, version: int
 ) -> None:
-    monkeypatch.setattr(
-        attention_impl,
-        "_is_fa3_supported",
-        lambda: False,
+    source = ReferenceAttention(hidden_size=128, num_heads=2)
+    weights = source.state_dict()
+    select_version = Mock(return_value=version)
+    kernel = Mock(side_effect=lambda q, *_, **__: q)
+    monkeypatch.setattr(attention_impl, "packed_flash_version", select_version)
+    monkeypatch.setattr(attention_impl, "flash_attn_varlen_func", kernel)
+    attention = MossAudioTokenizerAttention.from_module(source.to(device="meta"))
+    select_version.assert_not_called()
+    attention.load_state_dict(weights, assign=True)
+    monkeypatch.setattr(attention, "packed_flash_unavailable_reason", lambda *_: None)
+    inputs = torch.randn(3, 128)
+    kwargs = dict(
+        cu_seqlens=torch.tensor([0, 3], dtype=torch.int32),
+        max_seqlen=3,
+        position_ids=torch.arange(3),
     )
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    source = FakeAttention(hidden_size=6)
-    source.attention_implementation = "flash_attention_2"
+
+    first = attention(inputs, **kwargs)
+    second = attention(inputs, **kwargs)
+
+    assert torch.equal(first, second)
+    select_version.assert_called_once_with(torch.device("cpu"))
+    assert kernel.call_count == 2
+    assert all(
+        call.kwargs["ver"] == version and call.kwargs["num_splits"] == 1
+        for call in kernel.call_args_list
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("num_heads", [12, 20])
+def test_sm120_attention_warmup_includes_packed_rope(
+    monkeypatch: pytest.MonkeyPatch, num_heads: int
+) -> None:
+    """Graph-disabled vocoding must not first compile packed RoPE on a request."""
+    if (
+        not torch.cuda.is_available()
+        or attention_impl.packed_flash_version(torch.device("cuda:0")) != 4
+        or not attention_impl.is_flash_attention_v4_available()
+    ):
+        pytest.skip("requires SM120 FA4")
+    else:
+        pass
+    source = ReferenceAttention(hidden_size=64 * num_heads, num_heads=num_heads).to(
+        device="cuda", dtype=torch.bfloat16
+    )
+    source.rope = RotaryEmbedding(10000.0)
     attention = MossAudioTokenizerAttention.from_module(source)
-    resolution = attention.resolve_attention_backend(
-        torch.device("cuda"),
-        torch.bfloat16,
-    )
+    rope = Mock(wraps=attention_impl.apply_exact_interleaved_rope_inplace)
+    monkeypatch.setattr(attention_impl, "apply_exact_interleaved_rope_inplace", rope)
 
-    assert resolution.backend == "sdpa"
-    assert (
-        resolution.fallback_reason
-        == "SGLang packed FlashAttention (FA3) is unavailable"
-    )
+    attention_impl.warmup_packed_attention(attention)
+
+    assert rope.call_count > 0
+    assert attention.streaming_state is None
 
 
 def test_attention_backend_auto_falls_back_for_cuda_float32(

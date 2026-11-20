@@ -92,6 +92,40 @@ stages:
 A value the factory does not accept is an error at stage construction, not a
 silent no-op.
 
+`engine.disable_speculative_decoding: true` never reaches SGLang. It drops
+every `speculative_*` key from the stage's `engine.*` block, whether the
+model's defaults, a config file or the CLI set it, so one setting turns off
+the stage's draft.
+
+The switch relies on one rule: a stage's draft is set only through its
+`engine.speculative_*` keys, and its engine builder reads the draft from the
+overrides, as every current draft does. A draft set under `factory.*`, or
+turned on by an engine builder's own defaults, would stay on. A new drafter
+follows the same rule, including one that is the model's own code rather than
+an SGLang draft worker.
+
+Every published draft a stage serves has one entry in
+`sglang_omni/speculative/draft_registry.py`: the draft repo, its full
+revision, the algorithm and its other `speculative_*` settings, the license
+and whether the model turns it on by default. A draft whose model card states
+no license stays off by default. No two entries share a draft repo. A stage
+can have several drafts of one algorithm, and at most one of them is on by
+default. A stage that names a registry draft without a `speculative_draft_model_revision` key
+loads the entry's revision. A revision the stage sets wins, and `none` loads
+the repo's default branch. A cookbook command, an example config or a model's
+defaults that serve the draft give that entry's algorithm, draft repo and
+settings. They leave the revision out, and a revision they do give must match
+the entry. `sgl-omni serve` adds a default-on entry's draft after every
+source is merged, so the model path and TP size that launch decide it: only
+for that entry's model path, with or without an `@<revision>` pin, or a
+Hugging Face cache snapshot of it, only on CUDA, and only to a stage with
+`tp_size` 1 that does not set `disable_speculative_decoding`. Like the TP
+derivation, it fills only the `speculative_*` keys no source set.
+`sgl-omni config resolve` shows these keys and the engine block as written,
+and the pinned revision is added when the stage's server args are built.
+`tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
+new draft adds its entry in the same change.
+
 ## Setting Values: YAML and CLI
 
 There are exactly two user-facing spellings of one path language.
@@ -256,13 +290,15 @@ rejected from the author channel.
 ### Device and GPU placement contract
 
 A stage's card is placement's decision, made in the parent process from
-`stage.gpu` (or `processes.<name>.replica_devices` for a replicated process)
+`stage.gpu` (or `processes.<name>.replica_devices` when configured, including a single replica)
 and handed to the factory as `gpu_id`. The factory's `device` argument is
 only ever a device type: `cpu` to keep a stage on the host, or a platform
 type such as `cuda`/`npu` that must match the host. It never carries an
 index. `cuda:1` in a config is refused, and so are `factory.gpu_id` and the
 two memory-fraction kwargs listed in `PLACEMENT_OWNED_FACTORY_KWARGS`
 (`sglang_omni/config/schema.py`), because those are injected by placement.
+
+Replica devices take precedence over stage GPU IDs regardless of YAML/CLI precedence. Expansion logs the overridden stage GPU and effective replica assignments; CPU stages are unchanged. No special GPU sentinel is needed.
 
 Inside a factory the two values meet in one helper:
 

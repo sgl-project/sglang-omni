@@ -626,37 +626,6 @@ def start_request_profiles(snapshot: LauncherState, run_id: str) -> None:
             timeout=30,
         )
         response.raise_for_status()
-    wait_for_profile_activity_files(snapshot)
-
-
-def wait_for_profile_activity_files(
-    snapshot: LauncherState,
-    *,
-    timeout_s: float = 10.0,
-    poll_interval_s: float = 0.1,
-) -> None:
-    engine_process_stages = ("preprocessing", "audio_encoder", "tts_engine")
-    deadline = time.monotonic() + timeout_s
-    while True:
-        pending = [
-            replica.index
-            for replica in snapshot.replicas
-            if not any(
-                path
-                for stage in engine_process_stages
-                for path in (snapshot.state_dir / f"activity-{replica.index}").glob(
-                    f"events_{stage}_*.jsonl"
-                )
-            )
-        ]
-        if not pending:
-            return
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                "TTS engine-process request profilers did not start for "
-                f"replicas {pending}"
-            )
-        time.sleep(poll_interval_s)
 
 
 def stop_request_profiles(snapshot: LauncherState, run_id: str) -> None:

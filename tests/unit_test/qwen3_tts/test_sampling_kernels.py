@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest import mock
 
@@ -21,7 +22,11 @@ from torch._dynamo.utils import counters
 from sglang_omni.models.qwen3_tts import sampling_kernels as sampling_kernels_module
 from sglang_omni.models.qwen3_tts import sglang_model as sglang_model_module
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+from sglang_omni.models.qwen3_tts.predictor_kernels import (
+    gather_codec_embedding_and_add,
+)
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
+    sample_codes_and_gather_codec_embedding,
     sample_from_logits_with_seed_top_k_top_p,
     sample_from_sorted_logprobs_with_seed_small_k,
 )
@@ -728,6 +733,130 @@ def test_fused_raw_logit_sampler_falls_back_without_triton_gather(
         )
         is None
     )
+
+
+@dataclass(kw_only=True)
+class CodebookStepInputs:
+    logits: torch.Tensor
+    row_tensors: tuple[torch.Tensor, ...]
+    embedding_weight: torch.Tensor
+    accumulated: torch.Tensor
+    projected_weight: torch.Tensor | None
+
+
+def codebook_step_inputs(
+    batch_size: int, max_top_k: int, top_p: float, projected_size: int
+) -> CodebookStepInputs:
+    generator = torch.Generator(device="cuda").manual_seed(
+        batch_size * 1000 + max_top_k + projected_size
+    )
+
+    def bf16_randn(*shape: int) -> torch.Tensor:
+        return torch.randn(*shape, generator=generator, device="cuda").to(
+            torch.bfloat16
+        )
+
+    return CodebookStepInputs(
+        logits=bf16_randn(batch_size, 2048) * 3,
+        row_tensors=(
+            torch.full((batch_size,), 0.9, device="cuda", dtype=torch.float32),
+            torch.full((batch_size,), max_top_k, device="cuda", dtype=torch.long),
+            torch.full((batch_size,), top_p, device="cuda", dtype=torch.float32),
+            torch.arange(700, 700 + batch_size, device="cuda", dtype=torch.long),
+            torch.arange(30, 30 + batch_size, device="cuda", dtype=torch.long),
+        ),
+        embedding_weight=bf16_randn(2048, 2048),
+        accumulated=bf16_randn(batch_size, 2048),
+        projected_weight=bf16_randn(2048, projected_size) if projected_size else None,
+    )
+
+
+@pytest.mark.parametrize("batch_size", [1, 16, 64])
+@pytest.mark.parametrize("max_top_k,top_p", [(50, 1.0), (128, 0.8)])
+@pytest.mark.parametrize("projected_size", [0, 1024])
+def test_sampled_codes_and_codec_gather_match_the_separate_launches(
+    batch_size: int, max_top_k: int, top_p: float, projected_size: int
+) -> None:
+    if torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("the split sampler runs on sm_90")
+    else:
+        pass
+    inputs = codebook_step_inputs(batch_size, max_top_k, top_p, projected_size)
+    expected_codes = sample_from_logits_with_seed_top_k_top_p(
+        inputs.logits,
+        *inputs.row_tensors,
+        max_top_k=max_top_k,
+        has_top_p=top_p < 1.0,
+    )
+    expected_gathered = torch.empty_like(inputs.accumulated)
+    expected_accumulated = inputs.accumulated.clone()
+    expected_projected = (
+        None
+        if inputs.projected_weight is None
+        else torch.empty(
+            batch_size, projected_size, device="cuda", dtype=torch.bfloat16
+        )
+    )
+    assert gather_codec_embedding_and_add(
+        expected_codes,
+        inputs.embedding_weight,
+        expected_gathered,
+        expected_accumulated,
+        projected_weight=inputs.projected_weight,
+        projected=expected_projected,
+    )
+    codes = torch.full((batch_size, 16), -1, device="cuda", dtype=torch.long)
+    gathered = torch.empty_like(expected_gathered)
+    projected = (
+        None if expected_projected is None else torch.empty_like(expected_projected)
+    )
+
+    assert sample_codes_and_gather_codec_embedding(
+        inputs.logits,
+        *inputs.row_tensors,
+        max_top_k=max_top_k,
+        has_top_p=top_p < 1.0,
+        codes=codes[:, 3],
+        embedding_weight=inputs.embedding_weight,
+        gathered=gathered,
+        accumulated=inputs.accumulated,
+        projected_weight=inputs.projected_weight,
+        projected=projected,
+    )
+    torch.cuda.synchronize()
+
+    assert torch.equal(codes[:, 3], expected_codes)
+    assert torch.equal(codes[:, :3], torch.full_like(codes[:, :3], -1))
+    assert torch.equal(codes[:, 4:], torch.full_like(codes[:, 4:], -1))
+    assert torch.equal(gathered, expected_gathered)
+    assert torch.equal(inputs.accumulated, expected_accumulated)
+    assert projected is None or torch.equal(projected, expected_projected)
+
+
+@pytest.mark.parametrize("max_top_k,codes_dtype", [(32, torch.long), (50, torch.int32)])
+def test_sampled_codes_and_codec_gather_fall_back_without_writes(
+    max_top_k: int, codes_dtype: torch.dtype
+) -> None:
+    inputs = codebook_step_inputs(4, max_top_k, 1.0, 0)
+    codes = torch.full((4, 16), -1, device="cuda", dtype=codes_dtype)
+    gathered = torch.zeros_like(inputs.accumulated)
+    expected_accumulated = inputs.accumulated.clone()
+
+    assert not sample_codes_and_gather_codec_embedding(
+        inputs.logits,
+        *inputs.row_tensors,
+        max_top_k=max_top_k,
+        has_top_p=False,
+        codes=codes[:, 3],
+        embedding_weight=inputs.embedding_weight,
+        gathered=gathered,
+        accumulated=inputs.accumulated,
+    )
+    torch.cuda.synchronize()
+
+    assert torch.equal(codes, torch.full_like(codes, -1))
+    assert torch.equal(gathered, torch.zeros_like(gathered))
+    assert torch.equal(inputs.accumulated, expected_accumulated)
 
 
 class CodecHead(torch.nn.Linear):

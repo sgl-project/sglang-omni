@@ -102,8 +102,8 @@ SYSTEM_INSTRUCTION = (
 )
 
 # Decisions sample greedily unless the client sets a sampling field, and only
-# the decision schema bounds their length: a client length or stop setting
-# would truncate the JSON and fail the request.
+# the Reasoner stage's token limit bounds their length: a client length or stop
+# setting would truncate the JSON and fail the request.
 DECISION_SAMPLING = {"temperature": 0.0}
 SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "min_p", "repetition_penalty")
 DECISION_OWNED_FIELDS = frozenset(
@@ -964,8 +964,9 @@ class Cosmos3UMMAdapter:
         now = self.clock()
         if phase == REASON:
             offered, history.offered = history.offered, False
-            self.measure(self.reason_times, now, now - history.dispatched_at, history)
+            # note (Yixiao Zeng): time a decision only after it passes, so a failed one cannot get later requests turned away.
             decision = interpret_reasoner(result)
+            self.measure(self.reason_times, now, now - history.dispatched_at, history)
             history.reasons_left -= 1
             outputs = (UMMOutput("text", decision.text),) if decision.text else ()
             if decision.kind == "final":

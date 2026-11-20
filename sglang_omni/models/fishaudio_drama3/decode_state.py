@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Persistent request rows and frame histories used to stage Drama 3 decode."""
+"""Frame histories and request lookups that stage Drama 3 forwards."""
 
 from __future__ import annotations
-
-import dataclasses
 
 import torch
 
@@ -18,39 +16,6 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
 from sglang_omni.scheduling.types import SchedulerRequest
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class Drama3DecodeStatePool:
-    frames: torch.Tensor
-    ras_windows: torch.Tensor
-    temperature: torch.Tensor
-    top_k: torch.Tensor
-    top_p: torch.Tensor
-    row_indices: torch.Tensor
-
-    @classmethod
-    def allocate(
-        cls, *, request_slot_count: int, frame_width: int, device: torch.device
-    ) -> Drama3DecodeStatePool:
-        row_count = request_slot_count + 1
-        return cls(
-            frames=torch.zeros(
-                (row_count, frame_width), dtype=torch.int64, device=device
-            ),
-            ras_windows=torch.full(
-                (row_count, RAS_WINDOW_FRAMES),
-                EMPTY_RAS_SLOT,
-                dtype=torch.int64,
-                device=device,
-            ),
-            temperature=torch.ones(row_count, dtype=torch.float32, device=device),
-            top_k=torch.ones(row_count, dtype=torch.int64, device=device),
-            top_p=torch.ones(row_count, dtype=torch.float32, device=device),
-            row_indices=torch.zeros(
-                request_slot_count, dtype=torch.int64, device=device
-            ),
-        )
-
-
 def ras_window(frame_rows: list[list[int]]) -> list[int]:
     """Main tokens of the last RAS_WINDOW_FRAMES frames, oldest first, left-padded with
     EMPTY_RAS_SLOT."""
@@ -63,15 +28,15 @@ def extend_frame_rows(request_data: Drama3RequestData) -> list[list[int]]:
     sglang_request = request_data.req
     assert sglang_request is not None
     sequence_ids = list(sglang_request.full_untruncated_fill_ids)
-    extend_range = sglang_request.extend_range
     if (
-        extend_range is None
-        or extend_range.start != 0
-        or extend_range.end != len(sequence_ids)
+        sglang_request.extend_end is None
+        or sglang_request.prefix_len != 0
+        or sglang_request.extend_end != len(sequence_ids)
     ):
         raise RuntimeError(
             f"{sglang_request.rid}: a Drama 3 prefill must cover the whole sequence of "
-            f"{len(sequence_ids)} rows in one extend; got {extend_range}"
+            f"{len(sequence_ids)} rows in one extend; got "
+            f"[{sglang_request.prefix_len}, {sglang_request.extend_end})"
         )
     elif len(sequence_ids) < MINIMUM_PROMPT_ROWS:
         raise RuntimeError(
@@ -83,6 +48,19 @@ def extend_frame_rows(request_data: Drama3RequestData) -> list[list[int]]:
         )
     else:
         return request_data.frame_rows
+
+
+def extend_frame_history(request_data: Drama3RequestData) -> torch.Tensor:
+    """extend_frame_rows as an int64 CPU tensor [rows, frame width]: the prompt
+    tensor the request builder kept, then any frames sampled before a retraction."""
+    frame_rows = extend_frame_rows(request_data)
+    prompt_frames = request_data.prompt_frames
+    assert prompt_frames is not None
+    sampled_rows = frame_rows[request_data.prompt_row_count :]
+    if not sampled_rows:
+        return prompt_frames
+    else:
+        return torch.cat((prompt_frames, torch.tensor(sampled_rows, dtype=torch.int64)))
 
 
 def request_data_of(request: SchedulerRequest) -> Drama3RequestData:

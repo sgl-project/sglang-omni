@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace moss {
 
@@ -30,7 +30,7 @@ public:
   mlx::core::array
   EncodeAudio(const mlx::core::array &window_features,
               const std::vector<int> &window_token_counts) const;
-  const qwen3_asr::Qwen3Decoder &decoder() const { return decoder_; }
+  const omni_common::Qwen3Decoder &decoder() const { return decoder_; }
 
   int mel_bin_count() const { return whisper_.num_mel_bins; }
   int audio_token_id() const { return audio_token_id_; }
@@ -48,8 +48,8 @@ private:
   float adaptor_norm_eps_ = 0.0f;
   int audio_token_id_ = 0;
   int audio_merge_size_ = 0;
-  qwen3_asr::Checkpoint checkpoint_;
-  qwen3_asr::Qwen3Decoder decoder_;
+  omni_common::Checkpoint checkpoint_;
+  omni_common::Qwen3Decoder decoder_;
 };
 
 } // namespace moss

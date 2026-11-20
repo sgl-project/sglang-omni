@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -19,27 +19,39 @@ from sglang_omni.config.schema import (
 PACKAGE = "sglang_omni.models.ming3_asr"
 
 
+class Ming3ASRFactoryArgs(FactoryArgs):
+    """Thinker knobs checked when the pipeline configuration loads."""
+
+    pre_lm_max_batch_size: int | None = Field(default=None, ge=1)
+    pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
+    stream_emit_interval_seconds: float = Field(default=0.05, ge=0, allow_inf_nan=False)
+
+
+class Ming3ASRThinkerStageConfig(EngineStageConfig):
+    factory: Ming3ASRFactoryArgs = Field(default_factory=Ming3ASRFactoryArgs)
+
+
 def default_stages() -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
             process="preprocessing",
             factory_path=f"{PACKAGE}.stages.create_preprocessing_executor",
-            next="audio_encoder",
-        ),
-        StageConfig(
-            name="audio_encoder",
-            process="audio_encoder",
-            gpu=0,
-            factory_path=f"{PACKAGE}.stages.create_audio_encoder_executor",
             next="thinker",
         ),
-        EngineStageConfig(
+        Ming3ASRThinkerStageConfig(
             name="thinker",
             process="thinker",
             gpu=0,
             factory_path=f"{PACKAGE}.stages.create_thinker_executor",
-            factory=FactoryArgs(max_seq_len=8192, max_new_tokens=256),
+            factory=Ming3ASRFactoryArgs(
+                max_seq_len=8192,
+                max_new_tokens=256,
+                pre_lm_max_batch_size=8,
+                pre_lm_max_batch_wait_ms=2,
+                request_build_max_workers=8,
+                request_build_max_pending=32,
+            ),
             engine=EngineArgs(
                 mem_fraction_static=0.75,
                 max_running_requests=64,
@@ -57,8 +69,10 @@ class Ming3ASRPipelineConfig(PipelineConfig):
     allow_audio_chunking: ClassVar[bool] = True
     max_native_clip_s: ClassVar[float] = 30.0
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "thinker": EngineStageConfig,
+        "thinker": Ming3ASRThinkerStageConfig,
     }
+    dspark_use_greedy_draft: bool = True
+    ragged_verify_mode: Literal["static", "cap-accept", "compact"] = "static"
     model_path: str
     entry_stage: str = "preprocessing"
     placement: PlacementConfig = Field(
@@ -67,6 +81,23 @@ class Ming3ASRPipelineConfig(PipelineConfig):
         )
     )
     stages: list[StageConfig] = Field(default_factory=default_stages)
+
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        environment = super().resolved_stage_env_defaults(stage_name)
+        if (
+            stage_name == "thinker"
+            and self.stage_named(stage_name)
+            .engine.overrides()
+            .get("speculative_algorithm")
+            == "DSPARK"
+        ):
+            environment.setdefault(
+                "SGLANG_DSPARK_USE_GREEDY_DRAFT", str(int(self.dspark_use_greedy_draft))
+            )
+            environment.setdefault("SGLANG_RAGGED_VERIFY_MODE", self.ragged_verify_mode)
+        else:
+            pass
+        return environment
 
 
 EntryClass = Ming3ASRPipelineConfig

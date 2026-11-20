@@ -23,6 +23,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_ENABLE_ASYNC_DECODE,
     DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS,
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
+    DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
     DEFAULT_MAX_RUNNING_REQUESTS,
@@ -50,12 +51,15 @@ ENGINE_MEMORY_FRACTION = "0.3"
 
 
 class EosMaskedLogits(nn.Module):
-    """Wraps the logits processor so end-of-speech never wins a sample."""
+    """Wraps the logits processor so end-of-speech never wins a sample.
 
-    def __init__(self, logits_processor: LogitsProcessor, *, eos_token_id: int) -> None:
+    The lm_head scores the main-token candidates only, so end-of-speech is a candidate column, not its token id.
+    """
+
+    def __init__(self, logits_processor: LogitsProcessor, *, eos_column: int) -> None:
         super().__init__()
         self.logits_processor = logits_processor
-        self.eos_token_id = eos_token_id
+        self.eos_column = eos_column
 
     def forward(
         self,
@@ -65,7 +69,7 @@ class EosMaskedLogits(nn.Module):
         forward_batch: ForwardBatch,
     ) -> LogitsProcessorOutput:
         output = self.logits_processor(input_ids, hidden_states, lm_head, forward_batch)
-        output.next_token_logits[:, self.eos_token_id] = float("-inf")
+        output.next_token_logits[:, self.eos_column] = float("-inf")
         return output
 
 
@@ -77,8 +81,10 @@ class EosMaskedDrama3Model(Drama3ForCausalLM):
         prefix: str = "",
     ) -> None:
         super().__init__(config, quant_config, prefix)
+        candidate_token_ids = self.audio_decoder.main_token_candidate_ids.tolist()
         self.logits_processor = EosMaskedLogits(
-            self.logits_processor, eos_token_id=config.eos_token_id
+            self.logits_processor,
+            eos_column=candidate_token_ids.index(config.eos_token_id),
         )
 
 
@@ -105,6 +111,7 @@ def create_eos_masked_tts_engine_executor(
     first_frame_cuda_graph_max_requests: int = (
         DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS
     ),
+    gdn_prefill_cuda_graphs: bool = DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
@@ -120,6 +127,7 @@ def create_eos_masked_tts_engine_executor(
         max_new_tokens_cap=max_new_tokens,
         first_frame_cuda_graphs=first_frame_cuda_graphs,
         first_frame_cuda_graph_max_requests=first_frame_cuda_graph_max_requests,
+        gdn_prefill_cuda_graphs=gdn_prefill_cuda_graphs,
         triton_sampling=triton_sampling,
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,

@@ -55,6 +55,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     this.target = this.initialSamples;
     this.maxJitterSamples = this.initialSamples;
     this.nativeUnitSamples = 0;
+    this.turnBased = false;
     this.generation = null;
     this.sinceUnderrun = 0;
     this.catchUp = { slow: 0.2, fast: 0.7, skip: 1.5, slowRate: 1.12, fastRate: 1.25 };
@@ -101,6 +102,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         if (data.maxSamples) this.maxSamples = data.maxSamples;
         if (data.keepSamples) this.keepSamples = data.keepSamples;
         if (data.catchUp) this.catchUp = { ...this.catchUp, ...data.catchUp };
+        if (data.turnBased !== undefined) this.turnBased = data.turnBased;
         if (data.nativeUnitSamples !== undefined) {
           this.nativeUnitSamples = Number.isSafeInteger(data.nativeUnitSamples) && data.nativeUnitSamples >= 0 ? data.nativeUnitSamples : 0;
         }
@@ -165,6 +167,8 @@ class PlaybackProcessor extends AudioWorkletProcessor {
   }
 
   trim(keepSamples) {
+    // Turn-based replies can arrive ahead of playback without becoming stale.
+    if (this.turnBased) return;
     while (this.queuedSamples > keepSamples && this.queue.length) {
       const chunk = this.queue[0];
       const remaining = chunk.length - this.headOffset;
@@ -186,6 +190,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
 
   // Seconds-old speech is stale in a duplex talk, so a large backlog is skipped instead of stretched.
   catchUpRate() {
+    if (this.turnBased) return 1;
     const { slow, fast, skip, slowRate, fastRate } = this.catchUp;
     const baselineSamples = Math.max(this.target, this.nativeUnitSamples);
     const backlog = (this.queuedSamples - baselineSamples) / sampleRate;

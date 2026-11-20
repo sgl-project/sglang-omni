@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 import sglang_omni.platforms as platforms
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.sglang_backend import server_args_builder
 
 
@@ -18,7 +22,7 @@ class CapturedServerArgs:
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
-        self.enable_dp_attention = False
+        self.attn_dp_size = 1
         self.enable_nccl_nvls = kwargs.get("enable_nccl_nvls", False)
         self.enable_symm_mem = kwargs.get("enable_symm_mem", False)
         self.startup_weight_load_mode = kwargs.get("startup_weight_load_mode", "serial")
@@ -53,8 +57,6 @@ def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
     """Omni's bootstrap never calls finalize_startup_weight_load, so the
     overlap mode would serve the staged sentinel weights.
     """
-    import pytest
-
     with pytest.raises(ValueError, match="startup_weight_load_mode"):
         build(monkeypatch, startup_weight_load_mode="overlap")
 
@@ -63,8 +65,6 @@ def test_ipc_weight_cache_modes_are_rejected(monkeypatch) -> None:
     """The bootstrap sizes the KV pool from a free-memory baseline that never
     has the bytes a weight cache daemon already holds added back.
     """
-    import pytest
-
     for mode in ("client", "daemon"):
         with pytest.raises(ValueError, match="weight_cache_mode"):
             build(monkeypatch, weight_cache_mode=mode)
@@ -73,8 +73,6 @@ def test_ipc_weight_cache_modes_are_rejected(monkeypatch) -> None:
 
 
 def test_nvls_and_symmetric_memory_engine_flags_are_rejected(monkeypatch) -> None:
-    import pytest
-
     with pytest.raises(ValueError, match="enable_nccl_nvls"):
         build(monkeypatch, enable_nccl_nvls=True)
     with pytest.raises(ValueError, match="enable_symm_mem"):
@@ -85,8 +83,6 @@ def drive_build(monkeypatch, *, overrides, gpu_id=0):
     """Run SGLangGenerationEngineBuilder.build() far enough to reach the device
     reconciliation, then stop. Returns the device handed to SGLang.
     """
-    import pytest
-
     from sglang_omni.scheduling import engine_factory
 
     captured: dict[str, Any] = {}
@@ -139,8 +135,6 @@ def test_an_operator_device_that_contradicts_placement_is_rejected(monkeypatch) 
     """setdefault() used to leave the override in place, so SGLang could run on a
     different device than the one this stage was placed on.
     """
-    import pytest
-
     resolved = platforms.current_platform.device_type
     other = "cuda" if resolved != "cuda" else "xpu"
 
@@ -206,3 +200,46 @@ def test_an_engine_that_asked_for_eager_decode_keeps_it(monkeypatch) -> None:
     # An engine naming its own backend keeps that too.
     pinned = build(monkeypatch, cuda_graph_backend_decode="disabled")
     assert pinned["cuda_graph_backend_decode"] == "disabled"
+
+
+@pytest.mark.parametrize(
+    ("platform_class", "extra", "expected"),
+    [
+        pytest.param(
+            XPUOmniPlatform,
+            {"enable_deterministic_inference": True},
+            "triton",
+            id="deterministic-xpu",
+        ),
+        pytest.param(
+            XPUOmniPlatform,
+            {"enable_deterministic_inference": True, "attention_backend": "intel_xpu"},
+            "intel_xpu",
+            id="explicit-backend",
+        ),
+        pytest.param(
+            XPUOmniPlatform,
+            {"enable_deterministic_inference": False},
+            None,
+            id="ordinary-xpu",
+        ),
+        pytest.param(
+            XPUOmniPlatform,
+            {"enable_deterministic_inference": True, "device": "cpu"},
+            None,
+            id="cpu-stage-on-xpu",
+        ),
+        pytest.param(
+            CUDAOmniPlatform,
+            {"enable_deterministic_inference": True, "device": "xpu"},
+            None,
+            id="deterministic-cuda",
+        ),
+    ],
+)
+def test_deterministic_attention_backend_selection(
+    monkeypatch, platform_class, extra, expected
+) -> None:
+    monkeypatch.setattr(platforms, "current_platform", platform_class())
+
+    assert build(monkeypatch, **extra).get("attention_backend") == expected

@@ -238,6 +238,8 @@ def reference_draws(
     top_k: torch.Tensor,
     top_p: torch.Tensor,
     noise: torch.Tensor,
+    *,
+    keep_top_p_crossing_token: bool = False,
 ) -> ReferenceDraws:
     scores = logits.float() / temperature.float().clamp(
         min=MINIMUM_TEMPERATURE
@@ -250,9 +252,12 @@ def reference_draws(
     )
     ranks = torch.arange(scores.shape[-1], device=scores.device).unsqueeze(0)
     is_within_top_k = ranks < top_k.unsqueeze(-1)
-    is_dropped = (cumulative_probabilities > top_p.float().unsqueeze(-1)) | (
-        ~is_within_top_k
-    )
+    is_dropped = cumulative_probabilities > top_p.float().unsqueeze(-1)
+    if keep_top_p_crossing_token:
+        is_dropped[:, 1:] = is_dropped[:, :-1].clone()
+    else:
+        pass
+    is_dropped |= ~is_within_top_k
     is_dropped[:, 0] = False
     probabilities = torch.softmax(
         sorted_scores.masked_fill(is_dropped, float("-inf")), dim=-1
@@ -398,6 +403,7 @@ def test_semantic_kernel_draws_what_the_reference_draws_with_the_same_noise(
         top_k,
         top_p,
         kernel_noise(codebook_sampler, FIRST_DRAW_STREAM, rows, candidate_count),
+        keep_top_p_crossing_token=True,
     )
     ras_reference = reference_draws(
         candidate_logits,
@@ -405,6 +411,7 @@ def test_semantic_kernel_draws_what_the_reference_draws_with_the_same_noise(
         torch.full((rows,), RAS_TOP_K, dtype=torch.int64, device="cuda"),
         torch.full((rows,), RAS_TOP_P, device="cuda"),
         kernel_noise(codebook_sampler, RAS_DRAW_STREAM, rows, candidate_count),
+        keep_top_p_crossing_token=True,
     )
     first_tokens = candidates[first_reference.tokens]
     ras_tokens = candidates[ras_reference.tokens]
@@ -486,6 +493,7 @@ def test_semantic_kernel_keeps_repeated_eos_and_replaces_repeated_semantic(
         torch.full((rows,), RAS_TOP_K, dtype=torch.int64, device="cuda"),
         torch.full((rows,), RAS_TOP_P, device="cuda"),
         kernel_noise(codebook_sampler, RAS_DRAW_STREAM, rows, candidates.shape[0]),
+        keep_top_p_crossing_token=True,
     )
     ras_tokens = candidates[ras_reference.tokens]
 

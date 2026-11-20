@@ -15,6 +15,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    FreezeGCMessage,
     KVTransferPrepareMessage,
     KVTransferReadyMessage,
     ProfilerStartMessage,
@@ -24,6 +25,7 @@ from sglang_omni.proto import (
     SubmitMessage,
     parse_message,
 )
+from sglang_omni.proto.messages import StreamChunkBatchMessage
 
 logger = logging.getLogger(__name__)
 ControlMessage = (
@@ -31,12 +33,14 @@ ControlMessage = (
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | StreamChunkBatchMessage
     | KVTransferPrepareMessage
     | KVTransferReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
     | ShutdownMessage
+    | FreezeGCMessage
     | SubmitMessage
     | ProfilerStartMessage
     | ProfilerStopMessage
@@ -318,8 +322,10 @@ class StageControlPlane:
         AdminMessage
         | DataAckMessage
         | DataReadyMessage
+        | StreamChunkBatchMessage
         | SubmitMessage
         | ShutdownMessage
+        | FreezeGCMessage
         | ProfilerStartMessage
         | ProfilerStopMessage
     ):
@@ -333,9 +339,11 @@ class StageControlPlane:
             msg,
             (
                 DataReadyMessage,
+                StreamChunkBatchMessage,
                 DataAckMessage,
                 SubmitMessage,
                 ShutdownMessage,
+                FreezeGCMessage,
                 ProfilerStartMessage,
                 ProfilerStopMessage,
                 AdminMessage,
@@ -350,7 +358,7 @@ class StageControlPlane:
         self,
         next_stage: str,
         next_stage_endpoint: str,
-        msg: DataReadyMessage | DataAckMessage,
+        msg: DataReadyMessage | StreamChunkBatchMessage | DataAckMessage,
     ) -> None:
         """Send a stage-to-stage control message."""
         await send_to_endpoint(self.next_stage_sockets, next_stage_endpoint, msg)
@@ -442,7 +450,7 @@ class CoordinatorControlPlane:
         self,
         stage_name: str,
         stage_endpoint: str,
-        msg: SubmitMessage | AdminMessage | ShutdownMessage,
+        msg: SubmitMessage | AdminMessage | ShutdownMessage | FreezeGCMessage,
     ) -> None:
         """Submit a request to a stage."""
         if stage_name not in self.stage_sockets:

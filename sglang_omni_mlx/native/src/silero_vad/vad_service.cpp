@@ -63,7 +63,7 @@ int HandleSpeechTimestamps(mg_connection *connection, void *data) {
   } else {
   }
   const char *content_type = mg_get_header(connection, "Content-Type");
-  const auto form = qwen3_asr::ParseMultipartForm(
+  const auto form = omni_common::ParseMultipartForm(
       content_type ? content_type : "", omni_server::ReadBody(connection));
   if (!form.has_value() || form->count("file") == 0 ||
       !form->at("file").filename.has_value()) {
@@ -73,7 +73,7 @@ int HandleSpeechTimestamps(mg_connection *connection, void *data) {
   std::vector<float> samples;
   TimestampOptions options = service->defaults();
   try {
-    samples = qwen3_asr::DecodeWav(form->at("file").value);
+    samples = omni_common::DecodeWav(form->at("file").value);
     if (!std::all_of(samples.begin(), samples.end(),
                      [](float sample) { return std::isfinite(sample); })) {
       throw std::invalid_argument("Audio must be finite.");
@@ -117,14 +117,6 @@ void SocketReady(mg_connection *connection, void *data) {
   mg_set_user_connection_data(connection, new SocketState());
 }
 
-bool SendText(mg_connection *connection, const std::string &text) {
-  mg_lock_connection(connection);
-  const int written = mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
-                                         text.data(), text.size());
-  mg_unlock_connection(connection);
-  return written > 0;
-}
-
 int SocketData(mg_connection *connection, int bits, char *data, size_t length,
                void *service_data) {
   auto *service = static_cast<VADService *>(service_data);
@@ -145,9 +137,10 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
   // Note (Jiaxin Deng): checked before buffering, so a stream holds <= 30 s.
   if (opcode == MG_WEBSOCKET_OPCODE_TEXT ||
       socket->fragments.size() + length > kMaxMessageBytes) {
-    SendText(connection,
-             Json({{"error", "Audio must be binary messages of at most 30 s."}})
-                 .dump());
+    omni_server::SendWebSocketText(
+        connection,
+        Json({{"error", "Audio must be binary messages of at most 30 s."}})
+            .dump());
     return 0;
   } else {
   }
@@ -159,9 +152,10 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
   const std::string message = std::move(socket->fragments);
   socket->fragments.clear();
   if (message.size() % sizeof(float) != 0) {
-    SendText(connection,
-             Json({{"error", "Audio must be float32 little-endian samples."}})
-                 .dump());
+    omni_server::SendWebSocketText(
+        connection,
+        Json({{"error", "Audio must be float32 little-endian samples."}})
+            .dump());
     return 0;
   } else {
   }
@@ -172,7 +166,8 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
               message.size());
   for (size_t index = previous; index < socket->pending.size(); ++index) {
     if (!std::isfinite(socket->pending[index])) {
-      SendText(connection, Json({{"error", "Audio must be finite."}}).dump());
+      omni_server::SendWebSocketText(
+          connection, Json({{"error", "Audio must be finite."}}).dump());
       return 0;
     } else {
     }
@@ -187,7 +182,7 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
     const Json reply = {{"probability", probabilities.empty()
                                             ? Json()
                                             : Json(probabilities.back())}};
-    return SendText(connection, reply.dump()) ? 1 : 0;
+    return omni_server::SendWebSocketText(connection, reply.dump()) ? 1 : 0;
   } catch (const std::exception &error) {
     // Note (Jiaxin Deng): only the exception type is logged, never audio.
     std::cerr << "voice activity stream failed: " << typeid(error).name()
@@ -225,13 +220,9 @@ std::map<std::string, int> VADService::RequestStates() const {
 
 std::vector<float> VADService::FeedSamples(const std::vector<float> &samples,
                                            StreamState &state) {
-  std::vector<float> probabilities;
   std::lock_guard<std::mutex> lock(inference_mutex_);
-  for (size_t offset = 0; offset + kChunkSamples <= samples.size();
-       offset += kChunkSamples) {
-    probabilities.push_back(vad_.Feed(samples.data() + offset, state));
-  }
-  return probabilities;
+  return vad_.Feed(samples.data(),
+                   static_cast<int>(samples.size() / kChunkSamples), state);
 }
 
 std::vector<Timestamp>

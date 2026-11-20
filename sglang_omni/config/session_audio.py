@@ -59,6 +59,9 @@ class AudioSessionPipelineConfig(PipelineConfig):
     }
     session_nodes: dict[str, SessionNodeConfig]
     session_publish: dict[str, list[str]]
+    realtime_idle_timeout_s: float = Field(
+        default=REALTIME_IDLE_TIMEOUT_S, gt=0, allow_inf_nan=False
+    )
     unit_ms: int = Field(default=SESSION_UNIT_MS, gt=0)
     max_pending_output_chunks: int = Field(default=MAX_PENDING_OUTPUT_CHUNKS, gt=0)
     max_pending_output_bytes: int = Field(default=MAX_PENDING_OUTPUT_BYTES, gt=0)

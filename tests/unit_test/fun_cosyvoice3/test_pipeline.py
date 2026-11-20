@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 import torch
 
+import sglang_omni.models.fun_cosyvoice3.config as config_module
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
@@ -115,13 +117,76 @@ def test_fun_cosyvoice3_engine_process_spawns_with_a_written_omp_setting(
         prepared_runtime.runtime_dir.close()
 
 
+def fun_cosyvoice3_engine_process_spec(prepared_runtime, config):
+    groups = build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prepared_runtime.stages_cfg,
+        endpoints=prepared_runtime.endpoints,
+        placement_plan=prepared_runtime.placement_plan,
+        process_plan=prepared_runtime.process_plan,
+        replica_topology=prepared_runtime.replica_topology,
+    )
+    (engine_process_spec,) = [
+        process_spec
+        for group in groups
+        for process_spec in group.process_specs
+        if any(
+            stage_spec.stage_name == "tts_engine"
+            for stage_spec in process_spec.stage_specs
+        )
+    ]
+    return engine_process_spec
+
+
+def test_fun_cosyvoice3_engine_process_spawns_with_per_stream_queues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PER_STREAM_QUEUE", raising=False)
+    monkeypatch.setattr(
+        config_module, "current_platform", SimpleNamespace(is_npu=lambda: True)
+    )
+    config = FunCosyVoice3PipelineConfig(model_path="model")
+    prepared_runtime = prepare_pipeline_runtime(config)
+    try:
+        engine_process_spec = fun_cosyvoice3_engine_process_spec(
+            prepared_runtime, config
+        )
+        with patched_spawn_env(engine_process_spec):
+            assert os.environ["PER_STREAM_QUEUE"] == "1"
+    finally:
+        prepared_runtime.runtime_dir.close()
+
+
+def test_a_written_per_stream_queue_survives_the_spawn_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A written value must win over the engine default for the whole worker."""
+    monkeypatch.delenv("PER_STREAM_QUEUE", raising=False)
+    monkeypatch.setattr(
+        config_module, "current_platform", SimpleNamespace(is_npu=lambda: True)
+    )
+    config = ConfigManager(
+        FunCosyVoice3PipelineConfig(model_path="model")
+    ).merge_config([("tts_engine.env.PER_STREAM_QUEUE", "0")])
+    prepared_runtime = prepare_pipeline_runtime(config)
+    try:
+        engine_process_spec = fun_cosyvoice3_engine_process_spec(
+            prepared_runtime, config
+        )
+        with patched_spawn_env(engine_process_spec):
+            assert os.environ["PER_STREAM_QUEUE"] == "0"
+    finally:
+        prepared_runtime.runtime_dir.close()
+
+
 def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     config = FunCosyVoice3PipelineConfig(model_path="model")
 
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
-        "vocoder",
         "tts_engine",
+        "vocoder",
     ]
     assert [stage.process for stage in config.stages] == [
         "pipeline",
@@ -158,7 +223,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "token_hop_len": 25,
         "token_max_hop_len": 100,
         "disable_hop_growth": False,
-        "flow_prefix_cache_gb": 24.0,
+        "flow_prefix_cache_gb": None,
     }
 
     build_compiled_process_topology(config)

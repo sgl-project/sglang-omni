@@ -106,12 +106,12 @@ class FakeFishReq:
         rid: str = "req-fish",
         inflight_middle_chunks: int = 0,
         extend_len: int = 0,
-        prefix_indices: list[int] | None = None,
+        prefix_len: int = 0,
     ) -> None:
         self.rid = rid
         self.inflight_middle_chunks = inflight_middle_chunks
-        self.extend_range = SimpleNamespace(length=extend_len)
-        self.prefix_indices = prefix_indices or []
+        self.prefix_len = prefix_len
+        self.extend_len = extend_len
 
 
 class FakeFishModel:

@@ -45,7 +45,9 @@ def test_ming_config_manager_resolves_top_level_hf_architecture(monkeypatch) -> 
 
     config_manager = ConfigManager.from_model_path("inclusionAI/Ming-flash-omni-2.0")
 
-    assert calls == [(("inclusionAI/Ming-flash-omni-2.0",), {})]
+    assert calls == [
+        (("inclusionAI/Ming-flash-omni-2.0",), {"trust_remote_code": False})
+    ]
     assert isinstance(config_manager.config, MingOmniSpeechPipelineConfig)
     assert config_manager.config.model_path == "inclusionAI/Ming-flash-omni-2.0"
     assert config_manager.config.terminal_stages == ["decode", "talker"]

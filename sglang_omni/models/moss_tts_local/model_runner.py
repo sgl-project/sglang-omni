@@ -207,8 +207,8 @@ class MossTTSLocalModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS Local prefill requires prompt_rows")
             else:
                 pass
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             pool = self.model.state_pool
             if data.output_rows:
                 generated = torch.stack(data.output_rows, dim=0)

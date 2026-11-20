@@ -486,8 +486,10 @@ class FunAsrNanoConfig(PretrainedConfig):
         return text_config
 
 
-AutoConfig.register("fun_asr_nano", FunAsrNanoConfig)
-AutoConfig.register("fun_asr_nano_encoder", FunAsrNanoEncoderConfig)
+# note (ratish): the installed transformers may map these types to its own
+# classes; the model reads this package's layout, so the mapping is replaced.
+AutoConfig.register("fun_asr_nano", FunAsrNanoConfig, exist_ok=True)
+AutoConfig.register("fun_asr_nano_encoder", FunAsrNanoEncoderConfig, exist_ok=True)
 
 # note(LauraGPT): The checkpoint metadata names this local feature extractor.
 AutoFeatureExtractor.register("FunAsrNanoFeatureExtractor", FunAsrNanoFeatureExtractor)

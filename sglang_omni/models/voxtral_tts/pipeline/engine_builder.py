@@ -5,10 +5,16 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sglang.srt.configs.model_config_parser_registry import (
+    ModelConfigParserBase,
+    register_model_config_parser,
+)
 from sglang.srt.server_args import ServerArgs
 from torch import Tensor
+from transformers import PretrainedConfig
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.voxtral_tts import request_builders
@@ -30,19 +36,33 @@ if TYPE_CHECKING:
 else:
     pass
 
+VOXTRAL_CONFIG_PARSER = "voxtral_tts"
+
+
+class VoxtralConfigParser(ModelConfigParserBase):
+    """Builds the config from params.json, the checkpoint having no config.json."""
+
+    def parse(
+        self,
+        model: str | Path,
+        trust_remote_code: bool,
+        revision: str | None = None,
+        **kwargs: str,
+    ) -> PretrainedConfig:
+        del trust_remote_code, revision, kwargs
+        return voxtral_stages.build_voxtral_sglang_config(str(model))
+
 
 class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
     model_name = "Voxtral TTS"
     context_length = 8192
 
     def __init__(self) -> None:
-        self.decrypted_config_file: str | None = None
         self.voice_embeddings: dict[str, Tensor] = {}
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        self.decrypted_config_file = voxtral_stages.write_voxtral_sglang_config(
-            checkpoint_dir
-        )
+        del checkpoint_dir
+        register_model_config_parser(VOXTRAL_CONFIG_PARSER)(VoxtralConfigParser)
 
     def generation_defaults(
         self,
@@ -55,7 +75,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
             "dtype": "bfloat16",
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "decrypted_config_file": self.decrypted_config_file,
+            "model_config_parser": VOXTRAL_CONFIG_PARSER,
             "enable_torch_compile": True,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
@@ -89,7 +109,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
         # Note (Jiaxin Deng): eager, the 7-step flow-matching loop is launch bound
         # (~10 ms per decode step at any batch size); replay takes ~3.6 ms on H200.
         batch_sizes = get_decode_cuda_graph_bs(server_args)
-        if batch_sizes:
+        if batch_sizes and self.device.startswith("cuda"):
             model.init_acoustic_graphs(list(batch_sizes))
         else:
             pass
