@@ -43,13 +43,20 @@ type Models struct {
 }
 
 // FasterOn says whether speech model id uses its draft, given whether
-// the draft is installed: the switch, else the installed draft — but an
-// opt-in model's (a draft that came with another's download) waits for
-// the switch.
+// the draft is installed: the switch, else FasterDefault.
 func (m Models) FasterOn(id string, draftInstalled, optIn bool) bool {
 	if on, set := m.Faster[id]; set {
 		return on && draftInstalled
 	}
+	return FasterDefault(draftInstalled, optIn)
+}
+
+// FasterDefault is a never-switched model's Faster transcription state:
+// on while its draft is installed, as 2.0.2 and 2.0.3 did — but an
+// opt-in model's (a draft that came with another's download) waits for
+// the switch. The model card's switch and the runtime share it so the
+// two cannot drift.
+func FasterDefault(draftInstalled, optIn bool) bool {
 	return draftInstalled && !optIn
 }
 
