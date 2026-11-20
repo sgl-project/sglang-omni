@@ -155,8 +155,8 @@ func (f *fake) textio(m proto.Message) {
 			if b, _ := os.ReadFile(path); len(b) > 0 {
 				res.Text, res.Via = string(b), proto.ViaAX
 			}
-		} else if sel := f.opts["selection"]; sel != "" {
-			res.Text, res.Via = sel, proto.ViaAX
+		} else if sel := f.opts["selection"]; strings.TrimSpace(sel) != "" {
+			res.Text, res.Via = sel, proto.ViaAX // a blank one is not text (the helper's SelectionRead.hasText): on to the copy
 		} else if sel := f.opts["copy-selection"]; sel != "" && p.AllowCopy {
 			res.Text, res.Via, res.Steps = sel, proto.ViaCopy, append(res.Steps, "copy: changed")
 		}

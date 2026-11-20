@@ -93,13 +93,6 @@ func modelLabel(ready []local.Model, id, automatic string) string {
 	return automatic
 }
 
-func modelID(options []string, ready []local.Model, label string) string {
-	if index := slices.Index(options, label); index > 0 {
-		return ready[index-1].ID
-	}
-	return ""
-}
-
 func (a *app) syncFeatureModelControls(input featureModelsStateInput) {
 	f := featureOf(input.Settings, input.Feature)
 	optionsA, automaticA := modelOptions(input.ReadyASR, input.ShownASR)
