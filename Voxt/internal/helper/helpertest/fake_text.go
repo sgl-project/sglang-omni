@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf16"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -132,6 +133,13 @@ func (f *fake) playScript(bindings []proto.HotkeyBinding) {
 
 // ---- textio ----
 
+// hasText mirrors the real helper's SelectionRead.hasText: an
+// Accessibility reading of only whitespace or U+FFFC (an image-only
+// block selection) is not the selection's text.
+func hasText(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsSpace(r) && r != '\uFFFC' })
+}
+
 func (f *fake) textio(m proto.Message) {
 	if !f.isTrusted() {
 		f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionAccessibility}, "VoxtNew may not use Accessibility")
@@ -164,8 +172,8 @@ func (f *fake) textio(m proto.Message) {
 			if b, _ := os.ReadFile(path); len(b) > 0 {
 				res.Text, res.Via = string(b), proto.ViaAX
 			}
-		} else if sel := f.opts["selection"]; strings.TrimSpace(sel) != "" {
-			res.Text, res.Via = sel, proto.ViaAX // a blank one is not text (the helper's SelectionRead.hasText): on to the copy
+		} else if sel := f.opts["selection"]; hasText(sel) {
+			res.Text, res.Via = sel, proto.ViaAX // a blank or U+FFFC-only one is not text (the helper's SelectionRead.hasText): on to the copy
 		} else if sel := f.opts["copy-selection"]; sel != "" && p.AllowCopy {
 			res.Text, res.Via, res.Steps = sel, proto.ViaCopy, append(res.Steps, "copy: changed")
 			if f.has("copy-selection-image") {

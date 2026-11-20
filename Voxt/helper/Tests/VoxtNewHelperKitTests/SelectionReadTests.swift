@@ -14,6 +14,7 @@ final class SelectionReadTests: XCTestCase {
         // object replacement character.
         XCTAssertFalse(SelectionRead.hasText("\u{FFFC}"))
         XCTAssertFalse(SelectionRead.hasText(" \u{FFFC} "))
+        XCTAssertTrue(SelectionRead.hasText("\u{FFFC}caption"), "an image with its text still has the text")
         XCTAssertTrue(SelectionRead.hasText("a"))
         XCTAssertTrue(SelectionRead.hasText("  summary of the selection  "), "real text keeps its whitespace")
         XCTAssertTrue(SelectionRead.hasText("图"))

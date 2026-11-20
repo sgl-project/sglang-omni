@@ -205,18 +205,21 @@ func TestRewriteNoCard(t *testing.T) {
 }
 
 // TestRewriteBlankSelectionReadsTheCopy: Accessibility gives a selection
-// of one blank (a Lark block selection in Chrome): that is not the
+// of one blank (a Lark block selection in Chrome) or of the object
+// replacement character (an image-only block selection): that is not the
 // selection. The text ⌘C copies is, and the model gets it.
 func TestRewriteBlankSelectionReadsTheCopy(t *testing.T) {
-	chat := &fakeChat{text: "Team: the release moves to Friday."}
-	opts := helpertest.Opt("selection", " ") + "," + helpertest.Opt("copy-selection", "hey all, ship friday") + ","
-	a, _ := rewriteOnce(t, opts, chat, "make it formal")
-	if a.sess.SelectionVia != proto.ViaCopy || a.answer.input.Selection != "hey all, ship friday" {
-		t.Fatalf("end %+v card %+v", a.sess, a.answer)
-	}
-	msgs := chatMessages(chat.requests()[0])
-	if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
-		t.Errorf("user message %q", msgs[1][1])
+	for _, ax := range []string{" ", "\uFFFC"} {
+		chat := &fakeChat{text: "Team: the release moves to Friday."}
+		opts := helpertest.Opt("selection", ax) + "," + helpertest.Opt("copy-selection", "hey all, ship friday") + ","
+		a, _ := rewriteOnce(t, opts, chat, "make it formal")
+		if a.sess.SelectionVia != proto.ViaCopy || a.answer.input.Selection != "hey all, ship friday" {
+			t.Fatalf("ax %q: end %+v card %+v", ax, a.sess, a.answer)
+		}
+		msgs := chatMessages(chat.requests()[0])
+		if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
+			t.Errorf("ax %q: user message %q", ax, msgs[1][1])
+		}
 	}
 }
 
