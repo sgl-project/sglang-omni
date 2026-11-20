@@ -4,41 +4,44 @@ This tool opens, closes, drops, cancels, idles out, reconnects and interrupts `/
 
 ## GPU run
 
-This is the part that is still open: the tool has only run against a model-free mock. Three runs against a turn-based Qwen3-Omni server, with the client on the server's host and no other job on the GPU.
+This is the part that is still open: the tool has only run against a model-free mock. One script runs every cell against a turn-based Qwen3-Omni server, with the client on the server's host and no other job on the GPU.
 
 ```bash
-run() { python -m benchmarks.duplex.lifecycle_stress run --url ws://127.0.0.1:8000/v1/realtime --server-revision $(git rev-parse HEAD) --model $MODEL --no-debug-route --max-connections $MAX_SESSIONS --server-pid $SERVER_PID --device-memory --server-log $SERVER_LOG "$@"; }
-pair=$FDB_WORK/dataset/v1.5/user_interruption/1
-
-run --scenario churn --concurrency $MAX_SESSIONS --cycles 50 --audio-file $pair/clean_input.wav --output runs/gpu_churn
-run --scenario interrupt --concurrency $MAX_SESSIONS --cycles 5 --audio-file $pair/input.wav --output runs/gpu_interrupt
-run --scenario interrupt --concurrency $MAX_SESSIONS --cycles 5 --audio-file $pair/clean_input.wav --output runs/gpu_interrupt_control
+MODEL=$MODEL MAX_SESSIONS=$MAX_SESSIONS SERVER_PID=$SERVER_PID SERVER_LOG=$SERVER_LOG PAIR=$FDB_WORK/dataset/v1.5/user_interruption/1 bash benchmarks/duplex/lifecycle_stress/gpu_matrix.sh runs/gpu
 ```
 
-What each run should show in its `summary.json`:
+- `MAX_SESSIONS` is the server's `max_sessions`, `SERVER_PID` its main process, `SERVER_LOG` the file its log goes to.
+- `PAIR` is a directory with `input.wav`, in which the user talks over the reply, and `clean_input.wav`, in which nobody does.
+- `URL` (default `ws://127.0.0.1:8000/v1/realtime`) and `CYCLES` (default 10) can be set the same way.
 
-| Run | Expected |
+Each cell first runs one cycle of two clients. A cell that fails there is skipped; the others run `CYCLES` cycles at `MAX_SESSIONS` clients. No failure stops the script, and a rerun with the same output directory skips what is already there. It ends with `runs/gpu/report.txt`, and `runs/gpu` is what to send back.
+
+What `report.txt` should show:
+
+| Cell | Expected |
 |---|---|
-| `gpu_churn` | `failed_checks` is empty, and every session in `session_outcomes` is `completed` |
-| `gpu_interrupt` | `interrupted_replies` is above zero, and `failed_checks` is empty |
-| `gpu_interrupt_control` | `interrupted_replies` is zero, and `failed_checks` is empty |
+| every cell | `failed_checks` is empty; `unmeasured_checks` is `["no_sessions_left"]`, because a model server has no debug route to read its session count from |
+| `interrupt` | `interrupted_replies` is above zero |
+| `interrupt_control` | `interrupted_replies` is zero |
+| `churn`, `long` | every session `completed` |
+| `churn_overflow` | `MAX_SESSIONS` sessions `completed` per cycle and the rest `denied` |
+| `drop_*`, `reconnect_reply_reset` | every session `dropped`; in the `reply` cells `drops_mid_reply` counts them and `drops_after_reply` is zero |
+| `cancel` | every session `completed`, `cancel_statuses` all `cancelled` |
+| `cancel_reply_reset` | every session `dropped` |
 
-In all three, `unmeasured_checks` lists `no_sessions_left`: a model server has no debug route to read its session count from. That is expected and not a failure.
-
-The two interrupt runs come first in meaning: they establish that the scenario does what it says before any of its numbers count. A zero in `gpu_interrupt` means the server's voice detection did not cancel a reply, or the tool did not count it; the traces under `traces/` tell which.
+The two interrupt cells run first, because they establish that the scenario does what it says before any of its numbers count. A zero in `interrupt` means the server's voice detection did not cancel a reply, or the tool did not count it; the traces under `traces/` tell which.
 
 Also worth a look:
 
-- `server_log` in the summary counts the tracebacks and `ERROR` lines the server logged during the run. A line with `unknown session open index` is #3565; its count is worth recording either way.
+- `server_log` counts the tracebacks and `ERROR` lines the server logged during a cell. A line with `unknown session open index` is #3565; its count is worth recording either way.
 - `device_megabytes`, `rss_megabytes`, `thread_count` and `open_files` were tested against stand-ins only. A reading that is empty or absurd is a bug in the tool, not a finding about the server.
 
 Setup notes:
 
-- Pass `--no-debug-route`, and `--max-connections` equal to the server's `max_sessions`.
-- With the client on the server's host, pass `--server-pid`, `--device-memory` and `--server-log`; the GPU should carry no other job. `--server-pid` is the server's main process; its child processes are read with it.
+- The tool reads from `/v1/realtime/capabilities` whether the deployment is turn-based. If it is, every session of the run asks for `server_vad` turn detection, and the recorded sessions use the duplex recorder's turn-based profile.
+- With `--audio-file` a short session sends the whole file, because a turn-based model replies only after the speech and the pause that ends the turn. So a cycle takes at least as long as the file.
 - The tool cannot see how the server was started. State the voice, the encoder scheduling (`batch_sessions` and the like), `max_sessions` and the GPU and driver with the results; `--runtime` takes a free text that is stored in every run's record.
-- Pass `--audio-file` with speech, because a model does not answer silence. For cancel and a mid-reply drop the session needs at least one whole unit of input, 13 packets for a 1000 ms unit.
-- The interrupt scenario needs a turn-based deployment and a file in which the user talks over the reply, such as `input.wav` of a Full-Duplex-Bench v1.5 `user_interruption` pair; `clean_input.wav` of the same pair is the control.
+- The script was run end to end against the mock's turn-taking stand-in only. Nothing here has met a model.
 
 ## Mock results
 
@@ -75,7 +78,7 @@ Until #3504 is merged, the `legacy_drop_frame` row leaks on `main` and fails `no
 
 ## Scenarios
 
-Every scenario runs `--concurrency` clients at once per cycle and repeats for `--cycles` cycles. A short session sends `--packets-per-session` packets of 80 ms (5 by default, 0.4 s of input).
+Every scenario runs `--concurrency` clients at once per cycle and repeats for `--cycles` cycles. A short session sends `--packets-per-session` packets of 80 ms: 5 of silence by default, 0.4 s of input, and the whole file with `--audio-file`.
 
 - churn: connect, `session.update`, send the packets, then say goodbye the way the duplex recorder does: `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, `session.close`, wait for `session.closed`. With more clients than the connection cap, the excess is expected to be denied.
 - drop: leave early without reading what the server still has to say. `--leave-point update` leaves right after `session.update`, `append` after the last packet, `reply` while the first reply is in progress. `--leave-style reset` resets the TCP connection; `close_frame` sends a close frame.
@@ -83,7 +86,7 @@ Every scenario runs `--concurrency` clients at once per cycle and repeats for `-
 - idle: stop sending, before `session.update` (`--idle-point created`) or after the last packet (`open`), and read until the server closes the session.
 - reconnect: each client opens `--reconnects` further sessions per cycle, each the moment its previous one ended. The server has no session resume, so a reconnect is a new session; a denied one retries every 20 ms.
 - long: whole conversations of 15 s through `benchmarks.duplex.client.run_session`, the recorder the other duplex benchmarks use, with one trace file per session.
-- interrupt: whole conversations through the same recorder with the server's voice detection turned on and `--audio-file` speech in which the user talks over the reply, so that the server cancels the reply by itself. Only a turn-based deployment has this path; a native full-duplex model decides for itself when to speak. The same command with a file in which nobody talks over the reply is the control.
+- interrupt: whole conversations through the same recorder with `--audio-file` speech in which the user talks over the reply, so that the server's voice detection cancels the reply by itself. Only a turn-based deployment has this path, and the tool refuses the scenario elsewhere; a native full-duplex model decides for itself when to speak. The same command with a file in which nobody talks over the reply is the control.
 
 A reply cannot start before the server has one whole unit of input, and the unit belongs to the deployment: 80 ms for Nemotron VoiceChat and PersonaPlex, 1000 ms for MiniCPM-o, 200 ms for the turn-based pipeline. A turn-based pipeline also answers only once it has heard the user's turn end, which takes the packets after the speech. So the client keeps sending at its pace while it waits for the first `response.created`, and acts on it when it arrives. It reads `native_unit_ms` from `/v1/realtime/capabilities` and refuses cancel and a mid-reply drop when a session's packets do not fill one unit (13 packets for a 1000 ms unit).
 
