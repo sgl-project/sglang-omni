@@ -231,9 +231,9 @@ var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}, {}}
 
 // CardFillW is the fill size's width in the work area wa: the area
 // less the frame's margins (Overlay.Margin and the shadow's Pad on
-// each side), never narrower than the large card.
+// each side), never narrower than the largest fixed size.
 func CardFillW(wa mygo.Rectangle, margin float64) int {
-	return max(CardSizes[2].W, wa.Width-2*(int(math.Round(margin))+Pad))
+	return max(CardSizes[len(CardSizes)-2].W, wa.Width-2*(int(math.Round(margin))+Pad))
 }
 
 // Width is the size's width in the work area: the fixed one, or

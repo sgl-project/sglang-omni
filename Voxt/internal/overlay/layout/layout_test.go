@@ -105,8 +105,8 @@ func TestCardFillW(t *testing.T) {
 		t.Errorf("CardFillW = %d, want the work area less the frame's margins %d", got, want)
 	}
 	narrow := mygo.Rectangle{X: 0, Y: 25, Width: 800, Height: 600}
-	if got := CardFillW(narrow, 96); got != CardSizes[2].W {
-		t.Errorf("CardFillW on a narrow area = %d, want the large card's %d", got, CardSizes[2].W)
+	if got, want := CardFillW(narrow, 96), CardSizes[len(CardSizes)-2].W; got != want {
+		t.Errorf("CardFillW on a narrow area = %d, want the largest fixed size %d", got, want)
 	}
 	for step, want := range []int{AnswerW, 600, 760, CardFillW(area, 96)} {
 		if got := CardSizes[step].Width(area, 96); got != want {
