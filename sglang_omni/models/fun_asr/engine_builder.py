@@ -137,6 +137,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.torch_mps_model_runner: FunASRTorchMpsModelRunner | None = None
         self.speculative_worker_class: type[BaseSpecWorker] | None = None
         self.draft_checkpoint: TemporaryDirectory[str] | None = None
+        self.pd_dflash_greedy_only = False
         self.speculative_reserve_tokens = 0
         self.engine_context_padding = 0
         self.context_length = 0
@@ -171,10 +172,6 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         speculative_algorithm = SpeculativeAlgorithm.from_string(
             overrides.get("speculative_algorithm")
         )
-        if self.pd_role is not None and not speculative_algorithm.is_none():
-            raise ValueError("Fun-ASR PD requires speculative decoding disabled")
-        else:
-            pass
         if speculative_algorithm.is_none():
             if draft_model_path is not None:
                 raise ValueError(
@@ -197,6 +194,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             # note (wilsonzheng0327): hosts without a draft never load its kernels.
             from sglang_omni.speculative.dflash_draft import (
                 ReducedVocabularyDFlashWorker,
+                draft_worker_class,
                 materialize_draft_checkpoint,
             )
 
@@ -207,6 +205,27 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             )
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
+            if self.pd_role is not None:
+                from sglang.srt.speculative.dflash_utils import (
+                    is_dflash_sampling_verify_available,
+                )
+
+                if (
+                    draft_worker_class(self.draft_checkpoint.name)
+                    is not ReducedVocabularyDFlashWorker
+                ):
+                    raise ValueError(
+                        "Fun-ASR PD requires a draft without a candidate selector"
+                    )
+                elif overrides.get("speculative_draft_window_size") is not None:
+                    raise ValueError("Fun-ASR PD requires a shared draft request table")
+                else:
+                    pass
+                self.pd_dflash_greedy_only = not is_dflash_sampling_verify_available()
+                overrides["disable_overlap_schedule"] = True
+                overrides["enable_mixed_chunk"] = False
+            else:
+                pass
             self.speculative_worker_class = ReducedVocabularyDFlashWorker
             # note (wilsonzheng0327): async decode under a draft means speculative
             # overlap, which this runner has not opted into.
@@ -484,7 +503,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             # draft; only the engine holds the reserve.
             context_length=self.context_length - self.engine_context_padding,
             audio_encoder_service=self.audio_encoder_service,
-            greedy_only=self.uses_torch_mps(),
+            greedy_only=self.uses_torch_mps() or self.pd_dflash_greedy_only,
         )
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None] | None]:
@@ -519,6 +538,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
                 stage_name="asr",
                 partner_stage="asr_decode",
                 state_builder=adapter.build_state,
+                enable_dflash=self.draft_checkpoint is not None,
             )
         else:
             return partial(
@@ -527,6 +547,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
                 resume_schema=adapter.schema,
                 state_restorer=adapter.restore_state,
                 emit_transferred_token=True,
+                enable_dflash=self.draft_checkpoint is not None,
             )
 
     def extra_scheduler_kwargs(

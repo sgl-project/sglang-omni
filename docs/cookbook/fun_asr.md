@@ -88,6 +88,12 @@ sgl-omni serve --config examples/configs/fun_asr_nano_pd.yaml
 
 Both stages use the same checkpoint, TP=1, one token per KV page, and disabled RadixCache and speculative decoding. The handoff transfers prompt KV, the first sampled token, and the transcription state used by the existing JSON and streaming output paths.
 
+The DFlash profile uses the same topology with the pinned Fun-ASR-Nano draft. Prefill transfers both prompt caches and Decode continues verification through the existing DFlash worker.
+
+```bash
+sgl-omni serve --config examples/configs/fun_asr_nano_pd_dflash.yaml
+```
+
 ## Transcribe Audio
 
 ```bash
