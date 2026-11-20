@@ -32,6 +32,8 @@ from sglang_omni.config.sources import (
     sources_from_config_file,
 )
 from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.mps.devices import NvmlDeviceInfo
+from sglang_omni.mps.replica_profiles import decide_replica_profile
 from sglang_omni.pipeline.replicas import warn_replica_device_overrides
 
 logger = logging.getLogger(__name__)
@@ -174,12 +176,16 @@ def resolve_sources(
             resolved.provenance.baseline.pop("model_path", None)
         else:
             pass
-        logical_plan, logical_stages = compile_logical_processes(resolved.config)
+        # The same post-merge derivations serve runs; they only fill keys no
+        # source set, so the previewed config is the launched one.
+        replica_profile = decide_replica_profile(
+            resolved.config, user_patches=patches, device_info=NvmlDeviceInfo()
+        )
+        profiled = apply_engine_writes(resolved.config, replica_profile.writes)
+        logical_plan, logical_stages = compile_logical_processes(profiled)
         warn_replica_device_overrides(logical_stages, logical_plan)
-        # The same post-merge derivations serve runs; they only fill engine
-        # keys no source set, so the previewed config is the launched one.
-        draft_writes = default_draft_engine_writes(resolved.config)
-        drafted = apply_engine_writes(resolved.config, draft_writes)
+        draft_writes = default_draft_engine_writes(profiled)
+        drafted = apply_engine_writes(profiled, draft_writes)
         derivation_writes = tensor_parallel_engine_writes(drafted)
         derived = apply_engine_writes(drafted, derivation_writes)
         # The derivation may fill a key a source explicitly cleared (an
@@ -192,6 +198,13 @@ def resolve_sources(
         # A purely derived key has no patch; give it an entry of its own so
         # explain names the derivation instead of claiming a model default.
         derivation_sources = (
+            (
+                replica_profile.writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="the replica profile measured on this GPU, added at launch",
+                ),
+            ),
             (
                 draft_writes,
                 ConfigSource(

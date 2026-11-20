@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-# Ming-3.0-tts 0.5B, 3 replicas on one 183 GB B200 under native MPS: the most audio within a p99 stall-free start of 1 s, measured with sglang-omni 8848e500 (see docs/basic_usage/mps_dp.md).
+# Ming-3.0-tts 0.5B, 3 replicas on one 183 GB B200 under native MPS, measured with sglang-omni 8848e500: the most audio within a p99 stall-free start of 1 s.
+# The B200 default is 2 replicas, the most within 0.5 s; serve this file with sgl-omni serve --config for a looser target (see docs/basic_usage/mps_dp.md).
 
 config_cls: Ming3TTSPipelineConfig
 model_path: inclusionAI/Ming-3.0-tts-0.5B
+mps: 'on'
 stages:
   preprocessing:
     gpu: 0

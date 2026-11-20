@@ -1,14 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-# Nemotron 3.5 ASR Streaming 0.6B, 8 replicas on one 183 GB B200 under native MPS: the most audio within a p99 request latency of 0.5 s, measured with sglang-omni 8848e500 (see docs/basic_usage/mps_dp.md).
-# Run with OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4, as measured: under the runtime's default thread plan, which sets only OMP_NUM_THREADS, each replica grew to 130 to 140 threads on a 288-core host, and 12 replicas served 31 requests/s against 228 for 11.
+# Nemotron 3.5 ASR Streaming 0.6B, 8 replicas on one 183 GB B200 under native MPS, measured with sglang-omni 8848e500: the most audio within a p99 request latency of 0.5 s.
+# sgl-omni serve --model-path nvidia/nemotron-3.5-asr-streaming-0.6b serves this config by default on a B200 (see docs/basic_usage/mps_dp.md).
+# The thread caps are part of the measured config: with the runtime's default thread plan, which sets only OMP_NUM_THREADS, each replica grew to 130 to 140 threads on a 288-core host, and 12 replicas served 31 requests/s against 239 with the caps.
 
 config_cls: Nemotron3_5ASRPipelineConfig
 model_path: nvidia/nemotron-3.5-asr-streaming-0.6b
+mps: 'on'
 stages:
   asr:
     gpu: 0
     gpu_memory_fraction: 0.0623
     process: asr
+    env:
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+      OPENBLAS_NUM_THREADS: '4'
     factory:
       max_batch_size: 16
       session_max_concurrency: 16

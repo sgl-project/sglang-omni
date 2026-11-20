@@ -125,6 +125,8 @@ and the pinned revision is added when the stage's server args are built.
 `tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
 new draft adds its entry in the same change.
 
+A model measured on one GPU model has an entry in `sglang_omni/mps/replica_profiles.py`: the model path, the GPU's NVML name and total memory, the replica count, the processes it replicates and the per-replica settings. `sgl-omni serve` applies the entry after every source is merged and before the default-on draft, for that entry's model path, with or without an `@<revision>` pin or as a Hugging Face cache snapshot, on a GPU whose NVML name matches and whose total memory is within 2%, where native MPS can start and the replicas' reserved memory is free. It writes the entry's settings, `processes.<name>.num_replicas` and `replica_devices` on the pipeline's GPU, and `mps: on` unless a source set `mps`. A source that writes anything under `processes`, `mps: off`, a stage's `process`, `tp_size`, `gpu_memory_fraction` or `total_reserve_bytes`, an engine's `mem_fraction_static`, `max_total_tokens` or `kv_cache_bytes`, or any setting of the entry keeps its own config, and the launch logs why. `sgl-omni config resolve` makes the same decision on the host it runs on, and `config explain` names the profile as the source of what it wrote. `tests/unit_test/mps/test_mps_replica_profiles.py` checks that every config in `examples/mps_dp/<gpu>/` is its model's entry at the file's replica count, so a new entry adds its measured configs in the same change.
+
 ## Setting Values: YAML and CLI
 
 There are exactly two user-facing spellings of one path language.

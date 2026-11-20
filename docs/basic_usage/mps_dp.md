@@ -19,7 +19,7 @@ replicas), pass `--mps auto`:
 sgl-omni serve --model-path <model> --mps auto
 ```
 
-Modes (`--mps` on the CLI or `mps:` in the pipeline config; default `off`):
+Modes (`--mps` on the CLI or `mps:` in the pipeline config; default `off`, except where a measured replica profile applies, as described under [Default replica counts on a B200](#default-replica-counts-on-a-b200)):
 
 * `off`: MPS is never touched.
 * `auto`: MPS is enabled on every GPU that hosts two or more single-GPU,
@@ -190,36 +190,51 @@ Setting up and tearing down MPS is more involved than running a single replica, 
 
 The throughput results in the table and H100 case study are from an 80 GB H100 with Higgs. The H200 DP8 profile was validated separately on the full SeedTTS English dataset at concurrency 64 per replica. Re-evaluate replica count, CPU allocation, token capacity, and saturation concurrency before applying either profile to different hardware or workloads.
 
-## Measured replica counts on a B200
+## Default replica counts on a B200
 
-`examples/mps_dp/b200/` holds one config per model and replica count, measured on one 183 GB NVIDIA B200. Each config runs its replicas as one pipeline under native MPS:
+On an NVIDIA B200, `sgl-omni serve --model-path <model>` serves each model below as several replicas on one GPU under native MPS, with no other flag. The launch identifies the GPU through NVML and applies the replica count and per-replica settings measured on that GPU, and the log says what it did:
 
 ```bash
-sgl-omni serve --config examples/mps_dp/b200/qwen3_asr_1_7b_b200_dp5.yaml --mps on
+sgl-omni serve --model-path openai/whisper-large-v3
 ```
 
-For each latency target, the table gives the replica count that delivered the most audio within it; the config for N replicas is `<config name>_b200_dp<N>.yaml`. Goodput is audio seconds per second: generated audio for TTS, transcribed input audio for ASR. For TTS the latency is the p99 stall-free start, the time from a request's arrival to its first audio packet plus the smallest client buffer that plays the rest without a stall. For ASR it is the p99 request latency from arrival. The last column is one replica on the same GPU.
+```text
+Serving 6 replicas of openai/whisper-large-v3 on GPU 0 (NVIDIA B200) under MPS, the count measured for this GPU; --mps off serves one replica
+```
 
-| Model | Config name | Replicas at 0.5 / 1 / 3 s | Goodput at 0.5 / 1 / 3 s | One replica at 0.5 / 1 / 3 s |
-|---|---|---:|---:|---:|
-| Qwen3-TTS 1.7B Base | `qwen3_tts_1_7b` | 9 / 9 / 9 | 459 / 459 / 459 | 54 / 86 / 86 |
-| Qwen3-TTS 1.7B CustomVoice | `qwen3_tts_1_7b_customvoice` | 7 / 8 / 8 | 444 / 461 / 461 | 131 / 131 / 131 |
-| MOSS-TTS Local Transformer v1.5 | `moss_tts_local` | 5 / 5 / 5 | 163 / 163 / 163 | 46 / 73 / 73 |
-| MOSS-TTS v1.5 | `moss_tts` | 2 / 3 / 2 | 77 / 100 / 111 | 33 / 50 / 67 |
-| Ming-3.0-tts 0.5B | `ming3_tts` | 2 / 3 / 6 | 83 / 100 / 113 | 33 / 50 / 55 |
-| Fish Audio Drama 3 | `drama3_tts` | 2 / 2 / 2 | 45 / 53 / 57 | 26 / 34 / 34 |
-| Whisper large-v3 | `whisper_large_v3` | 6 / 12 / 12 | 1110 / 1117 / 1117 | 268 / 268 / 268 |
-| Qwen3-ASR 1.7B | `qwen3_asr_1_7b` | 5 / 5 / 5 | 2008 / 2008 / 2008 | 923 / 923 / 923 |
-| MOSS-Transcribe-Diarize | `moss_td` | 7 / 7 / 7 | 1854 / 1993 / 1993 | 510 / 510 / 510 |
-| Nemotron 3.5 ASR Streaming 0.6B | `nemotron3_5_asr` | 8 / 14 / 14 | 1224 / 1373 / 1373 | 205 / 205 / 227 |
+The measured settings apply only when all of the following hold. Otherwise the launch serves the model's own config, one replica without MPS as before, and the log line names the reason.
 
-Every count from 1 to the most that fit on the GPU was served at eight or more open-loop Poisson arrival rates, 1,024 requests per rate, once for each of three arrival seeds. The requests come from the SeedTTS evaluation set, and the ASR models transcribe its reference clips. Each replica admits up to 16 running requests. A rate counts when at most 1% of its requests fail and the backlog does not grow: the median latency of the last quarter of requests is at most 1.15 times that of the second quarter. A count's goodput is the most audio among its counted rates whose p99 latency meets the target. The table gives the count with the most goodput averaged over the three seeds, ties going to fewer replicas; on every seed that count is within 90% of the seed's best count. Near the top the curves are flat, so a neighboring count usually costs a few percent.
+* The GPU is the measured model: NVML reports `NVIDIA B200` with 183,359 MiB of memory, within 2%.
+* Native MPS can start on it: the platform is NVIDIA CUDA, `nvidia-cuda-mps-control` is on `PATH`, MIG mode is off, and the environment sets neither `CUDA_MPS_PIPE_DIRECTORY` nor `SGLANG_OMNI_WEIGHT_SHARE`.
+* The pipeline runs on that one GPU without tensor parallelism, and the GPU has the memory the replicas reserve free.
+* No config file or flag sizes or places the replicas itself: nothing under `processes`, no `--mps off`, no stage `process`, `tp_size`, `gpu_memory_fraction` or `total_reserve_bytes`, no engine `mem_fraction_static` (including `--mem-fraction-static`), `max_total_tokens` or `kv_cache_bytes`, and none of the settings the profile writes. Moving the pipeline to another GPU with `--<stage>.gpu` keeps the profile, and the replicas follow it.
 
-Nemotron 3.5 ASR was served with `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `OPENBLAS_NUM_THREADS` set to 4. Without them, under the runtime's default thread plan (already in 8848e500), which sets only `OMP_NUM_THREADS` and binds each process to the CPUs near its GPU, each replica process grew to 130 to 140 threads on this 288-core host. In a closed-loop pass at 16 requests in flight per replica, 12 such replicas served 31 requests/s against 228 for 11; with the cap, 12 replicas served 239. The cap is not a general setting; at its listed count it slowed MOSS-TTS Local Transformer by 36%.
+`sgl-omni config resolve --model-path <model>` prints the config a launch on the same host would use, and `sgl-omni config explain processes.<process>.num_replicas --model-path <model>` names the measured profile as the source of the count. The profiles live in `sglang_omni/mps/replica_profiles.py`.
 
-CosyVoice3 is not listed: its speech tokenizer runs on onnxruntime-gpu, whose 1.32.0 build has no sm_100 kernels, so it did not serve on the B200 without a local change that moves the tokenizer to the CPU.
+| Model | Default replicas | Goodput at 0.5 / 1 / 3 s | One replica at 0.5 / 1 / 3 s | More replicas for a looser target |
+|---|---:|---:|---:|---|
+| Qwen3-TTS 1.7B Base | 9 | 459 / 459 / 459 | 54 / 86 / 86 | |
+| Qwen3-TTS 1.7B CustomVoice | 7 | 444 / 444 / 444 | 131 / 131 / 131 | 8 at 1 and 3 s: 461 |
+| MOSS-TTS Local Transformer v1.5 | 5 | 163 / 163 / 163 | 46 / 73 / 73 | |
+| MOSS-TTS v1.5 | 2 | 77 / 99 / 111 | 33 / 50 / 67 | 3 at 1 s: 100 |
+| Ming-3.0-tts 0.5B | 2 | 83 / 100 / 100 | 33 / 50 / 55 | 3 at 1 s: 100, 6 at 3 s: 113 |
+| Fish Audio Drama 3 | 2 | 45 / 53 / 57 | 26 / 34 / 34 | |
+| Whisper large-v3 | 6 | 1110 / 1110 / 1110 | 268 / 268 / 268 | 12 at 1 and 3 s: 1117 |
+| Qwen3-ASR 1.7B | 5 | 2008 / 2008 / 2008 | 923 / 923 / 923 | |
+| MOSS-Transcribe-Diarize | 7 | 1854 / 1993 / 1993 | 510 / 510 / 510 | |
+| Nemotron 3.5 ASR Streaming 0.6B | 8 | 1224 / 1359 / 1359 | 205 / 205 / 227 | 14 at 1 and 3 s: 1373 |
 
-The measurements used sglang-omni 8848e500, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 590.48.01. The host had 288 CPU cores, its other seven GPUs ran other measurements at the same time, and replicas were not pinned to cores. Re-measure before applying a count to another version, GPU or workload.
+Goodput is audio seconds per second: generated audio for TTS, transcribed input audio for ASR. For TTS the latency is the p99 stall-free start, the time from a request's arrival to its first audio packet plus the smallest client buffer that plays the rest without a stall. For ASR it is the p99 request latency from arrival. The one-replica column is the model's own config on the same GPU.
+
+The default is the count with the most audio within the strictest target, 0.5 s. It keeps at least 88% of the best count's audio at 1 s and 3 s, the lowest being Ming-3.0-tts at 3 s, so one default holds for all three targets. `examples/mps_dp/b200/` has every measured config as `<model>_b200_dp<N>.yaml`, the defaults and the larger counts in the last column; `sgl-omni serve --config <file>` serves one as written. A file is also the way to change one setting and keep the others, because a flag that sets one of the settings above drops the whole profile.
+
+Every count from 1 to the most that fit on the GPU was served at eight or more open-loop Poisson arrival rates, 1,024 requests per rate, once for each of three arrival seeds. The requests come from the SeedTTS evaluation set, and the ASR models transcribe its reference clips. Each replica admits up to 16 running requests. A rate counts when at most 1% of its requests fail and the backlog does not grow: the median latency of the last quarter of requests is at most 1.15 times that of the second quarter. A count's goodput is the most audio among its counted rates whose p99 latency meets the target, averaged over the three seeds. Each count in the table, the default at 0.5 s and a looser target's count at that target, is within 90% of the best count on every seed.
+
+The Nemotron 3.5 ASR profile caps `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `OPENBLAS_NUM_THREADS` at 4 in the stage environment, as measured. Under the runtime's default thread plan, which sets only `OMP_NUM_THREADS`, each replica process grew to 130 to 140 threads on the 288-core host, and in a closed-loop pass at 16 requests in flight per replica, 12 replicas served 31 requests/s against 239 with the caps. The cap is not a general setting: it slowed MOSS-TTS Local Transformer by 36% at its default 5 replicas. A thread variable set in the parent environment still wins over the profile's.
+
+CosyVoice3 has no profile: its speech tokenizer runs on onnxruntime-gpu, whose 1.32.0 build has no sm_100 kernels, so it did not serve on the B200 without a local change that moves the tokenizer to the CPU.
+
+The measurements used sglang-omni 8848e500, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 590.48.01. The host had 288 CPU cores, its other seven GPUs ran other measurements at the same time, and replicas were not pinned to cores. A new GPU model gets its defaults the same way: measure it, then add its entries to `sglang_omni/mps/replica_profiles.py` and its configs to `examples/mps_dp/<gpu>/`, which `tests/unit_test/mps/test_mps_replica_profiles.py` keeps equal.
 
 ## Shared weights across replicas (opt-in, default off)
 

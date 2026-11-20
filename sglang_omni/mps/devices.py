@@ -14,6 +14,9 @@ _MIN_COMPUTE_CAPABILITY = (7, 0)
 class MpsPhysicalDevice:
     gpu_uuid: str | None
     unsupported_reason: str | None = None
+    name: str | None = None
+    total_memory_bytes: int | None = None
+    free_memory_bytes: int | None = None
 
 
 def check_cuda(status: int, operation: str) -> None:
@@ -170,7 +173,14 @@ class NvmlDeviceInfo:
                         pass
                 except pynvml.NVMLError_NotSupported:
                     pass
-                devices[ordinal] = MpsPhysicalDevice(gpu_uuid)
+                name = pynvml.nvmlDeviceGetName(handle)
+                memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                devices[ordinal] = MpsPhysicalDevice(
+                    gpu_uuid,
+                    name=name.decode() if isinstance(name, bytes) else name,
+                    total_memory_bytes=int(memory.total),
+                    free_memory_bytes=int(memory.free),
+                )
             except (pynvml.NVMLError, OSError, ValueError) as exc:
                 devices[ordinal] = MpsPhysicalDevice(
                     gpu_uuid,
