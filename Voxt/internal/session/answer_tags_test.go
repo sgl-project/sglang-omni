@@ -9,6 +9,26 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+// TestTranslateKeepsInputTags: Translate never applies Rewrite's echoed-tag
+// cleanup, even when the whole answer is one tagged value.
+func TestTranslateKeepsInputTags(t *testing.T) {
+	for _, answer := range []string{
+		"<instruction>Hello</instruction>",
+		"<selected_text>Good morning</selected_text>",
+	} {
+		t.Run(answer, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{}, &fakeLLM{text: answer}, nil)
+			if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack, TargetLanguage: "en", Card: true,
+				Text: &TextInput{Selection: "<指令>你好</指令>"}}); err != nil {
+				t.Fatal(err)
+			}
+			if end := h.rec.wait(t); end.State != Done || end.Result != answer {
+				t.Errorf("end %s %q, want %q (problem %+v)", end.State, end.Result, answer, end.Problem)
+			}
+		})
+	}
+}
+
 // TestRewriteDropsEchoedInputTags: an <instruction> or <selected_text>
 // pair the model echoes from any text the request sent (this turn's or an
 // earlier turn's) never reaches the answer card; the text between stays.

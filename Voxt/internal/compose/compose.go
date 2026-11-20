@@ -570,13 +570,18 @@ func CleanOutput(out, input string) string {
 	return Clean(s, input)
 }
 
+// CleanRewrite applies Clean and removes Rewrite's echoed <instruction>
+// and <selected_text> pairs. Translate and Transcribe keep those tags.
+func CleanRewrite(out string, input ...string) string {
+	return Clean(stripInputTags(strings.TrimSpace(out), input...), input...)
+}
+
 // Clean tidies a model's answer to input: without the <input> tags a
-// model echoed (nor Rewrite's <instruction> and <selected_text> around
-// it), or the quotes it wrapped the whole answer in (unless
+// model echoed, or the quotes it wrapped the whole answer in (unless
 // an input was quoted so itself). Input is every text the request sent.
 func Clean(out string, input ...string) string {
 	s := strings.TrimSpace(out)
-	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(stripInputTags(s, input...), "<input>"), "</input>"))
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
 	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}} {
 		wrapped := func(t string) bool {
 			return len(t) > len(q[0])+len(q[1]) && strings.HasPrefix(t, q[0]) && strings.HasSuffix(t, q[1]) &&

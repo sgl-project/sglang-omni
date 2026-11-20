@@ -273,9 +273,13 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), sent...)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewrite(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), sent...)}, out.Profile(), truncated, nil
 	}
-	return compose.Answer{Content: compose.Clean(resp.Text, sent...)}, out.Profile(), truncated, nil
+	clean := compose.Clean
+	if in.Task == compose.Rewrite {
+		clean = compose.CleanRewrite
+	}
+	return compose.Answer{Content: clean(resp.Text, sent...)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,
