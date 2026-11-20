@@ -9,8 +9,9 @@ import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
@@ -44,9 +45,11 @@ from sglang_omni.preprocessing import (
     ensure_video_list_async,
 )
 from sglang_omni.preprocessing.resource_connector import (
+    FramePool,
     MultiModalResourceConnector,
     ResourceHTTPConnection,
     await_media_cleanup,
+    global_thread_pool,
 )
 from sglang_omni.preprocessing.text import (
     ContentMedia,
@@ -349,10 +352,11 @@ class ChatRequestInputs:
 
 
 @dataclass(frozen=True, kw_only=True)
-class VideoCpuShare:
-    """The CPUs a video request preprocesses on: the OpenMP team that resizes its frames and the FFmpeg threads that decode them."""
+class VideoLane:
+    """Where a video request preprocesses: its media loads on media_executor, its frame resizes and HF processor call on frame_pool, and each video's decoders on decode_threads FFmpeg threads."""
 
-    intraop_threads: int
+    media_executor: Executor
+    frame_pool: FramePool
     decode_threads: int
 
 
@@ -591,16 +595,16 @@ class Qwen3OmniPreprocessor:
         self,
         payload: StagePayload,
         request_inputs: TrainRequestInputs | ChatRequestInputs,
-        video_share: VideoCpuShare | None = None,
+        video_lane: VideoLane | None = None,
     ) -> StagePayload:
-        """Preprocess a request whose inputs were already read, its videos on video_share when the stage sets one."""
+        """Preprocess a request whose inputs were already read, on video_lane when the stage runs it there."""
         _emit_event(
             request_id=payload.request_id,
             stage=None,
             event_name="preprocess_start",
         )
         try:
-            result = await self.call_impl(payload, request_inputs, video_share)
+            result = await self.call_impl(payload, request_inputs, video_lane)
         finally:
             _emit_event(
                 request_id=payload.request_id,
@@ -761,7 +765,7 @@ class Qwen3OmniPreprocessor:
         self,
         payload: StagePayload,
         request_inputs: TrainRequestInputs | ChatRequestInputs,
-        video_share: VideoCpuShare | None,
+        video_lane: VideoLane | None,
     ) -> StagePayload:
         if isinstance(request_inputs, TrainRequestInputs):
             return self.preprocess_train_inputs(
@@ -896,7 +900,12 @@ class Qwen3OmniPreprocessor:
         # Worker requests run on separate event loops. Keep pooled HTTP
         # connections within this request and close them before its loop ends.
         connection = ResourceHTTPConnection()
-        connector = MultiModalResourceConnector(connection=connection)
+        connector = MultiModalResourceConnector(
+            connection=connection,
+            executor=(
+                global_thread_pool if video_lane is None else video_lane.media_executor
+            ),
+        )
         loaders = [
             ensure_image_list_async(request_images, media_connector=connector),
             ensure_video_list_async(
@@ -911,12 +920,10 @@ class Qwen3OmniPreprocessor:
                 resource_connector=connector,
                 video_decode_threads=(
                     self.video_decode_threads
-                    if video_share is None
-                    else video_share.decode_threads
+                    if video_lane is None
+                    else video_lane.decode_threads
                 ),
-                video_intraop_threads=(
-                    None if video_share is None else video_share.intraop_threads
-                ),
+                video_frame_pool=None if video_lane is None else video_lane.frame_pool,
             ),
             ensure_audio_list_async(
                 request_audios,
@@ -1029,29 +1036,40 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
+        run_processor = partial(
+            self.processor,
+            text=prompt_text,
+            images=images or None,
+            videos=videos or None,
+            audio=audios or None,
+            add_special_tokens=False,
+            return_tensors="pt",
+            **processor_kwargs,
+        )
         # note (ratish): the video key only tags the encoder inputs, and the HF processor reads float32 frames without writing them, so the request's own thread hashes them while the processor runs; leaving the block waits for the hash on every exit.
-        with ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="qwen3-omni-video-cache-key"
-        ) as video_cache_key_executor:
-            video_cache_key_future = (
-                video_cache_key_executor.submit(compute_video_cache_key, videos)
-                if videos
+        if video_lane is None:
+            with ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="qwen3-omni-video-cache-key"
+            ) as video_cache_key_executor:
+                video_cache_key_future = (
+                    video_cache_key_executor.submit(compute_video_cache_key, videos)
+                    if videos
+                    else None
+                )
+                hf_inputs: BatchFeature = run_processor()
+            video_cache_key = (
+                video_cache_key_future.result()
+                if video_cache_key_future is not None
                 else None
             )
-            hf_inputs: BatchFeature = self.processor(
-                text=prompt_text,
-                images=images or None,
-                videos=videos or None,
-                audio=audios or None,
-                add_special_tokens=False,
-                return_tensors="pt",
-                **processor_kwargs,
-            )
-        video_cache_key = (
-            video_cache_key_future.result()
-            if video_cache_key_future is not None
-            else None
-        )
+        else:
+            # note (ratish): on the video lane the processor runs on a frame thread, so its OpenMP work counts among the lane's, and this thread hashes the frames beside it.
+            processor_future = video_lane.frame_pool.executor.submit(run_processor)
+            try:
+                video_cache_key = compute_video_cache_key(videos) if videos else None
+            finally:
+                wait([processor_future])
+            hf_inputs = processor_future.result()
 
         input_ids = hf_inputs["input_ids"][0]
         attention_mask = hf_inputs.get("attention_mask")

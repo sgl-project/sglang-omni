@@ -12,12 +12,11 @@ import asyncio
 import logging
 import os
 import threading
-from collections.abc import Callable, Coroutine, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
@@ -36,7 +35,7 @@ from sglang_omni.models.qwen3_omni.components.preprocessor import (
     ChatRequestInputs,
     Qwen3OmniPreprocessor,
     TrainRequestInputs,
-    VideoCpuShare,
+    VideoLane,
     read_request_inputs,
 )
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
@@ -49,6 +48,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     apply_encoder_result,
     build_encoder_request,
 )
+from sglang_omni.preprocessing.resource_connector import FramePool
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -67,9 +67,9 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.utils.cpu import (
+    MAX_VIDEO_DECODE_THREADS,
     automatic_video_decode_threads,
     effective_cpu_count,
-    intraop_team,
 )
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
@@ -1017,41 +1017,93 @@ def batch_audio_encoder_payloads(
 # ---------------------------------------------------------------------------
 
 
+def fixed_team_thread_pool(
+    *, thread_count: int, intraop_threads: int, thread_name_prefix: str
+) -> ThreadPoolExecutor:
+    """Start thread_count threads now, each on an OpenMP team of intraop_threads, and leave the team that threads started later take as it was."""
+    with ThreadPoolExecutor(max_workers=1) as probe_executor:
+        process_intraop_threads = probe_executor.submit(torch.get_num_threads).result()
+
+    def start_thread() -> None:
+        name_native_thread()
+        # note (ratish): a thread takes the process's team at its first parallel work, overwriting any size set before it, so it settles that team first.
+        if torch.get_num_threads() != intraop_threads:
+            torch.set_num_threads(intraop_threads)
+        else:
+            pass
+
+    thread_pool = ThreadPoolExecutor(
+        max_workers=thread_count,
+        thread_name_prefix=thread_name_prefix,
+        initializer=start_thread,
+    )
+    # note (ratish): a pool starts a thread only for work no idle thread can take, so work that waits for every thread starts them all now.
+    threads_started = threading.Barrier(thread_count)
+    for start_future in [
+        thread_pool.submit(threads_started.wait) for _ in range(thread_count)
+    ]:
+        start_future.result()
+    if intraop_threads != process_intraop_threads:
+        with ThreadPoolExecutor(max_workers=1) as restore_executor:
+            restore_executor.submit(
+                torch.set_num_threads, process_intraop_threads
+            ).result()
+    else:
+        pass
+    return thread_pool
+
+
 class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
-    """Run requests in arrival order on the scheduler thread, except that a request with video runs on a video thread, so its long decode holds up no request behind it."""
+    """Run requests in arrival order on the scheduler thread, except that a request with video runs on the video lane, so no request behind it waits for its media loads or its CPU work."""
 
     def __init__(
         self,
         preprocessor: Qwen3OmniPreprocessor,
         *,
-        video_threads: int,
-        stage_threads: int,
-        stage_cpus: int,
+        video_request_worker_count: int,
+        stage_intraop_threads: int,
+        stage_cpu_count: int,
         video_decode_threads: int | None,
     ) -> None:
-        video_executor = ThreadPoolExecutor(
-            max_workers=video_threads,
-            thread_name_prefix="preprocessing-video",
-            initializer=name_native_thread,
-        )
-        super().__init__(
-            preprocessor,
-            shutdown_callback=partial(
-                video_executor.shutdown, wait=False, cancel_futures=True
-            ),
-        )
+        super().__init__(preprocessor, shutdown_callback=self.shut_down_video_lane)
         # note (ratish): the threads share one preprocessor, since the HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
         self.preprocessor = preprocessor
-        self.video_executor = video_executor
-        self.stage_threads = stage_threads
-        self.stage_cpus = stage_cpus
+        # note (ratish): Linux keeps 15 bytes of a thread's name, so the video lane's pools take short prefixes that stay apart in top and traces.
+        self.video_executor = ThreadPoolExecutor(
+            max_workers=video_request_worker_count,
+            thread_name_prefix="prep-video",
+            initializer=name_native_thread,
+        )
+        # note (ratish): a lone video's frame slices keep every frame thread busy at once, so the frame threads split the stage's CPUs, each at most the stage's own team.
+        frame_worker_count = min(video_request_worker_count, stage_cpu_count)
+        video_intraop_threads = min(
+            stage_intraop_threads, stage_cpu_count // frame_worker_count
+        )
+        self.media_executor = fixed_team_thread_pool(
+            thread_count=video_request_worker_count,
+            intraop_threads=video_intraop_threads,
+            thread_name_prefix="prep-media",
+        )
+        self.frame_pool = FramePool(
+            executor=fixed_team_thread_pool(
+                thread_count=frame_worker_count,
+                intraop_threads=video_intraop_threads,
+                thread_name_prefix="prep-frames",
+            ),
+            frame_workers=frame_worker_count,
+        )
+        self.stage_cpu_count = stage_cpu_count
         self.video_decode_threads = video_decode_threads
         self.videos_lock = threading.Lock()
         self.videos_running = 0
 
-    def warm_up_serving_thread(self) -> None:
-        # note (ratish): settles this thread's OpenMP team at the stage's before any video thread resizes its own.
-        torch.get_num_threads()
+    def shut_down_video_lane(self) -> None:
+        for executor in (
+            self.video_executor,
+            self.media_executor,
+            self.frame_pool.executor,
+        ):
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
         request_inputs = read_request_inputs(msg.data)
@@ -1060,26 +1112,27 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
                 copy_context().run, self.run_video_request, msg, request_inputs
             )
         else:
-            self.run_request(msg, request_inputs, loop.run_until_complete, None)
+            loop.run_until_complete(self.run_request(msg, request_inputs, None))
 
     def run_video_request(
         self, msg: IncomingMessage, request_inputs: ChatRequestInputs
     ) -> None:
         try:
             with self.video_slot() as running:
-                # note (ratish): a video takes the stage's CPUs split over the videos running as it starts, at most the stage's own team, so a lone video runs as on the serial stage and every video thread at once on one share each.
-                video_share = VideoCpuShare(
-                    intraop_threads=min(
-                        self.stage_threads, max(self.stage_cpus // running, 1)
-                    ),
+                video_lane = VideoLane(
+                    media_executor=self.media_executor,
+                    frame_pool=self.frame_pool,
+                    # note (ratish): FFmpeg threads belong to each decoder, so a video's follow the videos running as it starts.
                     decode_threads=(
-                        automatic_video_decode_threads(running)
+                        min(
+                            MAX_VIDEO_DECODE_THREADS,
+                            max(self.stage_cpu_count // running, 1),
+                        )
                         if self.video_decode_threads is None
                         else self.video_decode_threads
                     ),
                 )
-                with intraop_team(video_share.intraop_threads):
-                    self.run_request(msg, request_inputs, asyncio.run, video_share)
+                asyncio.run(self.run_request(msg, request_inputs, video_lane))
         except Exception as exc:
             # note (ratish): nothing reads a video thread's future, so a failure outside the request's own preprocessing is answered here or never.
             logger.exception(f"Video request {msg.request_id} failed on its thread")
@@ -1101,20 +1154,19 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
             with self.videos_lock:
                 self.videos_running -= 1
 
-    def run_request(
+    async def run_request(
         self,
         msg: IncomingMessage,
         request_inputs: TrainRequestInputs | ChatRequestInputs,
-        run_coroutine: Callable[[Coroutine[None, None, StagePayload]], StagePayload],
-        video_share: VideoCpuShare | None,
+        video_lane: VideoLane | None,
     ) -> None:
         if self.consume_if_aborted(msg.request_id):
             return
         else:
             pass
         try:
-            result = run_coroutine(
-                self.preprocessor.process(msg.data, request_inputs, video_share)
+            result = await self.preprocessor.process(
+                msg.data, request_inputs, video_lane
             )
         except Exception as exc:
             if self.consume_if_aborted(msg.request_id):
@@ -1165,9 +1217,9 @@ def create_preprocessing_executor(
 
     return PreprocessingScheduler(
         preprocessor,
-        video_threads=max_concurrency,
-        stage_threads=torch.get_num_threads(),
-        stage_cpus=effective_cpu_count(),
+        video_request_worker_count=max_concurrency,
+        stage_intraop_threads=torch.get_num_threads(),
+        stage_cpu_count=effective_cpu_count(),
         video_decode_threads=video_decode_threads,
     )
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,9 +14,13 @@ import av
 import numpy as np
 import pytest
 import torch
+from torchvision.transforms import InterpolationMode
 
 from sglang_omni.preprocessing import audio, image, video
-from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing.resource_connector import (
+    FramePool,
+    MultiModalResourceConnector,
+)
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 MPEG4_KEYFRAME_INTERVAL = 2
@@ -502,26 +507,97 @@ def test_videos_of_one_request_share_its_decode_threads(
     ] * 2
 
 
-def test_videos_of_one_request_share_its_intraop_threads(
+def test_a_frame_pool_resizes_a_lone_video_on_every_thread_into_the_bytes_of_one_resize(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    teams: list[int] = []
+    frames = torch.randint(
+        0,
+        256,
+        (7, 3, 90, 120),
+        dtype=torch.uint8,
+        generator=torch.Generator().manual_seed(0),
+    )
+    monkeypatch.setattr(
+        video.qwen_vision, "get_video_reader_backend", lambda: "torchvision"
+    )
+    monkeypatch.setitem(
+        video.qwen_vision.VIDEO_READER_BACKENDS,
+        "torchvision",
+        lambda video_options: (frames, 2.0),
+    )
+    path = tmp_path / "video.mp4"
+    whole_video, whole_fps = video.load_video_path(path, decode_threads=16)
+    resize = video.tv_f.resize
+    every_slice_running = threading.Barrier(3, timeout=5)
+    slice_threads: list[str] = []
 
-    def load_video_path(path: Path, **_kwargs: object) -> tuple[torch.Tensor, float]:
-        teams.append(torch.get_num_threads())
+    def resize_slice(
+        frame_slice: torch.Tensor,
+        size: list[int],
+        *,
+        interpolation: InterpolationMode,
+        antialias: bool,
+    ) -> torch.Tensor:
+        slice_threads.append(threading.current_thread().name)
+        every_slice_running.wait()
+        return resize(
+            frame_slice, size, interpolation=interpolation, antialias=antialias
+        )
+
+    monkeypatch.setattr(video.tv_f, "resize", resize_slice)
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="frames") as executor:
+        sliced_video, sliced_fps = video.load_video_path(
+            path,
+            decode_threads=16,
+            frame_pool=FramePool(executor=executor, frame_workers=3),
+        )
+
+    assert sliced_video.dtype == whole_video.dtype == torch.float32
+    assert torch.equal(sliced_video, whole_video)
+    assert sliced_fps == whole_fps
+    assert len(slice_threads) == 3
+    assert all(name.startswith("frames") for name in slice_threads)
+
+
+@pytest.mark.parametrize("extract_audio", [False, True])
+def test_a_requests_local_videos_load_on_its_connectors_threads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extract_audio: bool
+) -> None:
+    load_threads: list[str] = []
+
+    def load_video_path(
+        path: Path,
+        fps: float | None,
+        max_frames: int | None,
+        min_pixels: int | None,
+        max_pixels: int | None,
+        total_pixels: int | None,
+        *,
+        decode_threads: int,
+        frame_pool: FramePool | None,
+    ) -> tuple[torch.Tensor, float]:
+        load_threads.append(threading.current_thread().name)
         return torch.zeros(1, 3, 2, 2), 2.0
 
-    monkeypatch.setattr(video, "load_video_path", load_video_path)
-    paths = [tmp_path / "first.mp4", tmp_path / "second.mp4"]
-    for path in paths:
-        path.touch()
-    asyncio.run(
-        video.ensure_video_list_async(
-            paths, video_decode_threads=16, video_intraop_threads=6
-        )
-    )
+    def extract_audio_from_path(video_path: Path, target_sr: int) -> None:
+        load_threads.append(threading.current_thread().name)
 
-    assert teams == [3, 3]
+    monkeypatch.setattr(video, "load_video_path", load_video_path)
+    monkeypatch.setattr(video, "extract_audio_from_path", extract_audio_from_path)
+    path = tmp_path / "video.mp4"
+    path.touch()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="lane-media") as executor:
+        asyncio.run(
+            video.ensure_video_list_async(
+                [path],
+                extract_audio=extract_audio,
+                resource_connector=MultiModalResourceConnector(executor=executor),
+                video_decode_threads=16,
+            )
+        )
+
+    assert len(load_threads) == (2 if extract_audio else 1)
+    assert all(name.startswith("lane-media") for name in load_threads)
 
 
 def test_torchcodec_reader_of_record_runs_when_the_native_decoder_is_unavailable(

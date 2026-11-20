@@ -6,8 +6,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from collections.abc import Iterable
 from pathlib import Path
 
 from sglang_omni.utils.gpu_memory import (
@@ -189,20 +188,6 @@ def automatic_video_decode_threads(worker_count: int) -> int:
     return bounded_intraop_threads(
         worker_count=worker_count, max_threads=MAX_VIDEO_DECODE_THREADS
     )
-
-
-@contextmanager
-def intraop_team(threads: int) -> Iterator[None]:
-    """Run the block with the calling thread's OpenMP team at threads, then give the thread its own team back."""
-    import torch
-
-    # note (ratish): torch sizes a thread's team from the last size any thread set when the thread first runs parallel work, so reading the team first settles this thread's own before the resize.
-    previous = torch.get_num_threads()
-    torch.set_num_threads(threads)
-    try:
-        yield
-    finally:
-        torch.set_num_threads(previous)
 
 
 # Native multimodal_gen gives each of num_gpus colocated GPU workers

@@ -20,7 +20,6 @@ from sglang_omni.config import (
 from sglang_omni.config.session_audio import AudioSessionPipelineConfig, StageGroup
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS
 from sglang_omni.platforms import current_platform
-from sglang_omni.preprocessing.resource_connector import MEDIA_WORKERS
 from sglang_omni.proto.session import GRAPH_INPUT
 from sglang_omni.proto.streams import IMAGE, SessionPorts
 from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
@@ -36,6 +35,9 @@ THINKER_STAGE = "thinker"
 TALKER_START_MIN_CHUNKS = 1
 
 TALKER_MAX_RUNNING_REQUESTS = 32
+
+# note (ratish): the video requests preprocessing runs at once, as measured on one H200 at Video-MME c16.
+PREPROCESSING_VIDEO_REQUESTS = 8
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -68,8 +70,7 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-        # note (ratish): one video thread per media worker, since a further video would only wait for a worker to decode it.
-        factory=FactoryArgs(max_concurrency=MEDIA_WORKERS),
+        factory=FactoryArgs(max_concurrency=PREPROCESSING_VIDEO_REQUESTS),
         next=next_stages,
         route_fn=route_fn,
         project_payload={

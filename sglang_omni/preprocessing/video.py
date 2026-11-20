@@ -10,8 +10,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor, wait
 from itertools import islice
 from pathlib import Path
 
@@ -24,12 +23,14 @@ from qwen_vl_utils import vision_process as qwen_vision
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
-from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
-from sglang_omni.utils.cpu import intraop_team
+from sglang_omni.preprocessing.resource_connector import (
+    FramePool,
+    MultiModalResourceConnector,
+)
 
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
-from .resource_connector import await_media_cleanup, global_thread_pool
+from .resource_connector import await_media_cleanup
 
 try:
     from torchcodec.decoders import VideoDecoder
@@ -63,7 +64,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
         decode_threads: int,
-        intraop_threads: int | None = None,
+        frame_pool: FramePool | None = None,
         **kwargs: object,
     ) -> None:
         """Initialize VideoMediaIO.
@@ -78,7 +79,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
             decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
-            intraop_threads: OpenMP team the loading thread decodes and resizes this video on; None keeps its own.
+            frame_pool: Threads that resize this video's frames; None resizes them on the loading thread.
             **kwargs: Additional arguments (for compatibility with MultiModalResourceConnector).
         """
         super().__init__()
@@ -91,24 +92,20 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
         self.extract_audio = extract_audio
         self.audio_target_sr = audio_target_sr
         self.decode_threads = decode_threads
-        self.intraop_threads = intraop_threads
+        self.frame_pool = frame_pool
         self.kwargs = kwargs
 
     def load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
-        with (
-            nullcontext()
-            if self.intraop_threads is None
-            else intraop_team(self.intraop_threads)
-        ):
-            return load_video_path(
-                filepath,
-                fps=self.fps,
-                max_frames=self.max_frames,
-                min_pixels=self.min_pixels,
-                max_pixels=self.max_pixels,
-                total_pixels=self.total_pixels,
-                decode_threads=self.decode_threads,
-            )
+        return load_video_path(
+            filepath,
+            fps=self.fps,
+            max_frames=self.max_frames,
+            min_pixels=self.min_pixels,
+            max_pixels=self.max_pixels,
+            total_pixels=self.total_pixels,
+            decode_threads=self.decode_threads,
+            frame_pool=self.frame_pool,
+        )
 
     def load_bytes(
         self, data: bytes
@@ -173,7 +170,7 @@ async def ensure_video_list_async(
     extract_audio: bool = False,
     audio_target_sr: int = 16000,
     video_decode_threads: int,
-    video_intraop_threads: int | None = None,
+    video_frame_pool: FramePool | None = None,
 ) -> tuple[
     list[object], list[float] | None, list[npt.NDArray[np.float32] | None] | None
 ]:
@@ -192,8 +189,7 @@ async def ensure_video_list_async(
         extract_audio: If True, extract audio from videos and return as third element.
         audio_target_sr: Target sample rate for audio extraction (default: 16000).
         video_decode_threads: FFmpeg threads the request's videos share while they load together.
-        video_intraop_threads: OpenMP threads the request's videos share while they load together; None keeps each
-            loading thread's own team.
+        video_frame_pool: Threads that resize the request's frames; None resizes each video's on its loading thread.
 
     Returns:
         Tuple of (normalized video list, sample_fps_list or None, extracted_audio_list or None).
@@ -207,12 +203,8 @@ async def ensure_video_list_async(
         items = videos
     else:
         items = [videos]
-    path_videos = max(sum(1 for item in items if isinstance(item, (str, Path))), 1)
-    decode_threads = video_decode_threads // path_videos
-    intraop_threads = (
-        None
-        if video_intraop_threads is None
-        else max(video_intraop_threads // path_videos, 1)
+    decode_threads = video_decode_threads // max(
+        sum(1 for item in items if isinstance(item, (str, Path))), 1
     )
     normalized: list[object] = []
     sample_fps_list: list[float] = [0.0] * len(items)
@@ -245,7 +237,7 @@ async def ensure_video_list_async(
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
                 decode_threads=decode_threads,
-                intraop_threads=intraop_threads,
+                frame_pool=video_frame_pool,
             )
         else:
             media_io = VideoMediaIO(
@@ -257,13 +249,13 @@ async def ensure_video_list_async(
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
                 decode_threads=decode_threads,
-                intraop_threads=intraop_threads,
+                frame_pool=video_frame_pool,
             )
             video_path = Path(video_item)
             loop = asyncio.get_running_loop()
             if not extract_audio:
                 video_future = loop.run_in_executor(
-                    global_thread_pool, media_io.load_file, video_path
+                    resource_connector.executor, media_io.load_file, video_path
                 )
 
                 async def cleanup_video_decoder() -> None:
@@ -275,10 +267,10 @@ async def ensure_video_list_async(
                     await await_media_cleanup(cleanup_video_decoder())
             else:
                 frames_future = loop.run_in_executor(
-                    global_thread_pool, media_io.load_path, video_path
+                    resource_connector.executor, media_io.load_path, video_path
                 )
                 audio_future = loop.run_in_executor(
-                    global_thread_pool,
+                    resource_connector.executor,
                     extract_audio_from_path,
                     video_path,
                     audio_target_sr,
@@ -566,6 +558,7 @@ def load_video_path(
     total_pixels: int | None = None,
     *,
     decode_threads: int,
+    frame_pool: FramePool | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Load a local video into a torch tensor (T, C, H, W) on CPU."""
     path = Path(path)
@@ -658,13 +651,44 @@ def load_video_path(
             min_pixels=min_pixels,
             max_pixels=max_pixels,
         )
-    video = tv_f.resize(
-        video,
-        [resized_height, resized_width],
-        interpolation=InterpolationMode.BICUBIC,
-        antialias=True,
-    ).float()
-    return video, sample_fps
+    if frame_pool is None:
+        video = tv_f.resize(
+            video,
+            [resized_height, resized_width],
+            interpolation=InterpolationMode.BICUBIC,
+            antialias=True,
+        ).float()
+        return video, sample_fps
+    else:
+        pass
+    # note (ratish): each frame resizes on its own, so slices on the pool's threads write the bytes one resize gives, and a lone video still keeps every pool thread busy.
+    resized_video = torch.empty(
+        (nframes, video.shape[1], resized_height, resized_width), dtype=torch.float32
+    )
+    slice_count = min(frame_pool.frame_workers, nframes)
+
+    def resize_frames(start_frame: int, stop_frame: int) -> None:
+        resized_video[start_frame:stop_frame].copy_(
+            tv_f.resize(
+                video[start_frame:stop_frame],
+                [resized_height, resized_width],
+                interpolation=InterpolationMode.BICUBIC,
+                antialias=True,
+            )
+        )
+
+    slice_futures = [
+        frame_pool.executor.submit(
+            resize_frames,
+            nframes * slice_index // slice_count,
+            nframes * (slice_index + 1) // slice_count,
+        )
+        for slice_index in range(slice_count)
+    ]
+    wait(slice_futures)
+    for slice_future in slice_futures:
+        slice_future.result()
+    return resized_video, sample_fps
 
 
 def build_video_mm_inputs(

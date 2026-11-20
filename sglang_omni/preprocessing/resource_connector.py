@@ -11,9 +11,10 @@ import os
 import socket
 import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, TypeVar
 from urllib.parse import ParseResult, urlparse
@@ -36,15 +37,21 @@ else:
 _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
 
-MEDIA_WORKERS = 8
-
 # Global thread pool for CPU-bound tasks (decoding/resampling)
 global_thread_pool = ThreadPoolExecutor(
-    max_workers=MEDIA_WORKERS,
+    max_workers=8,
     thread_name_prefix="media-decode",
     initializer=name_native_thread,
 )
 atexit.register(global_thread_pool.shutdown)
+
+
+@dataclass(frozen=True, kw_only=True)
+class FramePool:
+    """Threads that resize a video's frames, which split evenly among frame_workers of them."""
+
+    executor: Executor
+    frame_workers: int
 
 
 async def await_media_cleanup(awaitable: Awaitable[None]) -> None:
@@ -321,6 +328,7 @@ class MultiModalResourceConnector:
         media_io_kwargs: dict[str, dict[str, object]] | None = None,
         *,
         connection: ResourceHTTPConnection = global_http_connection,
+        executor: Executor = global_thread_pool,
         allowed_local_media_path: str | Path | None = None,
         allowed_media_domains: list[str] | None = None,
         allow_remote_media_without_domains: bool = True,
@@ -331,6 +339,7 @@ class MultiModalResourceConnector:
         Args:
             media_io_kwargs: Additional args passed to process media inputs, keyed by modalities.
             connection: ResourceHTTPConnection instance for HTTP clients.
+            executor: Threads that decode the media this connector loads.
             allowed_local_media_path: A local directory to load media files from.
             allowed_media_domains: Domains allowed for remote media URLs.
             allow_remote_media_without_domains: Whether remote HTTP(S) URLs are
@@ -340,6 +349,7 @@ class MultiModalResourceConnector:
         """
         self.media_io_kwargs = media_io_kwargs or {}
         self.connection = connection
+        self.executor = executor
         allowed_local_media_path = allowed_local_media_path or os.environ.get(
             ALLOWED_LOCAL_MEDIA_PATH_ENV
         )
@@ -539,7 +549,7 @@ class MultiModalResourceConnector:
 
             decode_start = time.time()
             decode_future = asyncio.get_running_loop().run_in_executor(
-                global_thread_pool, media_io.load_http_bytes, data, media_type
+                self.executor, media_io.load_http_bytes, data, media_type
             )
 
             async def cleanup_http_decoder() -> None:
@@ -569,7 +579,7 @@ class MultiModalResourceConnector:
                 self.load_data_url if url_spec.scheme == "data" else self.load_file_url
             )
             decode_future = asyncio.get_running_loop().run_in_executor(
-                global_thread_pool, method, url_spec, media_io
+                self.executor, method, url_spec, media_io
             )
 
             async def cleanup_url_decoder() -> None:
@@ -714,7 +724,7 @@ class MultiModalResourceConnector:
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
         decode_threads: int,
-        intraop_threads: int | None = None,
+        frame_pool: FramePool | None = None,
     ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
@@ -730,7 +740,7 @@ class MultiModalResourceConnector:
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
             decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
-            intraop_threads: OpenMP team the loading thread decodes and resizes this video on; None keeps its own.
+            frame_pool: Threads that resize this video's frames; None resizes them on the loading thread.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
@@ -747,7 +757,7 @@ class MultiModalResourceConnector:
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,
             decode_threads=decode_threads,
-            intraop_threads=intraop_threads,
+            frame_pool=frame_pool,
             **self.media_io_kwargs.get("video", {}),
         )
 

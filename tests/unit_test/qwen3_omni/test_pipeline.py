@@ -6,8 +6,9 @@ import asyncio
 import base64
 import inspect
 import threading
+import wave
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
@@ -71,8 +72,11 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages,
     resolve_preprocessing_next_stages_speech,
 )
-from sglang_omni.preprocessing.audio import decode_audio_bytes
-from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing.audio import decode_audio_bytes, ensure_audio_list_async
+from sglang_omni.preprocessing.resource_connector import (
+    FramePool,
+    MultiModalResourceConnector,
+)
 from sglang_omni.preprocessing.text import split_content_parts
 from sglang_omni.profiler.event_recorder import get_active_stage, set_active_stage
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -2482,12 +2486,23 @@ class VideoCacheKeyProtocol(Protocol):
     def __call__(self, videos: list[torch.Tensor]) -> str | None: ...
 
 
+def single_thread_video_lane(
+    lane_executor: ThreadPoolExecutor,
+) -> preprocessor_mod.VideoLane:
+    return preprocessor_mod.VideoLane(
+        media_executor=lane_executor,
+        frame_pool=FramePool(executor=lane_executor, frame_workers=1),
+        decode_threads=16,
+    )
+
+
 def run_video_request(
     pre: preprocessor_mod.Qwen3OmniPreprocessor,
     monkeypatch: pytest.MonkeyPatch,
     frames: torch.Tensor,
     process: VideoProcessorProtocol,
     video_cache_key: VideoCacheKeyProtocol,
+    video_lane: preprocessor_mod.VideoLane | None,
 ) -> StagePayload:
     class Processor:
         def apply_chat_template(
@@ -2513,7 +2528,7 @@ def run_video_request(
         audio_target_sr: int,
         resource_connector: MultiModalResourceConnector,
         video_decode_threads: int,
-        video_intraop_threads: int | None,
+        video_frame_pool: FramePool | None,
     ) -> tuple[list[torch.Tensor], list[float], None]:
         return [frames], [2.0], None
 
@@ -2530,11 +2545,14 @@ def run_video_request(
         ),
         data={},
     )
-    return asyncio.run(pre(payload))
+    return asyncio.run(
+        pre.process(payload, preprocessor_mod.read_request_inputs(payload), video_lane)
+    )
 
 
+@pytest.mark.parametrize("on_video_lane", [False, True])
 def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
-    decoded_audio_preprocessor, monkeypatch
+    decoded_audio_preprocessor, monkeypatch, on_video_lane: bool
 ):
     pre, _, _ = decoded_audio_preprocessor
     frames = torch.zeros(4, 3, 2, 2)
@@ -2542,6 +2560,7 @@ def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
     hash_finished = threading.Event()
     hash_saw_processor: list[bool] = []
     processor_saw_hash: list[bool] = []
+    processor_threads: list[str] = []
     compute_video_cache_key = preprocessor_mod.compute_video_cache_key
 
     def video_cache_key(videos: list[torch.Tensor]) -> str | None:
@@ -2560,6 +2579,7 @@ def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
         return_tensors: str,
         videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
     ) -> dict[str, torch.Tensor]:
+        processor_threads.append(threading.current_thread().name)
         processor_entered.set()
         processor_saw_hash.append(hash_finished.wait(timeout=5))
         return {
@@ -2567,12 +2587,25 @@ def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
             "pixel_values_videos": torch.ones(1, 3),
         }
 
-    state = Qwen3OmniPipelineState.from_dict(
-        run_video_request(pre, monkeypatch, frames, process, video_cache_key).data
-    )
+    with ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="video-lane"
+    ) as lane_executor:
+        state = Qwen3OmniPipelineState.from_dict(
+            run_video_request(
+                pre,
+                monkeypatch,
+                frames,
+                process,
+                video_cache_key,
+                single_thread_video_lane(lane_executor) if on_video_lane else None,
+            ).data
+        )
 
     assert hash_saw_processor == [True]
     assert processor_saw_hash == [True]
+    assert [name.startswith("video-lane") for name in processor_threads] == [
+        on_video_lane
+    ]
     assert state.encoder_inputs["image_encoder"]["cache_key"].startswith(
         compute_video_cache_key([frames])
     )
@@ -2618,7 +2651,7 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
     monkeypatch.setattr(preprocessor_mod, "ThreadPoolExecutor", RequestExecutor)
     with pytest.raises(RuntimeError, match="processor failed"):
         run_video_request(
-            pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key
+            pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key, None
         )
     trace.append("request failed")
 
@@ -2628,6 +2661,56 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
         "hash finished",
         "request failed",
     ]
+
+
+def test_qwen_video_lane_request_fails_after_its_processor_stops_reading_frames(
+    decoded_audio_preprocessor, monkeypatch
+):
+    """A video lane request whose frame hash failed surfaced its error while the HF processor still read its frames on a frame thread."""
+    pre, _, _ = decoded_audio_preprocessor
+    trace: list[str] = []
+    request_waits = threading.Event()
+    wait_for_futures = preprocessor_mod.wait
+
+    def wait_for_processor(futures: list[Future[dict[str, torch.Tensor]]]) -> None:
+        request_waits.set()
+        wait_for_futures(futures)
+
+    def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        trace.append("hash failed")
+        raise RuntimeError("hash failed")
+
+    def process(
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]:
+        request_waits.wait(timeout=5)
+        trace.append("processor finished")
+        return {
+            "input_ids": torch.tensor([[1, 2]]),
+            "pixel_values_videos": torch.ones(1, 3),
+        }
+
+    monkeypatch.setattr(preprocessor_mod, "wait", wait_for_processor)
+    with ThreadPoolExecutor(max_workers=1) as lane_executor:
+        with pytest.raises(RuntimeError, match="hash failed"):
+            run_video_request(
+                pre,
+                monkeypatch,
+                torch.zeros(4, 3, 2, 2),
+                process,
+                video_cache_key,
+                single_thread_video_lane(lane_executor),
+            )
+        trace.append("request failed")
+
+    assert trace == ["hash failed", "processor finished", "request failed"]
 
 
 RequestInputs = preprocessor_mod.TrainRequestInputs | preprocessor_mod.ChatRequestInputs
@@ -2731,7 +2814,7 @@ def test_preprocessing_video_holds_up_no_request_behind_it(
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
             if payload.request_id == "video":
                 video_entered.set()
@@ -2764,6 +2847,98 @@ def test_preprocessing_video_holds_up_no_request_behind_it(
     assert not worker.is_alive()
 
 
+def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threads(
+    decoded_audio_preprocessor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A video's loads ran on the media decode pool requests without video share, so held video loads kept an audio data URL request, and every request behind it, waiting for the video."""
+    pre, _, _ = decoded_audio_preprocessor
+    held_video_loads = 16
+    video_loads_entered = threading.Semaphore(0)
+    video_loads_release = threading.Event()
+    wav_bytes = BytesIO()
+    with wave.open(wav_bytes, "wb") as wav:
+        wav.setparams((1, 2, 16000, 1600, "NONE", "not compressed"))
+        wav.writeframes(np.zeros(1600, dtype=np.int16).tobytes())
+    wav_url = "data:audio/wav;base64," + base64.b64encode(wav_bytes.getvalue()).decode()
+
+    class HeldVideoMediaIO:
+        def load_base64(
+            self, media_type: str, data: str
+        ) -> tuple[torch.Tensor, float, None]:
+            video_loads_entered.release()
+            assert video_loads_release.wait(timeout=5)
+            return torch.zeros(1, 3, 2, 2), 2.0, None
+
+    async def video_loader(
+        videos: list[str],
+        *,
+        fps: float | None,
+        max_frames: int | None,
+        min_pixels: int | None,
+        max_pixels: int | None,
+        total_pixels: int | None,
+        extract_audio: bool,
+        audio_target_sr: int,
+        resource_connector: MultiModalResourceConnector,
+        video_decode_threads: int,
+        video_frame_pool: FramePool | None,
+    ) -> tuple[list[torch.Tensor], list[float], None]:
+        loaded_videos = await asyncio.gather(
+            *(
+                resource_connector.load_resource_async(
+                    "data:video/mp4;base64,AAAA", HeldVideoMediaIO()
+                )
+                for _ in range(held_video_loads)
+            )
+        )
+        return [loaded_videos[0][0]], [2.0], None
+
+    monkeypatch.setattr(
+        preprocessor_mod, "ensure_audio_list_async", ensure_audio_list_async
+    )
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
+    scheduler = qwen_stages.PreprocessingScheduler(
+        pre,
+        video_request_worker_count=2,
+        stage_intraop_threads=torch.get_num_threads(),
+        stage_cpu_count=2,
+        video_decode_threads=None,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("video"))
+        assert video_loads_entered.acquire(timeout=5)
+        assert video_loads_entered.acquire(timeout=5)
+        scheduler.inbox.put(
+            IncomingMessage(
+                request_id="audio",
+                type="new_request",
+                data=make_qwen_payload(
+                    request_id="audio",
+                    inputs={
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "audio": [wav_url],
+                    },
+                ),
+            )
+        )
+        scheduler.inbox.put(text_request("text"))
+        answered = [scheduler.outbox.get(timeout=5) for _ in range(2)]
+        video_loads_release.set()
+        answered.append(scheduler.outbox.get(timeout=5))
+    finally:
+        video_loads_release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert [(message.request_id, message.type) for message in answered] == [
+        ("audio", "result"),
+        ("text", "result"),
+        ("video", "result"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("max_concurrency", "build_request"),
     [(2, text_request), (1, video_request)],
@@ -2785,7 +2960,7 @@ def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_threa
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
             calls.append((payload.request_id, threading.get_ident()))
             return payload.request_id
@@ -2824,7 +2999,7 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
             nonlocal running, most_running
             with running_lock:
@@ -2855,37 +3030,44 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
 
 @pytest.mark.parametrize(
     (
-        "stage_threads",
-        "stage_cpus",
+        "stage_intraop_threads",
+        "stage_cpu_count",
         "video_decode_threads",
-        "intraop_threads",
         "decode_threads",
+        "frame_workers",
+        "lane_intraop_threads",
     ),
     [
-        (8, 6, None, (6, 3), (10, 20)),
-        (2, 64, 5, (2, 2), (5, 5)),
-        (8, 1, None, (1, 1), (10, 20)),
+        (8, 6, None, (6, 3), 2, 3),
+        (2, 64, 5, (5, 5), 2, 2),
+        (8, 1, None, (1, 1), 1, 1),
     ],
 )
-def test_preprocessing_video_shares_the_stage_cpus_with_the_videos_running(
-    monkeypatch: pytest.MonkeyPatch,
-    stage_threads: int,
-    stage_cpus: int,
+def test_preprocessing_video_lane_splits_the_stage_cpus_among_its_threads(
+    stage_intraop_threads: int,
+    stage_cpu_count: int,
     video_decode_threads: int | None,
-    intraop_threads: tuple[int, int],
     decode_threads: tuple[int, int],
+    frame_workers: int,
+    lane_intraop_threads: int,
 ) -> None:
     first_entered, first_release = threading.Event(), threading.Event()
-    shares: dict[str, tuple[preprocessor_mod.VideoCpuShare | None, int]] = {}
+    lanes: dict[str, tuple[int, int, int, int]] = {}
 
     class Preprocessor:
         async def process(
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
-            shares[payload.request_id] = (video_share, torch.get_num_threads())
+            assert video_lane is not None
+            lanes[payload.request_id] = (
+                video_lane.decode_threads,
+                video_lane.frame_pool.frame_workers,
+                video_lane.frame_pool.executor.submit(torch.get_num_threads).result(),
+                video_lane.media_executor.submit(torch.get_num_threads).result(),
+            )
             if payload.request_id == "first":
                 first_entered.set()
                 assert first_release.wait(timeout=5)
@@ -2893,14 +3075,11 @@ def test_preprocessing_video_shares_the_stage_cpus_with_the_videos_running(
                 pass
             return payload.request_id
 
-    monkeypatch.setattr(
-        qwen_stages, "automatic_video_decode_threads", lambda running: 10 * running
-    )
     scheduler = qwen_stages.PreprocessingScheduler(
         Preprocessor(),
-        video_threads=2,
-        stage_threads=stage_threads,
-        stage_cpus=stage_cpus,
+        video_request_worker_count=2,
+        stage_intraop_threads=stage_intraop_threads,
+        stage_cpu_count=stage_cpu_count,
         video_decode_threads=video_decode_threads,
     )
     worker = threading.Thread(target=scheduler.start, daemon=True)
@@ -2912,54 +3091,122 @@ def test_preprocessing_video_shares_the_stage_cpus_with_the_videos_running(
         assert scheduler.outbox.get(timeout=5).data == "second"
         first_release.set()
         assert scheduler.outbox.get(timeout=5).data == "first"
-        scheduler.inbox.put(text_request("text"))
-        assert scheduler.outbox.get(timeout=5).data == "text"
     finally:
         first_release.set()
         scheduler.stop()
         worker.join(timeout=3)
 
-    for request_id, intraop, decode in zip(
-        ("first", "second"), intraop_threads, decode_threads
-    ):
-        share, team = shares[request_id]
-        assert share == preprocessor_mod.VideoCpuShare(
-            intraop_threads=intraop, decode_threads=decode
+    assert lanes == {
+        request_id: (
+            request_decode_threads,
+            frame_workers,
+            lane_intraop_threads,
+            lane_intraop_threads,
         )
-        assert team == intraop
-    assert shares["text"][0] is None
+        for request_id, request_decode_threads in zip(
+            ("first", "second"), decode_threads
+        )
+    }
 
 
-def test_preprocessing_video_answers_a_failure_outside_its_preprocessing_and_frees_its_slot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    shares: dict[str, preprocessor_mod.VideoCpuShare | None] = {}
-    decode_calls: list[int] = []
+def test_preprocessing_video_lane_threads_keep_their_team_and_later_threads_the_process_team() -> (
+    None
+):
+    """Video requests set the process-wide thread count, so a thread started after them took a video's team instead of the stage's."""
+    with ThreadPoolExecutor(max_workers=1) as earlier_executor:
+        process_intraop_threads = earlier_executor.submit(
+            torch.get_num_threads
+        ).result()
+    lane_intraop_threads = process_intraop_threads + 1
+    teams: dict[str, int] = {}
 
     class Preprocessor:
         async def process(
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
-            shares[payload.request_id] = video_share
+            if video_lane is None:
+                teams["scheduler"] = torch.get_num_threads()
+            else:
+                teams["frames"] = video_lane.frame_pool.executor.submit(
+                    torch.get_num_threads
+                ).result()
+                teams["media"] = video_lane.media_executor.submit(
+                    torch.get_num_threads
+                ).result()
             return payload.request_id
 
-    def decode_threads(running: int) -> int:
-        decode_calls.append(running)
-        if len(decode_calls) == 1:
-            raise RuntimeError("share failed")
-        else:
-            pass
-        return 10 * running
-
-    monkeypatch.setattr(qwen_stages, "automatic_video_decode_threads", decode_threads)
     scheduler = qwen_stages.PreprocessingScheduler(
         Preprocessor(),
-        video_threads=2,
-        stage_threads=8,
-        stage_cpus=6,
+        video_request_worker_count=2,
+        stage_intraop_threads=lane_intraop_threads,
+        stage_cpu_count=2 * lane_intraop_threads,
+        video_decode_threads=None,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("video"))
+        assert scheduler.outbox.get(timeout=5).data == "video"
+        scheduler.inbox.put(text_request("text"))
+        assert scheduler.outbox.get(timeout=5).data == "text"
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+    with ThreadPoolExecutor(max_workers=1) as later_executor:
+        teams["later"] = later_executor.submit(torch.get_num_threads).result()
+
+    assert teams == {
+        "frames": lane_intraop_threads,
+        "media": lane_intraop_threads,
+        "scheduler": process_intraop_threads,
+        "later": process_intraop_threads,
+    }
+
+
+def test_preprocessing_video_answers_a_failure_outside_its_preprocessing_and_frees_its_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lanes: dict[str, int] = {}
+    lanes_built: list[int] = []
+    video_lane_type = preprocessor_mod.VideoLane
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            assert video_lane is not None
+            lanes[payload.request_id] = video_lane.decode_threads
+            return payload.request_id
+
+    def build_video_lane(
+        *,
+        media_executor: ThreadPoolExecutor,
+        frame_pool: FramePool,
+        decode_threads: int,
+    ) -> preprocessor_mod.VideoLane:
+        lanes_built.append(decode_threads)
+        if len(lanes_built) == 1:
+            raise RuntimeError("lane failed")
+        else:
+            pass
+        return video_lane_type(
+            media_executor=media_executor,
+            frame_pool=frame_pool,
+            decode_threads=decode_threads,
+        )
+
+    monkeypatch.setattr(qwen_stages, "VideoLane", build_video_lane)
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_request_worker_count=2,
+        stage_intraop_threads=8,
+        stage_cpu_count=6,
         video_decode_threads=None,
     )
     worker = threading.Thread(target=scheduler.start, daemon=True)
@@ -2976,9 +3223,7 @@ def test_preprocessing_video_answers_a_failure_outside_its_preprocessing_and_fre
     assert (error.request_id, error.type) == ("broken", "error")
     assert isinstance(error.data, RuntimeError)
     assert (result.request_id, result.data) == ("after", "after")
-    assert shares == {
-        "after": preprocessor_mod.VideoCpuShare(intraop_threads=6, decode_threads=10)
-    }
+    assert lanes == {"after": 6}
 
 
 def test_preprocessing_video_threads_see_the_stage_bound_to_the_scheduler_thread(
@@ -2989,7 +3234,7 @@ def test_preprocessing_video_threads_see_the_stage_bound_to_the_scheduler_thread
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str | None:
             return get_active_stage()
 
@@ -3025,7 +3270,7 @@ def test_preprocessing_video_reports_errors_and_drops_aborted_requests(
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
             started.append(payload.request_id)
             if payload.request_id.startswith("running"):
@@ -3082,7 +3327,7 @@ def test_preprocessing_stop_drops_videos_still_waiting_for_a_thread(
             self,
             payload: StagePayload,
             request_inputs: RequestInputs,
-            video_share: preprocessor_mod.VideoCpuShare | None,
+            video_lane: preprocessor_mod.VideoLane | None,
         ) -> str:
             started.append(payload.request_id)
             if payload.request_id.startswith("running"):
