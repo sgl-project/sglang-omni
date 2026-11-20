@@ -10,11 +10,11 @@ nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing) {
           {"window_id", timing.window_id},
           {"kind", timing.kind},
           {"audio_sample_count", timing.audio_sample_count},
-          {"append_ms", timing.append_ms},
-          {"decision_ms", timing.decision_ms},
-          {"submit_ms", timing.submit_ms},
-          {"transcribe_ms", timing.transcribe_ms},
-          {"publish_ms", timing.publish_ms}};
+          {"append_at_ms", timing.append_at_ms},
+          {"decision_at_ms", timing.decision_at_ms},
+          {"submit_at_ms", timing.submit_at_ms},
+          {"transcribe_at_ms", timing.transcribe_at_ms},
+          {"publish_at_ms", timing.publish_at_ms}};
 }
 
 nlohmann::ordered_json

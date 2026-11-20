@@ -42,15 +42,18 @@ struct TranscriptionResult {
 };
 
 // Realtime preview timing without prompt, transcript or speaker content.
+// The *_at_ms fields are absolute steady_clock milliseconds, not stage
+// durations: a stage's cost is the difference of two consecutive fields
+// (e.g. publish_at_ms - transcribe_at_ms is the publish cost).
 struct MossPreviewTiming {
   int window_id = 0;
   std::string kind = "preview";
   int audio_sample_count = 0;
-  int64_t append_ms = 0;
-  int64_t decision_ms = 0;
-  int64_t submit_ms = 0;
-  int64_t transcribe_ms = 0;
-  int64_t publish_ms = 0;
+  int64_t append_at_ms = 0;
+  int64_t decision_at_ms = 0;
+  int64_t submit_at_ms = 0;
+  int64_t transcribe_at_ms = 0;
+  int64_t publish_at_ms = 0;
 };
 
 nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing);

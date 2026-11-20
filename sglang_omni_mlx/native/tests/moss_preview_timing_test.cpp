@@ -18,22 +18,22 @@ int main() {
   timing.window_id = 7;
   timing.kind = "preview";
   timing.audio_sample_count = 40000;
-  timing.append_ms = 1000;
-  timing.decision_ms = 1002;
-  timing.submit_ms = 1004;
-  timing.transcribe_ms = 1250;
-  timing.publish_ms = 1252;
+  timing.append_at_ms = 1000;
+  timing.decision_at_ms = 1002;
+  timing.submit_at_ms = 1004;
+  timing.transcribe_at_ms = 1250;
+  timing.publish_at_ms = 1252;
 
   const auto json = omni_common::MossPreviewTimingJson(timing);
   if (!Check(json["event"] == "moss_preview_timing", "event") ||
       !Check(json["window_id"] == 7, "window_id") ||
       !Check(json["kind"] == "preview", "kind") ||
       !Check(json["audio_sample_count"] == 40000, "audio_sample_count") ||
-      !Check(json["append_ms"] == 1000, "append_ms") ||
-      !Check(json["decision_ms"] == 1002, "decision_ms") ||
-      !Check(json["submit_ms"] == 1004, "submit_ms") ||
-      !Check(json["transcribe_ms"] == 1250, "transcribe_ms") ||
-      !Check(json["publish_ms"] == 1252, "publish_ms")) {
+      !Check(json["append_at_ms"] == 1000, "append_at_ms") ||
+      !Check(json["decision_at_ms"] == 1002, "decision_at_ms") ||
+      !Check(json["submit_at_ms"] == 1004, "submit_at_ms") ||
+      !Check(json["transcribe_at_ms"] == 1250, "transcribe_at_ms") ||
+      !Check(json["publish_at_ms"] == 1252, "publish_at_ms")) {
     return 1;
   }
   for (const std::string &key :
