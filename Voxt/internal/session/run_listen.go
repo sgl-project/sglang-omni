@@ -292,6 +292,9 @@ func (r *run) listen() (string, bool) {
 		if stream != nil {
 			stream.Close()
 		}
+		if r.typedOnly() {
+			return "", true
+		}
 		r.m.end(r, Cancelled, func(s *Snapshot) { s.Problem = &Problem{Code: ProblemTooShort} }, nil)
 		return "", false
 	}
@@ -355,6 +358,9 @@ func (r *run) listen() (string, bool) {
 			salvaged = r.salvage(stream)
 		}
 		stream.Close()
+		if silent && r.typedOnly() {
+			return "", true
+		}
 		if silent {
 			// The gate held the whole recording: no speech, nothing sent.
 			r.logf("info", "no speech in %v: nothing sent to %s", audioLen.Round(time.Millisecond), r.svc.ASRInfo.ID)
@@ -365,6 +371,9 @@ func (r *run) listen() (string, bool) {
 		}
 	} else if ft, ok := r.svc.ASR.(asr.FileTranscriber); ok {
 		upload, speech := r.prepare(pcm)
+		if !speech && r.typedOnly() {
+			return "", true
+		}
 		if !speech {
 			r.logf("info", "no speech in %v: not sent to %s", audioLen.Round(time.Millisecond), r.svc.ASRInfo.ID)
 			r.recognitionFailed = true
@@ -402,6 +411,9 @@ func (r *run) listen() (string, bool) {
 	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), word)
 	r.logf("info", "recognised %s in %v", r.logText(raw), asrTime.Round(time.Millisecond))
 	r.m.update(r, func(s *Snapshot) { s.Raw, s.Timings.ASR = raw, asrTime })
+	if raw == "" && r.typedOnly() {
+		return "", true
+	}
 	if raw == "" {
 		r.recognitionFailed = true
 		r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})
@@ -491,4 +503,16 @@ func (r *run) glossary() []compose.Term {
 		}
 	}
 	return out
+}
+
+// typedOnly says whether the input box holds typed text for a recording
+// nothing was heard in: the session goes on, the text its instruction
+// (writeInput), instead of ending with "no speech".
+func (r *run) typedOnly() bool {
+	cfg := r.m.cfg
+	if !r.req.Box || cfg.BoxInput == nil {
+		return false
+	}
+	typed, _, err := cfg.BoxInput(r.ctx)
+	return err == nil && strings.TrimSpace(typed) != ""
 }
