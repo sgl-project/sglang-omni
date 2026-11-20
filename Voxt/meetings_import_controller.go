@@ -81,7 +81,7 @@ func (a *app) importRecording(path string) {
 			switch {
 			case err == nil:
 				a.openMeetingDetail(id)
-			case errors.Is(err, context.Canceled):
+			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 				// interrupted: the meeting's Continue processing finishes it
 			case errors.Is(err, meeting.ErrNoDiarizer):
 				if a.meetingMTDInstalled() && !a.meetingDiarizerLanguage() {

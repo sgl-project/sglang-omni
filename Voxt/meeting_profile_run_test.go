@@ -401,7 +401,7 @@ func runMeetingProfile(
 		// an absolute output directory.
 	} else if segmentsErr := os.MkdirAll(config.OutputDir, 0o700); segmentsErr != nil {
 		recorder.Warn("segments.jsonl: " + segmentsErr.Error())
-	} else if segmentsFile, segmentsErr := os.Create(filepath.Join(config.OutputDir, "segments.jsonl")); segmentsErr == nil {
+	} else if segmentsFile, segmentsErr := os.OpenFile(filepath.Join(config.OutputDir, "segments.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); segmentsErr == nil {
 		encoder := json.NewEncoder(segmentsFile)
 		for _, segment := range rawSegments {
 			if encodeErr := encoder.Encode(map[string]any{

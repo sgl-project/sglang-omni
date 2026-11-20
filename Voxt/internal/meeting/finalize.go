@@ -288,8 +288,15 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 				carry += "[" + mtdLabel(speaker) + "] " + text + "\n"
 			}
 		}
-		if marked == 0 && strings.TrimSpace(res.Text) != "" {
-			out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: strings.TrimSpace(res.Text), Final: true})
+		if marked == 0 {
+			text := strings.TrimSpace(res.Text)
+			if needTrim {
+				text = DedupeOverlapText(prevText, text)
+			}
+			if text != "" {
+				out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: text, Final: true})
+				prevText = text
+			}
 		}
 		if runes := []rune(carry); len(runes) > 300 { // the last lines, at most a screen
 			carry = string(runes[len(runes)-300:])

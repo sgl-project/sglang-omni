@@ -9,6 +9,12 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/macx"
 )
 
+func TestPressureRankTreatsUnknownLevelsAsCritical(t *testing.T) {
+	if got := pressureRank("level 2"); got != pressureRank("critical") {
+		t.Fatalf("unknown pressure rank = %d, want critical", got)
+	}
+}
+
 func TestResourceSamplerPeakCPUAndSwap(t *testing.T) {
 	sampler := NewResourceSampler(func() []int { return []int{10, 11, 11} })
 	memoryCalls := 0

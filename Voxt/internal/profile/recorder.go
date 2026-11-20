@@ -348,7 +348,9 @@ func (r *Recorder) WrapChat(kind string, chat interface {
 // SetStopToSummary records the acceptance wall from the final pass's
 // start to the summary's return.
 func (r *Recorder) SetStopToSummary(elapsed time.Duration) {
+	r.mu.Lock()
 	r.report.StopToSummaryMS = Available(float64(elapsed) / float64(time.Millisecond))
+	r.mu.Unlock()
 }
 
 func (r *Recorder) Warn(warning string) {

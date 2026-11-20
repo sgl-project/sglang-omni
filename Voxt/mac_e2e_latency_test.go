@@ -91,9 +91,10 @@ var minPreviewLine = regexp.MustCompile(`"min_preview_samples"\s*:\s*(\d+)`)
 // latencyLog keeps when each model's server became ready and how long
 // its start took.
 type latencyLog struct {
-	mu                sync.Mutex
-	ready             map[string][]readyAt
-	minPreviewSamples int
+	mu             sync.Mutex
+	ready          map[string][]readyAt
+	latestModel    string
+	previewByModel map[string]int
 }
 
 type readyAt struct {
@@ -104,13 +105,17 @@ type readyAt struct {
 func (l *latencyLog) add(msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if m := minPreviewLine.FindStringSubmatch(msg); m != nil {
-		l.minPreviewSamples, _ = strconv.Atoi(m[1])
+	if m := minPreviewLine.FindStringSubmatch(msg); m != nil && l.latestModel != "" {
+		if l.previewByModel == nil {
+			l.previewByModel = map[string]int{}
+		}
+		l.previewByModel[l.latestModel], _ = strconv.Atoi(m[1])
 	}
 	m := readyLine.FindStringSubmatch(msg)
 	if m == nil {
 		return
 	}
+	l.latestModel = m[1]
 	load, _ := time.ParseDuration(m[2])
 	if l.ready == nil {
 		l.ready = map[string][]readyAt{}
@@ -118,10 +123,10 @@ func (l *latencyLog) add(msg string) {
 	l.ready[m[1]] = append(l.ready[m[1]], readyAt{time.Now(), load})
 }
 
-func (l *latencyLog) minPreview() int {
+func (l *latencyLog) minPreview(id string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.minPreviewSamples
+	return l.previewByModel[id]
 }
 
 // since is the newest start of model id's server after t.
@@ -334,7 +339,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	t.Logf("MEASURE latency %s %s: first audio %v, server ready %v (its start %v), first partial %v, %d live updates in %v (longest wait %v), Final %v / insert %v / done %v after Stop: %d characters %q", name, id,
 		st.heard.Round(time.Millisecond), st.ready.Round(time.Millisecond), st.load.Round(time.Millisecond),
 		st.partial.Round(time.Millisecond), updates, speak, gap.Round(time.Millisecond), st.final.Round(time.Millisecond), st.insert.Round(time.Millisecond), st.done.Round(time.Millisecond), len([]rune(a.sess.Raw)), firstRunes(a.sess.Raw, 40))
-	st.minPreviewSamples = lg.minPreview()
+	st.minPreviewSamples = lg.minPreview(id)
 	writeLatencyResult(t, name, id, round, st, updates, gap, a.sess.Raw)
 	return st
 }
@@ -418,9 +423,18 @@ func TestMacLatencyScriptRequiresMainSHA(t *testing.T) {
 
 func TestLatencyLogReadsNativePreviewConfig(t *testing.T) {
 	var log latencyLog
+	log.add("omni: asr.one ready on 127.0.0.1:1 after 50ms (pid 1)")
 	log.add(`omni: native {"event":"moss_preview_timing","min_preview_samples":12000}`)
-	if got := log.minPreview(); got != 12000 {
+	if got := log.minPreview("asr.one"); got != 12000 {
 		t.Fatalf("min_preview_samples = %d, want 12000", got)
+	}
+	log.add("omni: asr.two ready on 127.0.0.1:2 after 50ms (pid 2)")
+	if got := log.minPreview("asr.two"); got != 0 {
+		t.Fatalf("a model switch reused the previous model's preview gate: %d", got)
+	}
+	log.add(`omni: native {"event":"moss_preview_timing","min_preview_samples":10000}`)
+	if got := log.minPreview("asr.two"); got != 10000 {
+		t.Fatalf("min_preview_samples after the switch = %d, want 10000", got)
 	}
 }
 

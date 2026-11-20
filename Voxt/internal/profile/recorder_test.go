@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -320,6 +321,25 @@ func TestSummaryContentHashIgnoresGeneratedAt(t *testing.T) {
 	second.SetTranscripts("asr", "final", `{"title":"title","body":"changed","todos":["one"],"generated_at":2}`)
 	if first.report.SummaryContentSHA256 == second.report.SummaryContentSHA256 {
 		t.Fatal("changed body did not change the summary content hash")
+	}
+}
+
+func TestRecorderStopToSummaryConcurrentWithFinish(t *testing.T) {
+	recorder := NewRecorder(validConfig())
+	var workers sync.WaitGroup
+	for range 4 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for range 25 {
+				recorder.SetStopToSummary(time.Second)
+				recorder.Finish(nil)
+			}
+		}()
+	}
+	workers.Wait()
+	if recorder.report.StopToSummaryMS.Value == nil || *recorder.report.StopToSummaryMS.Value != 1000 {
+		t.Fatalf("stop_to_summary_ms = %+v, want 1000", recorder.report.StopToSummaryMS)
 	}
 }
 

@@ -143,6 +143,12 @@ class SummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             loop.summarize_reports(reports)
 
+    def test_summary_non_integer_stage_index_is_a_value_error(self):
+        reports = [raw_report(300), raw_report(100), raw_report(200)]
+        reports[1]["stages"][0]["index"] = None
+        with self.assertRaises(ValueError):
+            loop.summarize_reports(reports)
+
     def test_summary_content_hashes_are_ordered_without_fabricating_missing_values(
         self,
     ):

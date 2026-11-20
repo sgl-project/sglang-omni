@@ -92,11 +92,15 @@ func (m *Manager) finishImport(ctx context.Context, mt store.Meeting, summarize 
 		}
 		return err
 	}
+	current, segments, err := m.cfg.Store.Meeting(context.WithoutCancel(ctx), mt.ID)
+	if err != nil {
+		return err
+	}
 	var first error
-	if summarize {
+	if summarize && len(segments) > 0 {
 		first = m.correctAndSummarize(ctx, mt.ID)
 	}
-	current, _, err := m.cfg.Store.Meeting(context.WithoutCancel(ctx), mt.ID)
+	current, _, err = m.cfg.Store.Meeting(context.WithoutCancel(ctx), mt.ID)
 	if err != nil {
 		return err
 	}
@@ -108,6 +112,10 @@ func (m *Manager) finishImport(ctx context.Context, mt store.Meeting, summarize 
 	}
 	if err := applyAudioRetention(context.WithoutCancel(ctx), m.cfg, current, ModeImport, true); err != nil {
 		return err
+	}
+	if !m.cfg.Privacy().KeepAudio && !ModeImport.KeepsAudio() {
+		current.Audio = ""
+		current.AudioUntil = time.Time{}
 	}
 	current.Status = store.MeetingDone
 	if err := m.cfg.Store.UpdateMeeting(context.WithoutCancel(ctx), current); err != nil {

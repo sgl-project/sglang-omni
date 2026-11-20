@@ -95,6 +95,21 @@ func TestDiarizeTrackDropsOverlapRepeat(t *testing.T) {
 	}
 }
 
+func TestDiarizeTrackDeduplicatesUnlabeledOverlap(t *testing.T) {
+	d := &seqDiarizer{results: []asr.Result{
+		{Text: "same words"},
+		{Text: "same words next"},
+	}}
+	rate := asr.SampleRate
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, make([]byte, rate*200*2), []vad.Segment{{Start: 0, End: rate * 200}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 2 || segs[0].Text != "same words" || segs[1].Text != "next" {
+		t.Fatalf("unlabeled overlap segments: %+v", segs)
+	}
+}
+
 // The model can number a voice again in a later chunk: the repeated line
 // in the overlap anchors the new number to the earlier speaker instead of
 // merging two voices into one, and the carry shows the earlier numbers.

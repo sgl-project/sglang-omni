@@ -101,7 +101,7 @@ func pressureRank(pressure string) int {
 	case "":
 		return 0
 	default:
-		return 4
+		return 3
 	}
 }
 

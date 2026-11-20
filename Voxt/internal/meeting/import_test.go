@@ -134,8 +134,8 @@ func TestImportDiarizesCorrectsAndSummarizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mt.Status != store.MeetingDone || mt.Mode != store.MeetingModeImport {
-		t.Fatalf("status %s, mode %s", mt.Status, mt.Mode)
+	if mt.Status != store.MeetingDone || mt.Mode != store.MeetingModeImport || mt.Audio != "" {
+		t.Fatalf("status %s, mode %s, stale audio %q", mt.Status, mt.Mode, mt.Audio)
 	}
 	var got []string
 	for _, s := range segs {
@@ -155,6 +155,18 @@ func TestImportDiarizesCorrectsAndSummarizes(t *testing.T) {
 	}
 	if lastP != 1 {
 		t.Errorf("progress ended at %v", lastP)
+	}
+}
+
+func TestImportSilentRecordingFinishesWithoutSummaryError(t *testing.T) {
+	m, repo := importFixture(t, &fixingChat{}, &importDiarizer{}, &importFileASR{})
+	id, err := m.Import(context.Background(), ImportRequest{Name: "silent", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt, _, err := repo.Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingDone || mt.Audio != "" {
+		t.Fatalf("status %s, stale audio %q, err %v", mt.Status, mt.Audio, err)
 	}
 }
 

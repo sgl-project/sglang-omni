@@ -207,6 +207,13 @@ def numeric_path(report: dict[str, object], path: list[str]) -> float:
     return current
 
 
+def stage_index(stage: dict[str, object]) -> int:
+    value = stage.get("index", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("stage index must be an integer")
+    return value
+
+
 def report_peak_memory_pressure(report: dict[str, object]) -> str | None:
     resources = report.get("resources")
     if not isinstance(resources, dict):
@@ -258,7 +265,7 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
                 stage_keys.add(
                     (
                         str(stage.get("name")),
-                        int(stage.get("index", 0)),
+                        stage_index(stage),
                         str(stage.get("track", "")),
                     )
                 )
@@ -272,7 +279,7 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
                 stage
                 for stage in stages
                 if stage.get("name") == name
-                and int(stage.get("index", 0)) == index
+                and stage_index(stage) == index
                 and str(stage.get("track", "")) == track
             ]
             if len(matches) != 1:
@@ -291,7 +298,7 @@ def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
                 stage
                 for stage in report["stages"]
                 if stage.get("name") == name
-                and int(stage.get("index", 0)) == index
+                and stage_index(stage) == index
                 and str(stage.get("track", "")) == track
             )
             for report in reports

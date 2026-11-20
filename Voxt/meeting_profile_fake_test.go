@@ -244,6 +244,7 @@ func TestMeetingProfileDiarizeChunkSeconds(t *testing.T) {
 func TestMeetingProfileFakeImportWithMicTrack(t *testing.T) {
 	config := fakeProfileConfig("import")
 	config.MicAudio = "mic.wav"
+	config.OutputDir = t.TempDir()
 	config.Cleanup = true
 	config.Summary = true
 	config.IdleTimeoutMS = 1
@@ -304,6 +305,13 @@ func TestMeetingProfileFakeImportWithMicTrack(t *testing.T) {
 	}
 	if micChunks != 1 || sysDiarize != 1 {
 		t.Errorf("track attribution mic asr_chunk=%d, system diarization=%d, want 1/1", micChunks, sysDiarize)
+	}
+	segmentsInfo, err := os.Stat(filepath.Join(config.OutputDir, "segments.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if segmentsInfo.Mode().Perm() != 0o600 {
+		t.Errorf("segments.jsonl mode = %o, want 600", segmentsInfo.Mode().Perm())
 	}
 }
 

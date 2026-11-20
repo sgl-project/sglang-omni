@@ -12,6 +12,7 @@ func TestRequestWindowsUseTheResultCap(t *testing.T) {
 		}
 		result.Stages = append(result.Stages, struct {
 			Name    string `json:"name"`
+			Track   string `json:"track,omitempty"`
 			Index   int    `json:"index"`
 			AudioMs int    `json:"audio_ms"`
 		}{Name: "diarization", Index: i, AudioMs: audioMs})
@@ -46,12 +47,40 @@ func TestRequestWindowsUseTheResultCap(t *testing.T) {
 	}
 }
 
+func TestRequestWindowsRejectsMultipleTracks(t *testing.T) {
+	var result resultFile
+	result.Stages = append(result.Stages,
+		struct {
+			Name    string `json:"name"`
+			Track   string `json:"track,omitempty"`
+			Index   int    `json:"index"`
+			AudioMs int    `json:"audio_ms"`
+		}{Name: "diarization", Track: "mic", AudioMs: 1000},
+		struct {
+			Name    string `json:"name"`
+			Track   string `json:"track,omitempty"`
+			Index   int    `json:"index"`
+			AudioMs int    `json:"audio_ms"`
+		}{Name: "diarization", Track: "system", Index: 1, AudioMs: 1000},
+	)
+	if _, err := requestWindows(result, 120); err == nil {
+		t.Fatal("two diarization tracks were silently treated as one timeline")
+	}
+}
+
+func TestLongClipIDsRejectsAnEmptyFixture(t *testing.T) {
+	if _, err := longClipIDs(clipsFile{}); err == nil {
+		t.Fatal("an empty long-clip fixture was accepted")
+	}
+}
+
 func TestRequestAtRejectsAudioOutsideTheTimeline(t *testing.T) {
 	var result resultFile
 	result.AudioDurationMs = 601943
 	for i := 0; i < 6; i++ {
 		result.Stages = append(result.Stages, struct {
 			Name    string `json:"name"`
+			Track   string `json:"track,omitempty"`
 			Index   int    `json:"index"`
 			AudioMs int    `json:"audio_ms"`
 		}{Name: "diarization", Index: i, AudioMs: 120240})

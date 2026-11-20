@@ -41,6 +41,7 @@ type resultFile struct {
 	AudioDurationMs int `json:"audio_duration_ms"`
 	Stages          []struct {
 		Name    string `json:"name"`
+		Track   string `json:"track,omitempty"`
 		Index   int    `json:"index"`
 		AudioMs int    `json:"audio_ms"`
 	} `json:"stages"`
@@ -135,9 +136,16 @@ func requestWindows(result resultFile, capSeconds int) ([]requestWindow, error) 
 		return nil, fmt.Errorf("cap seconds must be positive")
 	}
 	var windows []requestWindow
+	track := ""
 	for _, stage := range result.Stages {
 		if stage.Name != "diarization" {
 			continue
+		}
+		if len(windows) == 0 {
+			track = stage.Track
+		}
+		if stage.Track != track {
+			return nil, fmt.Errorf("multiple diarization tracks %q and %q are not supported", track, stage.Track)
 		}
 		request := len(windows) + 1
 		timelineStart := float64(request-1) * float64(capSeconds-1)
@@ -167,6 +175,17 @@ func requestAt(windows []requestWindow, seconds float64) (int, error) {
 	return request, nil
 }
 
+func longClipIDs(input clipsFile) ([]string, error) {
+	if len(input.Long) == 0 || len(input.Long[0].Of) == 0 {
+		return nil, fmt.Errorf("the eval fixture has no long clips")
+	}
+	of := input.Long[0].Of
+	for len(of) < 81 {
+		of = append(of, input.Long[0].Of...)
+	}
+	return of[:81], nil
+}
+
 func main() {
 	if len(os.Args) != 3 {
 		panic("usage: go run ./scripts/meetingquality CAP_SECONDS RESULT_JSON")
@@ -181,11 +200,10 @@ func main() {
 	for _, clip := range input.Clips {
 		textByID[clip.ID] = clip.Text
 	}
-	of := input.Long[0].Of
-	for len(of) < 81 {
-		of = append(of, input.Long[0].Of...)
+	of, err := longClipIDs(input)
+	if err != nil {
+		panic(err)
 	}
-	of = of[:81]
 	clips := make([]clipInfo, len(of))
 	start := 0.0
 	for i, id := range of {
