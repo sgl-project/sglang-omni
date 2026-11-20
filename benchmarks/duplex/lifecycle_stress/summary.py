@@ -41,6 +41,7 @@ class StressSummary(BaseModel):
     mock_settings: dict[str, JsonValue] | None
     server_unit_ms: int | None
     server_supports_cancel: bool | None
+    server_interaction: str | None
     device_models: list[str] | None
     input_seconds: float
     audio_file: str | None
@@ -227,6 +228,7 @@ def summarize(samples: StressSamples) -> StressSummary:
         mock_settings=samples.mock_settings,
         server_unit_ms=samples.server_unit_ms,
         server_supports_cancel=samples.server_supports_cancel,
+        server_interaction=samples.server_interaction,
         device_models=samples.device_models,
         input_seconds=samples.input_seconds,
         audio_file=samples.audio_file,

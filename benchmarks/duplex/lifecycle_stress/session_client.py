@@ -68,6 +68,8 @@ class SessionPlan:
     should_cancel_reply: bool
     # note (Yi Zhao): what the deployment publishes; one that does not cancel has to refuse response.cancel and keep the session going.
     supports_cancel: bool
+    # note (Yi Zhao): set for a turn-based deployment, which takes its turns from the voice detection a session asks for.
+    turn_detection: TurnDetection | None
     timeout_s: float
 
 
@@ -239,11 +241,18 @@ async def drive_session(
     else:
         pass
     last_sent_s = time.perf_counter()
-    await connection.send(
-        client_event(
-            "session.update", {"session": SESSION_CONFIGURATION[plan.protocol]}
-        )
-    )
+    configuration = SESSION_CONFIGURATION[plan.protocol]
+    if plan.turn_detection is None:
+        pass
+    else:
+        # note (Yi Zhao): the same request the duplex recorder makes of a turn-based server.
+        configuration = {
+            **configuration,
+            "audio": {
+                "input": {"turn_detection": plan.turn_detection.model_dump(mode="json")}
+            },
+        }
+    await connection.send(client_event("session.update", {"session": configuration}))
     if plan.leave_point == "update":
         await leave_early(connection, plan.leave_style)
         return ended("dropped")

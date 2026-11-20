@@ -105,6 +105,8 @@ class StressSamples(BaseModel):
     reconnects: int
     server_unit_ms: int | None
     server_supports_cancel: bool | None
+    # note (Yi Zhao): native or turn_based, as the deployment publishes it; every session of a run against a turn-based one asks for its voice detection.
+    server_interaction: str | None
     server_timeout_s: float | None
     max_connections: int | None
     cleanup_wait_s: float

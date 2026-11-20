@@ -79,7 +79,9 @@ def run(arguments: argparse.Namespace) -> None:
         input_seconds = (
             DEFAULT_LONG_SECONDS
             if scenario == "long"
-            else arguments.packets_per_session * PACKET_BYTES / (2 * SAMPLE_RATE)
+            else (arguments.packets_per_session or DEFAULT_PACKETS_PER_SESSION)
+            * PACKET_BYTES
+            / (2 * SAMPLE_RATE)
         )
         pcm = bytes(int(input_seconds * SAMPLE_RATE) * 2)
         audio_sha256: str | None = None
@@ -88,6 +90,13 @@ def run(arguments: argparse.Namespace) -> None:
         # note (Yi Zhao): the conversion the Full-Duplex-Bench recorder applies, so both send the same bytes for the same file.
         pcm, audio_conversion = normalize_audio(arguments.audio_file)
         audio_sha256 = file_sha256(arguments.audio_file)
+    if arguments.packets_per_session is not None:
+        packets_per_session = arguments.packets_per_session
+    elif arguments.audio_file is None:
+        packets_per_session = DEFAULT_PACKETS_PER_SESSION
+    else:
+        # note (Yi Zhao): a turn-based model replies only after the speech and the pause that ends the turn, so a short session of a file sends the whole file.
+        packets_per_session = len(pcm) // PACKET_BYTES
     settings = RunSettings(
         url=arguments.url,
         server=server_identity(
@@ -106,7 +115,7 @@ def run(arguments: argparse.Namespace) -> None:
         audio_file=None if arguments.audio_file is None else str(arguments.audio_file),
         audio_sha256=audio_sha256,
         audio_conversion=audio_conversion,
-        packets_per_session=arguments.packets_per_session,
+        packets_per_session=packets_per_session,
         leave_point=leave_point,
         leave_style=leave_style,
         idle_point=arguments.idle_point if scenario == "idle" else "none",
@@ -214,8 +223,8 @@ def main() -> None:
     run_parser.add_argument(
         "--packets-per-session",
         type=int,
-        default=DEFAULT_PACKETS_PER_SESSION,
-        help="80 ms input packets a short session sends",
+        default=None,
+        help=f"80 ms input packets a short session sends; {DEFAULT_PACKETS_PER_SESSION} of silence by default, the whole file with --audio-file",
     )
     run_parser.add_argument(
         "--audio-file",

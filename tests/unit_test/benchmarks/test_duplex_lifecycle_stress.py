@@ -632,6 +632,35 @@ def test_a_reply_that_only_comes_after_the_turn_has_ended_is_still_met(
     assert summary.sessions_left == 0
 
 
+def test_every_session_of_a_run_against_a_turn_based_server_asks_for_its_voice_detection(
+    tmp_path: Path,
+) -> None:
+    """A turn-based deployment takes its turns by the voice detection a session asks for, in any scenario; turns red if only the interrupt scenario asks, which leaves the final session of every other run on the recorder's native profile."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2, takes_turns=True, reply_chunks=3),
+            tmp_path,
+            pcm=SPEECH_PACKET + bytes(5 * PACKET_BYTES),
+        )
+    )
+    trace = (tmp_path / "traces" / "final" / "trace.jsonl").read_text()
+    assert samples.server_interaction == "turn_based"
+    assert '"turn_detection"' in trace
+    assert summarize(samples).failed_checks == []
+
+
+def test_the_interrupt_scenario_is_refused_where_the_server_does_not_take_turns(
+    tmp_path: Path,
+) -> None:
+    """A native full-duplex model has no voice detection to cancel a reply with; turns red if the run starts anyway, because every session would then be refused at session.update and reported as errored."""
+    with pytest.raises(ValueError, match="turn-based deployment"):
+        asyncio.run(
+            stress_against_mock(
+                MockSettings(max_connections=2), tmp_path, scenario="interrupt"
+            )
+        )
+
+
 def test_only_what_the_server_logs_during_the_run_is_kept_and_counted(
     tmp_path: Path,
 ) -> None:
@@ -783,6 +812,7 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
         should_cancel_reply=False,
         reconnects=0,
         server_unit_ms=None,
+        server_interaction=None,
         server_supports_cancel=None,
         server_timeout_s=None,
         max_connections=None,

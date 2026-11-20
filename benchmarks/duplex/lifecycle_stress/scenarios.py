@@ -65,6 +65,7 @@ MAX_ERROR_KINDS = 5
 MAX_ERROR_LINE_CHARS = 200
 READING_FAILURES = (httpx.HTTPError, subprocess.SubprocessError, OSError)
 MAX_RECOVERY_POLL_INTERVAL_S = 2.0
+TURN_BASED_INTERACTION = "turn_based"
 
 
 @dataclass(kw_only=True)
@@ -106,6 +107,7 @@ class PublishedLimits(BaseModel):
 class PublishedCapabilities(BaseModel):
     """What this client reads of the capabilities a shared deployment publishes."""
 
+    interaction: str
     native_unit_ms: int
     supports_cancel: bool
     limits: PublishedLimits
@@ -355,10 +357,6 @@ async def run_stress(settings: RunSettings) -> StressSamples:
     log_offset = (
         0 if settings.server_log is None else settings.server_log.stat().st_size
     )
-    # note (Yi Zhao): a server interrupts a reply when its own voice detection hears the user again, so only this scenario turns that detection on.
-    turn_detection = (
-        TurnDetection(type="server_vad") if settings.scenario == "interrupt" else None
-    )
     assert settings.packets_per_session * PACKET_BYTES <= len(
         settings.pcm
     ), "input audio shorter than the packets of one session"
@@ -389,6 +387,8 @@ async def run_stress(settings: RunSettings) -> StressSamples:
         server_unit_ms: int | None = None
         # note (Yi Zhao): the legacy path publishes no capabilities and always takes response.cancel.
         server_supports_cancel: bool | None = None
+        server_interaction: str | None = None
+        turn_detection: TurnDetection | None = None
         server_timeout_s: float | None = None
         unit_packets = 1
         session_timeout_s = SESSION_TIMEOUT_S + input_seconds
@@ -399,6 +399,12 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             published = PublishedCapabilities.model_validate_json(response.text)
             server_unit_ms = published.native_unit_ms
             server_supports_cancel = published.supports_cancel
+            server_interaction = published.interaction
+            if server_interaction == TURN_BASED_INTERACTION:
+                # note (Yi Zhao): a turn-based deployment takes its turns, answers and interrupts by the voice detection a session asks for, and the recorder has a profile of its own for it; so every session of the run asks for it, not only those of the interrupt scenario.
+                turn_detection = TurnDetection(type="server_vad")
+            else:
+                pass
             unit_packets = math.ceil(server_unit_ms / PACKET_MS)
             if settings.idle_point != "none":
                 server_timeout_s = published.limits.model_dump()[
@@ -410,6 +416,12 @@ async def run_stress(settings: RunSettings) -> StressSamples:
         elif settings.idle_point != "none":
             raise ValueError(
                 "the idle scenario needs the native protocol: only its server publishes the idle limits an expiry is checked against"
+            )
+        else:
+            pass
+        if settings.scenario == "interrupt" and turn_detection is None:
+            raise ValueError(
+                "the interrupt scenario needs a turn-based deployment: only there does the server cancel a reply the user talks over"
             )
         else:
             pass
@@ -431,6 +443,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             idle_point=settings.idle_point,
             should_cancel_reply=should_cancel_reply,
             supports_cancel=server_supports_cancel is not False,
+            turn_detection=turn_detection,
             timeout_s=session_timeout_s,
         )
         baseline = await observer.snapshot(is_required=True)
@@ -467,6 +480,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                 reconnects=settings.reconnects,
                 server_unit_ms=server_unit_ms,
                 server_supports_cancel=server_supports_cancel,
+                server_interaction=server_interaction,
                 server_timeout_s=server_timeout_s,
                 max_connections=settings.max_connections,
                 cleanup_wait_s=settings.cleanup_wait_s,
@@ -512,6 +526,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                     idle_point="none",
                     should_cancel_reply=False,
                     supports_cancel=True,
+                    turn_detection=None,
                     timeout_s=session_timeout_s,
                 ),
             )
