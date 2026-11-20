@@ -195,11 +195,11 @@ const (
 	// The size button sits in the card's corner, in the padding under
 	// the text (CardPadY), CardSizeBtnInset from the edges: far enough
 	// in that the whole button stays inside the rounded corner at the
-	// widest corner radius (26: its corner's centre is 26 from each
-	// edge, and (26-9)·√2 < 26).
+	// widest corner radius (40: its corner's centre is 40 from each
+	// edge, and (40-12)·√2 < 40).
 	CardSizeBtn      = 20
 	CardSizeBtnIcon  = 14
-	CardSizeBtnInset = 9
+	CardSizeBtnInset = 12
 	CardLangMaxW     = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
 	CardWaveW        = 96  // a conversation's waveform
 
@@ -229,11 +229,13 @@ type CardSize struct{ W int }
 // display).
 var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}, {}}
 
-// CardFillW is the fill size's width in the work area wa: the area
-// less the frame's margins (Overlay.Margin and the shadow's Pad on
-// each side), never narrower than the large card.
+// CardFillW is the fill size's width in the work area wa. It never makes
+// the card narrower when Large already fits; past Large it leaves the
+// frame's margins (Overlay.Margin and the shadow's Pad on each side).
 func CardFillW(wa mygo.Rectangle, margin float64) int {
-	return max(CardSizes[2].W, wa.Width-2*(int(math.Round(margin))+Pad))
+	availableWidth := wa.Width - 2*(int(math.Round(margin))+Pad)
+	fitWidth := max(AnswerW, wa.Width-2*Pad)
+	return max(AnswerW, availableWidth, min(CardSizes[2].W, fitWidth))
 }
 
 // Width is the size's width in the work area: the fixed one, or

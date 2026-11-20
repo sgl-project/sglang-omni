@@ -253,7 +253,9 @@ func Check(img image.Image, scale float64, want Want) (Ink, []string) {
 		failf("the face is %.1f×%.1f, not %d×%d", k.faceW, k.faceH, want.W, want.H)
 	}
 	if want.Card {
-		if !slices.ContainsFunc(layout.CardSizes[:], func(s layout.CardSize) bool { return math.Abs(k.faceW-float64(s.W)) <= ovInkSizeTol }) {
+		if !slices.ContainsFunc(layout.CardSizes[:], func(s layout.CardSize) bool {
+			return math.Abs(k.faceW-float64(s.W)) <= ovInkSizeTol || s.W == 0 && k.faceW >= layout.AnswerW-ovInkSizeTol
+		}) {
 			failf("the card is %.1f wide, not a card size's width (%v)", k.faceW, layout.CardSizes)
 		}
 		// The header between the card's top and the rule: as much room

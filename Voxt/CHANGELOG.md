@@ -7,14 +7,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
-- **The answer card has a Fill size and a clearer size button**: the card sizes are Small, Medium, Large and Fill; Fill takes the width the screen's work area leaves, never less than Large. The corner button that cycles the sizes is bigger, easier to see, and sits fully inside the card's rounded corner.
+- **The answer card has a Fill size and a clearer size button**: the card sizes are Small, Medium, Large and Fill; Fill uses the room beyond Large when it fits, and only clamps further when Large cannot fit. The corner button that cycles the sizes is bigger, easier to see, and sits fully inside the card's rounded corner without covering the status line.
 
 ### 中文
 
 #### 新增
 
 - **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
-- **答案卡片新增“充满”大小，尺寸按钮更清楚**：卡片大小现在有小、中、大、充满四档，“充满”占满屏幕工作区留出的宽度，不会比“大”更窄。右下角切换大小的按钮更大、更容易看清，并完全收在卡片圆角内。
+- **答案卡片新增“充满”大小，尺寸按钮更清楚**：卡片大小现在有小、中、大、充满四档；已经放得下的“大”卡片切换成“充满”后不会变窄，只有放不下时才继续收窄。右下角切换大小的按钮更大、更容易看清，完全收在卡片圆角内，也不会遮住状态行。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### 中文

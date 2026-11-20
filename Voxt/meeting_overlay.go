@@ -197,6 +197,7 @@ func meetingOverlayProblem(c *ui.Context, message string, short bool) {
 }
 
 func meetingOverlaySizeButton(c *ui.Context, step int) (next int, clicked bool) {
+	step = min(max(step, 0), len(meetingOvWidths)-1)
 	label, icon, next := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic, step+1
 	if next == len(meetingOvWidths) {
 		label, icon, next = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic, 0

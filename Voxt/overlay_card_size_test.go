@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/ink"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -97,6 +98,7 @@ func TestCardFillSize(t *testing.T) {
 		{X: 0, Y: 25, Width: 2560, Height: 1415},
 		{X: 0, Y: 25, Width: 1280, Height: 600},
 		{X: 0, Y: 25, Width: 900, Height: 600},
+		{X: 0, Y: 25, Width: 520, Height: 600},
 	} {
 		ovTestArea = area
 		a, _, _ := newTestApp(t)
@@ -109,6 +111,69 @@ func TestCardFillSize(t *testing.T) {
 		if f := a.ov.frame; f.X < area.X || f.X+f.Width > area.X+area.Width {
 			t.Errorf("area %+v: the card's window %+v reaches past it", area, f)
 		}
+	}
+}
+
+// TestCardFillInk: the fill card passes the same pixel geometry checks as
+// the fixed widths, including its text and the resized corner control.
+func TestCardFillInk(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) { s.Features.CardSizes = map[string]int{hotkey.Rewrite: 3} })
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread. ", 30)}
+	a.overlaySync()
+	img := renderOverlay(t, a)
+	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cachedCardRef())); len(bad) > 0 {
+		t.Errorf("fill card ink: %v", bad)
+	}
+}
+
+// TestCardMessageLeavesRoomForResizeButton: a long status message and the
+// resize control never cover each other.
+func TestCardMessageLeavesRoomForResizeButton(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	message := "No text field is focused. Click where the text should go, then insert."
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short.", msg: message}
+	a.overlaySync()
+	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
+	frames(tt)
+	messageBounds, ok := tt.Find(message)
+	if !ok {
+		t.Fatalf("no status message in %q", firstTexts(tt))
+	}
+	button, ok := tt.Find(i18n.T("Make the card larger"))
+	if !ok {
+		t.Fatal("no resize control")
+	}
+	if messageBounds.X+messageBounds.W > button.X && messageBounds.Y+messageBounds.H > button.Y {
+		t.Errorf("status message %+v overlaps resize control %+v", messageBounds, button)
+	}
+}
+
+// TestCardFillFollowsDraggedDisplay: dragging Fill to another display
+// recomputes its width from that display's work area.
+func TestCardFillFollowsDraggedDisplay(t *testing.T) {
+	saved := ovTestArea
+	t.Cleanup(func() { ovTestArea = saved })
+	ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 2560, Height: 1415}
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) { s.Features.CardSizes = map[string]int{hotkey.Rewrite: 3} })
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	if a.ov.w != 2332 {
+		t.Fatalf("initial fill width %d, want 2332", a.ov.w)
+	}
+	ovTestArea = mygo.Rectangle{X: 2560, Y: 25, Width: 1440, Height: 875}
+	bounds := mygo.Rectangle{X: 2700, Y: 100, Width: a.ov.w + 2*layout.Pad, Height: a.ov.h + 2*layout.Pad}
+	a.overlayDraggedTo(bounds)
+	if want := layout.CardFillW(ovTestArea, a.prefs.Overlay.Margin); a.ov.w != want {
+		t.Errorf("after dragging to the narrower display: width %d, want %d", a.ov.w, want)
+	}
+	if frame := a.ov.frame; frame.X < ovTestArea.X || frame.X+frame.Width > ovTestArea.X+ovTestArea.Width {
+		t.Errorf("after dragging: window %+v leaves work area %+v", frame, ovTestArea)
+	}
+	a.overlayRestyle()
+	if a.ov.frame.X != bounds.X || a.ov.w != 1212 {
+		t.Errorf("after another restyle: frame %+v, want dragged x %d and width 1212", a.ov.frame, bounds.X)
 	}
 }
 

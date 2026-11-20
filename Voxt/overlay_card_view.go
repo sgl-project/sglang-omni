@@ -29,7 +29,7 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)
 		if card.Message != "" {
-			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(card.Message).Children(func() {
+			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Padding(0, layout.CardSizeBtn+layout.CardSizeBtnInset-layout.CardPadX+layout.CardHeadGap, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
 				icon, color := icons.InfoCircle, ovText2
 				if card.Failed {
 					icon, color = icons.DangerCircle, tok(context.Theme()).Danger
