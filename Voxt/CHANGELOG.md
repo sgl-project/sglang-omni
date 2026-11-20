@@ -21,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Explain the Rewrite input card**: a live subtitle and recording level say whether to speak changes to selected text or what to write. The card uses the answer card's surface, shows selected text in a two-line expandable block, and keeps one Enter/Esc/images footer with a shorter editor placeholder. A dismissible tip appears on the first three opens and persists across restarts, and onboarding explains the same flow. Answer cards show input chips only when at least two input kinds were sent.
 - **Add files to the Rewrite box**: the Add menu chooses images, a text, Markdown or PDF file, or pastes the clipboard. Text PDFs import their text layer. A scanned PDF adds its first pages as images within the existing four-image cap and says how many pages were skipped.
 - **Hide Notes and Meetings** (#4224): Settings → General → Shown features now lists Notes and Meetings. Unchecked, their pages leave the sidebar and the command palette, and Notes' shortcut stops; their settings, notes and meetings are kept.
+- **The answer card has a Fill size and a clearer size button** (#4341): the card sizes are Small, Medium, Large and Fill; Fill uses the room beyond Large when it fits, and only clamps further when Large cannot fit. The corner button that cycles the sizes is bigger, easier to see, and sits fully inside the card's rounded corner without covering the status line.
 
 ### Changed
 
@@ -63,6 +64,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Answers no longer show a model's raw tool-call or thinking control markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged. An unmatched thinking-close marker no longer discards the answer that follows it, and a literal control-token mention inside a sentence stays intact.
 - **Transcribe no longer sends a built-in example for the language model to copy** (#4228): a short dictation could look like an instruction to rewrite the example, so the model returned the built-in weekly-report text instead of your words. Cleanup rules now go in the system prompt without an example conversation, in both the built-in and custom prompt paths. Spoken Translate keeps its translated example.
 - **Language models can use an HTTP gateway**: API-key services now accept HTTP addresses on other hosts, including a private-network gateway. HTTP sends the key and text without encryption, which the Address tip in the service's set-up dialog says; ChatGPT sign-in still requires HTTPS for remote addresses.
+- **Hidden Meetings cannot start from a menu** (#4224): while Meetings is hidden and no meeting is active, Start meeting leaves both the menu-bar and Voxt app menus; an active meeting can still be ended from the menu bar.
+- **Transcribe works while a Rewrite answer streams, and the card stays put**: pressing the Transcribe shortcut while a Rewrite or Translate answer was still streaming into its card did nothing, and a transcription after it finished closed the card and reopened it at the screen's center when done. The answer now keeps streaming into the unmoved card, the recording window shows beside it in its own window, and the card is never closed or recreated by a transcription. The answer's Stop and the cancel shortcut still work on it while it finishes.
+- **Background answers no longer block or get lost**: after the foreground session ends, other features and Try cannot start over a streaming answer, and old cards wait until it finishes. Close and Escape cancel a request even before its first token. Background history writes no longer stall foreground recording, Start, Stop, Cancel or snapshot delivery.
 
 ### 中文
 
@@ -81,6 +85,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **预览改写输入内容**：粘贴超过三行或 300 个字符的文字会折叠成可删除的块，显示字符数、行数和“展开”视图；图片显示来源和像素尺寸，点击后在同一卡片里查看原图。复制的图片和窗口截图也会显示，并可在发送前移除；答案卡片在请求包含多类输入时用小标签列出它们，点击标签可查看原始内容。
 - **说明改写输入卡片在做什么**：实时副标题和录音音量会提示你是要说出如何修改选中的文字，还是要说出想写的内容。卡片与答案卡片使用相同的外观，选中的文字以两行折叠块显示，底部只保留一行 Enter、Esc 和图片输入提示，编辑器占位文字也更短。前三次打开会显示可关闭的提示，重启后仍会记住；新手引导也补充了同样的用法。答案卡片只在发送了至少两类输入时显示输入标签。
 - **向改写输入框添加文件**：通过“添加”菜单选择图片、TXT/Markdown/PDF 文件，或粘贴剪贴板内容。文字版 PDF 导入文字层；扫描版 PDF 在现有 4 张图片上限内按页序加入页面图片，并说明跳过了多少页。
+- **答案卡片新增“充满”大小，尺寸按钮更清楚**（#4341）：卡片大小现在有小、中、大、充满四档；已经放得下的“大”卡片切换成“充满”后不会变窄，只有放不下时才继续收窄。右下角切换大小的按钮更大、更容易看清，完全收在卡片圆角内，也不会遮住状态行。
 
 #### 变更
 
@@ -123,6 +128,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **回答不再显示语言模型原始的内部工具调用或思考控制标记**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。未配对的思考结束标记不再误删后面的正式回答，句子中字面提到的控制标记也原样保留。
 - **转录不再发送可能被语言模型复制的内置示例**（#4228）：短听写以前可能被当成改写示例的指令，导致模型返回内置周报文本而不是你说的话。现在，清理规则直接写在系统提示词里，内置提示词和自定义提示词都不再附带示例对话；语音翻译仍保留翻译示例。
 - **语言模型可使用 HTTP 网关**：使用 API Key 的服务现在可以连接其他主机上的 HTTP 地址，包括局域网网关。HTTP 会明文传输密钥和文本，服务设置对话框里“地址”旁的提示写了这一点；ChatGPT 登录仍要求远程地址使用 HTTPS。
+- **隐藏的会议不会再从菜单启动**（#4224）：会议已隐藏且没有进行中的会议时，菜单栏和 Voxt 应用菜单都不再显示“开始会议”；进行中的会议仍可从菜单栏结束。
+- **改写的回答还在写时也能转录，卡片不再被关掉**：改写或翻译的回答还在流进卡片时按转录快捷键以前没有反应，回答写完后再转录又会把卡片关掉、转录完在屏幕中央重新打开。现在回答在原地不动的卡片里继续写完，录音浮窗显示在它旁边自己的窗口里，转录不再关闭或重建卡片；回答写完前，它的“停止”和取消快捷键照旧可用。
+- **后台回答不再阻塞或丢失**：前台会话结束后，其他功能和“试一试”不能抢在后台回答完成前启动，旧卡片会等回答完成再恢复。即使首个 token 还没到，关闭和 Esc 也能取消请求。后台写历史不再卡住前台录音、开始、停止、取消和快照发布。
 
 ## [2.1.1] - 2026-11-17
 
