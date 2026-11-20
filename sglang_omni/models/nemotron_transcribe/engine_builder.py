@@ -45,6 +45,7 @@ from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -92,6 +93,8 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         compile_perception: bool,
         perception_cuda_graphs: bool,
         perception_compile_mode: EncoderCompileMode,
+        tp_rank: int,
+        nccl_port: int | None,
     ) -> None:
         if perception_cuda_graphs and not compile_perception:
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
@@ -114,10 +117,15 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.compile_perception = compile_perception
         self.perception_cuda_graphs = perception_cuda_graphs
         self.perception_compile_mode = perception_compile_mode
+        self.tp_rank = tp_rank
+        self.nccl_port = nccl_port
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
         self.should_wait_for_encode_fn: Callable[[], bool] | None = None
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        return {"tp_rank": self.tp_rank, "nccl_port": self.nccl_port}
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
@@ -194,8 +202,10 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         server_args: ServerArgs,
     ) -> None:
         """Start perception encode after decoder graphs and encoder compile."""
-        del server_args
-        if not self.enable_pre_lm_encoder:
+        # note (anupa): Admission waits on each rank's own encode, so above one rank
+        # the ranks admit a request in different steps and its first all-reduce never
+        # pairs up; encode inside the forward instead, where every rank is in step.
+        if not self.enable_pre_lm_encoder or server_args.tp_size > 1:
             return
         else:
             pass
