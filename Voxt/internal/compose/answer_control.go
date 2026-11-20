@@ -23,78 +23,66 @@ func inlineLiteral(s string, start int, token string) bool {
 	return start+len(token) < len(s) && (strings.ContainsRune(" \t", next) || unicode.IsPunct(next))
 }
 
-func proseTagMention(rest string) bool {
-	if strings.HasPrefix(rest, " 标记") || strings.HasPrefix(rest, " literally") {
-		return true
-	}
-	if !strings.HasPrefix(rest, " tag") && !strings.HasPrefix(rest, "\ttag") {
-		return false
-	}
-	if len(rest) == len(" tag") {
-		return true
-	}
-	next, _ := utf8.DecodeRuneInString(rest[len(" tag"):])
-	return unicode.IsSpace(next) || unicode.IsPunct(next)
-}
-
 func proseTokenMention(s string, start int, token string) bool {
 	if quotedControlToken(s, start, token) {
 		return true
 	}
-	if start > 0 && !strings.ContainsRune(" \t\r\n", rune(s[start-1])) {
-		return false
-	}
 	rest := s[start+len(token):]
-	if proseTagMention(rest) {
-		return true
-	}
-	switch token {
-	case "<think>":
-		if strings.HasPrefix(rest, " is the tag") || strings.HasPrefix(rest, " in your prompt") || strings.HasPrefix(rest, " 模型就会先推理") {
-			return true
-		}
-	case "</think>":
-		if strings.HasSuffix(strings.ToLower(s[:start]), "reasoning ends with ") && strings.HasPrefix(rest, " and then") {
-			return true
-		}
-	case "<|channel>":
-		if strings.HasPrefix(rest, " for its thoughts") {
-			return true
-		}
-	case "<|tool_call|>":
-		if strings.HasPrefix(rest, " starts a tool call") {
-			return true
-		}
-	}
-	if proseSentenceToken(token, rest) {
-		return true
-	}
-	switch token {
-	case "<|im_start|>", "<|im_end|>":
-		return strings.HasPrefix(rest, " to ") && explanatoryControlContext(s[:start])
-	case "<think>":
-		return strings.HasPrefix(rest, " before it ") && explanatoryControlContext(s[:start])
-	default:
-		return false
-	}
-}
-
-func proseSentenceMention(rest string) bool {
 	trimmed := strings.TrimLeft(rest, " \t")
 	if trimmed == rest {
 		return false
 	}
-	first, _ := utf8.DecodeRuneInString(trimmed)
-	return unicode.IsLetter(first) && strings.ContainsAny(trimmed, ".!?。！？")
-}
-
-func proseSentenceToken(token, rest string) bool {
-	for _, tag := range thinkingTags {
-		if token == tag[0] || token == tag[1] {
-			return false
+	if structuralControlToken(token, rest) && bracketedToolPayload(trimmed) {
+		return false
+	}
+	for _, word := range []string{"tag", "marker", "token", "tokens", "literally", "标记"} {
+		if strings.HasPrefix(trimmed, word) {
+			return true
 		}
 	}
-	return proseSentenceMention(rest) && !structuralControlToken(token, rest)
+	if structuralControlToken(token, rest) && structuredToolPayload(rest) {
+		return false
+	}
+	if start == 0 {
+		return strings.HasPrefix(trimmed, "is ")
+	}
+	for _, phrase := range []string{"and ", "at ", "in ", "into ", "is ", "to ", "for ", "on ", "starts ", "before the ", "before its ", "before your ", "before a ", "before every ", "就", "可以", "能", "让", "模型就"} {
+		if strings.HasPrefix(trimmed, phrase) {
+			return true
+		}
+	}
+	return strings.HasPrefix(trimmed, "before it ") && modelOutputContext(s[:start])
+}
+
+func modelOutputContext(prefix string) bool {
+	if index := strings.LastIndexAny(prefix, ".!?;,:\n，。！？；："); index >= 0 {
+		prefix = prefix[index+1:]
+	}
+	prefix = strings.ToLower(prefix)
+	return strings.Contains(prefix, "chatml") || strings.Contains(prefix, "emit")
+}
+
+func bracketedToolPayload(rest string) bool {
+	if rest == "" {
+		return false
+	}
+	if strings.ContainsRune("{[\"", rune(rest[0])) {
+		return true
+	}
+	fields := strings.Fields(rest)
+	return len(fields) > 1 && strings.ContainsRune("{[\"", rune(fields[1][0]))
+}
+
+func structuredToolPayload(after string) bool {
+	rest := strings.TrimLeft(after, " \t\r\n")
+	if rest == "" {
+		return false
+	}
+	if bracketedToolPayload(rest) {
+		return true
+	}
+	fields := strings.Fields(rest)
+	return len(fields) == 1 || strings.Contains(fields[0], "_")
 }
 
 func literalThinkingPair(pair string, tag [2]string, input string, previous []string) bool {
@@ -107,26 +95,6 @@ func literalThinkingPair(pair string, tag [2]string, input string, previous []st
 		}
 	}
 	return false
-}
-
-func proseThinkingBlock(s string, start int, tag [2]string) (int, bool) {
-	if !strings.HasSuffix(strings.ToLower(s[:start]), "wrap it as ") {
-		return 0, false
-	}
-	rest := s[start+len(tag[0]):]
-	close := strings.Index(rest, tag[1])
-	if close < 0 || !strings.HasPrefix(rest[close+len(tag[1]):], " and go on") {
-		return 0, false
-	}
-	return start + len(tag[0]) + close + len(tag[1]), true
-}
-
-func explanatoryControlContext(prefix string) bool {
-	if index := strings.LastIndexAny(prefix, ".!?;,:\n，。！？；："); index >= 0 {
-		prefix = prefix[index+1:]
-	}
-	prefix = strings.ToLower(prefix)
-	return strings.Contains(prefix, "chatml") || strings.Contains(prefix, "emit")
 }
 
 func quotedControlToken(s string, start int, token string) bool {
@@ -181,19 +149,12 @@ func controlTokenStart(s string, inputs ...string) int {
 			i += offset
 			after := s[i+len(token):]
 			proseBlock := false
-			if i > 0 {
-				for _, tag := range thinkingTags {
-					if token == tag[0] {
-						if end, ok := proseThinkingBlock(s, i, tag); ok {
-							offset, proseBlock = end, true
-						}
-					}
-					if token == tag[1] {
-						open := strings.LastIndex(s[:i], tag[0])
-						if open > 0 {
-							if end, ok := proseThinkingBlock(s, open, tag); ok && end == i+len(token) {
-								offset, proseBlock = end, true
-							}
+			for _, tag := range thinkingTags {
+				if token == tag[0] {
+					if close := strings.Index(after, tag[1]); close >= 0 {
+						close += i + len(token)
+						if proseTokenMention(s, close, tag[1]) {
+							offset, proseBlock = close+len(tag[1]), true
 						}
 					}
 				}

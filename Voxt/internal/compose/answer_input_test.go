@@ -310,6 +310,14 @@ func TestAnswerCleanupKeepsEverydayControlTokenProse(t *testing.T) {
 		{name: "thinking pair requested as an example", text: "Wrap it as <think>step one</think> and go on."},
 		{name: "closing marker in a sentence", text: "Reasoning ends with </think> and then the answer follows."},
 		{name: "prompting instruction", text: "To start, put <think> in your prompt and the model reasons first. That is all."},
+		{name: "reworded prompting instruction", text: "To start, add <think> to your prompt and the model reasons first. That is all."},
+		{name: "thinking marker at the prompt top", text: "Put <think> at the top of the prompt. That is all."},
+		{name: "thinking marker before a question", text: "You can write <think> before the question to make it reason."},
+		{name: "thinking marker in reworded Chinese prose", text: "在提示词开头写 <think> 就可以让模型先思考。"},
+		{name: "channel marker in reworded prose", text: "Gemma writes <|channel> before its thoughts. Ok."},
+		{name: "closing marker in reworded prose", text: "The reasoning stops at </think> and the answer comes next."},
+		{name: "thinking pair in reworded prose", text: "Write it as <think>step one</think> and continue."},
+		{name: "tool marker in reworded prose", text: "A tool call begins with <|tool_call|> in this template."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertAnswerCleanup(t, tc.text, "q", tc.text)
@@ -405,6 +413,10 @@ func TestAnswerCleanupKeepsStructuralControlMarkup(t *testing.T) {
 	assertAnswerCleanupWithPrevious(t, "Visible <think>private</think>", "Example <think>public</think>", "Visible")
 	assertAnswerCleanup(t, "Keep <think> this</think>", "Keep <think> this</think>", "Keep <think> this</think>")
 	assertAnswerCleanup(t, "<think> The user is asking for medical advice. I should avoid diagnosis", "x", "")
+	assertAnswerCleanup(t, "<think> to inspect private data", "x", "")
+	assertAnswerCleanupWithPrevious(t, `Visible <|tool_call|> tokens ["/private/secret.png"]`, "history", "Visible")
+	assertAnswerCleanup(t, "ChatML places <|im_start|> before every role.", "x", "ChatML places <|im_start|> before every role.")
+	assertAnswerCleanup(t, "The <think> tag pairs with </think> on every answer.", "x", "The <think> tag pairs with </think> on every answer.")
 	assertAnswerCleanupWithPrevious(t, "Visible <think>The user wants private medical advice</think>", "history", "Visible")
 	assertAnswerCleanup(t, "The user asked which confidential details to respond with </think> Final answer.", "x", "Final answer.")
 	assertAnswerCleanup(t, "I will respond as <think>The user needs confidential medical guidance</think> a numbered list.", "x", "I will respond as  a numbered list.")

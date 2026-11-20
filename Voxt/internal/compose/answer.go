@@ -136,7 +136,7 @@ func onlyControlMarkup(s, input string, previous ...string) bool {
 			}
 			if strings.HasPrefix(s, tag[0]) {
 				rest := s[len(tag[0]):]
-				if previousControlToken(tag[0], previous) && proseTagMention(rest) {
+				if previousControlToken(tag[0], previous) && proseTokenMention(s, 0, tag[0]) {
 					return false
 				}
 				j := strings.Index(rest, tag[1])
@@ -161,7 +161,7 @@ func onlyControlMarkup(s, input string, previous ...string) bool {
 				continue
 			}
 			if !trailingControlToken(token) {
-				if previousControlToken(token, previous) && proseTagMention(s[len(token):]) {
+				if previousControlToken(token, previous) && proseTokenMention(s, 0, token) {
 					return false
 				}
 				return true
@@ -212,10 +212,6 @@ func stripControlMarkup(s string, inputs ...string) string {
 				}
 				if literalOpen >= 0 {
 					after := j + len(tag[1])
-					if proseSentenceMention(s[after:]) {
-						openSearchFrom, closeSearchFrom, literalOpen = after, after, -1
-						continue
-					}
 					s = s[:j] + s[after:]
 					openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 					continue
@@ -239,7 +235,9 @@ func stripControlMarkup(s string, inputs ...string) string {
 			rest := s[i+len(tag[0]):]
 			j = strings.Index(rest, tag[1])
 			if i > 0 && literalOpen < 0 && j >= 0 {
-				if end, ok := proseThinkingBlock(s, i, tag); ok {
+				close := i + len(tag[0]) + j
+				if proseTokenMention(s, close, tag[1]) {
+					end := close + len(tag[1])
 					openSearchFrom, closeSearchFrom = end, end
 					continue
 				}
