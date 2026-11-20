@@ -668,8 +668,7 @@ processing with the next GPU decode forward. Use <code class="docutils literal n
 it, or tune the crossover with <code class="docutils literal notranslate"><span class="pre">--async-lookahead-min-batch-size</span></code>.
 Request concurrency and audio-encoder batching are controlled separately:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">32</span></code> and limits requests admitted by the
-ASR scheduler.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">64</span></code> and limits requests admitted by the ASR scheduler. With a cap of 32, a full cap admitted queued requests one or two per prefill: on one H200 the server without a draft served 141 SeedTTS English clips/s at 64 concurrent requests, against 263 with a cap of 64, and the two caps match from 1 to 32 requests.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">encoder_max_batch_size</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">8</span></code> and limits the number of uncached
 audio items processed by one encoder forward. Larger cache-miss batches are
 processed as sequential encoder microbatches, so request concurrency does
@@ -712,7 +711,7 @@ capacity is acceptable.</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>Scheduling is synchronous by default. Add <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">true</span></code> to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with greedy decoding and the prefix cache off, the draft against the server without one:</p>
+<p>Scheduling is synchronous by default. Add <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_async_decode</span> <span class="pre">true</span></code> to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with SGLang 0.5.23, greedy decoding, the prefix cache off and streamed output, SeedTTS clips sent once each, three passes per load, A B B A on fresh servers (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">benchmarks.eval.speculative_sweep</span></code>), the draft against the server without one:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Concurrent requests</p></th>
@@ -727,45 +726,45 @@ capacity is acceptable.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>SeedTTS English, synchronous</p></td>
-<td class="text-right"><p>2.02x</p></td>
+<td class="text-right"><p>1.94x</p></td>
 <td class="text-right"><p>1.92x</p></td>
-<td class="text-right"><p>1.62x</p></td>
-<td class="text-right"><p>1.45x</p></td>
-<td class="text-right"><p>1.15x</p></td>
-<td class="text-right"><p>1.13x</p></td>
-<td class="text-right"><p>1.86x</p></td>
-</tr>
-<tr class="row-odd"><td><p>SeedTTS English, overlapped</p></td>
-<td class="text-right"><p>2.08x</p></td>
-<td class="text-right"><p>2.05x</p></td>
-<td class="text-right"><p>1.75x</p></td>
-<td class="text-right"><p>1.51x</p></td>
-<td class="text-right"><p>1.20x</p></td>
-<td class="text-right"><p>1.17x</p></td>
-<td class="text-right"><p>1.83x</p></td>
-</tr>
-<tr class="row-even"><td><p>SeedTTS Chinese, synchronous</p></td>
-<td class="text-right"><p>1.74x</p></td>
-<td class="text-right"><p>1.60x</p></td>
+<td class="text-right"><p>1.82x</p></td>
 <td class="text-right"><p>1.56x</p></td>
-<td class="text-right"><p>1.39x</p></td>
 <td class="text-right"><p>1.18x</p></td>
 <td class="text-right"><p>1.21x</p></td>
-<td class="text-right"><p>2.00x</p></td>
+<td class="text-right"><p>1.05x</p></td>
+</tr>
+<tr class="row-odd"><td><p>SeedTTS English, overlapped</p></td>
+<td class="text-right"><p>2.07x</p></td>
+<td class="text-right"><p>2.04x</p></td>
+<td class="text-right"><p>1.95x</p></td>
+<td class="text-right"><p>1.65x</p></td>
+<td class="text-right"><p>1.24x</p></td>
+<td class="text-right"><p>1.22x</p></td>
+<td class="text-right"><p>1.07x</p></td>
+</tr>
+<tr class="row-even"><td><p>SeedTTS Chinese, synchronous</p></td>
+<td class="text-right"><p>1.77x</p></td>
+<td class="text-right"><p>1.74x</p></td>
+<td class="text-right"><p>1.63x</p></td>
+<td class="text-right"><p>1.58x</p></td>
+<td class="text-right"><p>1.27x</p></td>
+<td class="text-right"><p>1.22x</p></td>
+<td class="text-right"><p>1.06x</p></td>
 </tr>
 <tr class="row-odd"><td><p>SeedTTS Chinese, overlapped</p></td>
-<td class="text-right"><p>1.84x</p></td>
-<td class="text-right"><p>1.65x</p></td>
-<td class="text-right"><p>1.65x</p></td>
-<td class="text-right"><p>1.44x</p></td>
-<td class="text-right"><p>1.21x</p></td>
-<td class="text-right"><p>1.20x</p></td>
+<td class="text-right"><p>1.89x</p></td>
+<td class="text-right"><p>1.92x</p></td>
+<td class="text-right"><p>1.81x</p></td>
 <td class="text-right"><p>1.74x</p></td>
+<td class="text-right"><p>1.31x</p></td>
+<td class="text-right"><p>1.29x</p></td>
+<td class="text-right"><p>1.09x</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>WER stays at 1.11-1.13% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. The larger gain at 64 comes from the default cap of 32 running requests, under which the server without a draft slows from 32 to 64 concurrent requests; with <code class="docutils literal notranslate"><span class="pre">--asr.engine.max_running_requests</span> <span class="pre">64</span> <span class="pre">--asr.engine.cuda_graph_max_bs</span> <span class="pre">64</span></code> on both sides, the gain at 16, 32 and 64 is 1.12x, 1.18x and 1.06x synchronous and 1.30x, 1.27x and 1.13x overlapped. Overlap delays streamed first text: first-output p95 against the server without a draft is -4%, +6% and +15% at 1, 4 and 16 concurrent requests synchronous, and +8%, +23% and +31% overlapped. The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; <code class="docutils literal notranslate"><span class="pre">--asr.engine.speculative_num_draft_tokens</span></code> overrides it. The default context budget includes speculative KV reserve; an explicit <code class="docutils literal notranslate"><span class="pre">--context-length</span></code> must leave room for that reserve as well as the prompt and output.</p>
+<p>WER stays at 1.15-1.17% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. Streamed first text arrives later with the draft: first-output p95 against the server without a draft is +3%, +4% and +21% at 1, 4 and 16 concurrent requests synchronous on English (+4%, +20% and +14% on Chinese), and +17%, +14% and +31% overlapped (+17%, +25% and +26%). The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; <code class="docutils literal notranslate"><span class="pre">--asr.engine.speculative_num_draft_tokens</span></code> overrides it. The default context budget includes speculative KV reserve; an explicit <code class="docutils literal notranslate"><span class="pre">--context-length</span></code> must leave room for that reserve as well as the prompt and output.</p>
 </section>
 <section id="prefill-coalescing">
 <h3>Prefill Coalescing<a class="headerlink" href="#prefill-coalescing" title="Link to this heading">#</a></h3>
