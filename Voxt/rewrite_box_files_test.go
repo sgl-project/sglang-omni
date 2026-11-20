@@ -237,6 +237,36 @@ func TestRewriteBoxAddMenuPastesShortClipboardText(t *testing.T) {
 	}
 }
 
+func TestRewriteBoxAddMenuRejectsOversizeClipboardText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, text: "keep me"}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	tt.SetClipboardData(transfer.TextData(strings.Repeat("x", (32<<20)+1)))
+	click(t, tt, "Add")
+	if err := tt.ClickControl("Paste clipboard"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if got := a.boxTextContent(); got != "keep me" {
+		t.Fatalf("oversize clipboard text changed the existing input to %q", got)
+	}
+	if a.box.err != "This text is too large." {
+		t.Fatalf("oversize clipboard text error %q", a.box.err)
+	}
+}
+
+func TestBoxPasteClipboardTextAtRejectsOversize(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, text: "keep me"}
+	a.boxPasteClipboardTextAt(strings.Repeat("x", (32<<20)+1), -1, 7, 7)
+	if got := a.boxTextContent(); got != "keep me" {
+		t.Fatalf("oversize clipboard text changed the existing input to %q", got)
+	}
+	if a.box.err != "This text is too large." {
+		t.Fatalf("oversize clipboard text error %q", a.box.err)
+	}
+}
+
 func TestRewriteBoxAddMenuPastesAtTheCaret(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, focusText: true}

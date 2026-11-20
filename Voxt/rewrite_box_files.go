@@ -92,6 +92,11 @@ func (a *app) boxPasteClipboardTextAt(text string, index, start, end int) {
 	if index >= 0 && a.box.textSegments[index].Pasted {
 		return
 	}
+	if boxTextTooLarge(text) {
+		a.box.err = i18n.T("This text is too large.")
+		a.boxSync()
+		return
+	}
 	editor := a.box.text
 	focusID := -1
 	if index >= 0 {
