@@ -521,6 +521,9 @@ func (f *fake) serve(m proto.Message) {
 		if f.has("clipboard-image") {
 			r.JPEG = ClipImage
 		}
+		if f.has("clipboard-too-large") {
+			r.TooLarge = true
+		}
 		f.result(m.ID, r)
 	case proto.MethodAppIcons:
 		var p proto.AppIconsParams

@@ -156,7 +156,7 @@ func TestRewriteBoxRejectedClipboardImageShowsError(t *testing.T) {
 		t.Run(string(format), func(t *testing.T) {
 			a, fs, _ := newTestApp(t)
 			fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
-				return proto.ClipboardImageResult{}, nil
+				return proto.ClipboardImageResult{TooLarge: true}, nil
 			}
 			a.box = rewriteBox{open: true, shown: true, focusText: true}
 			tt := hudTester(a.boxView, boxWinW, boxWinH)
@@ -168,6 +168,22 @@ func TestRewriteBoxRejectedClipboardImageShowsError(t *testing.T) {
 				t.Fatalf("rejected clipboard image is silent or changed the input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
 			}
 		})
+	}
+}
+
+func TestRewriteBoxUnreadableClipboardImageShowsError(t *testing.T) {
+	a, fs, _ := newTestApp(t)
+	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+		return proto.ClipboardImageResult{}, nil
+	}
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, []byte("not a png")))))
+	tt.Command("paste")
+	frames(tt)
+	if a.box.err != "This image could not be read." || !has(tt, "This image could not be read.") || a.boxPending != 0 || len(a.box.images) != 0 {
+		t.Fatalf("unreadable clipboard image has the wrong error or changed the input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
 	}
 }
 

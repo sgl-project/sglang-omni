@@ -39,5 +39,6 @@ type ClipboardImageParams struct {
 // holds none: no image, text (a copied spreadsheet range or styled text
 // brings a picture of itself), or a copied file that is not an image.
 type ClipboardImageResult struct {
-	JPEG []byte `json:"jpeg,omitempty"` // base64 on the wire
+	JPEG     []byte `json:"jpeg,omitempty"` // base64 on the wire
+	TooLarge bool   `json:"tooLarge,omitempty"`
 }

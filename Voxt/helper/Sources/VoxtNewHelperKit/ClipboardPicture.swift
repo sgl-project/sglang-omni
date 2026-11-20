@@ -22,14 +22,15 @@ public enum ClipboardPicture {
         return size > maxSourceBytes
     }
 
-    private static func thumbnail(_ source: CGImageSource?, maxSide: Int) -> CGImage? {
-        guard let source, !exceedsPixelLimit(source) else { return nil }
+    private static func thumbnail(_ source: CGImageSource?, maxSide: Int) -> (image: CGImage?, tooLarge: Bool) {
+        guard let source else { return (nil, false) }
+        guard !exceedsPixelLimit(source) else { return (nil, true) }
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxSide,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary)
+        return (CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary), false)
     }
 
     /// The image types read, in order of preference.
@@ -44,22 +45,21 @@ public enum ClipboardPicture {
     /// bytes only when the earlier ones could not be decoded.
     public static func image(
         types: [String], file: URL?, maxSide: Int, dataForType: @Sendable (String) async -> Data?
-    ) async -> CGImage? {
+    ) async -> (image: CGImage?, tooLarge: Bool) {
         if let file {
-            guard UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true,
-                  !exceedsFileSizeLimit(file) else { return nil }
+            guard UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true else { return (nil, false) }
+            guard !exceedsFileSizeLimit(file) else { return (nil, true) }
             return thumbnail(CGImageSourceCreateWithURL(file as CFURL, nil), maxSide: maxSide)
         }
-        guard !types.contains(UTType.utf8PlainText.identifier) else { return nil }
+        guard !types.contains(UTType.utf8PlainText.identifier) else { return (nil, false) }
         for type in imageTypes where types.contains(type) {
             if let bytes = await dataForType(type) {
-                if bytes.count > maxSourceBytes { return nil }
-                if let image = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil), maxSide: maxSide) {
-                    return image
-                }
+                if bytes.count > maxSourceBytes { return (nil, true) }
+                let result = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil), maxSide: maxSide)
+                if result.image != nil || result.tooLarge { return result }
             }
         }
-        return nil
+        return (nil, false)
     }
 
     /// A copied selection opts into an image only through an [Image]
@@ -90,13 +90,13 @@ public enum ClipboardPicture {
         if let file {
             guard UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true,
                   !exceedsFileSizeLimit(file) else { return nil }
-            return thumbnail(CGImageSourceCreateWithURL(file as CFURL, nil), maxSide: maxSide)
+            return thumbnail(CGImageSourceCreateWithURL(file as CFURL, nil), maxSide: maxSide).image
         }
         let withoutPlaceholder = types.filter { $0 != UTType.utf8PlainText.identifier }
         for type in imageTypes where withoutPlaceholder.contains(type) {
             if let bytes = data[type] {
                 if bytes.count > maxSourceBytes { return nil }
-                if let image = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil), maxSide: maxSide) {
+                if let image = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil), maxSide: maxSide).image {
                     return image
                 }
             }

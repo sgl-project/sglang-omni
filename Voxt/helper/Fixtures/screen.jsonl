@@ -8,3 +8,5 @@
 {"to":"app","msg":{"id":"s4","result":{"jpeg":"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q=="}}}
 {"to":"helper","msg":{"id":"s5","method":"clipboard.image","params":{}}}
 {"to":"app","msg":{"id":"s5","result":{}}}
+{"to":"helper","msg":{"id":"s6","method":"clipboard.image","params":{}}}
+{"to":"app","msg":{"id":"s6","result":{"tooLarge":true}}}

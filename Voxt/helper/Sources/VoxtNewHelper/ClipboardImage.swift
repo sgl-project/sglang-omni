@@ -25,7 +25,7 @@ enum ClipboardImage {
             }
             return ([], nil, changeCount, nil)
         }
-        let image = await ClipboardPicture.image(types: types, file: file, maxSide: screenSide(p.maxSide)) { type in
+        let result = await ClipboardPicture.image(types: types, file: file, maxSide: screenSide(p.maxSide)) { type in
             guard let index else { return nil }
             return await onMain {
                 let pb = NSPasteboard.general
@@ -36,6 +36,6 @@ enum ClipboardImage {
                 return pb.changeCount == changeCount ? data : nil
             }
         }
-        return ClipboardImageResult(jpeg: image.flatMap(ScreenWindow.jpeg))
+        return ClipboardImageResult(jpeg: result.image.flatMap(ScreenWindow.jpeg), tooLarge: result.tooLarge ? true : nil)
     }
 }

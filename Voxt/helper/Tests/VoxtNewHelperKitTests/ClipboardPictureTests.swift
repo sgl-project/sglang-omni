@@ -21,7 +21,7 @@ final class ClipboardPictureTests: XCTestCase {
     let png = UTType.png.identifier, text = UTType.utf8PlainText.identifier
 
     private func decode(types: [String], data: [String: Data], file: URL?, maxSide: Int) async -> CGImage? {
-        await ClipboardPicture.image(types: types, file: file, maxSide: maxSide) { data[$0] }
+        await ClipboardPicture.image(types: types, file: file, maxSide: maxSide) { data[$0] }.image
     }
 
     func testCopiedImage() async {
@@ -90,24 +90,26 @@ final class ClipboardPictureTests: XCTestCase {
             XCTAssertEqual(type, UTType.png.identifier)
             return validPNG
         }
-        XCTAssertEqual(preferred?.width, 40)
+        XCTAssertEqual(preferred.image?.width, 40)
         let fallback = await ClipboardPicture.image(types: types, file: nil, maxSide: 1600) { type in
             type == tiff ? validTIFF : nil
         }
-        XCTAssertEqual(fallback?.width, 30)
+        XCTAssertEqual(fallback.image?.width, 30)
     }
 
     func testRejectsSourceBytesAbove32MiB() async {
         let bytes = imageData(6000, 4000, type: .tiff)
         XCTAssertGreaterThan(bytes.count, 32 << 20)
-        await expectNoImage(types: [UTType.tiff.identifier], data: [UTType.tiff.identifier: bytes], file: nil, maxSide: 1600,
-                            "a valid image over the source byte limit is rejected before decoding")
+        let result = await ClipboardPicture.image(types: [UTType.tiff.identifier], file: nil, maxSide: 1600) { _ in bytes }
+        XCTAssertNil(result.image, "a valid image over the source byte limit is rejected before decoding")
+        XCTAssertTrue(result.tooLarge)
     }
 
     func testRejectsSourcePixelsAbove40MP() async {
         let bytes = imageData(40001, 1000)
-        await expectNoImage(types: [png], data: [png: bytes], file: nil, maxSide: 1600,
-                            "a valid image over the source pixel limit is rejected before decoding")
+        let result = await ClipboardPicture.image(types: [png], file: nil, maxSide: 1600) { _ in bytes }
+        XCTAssertNil(result.image, "a valid image over the source pixel limit is rejected before decoding")
+        XCTAssertTrue(result.tooLarge)
     }
 
     func testRejectsCopiedFileAbove32MiB() async throws {
@@ -116,8 +118,9 @@ final class ClipboardPictureTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let pic = dir.appendingPathComponent("huge.tiff")
         try imageData(6000, 4000, type: .tiff).write(to: pic)
-        await expectNoImage(types: [UTType.fileURL.identifier], data: [:], file: pic, maxSide: 1600,
-                            "a copied file over the source byte limit is rejected before decoding")
+        let result = await ClipboardPicture.image(types: [UTType.fileURL.identifier], file: pic, maxSide: 1600) { _ in nil }
+        XCTAssertNil(result.image, "a copied file over the source byte limit is rejected before decoding")
+        XCTAssertTrue(result.tooLarge)
     }
 
     func testCopiedSelectionRejectsOversizeSources() async throws {
@@ -156,7 +159,9 @@ final class ClipboardPictureTests: XCTestCase {
         await expectNoImage(types: [text], data: [:], file: nil, maxSide: 1600, "text")
         await expectNoImage(types: [text, png], data: [png: imageData(10, 10)], file: nil, maxSide: 1600,
                      "text with a picture of itself (a spreadsheet range)")
-        await expectNoImage(types: [png], data: [png: Data("not a png".utf8)], file: nil, maxSide: 1600, "broken data")
+        let broken = await ClipboardPicture.image(types: [png], file: nil, maxSide: 1600) { _ in Data("not a png".utf8) }
+        XCTAssertNil(broken.image, "broken data")
+        XCTAssertFalse(broken.tooLarge, "undecodable data is not an oversize rejection")
     }
 
     func testCopiedFile() async throws {
