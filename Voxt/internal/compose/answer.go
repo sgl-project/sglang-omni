@@ -242,13 +242,12 @@ func stripControlMarkup(s string, inputs ...string) string {
 			}
 			if i > 0 && literalOpen < 0 && j >= 0 {
 				after := rest[j+len(tag[1]):]
-				if strings.TrimSpace(after) != "" && lowerOrHan(rest) && proseContinuation(after) {
-					end := i + len(tag[0]) + j + len(tag[1])
+				end := i + len(tag[0]) + j + len(tag[1])
+				pair := s[i:end]
+				if strings.TrimSpace(after) != "" && lowerOrHan(rest) && proseContinuation(after) && literalThinkingContext(s, i, tag[0], input, previous) {
 					openSearchFrom, closeSearchFrom = end, end
 					continue
 				}
-				end := i + len(tag[0]) + j + len(tag[1])
-				pair := s[i:end]
 				if exactThinkingPair(pair, input, previous) || !strings.ContainsAny(pair, " \t") && literalThinkingPair(pair, tag, input, previous) {
 					openSearchFrom, closeSearchFrom = end, end
 					continue

@@ -69,6 +69,10 @@ func lowerOrHan(rest string) bool {
 	return unicode.IsLower(next) || unicode.Is(unicode.Han, next)
 }
 
+func literalThinkingContext(s string, start int, token, input string, previous []string) bool {
+	return quotedControlToken(s, start, token) || preservedControlToken(token, input) || previousControlToken(token, previous)
+}
+
 func structuralControlSuffix(s string) bool {
 	for _, token := range controlTokens {
 		index := strings.Index(s, token)
@@ -93,9 +97,10 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 	if quotedControlToken(s, start, token) {
 		return true
 	}
+	input := ""
 	var previous []string
 	if len(inputs) > 0 {
-		previous = inputs[1:]
+		input, previous = inputs[0], inputs[1:]
 	}
 	rest := s[start+len(token):]
 	for _, tag := range thinkingTags {
@@ -111,7 +116,7 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 				return false
 			}
 			after := rest[close+len(tag[1]):]
-			return strings.TrimSpace(after) != "" && lowerOrHan(rest) && proseContinuation(after)
+			return strings.TrimSpace(after) != "" && lowerOrHan(rest) && proseContinuation(after) && literalThinkingContext(s, start, tag[0], input, previous)
 		}
 	}
 	if structuralControlSuffix(rest) {

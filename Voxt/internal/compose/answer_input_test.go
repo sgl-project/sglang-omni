@@ -344,13 +344,13 @@ func TestAnswerCleanupKeepsProseControlTokens(t *testing.T) {
 }
 
 func TestAnswerCleanupKeepsEverydayControlTokenProse(t *testing.T) {
-	for _, tc := range []struct{ name, text, want string }{
+	for _, tc := range []struct{ name, text, want, previous string }{
 		{name: "role marker in a sentence", text: "Each turn starts with <|im_start|> and a role name.", want: "Each turn starts with"},
 		{name: "tool marker in a sentence", text: "The marker <|tool_call|> starts a tool call.", want: "The marker"},
 		{name: "channel marker in a sentence", text: "Gemma uses <|channel> for its thoughts. Ok.", want: "Gemma uses"},
 		{name: "thinking marker in Chinese prose", text: "在提示词里加上 <think> 模型就会先推理。完。", want: "在提示词里加上"},
 		{name: "thinking marker at the start of prose", text: "<think> is the tag that starts reasoning.", want: ""},
-		{name: "thinking pair requested as an example", text: "Wrap it as <think>step one</think> and go on.", want: "Wrap it as <think>step one</think> and go on."},
+		{name: "thinking pair requested as an example", text: "Wrap it as <think>step one</think> and go on.", want: "Wrap it as <think>step one</think> and go on.", previous: "how do I write a <think> block?"},
 		{name: "closing marker in a sentence", text: "Reasoning ends with </think> and then the answer follows.", want: "Reasoning ends with </think> and then the answer follows."},
 		{name: "prompting instruction", text: "To start, put <think> in your prompt and the model reasons first. That is all.", want: "To start, put"},
 		{name: "reworded prompting instruction", text: "To start, add <think> to your prompt and the model reasons first. That is all.", want: "To start, add"},
@@ -359,7 +359,7 @@ func TestAnswerCleanupKeepsEverydayControlTokenProse(t *testing.T) {
 		{name: "thinking marker in reworded Chinese prose", text: "在提示词开头写 <think> 就可以让模型先思考。", want: "在提示词开头写"},
 		{name: "channel marker in reworded prose", text: "Gemma writes <|channel> before its thoughts. Ok.", want: "Gemma writes"},
 		{name: "closing marker in reworded prose", text: "The reasoning stops at </think> and the answer comes next.", want: "The reasoning stops at </think> and the answer comes next."},
-		{name: "thinking pair in reworded prose", text: "Write it as <think>step one</think> and continue.", want: "Write it as <think>step one</think> and continue."},
+		{name: "thinking pair in reworded prose", text: "Write it as <think>step one</think> and continue.", want: "Write it as <think>step one</think> and continue.", previous: "how do I write a <think> block?"},
 		{name: "tool marker in reworded prose", text: "A tool call begins with <|tool_call|> in this template.", want: "A tool call begins with"},
 		{name: "channel marker ahead of thoughts", text: "Gemma writes <|channel> ahead of its thoughts. Ok.", want: "Gemma writes"},
 		{name: "thinking marker prior to a question", text: "You should write <think> prior to the question.", want: "You should write"},
@@ -367,14 +367,22 @@ func TestAnswerCleanupKeepsEverydayControlTokenProse(t *testing.T) {
 		{name: "closing marker before a comma", text: "The reasoning stops at </think>, and the answer comes next.", want: "The reasoning stops at </think>, and the answer comes next."},
 		{name: "thinking marker in fresh Chinese prose", text: "在提示词开头加 <think> 会让模型先思考。", want: "在提示词开头加"},
 		{name: "thinking marker near the prompt top", text: "Just add <think> near the top of your prompt.", want: "Just add"},
-		{name: "thinking pair before then", text: "Write it as <think>step one</think> then continue.", want: "Write it as <think>step one</think> then continue."},
+		{name: "thinking pair before then", text: "Write it as <think>step one</think> then continue.", want: "Write it as <think>step one</think> then continue.", previous: "how do I write a <think> block?"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assertAnswerCleanupWithPrevious(t, tc.text, "history", tc.want)
-			if got := CleanOutput(tc.text, "q"); got != tc.want {
+			previous := tc.previous
+			if previous == "" {
+				previous = "history"
+			}
+			assertAnswerCleanupWithPrevious(t, tc.text, previous, tc.want)
+			input := "q"
+			if tc.previous != "" {
+				input = tc.previous
+			}
+			if got := CleanOutput(tc.text, input); got != tc.want {
 				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
 			}
-			if got := PartialOutput(tc.text, "q"); got != tc.want && got != tc.want+" " {
+			if got := PartialOutput(tc.text, input); got != tc.want && got != tc.want+" " {
 				t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
 			}
 		})
@@ -466,7 +474,7 @@ func TestAnswerCleanupKeepsStructuralControlMarkup(t *testing.T) {
 	assertAnswerCleanup(t, "<think> to inspect private data", "x", "")
 	assertAnswerCleanupWithPrevious(t, `Visible <|tool_call|> tokens ["/private/secret.png"]`, "history", "Visible")
 	assertAnswerCleanupWithPrevious(t, "ChatML places <|im_start|> before every role.", "history", "ChatML places")
-	assertAnswerCleanup(t, "The <think> tag pairs with </think> on every answer.", "x", "The <think> tag pairs with </think> on every answer.")
+	assertAnswerCleanup(t, "The <think> tag pairs with </think> on every answer.", "Explain <think> and </think>", "The <think> tag pairs with </think> on every answer.")
 	assertAnswerCleanupWithPrevious(t, "Visible <think>The user wants private medical advice</think>", "history", "Visible")
 	assertAnswerCleanup(t, "The user asked which confidential details to respond with </think> Final answer.", "x", "Final answer.")
 	assertAnswerCleanup(t, "I will respond as <think>The user needs confidential medical guidance</think> a numbered list.", "x", "I will respond as  a numbered list.")
@@ -485,6 +493,21 @@ func TestAnswerCleanupKeepsStructuralControlMarkup(t *testing.T) {
 			t.Fatalf("at %d: reasoning leaked in %q", index, got)
 		}
 	}
+}
+
+func TestAnswerCleanupStripsClosedReasoningBeforeLowercaseAnswer(t *testing.T) {
+	const text = "Sure! <think>the user's note says the password is hunter2</think> here is the summary."
+	const want = "Sure!  here is the summary."
+	assertAnswerCleanupWithPrevious(t, text, "history", want)
+	if got := CleanOutput(text, "x"); got != want {
+		t.Errorf("CleanOutput(%q) = %q, want %q", text, got, want)
+	}
+	if got := PartialOutput(text, "x"); got != want {
+		t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
+	}
+	const example = "Wrap it as <think>step one</think> and go on."
+	assertAnswerCleanup(t, example, "how do I write a <think> block?", example)
+	assertAnswerCleanupWithPrevious(t, example, "how do I write a <think> block?", example)
 }
 
 func TestAnswerCleanupRejectsUnclosedAndStructuredMarkup(t *testing.T) {
