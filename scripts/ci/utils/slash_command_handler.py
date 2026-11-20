@@ -11,11 +11,13 @@ from resolve_ci_labels import (
     ASR_STAGE_LABEL,
     CI_STAGES,
     RUN_LINT_ONLY_LABEL,
+    TTS_STAGE_LABEL,
     resolve_ci_plan,
     select_workflows,
 )
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
+SHORT_TARGET_BY_SHARED_STAGE_LABEL = {ASR_STAGE_LABEL: "asr", TTS_STAGE_LABEL: "tts"}
 
 
 def get_env_var(name):
@@ -78,10 +80,11 @@ def handle_tag_run_ci(
         "lint": frozenset({RUN_LINT_ONLY_LABEL}),
     }
     for stage in CI_STAGES:
-        if stage.label == ASR_STAGE_LABEL:
-            labels_by_target["asr"] = frozenset({ASR_STAGE_LABEL})
+        if stage.label in SHORT_TARGET_BY_SHARED_STAGE_LABEL:
+            stage_target = SHORT_TARGET_BY_SHARED_STAGE_LABEL[stage.label]
         else:
-            labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
+            stage_target = stage.name.replace("_", "-")
+        labels_by_target[stage_target] = frozenset({stage.label})
         for label, preset in stage.preset_by_model_label.items():
             if stage.label == ASR_STAGE_LABEL:
                 target = f"{preset}-asr"

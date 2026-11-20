@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // TestModelAssignmentPreservesOtherSettings: applying a model writes the
@@ -258,6 +259,52 @@ func TestModelAssignmentRemoteCard(t *testing.T) {
 	}
 	if a.provDlg.open {
 		t.Error("the assignment opened the provider dialog")
+	}
+}
+
+func TestUnavailableFeatureChoiceDoesNotFallBack(t *testing.T) {
+	ready := []local.Model{{Kind: local.LLM, ID: "ready"}}
+	prefs := settings.Defaults()
+	prefs.Features.Rewrite.LLM = "gone"
+	if selected, ok := chooseFeatureModel(prefs, ready, local.LLM, hotkey.Rewrite); ok || selected.ID != "" {
+		t.Fatalf("Rewrite replaced an unavailable choice with %q", selected.ID)
+	}
+	if got := modelsUsedBy(i18n.CurrentTranslator(), prefs, nil, ready, local.LLM, "ready"); strings.Contains(got, "Rewrite") {
+		t.Fatalf("ready model is shown as used by Rewrite: %q", got)
+	}
+
+	prefs.Features.Translate.LLM = "gone"
+	prefs.Features.Translate.Fallback = "ready"
+	if selected, ok := chooseFeatureModel(prefs, ready, local.LLM, hotkey.Translate); !ok || selected.ID != "ready" {
+		t.Fatalf("Translate's explicit fallback = %q, %v", selected.ID, ok)
+	}
+	prefs.Features.Translate.Fallback = ""
+	if selected, ok := chooseFeatureModel(prefs, ready, local.LLM, hotkey.Translate); ok || selected.ID != "" {
+		t.Fatalf("Translate replaced an unavailable choice with %q", selected.ID)
+	}
+	prefs.Features.Rewrite.LLM = ""
+	if selected, ok := chooseFeatureModel(prefs, ready, local.LLM, hotkey.Rewrite); !ok || selected.ID != "ready" {
+		t.Fatalf("Automatic = %q, %v", selected.ID, ok)
+	}
+
+	speech := []local.Model{{Kind: local.ASR, ID: "ready-speech"}}
+	prefs.Features.Rewrite.ASR = "gone-speech"
+	if selected, ok := chooseFeatureModel(prefs, speech, local.ASR, hotkey.Rewrite); !ok || selected.ID != "ready-speech" {
+		t.Fatalf("ASR did not use the ready speech model: %q, %v", selected.ID, ok)
+	}
+
+	a, _, _ := newTestApp(t)
+	readyModels(a)
+	a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.LLM = "gone" })
+	if notice := a.sessionBlocker(store.KindRewrite); notice == nil || notice.text != "No language model is set up." {
+		t.Fatalf("Rewrite preflight = %+v", notice)
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Rewrite.ASR = "gone-speech"
+		s.Features.Rewrite.LLM = ""
+	})
+	if notice := a.sessionBlocker(store.KindRewrite); notice != nil {
+		t.Fatalf("an unavailable speech choice blocks a ready replacement: %+v", notice)
 	}
 }
 

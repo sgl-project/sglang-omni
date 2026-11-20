@@ -410,7 +410,22 @@ func TestUntranslated(t *testing.T) {
 		{"Hello, world!", "Hello world, friends", "zh-Hans", true}, // Latin back for Chinese
 		{"Hello, world!", "你好，世界！", "zh-Hans", false},
 		{"Deploy Kubernetes today", "今天部署 Kubernetes", "zh-Hans", false}, // a name stays Latin
+		{"豆包", "Doubao (豆包)", "en", false},
+		{"Google", "谷歌（Google）", "zh-Hans", false},
+		{"it", "petit", "fr", false},
+		{"in", "matin", "fr", false},
+		{"or", "alors", "fr", false},
+		{"发布“豆包”", "Release \"豆包\"", "en", false},
+		{"Use Google Cloud", "用 Google Cloud", "zh-Hans", false},
+		{"猫", "Cat 猫", "en", true},
+		{"发布", "Release发布", "en", true},
+		{"发布", "发布Release", "en", true},
+		{"猫", "Cat猫", "en", true},
+		{"发布", "Release 发布", "en", true},
+		{"发布", "We release 发布", "en", true},
+		{"Good morning", "Bonjour Good morning", "fr", true},
 		{"我们周五发布", "我们周五发布。", "en", true},
+		{"我们周五发布", "我们周五发布 Release", "en", true},
 		{"我们周五发布", "我们在周五发版", "en", true}, // still Chinese
 		{"我们周五发布", "We ship on Friday.", "en", false},
 		{"我们周五发布", "我们周五发布", "zh-Hans", false},       // already Chinese: nothing to redo
@@ -425,6 +440,57 @@ func TestUntranslated(t *testing.T) {
 	} {
 		if got := Untranslated(tc.src, tc.res, tc.target); got != tc.want {
 			t.Errorf("Untranslated(%q, %q, %s) = %v", tc.src, tc.res, tc.target, got)
+		}
+	}
+}
+
+func TestLanguageMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		text, target string
+		want         bool
+	}{
+		{"Good morning", "en", false},
+		{"Good morning", "fr", true},
+		{"Goodbye", "fr", true},
+		{"Have a nice day", "fr", true},
+		{"Have a nice day", "en", false},
+		{"Hola", "en", true},
+		{"Hola", "es", false},
+		{"Bonjour, comment ça va ?", "fr", false},
+		{"Bonjour, comment ça va ?", "en", true},
+		{"Guten Tag", "en", true},
+		{"Guten Tag", "de", false},
+		{"Bom dia", "en", true},
+		{"Bom dia", "pt", false},
+		{"Buongiorno", "en", true},
+		{"Buongiorno", "it", false},
+		{"Goedemorgen", "en", true},
+		{"Goedemorgen", "nl", false},
+		{"Dzień dobry", "en", true},
+		{"Dzień dobry", "pl", false},
+		{"Günaydın", "en", true},
+		{"Günaydın", "tr", false},
+		{"Selamat pagi", "en", true},
+		{"Selamat pagi", "id", false},
+		{"Chào buổi sáng", "en", true},
+		{"Chào buổi sáng", "vi", false},
+		{"Kubernetes", "fr", false},
+		{"Kubernetes", "zh-Hans", false},
+		{"Kubernetes", "ja", false},
+		{"Kubernetes", "ru", false},
+		{"Привет", "en", true},
+		{"para", "pt", false},
+		{"on", "fr", false},
+		{"son", "fr", false},
+		{"comment", "en", false},
+		{"con", "en", false},
+		{"a", "es", false},
+		{"12:30", "fr", false},
+		{"Voxt supports 中文", "en", true},
+		{"我们周五发布", "zh-Hans", false},
+	} {
+		if got := LanguageMismatch(tc.text, tc.target); got != tc.want {
+			t.Errorf("LanguageMismatch(%q, %s) = %v, want %v", tc.text, tc.target, got, tc.want)
 		}
 	}
 }

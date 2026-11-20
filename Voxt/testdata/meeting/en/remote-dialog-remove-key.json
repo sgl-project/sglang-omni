@@ -17,7 +17,7 @@
       "has_saved": false
     },
     "endpoint": {
-      "info": "The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.",
+      "info": "The API root of any OpenAI-compatible server, ending in /v1. HTTP sends the API key and text without encryption.",
       "placeholder": "https://…/v1"
     },
     "model_options": [

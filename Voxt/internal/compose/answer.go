@@ -396,6 +396,12 @@ func PartialCleanWithInputs(out string, inputs []string, quoteSource ...string) 
 	return clean(out, inputs, true, quoteSource...)
 }
 
+// CleanRewrite is the clean for a Rewrite answer: it also drops echoed
+// input tags, and any unclosed pair or tag fragment a stopped stream left.
+func CleanRewrite(out string, inputs []string, partial bool, quoteSource ...string) string {
+	return strings.TrimSpace(stripPartialInputTags(clean(out, inputs, partial, quoteSource...), inputs...))
+}
+
 func clean(out string, inputs []string, partial bool, quoteSource ...string) string {
 	s := strings.TrimSpace(out)
 	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
@@ -433,6 +439,68 @@ func partialTagSuffix(s, tag string) int {
 	return 0
 }
 
+// stripInputTags drops an <instruction>, <selected_text> or <typed_text>
+// pair a model echoed from RewriteMessage, keeping the text between: a
+// pair that wraps the whole answer, or one around exactly a text the user sent (whole
+// lines of input). Other pairs are part of the answer (a prompt template the
+// user asked for) and stay, as do the tags the user's own text has.
+func stripInputTags(s string, input ...string) string {
+	sent := "\n" + strings.Join(input, "\n") + "\n"
+	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
+		open, close := "<"+name+">", "</"+name+">"
+		if strings.Contains(sent, open) || strings.Contains(sent, close) {
+			continue
+		}
+		for from := 0; ; {
+			i := strings.Index(s[from:], open)
+			if i < 0 {
+				break
+			}
+			i += from
+			j := strings.Index(s[i+len(open):], close)
+			if j < 0 {
+				break
+			}
+			j += i + len(open)
+			inner := strings.TrimSpace(s[i+len(open) : j])
+			whole := strings.TrimSpace(s[:i]) == "" && strings.TrimSpace(s[j+len(close):]) == ""
+			if whole || inner != "" && strings.Contains(sent, "\n"+inner+"\n") {
+				s = s[:i] + inner + s[j+len(close):]
+				from = i + len(inner)
+			} else {
+				from = j + len(close)
+			}
+		}
+	}
+	return s
+}
+
+func stripPartialInputTags(s string, input ...string) string {
+	s = stripInputTags(s, input...)
+	sent := "\n" + strings.Join(input, "\n") + "\n"
+	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
+		open, close := "<"+name+">", "</"+name+">"
+		if strings.Contains(sent, open) || strings.Contains(sent, close) {
+			continue
+		}
+		i := strings.LastIndex(s, open)
+		if i >= 0 {
+			rest := s[i+len(open):]
+			literalMention := strings.HasPrefix(rest, " tag") || strings.HasPrefix(rest, " 标记") || strings.HasPrefix(rest, " literally")
+			if i > strings.LastIndex(s, close) && !literalMention {
+				s = s[:i] + rest
+			}
+		}
+		if n := partialTagSuffix(s, open); n > 0 {
+			s = s[:len(s)-n]
+		}
+		if n := partialTagSuffix(s, close); n > 0 {
+			s = s[:len(s)-n]
+		}
+	}
+	return s
+}
+
 // ParseAnswer reads a model's JSON answer {title, content}: the object
 // may sit in a code fence or among other text. ok is false when there is
 // no such object; the caller then takes the text as it is (Clean),
@@ -451,8 +519,8 @@ func ParseAnswer(text string, input ...string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripControlMarkup(a.Title, input...)), `"“”#*`))
-	a.Content = strings.TrimSpace(stripControlMarkup(a.Content, input...))
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Title, input...), input...)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Content, input...), input...))
 	return a, true
 }
 
@@ -508,13 +576,13 @@ func PartialAnswer(text string, input ...string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		t = strings.TrimSpace(stripPartialControlMarkup(t, input...))
+		t = strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(t, input...), input...))
 		if !strings.HasPrefix(t, "{") {
 			return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
 		}
 	}
-	title := strings.TrimSpace(stripPartialControlMarkup(partialField(t, "title"), input...))
-	content := strings.TrimLeft(stripPartialControlMarkup(partialField(t, "content"), input...), " \n")
+	title := strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "title"), input...), input...))
+	content := strings.TrimLeft(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "content"), input...), input...), " \n")
 	return Answer{Title: title, Content: content}
 }
 

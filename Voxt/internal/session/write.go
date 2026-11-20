@@ -162,6 +162,11 @@ func (r *run) write(raw, selection string) {
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
 		return
 	}
+	if kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && compose.LanguageMismatch(source, in.TargetLanguage) {
+		r.logf("warning", "the translation still looks untranslated after the strict retry")
+		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: ErrNotTranslated}, true)
+		return
+	}
 	r.logf("info", "wrote %s in %v", r.logText(res.Content), llmTime.Round(time.Millisecond))
 	if res.Content == "" {
 		if kind == store.KindTranslate && selection == "" {
@@ -234,6 +239,8 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		var a compose.Answer
 		if in.Answer {
 			a = compose.PartialAnswer(buf.String(), answerInputs...)
+		} else if in.Task == compose.Rewrite {
+			a.Content = compose.CleanRewrite(buf.String(), answerInputs, true, quoteSource)
 		} else {
 			a.Content = compose.PartialCleanWithInputs(buf.String(), answerInputs, quoteSource)
 		}
@@ -267,7 +274,10 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.CleanWithInputs(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, quoteSource)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewrite(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
+	}
+	if in.Task == compose.Rewrite {
+		return compose.Answer{Content: compose.CleanRewrite(resp.Text, answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
 	}
 	return compose.Answer{Content: compose.CleanWithInputs(resp.Text, answerInputs, quoteSource)}, out.Profile(), truncated, nil
 }

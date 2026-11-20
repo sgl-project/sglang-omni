@@ -145,7 +145,7 @@ func (a *app) pillThinks(mode overlayMode) bool {
 }
 
 func (a *app) pillThinkText() ovSized {
-	return ovSized{thinkButtonText(a.sess.Thinking, a.llmGeneration(a.sess.LLM.ID)), 11, 600, 0}
+	return ovSized{thinkButtonText(a.sess.Thinking, a.llmGeneration(a.sess.LLM.ID)), 11, 600, 0, ""}
 }
 
 func settingLevel(generation settings.Generation) *llm.Thinking {

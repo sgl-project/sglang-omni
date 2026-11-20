@@ -46,7 +46,8 @@
       "language_label": "Simplified Chinese",
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
-      "insert_tooltip": "Insert into Slack",
+      "insert_tooltip": "Insert into Slack (R)",
+      "copy_tooltip": "Copy (C)",
       "size_step": 0,
       "levels": [
         0,

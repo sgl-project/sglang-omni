@@ -156,6 +156,10 @@ func (a *app) setFeatureEndWord(word string) {
 	a.setEndWord(normalizeFeatureEndWord(word))
 }
 
+func (a *app) setFeatureReturnFinish(on bool) {
+	a.updateSettings(func(settings *settings.Settings) { settings.Features.Transcribe.ReturnFinishes = on })
+}
+
 func (a *app) setEndWord(word string) {
 	a.updateSettings(func(settings *settings.Settings) {
 		settings.Features.EndWord = word
