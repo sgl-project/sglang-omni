@@ -22,6 +22,49 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+func TestBackgroundToastDoesNotRearm(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		life time.Duration
+		add  func(c *ui.Context)
+	}{
+		{name: "plain", life: 4 * time.Second, add: func(c *ui.Context) { c.Toast("Copied") }},
+		{name: "action", life: 8 * time.Second, add: func(c *ui.Context) {
+			c.ToastAction("Deleted", "Undo", func() {})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := &shellLocalUI{nav: &navLocalUI{sideW: sidebarWidth}}
+			state := &shellViewState{}
+			frames, added := 0, false
+			tt := ui.NewTester(func(c *ui.Context) {
+				frames++
+				if !added {
+					tc.add(c)
+					added = true
+				}
+				toastsView(c, state, local)
+			}, windowWidth, windowHeight)
+
+			tt.SetFocused(false)
+			before := frames
+			tt.Advance(30 * time.Second)
+			if frames != before {
+				t.Fatalf("a background toast armed another frame: %d frames in 30 seconds", frames-before)
+			}
+			if !tt.HasText("Copied") && !tt.HasText("Deleted") {
+				t.Fatal("the background toast expired while its timer was paused")
+			}
+
+			tt.SetFocused(true)
+			tt.Advance(tc.life + 500*time.Millisecond)
+			if tt.HasText("Copied") || tt.HasText("Deleted") {
+				t.Fatal("the toast did not expire after the window regained focus")
+			}
+		})
+	}
+}
+
 func TestNoticeModelsChangeWithTimeZone(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)

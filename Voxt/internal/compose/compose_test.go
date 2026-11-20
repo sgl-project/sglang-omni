@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -94,10 +95,12 @@ func TestGoldenTranscribe(t *testing.T) {
 	}
 }
 
-func TestCleanupDoesNotChangeSystem(t *testing.T) {
+func TestCleanupLayers(t *testing.T) {
 	cases := []Input{
 		{Task: Transcribe, Cleanup: false, MainLanguage: "en", Text: "x"},
 		{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"},
+		{Task: Transcribe, Cleanup: false, MainLanguage: "en", TaskPrompt: "Custom rules", Text: "x"},
+		{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: "Custom rules", Text: "x"},
 		{Task: Translate, Cleanup: false, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Translate, Cleanup: true, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Rewrite, Cleanup: false, MainLanguage: "en", Instruction: "shorter", Text: "hi"},
@@ -113,7 +116,11 @@ func TestCleanupDoesNotChangeSystem(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if a.System != b.System {
+		if off.Task == Transcribe {
+			if a.System == b.System || len(a.History) != 0 || len(b.History) != 0 || !slices.Contains(b.Layers, "cleanup") {
+				t.Errorf("Transcribe cleanup has no rules-only layer:\n--- off\n%s\n--- on\n%s", a.System, b.System)
+			}
+		} else if a.System != b.System {
 			t.Errorf("%s cleanup changes system:\n--- off\n%s\n--- on\n%s", off.Task, a.System, b.System)
 		}
 	}
@@ -136,15 +143,33 @@ func TestFullPromptSentAsIs(t *testing.T) {
 	}
 }
 
+// TestEditedBuiltinPromptKeepsOneCleanup: appending a rule to the built-in
+// Transcribe prompt must not add a second cleanup layer beside the one the
+// user edited. A short custom prompt still gets the cleanup layer.
+func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
+	base, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := base.System + "\nUse British spelling."
+	edited, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: custom, Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(edited.System, custom) || strings.Count(edited.System, "Basic cleanup:") != 1 || len(edited.History) != 0 {
+		t.Errorf("edited built-in prompt changed or duplicated cleanup:\n%s", edited.System)
+	}
+}
+
 func TestLayersAndProfile(t *testing.T) {
 	out, err := Build(Input{Task: Transcribe, Cleanup: true, Structure: true, MainLanguage: "zh", Text: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(out.Layers, " "); got != "transcribe input structure task output" {
+	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output" {
 		t.Errorf("layers %q", got)
 	}
-	if out.Profile() != "transcribe:structure" {
+	if out.Profile() != "transcribe:cleanup+structure" {
 		t.Errorf("profile %q", out.Profile())
 	}
 	out, _ = Build(Input{Task: Transcribe, MainLanguage: "en", Text: "x"})
@@ -355,7 +380,7 @@ func TestLayersOfTheTasks(t *testing.T) {
 	out, _ := Build(Input{Task: Rewrite, Instruction: "y", Answer: true, Previous: []Turn{{Instruction: "z", Selection: "s", Answer: Answer{Title: "T", Content: "c"}}}})
 	msgs := out.Messages()
 	if len(msgs) != 4 || msgs[1].Role != "user" || msgs[2].Content != `{"title":"T","content":"c"}` || msgs[3].Content != "<instruction>\ny\n</instruction>" ||
-		msgs[1].Content != "<instruction>\nz\n</instruction>\n\n<selected_text>\ns\n</selected_text>" {
+		msgs[1].Content != "<selected_text>\ns\n</selected_text>\n\n<instruction>\nz\n</instruction>" {
 		t.Errorf("messages %+v", msgs)
 	}
 }
@@ -385,7 +410,22 @@ func TestUntranslated(t *testing.T) {
 		{"Hello, world!", "Hello world, friends", "zh-Hans", true}, // Latin back for Chinese
 		{"Hello, world!", "你好，世界！", "zh-Hans", false},
 		{"Deploy Kubernetes today", "今天部署 Kubernetes", "zh-Hans", false}, // a name stays Latin
+		{"豆包", "Doubao (豆包)", "en", false},
+		{"Google", "谷歌（Google）", "zh-Hans", false},
+		{"it", "petit", "fr", false},
+		{"in", "matin", "fr", false},
+		{"or", "alors", "fr", false},
+		{"发布“豆包”", "Release \"豆包\"", "en", false},
+		{"Use Google Cloud", "用 Google Cloud", "zh-Hans", false},
+		{"猫", "Cat 猫", "en", true},
+		{"发布", "Release发布", "en", true},
+		{"发布", "发布Release", "en", true},
+		{"猫", "Cat猫", "en", true},
+		{"发布", "Release 发布", "en", true},
+		{"发布", "We release 发布", "en", true},
+		{"Good morning", "Bonjour Good morning", "fr", true},
 		{"我们周五发布", "我们周五发布。", "en", true},
+		{"我们周五发布", "我们周五发布 Release", "en", true},
 		{"我们周五发布", "我们在周五发版", "en", true}, // still Chinese
 		{"我们周五发布", "We ship on Friday.", "en", false},
 		{"我们周五发布", "我们周五发布", "zh-Hans", false},       // already Chinese: nothing to redo
@@ -404,54 +444,53 @@ func TestUntranslated(t *testing.T) {
 	}
 }
 
-func TestParseAnswer(t *testing.T) {
+func TestLanguageMismatch(t *testing.T) {
 	for _, tc := range []struct {
-		text string
-		want Answer
-		ok   bool
+		text, target string
+		want         bool
 	}{
-		{`{"title":"Update","content":"Ships Friday."}`, Answer{"Update", "Ships Friday."}, true},
-		{"```json\n{\"title\": \" **Update** \", \"content\": \"Line 1\\nLine 2\"}\n```", Answer{"Update", "Line 1\nLine 2"}, true},
-		{`Sure! {"title":"T","content":"x {y} z"} hope it helps`, Answer{"T", "x {y} z"}, true},
-		{`{"title":"T","content":"  "}`, Answer{Title: "T"}, true},
-		{`{"title":"T","text":"x"}`, Answer{}, false},
-		{`{"title":"T"`, Answer{}, false},
-		{"just text", Answer{}, false},
-		{`{bad} {"content":"second"}`, Answer{Content: "second"}, true},
+		{"Good morning", "en", false},
+		{"Good morning", "fr", true},
+		{"Goodbye", "fr", true},
+		{"Have a nice day", "fr", true},
+		{"Have a nice day", "en", false},
+		{"Hola", "en", true},
+		{"Hola", "es", false},
+		{"Bonjour, comment ça va ?", "fr", false},
+		{"Bonjour, comment ça va ?", "en", true},
+		{"Guten Tag", "en", true},
+		{"Guten Tag", "de", false},
+		{"Bom dia", "en", true},
+		{"Bom dia", "pt", false},
+		{"Buongiorno", "en", true},
+		{"Buongiorno", "it", false},
+		{"Goedemorgen", "en", true},
+		{"Goedemorgen", "nl", false},
+		{"Dzień dobry", "en", true},
+		{"Dzień dobry", "pl", false},
+		{"Günaydın", "en", true},
+		{"Günaydın", "tr", false},
+		{"Selamat pagi", "en", true},
+		{"Selamat pagi", "id", false},
+		{"Chào buổi sáng", "en", true},
+		{"Chào buổi sáng", "vi", false},
+		{"Kubernetes", "fr", false},
+		{"Kubernetes", "zh-Hans", false},
+		{"Kubernetes", "ja", false},
+		{"Kubernetes", "ru", false},
+		{"Привет", "en", true},
+		{"para", "pt", false},
+		{"on", "fr", false},
+		{"son", "fr", false},
+		{"comment", "en", false},
+		{"con", "en", false},
+		{"a", "es", false},
+		{"12:30", "fr", false},
+		{"Voxt supports 中文", "en", true},
+		{"我们周五发布", "zh-Hans", false},
 	} {
-		got, ok := ParseAnswer(tc.text)
-		if ok != tc.ok || got != tc.want {
-			t.Errorf("ParseAnswer(%q) = %+v %v", tc.text, got, ok)
-		}
-	}
-}
-
-func TestPartialAnswer(t *testing.T) {
-	full := `{"title": "周五发布", "content": "大家好：\n- VoxtNew \"0.1\" 周五发布 \ud83d\ude80 \u4f60"}`
-	var last Answer
-	for i := 1; i <= len(full); i++ {
-		a := PartialAnswer(full[:i])
-		if !strings.HasPrefix(full, full[:i]) || len(a.Content) < len(last.Content) && !strings.HasPrefix(last.Content, a.Content) {
-			t.Fatalf("at %d: %+v after %+v", i, a, last)
-		}
-		if strings.ContainsRune(a.Content, '\ufffd') {
-			t.Fatalf("at %d: a broken rune in %q", i, a.Content)
-		}
-		last = a
-	}
-	if last.Title != "周五发布" || last.Content != "大家好：\n- VoxtNew \"0.1\" 周五发布 🚀 你" {
-		t.Errorf("final %+v", last)
-	}
-	for text, want := range map[string]Answer{
-		"":                               {},
-		"Plain text answer":              {Content: "Plain text answer"},
-		"```":                            {},
-		"```json\n{\"title\":\"T\",\"co": {Title: "T"},
-		`{"content":"a\`:                 {Content: "a"},
-		`{"content": "x", "title": "`:    {Content: "x"},
-	} {
-		if got := PartialAnswer(text); got != want {
-			t.Errorf("PartialAnswer(%q) = %+v", text, got)
+		if got := LanguageMismatch(tc.text, tc.target); got != tc.want {
+			t.Errorf("LanguageMismatch(%q, %s) = %v, want %v", tc.text, tc.target, got, tc.want)
 		}
 	}
 }
@@ -542,108 +581,6 @@ func TestUserMessage(t *testing.T) {
 	}
 }
 
-func TestClean(t *testing.T) {
-	for _, tc := range []struct{ out, in, want string }{
-		{"  Hello.  ", "hello", "Hello."},
-		{"<input>\nHello.\n</input>", "hello", "Hello."},
-		{`"Hello."`, "hello", "Hello."},
-		{"“你好。”", "你好", "你好。"},
-		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
-		{`"Quoted."`, `"quoted"`, `"Quoted."`},
-		{"", "x", ""},
-		// Only Transcribe's clean-up asks for <output> tags: a Rewrite
-		// or Translate answer whose text itself has them (HTML it was
-		// asked for) keeps them.
-		{"Use <output>result</output> for results.", "format this as HTML", "Use <output>result</output> for results."},
-	} {
-		if got := Clean(tc.out, tc.in); got != tc.want {
-			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
-		}
-	}
-}
-
-// TestCleanOutput: the Transcribe clean-up's contract — only the
-// <output> tags' content, never the model's commentary about its edits
-// (#4086); text that has the tags because the user said them keeps
-// them, less one outermost pair the model wrapped it in.
-func TestCleanOutput(t *testing.T) {
-	for _, tc := range []struct{ out, in, want string }{
-		{"  Hello.  ", "hello", "Hello."},
-		{"<output>\nHello.\n</output>", "hello", "Hello."},
-		{"<output>\nHello.\n</output>\n\nI removed the filler “um”.", "hello", "Hello."},
-		{"Here you go: <output>Hello.</output> Hope it helps.", "hello", "Hello."},
-		{"<output>\n算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？\n</output>\n\n清理时删掉了“就是说”。", "x", "算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？"},
-		{"<output>\nHello.", "hello", "Hello."}, // cut short: the rest is the text
-		{"<output></output>", "hello", ""},
-		{"<output>“你好。”</output>", "你好", "你好。"},
-		// The tags were in the input itself (dictated literally): the
-		// answer is used as it is…
-		{`use <output> and </output> here`, "use <output> and </output> here", `use <output> and </output> here`},
-		{"<output>a</output><output>b</output>", "<output>a</output><output>b</output>", "<output>a</output><output>b</output>"},
-		// …but a contract-abiding model wrapped it in one more pair:
-		// exactly that pair goes.
-		{"<output>use <output> and </output> here</output>", "use <output> and </output> here", "use <output> and </output> here"},
-	} {
-		if got := CleanOutput(tc.out, tc.in); got != tc.want {
-			t.Errorf("CleanOutput(%q) = %q, want %q", tc.out, got, tc.want)
-		}
-	}
-}
-
-// TestPartialOutput: a streaming clean-up answer never shows the
-// contract's <output> tags, whole or as far as they came.
-func TestPartialOutput(t *testing.T) {
-	full := "<output>\n大家好，周五发布。\n</output>\n\n我删掉了语气词。"
-	for i := 1; i <= len(full); i++ {
-		got := PartialOutput(full[:i], "周五发布")
-		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
-			t.Fatalf("at %d: a tag in %q", i, got)
-		}
-	}
-	// Commentary before the opening tag goes too, as Clean drops it.
-	prefixed := "Here you go: <output>Hello.</output>"
-	for i := 1; i <= len(prefixed); i++ {
-		got := PartialOutput(prefixed[:i], "hello")
-		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
-			t.Fatalf("at %d: a tag in %q", i, got)
-		}
-	}
-	for text, want := range map[string]string{
-		"":                            "",
-		"<":                           "",
-		"<outpu":                      "",
-		"<output>":                    "",
-		"plain text":                  "plain text",
-		"<output>\nHello.":            "Hello.",
-		"<output>Hello.</output>\n":   "Hello.",
-		"Here you go: <output>Hello.": "Hello.",
-		// A stream ending in the opening tag's start holds back: the
-		// tag may complete, and the commentary before it then goes.
-		"Here you go: <outpu": "",
-		// Without an opening tag a closing one is the user's text and
-		// shows as it is, whole or as far as it came (CleanOutput
-		// keeps it too).
-		"use </output> here": "use </output> here",
-		"Hello.</out":        "Hello.</out",
-	} {
-		if got := PartialOutput(text, "hello"); got != want {
-			t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
-		}
-	}
-	// The tags the user said stay: CleanOutput keeps that text too,
-	// less one outermost pair a contract-abiding model wrapped it in.
-	if got := PartialOutput("use <output> and </output> here", "use <output> and </output> here"); got != "use <output> and </output> here" {
-		t.Errorf("PartialOutput with the user's own tags = %q", got)
-	}
-	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here"); got != "use <output> and </output> here" {
-		t.Errorf("PartialOutput with the model's wrapper around the user's tags = %q", got)
-	}
-}
-
-// TestGlossaryInUser: past GlossaryAllUpTo terms the glossary (the terms
-// the text mentions) opens the user message, so that the system prompt
-// and the example stay the same whatever is said; up to it, the whole
-// glossary is in the system prompt.
 func TestGlossaryInUser(t *testing.T) {
 	var large []Term
 	for i := range GlossaryAllUpTo + 1 {
@@ -669,6 +606,12 @@ func TestGlossaryInUser(t *testing.T) {
 		if out.Glossary == "" || !strings.HasPrefix(out.User, out.Glossary+"\n\n") || o2.System != out.System || strings.Contains(out.System, "Term") ||
 			!strings.Contains(out.Profile(), "glossary") || o2.Glossary != "" || !strings.Contains(out.System, "<glossary>") {
 			t.Errorf("%s: glossary %q, user %q, profiles %s / %s", c.name, out.Glossary, out.User, out.Profile(), o2.Profile())
+		}
+	}
+	for _, taskPrompt := range []string{"", "Rewrite formally"} {
+		out, err := Build(Input{Task: Rewrite, MainLanguage: "en", Glossary: large, Instruction: "make it shorter", Text: "selected", Typed: "Term03", TaskPrompt: taskPrompt})
+		if err != nil || !strings.Contains(out.Glossary, "- Term03\n") {
+			t.Errorf("typed-only glossary match %q, %v", out.Glossary, err)
 		}
 	}
 	small := Input{Task: Transcribe, MainLanguage: "en", Glossary: large[:GlossaryAllUpTo], Text: "Term01"}

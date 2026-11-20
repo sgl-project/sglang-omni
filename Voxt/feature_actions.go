@@ -38,4 +38,5 @@ type featureActions interface {
 	scheduleFeaturePromptSave(feature string, sequence int)
 	copyFeatureText(text string)
 	setFeatureEndWord(word string)
+	setFeatureReturnFinish(on bool)
 }

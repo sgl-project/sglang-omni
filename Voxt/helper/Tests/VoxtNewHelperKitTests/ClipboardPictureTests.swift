@@ -44,6 +44,43 @@ final class ClipboardPictureTests: XCTestCase {
         XCTAssertEqual(preferred.map { [$0.width, $0.height] }, [40, 20])
     }
 
+    func testImageSelectionPlaceholderUsesCopiedImageOnlyWhenPresent() {
+        let image = ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: imageData(12, 8)], file: nil, maxSide: 1600, text: "[Image]")
+        XCTAssertEqual(image.map { [$0.width, $0.height] }, [12, 8])
+        let mixed = ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: imageData(12, 8)], file: nil, maxSide: 1600, text: "caption [Image]")
+        XCTAssertEqual(mixed.map { [$0.width, $0.height] }, [12, 8])
+        XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text], data: [:], file: nil, maxSide: 1600, text: "[Image]"),
+                     "literal placeholder text without an image stays text")
+        XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: imageData(12, 8)], file: nil, maxSide: 1600, text: "caption"),
+                     "ordinary selected text does not opt into an image")
+    }
+
+    func testPlainTextSelectionSkipsTheImageRead() {
+        let tiff = UTType.tiff.identifier
+        var read: [String] = []
+        let collect = { (text: String?) in
+            ClipboardPicture.copiedSelectionImageData(types: [self.text, tiff], text: text) { type in
+                read.append(type)
+                return self.imageData(12, 8, type: .tiff)
+            }
+        }
+        XCTAssertTrue(collect("caption").isEmpty)
+        XCTAssertTrue(collect(nil).isEmpty)
+        XCTAssertTrue(read.isEmpty, "plain text never reads the pasteboard's image bytes")
+        let optedIn = collect("caption [Image]")
+        XCTAssertEqual(read, [tiff], "an [Image] placeholder reads its image representation")
+        XCTAssertNotNil(optedIn[tiff])
+    }
+
+    func testImageSelectionFallsBackFromUnreadablePNGToTIFF() {
+        let tiff = UTType.tiff.identifier
+        let validPNG = imageData(40, 20)
+        let unreadablePNG = Data(validPNG.prefix(8))
+        let validTIFF = imageData(30, 60, type: .tiff)
+        let image = ClipboardPicture.imageForCopiedSelection(types: [text, png, tiff], data: [png: unreadablePNG, tiff: validTIFF], file: nil, maxSide: 1600, text: "caption [Image]")
+        XCTAssertEqual(image.map { [$0.width, $0.height] }, [30, 60])
+    }
+
     func testReadsLaterFormatOnlyWhenNeeded() async {
         let tiff = UTType.tiff.identifier
         let validPNG = imageData(40, 20)

@@ -45,7 +45,11 @@ func TestDeliverWhereTyping(t *testing.T) {
 		{name: "a selection in the same app", kind: store.KindTranslate, selection: "Good morning", focus: inSlack, into: slack},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t, &fakeFile{text: "hello"}, &fakeLLM{text: "Hello."}, func(c *Config, s *settings.Settings) {
+			answer := "Hello."
+			if tc.kind == store.KindTranslate {
+				answer = "早上好"
+			}
+			h := newHarness(t, &fakeFile{text: "hello"}, &fakeLLM{text: answer}, func(c *Config, s *settings.Settings) {
 				c.Select = &fakeSelector{text: tc.selection}
 				c.Self = 77 // no Activate: VoxtNew in front stays so
 				c.Scene = &SceneConfig{
