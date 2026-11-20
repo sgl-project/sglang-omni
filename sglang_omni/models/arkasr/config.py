@@ -79,7 +79,8 @@ class ArkasrPipelineConfig(PipelineConfig):
                 request_build_max_workers=2,
                 request_build_max_pending=16,
             ),
-            engine=EngineArgs(max_running_requests=32),
+            # note (wilsonzheng0327): at 32 a full cap admits queued requests one or two per prefill, and throughput fell 30% from 32 to 64 concurrent requests on H200.
+            engine=EngineArgs(max_running_requests=64),
             gpu=0,
             terminal=True,
         )

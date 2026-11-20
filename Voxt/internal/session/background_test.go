@@ -10,17 +10,12 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// say records n frames of the session that started after base frames, then
-// stops it (harness.speak counts every session's frames).
-func (h *harness) say(id string, base, n int) {
+// say records n frames of another session, then stops it.
+func (h *harness) say(id string, n int) {
 	h.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for h.audio.recorded() < base+n {
-		if time.Now().After(deadline) {
-			h.t.Fatalf("only %d frames recorded", h.audio.recorded()-base)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	h.rec.waitFor(h.t, "the other session's audio", func(s Snapshot) bool {
+		return s.ID == id && len(s.Levels) >= n
+	})
 	h.m.Stop(id)
 }
 
@@ -66,7 +61,7 @@ func TestBackgroundComposesBesideANewSession(t *testing.T) {
 	if s := h.m.Current(); s.ID != other || s.State != Recording {
 		t.Errorf("the new session is the current one: %+v", s)
 	}
-	h.say(other, 3, 3)
+	h.say(other, 3)
 	if end := h.rec.waitFor(t, "the second session's end", func(s Snapshot) bool { return s.ID == other && s.State.Ended() }); end.State != Done || end.Result != "dictated" {
 		t.Errorf("the second session ended %+v", end)
 	}
@@ -221,7 +216,7 @@ func TestBackgroundCancel(t *testing.T) {
 	if s := h.m.Current(); s.ID != other || !s.State.Live() {
 		t.Errorf("the new session runs on: %+v", s)
 	}
-	h.say(other, 3, 3)
+	h.say(other, 3)
 	h.rec.waitFor(t, "the second session's end", func(s Snapshot) bool { return s.ID == other && s.State.Ended() })
 	// A cancelled session keeps its recording for Retry; no result.
 	es := h.hist.all()
