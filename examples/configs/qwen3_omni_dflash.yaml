@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+config_cls: Qwen3OmniPipelineConfig
+name: qwen3-omni-dflash
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+stages:
+  preprocessing:
+    factory:
+      max_seq_len: 8192
+  image_encoder:
+    gpu_memory_fraction: 0.025
+  audio_encoder:
+    gpu_memory_fraction: 0.025
+  thinker:
+    gpu_memory_fraction: 0.75
+    factory:
+      max_seq_len: 8192
+    engine:
+      enable_mixed_chunk: false
+      speculative_algorithm: DFLASH
+      speculative_draft_model_path: yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8
+      speculative_draft_model_revision: 47029d797b43f6fb8fba8948784ad221a55aafd6
+      speculative_num_draft_tokens: 8

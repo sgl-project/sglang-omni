@@ -17,6 +17,7 @@ from benchmarks.benchmarker.conditions import sampling_seed_field
 from benchmarks.benchmarker.data import RequestResult, finish_reason_from_server
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.dataset.mmmu import MMMUSample
+from benchmarks.tasks.chat_stream import consume_text_chat_stream
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,7 @@ def make_mmmu_send_fn(
     seed: int | None = None,
     enable_audio: bool = False,
     audio_dir: str | None = None,
+    stream: bool = False,
 ) -> SendFn:
     """Return a *send_fn* that sends an MMMUSample to /v1/chat/completions.
 
@@ -242,6 +244,10 @@ def make_mmmu_send_fn(
     audio response, saves it as a WAV file under *audio_dir*, and stores
     the path in ``RequestResult.wav_path``.
     """
+    if stream and enable_audio:
+        raise ValueError("Streaming MMMU supports text output only")
+    else:
+        pass
     modalities = ["text", "audio"] if enable_audio else ["text"]
     if enable_audio:
         import soundfile as sf
@@ -261,7 +267,8 @@ def make_mmmu_send_fn(
             "modalities": modalities,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "stream": False,
+            "stream": stream,
+            **({"stream_options": {"include_usage": True}} if stream else {}),
             **sampling_seed_field(seed),
         }
         if enable_audio:
@@ -271,7 +278,11 @@ def make_mmmu_send_fn(
         try:
             async with session.post(api_url, json=payload) as response:
                 response.raise_for_status()
-                body = await response.json()
+                if stream:
+                    await consume_text_chat_stream(response, result, start_time)
+                    return result
+                else:
+                    body = await response.json()
 
             message = body.get("choices", [{}])[0].get("message", {})
             content = message.get("content", "")
@@ -310,7 +321,7 @@ def make_mmmu_send_fn(
                 result.rtf = elapsed / result.audio_duration_s
             if result.completion_tokens > 0 and result.engine_time_s > 0:
                 result.tok_per_s = result.completion_tokens / result.engine_time_s
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time

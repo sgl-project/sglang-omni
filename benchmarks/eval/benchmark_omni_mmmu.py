@@ -118,6 +118,7 @@ class MMMUEvalConfig:
     request_rate: float = float("inf")
     disable_tqdm: bool = False
     enable_audio: bool = False
+    stream: bool = False
     asr_device: str = "cuda:0"
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     lang: str = "en"
@@ -162,6 +163,7 @@ async def run_mmmu_eval(
         temperature=config.temperature,
         seed=config.seed,
         enable_audio=config.enable_audio,
+        stream=config.stream,
         audio_dir=audio_dir,
     )
 
@@ -194,6 +196,7 @@ async def run_mmmu_eval(
         "warmup": resolve_warmup(config.warmup, config.max_concurrency),
         "request_rate": config.request_rate,
         "enable_audio": config.enable_audio,
+        "stream": config.stream,
         "asr_concurrency": config.asr_concurrency,
         **fingerprint_fields(config.record_fingerprint, base_url),
     }
@@ -236,6 +239,7 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
         enable_audio=args.enable_audio,
+        stream=args.stream,
         asr_device=args.asr_device,
         asr_concurrency=args.asr_concurrency,
         lang=args.lang,
@@ -280,6 +284,9 @@ def main() -> None:
         type=str,
         default="qwen3-omni",
         help="Model name for the API request.",
+    )
+    parser.add_argument(
+        "--stream", action="store_true", help="Measure first streamed text."
     )
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--max-samples", type=int, default=None)

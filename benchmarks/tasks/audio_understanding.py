@@ -20,6 +20,7 @@ from benchmarks.benchmarker.runner import SendFn
 from benchmarks.benchmarker.utils import get_wav_duration, save_json_results
 from benchmarks.dataset.mmsu import MmsuSample, normalize_text
 from benchmarks.metrics.accuracy import INDEX_TO_LETTER, extract_answer_letter
+from benchmarks.tasks.chat_stream import consume_text_chat_stream
 
 DEFAULT_PROMPT = (
     "Listen to the audio and answer the multiple-choice question. "
@@ -175,11 +176,16 @@ def make_mmsu_send_fn(
     temperature: float = 0.0,
     seed: int | None = None,
     save_audio_dir: str | None = None,
+    stream: bool = False,
 ) -> SendFn:
     if modalities is None:
         modalities = ["text"]
 
     audio_mode = "audio" in modalities
+    if stream and audio_mode:
+        raise ValueError("Streaming MMSU supports text output only")
+    else:
+        pass
 
     async def send_fn(
         session: aiohttp.ClientSession,
@@ -196,6 +202,11 @@ def make_mmsu_send_fn(
             seed=seed,
         )
 
+        payload["stream"] = stream
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
+        else:
+            pass
         start_time = time.perf_counter()
         try:
             async with session.post(
@@ -204,7 +215,11 @@ def make_mmsu_send_fn(
                 headers={"Content-Type": "application/json"},
             ) as response:
                 response.raise_for_status()
-                response_json = await response.json()
+                if stream:
+                    await consume_text_chat_stream(response, result, start_time)
+                    return result
+                else:
+                    response_json = await response.json()
 
             result = _build_result_from_response(
                 result,
@@ -220,7 +235,7 @@ def make_mmsu_send_fn(
                 result.rtf = elapsed / result.audio_duration_s
             if result.completion_tokens > 0 and elapsed > 0:
                 result.tok_per_s = result.completion_tokens / elapsed
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time

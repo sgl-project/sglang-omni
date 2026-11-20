@@ -128,6 +128,7 @@ async def run(
     *,
     samples: list[MmsuSample] | None = None,
     compute_wer: bool = True,
+    stream: bool = False,
 ) -> dict:
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
@@ -156,6 +157,7 @@ async def run(
         temperature=args.temperature,
         seed=args.seed,
         save_audio_dir=save_audio_dir,
+        stream=stream,
     )
     if args.prompt:
         send_fn_kwargs["prompt"] = args.prompt
@@ -205,6 +207,7 @@ async def run(
                 "model": args.model,
                 "base_url": base_url,
                 "modalities": modalities,
+                "stream": stream,
                 "max_samples": args.max_samples,
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
@@ -235,6 +238,7 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--model", type=str, default="qwen3-omni")
     p.add_argument("--modalities", choices=["text", "text+audio"], default="text")
+    p.add_argument("--stream", action="store_true", help="Measure first streamed text.")
     p.add_argument("--output-dir", type=str, default="results/mmsu")
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--task-names", type=str, default=None)
@@ -282,7 +286,7 @@ def main() -> None:
 
     args = p.parse_args()
     wait_for_service(args.base_url or f"http://{args.host}:{args.port}")
-    output = asyncio.run(run(args))
+    output = asyncio.run(run(args, stream=args.stream))
     print_mmsu_summary(output["accuracy"], args.model, speed_metrics=output["speed"])
     if "wer" in output:
         print_wer_summary(output["wer"]["summary"], args.model)
