@@ -20,9 +20,14 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 		{"OK: <typed_text>\ntype this\n</typed_text>", "OK: type this"},
 		{"<typed_text>\nA typed note.\n</typed_text>", "A typed note."},
 		{"<typed_text>\ntype this", "type this"},
+		{"<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow."},
+		{"OK: <selected_text>The quick brown fox", "OK: The quick brown fox"},
 	} {
 		checkAnswer(t, tc.out, tc.want, selection, instruction, typed)
 	}
+	checkAnswer(t, "<instruction>Use 230 V.</instruction>", "Use 230 V.", "", "fix the voltage")
+	checkAnswer(t, "<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow.", "The template is attached.", "make it formal")
+	checkAnswer(t, "<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow.", "see you tmrw", "The template is attached.\nmake it formal", "The template is attached.")
 }
 
 // TestAnswerKeepsRequestedTags: tags that are part of the answer, such as
@@ -41,6 +46,13 @@ func TestAnswerKeepsRequestedTags(t *testing.T) {
 func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
 	template := "<instruction>\n{task}\n</instruction>"
 	checkAnswer(t, template, template, "", "Write an instruction template")
+}
+
+func TestAnswerKeepsSingleSelectedTextPair(t *testing.T) {
+	template := "<selected_text>{text}</selected_text>"
+	checkAnswer(t, template, template, "", "Write a selected_text template")
+	checkAnswer(t, template, template, "see you tmrw", "write a selected_text template\ndo it", "write a selected_text template")
+	checkAnswer(t, template, template, "see you tmrw", "这个模板太啰嗦，重新写一个 selected_text 模板\n照做", "这个模板太啰嗦，重新写一个 selected_text 模板")
 }
 
 func TestAnswerTitleDropsWholeInstructionPair(t *testing.T) {

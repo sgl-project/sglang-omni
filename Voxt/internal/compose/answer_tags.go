@@ -1,6 +1,9 @@
 package compose
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // CleanRewrite is the clean for a Rewrite answer: it also drops echoed
 // input tags, and any unclosed pair or tag fragment a stopped stream left.
@@ -9,14 +12,13 @@ func CleanRewrite(out string, inputs []string, partial bool, quoteSource ...stri
 }
 
 // stripInputTags drops an <instruction>, <selected_text> or <typed_text>
-// pair a model echoed from RewriteMessage, keeping the text between: a
-// selected_text or typed_text pair that wraps the whole answer, or one around
-// exactly a text the user sent (whole lines of input). A whole instruction
-// pair and other pairs are part of the answer (a prompt template the user
-// asked for) and stay, as do the tags the user's own text has.
-// keepWholeInstruction is true for content and false for titles.
-func stripInputTags(s string, keepWholeInstruction bool, input ...string) string {
+// pair a model echoed from RewriteMessage, keeping the text between: a pair
+// that wraps the whole answer when the user did not request a template, or
+// one around exactly a text the user sent (whole lines of input). Requested
+// templates and tags in the user's own text stay. content is false for titles.
+func stripInputTags(s string, content bool, input ...string) string {
 	sent := "\n" + strings.Join(input, "\n") + "\n"
+	requestedTemplate := content && requestsInputTemplate(input)
 	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
 		open, close := "<"+name+">", "</"+name+">"
 		if strings.Contains(sent, open) || strings.Contains(sent, close) {
@@ -35,7 +37,7 @@ func stripInputTags(s string, keepWholeInstruction bool, input ...string) string
 			j += i + len(open)
 			inner := strings.TrimSpace(s[i+len(open) : j])
 			whole := strings.TrimSpace(s[:i]) == "" && strings.TrimSpace(s[j+len(close):]) == ""
-			if whole && (!keepWholeInstruction || name != "instruction") || inner != "" && strings.Contains(sent, "\n"+inner+"\n") {
+			if whole && !requestedTemplate || inner != "" && strings.Contains(sent, "\n"+inner+"\n") {
 				s = s[:i] + inner + s[j+len(close):]
 				from = i + len(inner)
 			} else {
@@ -46,8 +48,46 @@ func stripInputTags(s string, keepWholeInstruction bool, input ...string) string
 	return s
 }
 
-func stripPartialInputTags(s string, keepWholeInstruction bool, input ...string) string {
-	s = stripInputTags(s, keepWholeInstruction, input...)
+func requestsInputTemplate(input []string) bool {
+	if len(input) == 0 {
+		return false
+	}
+	// A session repeats the current typed and spoken request at input[1], before earlier turns.
+	request := input[0]
+	if len(input) > 1 {
+		request = input[1]
+	}
+	for _, action := range []string{"写", "生成", "创建", "输出", "返回", "给", "用", "改", "按", "做"} {
+		actionAt := strings.Index(request, action)
+		if actionAt < 0 {
+			continue
+		}
+		rest := request[actionAt+len(action):]
+		for _, keyword := range []string{"标签", "模板", "提示词"} {
+			if strings.Contains(rest, keyword) {
+				return true
+			}
+		}
+	}
+	words := strings.FieldsFunc(strings.ToLower(request), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	})
+	requested := false
+	for _, word := range words {
+		switch word {
+		case "write", "create", "generate", "make", "produce", "use", "turn", "give", "show", "output", "return", "provide", "convert", "rewrite", "wrap", "need", "want":
+			requested = true
+		case "tag", "tags", "template", "templates", "prompt", "prompts":
+			if requested {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stripPartialInputTags(s string, content bool, input ...string) string {
+	s = stripInputTags(s, content, input...)
 	sent := "\n" + strings.Join(input, "\n") + "\n"
 	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
 		open, close := "<"+name+">", "</"+name+">"

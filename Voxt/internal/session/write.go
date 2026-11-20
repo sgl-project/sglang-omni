@@ -328,7 +328,8 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
-	answerInputs := []string{in.Text + "\n" + in.Typed + "\n" + in.Instruction}
+	// Keep the current typed and spoken request separate so selected prose and earlier turns cannot request a template.
+	answerInputs := []string{in.Text + "\n" + in.Typed + "\n" + in.Instruction, in.Typed + "\n" + in.Instruction}
 	for _, turn := range in.Previous {
 		answerInputs = append(answerInputs, turn.Instruction+"\n"+turn.Selection+"\n"+turn.Typed+"\n"+turn.Answer.Title+"\n"+turn.Answer.Content)
 	}

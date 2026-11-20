@@ -37,6 +37,7 @@ func TestTranslateKeepsInputTags(t *testing.T) {
 func TestRewriteDropsEchoedInputTags(t *testing.T) {
 	const fox = "The quick brown fox jumps over the lazy dog."
 	earlier := []compose.Turn{{Instruction: "make it shorter", Selection: fox, Answer: compose.Answer{Content: "The quick fox."}}}
+	templateEarlier := []compose.Turn{{Instruction: "write an instruction template", Selection: fox, Answer: compose.Answer{Content: "The quick fox."}}}
 	asJSON := func(content string) string {
 		b, _ := json.Marshal(compose.Answer{Title: "T", Content: content})
 		return string(b)
@@ -44,9 +45,9 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 	template := "Use:\n<instruction>\n{task}\n</instruction>\n<selected_text>\n{text}\n</selected_text>"
 	instructionTemplate := "<instruction>\n{task}\n</instruction>"
 	for _, tc := range []struct {
-		name, raw, sel string
-		previous       []compose.Turn
-		answer, want   string
+		name, raw, sel, typed string
+		previous              []compose.Turn
+		answer, want          string
 	}{
 		{name: "the instruction, after a selection", raw: "make it shorter", sel: fox,
 			answer: "<instruction>\nmake it shorter\n</instruction>\n\nDone: The quick fox.", want: "make it shorter\n\nDone: The quick fox."},
@@ -68,11 +69,25 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 			answer: asJSON(instructionTemplate), want: instructionTemplate},
 		{name: "a requested template stays, after a selection", raw: "turn it into a template", sel: fox,
 			answer: template, want: template},
+		{name: "a whole instruction wrapper around the answer", raw: "make it formal", sel: "see you tmrw",
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a whole selected_text template stays", raw: "write a selected_text template",
+			answer: asJSON("<selected_text>{text}</selected_text>"), want: "<selected_text>{text}</selected_text>"},
+		{name: "template prose in the selection", raw: "make it formal", sel: "The template is attached.",
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a template request only in an earlier turn", raw: "make it formal", previous: templateEarlier,
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a typed selected_text template request", raw: "do it", sel: "see you tmrw", typed: "write a selected_text template",
+			answer: "<selected_text>{text}</selected_text>", want: "<selected_text>{text}</selected_text>"},
+		{name: "template prose in typed input", raw: "make it formal", sel: "see you tmrw", typed: "The template is attached.",
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a repeated Chinese template keyword", raw: "照做", sel: "see you tmrw", typed: "这个模板太啰嗦，重新写一个 selected_text 模板",
+			answer: "<selected_text>{text}</selected_text>", want: "<selected_text>{text}</selected_text>"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, &fakeFile{}, &fakeLLM{text: tc.answer}, func(c *Config, s *settings.Settings) { c.Select = &fakeSelector{} })
 			if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack, Card: true, Previous: tc.previous,
-				Text: &TextInput{Raw: tc.raw, Selection: tc.sel}}); err != nil {
+				Text: &TextInput{Raw: tc.raw, Selection: tc.sel, Typed: tc.typed}}); err != nil {
 				t.Fatal(err)
 			}
 			if end := h.rec.wait(t); end.State != Done || end.Result != tc.want || !end.Card {
