@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,7 +248,7 @@ func (f *deadlineDiarizeFake) Diarize(context.Context, asr.FileRequest) (asr.Res
 }
 
 func TestMeetingImportDeadlineStaysInterrupted(t *testing.T) {
-	a, _, tt := newTestApp(t)
+	a, _, _ := newTestApp(t)
 	diarizer := &deadlineDiarizeFake{}
 	a.local = &importLocal{fakeLocal: withChat(&fakeLocal{ASRP: &fakeTranscriptions{}}, &fakeChat{}), mtd: diarizer}
 	a.prefs.General.MainLanguage = "en"
@@ -262,12 +263,10 @@ func TestMeetingImportDeadlineStaysInterrupted(t *testing.T) {
 		return pcm, nil
 	}
 	a.navigate("/meetings")
-	if err := tt.ClickControl("Import recording…"); err != nil {
-		t.Fatalf("%v (%q)", err, firstTexts(tt))
-	}
-	frames(tt)
+	a.win = nil
+	a.importRecording("long.m4a")
 	for _, toast := range a.toasts {
-		if toast == "Could not import the recording: context deadline exceeded" {
+		if strings.Contains(toast, "Could not import the recording") {
 			t.Fatalf("a recoverable timeout showed a failure: %q", toast)
 		}
 	}
