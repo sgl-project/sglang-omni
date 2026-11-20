@@ -14,6 +14,7 @@ import av
 import numpy as np
 import numpy.typing as npt
 import soundfile
+import soxr
 import torch
 
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
@@ -224,22 +225,29 @@ def parse_wav_bytes(
     return audio.astype(np.float32, copy=False), int(sample_rate)
 
 
-def resample_linear(
-    audio: np.ndarray, orig_sr: int, target_sr: int
+def resample_audio(
+    waveform: npt.NDArray[np.float32], source_sample_rate: int, target_sample_rate: int
 ) -> npt.NDArray[np.float32]:
-    if orig_sr == target_sr:
-        return audio.astype(np.float32, copy=False)
+    """Low-pass filter when downsampling and interpolate when upsampling."""
+    if source_sample_rate == target_sample_rate or waveform.size == 0:
+        return waveform
     else:
         pass
-    if audio.size == 0:
-        return audio.astype(np.float32, copy=False)
+    sample_count = max(
+        round(waveform.size / source_sample_rate * target_sample_rate), 1
+    )
+    if sample_count == 1:
+        return waveform[:1]
+    elif target_sample_rate < source_sample_rate:
+        resampled = soxr.resample(waveform, source_sample_rate, target_sample_rate)
+        if resampled.size < sample_count:
+            return np.pad(resampled, (0, sample_count - resampled.size))
+        else:
+            return resampled[:sample_count]
     else:
-        pass
-    duration = audio.shape[0] / float(orig_sr)
-    new_len = max(int(round(duration * target_sr)), 1)
-    old_idx = np.arange(audio.shape[0], dtype=np.float64)
-    new_idx = np.linspace(0.0, audio.shape[0] - 1, num=new_len, dtype=np.float64)
-    return np.interp(new_idx, old_idx, audio).astype(np.float32)
+        source_indices = np.arange(waveform.size, dtype=np.float64)
+        target_indices = np.linspace(0, waveform.size - 1, num=sample_count)
+        return np.interp(target_indices, source_indices, waveform).astype(np.float32)
 
 
 def load_audio_path(
@@ -248,7 +256,7 @@ def load_audio_path(
     with open(path, "rb") as f:
         data = f.read()
     audio, sample_rate = decode_audio_bytes(data)
-    return resample_linear(audio, sample_rate, target_sr)
+    return resample_audio(audio, sample_rate, target_sr)
 
 
 class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
@@ -268,7 +276,7 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
     def load_bytes(self, data: bytes) -> tuple[npt.NDArray[np.float32], float]:
         """Load audio from raw bytes (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
         audio, sample_rate = decode_audio_bytes(data)
-        resampled = resample_linear(audio, sample_rate, self.target_sr)
+        resampled = resample_audio(audio, sample_rate, self.target_sr)
         return resampled, float(self.target_sr)
 
     def load_base64(
@@ -284,7 +292,7 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
         with open(filepath, "rb") as f:
             data = f.read()
         audio, sample_rate = decode_audio_bytes(data)
-        resampled = resample_linear(audio, sample_rate, self.target_sr)
+        resampled = resample_audio(audio, sample_rate, self.target_sr)
         return resampled, float(self.target_sr)
 
 

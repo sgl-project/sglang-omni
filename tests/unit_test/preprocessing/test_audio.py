@@ -10,6 +10,7 @@ import pytest
 import soundfile as sf
 
 from sglang_omni.preprocessing.audio import (
+    AudioMediaIO,
     decode_audio_bytes,
     decode_audio_bytes_av,
     parse_wav_bytes,
@@ -154,3 +155,36 @@ def test_pyav_float_audio_above_full_scale_keeps_its_amplitude() -> None:
 
     assert sample_rate == 8_000
     np.testing.assert_array_equal(decoded, source)
+
+
+def test_downsampling_keeps_speech_band_audio_without_aliasing() -> None:
+    """A 12 kHz tone in a 32 kHz upload used to appear in the 16 kHz model input."""
+    source_sample_rate = 32_000
+    source_seconds = np.arange(source_sample_rate + 1) / source_sample_rate
+    stereo = np.column_stack(
+        (
+            0.5 * np.sin(2 * np.pi * 1000 * source_seconds),
+            0.5 * np.sin(2 * np.pi * 12_000 * source_seconds),
+        )
+    )
+    wav_bytes = encode_audio(stereo, "WAV", "PCM_16", source_sample_rate)
+
+    waveform, sample_rate = AudioMediaIO(target_sr=SAMPLE_RATE).load_bytes(wav_bytes)
+
+    assert sample_rate == SAMPLE_RATE
+    assert waveform.shape == (SAMPLE_RATE,)
+    assert waveform.dtype == np.float32
+    expected = 0.25 * np.sin(2 * np.pi * 1000 * np.arange(SAMPLE_RATE) / SAMPLE_RATE)
+    np.testing.assert_allclose(waveform[128:-128], expected[128:-128], atol=0.003)
+
+
+@pytest.mark.parametrize(("source_samples", "expected_samples"), [(1, 1), (800, 368)])
+def test_short_audio_retains_its_rounded_duration(
+    source_samples: int, expected_samples: int
+) -> None:
+    """A clip shorter than half a target period yields one sample, and 367.5 periods yield 368."""
+    wav_bytes = encode_audio(np.ones(source_samples), "WAV", "PCM_16", 48_000)
+
+    waveform, _ = AudioMediaIO(target_sr=22_050).load_bytes(wav_bytes)
+
+    assert len(waveform) == expected_samples
