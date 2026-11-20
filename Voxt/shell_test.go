@@ -384,6 +384,31 @@ func TestPermissionsSettings(t *testing.T) {
 	if !slices.Contains(fs.methods(), proto.MethodPermissionsStatus) || a.perms.mic != permission.NotDetermined || a.perms.access || a.perms.speech != permission.NotDetermined {
 		t.Errorf("permissions %+v after %v", a.perms, fs.methods())
 	}
+	// A recheck keeps what is shown until the helper answers: this
+	// process's read (the microphone allowed) never shows in between
+	// (#4365).
+	var held []func()
+	a.postQueue = func(fn func()) { held = append(held, fn) }
+	a.recheckPermissions()
+	if a.perms.mic != permission.NotDetermined || a.perms.speech != permission.NotDetermined {
+		t.Errorf("before the helper answered: %+v", a.perms)
+	}
+	a.postQueue = nil
+	for _, fn := range held {
+		fn()
+	}
+	if len(held) == 0 || a.perms.mic != permission.NotDetermined || !a.perms.checked {
+		t.Errorf("after the helper answered (%d posts): %+v", len(held), a.perms)
+	}
+	// An older helper does not read Speech Recognition: this process does.
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermNotDetermined}, nil
+	}
+	a.permSys.(*permission.Fake).Speech = permission.Granted
+	a.recheckPermissions()
+	if a.perms.speech != permission.Granted {
+		t.Errorf("speech with an older helper: %+v", a.perms)
+	}
 	if slices.ContainsFunc(fs.methods(), func(m string) bool { return strings.HasPrefix(m, "automation.") }) {
 		t.Errorf("asked for Automation: %v", fs.methods())
 	}
