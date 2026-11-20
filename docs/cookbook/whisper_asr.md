@@ -58,14 +58,12 @@ request, so `stream=true` is bounded by the 30-second mel window.
 
 ## Translate Audio
 
-Whisper multilingual checkpoints can translate source speech to English via
-`/v1/audio/translations`:
+Multilingual, non-turbo Whisper checkpoints translate speech to English through `/v1/audio/translations`. Omit `language` to detect the source language.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/translations \
   -F model=openai/whisper-large-v3 \
   -F file=@tests/data/query_to_cars.wav \
-  -F language=fr \
   -F response_format=json
 ```
 
@@ -83,14 +81,14 @@ The table lists only Whisper-specific behavior. For the shared fields `file`, `m
 |---|---|---|---|
 | `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning. Only the last 223 prompt tokens are kept (224 prev-context tokens including `<\|startofprev\|>`); the prompt must not contain Whisper special tokens |
-| `response_format` | string | `json` | Non-streaming requests support `srt` and `vtt` using Whisper's model-derived segment timestamps. `stream=true` accepts only `json` and `text` |
+| `response_format` | string | `json` | Use `srt` or `vtt` for a single, non-streamed clip with model-derived timestamps. Streaming accepts `json` and `text` |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
 or `translate`); it is not a public form field. The route uses the ASR stage
 default unless the pipeline is configured another way. For smoke tests, keep
 the request minimal and use `response_format=json`.
 
-Both transcription and translation return HTTP 400 for a streaming `srt` or `vtt` request.
+Both endpoints return HTTP 400 for streaming subtitles. Transcription also returns HTTP 400 for `srt` or `vtt` when the server splits a long upload. Use `verbose_json` for segment times based on those chunk boundaries.
 
 Prompt, task prefix, and output share Whisper's 448-token decoder context, so
 the prompt keeps fewer prev-context tokens when `max_new_tokens` is large;
@@ -244,13 +242,7 @@ Chinese transcripts are shorter, so the gain is smaller: on 500 SeedTTS ZH clips
 
 ## Long Audio
 
-Whisper reads at most 30 seconds of audio in one request: the feature extractor
-works on a fixed 30-second mel window and drops everything past it. Longer
-uploads are split at the quietest point near each 30-second boundary, each chunk
-runs as its own engine request, and the transcripts are joined back in order.
-The splitting path and the aggregate memory and slot guard are shared with
-Qwen3-ASR; see [ASR Model Usage](../basic_usage/asr.md#long-audio). The values
-below are the ones Whisper ships with:
+Whisper accepts up to 30 seconds of audio per engine request. For longer non-streaming uploads, `/v1/audio/transcriptions` splits the recording at quiet points, runs one engine request per chunk, and joins the transcripts in order. `/v1/audio/translations` processes one clip per request. See [ASR Model Usage](../basic_usage/asr.md#long-audio) for the shared splitting and admission rules. Whisper uses the following defaults.
 
 | Name | Default | Meaning |
 |---|---|---|
@@ -265,7 +257,7 @@ These model properties are ClassVars on the pipeline config and cannot be change
 |---|---|---|
 | `allow_audio_chunking` | `true` | Whisper transcribes an isolated chunk correctly, so chunking is on |
 | `max_native_clip_s` | `30` | The mel-window edge. Streaming cannot chunk, so `stream=true` takes audio up to 30 s and gets HTTP 400 above that |
-| `min_tail_s` | `1` | Shortest final chunk worth transcribing; a shorter tail is absorbed into the previous cut, which keeps Whisper from hallucinating on very short clips |
+| `min_tail_s` | `1` | When the chunk size allows it, the splitter moves the preceding cut earlier to leave at least one second for the final chunk |
 | `condition_on_previous_text` | `false` (inherited default, not overridden by Whisper) | Whether one request's chunks decode sequentially, each conditioned on the preceding chunk's decoded text. While disabled, chunks stay independent and can use the per-request concurrency cap |
 
 By default chunks decode independently and the caller's `prompt` is sent to
@@ -387,9 +379,7 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 
 - Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
   operational behavior before production deployment.
-- `verbose_json` returns a single segment spanning the audio duration. `srt`
-  and `vtt` are supported for non-streaming requests; `stream=true` with either
-  subtitle format returns HTTP 400.
+- For a single clip with text, `verbose_json` returns a segment spanning the clip. For a chunked transcription it returns one segment per non-empty chunk, timed to the chunk boundaries. For model-derived subtitles, use a single clip and request `srt` or `vtt` with streaming off.
 - Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA
   Graph. Validate the selected buckets before production use.
 - Audio encoding runs before LM admission by default
