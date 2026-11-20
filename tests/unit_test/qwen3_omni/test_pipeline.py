@@ -2853,7 +2853,7 @@ def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threa
     """A video's loads ran on the media decode pool requests without video share, so held video loads kept an audio data URL request, and every request behind it, waiting for the video."""
     pre, _, _ = decoded_audio_preprocessor
     held_video_loads = 16
-    video_loads_entered = threading.Semaphore(0)
+    video_loads_submitted = threading.Event()
     video_loads_release = threading.Event()
     wav_bytes = BytesIO()
     with wave.open(wav_bytes, "wb") as wav:
@@ -2865,7 +2865,6 @@ def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threa
         def load_base64(
             self, media_type: str, data: str
         ) -> tuple[torch.Tensor, float, None]:
-            video_loads_entered.release()
             assert video_loads_release.wait(timeout=5)
             return torch.zeros(1, 3, 2, 2), 2.0, None
 
@@ -2887,14 +2886,17 @@ def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threa
             return [], None, None
         else:
             pass
-        loaded_videos = await asyncio.gather(
-            *(
+        video_loads = [
+            asyncio.ensure_future(
                 resource_connector.load_resource_async(
                     "data:video/mp4;base64,AAAA", HeldVideoMediaIO()
                 )
-                for _ in range(held_video_loads)
             )
-        )
+            for _ in range(held_video_loads)
+        ]
+        await asyncio.sleep(0)
+        video_loads_submitted.set()
+        loaded_videos = await asyncio.gather(*video_loads)
         return [loaded_videos[0][0]], [2.0], None
 
     monkeypatch.setattr(
@@ -2912,8 +2914,7 @@ def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threa
     worker.start()
     try:
         scheduler.inbox.put(video_request("video"))
-        assert video_loads_entered.acquire(timeout=5)
-        assert video_loads_entered.acquire(timeout=5)
+        assert video_loads_submitted.wait(timeout=5)
         scheduler.inbox.put(
             IncomingMessage(
                 request_id="audio",
