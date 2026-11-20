@@ -23,6 +23,7 @@ from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
+from sglang_omni.config.schema import ResolvedAudioChunking
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
@@ -2852,8 +2853,6 @@ def chunking_app(
     architectures: list[str] | None = None,
     max_concurrent_long_audio_requests: int = 4,
 ):
-    from sglang_omni.config import ResolvedAudioChunking
-
     policy = ResolvedAudioChunking(
         allow_audio_chunking=True,
         max_audio_clip_s=1.0,
@@ -3055,11 +3054,11 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
 
 
-def test_chunked_subtitle_format_is_rejected_before_inference() -> None:
+def test_chunked_subtitles_require_model_timestamps() -> None:
     transcription_client = ChunkRecordingTranscriptionClient()
     client = chunking_test_client(
         transcription_client,
-        architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        architectures=["WhisperForConditionalGeneration"],
     )
 
     response = client.post(
@@ -3069,8 +3068,7 @@ def test_chunked_subtitle_format_is_rejected_before_inference() -> None:
     )
 
     assert response.status_code == 400
-    assert "does not support chunked transcription" in response.json()["detail"]
-    assert transcription_client.requests == []
+    assert "model did not produce segment timestamps" in response.json()["detail"]
 
 
 def test_noise_floor_chunks_are_skipped_not_transcribed() -> None:
@@ -4716,6 +4714,47 @@ class WhisperTimestampTranscriptionClient(SuccessfulTranscriptionClient):
         return CompletionResult(
             request_id="transcription-1",
             text="<|0.00|>hello there.<|1.20|>",
+        )
+
+
+@pytest.mark.parametrize("response_format", ["srt", "vtt"])
+def test_whisper_chunk_subtitles_use_the_upload_timeline(
+    response_format: Literal["srt", "vtt"],
+) -> None:
+    """Cues on either side of the cut meet at the sample-accurate boundary."""
+    transcription_client = WhisperTimestampTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="whisper",
+            architectures=["WhisperForConditionalGeneration"],
+            audio_chunking=ResolvedAudioChunking(
+                allow_audio_chunking=True,
+                max_audio_clip_s=3.0,
+                min_tail_s=2.0,
+                condition_on_previous_text=True,
+            ),
+        )
+    )
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"response_format": response_format},
+        files={"file": ("long.wav", wav_upload(3.006), "audio/wav")},
+    )
+    assert response.status_code == 200
+    first_request, second_request = transcription_client.requests
+    assert first_request.extra_params["segment_timestamps"]
+    assert second_request.extra_params["segment_timestamps"]
+    assert second_request.extra_params["prompt"] == "hello there."
+    if response_format == "srt":
+        assert response.text == (
+            "1\n00:00:00,000 --> 00:00:01,006\nhello there.\n\n"
+            "2\n00:00:01,006 --> 00:00:02,206\nhello there.\n\n"
+        )
+    else:
+        assert response.text == (
+            "WEBVTT\n\n00:00.000 --> 00:01.006\nhello there.\n\n"
+            "00:01.006 --> 00:02.206\nhello there.\n\n"
         )
 
 
