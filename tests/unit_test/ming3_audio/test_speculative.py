@@ -79,15 +79,26 @@ def test_dflash_draft_is_served_synchronously_from_a_loadable_copy(
         ({}, True, 32),
         ({"speculative_num_draft_tokens": 12}, True, 32),
         ({"speculative_num_draft_tokens": 8}, True, 16),
-        ({"enable_linear_replayssm_spec": False}, False, 32),
+        (
+            {"speculative_dflash_block_size": 32, "speculative_num_draft_tokens": 8},
+            True,
+            64,
+        ),
+        ({"enable_linear_replayssm_spec": False}, False, None),
     ],
-    ids=["checkpoint-block", "non-power-of-two", "smaller-block", "operator-off"],
+    ids=[
+        "checkpoint-block",
+        "non-power-of-two",
+        "smaller-block",
+        "dflash-block-size-wins",
+        "operator-off",
+    ],
 )
 def test_dflash_verify_replays_accepted_inputs_with_a_ring_that_fits_the_block(
     tmp_path: Path,
     draft_overrides: dict[str, JsonValue],
     expected_replay: bool,
-    expected_ring_length: int,
+    expected_ring_length: int | None,
 ) -> None:
     """DFlash defaults to ReplaySSM verify with a power-of-two ring covering twice the draft block, while honoring explicit overrides."""
     write_dflash_checkpoint(tmp_path)
@@ -98,7 +109,7 @@ def test_dflash_verify_replays_accepted_inputs_with_a_ring_that_fits_the_block(
     }
     stages.prepare_draft_checkpoint(overrides).cleanup()
     assert overrides["enable_linear_replayssm_spec"] is expected_replay
-    assert overrides["linear_replayssm_cache_len"] == expected_ring_length
+    assert overrides.get("linear_replayssm_cache_len") == expected_ring_length
 
 
 def test_dflash_draft_keeps_its_own_architecture(
