@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -53,6 +54,53 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 			}
 			if end := h.rec.wait(t); end.State != Done || end.Result != tc.want || !end.Card {
 				t.Errorf("end %s %q, card %v, want %q (problem %+v)", end.State, end.Result, end.Card, tc.want, end.Problem)
+			}
+		})
+	}
+}
+
+func TestRewriteDraftHidesEchoedInputTags(t *testing.T) {
+	for _, response := range []string{"<selected_text>Bonjour</selected_text>", "<selected_text>Bonjour"} {
+		t.Run(response, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{}, &fakeLLM{text: response, chunk: 1}, nil)
+			if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack, Card: true, Text: &TextInput{Raw: "rewrite", Selection: "text"}}); err != nil {
+				t.Fatal(err)
+			}
+			if end := h.rec.wait(t); end.State != Done || end.Result != "Bonjour" {
+				t.Fatalf("end %+v, want Bonjour", end)
+			}
+			for _, snapshot := range h.rec.all() {
+				if strings.Contains(snapshot.Draft, "selected_text") || strings.Contains(snapshot.Draft, "<selected") {
+					t.Errorf("draft exposed an echoed input tag: %q", snapshot.Draft)
+				}
+			}
+		})
+	}
+}
+
+func TestOtherFeaturesKeepLiteralInputTags(t *testing.T) {
+	for _, kind := range []store.Kind{store.KindTranslate, store.KindTranscribe} {
+		t.Run(string(kind), func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: "Good morning"}, &fakeLLM{text: "<selected_text>早上好</selected_text>", chunk: 1}, func(c *Config, s *settings.Settings) {
+				s.Features.Transcribe.Enhance = true
+			})
+			req := StartRequest{Kind: kind, Target: slack, Card: true}
+			if kind == store.KindTranslate {
+				req.Text = &TextInput{Raw: "Good morning"}
+			}
+			id, err := h.m.Start(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == store.KindTranscribe {
+				h.speak(id, 3)
+			}
+			end := h.rec.wait(t)
+			if end.Problem != nil {
+				t.Fatalf("session failed: %+v", *end.Problem)
+			}
+			if end.State != Done || end.Result != "<selected_text>早上好</selected_text>" {
+				t.Errorf("end %+v, want the literal tags kept", end)
 			}
 		})
 	}
