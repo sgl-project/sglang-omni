@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **The answer card's scroll bar stays still while an answer streams** (#4320): the text stays centered, and the Markdown page matches the card's transparency instead of drawing a darker box.
+
+### 中文
+
+#### 修复
+
+- **答案卡片流式输出时滚动条不再闪烁**（#4320）：文字保持左右居中，Markdown 页面与卡片使用相同的透明度，不再显示更深的底色块。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added
