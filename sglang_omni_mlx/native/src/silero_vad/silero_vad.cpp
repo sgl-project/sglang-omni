@@ -76,12 +76,8 @@ SileroVAD::SileroVAD(const std::filesystem::path &model_directory)
   }
 }
 
-std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
-                                   StreamState &state) const {
-  if (chunk_count == 0) {
-    return {};
-  } else {
-  }
+mx::array SileroVAD::FeedLazy(const float *samples, int chunk_count,
+                              StreamState &state) const {
   // Note (XXXXRT666): every chunk's window goes through the front end at once;
   // only the LSTM runs chunk by chunk, and the probabilities are read back
   // together.
@@ -140,15 +136,31 @@ std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
   mx::array out = mx::reshape(Relu(mx::concatenate(hidden_steps, 0)),
                               {chunk_count, steps_per_chunk, kLstmHidden});
   out = mx::sigmoid(checkpoint_.Conv1d(out, "final_conv", 1, 0));
-  const mx::array probabilities = mx::mean(mx::squeeze(out, -1), 1);
-  mx::eval({probabilities, lstm->hidden, lstm->cell});
   state.hidden = lstm->hidden;
   state.cell = lstm->cell;
   const float *last_chunk_end = samples + chunk_count * kChunkSamples;
   state.context.assign(last_chunk_end - kContextSamples, last_chunk_end);
+  return mx::mean(mx::squeeze(out, -1), 1);
+}
+
+std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
+                                   StreamState &state) const {
+  if (chunk_count == 0) {
+    return {};
+  } else {
+  }
+  const mx::array probabilities = FeedLazy(samples, chunk_count, state);
+  mx::eval({probabilities, *state.hidden, *state.cell});
   return {probabilities.data<float>(),
           probabilities.data<float>() + chunk_count};
 }
+
+namespace {
+
+// Chunks per GPU round trip on the file path; bounds the lazy graph.
+constexpr size_t kProbabilitySyncChunks = 250;
+
+} // namespace
 
 std::vector<float>
 SileroVAD::PredictProbabilities(const std::vector<float> &samples) const {
@@ -157,8 +169,25 @@ SileroVAD::PredictProbabilities(const std::vector<float> &samples) const {
                     kChunkSamples,
                 0.0f);
   StreamState state;
-  return Feed(padded.data(), static_cast<int>(padded.size() / kChunkSamples),
-              state);
+  std::vector<float> probabilities;
+  file_path_syncs_ = 0;
+  // One chunk per graph keeps the result bit-identical to Feed(chunk, 1): a
+  // front end batched over many chunks rounds differently. Syncs once a block.
+  std::vector<mx::array> pending;
+  for (size_t offset = 0; offset < padded.size(); offset += kChunkSamples) {
+    pending.push_back(FeedLazy(padded.data() + offset, 1, state));
+    if (pending.size() == kProbabilitySyncChunks ||
+        offset + kChunkSamples == padded.size()) {
+      const mx::array block = mx::concatenate(pending, 0);
+      mx::eval(block);
+      probabilities.insert(probabilities.end(), block.data<float>(),
+                           block.data<float>() + pending.size());
+      pending.clear();
+      ++file_path_syncs_;
+    } else {
+    }
+  }
+  return probabilities;
 }
 
 std::vector<Timestamp>

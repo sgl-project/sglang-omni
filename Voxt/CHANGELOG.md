@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **Meetings and recordings finish their voice activity detection much faster**: finding the spoken parts of a whole recording asked the GPU for an answer thirty times a second of audio, so an hour of audio spent minutes just waiting. The answers are now collected in batches, which takes seconds; the detected speech and every later step are unchanged.
+
+### 中文
+
+#### 变更
+
+- **会议和录音的语音活动检测快了很多**：给整段录音找出有声音的部分时，原来每 32 毫秒音频就要等一次显卡回复，一小时的音频光是等就要几分钟。现在成批收集结果，只要几秒；检测出的语音和之后的每一步都不变。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added
