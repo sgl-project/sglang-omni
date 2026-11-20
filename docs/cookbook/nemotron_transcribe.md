@@ -1,28 +1,30 @@
 # Nemotron Transcribe
 
-[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
+[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
 
-This integration accepts consolidated NeMo SpeechLM checkpoints with the `NeMoSpeechLMForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. The checkpoint directory must contain its tokenizer files and model weights. The loader creates a small configuration shim and reads the original weights without copying them.
+This integration accepts consolidated NeMo SpeechLM checkpoints with the `Nemotron3_5TranscribeForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. Earlier checkpoints using `NeMoSpeechLMForConditionalGeneration` are also supported. The [FP8 checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-FP8) loads its decoder through SGLang's ModelOpt FP8 path. Its speech encoder stores 128 transformer linears as FP8 with static per-tensor weight and input scales; they run as FP8 GEMMs on CUDA GPUs with compute capability 8.9 or newer and are dequantized to BF16 elsewhere. Compile the encoder with `--asr.factory.compile_perception true` to fuse the activation quantization into neighboring kernels; an eager FP8 encoder is slower than BF16. The checkpoint directory must contain its tokenizer files and matching model weights from the same checkpoint revision. The loader creates a small configuration shim and reads the original weights without copying them.
 
 ## Serve a checkpoint
 
 Install SGLang-Omni following [Installation](../get_started/installation.md), then download the checkpoint:
 
 ```bash
-hf download nvidia/Nemotron-3.5-Transcribe-30B-A4B
+hf download nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
 ```
 
 The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:
 
 ```bash
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --port 8000
 ```
 
 On a fresh install, the first launch also builds FlashInfer kernels, which can take longer than the default 600 second startup timeout. Set `SGLANG_OMNI_STARTUP_TIMEOUT=1800` for that launch.
+
+The [NVFP4 checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4) loads through SGLang's ModelOpt mixed-precision path: its Mamba projections are FP8, and its experts, shared experts and attention projections are NVFP4. Native NVFP4 kernels need a Blackwell GPU. On Hopper, add `--asr.engine.fp4_gemm_backend marlin`; Marlin runs the NVFP4 weights with BF16 activations, and the MoE layers select it automatically.
 
 The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to mono 16 kHz, and keeps each upload as one decoder request. Measured transcripts are the short clips in [Short-clip validation](#short-clip-validation): 4.352 s and 5.855 s. A one-hour recording can repeat sentences until the 16384-token response budget. The HTTP status stays 200. `json` and `verbose_json` then include `"finish_reason": "length"`. `text` sets `X-Finish-Reason: length`. A stream puts the same reason on `transcript.text.done`. The encoder processes the recording in checkpoint-defined windows with left and right context; the default checkpoint uses 40-second core windows.
 
@@ -36,6 +38,7 @@ The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to
 | `--asr.factory.mm_embedding_cache_size_bytes` | `0` | Audio embedding cache capacity |
 | `--asr.factory.compile_perception` | `false` | Compile encoder transformer layers |
 | `--asr.factory.perception_cuda_graphs` | `false` | Capture encoder graphs; requires compilation |
+| `--asr.factory.perception_fp8` | `true` | Run an FP8 checkpoint's encoder linears as FP8 GEMMs; `false` dequantizes them to BF16 |
 
 Decoder CUDA graphs are enabled. Decoder compilation is unsupported in this integration; use encoder compilation to reduce launch overhead. Encoder batch size bounds activation memory separately from decoder concurrency. For longer audio or a smaller GPU, reduce the encoder batch size and choose a memory fraction that still fits the model weights.
 
@@ -58,7 +61,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=text
 ```
 
-Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, speculative decoding, and `/v1/realtime` are outside this integration.
+Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. `seed` is an optional non-negative integer. Temperature 0 stays greedy, so the seed does not change that transcript. A temperature above 0 uses the seed as the decoder sampling seed. `word_timestamps=true` with `response_format=verbose_json` returns aligned `words` (`word`, `start`, `end`, in seconds) when the checkpoint's CTC head loads and alignment succeeds. An omitted language is treated as English. Any other language is rejected. A missing head or a failed alignment returns `word_timestamp_alignment.status=unavailable` and does not invent times. `json` and `text` stay plain transcripts. `response_format=srt` or `vtt` asks for the same English word timestamps and renders Speech-style cues (at most 7 seconds, two lines, 42 graphemes per line). If alignment is unavailable the request fails instead of emitting one cue for the whole file. Any word-timestamp request also returns post-processed `diarization_timestamps`. A prompt with at least two `<spk:N>` tags adds `speaker`, `speaker_slot`, and `speaker_confidence` on each word. A bare `<spk:0>` does not. A long tagged prompt that comes back without a tag is decoded once more, and the retry is kept only when it contains a tag. Translation, speculative decoding, and `/v1/realtime` are outside this integration.
 
 ## Compile the encoder
 
@@ -68,7 +71,7 @@ Enable compilation and encoder CUDA graphs independently of decoder graphs:
 SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1 \
 SGLANG_FLASHINFER_AUTOTUNE_CACHE=0 \
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --asr.engine.max_running_requests 16 \

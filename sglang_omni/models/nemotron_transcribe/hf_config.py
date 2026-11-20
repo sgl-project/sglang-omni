@@ -90,6 +90,15 @@ class NemotronTranscribeConfig(NemotronHConfig):
             )
         else:
             pass
+        quantization_config = nemo_config.get("quantization_config")
+        if quantization_config is not None:
+            if not isinstance(quantization_config, dict):
+                raise TypeError("quantization_config must be a dictionary")
+            else:
+                # note (yhayaran): SGLang's NemotronH setup reads quantized_layers from the model config.
+                decoder_config["quantization_config"] = quantization_config
+        else:
+            pass
         # note (yhayaran): NemotronH architecture keeps hybrid cache selection intact.
         return cls(
             **decoder_config,

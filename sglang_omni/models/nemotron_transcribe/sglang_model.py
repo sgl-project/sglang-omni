@@ -22,10 +22,15 @@ from sglang.srt.managers.schedule_batch import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.models.nemotron_h import NemotronHForCausalLM
+from sglang.srt.models.utils import WeightsMapper
 from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
     classify_checkpoint_name,
+)
+from sglang_omni.models.nemotron_transcribe.ctc_head import (
+    CtcTimestampHead,
+    load_ctc_head,
 )
 from sglang_omni.models.nemotron_transcribe.decoder_weights import (
     checkpoint_to_language_model_weights,
@@ -52,6 +57,12 @@ def build_perception(config: NemotronTranscribeConfig) -> AudioPerception:
 
 
 class NemotronTranscribeForConditionalGeneration(nn.Module):
+    # note (yhayaran): SGLang reads these from the top-level class to find each ModelOpt layer's format.
+    packed_modules_mapping = dict(NemotronHForCausalLM.packed_modules_mapping)
+    hf_to_sglang_mapper = WeightsMapper(
+        orig_to_new_prefix={"backbone.": "language_model.model."}
+    )
+
     def __init__(
         self,
         config: NemotronTranscribeConfig,
@@ -69,6 +80,7 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self.encoder_max_batch_size: int | None = None
+        self.ctc_head: CtcTimestampHead | None = None
 
     @property
     def pp_group(self) -> GroupCoordinator:
@@ -108,9 +120,22 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
         for i, wave in enumerate(waves):
             batch[i, : wave.numel()] = wave
 
-        embs, emb_lens = self.perception(
-            input_signal=batch, input_signal_length=lengths
-        )
+        wants_timestamps = [
+            bool((item.model_specific_data or {}).get("word_timestamps"))
+            for item in items
+        ]
+        asr_states = None
+        speaker_activity = None
+        if any(wants_timestamps):
+            embs, emb_lens, asr_states, speaker_activity = self.perception(
+                input_signal=batch,
+                input_signal_length=lengths,
+                return_evidence=True,
+            )
+        else:
+            embs, emb_lens = self.perception(
+                input_signal=batch, input_signal_length=lengths
+            )
 
         outputs = []
         for i, item in enumerate(items):
@@ -122,8 +147,93 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
                 )
             else:
                 pass
+            if wants_timestamps[i]:
+                self.stash_timestamp_evidence(
+                    item,
+                    None if asr_states is None else asr_states[i],
+                    None if speaker_activity is None else speaker_activity[i],
+                    int(emb_lens[i]),
+                )
+            else:
+                pass
             outputs.append(emb)
         return outputs
+
+    def attach_ctc_head(self, checkpoint_dir: str) -> None:
+        """Load the bundled CTC head. A missing or mismatched head stays unusable."""
+        self.ctc_head = load_ctc_head(checkpoint_dir)
+
+    def ctc_frame_seconds(self) -> float:
+        featurizer = self.perception.preprocessor.featurizer
+        mel_seconds = featurizer.hop_length / float(featurizer.sample_rate)
+        return mel_seconds * self.perception.encoder.subsampling_factor
+
+    def speaker_frame_seconds(self) -> float:
+        featurizer = self.perception.preprocessor.featurizer
+        mel_seconds = featurizer.hop_length / float(featurizer.sample_rate)
+        return mel_seconds * self.perception.encoder.diarization_model.downsample_factor
+
+    def stash_timestamp_evidence(
+        self,
+        item: MultimodalDataItem,
+        asr_state: torch.Tensor | None,
+        activity: torch.Tensor | None,
+        asr_frames: int,
+    ) -> None:
+        """Keep CPU CTC scores on the audio item for the result adapter."""
+        specific = item.model_specific_data
+        if specific is None:
+            return
+        else:
+            pass
+        if asr_state is None or activity is None or asr_frames < 1:
+            specific["timestamp_evidence"] = {"failure_reason": "no_speech_evidence"}
+            return
+        else:
+            pass
+        frames = min(asr_frames, int(asr_state.shape[-1]))
+        if frames < 1:
+            specific["timestamp_evidence"] = {"failure_reason": "no_speech_evidence"}
+            return
+        else:
+            pass
+        if activity.shape[0] == asr_state.shape[-1]:
+            activity_frames = frames
+        else:
+            ratio = activity.shape[0] / float(max(asr_state.shape[-1], 1))
+            activity_frames = max(1, int(round(frames * ratio)))
+        activity_frames = min(activity_frames, int(activity.shape[0]))
+        evidence: dict[str, object] = {
+            "speaker_activity": activity[:activity_frames]
+            .detach()
+            .to(device="cpu", dtype=torch.float32),
+            "speaker_frame_seconds": float(self.speaker_frame_seconds()),
+        }
+        head = self.ctc_head
+        if head is None or not head.usable:
+            evidence["failure_reason"] = "ctc_evidence_unavailable"
+            specific["timestamp_evidence"] = evidence
+            return
+        else:
+            pass
+        parameter = next(head.parameters())
+        if parameter.device != asr_state.device:
+            head.to(device=asr_state.device)
+        else:
+            pass
+        with torch.inference_mode():
+            log_probs = head(asr_state[:, :frames].unsqueeze(0).float())
+        evidence.update(
+            {
+                "log_probs": log_probs[0]
+                .detach()
+                .to(device="cpu", dtype=torch.float32),
+                "blank_id": int(head.blank_id),
+                "frame_seconds": float(self.ctc_frame_seconds()),
+                "tokenizer_proto": head.tokenizer_proto,
+            }
+        )
+        specific["timestamp_evidence"] = evidence
 
     def forward(
         self,

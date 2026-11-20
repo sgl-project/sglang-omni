@@ -31,6 +31,11 @@ class TranscriptionAdapter(ABC):
         return False
 
     @property
+    def supports_word_timestamps(self) -> bool:
+        """Whether the model can align transcript words to audio times."""
+        return False
+
+    @property
     def requires_ordered_chunk_decoding(self) -> bool:
         return False
 

@@ -14,6 +14,13 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from sglang_omni.client import Client, ClientError, GenerateRequest
 from sglang_omni.config import ResolvedAudioChunking
+from sglang_omni.models.nemotron_transcribe.speaker_attribution import (
+    choose_tagged_transcript,
+    decide_tagged_retry,
+)
+from sglang_omni.models.nemotron_transcribe.word_timestamps import (
+    english_timestamp_language,
+)
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
@@ -111,12 +118,52 @@ def register_transcriptions(app: FastAPI) -> None:
 
         response_format = form.response_format.strip().lower()
         segment_timestamps = response_format in speech_to_text.SEGMENT_RESPONSE_FORMATS
-        if (
-            segment_timestamps
-            and not speech_to_text.resolve_speech_to_text_adapter(
-                getattr(app.state, "architectures", None)
-            ).supports_segment_timestamps
-        ):
+        adapter = speech_to_text.resolve_speech_to_text_adapter(
+            getattr(app.state, "architectures", None)
+        )
+        request_word_timestamps = bool(form.word_timestamps) or (
+            adapter.supports_word_timestamps and segment_timestamps
+        )
+        timestamp_language = None
+        if form.word_timestamps and not adapter.supports_word_timestamps:
+            raise HTTPException(
+                status_code=400,
+                detail="word_timestamps is not supported for this model",
+            )
+        else:
+            pass
+        if request_word_timestamps:
+            if form.stream:
+                raise HTTPException(
+                    status_code=400,
+                    detail="word_timestamps is not available when stream=true",
+                )
+            else:
+                pass
+            timestamp_language = english_timestamp_language(form.language)
+            if timestamp_language is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="word timestamps support only English audio",
+                )
+            else:
+                pass
+            if response_format not in {
+                "verbose_json",
+                *speech_to_text.SEGMENT_RESPONSE_FORMATS,
+            }:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "word_timestamps requires response_format "
+                        "verbose_json, srt, or vtt"
+                    ),
+                )
+            else:
+                pass
+        else:
+            pass
+        if segment_timestamps and not adapter.supports_segment_timestamps:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -175,6 +222,8 @@ def register_transcriptions(app: FastAPI) -> None:
                 temperature=form.temperature,
                 repetition_penalty=form.repetition_penalty,
                 max_new_tokens=form.max_new_tokens,
+                seed=form.seed,
+                word_timestamps=form.word_timestamps,
                 stream=True,
             )
             return await speech_to_text.create_speech_to_text_streaming_response(
@@ -224,6 +273,8 @@ def register_transcriptions(app: FastAPI) -> None:
                 duration_s=duration_s,
                 request_id=request_id,
                 segment_timestamps=segment_timestamps,
+                timestamp_language=timestamp_language,
+                word_timestamps=request_word_timestamps,
             )
         finally:
             if admitted:
@@ -262,6 +313,8 @@ async def transcribe_planned_upload(
     duration_s: float | None,
     request_id: str,
     segment_timestamps: bool,
+    timestamp_language: str | None = None,
+    word_timestamps: bool = False,
 ) -> Response:
     """The non-stream path after planning: one request, or one per chunk."""
     client: Client = app.state.client
@@ -283,6 +336,16 @@ async def transcribe_planned_upload(
         )
     else:
         pass
+    if word_timestamps and plan is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "word_timestamps does not support chunked transcription "
+                "because alignment is computed for one upload"
+            ),
+        )
+    else:
+        pass
 
     if plan is None:
         gen_req = speech_to_text.build_speech_to_text_generate_request(
@@ -290,11 +353,13 @@ async def transcribe_planned_upload(
             filename=form.file.filename,
             content_type=form.file.content_type,
             model=form.model or default_model,
-            language=form.language,
+            language=timestamp_language or form.language,
             prompt=form.prompt,
             temperature=form.temperature,
             repetition_penalty=form.repetition_penalty,
             max_new_tokens=form.max_new_tokens,
+            seed=form.seed,
+            word_timestamps=word_timestamps,
             segment_timestamps=segment_timestamps,
         )
         result = await speech_to_text.complete_speech_to_text_request(
@@ -304,6 +369,23 @@ async def transcribe_planned_upload(
             request_id=request_id,
             error_log_message="Error transcribing audio for request %s",
         )
+        if decide_tagged_retry(form.prompt, result.text):
+            retry = await speech_to_text.complete_speech_to_text_request(
+                request,
+                client,
+                gen_req,
+                request_id=f"{request_id}-tag-retry",
+                error_log_message="Error retrying tagged transcription for request %s",
+            )
+            if (
+                "<spk:" in (retry.text or "")
+                and choose_tagged_transcript(result.text, retry.text) == retry.text
+            ):
+                result = retry
+            else:
+                pass
+        else:
+            pass
         return speech_to_text.assemble_speech_to_text_response(
             text=result.text,
             response_format=form.response_format,
@@ -318,6 +400,7 @@ async def transcribe_planned_upload(
             sglext=build_sglext(
                 form.return_spec_tokens_details, result.spec_tokens_details
             ),
+            transcription=result.transcription,
         )
     else:
         pass
@@ -339,6 +422,7 @@ async def transcribe_planned_upload(
                 temperature=form.temperature,
                 repetition_penalty=form.repetition_penalty,
                 max_new_tokens=form.max_new_tokens,
+                seed=form.seed,
                 max_concurrent=chunking.max_concurrent_chunks,
                 condition_on_previous_text=chunking.condition_on_previous_text,
                 adapter=adapter,
@@ -450,6 +534,7 @@ def build_chunk_generate_request(
     temperature: float | None,
     repetition_penalty: float | None,
     max_new_tokens: int | None,
+    seed: int | None = None,
     stream: bool = False,
 ) -> GenerateRequest:
     return build_transcription_generate_request(
@@ -464,6 +549,7 @@ def build_chunk_generate_request(
         temperature=temperature,
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
+        seed=seed,
         stream=stream,
     )
 
@@ -480,6 +566,7 @@ async def transcribe_audio_chunks(
     temperature: float | None,
     repetition_penalty: float | None,
     max_new_tokens: int | None,
+    seed: int | None = None,
     max_concurrent: int,
     condition_on_previous_text: bool,
     adapter: TranscriptionAdapter,
@@ -523,6 +610,7 @@ async def transcribe_audio_chunks(
                 temperature=temperature,
                 repetition_penalty=repetition_penalty,
                 max_new_tokens=max_new_tokens,
+                seed=seed,
             )
             retry_suffix = "-retry" if retry else ""
             chunk_request_id = f"{request_id}-chunk-{span.index}{retry_suffix}"
