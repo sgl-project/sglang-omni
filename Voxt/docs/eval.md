@@ -169,7 +169,7 @@ The faults without the example were the self-corrections kept and "uh" left in. 
 A larger public set, for the clean-up prompts Transcribe has shipped and the rule for spelled-out words.
 
 - **Set**: AASR-Bench (`Andrew0425/AASR-Bench`, revision `802577d`), 917 dictations (510 Chinese, 407 English) in 11 scenes, scored by 6,637 rubric questions on content kept, fillers removed, format, and self-corrections and rewording. In its `explanation` scene (47 Chinese clips) the speaker spells out the names and places they say.
-- **Setup**: one Qwen3-ASR-1.7B transcript per clip, the same for every row. The requests and the final text come from compose itself (`BuildParts`, `CleanOutput`, `JoinParts`, built at each commit) with Transcribe's defaults: Cleanup on, Structure off, the clip's language as the main language. Qwen3-4B-Instruct-2507 and Qwen3-30B-A3B-Instruct-2507 on vLLM with their own sampling defaults (Voxt sends none); GPT through the ChatGPT (Codex) language model at low reasoning. Judge: Gemma-4-31B-IT with the benchmark's scoring code, one verdict per question. Scores out of 100.
+- **Setup**: one Qwen3-ASR-1.7B transcript per clip, the same for every row. The requests and the final text come from compose itself (`BuildParts`, `CleanOutput`, `JoinParts`, built at each commit) with Transcribe's defaults: Cleanup on, Structure off, the clip's language as the main language. Qwen3-4B-Instruct-2507 and Qwen3-30B-A3B-Instruct-2507 in bf16 with their own sampling defaults (Voxt sends none); GPT through the ChatGPT (Codex) language model at low reasoning. Judge: Gemma-4-31B-IT with the benchmark's scoring code, one verdict per question. Scores out of 100.
 
 | prompt | Qwen3-4B | Qwen3-30B-A3B | GPT |
 |---|---|---|---|
