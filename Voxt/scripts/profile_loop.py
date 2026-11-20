@@ -277,7 +277,8 @@ def short_open_attempt_kept(
         returncode == 0
         and not environment_reasons
         and peak_pressure == "normal"
-        and [str(row.get("scenario")) for row in rows] == (scenarios or SHORT_OPEN_SCENARIOS)
+        and [str(row.get("scenario")) for row in rows]
+        == (scenarios or SHORT_OPEN_SCENARIOS)
         and latency_rows_valid(rows)
     )
 

@@ -80,7 +80,10 @@ class ShortOpenGateTests(unittest.TestCase):
     def observation(self, kept=True, scenario_hashes=None) -> dict[str, object]:
         rows = [
             row(scenario="cold", text_sha256=(scenario_hashes or ["a" * 64])[0]),
-            row(scenario="warm", text_sha256=(scenario_hashes or ["a" * 64, "a" * 64])[-1]),
+            row(
+                scenario="warm",
+                text_sha256=(scenario_hashes or ["a" * 64, "a" * 64])[-1],
+            ),
         ]
         return {"kept": kept, "rows": rows}
 
@@ -102,7 +105,9 @@ class ShortOpenGateTests(unittest.TestCase):
         observations.append(self.observation(kept=False))
         # A third invalid attempt stops the group: no medians.
         self.assertFalse(loop.short_open_group_complete(observations))
-        self.assertFalse(loop.short_open_group_complete(observations[:2][:1] + observations[2:]))
+        self.assertFalse(
+            loop.short_open_group_complete(observations[:2][:1] + observations[2:])
+        )
         complete = [self.observation() for _ in range(3)]
         self.assertTrue(loop.short_open_group_complete(complete))
 
