@@ -62,6 +62,7 @@ func TestAnswerCleanupWithPreviousInput(t *testing.T) {
 		{name: "literal thinking opener after a newline", text: "Markers:\n<think> tag opens reasoning.", previous: "explain <think>", want: "Markers:\n<think> tag opens reasoning."},
 		{name: "literal thinking closer at answer start", text: "</think> tag ends reasoning.", previous: "explain </think>", want: "</think> tag ends reasoning."},
 		{name: "literal thinking tag pair", text: "The <think> tag and </think> tag are markers.", previous: "explain <think> and </think>", want: "The <think> tag and </think> tag are markers."},
+		{name: "literal thinking pair without prose hints", text: "Keep <think>this</think>", previous: "Explain <think> and </think> literally", want: "Keep <think>this</think>"},
 		{name: "real close after a literal thinking tag pair", text: "The <think> tag and </think> tag are markers.</think>", previous: "explain <think> and </think>", want: "The <think> tag and </think> tag are markers."},
 		{name: "literal thinking opener after an orphan close", text: "reasoning</think> <think> tag", previous: "explain <think>", want: "<think> tag"},
 		{name: "literal tool call after an orphan close", text: "reasoning</think> <|tool_call|> tag", previous: "explain </think> and <|tool_call|>", want: "<|tool_call|> tag"},
@@ -229,6 +230,7 @@ func TestAnswerCleanupPreservesLiteralThinkingPair(t *testing.T) {
 	assertAnswerCleanup(t, "Keep <think>this</think> whole", "Explain <think> literally", "Keep <think>this</think> whole")
 	assertAnswerCleanup(t, "Keep <think>this</think>", "Explain <think> and </think> literally", "Keep <think>this</think>")
 	assertAnswerCleanup(t, "The <think> tag and </think> tag are markers.</think>", "Explain <think> and </think> literally", "The <think> tag and </think> tag are markers.")
+	assertAnswerCleanup(t, "The <think> tag wraps reasoning.</think>", "Explain <think> and </think> literally", "The <think> tag wraps reasoning.")
 	assertAnswerCleanup(t, "Keep <|channel>this<channel|>", "Explain <|channel> and <channel|> literally", "Keep <|channel>this<channel|>")
 }
 
@@ -298,6 +300,29 @@ func TestAnswerCleanupKeepsProseControlTokens(t *testing.T) {
 	assertAnswerCleanup(t, "The model emits <think> before it reasons.</think>", "x", "The model emits <think> before it reasons.")
 }
 
+func TestAnswerCleanupKeepsEverydayControlTokenProse(t *testing.T) {
+	for _, tc := range []struct{ name, text string }{
+		{name: "role marker in a sentence", text: "Each turn starts with <|im_start|> and a role name."},
+		{name: "tool marker in a sentence", text: "The marker <|tool_call|> starts a tool call."},
+		{name: "channel marker in a sentence", text: "Gemma uses <|channel> for its thoughts. Ok."},
+		{name: "thinking marker in Chinese prose", text: "在提示词里加上 <think> 模型就会先推理。完。"},
+		{name: "thinking marker at the start of prose", text: "<think> is the tag that starts reasoning."},
+		{name: "thinking pair requested as an example", text: "Wrap it as <think>step one</think> and go on."},
+		{name: "closing marker in a sentence", text: "Reasoning ends with </think> and then the answer follows."},
+		{name: "prompting instruction", text: "To start, put <think> in your prompt and the model reasons first. That is all."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertAnswerCleanup(t, tc.text, "q", tc.text)
+			if got := CleanOutput(tc.text, "q"); got != tc.text {
+				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.text)
+			}
+			if got := PartialOutput(tc.text, "q"); got != tc.text {
+				t.Errorf("PartialOutput(%q) = %q, want %q", tc.text, got, tc.text)
+			}
+		})
+	}
+}
+
 func TestAnswerCleanupDoesNotPreserveReasoningAsProse(t *testing.T) {
 	assertStripped := func(text, want string) {
 		t.Helper()
@@ -341,6 +366,8 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 		{name: "JSON tool call", text: `Visible<|tool_call|>{"name":"view_image"}`, input: "Explain <|tool_call|>"},
 		{name: "plain tool payload", text: "Visible<|tool_call|>internal", input: "Explain <|tool_call|>"},
 		{name: "trailing end token", text: "Visible<|im_end|>", input: "Explain <|im_end|>"},
+		{name: "thinking block at content start", text: "<think>secret plan</think>Visible", input: "Explain <think>"},
+		{name: "thinking block after assistant prefix", text: "<|im_start|>assistant\n<think>secret plan</think>Visible", input: "Explain <think>"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertAnswerCleanup(t, tc.text, tc.input, "Visible")
@@ -351,6 +378,21 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 				t.Errorf("PartialOutput(%q) = %q, want Visible", tc.text, got)
 			}
 		})
+	}
+}
+
+func TestPartialAnswerStripsLeadingThinkingWithLiteralInput(t *testing.T) {
+	plain := "<think>secret plan</think>Visible"
+	for index := 1; index <= len(plain); index++ {
+		if got := PartialClean(plain[:index], "Explain <think>"); strings.Contains(got, "secret") {
+			t.Fatalf("at %d: reasoning leaked in %q", index, got)
+		}
+	}
+	structured := `{"title":"T","content":"<think>secret plan</think>Visible"}`
+	for index := 1; index <= len(structured); index++ {
+		if got := PartialAnswer(structured[:index], "Explain <think>"); strings.Contains(got.Content, "secret") {
+			t.Fatalf("at %d: reasoning leaked in %q", index, got.Content)
+		}
 	}
 }
 

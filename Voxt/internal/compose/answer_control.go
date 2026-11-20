@@ -48,6 +48,9 @@ func proseTokenMention(s string, start int, token string) bool {
 	if proseTagMention(rest) {
 		return true
 	}
+	if proseSentenceMention(rest) && !thinkingPairFollows(token, rest) {
+		return true
+	}
 	switch token {
 	case "<|im_start|>", "<|im_end|>":
 		return strings.HasPrefix(rest, " to ") && explanatoryControlContext(s[:start])
@@ -56,6 +59,33 @@ func proseTokenMention(s string, start int, token string) bool {
 	default:
 		return false
 	}
+}
+
+func proseSentenceMention(rest string) bool {
+	trimmed := strings.TrimLeft(rest, " \t")
+	if trimmed == rest {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(trimmed)
+	return unicode.IsLetter(first) && strings.ContainsAny(trimmed, ".!?。！？")
+}
+
+func thinkingPairFollows(token, rest string) bool {
+	for _, tag := range thinkingTags {
+		if token == tag[0] {
+			return strings.Contains(rest, tag[1])
+		}
+	}
+	return false
+}
+
+func proseThinkingBlock(s string, start int, tag [2]string) (int, bool) {
+	rest := s[start+len(tag[0]):]
+	close := strings.Index(rest, tag[1])
+	if close < 0 || !proseSentenceMention(rest[close+len(tag[1]):]) {
+		return 0, false
+	}
+	return start + len(tag[0]) + close + len(tag[1]), true
 }
 
 func explanatoryControlContext(prefix string) bool {
@@ -117,6 +147,27 @@ func controlTokenStart(s string, inputs ...string) int {
 			}
 			i += offset
 			after := s[i+len(token):]
+			proseBlock := false
+			if i > 0 {
+				for _, tag := range thinkingTags {
+					if token == tag[0] {
+						if end, ok := proseThinkingBlock(s, i, tag); ok {
+							offset, proseBlock = end, true
+						}
+					}
+					if token == tag[1] {
+						open := strings.LastIndex(s[:i], tag[0])
+						if open > 0 {
+							if end, ok := proseThinkingBlock(s, open, tag); ok && end == i+len(token) {
+								offset, proseBlock = end, true
+							}
+						}
+					}
+				}
+			}
+			if proseBlock {
+				continue
+			}
 			if proseTokenMention(s, i, token) {
 				offset = i + len(token)
 				continue
@@ -127,8 +178,9 @@ func controlTokenStart(s string, inputs ...string) int {
 			}
 			literalPair := false
 			for _, tag := range thinkingTags {
-				if preserved && token == tag[1] && strings.TrimSpace(after) == "" &&
-					strings.LastIndex(s[:i], tag[0]) > strings.LastIndex(s[:i], tag[1]) {
+				open := strings.LastIndex(s[:i], tag[0])
+				if (preserved || previousPreserved) && token == tag[1] && strings.TrimSpace(after) == "" &&
+					open > strings.LastIndex(s[:i], tag[1]) && !proseTokenMention(s, open, tag[0]) {
 					literalPair = true
 				}
 			}

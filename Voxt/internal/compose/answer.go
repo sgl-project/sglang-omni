@@ -193,9 +193,6 @@ func stripControlMarkup(s string, inputs ...string) string {
 		}
 	}
 	for _, tag := range thinkingTags {
-		if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
-			continue
-		}
 		openSearchFrom, closeSearchFrom := 0, 0
 		literalOpen := -1
 		for {
@@ -215,6 +212,10 @@ func stripControlMarkup(s string, inputs ...string) string {
 				}
 				if literalOpen >= 0 {
 					after := j + len(tag[1])
+					if proseSentenceMention(s[after:]) {
+						openSearchFrom, closeSearchFrom, literalOpen = after, after, -1
+						continue
+					}
 					s = s[:j] + s[after:]
 					openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 					continue
@@ -236,13 +237,26 @@ func stripControlMarkup(s string, inputs ...string) string {
 				break
 			}
 			rest := s[i+len(tag[0]):]
+			j = strings.Index(rest, tag[1])
+			if i > 0 && literalOpen < 0 && j >= 0 {
+				if end, ok := proseThinkingBlock(s, i, tag); ok {
+					openSearchFrom, closeSearchFrom = end, end
+					continue
+				}
+				preservedLiteral := strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) ||
+					previousControlToken(tag[0], previous) || previousControlToken(tag[1], previous)
+				if preservedLiteral && strings.ContainsRune(" \t\r\n", rune(s[i-1])) && rest == strings.TrimLeft(rest, " \t") {
+					end := i + len(tag[0]) + j + len(tag[1])
+					openSearchFrom, closeSearchFrom = end, end
+					continue
+				}
+			}
 			if proseTokenMention(s, i, tag[0]) {
 				literalOpen = i
 				openSearchFrom = i + len(tag[0])
 				closeSearchFrom = openSearchFrom
 				continue
 			}
-			j = strings.Index(rest, tag[1])
 			if j < 0 {
 				s = s[:i]
 				break
@@ -277,11 +291,12 @@ func stripPartialControlMarkup(s string, inputs ...string) string {
 		}
 	}
 	for _, tag := range thinkingTags {
-		if strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) {
-			continue
-		}
 		if n := partialTagSuffix(s, tag[0]); n > 0 {
-			if i := len(s) - n; start < 0 || i < start {
+			i := len(s) - n
+			if i > 0 && (strings.Contains(input, tag[0]) || strings.Contains(input, tag[1])) {
+				continue
+			}
+			if start < 0 || i < start {
 				start = i
 			}
 		}
