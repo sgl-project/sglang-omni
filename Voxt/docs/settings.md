@@ -218,7 +218,7 @@ And their own fields:
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |
 | `features.translate.fallback` | string | `""` | a language model id; `""` = none | Fallback model |
 | `features.rewrite.cleanup` | bool | `true` | | Clean up the instruction |
-| `features.cardSizes` | object, string → integer | `{}` | `transcribe`/`translate`/`rewrite` → `0` small, `1` medium, `2` large, `3` fill | The answer card's size button |
+| `features.cardSizes` | object, string → integer | `{}` | `transcribe`/`translate`/`rewrite` → `0` small, `1` medium, `2` large, `3` fill (the available work-area width) | The answer card's size button |
 
 ### Meetings (Meetings → settings)
 

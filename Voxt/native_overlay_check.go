@@ -366,6 +366,9 @@ func (a *app) overlayInkWant() ink.Want {
 // be too dim to count), or to its bottom padding when it scrolls.
 func cardInkWant(w ink.Want, card *sessionCardViewState) ink.Want {
 	w.Card, w.Gap = true, 8
+	if card != nil && card.SizeStep == len(layout.CardSizes)-1 {
+		w.CardFill = w.W
+	}
 	if card == nil || !card.Conversation {
 		w.Gap = 22
 	} else {
