@@ -1,8 +1,8 @@
 package uitext
 
 // The words of the other pages: an address pattern's error, the key after
-// a paste, a dictionary term's error, a permission's state, the helper's
-// failure, a log line's source, a language's name.
+// a paste, a dictionary term's error, the helper's failure, a log line's
+// source, a language's name.
 
 import (
 	"errors"
@@ -13,14 +13,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 )
 
-// PatternErrorText says why a website rule is not valid.
-func PatternErrorText(err error) string {
-	return PatternErrorTextFor(i18n.CurrentTranslator(), err)
-}
-
+// PatternErrorTextFor says why a website rule is not valid.
 func PatternErrorTextFor(translator *i18n.Translator, err error) string {
 	switch err {
 	case appctx.ErrPatternEmpty:
@@ -66,20 +61,6 @@ func TermErrorTextFor(translator *i18n.Translator, err error) string {
 	return translator.T("Could not save the term: %v", err)
 }
 
-func PermissionText(p permission.State) (string, bool) {
-	switch p {
-	case permission.Granted:
-		return i18n.T("Allowed"), true
-	case permission.Denied:
-		return i18n.T("Not allowed"), false
-	case permission.Restricted:
-		return i18n.T("Restricted by your organisation"), false
-	case permission.NotDetermined:
-		return i18n.T("Not asked yet"), false
-	}
-	return i18n.T("Unknown"), false
-}
-
 // HelperFailText says why the helper does not run.
 func HelperFailText(st helper.Status) string {
 	return HelperFailTextFor(i18n.CurrentTranslator(), st)
@@ -100,8 +81,7 @@ func HelperFailTextFor(translator *i18n.Translator, st helper.Status) string {
 	return translator.T("Helper stopped unexpectedly")
 }
 
-func LogSourceLabel(s string) string { return LogSourceLabelFor(i18n.CurrentTranslator(), s) }
-
+// LogSourceLabelFor names a log line's source.
 func LogSourceLabelFor(translator *i18n.Translator, s string) string {
 	switch s {
 	case "":

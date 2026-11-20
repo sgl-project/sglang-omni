@@ -133,7 +133,7 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 			audio = base64.StdEncoding.EncodeToString(b[min(44, len(b)):])
 		}
 	}
-	record(o, Record{Event: "final", Fields: fields, Samples: samples, Audio: audio})
+	record(o, Record{Event: "final", Host: r.Host, Fields: fields, Samples: samples, Audio: audio})
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
@@ -212,7 +212,7 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 	}
 	samples, next, language, prompt := 0, 1600, "", ""
 	defer func() {
-		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
+		record(o, Record{Event: "live", Host: r.Host, Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
 	}()
 	for {
 		_, b, err := c.Read(ctx)
@@ -288,7 +288,7 @@ func timestamps(o Opts, w http.ResponseWriter, r *http.Request) {
 	for k, v := range r.MultipartForm.Value {
 		fields[k] = v[0]
 	}
-	record(o, Record{Event: "vad-timestamps", Fields: fields, Samples: len(pcm) / 2})
+	record(o, Record{Event: "vad-timestamps", Host: r.Host, Fields: fields, Samples: len(pcm) / 2})
 	type ts struct {
 		Start int `json:"start"`
 		End   int `json:"end"`
@@ -318,7 +318,7 @@ func vadStream(o Opts, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	total := 0
-	defer func() { record(o, Record{Event: "vad-stream", Samples: total}) }()
+	defer func() { record(o, Record{Event: "vad-stream", Host: r.Host, Samples: total}) }()
 	for {
 		_, b, err := c.Read(ctx)
 		if err != nil {

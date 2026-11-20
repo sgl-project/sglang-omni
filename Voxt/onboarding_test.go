@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"math"
 	"reflect"
 	"slices"
@@ -582,5 +583,53 @@ func TestKeyboardLit(t *testing.T) {
 				t.Errorf("%s: no key %q in the drawing", c.keys, id)
 			}
 		}
+	}
+}
+
+// TestOnboardingWalk walks the whole guide with its own buttons, from
+// Welcome to Start using Voxt: every step is reached from the one before
+// it and Back returns to it; the guide closed at any step opens again at
+// that step; the finished guide is marked done and starts over.
+func TestOnboardingWalk(t *testing.T) {
+	a, tt := obTester(t)
+	forward := []string{obWelcome: "Get started", obPermissions: "Continue", obModels: "Skip this step",
+		obTranscribe: "Skip this step", obTranslate: "Skip this step", obRewrite: "Skip this step"}
+	for step, label := range forward {
+		if a.ob.step != step {
+			t.Fatalf("at step %d, want %d: %q", a.ob.step, step, firstTexts(tt))
+		}
+		a.closeOnboarding() // the guide's ×; Set up later on Welcome
+		a.openOnboarding()
+		frames(tt)
+		if !a.ob.open || a.ob.step != step {
+			t.Fatalf("closed at step %d, it opened again at %d (open %v)", step, a.ob.step, a.ob.open)
+		}
+		click(t, tt, label)
+		if a.ob.step != step+1 {
+			t.Fatalf("%q at step %d led to step %d", label, step, a.ob.step)
+		}
+		click(t, tt, "Back")
+		if a.ob.step != step {
+			t.Fatalf("Back from step %d led to step %d", step+1, a.ob.step)
+		}
+		click(t, tt, label)
+	}
+	if a.ob.step != obMore {
+		t.Fatalf("the walk ended at step %d", a.ob.step)
+	}
+	if err := a.lib.settings.Update(context.Background(), func(s *settings.Settings) { s.Setup.Done = false }); err != nil {
+		t.Fatal(err)
+	}
+	click(t, tt, "Start using Voxt")
+	if a.ob.open || a.router.Path() != "/home" || !a.lib.settings.Get().Setup.Done {
+		t.Fatalf("finished: open %v, path %s, done %v", a.ob.open, a.router.Path(), a.lib.settings.Get().Setup.Done)
+	}
+	a.maybeOnboard()
+	if a.ob.open {
+		t.Error("the finished guide opened again by itself")
+	}
+	a.openOnboarding()
+	if a.ob.step != obWelcome {
+		t.Errorf("the finished guide starts over at step %d", a.ob.step)
 	}
 }

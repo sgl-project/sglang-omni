@@ -145,7 +145,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if msgs := chatMessages(chat.requests()[1]); !strings.Contains(msgs[0][1], "翻译成日语") || msgs[1][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("second request %q", msgs)
 	}
-	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" {
+	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" || es[0].Kind != store.KindTranslate || es[1].Kind != store.KindTranslate {
 		t.Errorf("history %+v", es)
 	}
 	// A language that fails: the card stays as it was, and says so.

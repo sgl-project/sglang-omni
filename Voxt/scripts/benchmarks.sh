@@ -13,7 +13,7 @@ benchstat="${BENCHSTAT:-$(command -v benchstat || true)}"
 [ -n "$benchstat" ] || { echo "install benchstat or set BENCHSTAT" >&2; exit 1; }
 export CGO_ENABLED=0 GOMAXPROCS="${GOMAXPROCS:-4}"
 rm -f "$out/a.txt" "$out/b.txt"
-for iteration in {1..10}; do
+for _ in {1..10}; do
 	for run in a b; do
 		go test -run '^$' -bench '^BenchmarkW0(AnswerCards|LongLists|MeetingDetailUpdates|MeetingOverlayHour|MeetingOverlayStates|OverlayStates|Pages|WaveformUpdate)$' -benchmem -count 1 -benchtime "$benchtime" . >>"$out/$run.txt"
 		go test -run '^$' -bench '^BenchmarkW0AnswerStreaming$' -benchmem -count 1 -benchtime "${stream_frames}x" . >>"$out/$run.txt"
