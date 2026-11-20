@@ -7,13 +7,15 @@ import argparse
 import asyncio
 from pathlib import Path
 
-import soundfile
+from pydantic import JsonValue
 
 from benchmarks.duplex.artifacts import add_server_identity_args, server_identity
 from benchmarks.duplex.client import PACKET_BYTES, SAMPLE_RATE
 from benchmarks.duplex.lifecycle_stress.mock_server import MockSettings, serve_mock
 from benchmarks.duplex.lifecycle_stress.scenarios import RunSettings, run_stress
 from benchmarks.duplex.lifecycle_stress.summary import write_summary
+from benchmarks.duplex.run_artifacts import file_sha256
+from benchmarks.duplex.v15_audio import normalize_audio
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -40,6 +42,8 @@ def mock(arguments: argparse.Namespace) -> None:
         chunk_delay_ms=arguments.chunk_delay_ms,
         close_delay_ms=arguments.close_delay_ms,
         unit_ms=arguments.unit_ms,
+        supports_cancel=arguments.cancel,
+        takes_turns=arguments.takes_turns,
     )
     asyncio.run(serve_mock(settings, arguments.host, arguments.port))
 
@@ -63,8 +67,12 @@ def run(arguments: argparse.Namespace) -> None:
         raise ValueError(
             "the drop scenario needs --leave-point update, append or reply"
         )
-    elif scenario in ("churn", "idle", "long") and leave_point != "end":
+    elif scenario in ("churn", "idle", "long", "interrupt") and leave_point != "end":
         raise ValueError(f"the {scenario} scenario does not take --leave-point")
+    elif scenario == "interrupt" and arguments.audio_file is None:
+        raise ValueError(
+            "the interrupt scenario needs --audio-file with speech that talks over the reply"
+        )
     else:
         pass
     if arguments.audio_file is None:
@@ -74,12 +82,12 @@ def run(arguments: argparse.Namespace) -> None:
             else arguments.packets_per_session * PACKET_BYTES / (2 * SAMPLE_RATE)
         )
         pcm = bytes(int(input_seconds * SAMPLE_RATE) * 2)
+        audio_sha256: str | None = None
+        audio_conversion: dict[str, JsonValue] | None = None
     else:
-        audio, sample_rate = soundfile.read(arguments.audio_file, dtype="int16")
-        if sample_rate != SAMPLE_RATE or audio.ndim != 1:
-            raise ValueError(f"--audio-file must be mono {SAMPLE_RATE} Hz audio")
-        else:
-            pcm = audio.tobytes()
+        # note (Yi Zhao): the conversion the Full-Duplex-Bench recorder applies, so both send the same bytes for the same file.
+        pcm, audio_conversion = normalize_audio(arguments.audio_file)
+        audio_sha256 = file_sha256(arguments.audio_file)
     settings = RunSettings(
         url=arguments.url,
         server=server_identity(
@@ -95,6 +103,9 @@ def run(arguments: argparse.Namespace) -> None:
         cycles=arguments.cycles,
         pcm=pcm,
         is_input_silence=arguments.audio_file is None,
+        audio_file=None if arguments.audio_file is None else str(arguments.audio_file),
+        audio_sha256=audio_sha256,
+        audio_conversion=audio_conversion,
         packets_per_session=arguments.packets_per_session,
         leave_point=leave_point,
         leave_style=leave_style,
@@ -103,6 +114,8 @@ def run(arguments: argparse.Namespace) -> None:
         max_connections=arguments.max_connections,
         server_pid=arguments.server_pid,
         has_debug_route=arguments.debug_route,
+        has_device_memory=arguments.device_memory,
+        server_log=arguments.server_log,
         cleanup_wait_s=arguments.cleanup_wait_s,
         output=arguments.output,
     )
@@ -167,6 +180,17 @@ def main() -> None:
         default=mock_defaults.unit_ms,
         help="input the stand-in model takes per step, as the model it imitates publishes: 80, 1000, 200 or 20",
     )
+    mock_parser.add_argument(
+        "--cancel",
+        action=argparse.BooleanOptionalAction,
+        default=mock_defaults.supports_cancel,
+        help="--no-cancel imitates a model that refuses response.cancel",
+    )
+    mock_parser.add_argument(
+        "--takes-turns",
+        action="store_true",
+        help="answer speech like a turn-based pipeline, one delta per silent unit, and end a reply as interrupted when speech meets it",
+    )
     mock_parser.set_defaults(handle=mock)
 
     run_parser = commands.add_parser("run", help="run one scenario against a server")
@@ -174,7 +198,7 @@ def main() -> None:
     add_server_identity_args(run_parser)
     run_parser.add_argument(
         "--scenario",
-        choices=("churn", "drop", "cancel", "idle", "reconnect", "long"),
+        choices=("churn", "drop", "cancel", "idle", "reconnect", "long", "interrupt"),
         required=True,
     )
     run_parser.add_argument(
@@ -197,7 +221,7 @@ def main() -> None:
         "--audio-file",
         type=Path,
         default=None,
-        help="mono 16 kHz speech to send instead of silence; a model needs it to reply",
+        help="speech to send instead of silence, which a model needs to reply; converted to mono 16 kHz as the Full-Duplex-Bench recorder does",
     )
     run_parser.add_argument(
         "--leave-point",
@@ -240,6 +264,17 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="read the session count from the mock's debug route; a real server has none",
+    )
+    run_parser.add_argument(
+        "--device-memory",
+        action="store_true",
+        help="read the memory in use on this host's GPUs with nvidia-smi after every cycle; the server has to run on this host",
+    )
+    run_parser.add_argument(
+        "--server-log",
+        type=Path,
+        default=None,
+        help="log file of a server on this host; what it gains during the run is copied to the output and its tracebacks and error lines are counted",
     )
     run_parser.add_argument(
         "--cleanup-wait-s", type=float, default=DEFAULT_CLEANUP_WAIT_S

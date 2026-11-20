@@ -15,6 +15,7 @@ from benchmarks.duplex.lifecycle_stress.records import (
     SUMMARY_FILE,
     Protocol,
     Scenario,
+    ServerLog,
     StressSamples,
 )
 
@@ -36,6 +37,12 @@ class StressSummary(BaseModel):
     protocol: Protocol
     server: dict[str, JsonValue]
     server_unit_ms: int | None
+    server_supports_cancel: bool | None
+    device_models: list[str] | None
+    input_seconds: float
+    audio_file: str | None
+    audio_sha256: str | None
+    audio_conversion: dict[str, JsonValue] | None
     concurrency: int
     cycles: int
     session_outcomes: dict[str, int]
@@ -49,11 +56,18 @@ class StressSummary(BaseModel):
     rss_megabytes_last: float | None
     rss_megabytes_peak: float | None
     rss_growth_megabytes_per_cycle: float | None
+    device_megabytes_first: float | None
+    device_megabytes_last: float | None
+    device_megabytes_peak: float | None
+    device_growth_megabytes_per_cycle: float | None
     task_count_growth: int | None
     thread_count_growth: int | None
     cancel_ms: Distribution
     cancel_statuses: dict[str, int]
     late_outputs: int | None
+    interrupted_replies: int | None
+    interrupted_sessions: int | None
+    server_log: ServerLog | None
     expire_overshoot_ms: Distribution
     early_expiries: int
     reconnects_denied_first: int
@@ -77,6 +91,15 @@ def distribution(values: list[float]) -> Distribution:
         )
 
 
+def growth_per_cycle(readings: list[float]) -> float | None:
+    """Slope of a line fitted to one reading per cycle; None below two readings."""
+    if len(readings) >= MIN_GROWTH_POINTS:
+        # note (Yi Zhao): a fitted line, because the difference of two readings moves with either one of them.
+        return statistics.linear_regression(range(len(readings)), readings).slope
+    else:
+        return None
+
+
 def summarize(samples: StressSamples) -> StressSummary:
     sessions = [session for cycle in samples.cycles for session in cycle.sessions]
     snapshots = [
@@ -97,14 +120,16 @@ def summarize(samples: StressSamples) -> StressSummary:
         for snapshot in measured_snapshots
         if snapshot.rss_megabytes is not None
     ]
-    rss_growth_megabytes_per_cycle: float | None
-    if len(measured_rss) >= MIN_GROWTH_POINTS:
-        # note (Yi Zhao): a fitted line, because the difference of two readings moves with either one of them.
-        rss_growth_megabytes_per_cycle = statistics.linear_regression(
-            range(len(measured_rss)), measured_rss
-        ).slope
-    else:
-        rss_growth_megabytes_per_cycle = None
+    device_series = [
+        snapshot.device_megabytes
+        for snapshot in snapshots
+        if snapshot.device_megabytes is not None
+    ]
+    measured_device = [
+        snapshot.device_megabytes
+        for snapshot in measured_snapshots
+        if snapshot.device_megabytes is not None
+    ]
     task_count_growth: int | None = None
     thread_count_growth: int | None = None
     if len(measured_snapshots) >= MIN_GROWTH_POINTS:
@@ -159,6 +184,11 @@ def summarize(samples: StressSamples) -> StressSummary:
     late_output_counts = [
         session.late_outputs for session in sessions if session.late_outputs is not None
     ]
+    interruption_counts = [
+        session.interrupted_replies
+        for session in sessions
+        if session.interrupted_replies is not None
+    ]
     reconnected = [session for session in sessions if session.readmit_ms is not None]
     errored = [session for session in sessions if session.outcome == "errored"]
 
@@ -177,6 +207,12 @@ def summarize(samples: StressSamples) -> StressSummary:
         protocol=samples.protocol,
         server=samples.server,
         server_unit_ms=samples.server_unit_ms,
+        server_supports_cancel=samples.server_supports_cancel,
+        device_models=samples.device_models,
+        input_seconds=samples.input_seconds,
+        audio_file=samples.audio_file,
+        audio_sha256=samples.audio_sha256,
+        audio_conversion=samples.audio_conversion,
         concurrency=samples.concurrency,
         cycles=len(samples.cycles),
         session_outcomes=dict(Counter(session.outcome for session in sessions)),
@@ -203,7 +239,11 @@ def summarize(samples: StressSamples) -> StressSummary:
         rss_megabytes_first=rss_series[0] if rss_series else None,
         rss_megabytes_last=rss_series[-1] if rss_series else None,
         rss_megabytes_peak=max(peaks) if peaks else None,
-        rss_growth_megabytes_per_cycle=rss_growth_megabytes_per_cycle,
+        rss_growth_megabytes_per_cycle=growth_per_cycle(measured_rss),
+        device_megabytes_first=device_series[0] if device_series else None,
+        device_megabytes_last=device_series[-1] if device_series else None,
+        device_megabytes_peak=max(device_series) if device_series else None,
+        device_growth_megabytes_per_cycle=growth_per_cycle(measured_device),
         task_count_growth=task_count_growth,
         thread_count_growth=thread_count_growth,
         cancel_ms=distribution(
@@ -217,6 +257,13 @@ def summarize(samples: StressSamples) -> StressSummary:
             Counter(str(session.cancel_status) for session in cancelled)
         ),
         late_outputs=sum(late_output_counts) if late_output_counts else None,
+        interrupted_replies=sum(interruption_counts) if interruption_counts else None,
+        interrupted_sessions=(
+            sum(count > 0 for count in interruption_counts)
+            if interruption_counts
+            else None
+        ),
+        server_log=samples.server_log,
         expire_overshoot_ms=distribution(expire_overshoots_ms),
         early_expiries=sum(overshoot_ms < 0 for overshoot_ms in expire_overshoots_ms),
         reconnects_denied_first=sum(

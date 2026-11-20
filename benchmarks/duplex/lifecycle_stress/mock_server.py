@@ -28,6 +28,7 @@ from benchmarks.duplex.lifecycle_stress.records import (
     Protocol,
     ServerSnapshot,
 )
+from benchmarks.duplex.lifecycle_stress.session_client import INTERRUPTED_REASON
 from sglang_omni.admission import QueueFullError
 from sglang_omni.audio import smart_turn as smart_turn_module
 from sglang_omni.audio.vad import Emit, VADConfig
@@ -45,6 +46,7 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.types import (
+    AdapterFactory,
     Capabilities,
     InteractionAdapter,
     OutputSink,
@@ -58,6 +60,7 @@ DEFAULT_REPLY_TEXT = "ok"
 # note (Yi Zhao): the duplex recorder asks every native session for audio output, so the mock has to grant it.
 RECORDER_OUTPUT_MODALITIES = ("audio",)
 DENIAL_MESSAGE_TYPE = "websocket.http.response.start"
+TURN_DETECTION_TYPE = "server_vad"
 STARTUP_POLL_INTERVAL_S = 0.01
 STARTUP_TIMEOUT_S = 10.0
 SHUTDOWN_TIMEOUT_S = 10.0
@@ -127,6 +130,7 @@ class EchoAdapter(InteractionAdapter):
     reply_chunks: int
     chunk_delay_ms: float
     close_delay_ms: float
+    supports_cancel: bool
     reply_holds: ReplyHolds
     close_gate: asyncio.Event | None
     slots: ModelSlots | None
@@ -190,7 +194,9 @@ class EchoAdapter(InteractionAdapter):
 
     async def cancel(self) -> None:
         # note (Yi Zhao): a cancel that finds no reply in progress must not end the next one.
-        if self.is_replying:
+        if not self.supports_cancel:
+            await super().cancel()
+        elif self.is_replying:
             self.cancel_requested.set()
         else:
             pass
@@ -213,6 +219,74 @@ class EchoAdapter(InteractionAdapter):
 
 
 @dataclass(kw_only=True)
+class SpeechTurnAdapter(InteractionAdapter):
+    """Stands in for a turn-based pipeline: a unit with speech starts a reply, every silent unit after it carries one delta, and speech during a reply ends it as interrupted."""
+
+    reply_text: str
+    reply_chunks: int
+    output_sink: OutputSink | None = None
+    reply_index: int = 0
+    # note (Yi Zhao): None while no reply is in progress; the reply advances with the input, not with the clock, so a test decides exactly where speech meets it.
+    deltas_sent: int | None = None
+
+    async def open(
+        self, session_id: str, config: SessionConfiguration, emit: OutputSink
+    ) -> None:
+        self.output_sink = emit
+
+    async def process(self, unit: Unit) -> int:
+        assert self.output_sink is not None, "process before open"
+        response_id = f"response_{self.reply_index}"
+        item_id = f"item_{self.reply_index}"
+        if any(unit.pcm):
+            if self.deltas_sent is None:
+                pass
+            else:
+                await self.output_sink(
+                    ResponseFinished(
+                        response_id,
+                        item_id,
+                        self.reply_text * self.deltas_sent,
+                        False,
+                        "cancelled",
+                        INTERRUPTED_REASON,
+                    ),
+                    unit,
+                )
+                self.reply_index += 1
+            self.deltas_sent = 0
+            await self.output_sink(
+                ResponseStarted(f"response_{self.reply_index}"), unit
+            )
+        elif self.deltas_sent is None:
+            pass
+        else:
+            await self.output_sink(
+                TextDelta(response_id, item_id, self.reply_text), unit
+            )
+            self.deltas_sent += 1
+            if self.deltas_sent == self.reply_chunks:
+                reply_text = self.reply_text * self.reply_chunks
+                await self.output_sink(
+                    TextFinished(response_id, item_id, reply_text), unit
+                )
+                await self.output_sink(
+                    ResponseFinished(
+                        response_id, item_id, reply_text, False, "completed", "stop"
+                    ),
+                    unit,
+                )
+                self.reply_index += 1
+                self.deltas_sent = None
+            else:
+                pass
+        return unit.real_samples
+
+    async def close(self) -> None:
+        pass
+
+
+@dataclass(kw_only=True)
 class MockSettings:
     protocol: Protocol = "native"
     max_connections: int = 128
@@ -226,6 +300,10 @@ class MockSettings:
     close_delay_ms: float = 0.0
     # note (Yi Zhao): a deployment publishes its own unit and a client cannot change it; the default is the 80 ms of the frame-locked full-duplex models, and 1000, 200 and 20 imitate the others.
     unit_ms: int = PACKET_MS
+    # note (Yi Zhao): False imitates a model that keeps talking, such as PersonaPlex: the capability is not granted and response.cancel is refused.
+    supports_cancel: bool = True
+    # note (Yi Zhao): True serves the stand-in for a turn-based pipeline, which answers speech and can be talked over; it proves this tool's counting, not that a model interrupts.
+    takes_turns: bool = False
     # note (Yi Zhao): this many sessions stay in the session table after their teardown, as when a teardown raises; a run against such a server has to fail its checks.
     leaked_sessions: int = 0
     # note (Yi Zhao): these two let a test force an interleaving with an event where a delay would only make it likely; held replies are counted so the final session is not held.
@@ -244,20 +322,44 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
             if settings.model_slots is None
             else ModelSlots(limit=settings.model_slots)
         )
-        deployment = RealtimeDeployment(
-            capabilities=Capabilities(
-                output_modalities=RECORDER_OUTPUT_MODALITIES,
-                native_unit_ms=settings.unit_ms,
-            ),
-            adapter_factory=lambda: EchoAdapter(
+
+        def speech_turn_adapter() -> InteractionAdapter:
+            return SpeechTurnAdapter(
+                reply_text=settings.reply_text, reply_chunks=settings.reply_chunks
+            )
+
+        def echo_adapter() -> InteractionAdapter:
+            return EchoAdapter(
                 reply_text=settings.reply_text,
                 reply_chunks=settings.reply_chunks,
                 chunk_delay_ms=settings.chunk_delay_ms,
                 close_delay_ms=settings.close_delay_ms,
+                supports_cancel=settings.supports_cancel,
                 reply_holds=reply_holds,
                 close_gate=first_denial if settings.should_close_after_denial else None,
                 slots=slots,
-            ),
+            )
+
+        capabilities: Capabilities
+        adapter_factory: AdapterFactory
+        if settings.takes_turns:
+            capabilities = Capabilities(
+                interaction="turn_based",
+                turn_control=(TURN_DETECTION_TYPE, None),
+                output_modalities=RECORDER_OUTPUT_MODALITIES,
+                native_unit_ms=settings.unit_ms,
+            )
+            adapter_factory = speech_turn_adapter
+        else:
+            capabilities = Capabilities(
+                output_modalities=RECORDER_OUTPUT_MODALITIES,
+                native_unit_ms=settings.unit_ms,
+                supports_cancel=settings.supports_cancel,
+            )
+            adapter_factory = echo_adapter
+        deployment = RealtimeDeployment(
+            capabilities=capabilities,
+            adapter_factory=adapter_factory,
             limits=RuntimeLimits(
                 cleanup_timeout_s=settings.cleanup_timeout_s,
                 session_update_timeout_s=settings.session_update_timeout_s,

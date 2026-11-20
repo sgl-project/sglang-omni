@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -21,11 +22,16 @@ from benchmarks.duplex.lifecycle_stress.records import (
     LeavePoint,
     LeaveStyle,
     Scenario,
+    ServerLog,
     ServerSnapshot,
     SessionOutcome,
     StressSamples,
 )
-from benchmarks.duplex.lifecycle_stress.scenarios import RunSettings, run_stress
+from benchmarks.duplex.lifecycle_stress.scenarios import (
+    TRACEBACK_MARKER,
+    RunSettings,
+    run_stress,
+)
 from benchmarks.duplex.lifecycle_stress.session_client import (
     probe_capacity,
     run_recorded_session,
@@ -39,6 +45,8 @@ from sglang_omni.serve.realtime import turn_detector as turn_detector_module
 CLEANUP_WAIT_S = 5.0
 PACKETS_PER_SESSION = 2
 SHORT_TIMEOUT_S = 0.3
+# note (Yi Zhao): any nonzero sample is speech to the stand-in pipeline.
+SPEECH_PACKET = b"\x01\x00" * (PACKET_BYTES // 2)
 SERVER: dict[str, JsonValue] = {"revision": "0" * 40, "model": "lifecycle-stress-mock"}
 
 
@@ -54,6 +62,9 @@ async def stress_against_mock(
     max_connections: int | None = None,
     has_debug_route: bool = True,
     cleanup_wait_s: float = CLEANUP_WAIT_S,
+    has_device_memory: bool = False,
+    pcm: bytes = bytes(PACKETS_PER_SESSION * PACKET_BYTES),
+    server_log: Path | None = None,
 ) -> StressSamples:
     """One cycle of the given scenario against a mock served on this event loop."""
     async with serve_in_process(mock, "127.0.0.1", 0) as url:
@@ -65,8 +76,11 @@ async def stress_against_mock(
                 protocol=mock.protocol,
                 concurrency=concurrency,
                 cycles=1,
-                pcm=bytes(PACKETS_PER_SESSION * PACKET_BYTES),
+                pcm=pcm,
                 is_input_silence=True,
+                audio_file=None,
+                audio_sha256=None,
+                audio_conversion=None,
                 packets_per_session=PACKETS_PER_SESSION,
                 leave_point=leave_point,
                 leave_style=leave_style,
@@ -75,6 +89,8 @@ async def stress_against_mock(
                 max_connections=max_connections,
                 server_pid=None,
                 has_debug_route=has_debug_route,
+                has_device_memory=has_device_memory,
+                server_log=server_log,
                 cleanup_wait_s=cleanup_wait_s,
                 output=output,
             )
@@ -93,6 +109,9 @@ def test_churn_cycle_completes_and_every_check_passes(tmp_path: Path) -> None:
     assert cycle.cleanup_latency_ms is not None
     assert cycle.capacity_probe is not None and cycle.capacity_probe.admitted == 2
     assert cycle.capacity_recovery_ms is None
+    assert cycle.snapshot_after is not None
+    assert cycle.snapshot_after.device_megabytes is None
+    assert samples.device_models is None
     assert summarize(samples).checks == {
         "no_sessions_left": True,
         "slots_recovered": True,
@@ -141,6 +160,25 @@ def test_cancel_ends_the_reply_in_progress_and_nothing_of_it_arrives_later(
     assert [session.outcome for session in sessions] == ["completed"] * 2
     assert [session.cancel_status for session in sessions] == ["cancelled"] * 2
     assert [session.late_outputs for session in sessions] == [0, 0]
+
+
+def test_a_model_that_does_not_cancel_refuses_and_the_session_still_completes(
+    tmp_path: Path,
+) -> None:
+    """The mock grants no cancel, as PersonaPlex does; the refusal is the expected answer and not an errored session."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2, supports_cancel=False),
+            tmp_path,
+            scenario="cancel",
+        )
+    )
+    summary = summarize(samples)
+    assert samples.server_supports_cancel is False
+    assert summary.session_outcomes == {"completed": 2}
+    assert summary.cancel_statuses == {"not_supported": 2}
+    assert summary.late_outputs is None
+    assert summary.failed_checks == []
 
 
 def test_a_client_that_cancels_and_resets_at_once_is_released(tmp_path: Path) -> None:
@@ -331,6 +369,7 @@ def test_a_recorded_session_the_server_has_no_slot_for_is_denied(
                 bytes(PACKETS_PER_SESSION * PACKET_BYTES),
                 tmp_path / "session" / "trace.jsonl",
                 CLEANUP_WAIT_S,
+                None,
             )
             await held.close()
             return outcome
@@ -355,6 +394,94 @@ def test_without_the_debug_route_the_session_count_is_unmeasured_not_passed(
     assert summary.checks["slots_recovered"] is True
     assert summary.cleanup_latency_ms.count == 0
     assert summary.capacity_recovery_ms.count == 1
+
+
+def test_device_memory_is_the_sum_over_gpus_and_joins_every_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stand-in nvidia-smi reports two GPUs; their sum has to reach the baseline, the cycle and the closing reading next to what the debug route gives, and the run has to name both GPUs."""
+    tool_directory = tmp_path / "tools"
+    tool_directory.mkdir()
+    stand_in = tool_directory / "nvidia-smi"
+    stand_in.write_text("#!/bin/sh\necho 1000\necho 2000\n")
+    stand_in.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tool_directory}{os.pathsep}{os.environ['PATH']}")
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2),
+            tmp_path / "run",
+            has_device_memory=True,
+        )
+    )
+    cycle_snapshot = samples.cycles[0].snapshot_after
+    assert samples.baseline is not None and samples.closing is not None
+    assert cycle_snapshot is not None and cycle_snapshot.active_sessions == 0
+    assert [
+        samples.baseline.device_megabytes,
+        cycle_snapshot.device_megabytes,
+        samples.closing.device_megabytes,
+    ] == [3000.0] * 3
+    assert summarize(samples).device_megabytes_peak == 3000.0
+    assert samples.device_models == ["1000", "2000"]
+
+
+@pytest.mark.parametrize(
+    ("speech_packets", "interrupted_replies"), [((0, 2), 1), ((0,), 0)]
+)
+def test_speech_over_a_reply_is_counted_as_an_interruption_and_its_control_is_not(
+    tmp_path: Path, speech_packets: tuple[int, ...], interrupted_replies: int
+) -> None:
+    """The stand-in pipeline starts a reply on the first packet and needs three silent packets to finish it; speech in the third packet meets it, and the same input without that speech does not."""
+    packets = [bytes(PACKET_BYTES)] * 6
+    for packet_index in speech_packets:
+        packets[packet_index] = SPEECH_PACKET
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2, takes_turns=True, reply_chunks=3),
+            tmp_path,
+            scenario="interrupt",
+            pcm=b"".join(packets),
+        )
+    )
+    summary = summarize(samples)
+    assert summary.session_outcomes == {"completed": 2}
+    assert summary.interrupted_replies == 2 * interrupted_replies
+    assert summary.interrupted_sessions == 2 * interrupted_replies
+    assert summary.late_outputs == 0
+    assert summary.failed_checks == []
+
+
+def test_only_what_the_server_logs_during_the_run_is_kept_and_counted(
+    tmp_path: Path,
+) -> None:
+    """A traceback from before the run must not count; the mock here logs nothing, so the test appends the run's lines itself once the run has taken its starting point."""
+    log_path = tmp_path / "server.log"
+    log_path.write_text(f"{TRACEBACK_MARKER}\nERROR old failure\n")
+    logged_during_run = (
+        f"INFO session 1 opened\n{TRACEBACK_MARKER}\n"
+        "ERROR unknown session open index 17\nERROR unknown session open index 52\n"
+    )
+
+    async def stress_while_the_server_logs() -> StressSamples:
+        run = asyncio.create_task(
+            stress_against_mock(
+                MockSettings(max_connections=2), tmp_path / "run", server_log=log_path
+            )
+        )
+        while not (tmp_path / "run" / "traces").exists():
+            await asyncio.sleep(0)
+        with log_path.open("a") as log_file:
+            log_file.write(logged_during_run)
+        return await run
+
+    samples = asyncio.run(stress_while_the_server_logs())
+    assert samples.server_log == ServerLog(
+        lines=4,
+        tracebacks=1,
+        error_lines=2,
+        top_error_lines={"ERROR unknown session open index #": 2},
+    )
+    assert (tmp_path / "run" / "server.log").read_text() == logged_during_run
 
 
 def test_legacy_sessions_close_with_a_frame_and_are_released(
@@ -398,18 +525,24 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
         packets_per_session=PACKETS_PER_SESSION,
         input_seconds=0.16,
         is_input_silence=True,
+        audio_file=None,
+        audio_sha256=None,
+        audio_conversion=None,
         leave_point="update",
         leave_style="close_frame",
         idle_point="none",
         should_cancel_reply=False,
         reconnects=0,
         server_unit_ms=None,
+        server_supports_cancel=None,
         server_timeout_s=None,
         max_connections=None,
         cleanup_wait_s=CLEANUP_WAIT_S,
         cleanup_poll_interval_s=0.005,
         has_debug_route=True,
         server_pid=None,
+        has_device_memory=True,
+        device_models=None,
         baseline=None,
         cycles=[
             CycleSample(
@@ -420,12 +553,15 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
                 capacity_probe=None,
                 capacity_recovery_ms=None,
                 snapshot_after=ServerSnapshot(
-                    active_sessions=index + 1, rss_megabytes=megabytes
+                    active_sessions=index + 1,
+                    rss_megabytes=megabytes,
+                    device_megabytes=10 * megabytes,
                 ),
             )
             for index, megabytes in enumerate(resident_megabytes)
         ],
         final_session=SessionOutcome(outcome="completed", ended_s=0.0),
+        server_log=None,
         closing=ServerSnapshot(active_sessions=len(resident_megabytes)),
     )
     summary = summarize(samples)
@@ -433,3 +569,5 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
     assert summary.sessions_left == len(resident_megabytes)
     assert summary.cleanup_timeouts == len(resident_megabytes)
     assert summary.rss_growth_megabytes_per_cycle == pytest.approx(2.0)
+    assert summary.device_growth_megabytes_per_cycle == pytest.approx(20.0)
+    assert summary.device_megabytes_peak == 3000.0

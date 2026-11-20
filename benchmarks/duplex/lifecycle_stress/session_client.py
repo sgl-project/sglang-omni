@@ -22,6 +22,7 @@ from benchmarks.duplex.client import (
     PACKET_BYTES,
     PACKET_MS,
     SAMPLE_RATE,
+    TurnDetection,
     run_session,
 )
 from benchmarks.duplex.lifecycle_stress.records import (
@@ -38,6 +39,10 @@ from benchmarks.duplex.oracle_models import is_admission_rejection
 
 NORMAL_CLOSE_CODE = 1000
 POLICY_CLOSE_CODE = 1008
+CANCEL_REFUSAL_CODE = "not_supported"
+# note (Yi Zhao): the recorder's profile for a server that takes turns by its own voice detection, and how such a server marks a reply the user talked over.
+TURN_BASED_PROFILE = "turn-based"
+INTERRUPTED_REASON = "interrupted"
 # note (Yi Zhao): the server closes an idle session with the name of the limit that expired, and publishes that limit under the same name plus _s.
 EXPIRY_LIMITS: dict[IdlePoint, str] = {
     "created": "session_update_timeout",
@@ -61,6 +66,8 @@ class SessionPlan:
     leave_style: LeaveStyle
     idle_point: IdlePoint
     should_cancel_reply: bool
+    # note (Yi Zhao): what the deployment publishes; one that does not cancel has to refuse response.cancel and keep the session going.
+    supports_cancel: bool
     timeout_s: float
 
 
@@ -79,6 +86,22 @@ class EventResponse(BaseModel):
 
     id: str
     status: str
+
+
+class EventError(BaseModel):
+    """The error object of an error event."""
+
+    code: str
+
+
+class DoneDetails(BaseModel):
+    reason: str | None = None
+
+
+class DoneResponse(EventResponse):
+    """The response of a response.done read from a trace, with why it ended."""
+
+    status_details: DoneDetails = DoneDetails()
 
 
 class TraceRecord(BaseModel):
@@ -219,7 +242,7 @@ async def drive_session(
             await connection.send(client_event("response.cancel", {}))
             if plan.leave_point == "reply":
                 break
-            else:
+            elif plan.supports_cancel:
                 cancelled_response_id = created.id
                 while cancel_status is None:
                     done = await receive_response(connection, "response.done")
@@ -227,7 +250,14 @@ async def drive_session(
                         cancel_status = done.status
                     else:
                         pass
-                cancel_ms = (time.perf_counter() - cancel_sent_s) * MS_PER_SECOND
+            else:
+                refusal = (await receive_until(connection, "error"))[-1]
+                cancel_status = EventError.model_validate(refusal.error).code
+                if cancel_status != CANCEL_REFUSAL_CODE:
+                    raise ServerErrorEvent(refusal)
+                else:
+                    pass
+            cancel_ms = (time.perf_counter() - cancel_sent_s) * MS_PER_SECOND
         elif packet_index == plan.reply_packet_index and plan.leave_point == "reply":
             await receive_until(connection, "response.created")
             break
@@ -303,11 +333,25 @@ async def run_lifecycle_session(url: str, plan: SessionPlan) -> SessionOutcome:
 
 
 async def run_recorded_session(
-    url: str, pcm: bytes, trace_path: Path, timeout_s: float
+    url: str,
+    pcm: bytes,
+    trace_path: Path,
+    timeout_s: float,
+    turn_detection: TurnDetection | None,
 ) -> SessionOutcome:
-    """A whole conversation by the duplex recorder; its trace is the raw record and tells how the session ended."""
+    """A whole conversation by the duplex recorder; its trace is the raw record and tells how the session ended and which replies the user talked over."""
     trace_path.parent.mkdir(parents=True)
-    await run_session(url, pcm, trace_path=trace_path, timeout_s=timeout_s)
+    if turn_detection is None:
+        await run_session(url, pcm, trace_path=trace_path, timeout_s=timeout_s)
+    else:
+        await run_session(
+            url,
+            pcm,
+            trace_path=trace_path,
+            timeout_s=timeout_s,
+            profile=TURN_BASED_PROFILE,
+            turn_detection=turn_detection,
+        )
     ended_s = time.perf_counter()
     records = [
         TraceRecord.model_validate_json(line)
@@ -322,7 +366,33 @@ async def run_recorded_session(
             outcome="errored", ended_s=ended_s, error=json.dumps(errors[0])
         )
     elif "session.closed" in received_types:
-        return SessionOutcome(outcome="completed", ended_s=ended_s)
+        interrupted_ids: set[str] = set()
+        late_outputs = 0
+        for record in records:
+            if record.direction != "receive":
+                pass
+            elif record.event["type"] == "response.done":
+                done = DoneResponse.model_validate(record.event["response"])
+                if (
+                    done.status == "cancelled"
+                    and done.status_details.reason == INTERRUPTED_REASON
+                ):
+                    interrupted_ids.add(done.id)
+                else:
+                    pass
+            elif record.event.get("response_id") in interrupted_ids:
+                late_outputs += 1
+            else:
+                pass
+        if turn_detection is None:
+            return SessionOutcome(outcome="completed", ended_s=ended_s)
+        else:
+            return SessionOutcome(
+                outcome="completed",
+                ended_s=ended_s,
+                interrupted_replies=len(interrupted_ids),
+                late_outputs=late_outputs,
+            )
     elif any(record.direction == "admission" for record in records):
         # note (Yi Zhao): the recorder retries a denied connection a few times before it gives up without an error line.
         return SessionOutcome(outcome="denied", ended_s=ended_s)

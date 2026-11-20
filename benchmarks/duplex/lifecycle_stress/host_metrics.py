@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Resident memory of a process, read without extra dependencies."""
+"""Resident memory of a process, and the models and memory of this host's GPUs, read without extra dependencies."""
 
 from __future__ import annotations
 
@@ -14,6 +14,18 @@ BYTES_PER_MEGABYTE = 1024 * 1024
 KILOBYTES_PER_MEGABYTE = 1024
 PROC_ROOT = Path("/proc")
 PS_TIMEOUT_S = 5.0
+# note (Yi Zhao): without units nvidia-smi prints one number of mebibytes per GPU, one GPU per line.
+NVIDIA_SMI_COMMAND = (
+    "nvidia-smi",
+    "--query-gpu=memory.used",
+    "--format=csv,noheader,nounits",
+)
+NVIDIA_SMI_TIMEOUT_S = 10.0
+NVIDIA_SMI_MODELS_COMMAND = (
+    "nvidia-smi",
+    "--query-gpu=name,memory.total",
+    "--format=csv,noheader",
+)
 
 
 def read_rss_megabytes(pid: int) -> float | None:
@@ -44,3 +56,28 @@ def peak_rss_megabytes() -> float:
         return peak / BYTES_PER_MEGABYTE
     else:
         return peak / KILOBYTES_PER_MEGABYTE
+
+
+def read_device_megabytes() -> float:
+    """Memory in use on all GPUs of this host together; a failing nvidia-smi raises, because the caller asked for this reading."""
+    # note (Yi Zhao): this is what every process holds on the device, cached and reserved memory included, so a session that leaks may not move it.
+    completed = subprocess.run(
+        NVIDIA_SMI_COMMAND,
+        capture_output=True,
+        text=True,
+        timeout=NVIDIA_SMI_TIMEOUT_S,
+        check=True,
+    )
+    return sum(float(line) for line in completed.stdout.split())
+
+
+def read_device_models() -> list[str]:
+    """Model name and total memory of every GPU of this host, one entry per GPU as nvidia-smi prints it."""
+    completed = subprocess.run(
+        NVIDIA_SMI_MODELS_COMMAND,
+        capture_output=True,
+        text=True,
+        timeout=NVIDIA_SMI_TIMEOUT_S,
+        check=True,
+    )
+    return completed.stdout.strip().splitlines()
