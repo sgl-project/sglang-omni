@@ -236,6 +236,50 @@ func TestMeetingImportExplainsHistoryOff(t *testing.T) {
 	}
 }
 
+type deadlineDiarizeFake struct {
+	fakeTranscriptions
+	calls int
+}
+
+func (f *deadlineDiarizeFake) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
+	f.calls++
+	return asr.Result{}, context.DeadlineExceeded
+}
+
+func TestMeetingImportDeadlineStaysInterrupted(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	diarizer := &deadlineDiarizeFake{}
+	a.local = &importLocal{fakeLocal: withChat(&fakeLocal{ASRP: &fakeTranscriptions{}}, &fakeChat{}), mtd: diarizer}
+	a.prefs.General.MainLanguage = "en"
+	savedC, savedD := chooseRecordingFile, decodeRecording
+	t.Cleanup(func() { chooseRecordingFile, decodeRecording = savedC, savedD })
+	chooseRecordingFile = func(a *app, then func(string)) { then("long.m4a") }
+	decodeRecording = func(context.Context, string) ([]byte, error) {
+		pcm := make([]byte, asr.SampleRate*2)
+		for i := 0; i < len(pcm); i += 2 {
+			pcm[i], pcm[i+1] = 0xff, 0x7f
+		}
+		return pcm, nil
+	}
+	a.navigate("/meetings")
+	if err := tt.ClickControl("Import recording…"); err != nil {
+		t.Fatalf("%v (%q)", err, firstTexts(tt))
+	}
+	frames(tt)
+	for _, toast := range a.toasts {
+		if toast == "Could not import the recording: context deadline exceeded" {
+			t.Fatalf("a recoverable timeout showed a failure: %q", toast)
+		}
+	}
+	if diarizer.calls != 1 {
+		t.Fatalf("MTD calls = %d, want 1", diarizer.calls)
+	}
+	list, err := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
+	if err != nil || len(list) != 1 || list[0].Status != store.MeetingInterrupted {
+		t.Fatalf("meetings %+v, err %v", list, err)
+	}
+}
+
 // Cancel reaches the decoder: a long afconvert stops instead of running
 // on while the page shows the import as cancelled.
 func TestMeetingImportDecodeCancels(t *testing.T) {
