@@ -14,6 +14,7 @@ on:
       - "Voxt/**"
       - "README.md"
       - "docs/get_started/voxt.md"
+      - "docs/get_started/voxt-tutorials/**"
       - ".github/workflows/voxtnew-ci.yaml"
   push:
     branches: [main]
@@ -118,27 +119,43 @@ jobs:
           fc-cache -f
           fc-list :lang=zh family | sort
 
-      - name: gofmt
-        run: |
-          bad="$(git ls-files -z '*.go' ':!:third_party/**' | xargs -0 gofmt -l)"
-          if [ -n "$bad" ]; then
-            echo "::error::not gofmt-ed (run gofmt -w): $bad"
-            exit 1
-          else
-            echo "gofmt: clean"
-          fi
+      # gofmt, MyGo's vet and internal/archtest: what developers run locally.
+      - name: Fast checks
+        run: scripts/check.sh
 
       # -count=1: setup-go's cache keeps the last run's test results too,
       # and a result does not change with what a test does not see (the
       # fonts, a flake): without it a run after a green one says "(cached)".
+      # -cover: each package's share of statements the tests run goes to
+      # the job summary. A report only, with no threshold.
       - name: Go tests
-        run: CGO_ENABLED=0 go test -count=1 ./...
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test -count=1 -cover ./... | tee "$RUNNER_TEMP/go-test.txt"
+          {
+            echo "### Coverage by package"
+            echo '```'
+            grep -E '^ok .*coverage: ' "$RUNNER_TEMP/go-test.txt" | awk '{print $(NF-2), $2}' | sort -n
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: MyGo vet
-        run: go tool mygo vet .
+      # The test skips on a machine without Chrome. The runner has it, so a
+      # skip here means the rendered preview went unchecked.
+      - name: The transcript preview in a browser
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test -count=1 -v -run '^TestPageSanitizesTranscriptInBrowser$' ./internal/transcriptpreview | tee "$RUNNER_TEMP/browser.txt"
+          grep -q -- '--- PASS: TestPageSanitizesTranscriptInBrowser' "$RUNNER_TEMP/browser.txt"
 
       - name: Vet the update-check build
         run: go vet -tags updatecheck .
+
+      # The fixture demo (Voxt/AGENTS.md) is this package with the tag.
+      - name: Build and vet the fixture demo
+        run: |
+          CGO_ENABLED=0 go build -tags meetingdemo -o /dev/null .
+          CGO_ENABLED=0 go vet -tags meetingdemo .
+          GOFLAGS=-tags=meetingdemo go tool mygo vet .
 
       - name: Vendored MyGo is MyGo with the patches
         run: scripts/vendor-mygo.sh --check
