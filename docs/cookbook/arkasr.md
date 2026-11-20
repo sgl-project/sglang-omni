@@ -24,7 +24,7 @@ hf download AutoArk-AI/ARK-ASR-3B
 
 ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default. On CUDA with TP=1, serving `AutoArk-AI/ARK-ASR-3B`, a pinned `AutoArk-AI/ARK-ASR-3B@<revision>` specification, or its Hugging Face cache snapshot enables synchronous DFlash with the registry-pinned draft. Other devices, TP sizes and unregistered checkpoints keep plain decoding unless a draft is explicitly configured.
 
-DFlash schedules decode synchronously. Without a draft, async decode overlaps host-side result processing with the next GPU decode forward for batches of at least two requests; disable it with `--asr.factory.enable_async_decode false` or tune the threshold with `--async-lookahead-min-batch-size`.
+DFlash decodes synchronously by default. Without a draft, async decode overlaps host-side result processing with the next GPU decode forward for batches of at least two requests; disable it with `--asr.factory.enable_async_decode false` or tune the threshold with `--async-lookahead-min-batch-size`.
 
 Request concurrency and audio-encoder batching are controlled separately:
 
@@ -80,7 +80,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work; this delays streamed first text. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. Results for the default are under [Prefill Coalescing](#prefill-coalescing), and the first-text comparison command is in [#4165](https://github.com/sgl-project/sglang-omni/pull/4165).
+To overlap verification with host work, add `--asr.factory.enable_async_decode true`; this delays streamed first text. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. Results for the default are under [Prefill Coalescing](#prefill-coalescing), and the first-text comparison command is in [#4165](https://github.com/sgl-project/sglang-omni/pull/4165).
 
 The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
 
@@ -88,9 +88,9 @@ The draft reserves 13% of the KV pool. The draft checkpoint sets the default blo
 
 ARK-ASR holds newly built requests briefly so the scheduler can admit a larger prefill batch. Synchronous DFlash defaults to four request-build workers and a 0.5 ms coalescing deadline. No draft and opt-in speculative overlap retain two workers and a 32 ms deadline. The request threshold is 16 when coalescing is enabled. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers` and `prefill_coalesce_wait_ms` settings take precedence.
 
-With the 0.5 ms default, all 20 streaming comparisons against no draft passed on one H100 (SeedTTS EN/ZH, prefix cache off/on, c1–c16): the worst TTFT p95 delta was +3.02 ms, throughput rose 1.38–2.36x and E2E p95 fell at every load. Six focused ZH c4/c8/c16 repeats with the cache off and on also passed, with a worst TTFT p95 delta of +2.53 ms; see [#4165](https://github.com/sgl-project/sglang-omni/pull/4165) for the complete results.
+With the 0.5 ms default, 20 streaming comparisons against no draft on one H100 (SeedTTS EN/ZH, prefix cache off/on, c1–c16) showed 1.38–2.36x throughput, lower E2E p95 at every load and at most +3.02 ms TTFT p95. Six repeated ZH comparisons at c4/c8/c16 with the cache off and on stayed within +2.53 ms TTFT p95; see [#4165](https://github.com/sgl-project/sglang-omni/pull/4165) for the complete results.
 
-For example, to set the original coalescing deadline explicitly:
+For example, to use the 32 ms no-draft deadline with DFlash:
 
 ```bash
 sgl-omni serve \
