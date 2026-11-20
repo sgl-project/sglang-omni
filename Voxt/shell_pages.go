@@ -18,7 +18,7 @@ type navPage struct {
 
 // navGroup is a section of the sidebar; the first has no title.
 type navGroup struct {
-	id    string // English title, translated by groupTitle; "" for none
+	id    string // English title, translated by groupTitleFor; "" for none
 	pages []navPage
 }
 
@@ -82,9 +82,6 @@ func pageKeys(path string) string {
 	}
 	return ""
 }
-
-// groupTitle translates a sidebar section's title.
-func groupTitle(id string) string { return groupTitleFor(i18n.CurrentTranslator(), id) }
 
 func groupTitleFor(translator *i18n.Translator, id string) string {
 	switch id {

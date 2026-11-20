@@ -75,11 +75,7 @@ func OrDash(s string) string {
 	return s
 }
 
-// TimeAgo says how long ago t was, briefly.
-func TimeAgo(t time.Time) string {
-	return TimeAgoFor(i18n.CurrentTranslator(), t, time.Now())
-}
-
+// TimeAgoFor says how long ago t was, briefly.
 func TimeAgoFor(translator *i18n.Translator, t, now time.Time) string {
 	d := now.Sub(t)
 	switch {
@@ -112,12 +108,8 @@ func StageTime(ms int64) string {
 	return ClockMS(ms)
 }
 
-// RecordingTime is the recording's length and, when the speech model
+// RecordingTimeFor is the recording's length and, when the speech model
 // got less of it (the silence left out), how much: "7.5 s, 2.5 s sent".
-func RecordingTime(e store.Entry) string {
-	return RecordingTimeFor(i18n.CurrentTranslator(), e)
-}
-
 func RecordingTimeFor(translator *i18n.Translator, e store.Entry) string {
 	rec := StageTime(e.AudioMS)
 	if rec == "" || e.SentMS <= 0 || e.SentMS >= e.AudioMS-50 {

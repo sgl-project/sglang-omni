@@ -77,6 +77,7 @@ jobs:
       run_asr_multi_speaker: ${{ steps.plan.outputs.run_asr_multi_speaker }}
       run_asr_seedtts: ${{ steps.plan.outputs.run_asr_seedtts }}
       run_tts: ${{ steps.plan.outputs.run_tts }}
+      run_tts_serving: ${{ steps.plan.outputs.run_tts_serving }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
       run_omni: ${{ steps.plan.outputs.run_omni }}
       run_full_duplex: ${{ steps.plan.outputs.run_full_duplex }}
@@ -273,6 +274,7 @@ jobs:
       needs.preflight.outputs.run_tts == 'true'
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
+      run_serving: ${{ needs.preflight.outputs.run_tts_serving == 'true' }}
       tts_ci_model: ${{ needs.preflight.outputs.tts_ci_model }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'

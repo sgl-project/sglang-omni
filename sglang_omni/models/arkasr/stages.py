@@ -14,7 +14,7 @@ def create_sglang_arkasr_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    max_running_requests: int = 32,
+    max_running_requests: int = 64,
     encoder_max_batch_size: int = 8,
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,

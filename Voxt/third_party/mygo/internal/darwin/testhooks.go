@@ -596,6 +596,12 @@ var (
 // the surface took the files over that point and whether it took the
 // drop.
 func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped bool) {
+	return TestDropFilesOperation(handle, x, y, paths, 1)
+}
+
+// TestDropFilesOperation is TestDropFiles with an explicit AppKit source
+// operation mask, for destinations that must accept Generic file drags.
+func TestDropFilesOperation(handle uintptr, x, y float64, paths []string, mask uint) (over, dropped bool) {
 	w := theBackend.byNSWindow[id(handle)]
 	if w == nil || w.surface == nil {
 		return false, false
@@ -611,7 +617,7 @@ func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped 
 	})
 	withPool(func() {
 		content := msgRect(send(w.win, "contentView"), sel("frame"))
-		testDragMask = 1
+		testDragMask = mask
 		testDragAt = NSPoint{x, content.Size.Height - y}
 		send(testDragPB, "clearContents")
 		var urls []id
@@ -624,8 +630,8 @@ func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped 
 		}
 		send(testDragPB, "writeObjects:", uintptr(nsArray(urls...)))
 		v := w.surface.view
-		over = send(v, "draggingEntered:", uintptr(testDragInfo)) != 0
-		over = send(v, "draggingUpdated:", uintptr(testDragInfo)) != 0 && over
+		over = uint(send(v, "draggingEntered:", uintptr(testDragInfo)))&mask != 0
+		over = uint(send(v, "draggingUpdated:", uintptr(testDragInfo)))&mask != 0 && over
 		if !over {
 			send(v, "draggingExited:", uintptr(testDragInfo))
 			return

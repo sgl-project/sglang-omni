@@ -28,8 +28,7 @@ DFlash decodes synchronously by default. Without a draft, async decode overlaps 
 
 Request concurrency and audio-encoder batching are controlled separately:
 
-- `max_running_requests` defaults to `32` and limits requests admitted by the
-  ASR scheduler.
+- `max_running_requests` defaults to `64` and limits requests admitted by the ASR scheduler. With a cap of 32, a full cap admitted queued requests one or two per prefill: on one H200 the server without a draft served 141 SeedTTS English clips/s at 64 concurrent requests, against 263 with a cap of 64, and the two caps match from 1 to 32 requests.
 - `encoder_max_batch_size` defaults to `8` and limits the number of uncached
   audio items processed by one encoder forward. Larger cache-miss batches are
   processed as sequential encoder microbatches, so request concurrency does

@@ -34,6 +34,14 @@
                 "model_id": "asr.accurate",
                 "label": "Delete",
                 "accessibility_label": "Delete Qwen3-ASR 1.7B (8bit)…"
+              },
+              {
+                "kind": "assign",
+                "model_id": "asr.accurate",
+                "model_kind": "asr",
+                "label": "Apply to",
+                "accessibility_label": "Apply Qwen3-ASR 1.7B (8bit) to features",
+                "tooltip": "Choose the features that use this model"
               }
             ],
             "draft": {
