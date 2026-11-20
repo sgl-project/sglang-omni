@@ -152,6 +152,11 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
         } else {
           timing->transcribe_at_ms = omni_common::MillisecondsSinceEpoch(
               std::chrono::steady_clock::now());
+          timing->verify_round_count = result->verify_round_count;
+          timing->proposed_draft_token_count =
+              result->proposed_draft_token_count;
+          timing->accepted_draft_token_count =
+              result->accepted_draft_token_count;
           self->Publish(decode, *result);
           // Stamped after Publish so publish_at_ms - transcribe_at_ms is the
           // real publish cost; the event line goes out once it is complete.

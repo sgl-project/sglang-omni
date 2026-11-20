@@ -16,7 +16,10 @@ nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing) {
           {"transcribe_started_at_ms", timing.transcribe_started_at_ms},
           {"transcribe_at_ms", timing.transcribe_at_ms},
           {"publish_at_ms", timing.publish_at_ms},
-          {"min_preview_samples", timing.min_preview_samples}};
+          {"min_preview_samples", timing.min_preview_samples},
+          {"verify_round_count", timing.verify_round_count},
+          {"proposed_draft_token_count", timing.proposed_draft_token_count},
+          {"accepted_draft_token_count", timing.accepted_draft_token_count}};
 }
 
 nlohmann::ordered_json
