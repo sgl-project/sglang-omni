@@ -29,6 +29,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Recording time keeps seconds after ten minutes**: the recording preview sizes its timer to the full duration, so times such as 10:59 and 61:05 no longer lose their seconds.
 - **System dictation keeps recognized text when stopping**: an empty result from macOS no longer clears the live transcript and causes Voxt to report no speech.
 
+### Fixed
+
+- **A feature's unavailable language model is not replaced silently**: when the model chosen for Transcribe, Translate or Rewrite is no longer ready, Voxt no longer sends the text to the first ready service. Translate can still use its explicitly selected fallback model.
+
 ### 中文
 
 #### 新增
@@ -54,6 +58,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **改写回答不再显示重复的输入标签**（#4313）：语言模型重复输出 `<selected_text>` 或 `<instruction>` 标签时，答案卡片会去掉标签，保留标签内的文字；流式输出和停止后未闭合的标签也不会露出。只去掉包住整段回答、或正好包住你的选中文字或指令的那一对；回答本身需要的标签（比如你要的提示词模板）保留。翻译和转录会保留同样的字面标签。
 - **录音超过 10 分钟仍显示秒数**：录音预览按完整时长调整计时文字的宽度，10:59、61:05 等时长不再丢失秒数。
 - **系统听写停止后保留已识别文字**：macOS 返回空结果时，不再清空实时转录并提示没有声音。
+
+#### 修复
+
+- **功能选用的语言模型不可用时不再静默换成其他服务**：转录、翻译或改写当前选用的模型不再可用时，Voxt 不会把文字发给列表中的第一个可用服务。翻译仍可使用明确选择的备用模型。
 
 ## [2.1.1] - 2026-11-17
 

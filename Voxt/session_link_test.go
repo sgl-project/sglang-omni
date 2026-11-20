@@ -20,8 +20,9 @@ import (
 // broken fails.
 type llmShelf struct {
 	local.NotInstalled
-	models []local.Model
-	broken string
+	models     []local.Model
+	broken     string
+	substitute bool
 }
 
 func (f llmShelf) Installed(kind local.Kind) []local.Model {
@@ -33,6 +34,9 @@ func (f llmShelf) Installed(kind local.Kind) []local.Model {
 
 func (f llmShelf) LLM(_ context.Context, id string) (local.Chat, local.Model, error) {
 	m, _ := local.Choose(f.models, id)
+	if f.substitute && len(f.models) > 0 {
+		m = f.models[0]
+	}
 	if m.ID == f.broken {
 		return nil, m, errors.New("no key in the Keychain")
 	}
@@ -73,6 +77,66 @@ func TestResolverFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResolverKeepsAnUnavailableChoiceClosed: a feature whose chosen model
+// is not ready gets no other model, even if the opener substitutes one.
+func TestResolverKeepsAnUnavailableChoiceClosed(t *testing.T) {
+	models := []local.Model{{Kind: local.LLM, ID: "deepseek"}, {Kind: local.LLM, ID: "ollama"}}
+	for _, kind := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
+		t.Run(string(kind), func(t *testing.T) {
+			s := settings.Defaults()
+			s.Features.Transcribe.Enhance = true
+			s.Features.Transcribe.LLM = "gone"
+			s.Features.Translate.LLM = "gone"
+			s.Features.Rewrite.LLM = "gone"
+			svc, err := resolver(llmShelf{models: models})(context.Background(), kind, s, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if svc.LLM != nil || svc.LLMInfo.ID != "" || svc.Fallback != nil {
+				t.Errorf("unavailable choice opened %q with fallback %q", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+			}
+		})
+	}
+
+	t.Run("translate uses only its explicit fallback", func(t *testing.T) {
+		s := settings.Defaults()
+		s.Features.Translate.LLM = "gone"
+		s.Features.Translate.Fallback = "ollama"
+		svc, err := resolver(llmShelf{models: models})(context.Background(), store.KindTranslate, s, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if svc.LLMInfo.ID != "ollama" || svc.Fallback != nil {
+			t.Errorf("model %q, fallback %q; want only the explicit fallback", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+		}
+	})
+
+	t.Run("an opener cannot substitute another model", func(t *testing.T) {
+		s := settings.Defaults()
+		s.Features.Rewrite.LLM = "ollama"
+		svc, err := resolver(llmShelf{models: models, substitute: true})(context.Background(), store.KindRewrite, s, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if svc.LLM != nil || svc.LLMInfo.ID != "" {
+			t.Errorf("opener substituted %q for the chosen model", svc.LLMInfo.ID)
+		}
+	})
+
+	t.Run("a fallback opener cannot substitute another model", func(t *testing.T) {
+		s := settings.Defaults()
+		s.Features.Translate.LLM = "deepseek"
+		s.Features.Translate.Fallback = "ollama"
+		svc, err := resolver(llmShelf{models: models, substitute: true})(context.Background(), store.KindTranslate, s, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if svc.LLMInfo.ID != "deepseek" || svc.Fallback != nil || svc.FallbackInfo.ID != "" {
+			t.Errorf("model %q, fallback %q; want no substituted fallback", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+		}
+	})
 }
 
 // speechShelf is llmShelf with a speech model that counts its openings.
