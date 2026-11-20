@@ -90,7 +90,7 @@ func runIsolated(m *testing.M) int {
 	// mygo's sqlite plugin finds its dylib only under UserCacheDir; keep the
 	// real one so each run does not download it from GitHub again.
 	if cache, err := os.UserCacheDir(); err == nil && realCache != "" && cache != realCache {
-		if os.MkdirAll(cache, 0o755) == nil {
+		if _, err := os.Stat(filepath.Join(realCache, "mygo")); err == nil && os.MkdirAll(cache, 0o755) == nil {
 			os.Symlink(filepath.Join(realCache, "mygo"), filepath.Join(cache, "mygo"))
 		}
 	}
@@ -115,6 +115,26 @@ func runIsolated(m *testing.M) int {
 		code = 1
 	}
 	return code
+}
+
+func TestIsolatedHomeDoesNotLinkAMissingMyGoCache(t *testing.T) {
+	if os.Getenv("VOXT_TEST_EMPTY_MYGO_CACHE") == "1" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(filepath.Join(cache, "mygo")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the isolated cache must not link a missing real cache: %v", err)
+		}
+		return
+	}
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestIsolatedHomeDoesNotLinkAMissingMyGoCache$")
+	cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "VOXT_TEST_EMPTY_MYGO_CACHE=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("clean-cache test run: %v\n%s", err, output)
+	}
 }
 
 // testHubs are the model libraries of test apps that use another than
@@ -434,7 +454,7 @@ func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 }
 
 func (a *app) cardBodyHeight(card *sessionCardViewState) (int, bool) {
-	body, streamHeight, exact := sessionOverlayCardBodyHeight(a.ov.projection.view.SessionID, card, a.ovTextHeight, a.sessionOverlayPreviewHeights(&a.ov.projection.view), a.cardBodyMax(card), a.ov.stream.h)
+	body, streamHeight, exact := sessionOverlayCardBodyHeight(a.ov.projection.view.SessionID, card, a.ovTextHeight, a.sessionOverlayPreviewHeights(&a.ov.projection.view), a.cardBodyMax(card), a.ov.stream.h, layout.CardSizes[card.SizeStep].Width(a.ov.area, a.prefs.Overlay.Margin))
 	a.ov.stream.h = streamHeight
 	return body, exact
 }

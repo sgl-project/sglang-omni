@@ -15,6 +15,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/macx"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
 // floatingWindowOptions are the options of a floating window of width ×
@@ -29,6 +30,11 @@ func floatingWindowOptions(title string, width, height int, content mygo.Content
 		NonActivating: true,
 		Content:       content,
 	}
+}
+
+func floatingVibrancyStyle(radius float32) mygo.VibrancyStyle {
+	return mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
+		Radius: float64(radius), Dark: true}
 }
 
 // showFloating shows a floating window at x, y (screen DIPs) on every

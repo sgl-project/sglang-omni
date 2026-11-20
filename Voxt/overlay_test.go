@@ -267,7 +267,7 @@ func TestClockAndTail(t *testing.T) {
 	if layout.PillW != 148 || layout.PillH != 48 || layout.LiveH != 76 || layout.LiveMaxW != 300 || math.Abs(layout.WaveW-88.7) > 1e-3 {
 		t.Errorf("Voxt's sizes: pill %d×%d, live %d high, at most %d wide, the bars %v wide", layout.PillW, layout.PillH, layout.LiveH, layout.LiveMaxW, layout.WaveW)
 	}
-	if layout.RowWidth(true, 0) != layout.RowW+layout.Gap+layout.TimeW || layout.RowWidth(false, 200) != layout.RowW+layout.Gap+layout.SceneMaxW || layout.RowWidth(false, 40.2) != layout.RowW+layout.Gap+41 {
+	if layout.RowWidth(0) != layout.RowW || layout.RowWidth(200) != layout.RowW+layout.Gap+layout.SceneMaxW || layout.RowWidth(40.2) != layout.RowW+layout.Gap+41 {
 		t.Error("rowWidth")
 	}
 }
@@ -419,6 +419,16 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		{"overlay-rewrite-failed", session.Snapshot{Kind: store.KindRewrite, State: session.Failed, Card: true,
 			Raw: "make it more formal", Selection: "hey, the release slips to thursday, sorry!",
 			Problem: &session.Problem{Code: session.ProblemLLM, Err: errors.New("llm.balanced: the language model process stopped (signal 9)")}}, nil, nil},
+		// The card says which picture went to the language model: the
+		// window's, the copied one, or the input box's as thumbnails.
+		{"overlay-rewrite-card-screenshot", session.Snapshot{Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "describe the window", Title: "窗口内容", Result: "窗口里是一个终端，正在运行测试。", ImageHint: "window"}, nil, nil},
+		{"overlay-rewrite-card-copied", session.Snapshot{Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "describe the picture", Title: "复制的图片", Result: "图片里是一个红色的正方形。", ImageHint: "clipboard"}, nil, nil},
+		{"overlay-rewrite-card-box-images", session.Snapshot{Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "describe them", Title: "两张图片", Result: "两张图片都是红色的正方形。", ImageHint: "box"}, nil, func(string) {
+			a.answer.ui.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t)}
+		}},
 		// The Mac short of memory (memory_notice.go), after an insert.
 	}
 	desk, line := ui.RGB(246, 246, 248), ui.RGB(150, 156, 166)
@@ -783,5 +793,6 @@ func snapshotsOverlay(t *testing.T, out string) {
 			suffix += "-" + run.lang
 		}
 		overlayShots(t, a, out, suffix, run.dark)
+		boxShots(t, a, out, suffix, run.dark)
 	}
 }

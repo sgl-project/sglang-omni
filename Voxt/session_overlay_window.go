@@ -106,6 +106,8 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
 		return ovHidden
+	case live && snapshot.State == session.Recording && snapshot.ID == a.box.session:
+		return ovHidden // the Rewrite card with the input box shows the recording
 	case live && snapshot.State == session.Recording:
 		return ovRecording
 	case live:
@@ -148,6 +150,7 @@ func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) myg
 }
 
 func (a *app) overlaySync() {
+	defer a.syncHotkeys()
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
 	mode := a.overlayModeNow()
@@ -258,8 +261,30 @@ func (a *app) overlayDragged() {
 	if !a.ov.shown || bounds.X == a.ov.frame.X && bounds.Y == a.ov.frame.Y {
 		return
 	}
-	a.overlayDraggedAt(bounds)
-	a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
+	a.overlayDraggedTo(bounds)
+}
+
+func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
+	frame := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+	a.ov.dragged.x, a.ov.dragged.y = bounds.X-frame.X, bounds.Y-frame.Y
+	area := ovTestArea
+	if a.overlayNative() {
+		area = mygo.Screen.DisplayMatching(bounds).WorkArea
+	}
+	if area != a.ov.area {
+		a.ov.area = area
+		a.ov.dragged.x, a.ov.dragged.y = 0, 0
+		a.refreshSessionOverlay(time.Now())
+		width, height := a.overlayFace(a.ov.mode)
+		anchor := layout.Frame(a.ov.area, a.prefs.Overlay, width, height)
+		a.ov.dragged.x, a.ov.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
+		a.overlayRestyle()
+	} else {
+		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
+	}
+	if a.ov.mode == ovAnswer {
+		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
+	}
 	a.syncLangMenu()
 }
 
@@ -296,8 +321,7 @@ func (a *app) syncOverlayMaterial() {
 	if a.ov.win == nil {
 		return
 	}
-	style := mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
-		Radius: float64(faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h)), Dark: true}
+	style := floatingVibrancyStyle(faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h))
 	if style != a.ov.style {
 		a.ov.style = style
 		a.ov.win.SetVibrancyStyle(style)
@@ -316,6 +340,7 @@ func (a *app) overlayFadeOut() {
 		if a.ov.win != nil {
 			a.ov.win.Hide()
 		}
+		a.closeOverlayPreviews()
 	}
 	if a.prefs.Appearance.ReduceMotion {
 		hide()
@@ -339,6 +364,9 @@ func (a *app) overlayFace(mode overlayMode) (int, int) {
 }
 
 func (a *app) overlayRestyle() {
+	if a.box.open {
+		a.boxSync()
+	}
 	if !a.ov.shown {
 		return
 	}
@@ -368,6 +396,9 @@ func (a *app) invalidatePaletteOverlays() {
 			window.Invalidate()
 		}
 	}
+	if a.box.win != nil {
+		a.box.win.Invalidate()
+	}
 }
 
 func (a *app) closeOverlay() {
@@ -377,6 +408,8 @@ func (a *app) closeOverlay() {
 		a.ov.win.Destroy()
 		a.ov.win = nil
 	}
+	a.overlayTranscript = transcriptPreview{}
+	a.bubbleTranscripts = nil
 	a.ov.shown, a.ov.visible = false, false
 }
 

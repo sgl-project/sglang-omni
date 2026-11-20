@@ -168,7 +168,7 @@ func homeFixtureEntries() []store.Entry {
 	translate.Audio = ""
 	rewrite := first
 	rewrite.ID, rewrite.Kind, rewrite.Result = "home-rewrite", store.KindRewrite, "A formal answer"
-	rewrite.RawText, rewrite.SourceText, rewrite.PromptText = "make this formal", "an informal source", "Rewrite formally"
+	rewrite.TypedText, rewrite.SourceText, rewrite.PromptText = "make this formal", "an informal source", "Rewrite formally"
 	second := first
 	second.ID, second.CreatedAt, second.Result = "home-second", meetingFixtureNow.Add(-2*time.Hour), "Second result"
 	second.RawText, second.Audio = second.Result, ""

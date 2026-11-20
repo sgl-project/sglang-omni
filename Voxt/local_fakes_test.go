@@ -30,7 +30,8 @@ type fakeLocal struct {
 	ASRP asr.Provider
 	Chat local.Chat
 	// MoreLLM are more language models installed (their opens get Chat).
-	MoreLLM []local.Model
+	MoreLLM  []local.Model
+	LLMModel local.Model
 	// NoStream: its speech model gets the recording once it stops.
 	NoStream bool
 	// ASRFeatures: its speech model serves only these features (nil: all).
@@ -43,6 +44,13 @@ func readyLocal() *fakeLocal {
 	return &fakeLocal{ASRP: &fakeTranscriptions{}, Chat: &llm.Client{Backend: &fakeChat{}}}
 }
 
+func (f *fakeLocal) languageModel() local.Model {
+	if f.LLMModel.ID != "" {
+		return f.LLMModel
+	}
+	return fakeLLMModel
+}
+
 func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 	switch {
 	case kind == local.ASR && f.ASRP != nil:
@@ -51,7 +59,7 @@ func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 		m.Features = f.ASRFeatures
 		return []local.Model{m}
 	case kind == local.LLM && f.Chat != nil:
-		return append([]local.Model{fakeLLMModel}, f.MoreLLM...)
+		return append([]local.Model{f.languageModel()}, f.MoreLLM...)
 	}
 	return nil
 }
@@ -67,7 +75,7 @@ func (f *fakeLocal) LLM(_ context.Context, id string) (local.Chat, local.Model, 
 	if f.Chat == nil {
 		return nil, local.Model{}, local.NotInstalledError(local.LLM, id)
 	}
-	return f.Chat, fakeLLMModel, nil
+	return f.Chat, f.languageModel(), nil
 }
 
 // withChat is s with chat as its language model (a fakeChat behind
@@ -159,8 +167,8 @@ func requestBody(req llm.Request) map[string]any {
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
-	if req.Image != nil {
-		body["image"] = req.Image
+	if len(req.Images) > 0 {
+		body["images"] = req.Images
 	}
 	if req.Format == llm.FormatJSON {
 		body["response_format"] = map[string]any{"type": "json_object"}
@@ -212,22 +220,23 @@ func (f *fakeTranscriptions) uploads() (calls, size int) {
 	return f.calls, f.size
 }
 
-// fakeStreamer is a streaming speech model: a partial "hello" after
-// three pieces of audio, the final text on Finish.
-type fakeStreamer struct{ final string }
+// fakeStreamer is a streaming speech model: a partial after three pieces
+// of audio ("hello" unless partial says otherwise), the final on Finish.
+type fakeStreamer struct{ final, partial string }
 
 func (fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
 
 func (f fakeStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
-	return &fakeStream{final: f.final, ev: make(chan asr.Event, 16)}, nil
+	return &fakeStream{final: f.final, partial: f.partial, ev: make(chan asr.Event, 16)}, nil
 }
 
 type fakeStream struct {
-	mu     sync.Mutex
-	final  string
-	sends  int
-	ev     chan asr.Event
-	closed bool
+	mu      sync.Mutex
+	final   string
+	partial string
+	sends   int
+	ev      chan asr.Event
+	closed  bool
 }
 
 func (s *fakeStream) Send([]byte) error {
@@ -235,7 +244,11 @@ func (s *fakeStream) Send([]byte) error {
 	defer s.mu.Unlock()
 	s.sends++
 	if s.sends == 3 && !s.closed {
-		s.ev <- asr.Event{Kind: asr.EventPartial, Text: "hello"}
+		text := s.partial
+		if text == "" {
+			text = "hello"
+		}
+		s.ev <- asr.Event{Kind: asr.EventPartial, Text: text}
 	}
 	return nil
 }

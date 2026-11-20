@@ -208,6 +208,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	r := &run{
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
+		svcResolved: make(chan struct{}),
 	}
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	r.think = req.Thinking
@@ -222,7 +223,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m.snap.TargetLanguage = r.target
 	}
 	if t := req.Text; t != nil {
-		m.snap.Raw, m.snap.Selection = strings.TrimSpace(t.Raw), t.Selection
+		m.snap.Raw, m.snap.Selection, m.snap.Typed = strings.TrimSpace(t.Raw), t.Selection, t.Typed
 	}
 	s := m.snap.clone()
 	m.foregroundPub.enqueue(publication{snapshot: s})
