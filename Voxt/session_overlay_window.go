@@ -138,6 +138,15 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 	return ovHidden
 }
 
+// sessionOverlayWindowOptions leaves StateKey empty because the pill and
+// card share this window; restored bounds would move the next mode.
+func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
+	opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
+	opts.Vibrancy = mygo.VibrancyHUD
+	opts.X, opts.Y = frame.X, frame.Y
+	return opts
+}
+
 func (a *app) overlaySync() {
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
@@ -149,10 +158,10 @@ func (a *app) overlaySync() {
 	} else if mode != ovAnswer && a.ov.mode == ovAnswer {
 		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
 	}
+	if (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && (mode == ovHidden || mode == ovNotice) && !a.ov.cardDraggedSet {
+		a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
+	}
 	if mode == ovHidden {
-		if a.ov.mode != ovAnswer && !a.ov.cardDraggedSet {
-			a.ov.cardDragged, a.ov.cardDraggedSet = a.ov.dragged, true
-		}
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
 		a.ov.dragged.x, a.ov.dragged.y = 0, 0
@@ -195,9 +204,7 @@ func (a *app) overlaySync() {
 			a.postSessionOverlayMeasurements,
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
 		)
-		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
-		opts.Vibrancy = mygo.VibrancyHUD
-		opts.X, opts.Y = frame.X, frame.Y
+		opts := sessionOverlayWindowOptions(frame, hudContent(content))
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
 		a.ov.passThrough = false

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -209,12 +208,9 @@ func TestRestoredCardFrameAllowsNewContentSize(t *testing.T) {
 // The recording pill and answer card share one window, so restoring its
 // bounds after a restart can put the next overlay where the last one was.
 func TestSessionOverlayDoesNotRestoreSharedWindowBounds(t *testing.T) {
-	source, err := os.ReadFile("session_overlay_window.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(source), `opts.StateKey = "session-overlay"`) {
-		t.Fatal("the shared session overlay must open each launch's first pill or card at its configured position")
+	opts := sessionOverlayWindowOptions(mygo.Rectangle{X: 100, Y: 200, Width: 476, Height: 130}, nil)
+	if opts.StateKey != "" {
+		t.Fatalf("the shared session overlay restores window bounds under %q", opts.StateKey)
 	}
 }
 
