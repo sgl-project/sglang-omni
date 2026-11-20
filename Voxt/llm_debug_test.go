@@ -97,6 +97,30 @@ func TestLLMDebugButtonsFit(t *testing.T) {
 // TestLLMDebugCloses: Esc or × leaves the debug page for Language
 // models; it had neither, so with no model set up its only way out was
 // Open Language models (#3781). Esc in an open menu closes only the menu.
+func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://localhost/v1", Model: "mock-model"}}
+		s.Features.Transcribe.Prompt = "Transcribe saved"
+		s.Features.Rewrite.Prompt = "Rewrite saved"
+	})
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	model := a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe saved" || model.Edited {
+		t.Fatalf("initial prompt %q, edited %v", model.SavedPrompt, model.Edited)
+	}
+	a.llmDbg.preset = "Rewrite"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Rewrite saved" || model.PromptLabel != "System prompt" || !model.Instruction || model.Edited || a.llmDbg.prompt != "Rewrite saved" {
+		t.Fatalf("rewrite state %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if len(model.PresetStates) != 3 || model.PresetStates[0].SavedPrompt != "Transcribe saved" || model.PresetStates[2].SavedPrompt != "Rewrite saved" {
+		t.Fatalf("preset prompts %+v", model.PresetStates)
+	}
+}
+
 func TestLLMDebugCloses(t *testing.T) {
 	srv, _ := mockOpenAI(t, "Hello there.")
 	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})

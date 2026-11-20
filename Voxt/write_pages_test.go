@@ -93,6 +93,9 @@ func TestRewritePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Rewrite.Cleanup {
 		t.Error("clean-up not saved")
 	}
+	if has(tt, "Input box") {
+		t.Error("the input box switch is back: the box is the only Rewrite")
+	}
 	if has(tt, "Long answers in the card") {
 		t.Error("0.1.0's card length setting is back")
 	}
@@ -119,9 +122,10 @@ func TestOverlayWriting(t *testing.T) {
 		t.Errorf("selection %s %d text %q", a.ov.mode, a.ov.w, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你好", Card: true, TargetLanguage: "zh-Hans"})
-	// The card streams the draft; the pill keeps the selection, not the draft.
-	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "Hi" {
-		t.Errorf("the draft of a card's answer: %s %+v text %q", a.ov.mode, a.answer, liveLineText(a.sess))
+	// The card streams the draft, in its language; the pill line keeps the
+	// selection, not the draft.
+	if v := a.cardNow(); a.ov.mode != ovAnswer || a.answer.open || !v.writing || v.text != "你好" || v.lang != "zh-Hans" || liveLineText(a.sess) != "Hi" {
+		t.Errorf("the draft of a card's answer: %s %+v text %q", a.ov.mode, v, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Selection: "Hi", Result: "你好", Card: true, Delivery: deliver.ReasonNotEditable, TargetLanguage: "zh-Hans"})
 	if !a.answer.open || a.answer.input.Selection != "Hi" || a.answer.lang != "zh-Hans" {
@@ -173,7 +177,7 @@ func TestOverlayWriting(t *testing.T) {
 	// It records in the card, a conversation (Voxt's).
 	a.followUp = "r2"
 	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording})
-	if v := a.cardNow(); a.ov.mode != ovAnswer || !a.answer.open || !v.conversation || !v.recording || !v.canStop {
+	if v := a.cachedCard(); a.ov.mode != ovAnswer || !a.answer.open || !v.Conversation || !v.Recording || !v.CanStop {
 		t.Errorf("follow-up recording %s %+v", a.ov.mode, v)
 	}
 	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "shorter", Title: "Note", Result: "Note."})

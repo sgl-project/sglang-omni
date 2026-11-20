@@ -69,7 +69,11 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
-from sglang_omni.scheduling.types import ModelRunnerOutput, RequestOutput
+from sglang_omni.scheduling.types import (
+    ModelRunnerOutput,
+    RequestOutput,
+    SchedulerRequest,
+)
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.pipeline.helpers import run_scheduler
 
@@ -2396,28 +2400,29 @@ def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
         "sampling_overrides",
         "return_logprob",
         "return_hidden_states",
-        "verifies_repetition_penalty",
+        "repetition_penalty_owner",
         "refused_option",
     ),
     [
-        ({}, False, False, False, None),
-        ({}, True, False, False, "logprobs"),
-        ({}, False, True, False, "return_hidden_states"),
-        ({"min_p": 0.05}, False, False, False, "min_p"),
-        ({"frequency_penalty": 0.5}, False, False, False, "frequency_penalty"),
-        ({"presence_penalty": 0.5}, False, False, False, "presence_penalty"),
-        ({"repetition_penalty": 1.2}, False, False, False, "repetition_penalty"),
-        ({"repetition_penalty": 1.2}, False, False, True, None),
-        ({"sampling_seed": 42}, False, False, False, "seed"),
-        ({"sampling_seed": 42, "top_k": 1}, False, False, False, None),
-        ({"repetition_penalty": 1.2, "max_new_tokens": 1}, False, False, False, None),
+        ({}, False, False, None, None),
+        ({}, True, False, None, "logprobs"),
+        ({}, False, True, None, "return_hidden_states"),
+        ({"min_p": 0.05}, False, False, None, "min_p"),
+        ({"frequency_penalty": 0.5}, False, False, None, "frequency_penalty"),
+        ({"presence_penalty": 0.5}, False, False, None, "presence_penalty"),
+        ({"repetition_penalty": 1.2}, False, False, None, "repetition_penalty"),
+        ({"repetition_penalty": 1.2}, False, False, "draft_worker", None),
+        ({"repetition_penalty": 1.2}, False, False, "verify_logits", None),
+        ({"sampling_seed": 42}, False, False, None, "seed"),
+        ({"sampling_seed": 42, "top_k": 1}, False, False, None, None),
+        ({"repetition_penalty": 1.2, "max_new_tokens": 1}, False, False, None, None),
     ],
 )
 def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     sampling_overrides: dict[str, float],
     return_logprob: bool,
     return_hidden_states: bool,
-    verifies_repetition_penalty: bool,
+    repetition_penalty_owner: Literal["draft_worker", "verify_logits"] | None,
     refused_option: str | None,
 ) -> None:
     scheduler = object.__new__(OmniScheduler)
@@ -2425,7 +2430,7 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     scheduler.spec_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.draft_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.model_runner = SimpleNamespace(
-        speculative_verifies_repetition_penalty=verifies_repetition_penalty,
+        speculative_repetition_penalty_owner=repetition_penalty_owner,
         speculative_ignores_request_seed=True,
     )
     sampling_params = {
@@ -2484,7 +2489,7 @@ def test_plain_fallback_admission_preserves_sampling_contract(
     scheduler.draft_worker = SimpleNamespace()
     scheduler.draft_algorithm = SpeculativeAlgorithm.DFLASH
     scheduler.model_runner = SimpleNamespace(
-        speculative_verifies_repetition_penalty=False,
+        speculative_repetition_penalty_owner=None,
         speculative_ignores_request_seed=False,
     )
     request = Req(
@@ -3463,6 +3468,7 @@ def test_request_timeout_fails_only_the_expired_request(
     monkeypatch: pytest.MonkeyPatch, timeout_env: str, placement: str, tp_size: int
 ) -> None:
     """The entry rank fails an expired request once, and every rank drops it."""
+    monkeypatch.setattr(time, "perf_counter", lambda: 120.0)
     install_tp_broadcast(monkeypatch)
     ranks = [tp_rank_scheduler(rank, tp_size, placement) for rank in range(tp_size)]
 
@@ -4790,13 +4796,24 @@ def test_spec_prefill_completion_precedes_host_result_processing(
 
 
 @pytest.mark.parametrize("is_prefill", [False, True])
-@pytest.mark.parametrize("takes_logits_hooks", [False, True])
+@pytest.mark.parametrize(
+    ("takes_logits_hooks", "repetition_penalty_owner", "penalized_rows", "verify_ids"),
+    [
+        (False, None, [], None),
+        (True, None, [], ["req-overlap"]),
+        (False, "verify_logits", [0], ["req-overlap"]),
+        (False, "verify_logits", [], []),
+    ],
+)
 def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_stream(
     monkeypatch: pytest.MonkeyPatch,
     is_prefill: bool,
     takes_logits_hooks: bool,
+    repetition_penalty_owner: Literal["draft_worker", "verify_logits"] | None,
+    penalized_rows: list[int],
+    verify_ids: list[str] | None,
 ) -> None:
-    """Overlap speculative batches bind verify requests before forward and capture hidden rows before the copy stream waits."""
+    """Overlap speculative batches bind verify requests before forward, never leave an earlier step's list for a runner that penalizes verify rows, and capture hidden rows before the copy stream waits."""
     events: list[tuple[str, tuple[str, ...]]] = []
     active_streams: list[str] = []
 
@@ -4814,7 +4831,13 @@ def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_s
         "_relay_forward_payload",
         lambda self, batch, future_indices, batch_result: None,
     )
-    target_worker = SimpleNamespace(verify_requests=None)
+    target_worker = SimpleNamespace(
+        verify_requests=(
+            None
+            if repetition_penalty_owner is None
+            else [SchedulerRequest(request_id="earlier-step")]
+        )
+    )
     request = multimodal_prefill_request("req-overlap", [1, 2])
     request.omni_data = (
         SGLangARRequestData()
@@ -4840,13 +4863,12 @@ def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_s
         step_batch: ScheduleBatch, *, on_publish: partial[None]
     ) -> SimpleNamespace:
         on_publish("published")
-        expected_ids = ["req-overlap"] if takes_logits_hooks else None
         actual_ids = (
             [req.request_id for req in target_worker.verify_requests]
             if target_worker.verify_requests is not None
             else None
         )
-        assert actual_ids == expected_ids
+        assert actual_ids == verify_ids
         step_batch.input_ids = torch.tensor([99])
         events.append(("forward", tuple(active_streams)))
         return draft_result
@@ -4857,6 +4879,16 @@ def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_s
         assert torch.equal(step_batch.input_ids, torch.tensor([5]))
         assert (is_prefill, num_draft_tokens) == (batch.forward_mode.is_extend(), 3)
         events.append(("after_step", tuple(active_streams)))
+
+    def record_speculative_output(
+        step_batch: ScheduleBatch, step_result: SimpleNamespace, *, is_prefill: bool
+    ) -> None:
+        assert (step_batch, step_result, is_prefill) == (
+            batch,
+            draft_result,
+            batch.forward_mode.is_extend(),
+        )
+        events.append(("record_output", tuple(active_streams)))
 
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_overlap = True
@@ -4883,14 +4915,18 @@ def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_s
     )
     scheduler.model_runner = SimpleNamespace(
         speculative_verify_takes_logits_hooks=takes_logits_hooks,
+        speculative_repetition_penalty_owner=repetition_penalty_owner,
+        speculative_penalized_rows=lambda requests: penalized_rows,
         restore_output_penalty_history=lambda step_batch: None,
         after_speculative_step=after_speculative_step,
+        record_speculative_output=record_speculative_output,
     )
 
     assert scheduler.run_speculative_batch(batch) is draft_result
     assert events == [
         ("forward", ("forward",)),
         ("after_step", ("forward",)),
+        ("record_output", ("forward",)),
         ("copy_wait", ("forward",)),
         ("copy_to_cpu", ("forward", "copy")),
     ]

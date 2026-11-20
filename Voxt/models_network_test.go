@@ -97,6 +97,27 @@ func TestNetworkDialog(t *testing.T) {
 	}
 }
 
+func TestNetworkRejectsProxyPassword(t *testing.T) {
+	keys := &memKeys{m: map[string]string{}}
+	useKeys(t, keys)
+	a, _, tt := newTestApp(t)
+	a.openURL("voxtnew://models/network")
+	click(t, tt, "Custom")
+	a.netForm.proxyURL = "http://fixture"
+	a.netForm.proxyPassword = "bad\"password"
+	before := a.prefs.Network
+	click(t, tt, "Save")
+	if !a.netOpen || a.netForm.proxyErr == "" {
+		t.Fatalf("forbidden password closed the dialog: %+v", a.netForm)
+	}
+	if a.prefs.Network != before || a.settings.Get().Network != before {
+		t.Fatalf("forbidden password changed settings: %+v", a.prefs.Network)
+	}
+	if len(keys.m) != 0 {
+		t.Fatalf("forbidden password reached the Keychain: %v", keys.m)
+	}
+}
+
 // TestNetworkUseTheirs: a proxy that differed from the family's at the
 // first start shows "Use theirs" once.
 func TestNetworkUseTheirs(t *testing.T) {

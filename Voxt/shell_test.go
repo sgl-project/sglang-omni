@@ -22,6 +22,67 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+func TestBackgroundToastDoesNotRearm(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		life time.Duration
+		add  func(c *ui.Context)
+	}{
+		{name: "plain", life: 4 * time.Second, add: func(c *ui.Context) { c.Toast("Copied") }},
+		{name: "action", life: 8 * time.Second, add: func(c *ui.Context) {
+			c.ToastAction("Deleted", "Undo", func() {})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := &shellLocalUI{nav: &navLocalUI{sideW: sidebarWidth}}
+			state := &shellViewState{}
+			frames, added := 0, false
+			tt := ui.NewTester(func(c *ui.Context) {
+				frames++
+				if !added {
+					tc.add(c)
+					added = true
+				}
+				toastsView(c, state, local)
+			}, windowWidth, windowHeight)
+
+			tt.SetFocused(false)
+			before := frames
+			tt.Advance(30 * time.Second)
+			if frames != before {
+				t.Fatalf("a background toast armed another frame: %d frames in 30 seconds", frames-before)
+			}
+			if !tt.HasText("Copied") && !tt.HasText("Deleted") {
+				t.Fatal("the background toast expired while its timer was paused")
+			}
+
+			tt.SetFocused(true)
+			tt.Advance(tc.life + 500*time.Millisecond)
+			if tt.HasText("Copied") || tt.HasText("Deleted") {
+				t.Fatal("the toast did not expire after the window regained focus")
+			}
+		})
+	}
+}
+
+func TestNoticeModelsChangeWithTimeZone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
+	a.notices = []core.Notification{{ID: "zone", Time: instant.Add(-time.Hour)}}
+	first := a.noticesModel(instant)
+	second := a.noticesModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if len(first) != 1 || len(second) != 1 || first[0].TimeHint == second[0].TimeHint {
+		t.Fatalf("notice cache kept stale timezone %q and %q", first[0].TimeHint, second[0].TimeHint)
+	}
+	a.announceShown = core.Notification{ID: "zone", Time: instant.Add(-time.Hour)}
+	a.announceShownOpen = true
+	firstAnnouncement := a.announcementModel(instant)
+	secondAnnouncement := a.announcementModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if firstAnnouncement == nil || secondAnnouncement == nil || firstAnnouncement.Sub == secondAnnouncement.Sub {
+		t.Fatalf("announcement cache kept stale timezone %q and %q", firstAnnouncement.Sub, secondAnnouncement.Sub)
+	}
+}
+
 func TestSidebarAndShortcuts(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	if got := a.router.Path(); got != "/home" {
@@ -99,6 +160,32 @@ func TestPaletteFitsTheWindow(t *testing.T) {
 	}
 	if red, _, _, _ := tt.Image().At(3, int(r.Y+r.H/2)).RGBA(); red>>8 > 240 {
 		t.Errorf("the palette reaches the window's left edge (red %d at x=3 beside its search field)", red>>8)
+	}
+}
+
+func TestPalettePopulatesItsFirstFrame(t *testing.T) {
+	for _, name := range []string{"keyboard", "sidebar"} {
+		t.Run(name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			var counts []int
+			var opens []bool
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.view(c)
+				counts = append(counts, len(a.paletteView.Items))
+				opens = append(opens, a.paletteOpen)
+			}, windowWidth, windowHeight)
+			before := len(counts)
+			if name == "keyboard" {
+				tt.Key(ui.Cmd, ui.KeyK)
+			} else if err := tt.Click("Command palette"); err != nil {
+				t.Fatal(err)
+			}
+			for i, open := range opens[before:] {
+				if open && counts[before+i] == 0 {
+					t.Fatalf("the palette's first open frame has no commands: counts %v, opens %v", counts, opens)
+				}
+			}
+		})
 	}
 }
 

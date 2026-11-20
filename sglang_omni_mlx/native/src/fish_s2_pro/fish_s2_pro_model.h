@@ -14,11 +14,11 @@
 #include <vector>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
 #include "fish_dac/fish_dac.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace fish_s2_pro {
 
@@ -109,13 +109,13 @@ private:
   // final-normed hidden state of the last position, [1, dim].
   mlx::core::array Forward(const mlx::core::array &x,
                            const TransformerConfig &config,
-                           std::vector<qwen3_asr::KVCache> &caches) const;
+                           std::vector<omni_common::KVCache> &caches) const;
   // The residual codes after semantic_code, chosen greedily from hidden; caches
   // are the fast transformer's, reused from frame to frame.
   std::vector<mlx::core::array>
   ResidualCodes(const mlx::core::array &hidden,
                 const mlx::core::array &semantic_code,
-                std::vector<qwen3_asr::KVCache> &caches) const;
+                std::vector<omni_common::KVCache> &caches) const;
   // The semantic token for candidate logits (semantic codes, then
   // <|im_end|>), as the CUDA server's sampler draws it.
   int SampleSemanticToken(const float *candidate_logits,

@@ -18,7 +18,7 @@ type navPage struct {
 
 // navGroup is a section of the sidebar; the first has no title.
 type navGroup struct {
-	id    string // English title, translated by groupTitle; "" for none
+	id    string // English title, translated by groupTitleFor; "" for none
 	pages []navPage
 }
 
@@ -83,15 +83,14 @@ func pageKeys(path string) string {
 	return ""
 }
 
-// groupTitle translates a sidebar section's title.
-func groupTitle(id string) string {
+func groupTitleFor(translator *i18n.Translator, id string) string {
 	switch id {
 	case "Features":
-		return i18n.T("Features")
+		return translator.T("Features")
 	case "Resources":
-		return i18n.T("Resources")
+		return translator.T("Resources")
 	case "System":
-		return i18n.T("System")
+		return translator.T("System")
 	}
 	return id
 }
@@ -106,34 +105,36 @@ func (a *app) navBadge(path string) string {
 }
 
 // pageTitle translates a page's title (literal calls, for the key scan).
-func pageTitle(path string) string {
+func pageTitle(path string) string { return pageTitleFor(i18n.CurrentTranslator(), path) }
+
+func pageTitleFor(translator *i18n.Translator, path string) string {
 	switch path {
 	case "/home":
-		return i18n.T("Home")
+		return translator.T("Home")
 	case "/history":
-		return i18n.T("History")
+		return translator.T("History")
 	case "/transcribe":
-		return i18n.T("Transcribe")
+		return translator.T("Transcribe")
 	case "/translate":
-		return i18n.T("Translate")
+		return translator.T("Translate")
 	case "/rewrite":
-		return i18n.T("Rewrite")
+		return translator.T("Rewrite")
 	case "/notes":
-		return i18n.T("Notes")
+		return translator.T("Notes")
 	case "/meetings":
-		return i18n.T("Meetings")
+		return translator.T("Meetings")
 	case "/app-enhancement":
-		return i18n.T("App enhancement")
+		return translator.T("App enhancement")
 	case modelsPath:
-		return i18n.T("Speech models")
+		return translator.T("Speech models")
 	case remotePath:
-		return i18n.T("Language models")
+		return translator.T("Language models")
 	case "/dictionary":
-		return i18n.T("Dictionary")
+		return translator.T("Dictionary")
 	case "/logs":
-		return i18n.T("Logs")
+		return translator.T("Logs")
 	case settingsPath:
-		return i18n.T("Settings")
+		return translator.T("Settings")
 	}
 	return path
 }

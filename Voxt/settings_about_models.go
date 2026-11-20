@@ -51,23 +51,23 @@ func (a *app) modelCheckInput() modelCheckInput {
 	return in
 }
 
-// modelChecks checks each kind of model: its runtime is there (a look
+// modelChecksFor checks each kind of model: its runtime is there (a look
 // on the disk: off the main thread), and a model of it is installed.
-func modelChecks(in modelCheckInput, add func(id, title, status, detail string)) {
-	missing := i18n.T("Its runtime is missing from this copy of Voxt.")
-	title := i18n.T("Speech recognition")
+func modelChecksFor(translator *i18n.Translator, in modelCheckInput, add func(id, title, status, detail string)) {
+	missing := translator.T("Its runtime is missing from this copy of Voxt.")
+	title := translator.T("Speech recognition")
 	switch _, err := omniLocate(); {
 	case err != nil:
 		add("speech", title, "fail", missing)
 	case len(in.asr) == 0:
-		add("speech", title, "warn", i18n.T("No model installed. Download one in Settings → Speech models."))
+		add("speech", title, "warn", translator.T("No model installed. Download one in Settings → Speech models."))
 	default:
 		add("speech", title, "pass", strings.Join(in.asr, ", "))
 	}
-	title = i18n.T("Language models")
+	title = translator.T("Language models")
 	switch {
 	case len(in.llm) == 0:
-		add("language", title, "warn", i18n.T("No model set up, so Transcribe types the text as recognised."))
+		add("language", title, "warn", translator.T("No model set up, so Transcribe types the text as recognised."))
 	default:
 		add("language", title, "pass", strings.Join(in.llm, ", "))
 	}

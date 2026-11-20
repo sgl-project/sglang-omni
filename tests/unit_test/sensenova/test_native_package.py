@@ -20,6 +20,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_ba
 from sglang.multimodal_gen.runtime.platforms import current_platform
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
+from sglang_omni.models.sensenova_u1.native.pipeline import SenseNovaU1Pipeline
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 from sglang_omni.vendor.sensenova_u1 import modeling_neo_chat
 
@@ -215,6 +216,47 @@ def test_offload_default_is_reset_but_explicit_request_is_rejected(
     else:
         config.validate_server_args(server_args)
         assert server_args.dit_cpu_offload is False
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ({}, ["expandable_segments:True"]),
+        ({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False"}, []),
+        ({"PYTORCH_ALLOC_CONF": "expandable_segments:False"}, []),
+    ],
+)
+def test_worker_enables_expandable_segments_unless_configured(
+    monkeypatch: pytest.MonkeyPatch, configured: dict[str, str], expected: list[str]
+) -> None:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+    } | configured
+    monkeypatch.setattr(os, "environ", environment)
+    set_allocator_settings = Mock()
+    monkeypatch.setattr(
+        torch._C,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        "_accelerator_setAllocatorSettings",
+        set_allocator_settings,
+    )
+    launcher_environment = dict(environment)
+    config = get_model_info(
+        "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
+    ).pipeline_config_cls()
+    config.validate_server_args(
+        SimpleNamespace(
+            num_gpus=1,
+            enable_torch_compile=False,
+            lora_path=None,
+            is_arg_explicitly_set=lambda option: False,
+        )
+    )
+    assert environment == launcher_environment
+    modules = {"model": Mock(), "tokenizer": Mock()}
+    assert SenseNovaU1Pipeline.load_modules(Mock(), Mock(), modules) is modules
+    assert [call.args[0] for call in set_allocator_settings.call_args_list] == expected
 
 
 @pytest.mark.parametrize(

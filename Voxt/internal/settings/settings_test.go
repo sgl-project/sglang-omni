@@ -25,7 +25,8 @@ func TestMigrate(t *testing.T) {
 	// A partial document keeps what it has and gains the defaults.
 	s, err = Migrate([]byte(`{"version":1,"general":{"language":"zh-Hans","menuBar":false},"privacy":{"keepHistory":false},"unknown":1}`))
 	if err != nil || s.General.Language != "zh-Hans" || s.General.MenuBar || s.Privacy.KeepHistory || s.Appearance.Scale != 1 ||
-		s.Appearance.Theme != "system" || len(s.Features.Transcribe.Hotkeys) != 1 || s.Features.Cancel.Keys != DefaultCancel {
+		s.Appearance.Theme != ThemeSystem || s.Appearance.Palette != DefaultPalette || s.Appearance.WindowTransparency != DefaultWindowTransparency ||
+		len(s.Features.Transcribe.Hotkeys) != 1 || s.Features.Cancel.Keys != DefaultCancel {
 		t.Fatalf("partial: %+v %v", s, err)
 	}
 	// A cancel the user turned off stays off; a chosen key stays.
@@ -38,6 +39,12 @@ func TestMigrate(t *testing.T) {
 			t.Errorf("%s: cancel %+v %v", tc.doc, s.Features.Cancel, err)
 		}
 	}
+	// The dropped inputBox switch (never released: the input box is the
+	// only Rewrite now) loads without a word.
+	s, err = Migrate([]byte(`{"version":4,"features":{"rewrite":{"inputBox":true,"cleanup":false}}}`))
+	if err != nil || s.Features.Rewrite.Cleanup {
+		t.Errorf("inputBox: %+v %v", s.Features.Rewrite, err)
+	}
 	data, _ := json.Marshal(s)
 	again, err := Migrate(data)
 	if err != nil || !reflect.DeepEqual(again, s) {
@@ -45,6 +52,22 @@ func TestMigrate(t *testing.T) {
 	}
 	if _, err := Migrate([]byte(`{`)); err == nil {
 		t.Error("bad JSON accepted")
+	}
+}
+
+func TestMeetingCorrectionStyleDocument(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"meeting":{"prompt":"Summary style"}}}`))
+	if err != nil || s.Features.Meeting.CorrectionStyle != "" || s.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("older document: %+v %v", s.Features.Meeting, err)
+	}
+	s.Features.Meeting.CorrectionStyle = "保持原语气。Keep English product names. " + strings.Repeat("Be concise. ", 100)
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || back.Features.Meeting.CorrectionStyle != s.Features.Meeting.CorrectionStyle || back.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("round trip: %+v %v", back.Features.Meeting, err)
 	}
 }
 
@@ -73,6 +96,8 @@ func TestStore(t *testing.T) {
 		s.General.Language = "zh-Hans"
 		s.Appearance.Scale = 1.12
 		s.Appearance.Theme = "sepia"
+		s.Appearance.Palette = " #B25280 "
+		s.Appearance.WindowTransparency = 25
 		s.Appearance.SidebarWidth = 900
 		s.General.OtherLanguages = []string{" en ", "en", ""}
 		s.Features.Translate.Hotkeys = append(s.Features.Translate.Hotkeys, Hotkey{Keys: " "}, Hotkey{Keys: "Option+T", Trigger: "weird"})
@@ -81,7 +106,7 @@ func TestStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := s.Get()
-	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != "system" ||
+	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != ThemeSystem || got.Appearance.Palette != "#b25280" || got.Appearance.WindowTransparency != MaxWindowTransparency ||
 		got.Appearance.SidebarWidth != MaxSidebarWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
 		len(got.Features.Translate.Hotkeys) != 2 || got.Features.Translate.Hotkeys[1].Trigger != TriggerTap || got.Overlay.Opacity != 0.5 {
 		t.Fatalf("normalized: %+v", got)
@@ -119,11 +144,88 @@ func TestStore(t *testing.T) {
 	}
 }
 
+func TestWindowTransparencyBounds(t *testing.T) {
+	for _, c := range []struct{ input, want int }{{-10, MinWindowTransparency}, {0, MinWindowTransparency}, {8, 8}, {35, MaxWindowTransparency}} {
+		s := Defaults()
+		s.Appearance.WindowTransparency = c.input
+		if got := normalize(s).Appearance.WindowTransparency; got != c.want {
+			t.Errorf("transparency %d normalized to %d, want %d", c.input, got, c.want)
+		}
+	}
+}
+
+func TestMigrateLegacyAppearance(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":1,"appearance":{"theme":"system","windowTransparency":35}}`))
+	if err != nil || s.Appearance.Theme != ThemeSystem || s.Appearance.WindowTransparency != MaxWindowTransparency {
+		t.Fatalf("legacy appearance = %+v, %v", s.Appearance, err)
+	}
+}
+
 func TestMemory(t *testing.T) {
 	s := NewMemory()
 	s.Update(context.Background(), func(s *Settings) { s.Audio.Sounds = false })
 	if s.Get().Audio.Sounds {
 		t.Error("not updated")
+	}
+}
+
+func TestMigrateClipboardImageWithSelection(t *testing.T) {
+	// Documents that predate the switch never chose the old
+	// selected-text-plus-image behavior, which was the #4152 demo
+	// configuration, so they migrate to text-only like a fresh install.
+	legacy, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Privacy.SendClipboardImageWithSelection {
+		t.Error("an older document kept the selected-text-plus-image behavior of #4152")
+	}
+	versionFour, err := Migrate([]byte(`{"version":4,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versionFour.Privacy.SendClipboardImageWithSelection {
+		t.Error("a version-4 document without the new key kept the selected-text-plus-image behavior of #4152")
+	}
+	explicitOn, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !explicitOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice was not preserved")
+	}
+	rawOn, _ := json.Marshal(explicitOn)
+	reloadedOn, err := Migrate(rawOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloadedOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice did not survive a save and reload")
+	}
+	explicit, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice was not preserved")
+	}
+	raw, _ := json.Marshal(explicit)
+	reloaded, err := Migrate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice did not survive a save and reload")
+	}
+	unrelated, err := Migrate([]byte(`{"version":1,"privacy":{"notes":"sendClipboardImageWithSelection"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrelated.Privacy.SendClipboardImageWithSelection {
+		t.Error("unrelated text was mistaken for an explicit together choice")
+	}
+	if Defaults().Privacy.SendClipboardImageWithSelection {
+		t.Error("a fresh install should default to text-only")
 	}
 }
 
@@ -590,6 +692,27 @@ func TestDictionaryNotesUpgrade(t *testing.T) {
 		again, err := Migrate(out)
 		if err != nil || again.Dictionary != s.Dictionary {
 			t.Errorf("saved as %s, read back %+v (%v)", out, again.Dictionary, err)
+		}
+	}
+}
+
+// TestReturnFinishesDefault: Return finishes dictation by default and for
+// a document saved before the setting existed; an explicit choice survives.
+func TestReturnFinishesDefault(t *testing.T) {
+	if !Defaults().Features.Transcribe.ReturnFinishes {
+		t.Fatal("Return does not finish dictation by default")
+	}
+	old, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || !old.Features.Transcribe.ReturnFinishes {
+		t.Fatalf("old document: %v %v", old.Features.Transcribe.ReturnFinishes, err)
+	}
+	for _, on := range []bool{false, true} {
+		s := Defaults()
+		s.Features.Transcribe.ReturnFinishes = on
+		data, _ := json.Marshal(s)
+		back, err := Migrate(data)
+		if err != nil || back.Features.Transcribe.ReturnFinishes != on {
+			t.Errorf("%v round trip: %v %v", on, back.Features.Transcribe.ReturnFinishes, err)
 		}
 	}
 }
