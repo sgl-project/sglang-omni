@@ -28,6 +28,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			caption(c, fixture.name)
 		})
 		ui.Box(c).Grow(1).Children(func() {
+			// Back or Continue above may have switched the fixture in this frame.
+			fixture := host.current()
 			switch fixture.state.Kind {
 			case "page":
 				meetingsPage(c, fixture.state.Page, host, &host.pageUI, 800)
@@ -110,6 +112,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				// The app draws these over Settings (shell_controller.go).
 				modelDeleteDialogs(c, &state.Delete, host, &host.modelsUI)
 				networkDialog(c, &state.Network, host, &host.modelsUI)
+				modelAssignmentDialog(c, state.Assignment, host, &host.modelsUI.assign)
 			case "feature":
 				state := host.featureViewState(fixture.state.Feature)
 				featurePage(c, &state, host, &host.feature.local, host)

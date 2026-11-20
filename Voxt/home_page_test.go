@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
@@ -418,6 +420,16 @@ func TestTryPlace(t *testing.T) {
 	if a.tryPlace(store.KindTranscribe, *selfFront()) != placeNone {
 		t.Error("a try under the settings")
 	}
+	// After the first result Home has no Try area: a session (#4199).
+	a.updateSettings(func(s *settings.Settings) { s.Setup.Tried = true })
+	a.navigate("/home")
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
+		t.Errorf("Home after the first result: %v, want no try", got)
+	}
+	a.navigate("/translate")
+	if got := a.tryPlace(store.KindTranslate, *selfFront()); got != placeFeature {
+		t.Errorf("feature page after the first result: %v, want its try", got)
+	}
 	a.openOnboarding()
 	a.ob.step = obTranslate
 	if a.tryPlace(store.KindTranslate, *selfFront()) != placeOnboarding || a.tryPlace(store.KindTranscribe, *selfFront()) != placeIgnore {
@@ -459,6 +471,35 @@ func TestHomeTryByShortcut(t *testing.T) {
 	a.sessionChanged(s)
 	if !has(tt, "The meeting moves to Thursday at four.") {
 		t.Errorf("result: %q", tt.Texts())
+	}
+}
+
+// TestHomeShortcutAfterFirstResult (#4199): once Home no longer offers
+// its Try area, a shortcut pressed while Home shows is a session as in
+// another app: its result shows and the history keeps it. It was a try
+// that kept nothing and showed its result nowhere.
+func TestHomeShortcutAfterFirstResult(t *testing.T) {
+	set, keys, _ := fileSetup(t, "hello aura link", &fakeChat{text: "Hello, Voxt."})
+	self := func(afterMS int) string {
+		b, _ := json.Marshal(helpertest.Script{AfterMS: afterMS, Method: proto.MethodHotkeyEvent,
+			Params: mustJSON(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, T: 1, Front: selfFront()})})
+		return string(b)
+	}
+	a := newSessionApp(t, script(t, self(500), self(400)), func(s *settings.Settings) {
+		set(s)
+		s.Setup.Tried = true
+	}, keys)
+	a.navigate("/home")
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.Try || a.sess.State != session.Done || a.sess.Result != "Hello, Voxt." {
+		t.Fatalf("end %+v", a.sess)
+	}
+	shown := a.sess.Inserted || a.answer.open || a.notice != nil && a.notice.text == copiedNotice
+	if !shown {
+		t.Errorf("result shown nowhere: inserted %v, card %v, notice %+v", a.sess.Inserted, a.answer.open, a.notice)
+	}
+	if es := a.history(); len(es) != 1 || es[0].Result != "Hello, Voxt." {
+		t.Errorf("history %+v", es)
 	}
 }
 

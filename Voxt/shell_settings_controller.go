@@ -92,6 +92,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.General.Language != new.General.Language {
 		a.applyLocale()
 	}
+	if !slices.Equal(old.Features.Hidden, new.Features.Hidden) {
+		a.buildMenu() // the Go menu lists the shown pages
+	}
 	if old.General.MenuBar != new.General.MenuBar {
 		a.applyTray() // tray.go
 	}
@@ -166,6 +169,7 @@ func (a *app) loadSettingsForm() {
 	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
+	f.sendClipboardWithSelection = s.Privacy.SendClipboardImageWithSelection
 	a.histAccessUI.historyAccess, a.histAccessUI.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult

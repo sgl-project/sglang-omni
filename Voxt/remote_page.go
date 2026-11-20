@@ -102,8 +102,11 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 				if state.Test != nil {
 					remoteTestStatus(c, *state.Test, false)
 				}
-				if ghostButton(c.Key("remote-test-"+state.Account), i18n.T("Test")).Label(i18n.T("Test %s", state.Name)).Disabled(state.TestDisabled).Clicked() {
+				if ghostButton(c.Key("remote-test-"+state.Account), i18n.T("Test")).Label(i18n.T("Test %s", state.Name)).Shrink(0).Disabled(state.TestDisabled).Clicked() {
 					actions.testRemoteProvider(state.Kind, state.ID)
+				}
+				if ghostButton(c.Key("remote-assign-"+state.Account), i18n.T("Apply to")).Label(i18n.T("Apply %s to features", state.Name)).Shrink(0).Tooltip(i18n.T("Choose the features that use this service")).Clicked() {
+					actions.openModelAssignment(state.Kind, state.ID)
 				}
 			} else if ghostButton(c.Key("remote-complete-"+state.Account), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", state.Name)).Clicked() {
 				actions.openRemoteProvider(state.Kind, state.ID)

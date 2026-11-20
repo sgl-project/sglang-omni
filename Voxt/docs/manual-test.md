@@ -1,8 +1,8 @@
-# 真机验证清单（Voxt 1.0）
+# 真机验证清单（Voxt 2）
 
 在 Mac 上按顺序点一遍：第一次打开和下载模型、转录、翻译、改写、应用增强、词典，再看模型进程（删除、崩溃、空闲卸载、退出、内存）、出错和离线时的表现，最后是首页、历史和设置。自动测试碰不到这些：权限、事件 tap、真实 App 的辅助功能、浏览器、浮窗的外观、真实麦克风下的本地模型。
 
-真机上不用人守着就能测的部分，由第 10 节的自动测试覆盖：`mac-e2e.sh`（真实的辅助进程、用文件代替麦克风的录音链路、只读的辅助功能读取、Core Text 下的文字测量）和 `mac-regress.sh`（真实的两个语音识别模型、Silero、三个语言模型、评测的快速版、打包好的 app 以 `--smoke` 启动再退出）。**时间不够时，先跑第 10.6 节的回归，再做第 10.4 节的“人工补测清单”（约 15 分钟）**，其余各节作为完整回归。
+真机上不用人守着就能测的部分，由第 10 节的自动测试覆盖：`mac-e2e.sh`（真实的辅助进程、用文件代替麦克风的录音链路、只读的辅助功能读取、Core Text 下的文字测量）和 `mac-regress.sh`（真实的两个语音识别模型、Silero、语音识别评测的快速版、打包好的 app 以 `--smoke` 启动再退出）。**时间不够时，先跑第 10.6 节的回归，再做第 10.4 节的“人工补测清单”（约 15 分钟）**，其余各节作为完整回归。
 
 - **2.1 起本地语言模型退役**，它们的进程 voxtnew-llm 之后也移除了：文中的“均衡语言模型”“快速语言模型”“翻译专用模型”换成你在“语言模型”页设置的远程服务来做（模型页“不再使用的语言模型”一节只用来删旧文件）；只和 voxtnew-llm 有关的步骤已经删掉。
 - **必做部分约 80 分钟**，不含下载模型的时间（推荐的两个模型共 5.8 GB）。标 **〔可选〕** 的步骤时间够再做，不影响结论。
@@ -1235,7 +1235,7 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh --full   # 完整
 
 依次：编译辅助进程，`swift test`；`TestMacE2EOmni`（真实辅助进程读语音样本文件，两个语音识别模型和 Silero）；评测快速版（`TestEval*`：语音识别模型每类一段，对照下限，见 [eval.md](eval.md)）；把 Omni 运行时放进 app 编译（`go tool mygo build`，签名检查），再以 `Voxt.app/Contents/MacOS/Voxt --smoke <dir>` 启动：自己的数据目录、不开窗口、没有快捷键（不装事件 tap），启动打包的辅助进程，经 app 自己的 Library 让语音识别模型回答一次，然后按 app 的方式退出。每一步之后、以及最后，检查没有残留的 `qwen3_asr_server`、`voxtnew-helper`。最后打印一张汇总表，退出码是失败的步骤数。不用麦克风和扬声器，不碰剪贴板和前台 App。另一个线程的 `qwen3_asr_server` 在运行时会提示“时间不准”。
 
-2026-10-17 第一次（mac-air，另有 AudioSmith、Dicta 和 M2b 的进程，swap 约 12 GB）：7 步里 6 步通过；`llm-real` 里 `TestLLMOpenerThroughLibrary` 因为脚本导出的 `VOXTNEW_DEV_LLM` 用上了真实模型而失败，测试已改为自己清掉这两个变量。smoke：辅助进程就绪，asr.fast 826 ms、llm.fast 2.8 s 回答，退出后没有残留进程；app 280 MB。修好后第二次：7 步全部通过，共约 4.5 分钟（omni-e2e 29 s、llm-real 65 s、评测快速版 160 s、app 编译 14 s、smoke 5 s）。
+2026-10-17 第一次（mac-air，另有 AudioSmith、Dicta 和 M2b 的进程，swap 约 12 GB）：7 步里 6 步通过；`llm-real` 里 TestLLMOpenerThroughLibrary 因为脚本导出的 `VOXTNEW_DEV_LLM` 用上了真实模型而失败，测试已改为自己清掉这两个变量。smoke：辅助进程就绪，asr.fast 826 ms、llm.fast 2.8 s 回答，退出后没有残留进程；app 280 MB。修好后第二次：7 步全部通过，共约 4.5 分钟（omni-e2e 29 s、llm-real 65 s、评测快速版 160 s、app 编译 14 s、smoke 5 s）。
 
 **10.7 发布式构建**
 
@@ -1270,7 +1270,7 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 
 **11.3a 旧版语言模型的设置**（在旧版里事先配好下面几个服务）
 - **做**：旧版里配一个不带路径的中转地址（如 `https://relay.example.com`）的 OpenAI、一个 `http://192.168.x.x:11434` 上的 Ollama、一个存了 API Key 的 LM Studio、一个模型选 `gpt-5.2-pro` 的 OpenAI（各用一台干净的 2.x 导入一次也行，只保留一个 OpenAI 时分开试），再导入。
-- **应看到**：结果的“还要做”里，中转地址和 `gpt-5.2-pro` 写“检查 …”；另一台机器的 http 地址写“要改 … 的地址”，说明只用 https 或连接这台 Mac 的 http，语言模型页那张卡写“地址不可用”、带“完成设置”，不算就绪，“自动”也不会选它；LM Studio 写“需要 API Key”，已经在 Voxt 钥匙串里有 Key 的服务不再要求粘贴。导入后中转地址是 `…/v1`。
+- **应看到**：结果的“还要做”里，中转地址和 `gpt-5.2-pro` 写“检查 …”；另一台机器的 http 地址可以继续使用，结果和语言模型设置里都没有 HTTP 的警告（打开这项服务的设置对话框，“地址”旁 ⓘ 的提示写 HTTP 会不加密地发送 API Key 和文字），卡片算就绪，“自动”也会选它；ChatGPT (Codex) 在另一台机器上仍只接受 https；LM Studio 写“需要 API Key”，已经在 Voxt 钥匙串里有 Key 的服务不再要求粘贴。导入后中转地址是 `…/v1`。
 - **不对时看**：语言模型页这个服务的对话框里的地址和生成设置；日志里的 `legacy import:` 一行。
 
 **11.3b 关着的清理和 Codex**

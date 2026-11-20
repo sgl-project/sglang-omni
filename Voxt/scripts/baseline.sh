@@ -25,15 +25,13 @@ done
 
 tmp="${TMPDIR:-$out/tmp}"
 mkdir -p "$tmp"
-short='TestHistoryAccess|TestSelectionNeedsItsSwitch|TestHistoryCLIExport|TestTranscribeCLI|TestTranscribeUsesTranscribesSpeechModel'
-TMPDIR="$tmp" go test -count=1 -skip "$short" -coverprofile="$out/coverage-main-absolute.out" . >"$out/coverage-main-absolute.txt"
-TMPDIR=. go test -count=1 -run "$short" -coverprofile="$out/coverage-main-sockets.out" . >"$out/coverage-main-sockets.txt"
+TMPDIR="$tmp" go test -count=1 -coverprofile="$out/coverage-main.out" . >"$out/coverage-main.txt"
 TMPDIR="$tmp" go test -count=1 -coverprofile="$out/coverage-internal.out" ./internal/... ./scripts/... >"$out/coverage-internal.txt"
 python3 -c 'import pathlib, sys
 out = pathlib.Path(sys.argv[1])
-(out / "coverage-packages.txt").write_text("".join((out / name).read_text() for name in ("coverage-main-absolute.txt", "coverage-main-sockets.txt", "coverage-internal.txt")))
+(out / "coverage-packages.txt").write_text("".join((out / name).read_text() for name in ("coverage-main.txt", "coverage-internal.txt")))
 blocks = {}
-for name in ("coverage-main-absolute.out", "coverage-main-sockets.out", "coverage-internal.out"):
+for name in ("coverage-main.out", "coverage-internal.out"):
     for line in (out / name).read_text().splitlines():
         if line.startswith("mode: "):
             continue

@@ -188,7 +188,7 @@ func TestAnswerCardStates(t *testing.T) {
 					t.Fatalf("%s: %s shown %v pass %v %d wide", st.name, a.ov.mode, a.ov.shown, a.ov.passThrough, a.ov.w)
 				}
 				body, _ := a.cardBodyHeight(&v)
-				_, line := guessText(ovSized{"x", layout.CardTextSize, layout.CardTextWeight, layout.CardBodyW})
+				_, line := guessText(ovSized{"x", layout.CardTextSize, layout.CardTextWeight, layout.CardBodyW, ""})
 				switch st.body {
 				case 0:
 					if body != int(line) {

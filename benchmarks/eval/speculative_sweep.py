@@ -47,6 +47,7 @@ from benchmarks.metrics.speculative import (
     Leg,
     Side,
     compare,
+    read_decode_batches,
     read_server_log,
     render,
 )
@@ -219,12 +220,14 @@ def run_leg(
             loads = measure_transcribe_diarize(
                 workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
             )
+    server_text = server_log.read_text(errors="replace")
     return Leg(
         name=name,
         side=side,
         startup_s=startup_s,
-        server=read_server_log(server_log.read_text(errors="replace")),
+        server=read_server_log(server_text),
         loads=loads,
+        decode_batches=read_decode_batches(server_text),
     )
 
 

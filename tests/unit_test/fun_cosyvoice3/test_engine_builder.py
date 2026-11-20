@@ -142,3 +142,56 @@ def test_prefill_stays_eager_where_the_attention_backend_cannot_capture_it(
 
     assert attention_backends_of(resolved)[0] not in FULL_PREFILL_ATTENTION_BACKENDS
     assert resolved.cuda_graph_config.prefill.backend == CudaGraphBackend.DISABLED
+
+
+def npu_server_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+) -> ServerArgs:
+    server_args = resolved_cuda_server_args(
+        tmp_path, monkeypatch, server_args_overrides
+    )
+    monkeypatch.setattr(
+        engine_builder_module,
+        "current_platform",
+        SimpleNamespace(is_cuda=lambda: False, is_npu=lambda: True),
+    )
+    return server_args
+
+
+def test_a_multi_row_npu_decode_graph_needs_per_stream_queues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server_args = npu_server_args(
+        tmp_path, monkeypatch, {"cuda_graph_config": {"decode": {"max_bs": 16}}}
+    )
+    monkeypatch.delenv("PER_STREAM_QUEUE", raising=False)
+
+    with pytest.raises(ValueError, match="PER_STREAM_QUEUE=1"):
+        FunCosyVoice3EngineBuilder().validate_before_infrastructure(server_args)
+
+
+def test_a_multi_row_npu_decode_graph_rejects_a_shared_task_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server_args = npu_server_args(
+        tmp_path, monkeypatch, {"cuda_graph_config": {"decode": {"max_bs": 16}}}
+    )
+    monkeypatch.setenv("PER_STREAM_QUEUE", "1")
+    monkeypatch.setenv("TASK_QUEUE_ENABLE", "2")
+
+    with pytest.raises(ValueError, match="TASK_QUEUE_ENABLE"):
+        FunCosyVoice3EngineBuilder().validate_before_infrastructure(server_args)
+
+
+def test_an_eager_npu_decode_graph_needs_no_queue_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server_args = npu_server_args(tmp_path, monkeypatch, {"disable_cuda_graph": True})
+    monkeypatch.delenv("PER_STREAM_QUEUE", raising=False)
+
+    FunCosyVoice3EngineBuilder().validate_before_infrastructure(server_args)
