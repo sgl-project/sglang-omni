@@ -70,11 +70,7 @@ func EntryMetaFor(translator *i18n.Translator, e store.Entry, now time.Time) str
 	return strings.Join(parts, " · ")
 }
 
-// TargetLang is a translation's target language.
-func TargetLang(e store.Entry) string {
-	return TargetLangFor(i18n.CurrentTranslator(), e)
-}
-
+// TargetLangFor is a translation's target language.
 func TargetLangFor(translator *i18n.Translator, e store.Entry) string {
 	if e.TargetLang == "" {
 		return ""
@@ -131,12 +127,8 @@ func SoundTextFor(translator *i18n.Translator, e store.Entry) string {
 	return ""
 }
 
-// RuleText is an entry's app enhancement group and how it matched:
+// RuleTextFor is an entry's app enhancement group and how it matched:
 // "Team chat (app)"; "" for none.
-func RuleText(e store.Entry) string {
-	return RuleTextFor(i18n.CurrentTranslator(), e)
-}
-
 func RuleTextFor(translator *i18n.Translator, e store.Entry) string {
 	if e.RuleName == "" {
 		return ""
@@ -149,11 +141,7 @@ func RuleTextFor(translator *i18n.Translator, e store.Entry) string {
 
 // ---- The preview ----
 
-// SourceText says how a group matched.
-func SourceText(s appctx.Source, pattern string) string {
-	return SourceTextFor(i18n.CurrentTranslator(), s, pattern)
-}
-
+// SourceTextFor says how a group matched.
 func SourceTextFor(translator *i18n.Translator, s appctx.Source, pattern string) string {
 	switch s {
 	case appctx.SourceURL:
@@ -166,11 +154,7 @@ func SourceTextFor(translator *i18n.Translator, s appctx.Source, pattern string)
 	return ""
 }
 
-// ruleSourceLabel says how a history entry's group matched.
-func ruleSourceLabel(s string) string {
-	return ruleSourceLabelFor(i18n.CurrentTranslator(), s)
-}
-
+// ruleSourceLabelFor says how a history entry's group matched.
 func ruleSourceLabelFor(translator *i18n.Translator, s string) string {
 	switch appctx.Source(s) {
 	case appctx.SourceURL:

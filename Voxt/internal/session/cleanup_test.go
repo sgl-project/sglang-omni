@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -81,7 +82,7 @@ func TestComposingSpoken(t *testing.T) {
 var longZH = strings.Repeat("嗯，那个，我们下周二，呃不对，下周三下午三点开个会，讨论一下预算。", 16)
 
 // TestLongDictation: a long dictation is cleaned up in pieces, every
-// request with the same system prompt and example turn, the answers
+// request with the same system prompt and no example turn, the answers
 // streaming into the draft in order; a piece that fails keeps its text as
 // recognised, with a warning.
 func TestLongDictation(t *testing.T) {
@@ -102,7 +103,7 @@ func TestLongDictation(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: longZH}, c.llm, nil)
 			h.speak(h.start(), 5)
 			end := h.rec.wait(t)
-			if end.Result != c.result || end.Raw != longZH || end.Profile != "transcribe:glossary" {
+			if end.Result != c.result || end.Raw != longZH || end.Profile != "transcribe:cleanup+glossary" {
 				t.Errorf("result %q, raw %q, profile %q", end.Result, end.Raw, end.Profile)
 			}
 			if (end.Problem == nil) != (c.problem == "") || end.Problem != nil && (end.Problem.Code != c.problem || !end.Problem.Degraded) {
@@ -114,8 +115,8 @@ func TestLongDictation(t *testing.T) {
 			}
 			for i, req := range reqs {
 				m := req.Messages
-				if len(m) != 4 || m[0] != reqs[0].Messages[0] || m[1] != reqs[0].Messages[1] || m[2] != reqs[0].Messages[2] ||
-					m[3].Content != compose.UserMessage(pieces[i].Text) || req.OnDelta == nil {
+				if len(m) != 2 || m[0] != reqs[0].Messages[0] ||
+					m[1].Content != compose.UserMessage(pieces[i].Text) || req.OnDelta == nil {
 					t.Errorf("request %d: %+v", i, m)
 				}
 			}
@@ -132,8 +133,8 @@ func TestLongDictation(t *testing.T) {
 // TestOnlyTheCleanedText (#4086): the model wraps the cleaned text in
 // the <output> tags the contract asks for and adds its own commentary
 // about the edits outside them; only the tags' content is streamed into
-// the card, shown and inserted. The request asks for the tags and the
-// example turn answers with them.
+// the card, shown and inserted. The request asks for the tags without showing
+// an example answer that the model could repeat.
 func TestOnlyTheCleanedText(t *testing.T) {
 	text := "算计算量，就是说，用 bf16 单元算和 int8 有区别吗"
 	cleaned := "算计算量（FLOPs）—— 用 bf16 单元算和 int8 有区别吗？"
@@ -155,8 +156,44 @@ func TestOnlyTheCleanedText(t *testing.T) {
 		t.Fatalf("%d requests", len(reqs))
 	}
 	m := reqs[0].Messages
-	if !strings.Contains(m[0].Content, "<output>") || len(m) != 4 || !strings.Contains(m[2].Content, "<output>") {
-		t.Errorf("the contract or the example lacks the tags: %d messages", len(m))
+	if !strings.Contains(m[0].Content, "<output>") || len(m) != 2 {
+		t.Errorf("the output contract is missing or an example remains: %d messages", len(m))
+	}
+}
+
+// TestCleanupHasNoExampleTurn (#4228): Transcribe does not send a built-in
+// example that a model can mistake for the text to clean. A model that copies
+// an earlier assistant answer has no example to copy in either prompt path.
+func TestCleanupHasNoExampleTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, text, prompt, example, cleanup string
+	}{
+		{"layered Chinese", "zh", "简洁", "", "周报发给小李", "基础清理"},
+		{"custom English", "en", "be concise", "Clean the text.", "weekly report to Anna", "Basic cleanup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: tc.text, copyExample: true}
+			h := newHarness(t, &fakeFile{text: tc.text}, model, func(_ *Config, s *settings.Settings) {
+				s.General.MainLanguage, s.Features.Transcribe.Prompt = tc.main, tc.prompt
+			})
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			if end.Result != tc.text {
+				t.Errorf("result %q, want the transcript %q", end.Result, tc.text)
+			}
+			reqs := model.requests()
+			if len(reqs) != 1 || len(reqs[0].Messages) != 2 {
+				t.Fatalf("requests %+v", reqs)
+			}
+			for _, message := range reqs[0].Messages {
+				if strings.Contains(message.Content, tc.example) || message.Role == "assistant" {
+					t.Errorf("an example remains in the request: %+v", message)
+				}
+			}
+			if !strings.Contains(reqs[0].Messages[0].Content, tc.cleanup) {
+				t.Error("removing the example also removed the cleanup rules")
+			}
+		})
 	}
 }
 
@@ -175,5 +212,32 @@ func TestLongTranslate(t *testing.T) {
 	reqs := model.requests()
 	if end.Result != "我们周四上午发布。" || len(reqs) != 1 || reqs[0].Messages[len(reqs[0].Messages)-1].Content != compose.UserMessage(strings.TrimSpace(en)) {
 		t.Errorf("result %q, %d requests", end.Result, len(reqs))
+	}
+}
+
+type cleanupBackend struct{ *fakeLLM }
+
+func (*cleanupBackend) Info() llm.BackendInfo { return llm.BackendInfo{ID: "cleanup-test"} }
+
+// TestCleanupProtocolFallback: tool serialization must never be pasted, while ordinary short words remain unchanged.
+func TestCleanupProtocolFallback(t *testing.T) {
+	for _, test := range []struct{ name, raw, reply, result, problem string }{
+		{"tool reply", "As.", `<|open|>tools<|sep|><|open|>call tool="thinking"<|sep|>discard`, "As.", ProblemLLM},
+		{"response tool", "你好", `<|open|>tools<|sep|><|open|>call tool="response"<|sep|>`, "你好", ProblemLLM},
+		{"single word", "As.", "<output>As.</output>", "As.", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &cleanupBackend{&fakeLLM{text: test.reply, finish: llm.FinishStop, chunk: 1}}
+			h := newHarness(t, &fakeFile{text: test.raw}, &llm.Client{Backend: backend}, nil)
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			if end.Result != test.result || end.Raw != test.raw || (end.Problem == nil) != (test.problem == "") || end.Problem != nil && end.Problem.Code != test.problem {
+				t.Fatalf("result %q, raw %q, problem %+v", end.Result, end.Raw, end.Problem)
+			}
+			pasted := h.text.pastes()
+			if len(pasted) != 1 || pasted[0] != test.result {
+				t.Fatalf("pasted %q", pasted)
+			}
+		})
 	}
 }

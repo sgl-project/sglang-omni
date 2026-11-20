@@ -3,9 +3,11 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -34,7 +36,11 @@ func TestWindowPicture(t *testing.T) {
 		{"no permission", true, false, errors.New("permission_denied"), store.KindTranscribe, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := &fakeLLM{text: "Hello."}
+			answer := "Hello."
+			if tc.kind == store.KindTranslate {
+				answer = "你好"
+			}
+			model := &fakeLLM{text: answer}
 			var pids []int
 			h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
 				s.Features.Transcribe.Enhance = !tc.noClean
@@ -73,36 +79,87 @@ func TestWindowPicture(t *testing.T) {
 
 // TestClipboardImage: with Privacy.SendClipboardImage on, Rewrite reads
 // the clipboard's picture before the selection (whose ⌘C would replace
-// it) and sends it with the text, instead of the window's; off, with no
-// picture or when reading fails, the model gets the text (or the window)
-// and the rewrite lands. Translate and a try never read the clipboard.
+// it) and sends it instead of the window's when no text is selected or
+// a copied [Image] placeholder denotes an image selection. Other text
+// selections, including duplicates on follow-ups, take the text path
+// (#4152). Off, with no picture or when reading fails, the model gets
+// the text (or the window) and the rewrite lands.
+// Translate and a try never read the clipboard.
 func TestClipboardImage(t *testing.T) {
-	clip, shot := []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
+	clip, selected, shot := []byte{0xff, 0xd8, 'A', 0xff, 0xd9}, []byte{0xff, 0xd8, 'B', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
 	for _, tc := range []struct {
-		name         string
-		kind         store.Kind
-		on, window   bool
-		try          bool
-		pic          []byte
-		err          error
-		want         []byte
-		wantReadClip bool
+		name          string
+		kind          store.Kind
+		on, window    bool
+		try           bool
+		noSel         bool
+		selection     string
+		copyText      string
+		copiedImage   []byte
+		withSelection bool
+		legacy        bool
+		previous      []compose.Turn
+		pic           []byte
+		err           error
+		want          []byte
+		wantReadClip  bool
 	}{
-		{name: "rewrite", kind: store.KindRewrite, on: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "upgraded settings stay text-only", kind: store.KindRewrite, on: true, legacy: true, pic: clip, wantReadClip: true},
+		{name: "a fresh selection sends no picture", kind: store.KindRewrite, on: true, pic: clip, wantReadClip: true},
+		{name: "the same selection on a follow-up sends no picture", kind: store.KindRewrite, on: true, previous: []compose.Turn{{Selection: "ship friday?"}}, pic: clip, wantReadClip: true},
+		{name: "a copied image placeholder sends the newly copied image", kind: store.KindRewrite, on: true, copyText: "[Image]", copiedImage: selected, pic: clip, want: selected, wantReadClip: true},
+		{name: "literal placeholder text through Accessibility sends no picture", kind: store.KindRewrite, on: true, selection: "[Image]", pic: clip, wantReadClip: true},
+		{name: "literal placeholder text through copy sends no picture", kind: store.KindRewrite, on: true, copyText: "[Image]", pic: clip, wantReadClip: true},
+		{name: "undecodable placeholder text sends no earlier picture", kind: store.KindRewrite, on: true, copyText: "[Image]", withSelection: true, pic: clip, wantReadClip: true},
+		{name: "deliberate text and image sends the copied image", kind: store.KindRewrite, on: true, selection: "chart caption", withSelection: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "newly copied text and image prefers the new image", kind: store.KindRewrite, on: true, copyText: "caption [Image]", copiedImage: selected, withSelection: true, pic: clip, want: selected, wantReadClip: true},
+		{name: "privacy off drops an image placeholder", kind: store.KindRewrite, copyText: "[Image]", copiedImage: selected, pic: clip, wantReadClip: false},
+		{name: "privacy off drops mixed content even with text and image on", kind: store.KindRewrite, copyText: "caption [Image]", copiedImage: selected, withSelection: true, pic: clip, wantReadClip: false},
+		{name: "no selection: the picture goes", kind: store.KindRewrite, on: true, noSel: true, pic: clip, want: clip, wantReadClip: true},
 		{name: "off", kind: store.KindRewrite, pic: clip},
-		{name: "wins over the window", kind: store.KindRewrite, on: true, window: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "wins over the window", kind: store.KindRewrite, on: true, window: true, noSel: true, pic: clip, want: clip, wantReadClip: true},
 		{name: "no picture: the window", kind: store.KindRewrite, on: true, window: true, want: shot, wantReadClip: true},
 		{name: "reading fails", kind: store.KindRewrite, on: true, err: errors.New("helper gone"), wantReadClip: true},
 		{name: "a try", kind: store.KindRewrite, on: true, try: true, pic: clip},
 		{name: "translate", kind: store.KindTranslate, on: true, pic: clip},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := &fakeLLM{text: "We ship on Friday."}
+			answer := "We ship on Friday."
+			if tc.kind == store.KindTranslate {
+				answer = "我们周五发布。"
+			}
+			model := &fakeLLM{text: answer}
 			sel := &fakeSelector{text: "ship friday?"}
+			if tc.noSel {
+				sel = &fakeSelector{}
+			}
+			if tc.selection != "" {
+				sel.text = tc.selection
+			}
+			if tc.copyText != "" {
+				sel = &fakeSelector{copyText: tc.copyText, copyImage: tc.copiedImage}
+			}
 			var reads, selBefore int
 			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
 				c.Select = sel
 				s.Privacy.SendClipboardImage, s.Privacy.SendWindow = tc.on, tc.window
+				if tc.legacy {
+					s.Version = 1
+					var document map[string]any
+					raw, _ := json.Marshal(s)
+					if err := json.Unmarshal(raw, &document); err != nil {
+						t.Fatal(err)
+					}
+					delete(document["privacy"].(map[string]any), "sendClipboardImageWithSelection")
+					raw, _ = json.Marshal(document)
+					migrated, err := settings.Migrate(raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					*s = migrated
+				} else {
+					s.Privacy.SendClipboardImageWithSelection = tc.withSelection
+				}
 				c.Window = func(context.Context, int) ([]byte, error) { return shot, nil }
 				c.ClipboardImage = func(context.Context) ([]byte, error) {
 					sel.mu.Lock()
@@ -111,14 +168,14 @@ func TestClipboardImage(t *testing.T) {
 					return tc.pic, tc.err
 				}
 			})
-			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack, Try: tc.try})
+			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack, Try: tc.try, Previous: tc.previous})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if tc.kind == store.KindRewrite {
 				h.speak(id, 3)
 			}
-			if end := h.rec.wait(t); end.State != Done || end.Result != "We ship on Friday." {
+			if end := h.rec.wait(t); end.State != Done || end.Result != answer {
 				t.Fatalf("end %s %q %+v", end.State, end.Result, end.Problem)
 			}
 			reqs := model.requests()

@@ -39,7 +39,7 @@ func (r *run) transcribe(text string) {
 		card := f.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
-		cleaned, profile, err := r.cleanUp(text, nil)
+		cleaned, profile, err := r.cleanUpFirst(text)
 		for r.askAgain() {
 			cleaned, profile, err = r.cleanUp(text, r.thinking())
 		}
@@ -71,6 +71,33 @@ func (r *run) transcribe(text string) {
 	r.finish(Done, problem, result, o)
 }
 
+// cleanUpFirst is a dictation's first clean-up: what the early clean-up
+// finished while the recording went on is not asked again, only the
+// tail left at Stop is (earlyclean.go). A Rethink reruns cleanUp on the
+// whole text instead.
+func (r *run) cleanUpFirst(text string) (string, string, error) {
+	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
+	parts, answers, tail, failed, ok := r.early.drain(text)
+	if !ok {
+		return r.cleanUp(text, nil)
+	}
+	if len(answers) > 0 {
+		r.logf("info", "%d characters were cleaned while the recording went on", len([]rune(text))-len([]rune(tail)))
+	}
+	if strings.TrimSpace(tail) == "" {
+		return compose.JoinParts(parts, answers), parts[0].Profile(), failed
+	}
+	tailParts, err := compose.BuildParts(r.transcribeInput(tail))
+	if err != nil {
+		return text, "", err
+	}
+	result, profile, err := r.cleanParts(text, append(parts, tailParts...), answers, nil)
+	if err == nil {
+		err = failed
+	}
+	return result, profile, err
+}
+
 // cleanUp runs the language model over text, a request per part, each
 // answer streaming into the snapshot's Draft after those before it. A
 // part that fails keeps its text as recognised; err is the first
@@ -84,9 +111,19 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 	if len(parts) > 1 {
 		r.logf("info", "cleaning up %d characters in %d pieces", len([]rune(text)), len(parts))
 	}
-	var answers []string
+	return r.cleanParts(text, parts, nil, think)
+}
+
+// cleanParts runs the requests of the parts after len(answers) (those
+// before are answered already, by the early clean-up), each answer
+// streaming into the snapshot's Draft after those before it, and joins
+// them all. err is the first failure (the text itself when the request
+// could not be composed). think overrides the service's thinking (nil:
+// its setting).
+func (r *run) cleanParts(text string, parts []compose.Part, answers []string, think *llm.Thinking) (string, string, error) {
 	var failed error
-	for i, p := range parts {
+	for i := len(answers); i < len(parts); i++ {
+		p := parts[i]
 		draft := newDrafter(r, parts[:i+1], answers)
 		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
 		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))

@@ -36,15 +36,21 @@ type featureKeyRowViewState struct {
 }
 
 type featureShortcutsViewState struct {
-	Prefix            string                   `json:"prefix"`
-	HotkeysInstalled  bool                     `json:"hotkeys_installed"`
-	HelperRecordsKeys bool                     `json:"helper_records_keys"`
-	EmptyText         string                   `json:"empty_text"`
-	RewriteHint       bool                     `json:"rewrite_hint"`
-	Rows              []featureKeyRowViewState `json:"rows"`
-	Paste             *featureKeyRowViewState  `json:"paste,omitempty"`
-	Cancel            *featureKeyRowViewState  `json:"cancel,omitempty"`
-	EndWord           *featureEndWordViewState `json:"end_word,omitempty"`
+	Prefix            string                        `json:"prefix"`
+	HotkeysInstalled  bool                          `json:"hotkeys_installed"`
+	HelperRecordsKeys bool                          `json:"helper_records_keys"`
+	EmptyText         string                        `json:"empty_text"`
+	RewriteHint       bool                          `json:"rewrite_hint"`
+	Rows              []featureKeyRowViewState      `json:"rows"`
+	Paste             *featureKeyRowViewState       `json:"paste,omitempty"`
+	Cancel            *featureKeyRowViewState       `json:"cancel,omitempty"`
+	EndWord           *featureEndWordViewState      `json:"end_word,omitempty"`
+	ReturnFinish      *featureReturnFinishViewState `json:"return_finish,omitempty"`
+}
+
+// featureReturnFinishViewState is Transcribe's Return-finishes switch.
+type featureReturnFinishViewState struct {
+	On bool `json:"on"`
 }
 
 type featureShortcutsStateInput struct {
@@ -88,6 +94,7 @@ func buildFeatureShortcutsViewState(translator *i18n.Translator, input featureSh
 	}
 	if feature == hotkey.Transcribe {
 		state.EndWord = input.EndWord
+		state.ReturnFinish = &featureReturnFinishViewState{On: input.Settings.Features.Transcribe.ReturnFinishes}
 		paste := buildFeatureKeyRowViewState(translator, featureKeyRowStateInput{
 			Hotkey: input.Settings.Features.PasteLast, Local: local.paste, Off: true,
 			Problems:     uitext.HotkeyProblemsFor(translator, input.Settings.Features, hotkey.PasteLast)[0],
