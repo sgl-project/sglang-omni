@@ -119,6 +119,8 @@ def test_serve_keeps_the_default_when_the_gpu_cannot_run_mps(gpu) -> None:
         ["--mps", "off"],
         ["--asr.engine.max_running_requests", "8"],
         ["--mem-fraction-static", "0.5"],
+        ["--asr.engine.kv_cache_bytes", "4GiB"],
+        ["--asr.total_reserve_bytes", "12GiB"],
     ],
 )
 def test_serve_keeps_the_default_when_the_user_sets_a_profile_setting(
@@ -153,3 +155,64 @@ def test_no_profile_off_cuda(gpu, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(current_platform, "is_cuda", lambda: False)
     config = Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B")
     assert select_hardware_profile(config, set()) is None
+
+
+@pytest.mark.parametrize(
+    ("env", "mps_control", "reason"),
+    [
+        ({}, "/usr/bin/nvidia-cuda-mps-control", None),
+        ({}, None, "nvidia-cuda-mps-control is not on PATH"),
+        (
+            {"CUDA_MPS_PIPE_DIRECTORY": ""},
+            "/usr/bin/nvidia-cuda-mps-control",
+            "CUDA_MPS_PIPE_DIRECTORY is set",
+        ),
+        (
+            {"SGLANG_OMNI_WEIGHT_SHARE": "1"},
+            "/usr/bin/nvidia-cuda-mps-control",
+            "SGLANG_OMNI_WEIGHT_SHARE is set",
+        ),
+    ],
+)
+def test_inspect_names_the_gpu_and_refuses_what_native_mps_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+    env: dict[str, str],
+    mps_control: str | None,
+    reason: str | None,
+) -> None:
+    from sglang_omni.mps.devices import MpsPhysicalDevice, NvmlDeviceInfo
+
+    monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
+    monkeypatch.delenv("SGLANG_OMNI_WEIGHT_SHARE", raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        NvmlDeviceInfo,
+        "inspect",
+        lambda self, gpu_ids: {0: MpsPhysicalDevice("GPU-0000")},
+    )
+    monkeypatch.setattr(
+        hardware_profiles,
+        "nvml_device_name",
+        lambda gpu_uuid: RTX_4090_D if gpu_uuid == "GPU-0000" else None,
+    )
+    monkeypatch.setattr(hardware_profiles.shutil, "which", lambda name: mps_control)
+    assert hardware_profiles.inspect_profile_gpu() == ProfileGpu(RTX_4090_D, reason)
+
+
+def test_inspect_keeps_the_reason_a_gpu_cannot_run_mps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.mps.devices import MpsPhysicalDevice, NvmlDeviceInfo
+
+    monkeypatch.setattr(
+        NvmlDeviceInfo,
+        "inspect",
+        lambda self, gpu_ids: {0: MpsPhysicalDevice("GPU-0000", "MIG mode is enabled")},
+    )
+    monkeypatch.setattr(
+        hardware_profiles, "nvml_device_name", lambda gpu_uuid: RTX_4090_D
+    )
+    assert hardware_profiles.inspect_profile_gpu() == ProfileGpu(
+        RTX_4090_D, "MIG mode is enabled"
+    )

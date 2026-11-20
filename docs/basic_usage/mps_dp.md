@@ -198,7 +198,7 @@ The throughput results in the table and H100 case study are from an 80 GB H100 w
 sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B
 ```
 
-The default config is kept, with one replica and no MPS, when the GPU cannot run native MPS (MIG, `nvidia-cuda-mps-control` missing from `PATH`, `CUDA_MPS_PIPE_DIRECTORY` set), when `--config` is given, or when the command line sets `--mps off` or any setting the profile writes. The log names the profile it applied or why it kept the default. A profile file also works as `--config` on another GPU.
+The default config is kept, with one replica and no MPS, when the GPU cannot run native MPS (MIG, `nvidia-cuda-mps-control` missing from `PATH`, `CUDA_MPS_PIPE_DIRECTORY` set), when `--config` is given, or when the command line sets `--mps off` or any setting the profile writes. When a profile matches, the log names it or says why it was not applied. A profile file also works as `--config` on another GPU.
 
 For each latency target, the table gives the replica count that delivered the most audio within it; the profile for N replicas is `<config name>_rtx4090d_dp<N>.yaml`. Goodput is audio seconds per second of transcribed input audio, and the latency is the p99 request latency from arrival. The last column is one replica on the same GPU.
 

@@ -30,8 +30,6 @@ PROFILE_DIRS: dict[str, str] = {
     "NVIDIA GeForce RTX 4090 D": "rtx4090d",
 }
 
-_MPS_ENV_CONFLICTS = ("CUDA_MPS_PIPE_DIRECTORY", "SGLANG_OMNI_WEIGHT_SHARE")
-
 
 @dataclass(frozen=True)
 class ProfileGpu:
@@ -56,10 +54,9 @@ def launches_checkpoint(model_path: str, repo_id: str) -> bool:
 def inspect_profile_gpu() -> ProfileGpu:
     """Name logical GPU 0 and say why it cannot run native MPS, without a CUDA context."""
     from sglang_omni.mps.devices import NvmlDeviceInfo
-    from sglang_omni.utils.gpu_memory import get_gpu_device_info
 
-    name = get_gpu_device_info(0).name
     device = NvmlDeviceInfo().inspect([0])[0]
+    name = nvml_device_name(device.gpu_uuid) if device.gpu_uuid else None
     if device.unsupported_reason is not None:
         return ProfileGpu(name, device.unsupported_reason)
     else:
@@ -68,12 +65,37 @@ def inspect_profile_gpu() -> ProfileGpu:
         return ProfileGpu(name, "nvidia-cuda-mps-control is not on PATH")
     else:
         pass
-    for variable in _MPS_ENV_CONFLICTS:
-        if os.environ.get(variable):
-            return ProfileGpu(name, f"{variable} is set")
-        else:
-            pass
+    # Note (Jiaxin Deng): the same tests create_for_pipeline uses to refuse native MPS.
+    if "CUDA_MPS_PIPE_DIRECTORY" in os.environ:
+        return ProfileGpu(name, "CUDA_MPS_PIPE_DIRECTORY is set")
+    else:
+        pass
+    if os.environ.get("SGLANG_OMNI_WEIGHT_SHARE", "").strip():
+        return ProfileGpu(name, "SGLANG_OMNI_WEIGHT_SHARE is set")
+    else:
+        pass
     return ProfileGpu(name)
+
+
+def nvml_device_name(gpu_uuid: str) -> str | None:
+    """NVML name of a GPU by UUID; unlike torch, NVML creates no CUDA context."""
+    from sglang_omni.utils.gpu_memory import decode_nvml_string
+
+    try:
+        import pynvml
+    except ImportError:
+        return None
+    try:
+        pynvml.nvmlInit()
+    except (pynvml.NVMLError, OSError):
+        return None
+    try:
+        handle = pynvml.nvmlDeviceGetHandleByUUID(gpu_uuid.encode())
+        return decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
+    except pynvml.NVMLError:
+        return None
+    finally:
+        pynvml.nvmlShutdown()
 
 
 def find_profile(
@@ -112,13 +134,14 @@ def select_hardware_profile(
         return None
     else:
         pass
-    if "mps" in user_paths and pipeline_config.mps == "off":
-        return None
-    else:
-        pass
     gpu = inspect_profile_gpu()
     profile = find_profile(gpu.name, pipeline_config)
     if profile is None:
+        return None
+    else:
+        pass
+    if "mps" in user_paths and pipeline_config.mps == "off":
+        logger.info("Not applying hardware profile %s: mps=off", profile.path.name)
         return None
     else:
         pass

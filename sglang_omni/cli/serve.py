@@ -6,6 +6,7 @@ from typing import Annotated, Literal, NoReturn
 import click
 import typer
 import yaml
+from pydantic import ValidationError
 from typer.core import TyperCommand
 
 from sglang_omni.config import PipelineConfig
@@ -389,8 +390,19 @@ def apply_hardware_profile_defaults(
         return pipeline_config
     else:
         pass
+    try:
+        applied = apply_engine_writes(pipeline_config, profile.writes)
+    except ValidationError as exc:
+        logger.warning(
+            "Not applying hardware profile %s: it conflicts with the command line: %s",
+            profile.path.name,
+            exc,
+        )
+        return pipeline_config
+    else:
+        pass
     logger.info("Applying hardware profile %s", profile.path.name)
-    return apply_engine_writes(pipeline_config, profile.writes)
+    return applied
 
 
 def apply_engine_writes(
