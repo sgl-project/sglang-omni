@@ -146,6 +146,23 @@ func TestLegacyHTTPGatewayDocs(t *testing.T) {
 			}
 		}
 	}
+	// Only the Address tip in the set-up dialog mentions plain HTTP; no
+	// document may claim the Language models page or the import result
+	// warns about it (remote_dialog_view_state.go draws the tip).
+	for file, claim := range map[string]string{
+		"docs/voxt-migration.md": "the Language models page warns that HTTP sends",
+		"docs/behavior.md":       "页面给出警告",
+		"docs/manual-test.md":    "语言模型页说明 HTTP",
+		"CHANGELOG.md":           "Voxt warns that HTTP sends",
+	} {
+		doc, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(doc), claim) {
+			t.Errorf("%s claims a plain-HTTP warning that the app does not show", file)
+		}
+	}
 }
 
 func TestLegacyPromptInputVariables(t *testing.T) {
