@@ -222,7 +222,9 @@ func (a *app) canFollowUp() bool {
 // closeAnswer closes the answer card (and cancels a follow-up, another
 // language, or the backgrounded answer, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
+	if a.liveCard() {
+		a.cancelSession() // a card-first Transcribe or Translate, still recording or working
+	} else if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
 		a.cancelCardSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""

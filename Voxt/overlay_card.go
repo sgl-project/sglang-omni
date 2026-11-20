@@ -109,8 +109,11 @@ func sessionCardBlockGap(block sessionCardBlock, index int) float32 {
 		}
 	case sessionCardProblemMore:
 		return 4
-	case sessionCardSource:
-		return 10
+	case sessionCardSource, sessionCardBody:
+		// A speech card's selected text comes first, its recognised text under it.
+		if index > 0 {
+			return 10
+		}
 	}
 	return 0
 }
