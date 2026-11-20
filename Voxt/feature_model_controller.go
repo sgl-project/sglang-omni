@@ -52,8 +52,17 @@ func (a *app) featureModelStatus(kind local.Kind, feature, id string) featureMod
 			id = model.ID
 		}
 	}
-	if kind == local.ASR && id == "" {
-		id = models.ASRAccurate
+	if kind == local.ASR {
+		if _, ok := models.Lookup(id); !ok {
+			_, configured := a.setupOf(kind, id)
+			hasInstalledCatalogModel := slices.ContainsFunc(a.installed(local.ASR), func(installedModel local.Model) bool {
+				_, ok := models.Lookup(installedModel.ID)
+				return ok
+			})
+			if !configured && !hasInstalledCatalogModel {
+				id = models.ASRAccurate
+			}
+		}
 	}
 	if model, ok := models.Lookup(id); ok && local.Kind(model.Kind) == kind && !model.Retired {
 		return featureModelStatusInput{Model: &model, Status: a.modelStatus[model.ID]}

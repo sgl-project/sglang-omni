@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fresh installs offer the recommended speech model beside each feature's picker**: System dictation no longer hides the download on Transcribe, Translate and Rewrite. Installed catalog models and configured remote services keep their existing controls.
+
+### 中文
+
+#### 修复
+
+- **新安装也会在功能选模型的地方显示推荐语音识别模型的下载入口**：系统听写不再遮住转录、翻译和改写页的下载按钮。已安装的目录模型和已配置的远程服务保持原有操作。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

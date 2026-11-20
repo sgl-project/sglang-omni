@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -196,8 +197,11 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 
 // TestFeatureModelControls: each feature manages its speech model where it
 // picks one, from the first download through deletion and download progress.
+// System dictation does not hide the first download or replace installed or
+// configured models' controls.
 func TestFeatureModelControls(t *testing.T) {
 	a, tt := trTester(t)
+	a.local = onlyDictation{&fakeLocal{}}
 	const download = "Download Qwen3-ASR 1.7B (8bit)"
 	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
 		a.navigate("/" + feature)
@@ -222,6 +226,18 @@ func TestFeatureModelControls(t *testing.T) {
 	frames(tt)
 	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading Qwen3-ASR 1.7B (8bit)") {
 		t.Errorf("download progress: %q", tt.Texts())
+	}
+
+	a.local = &featureCacheLocal{fakeLocal: readyLocal(), alternate: local.Model{Kind: local.ASR, ID: dictation.ModelID, Name: "System dictation", Stream: true}}
+	if status := a.featureModelStatus(local.ASR, hotkey.Transcribe, dictation.ModelID); status.Model != nil || status.Service != nil {
+		t.Errorf("System dictation with an installed catalog model offers another model: %+v", status)
+	}
+	a.local = onlyDictation{&fakeLocal{}}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.ASR = []settings.Provider{{ID: "openai"}}
+	})
+	if status := a.featureModelStatus(local.ASR, hotkey.Transcribe, "openai"); status.Model != nil || status.Service == nil {
+		t.Errorf("configured remote speech service lost its controls: %+v", status)
 	}
 }
 
