@@ -15,7 +15,7 @@ Open the console of a provider you can use, go to **API keys**, and create or co
    <div class="vx-anim" data-scene="llm-open" data-lang="en"></div>
 
 2. Click the **API Key** field and press `⌘V` to paste the key. It shows as dots, and when you save, it goes into this Mac's Keychain, never into Voxt's settings or logs.
-3. For the provider's own service, leave **Address** as it is. For another OpenAI-compatible service, enter its API root, usually ending in `/v1`. It must start with `https://` (`http://` only for a server on this Mac).
+3. For the provider's own service, leave **Address** as it is. For another OpenAI-compatible service, enter its API root, usually ending in `/v1`. The address may start with `https://` or `http://`. HTTP sends the API key and text without encryption, so use it only on a network you trust.
 4. Choose one of the provider's models under **Model**. If yours is not listed, choose **Other model…** and paste the exact model ID into the field that appears; it is case-sensitive.
 
    <div class="vx-anim" data-scene="llm-fill" data-lang="en"></div>
@@ -38,7 +38,7 @@ Open **Translate** or **Rewrite** in the sidebar and choose the saved setup unde
 |---|---|
 | The remote service refused the API key. | The key is wrong, expired or revoked. Copy the whole key again and paste it |
 | Paste the service's API key above, then test again. | No key yet |
-| The remote model's address is not allowed. Use https://, or http:// for an address on this Mac. | Make the address start with `https://` |
+| The remote model's address is not allowed. | Check that the address starts with `http://` or `https://` and has no user name or password |
 | Model not found, 404 | Check that the model ID matches exactly and the address ends in `/v1` |
 | The remote service refused the request, or rate limits | Check the key's access and credit in the provider's console |
 

@@ -59,6 +59,9 @@ const HotkeyCancel = "cancel"
 // event tap. Changing only the timings or Active keeps a chord in progress:
 // the app flips Active as a session starts and ends.
 type HotkeyConfigureParams struct {
+	// Sequence supersedes older configures. A newer close can therefore
+	// remove bindings even when an older open is stalled or times out.
+	Sequence uint64          `json:"sequence,omitempty"`
 	Bindings []HotkeyBinding `json:"bindings"`
 	// DoubleTapMS is the double-tap window: a second press starting
 	// within it of the first release makes a double tap (default: the
@@ -79,6 +82,12 @@ type HotkeyConfigureParams struct {
 	// HotkeyCancel, its behavior a tap). Absent: nothing cancels. It is
 	// never judged while inactive, so its keys reach the app in front.
 	Cancel *HotkeyBinding `json:"cancel,omitempty"`
+	// Generation numbers the configuration: the app counts up each time it
+	// sends one. The helper applies a configuration only above the
+	// generation it already has (requests can land out of order) and
+	// reports it on every hotkey.event, so the app can drop an event a
+	// replaced configuration produced. 0 opts out (an old helper).
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // HotkeyStatus answers hotkey.configure and hotkey.status, and is
@@ -108,6 +117,11 @@ type HotkeyEventParams struct {
 	Behavior string  `json:"behavior"`
 	HeldMS   float64 `json:"heldMs,omitempty"` // how long the chord was held, when known
 	T        float64 `json:"t"`                // when it was decided, ms of the helper's monotonic clock
+	// Generation is the configuration the event was decided under
+	// (HotkeyConfigureParams.Generation); the app drops events from a
+	// configuration it has since replaced. 0: no generation (an old
+	// helper, or a shortcut the app fired itself).
+	Generation int64 `json:"generation,omitempty"`
 	// Front is the app in front as the key went down: the start of the
 	// session's context snapshot.
 	Front *App `json:"front,omitempty"`
