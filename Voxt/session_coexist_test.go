@@ -450,3 +450,46 @@ func TestReviewBackgroundFollowUpDoesNotAllowAnotherFollowUp(t *testing.T) {
 		t.Fatal("Continue stayed off after the follow-up ended")
 	}
 }
+
+// TestTryWaitsForTheStreamingFollowUp: a Transcribe try on a settings
+// page while the card's follow-up streams in the foreground is refused:
+// the follow-up keeps the foreground and the card keeps its turns. The
+// try used to background the follow-up and clear the card, so its end
+// showed only the new turn.
+func TestTryWaitsForTheStreamingFollowUp(t *testing.T) {
+	chat := &fakeChat{texts: []string{`{"title":"Plan","content":"one"}`, "two, and more to come"}}
+	set, keys, tr := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+		s.Features.Transcribe.Enhance = false
+	}, keys)
+	a.pump("the first answer's card", func() bool { return a.sess.State.Ended() && a.answer.open })
+	chat.mu.Lock()
+	chat.stall = true
+	chat.mu.Unlock()
+	tr.setText("longer")
+	first := a.sess.ID
+	if !a.followUpAnswer("") {
+		t.Fatalf("Continue did nothing: %+v", a.answer)
+	}
+	a.pump("the follow-up's audio", func() bool {
+		return a.sess.ID != first && a.sess.State == session.Recording && len(a.sess.Levels) >= 5
+	})
+	a.stopSession()
+	a.pump("the follow-up's answer", func() bool { return a.sess.CanStop() })
+	followUp := a.sess.ID
+
+	if id, _ := a.startTry(store.KindTranscribe); id != "" {
+		t.Errorf("a try started beside the streaming follow-up: %q", id)
+	}
+	if a.bgID != "" || a.sess.ID != followUp || a.mgr.Current().ID != followUp || !a.answer.open || len(a.answer.turns) != 1 {
+		t.Fatalf("the try changed the follow-up: bg=%q sess=%q card=%+v", a.bgID, a.sess.ID, a.answer)
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+	a.pump("the follow-up's end", func() bool { return a.sess.State.Ended() })
+	if !a.answer.open || len(a.answer.turns) != 2 || a.answer.turns[1].Answer.Content != "two, and more to come" {
+		t.Fatalf("the conversation lost a turn: %+v", a.answer)
+	}
+}

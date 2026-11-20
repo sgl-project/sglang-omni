@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,5 +237,39 @@ func TestBackgroundOnlyComposing(t *testing.T) {
 	h.rec.wait(t)
 	if h.m.Background(id) {
 		t.Error("an ended session backgrounded")
+	}
+}
+
+// TestPublicationsKeepRevisionOrder: snapshots published from several
+// goroutines at once reach OnChange in revision order. A revision used
+// to be taken under mu and queued after it, so a later one could be
+// published first and the app, which drops a revision older than the
+// last it saw, lost the earlier snapshot (a session's end among them).
+func TestPublicationsKeepRevisionOrder(t *testing.T) {
+	h := newHarness(t, &fakeFile{text: "dictated"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+		c.Select = &fakeSelector{text: "Dear Ann"}
+	})
+	id, _ := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+	h.speak(id, 3)
+	h.rec.waitFor(t, "the answer streaming", func(s Snapshot) bool { return s.ID == id && s.CanStop() })
+	r := h.m.cur
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 500 {
+				h.m.update(r, func(s *Snapshot) { s.Levels = []float64{0.5} })
+			}
+		}()
+	}
+	wg.Wait()
+	h.m.Cancel(id)
+	h.rec.wait(t)
+	snaps := h.rec.all()
+	for i := 1; i < len(snaps); i++ {
+		if snaps[i].Rev <= snaps[i-1].Rev {
+			t.Fatalf("snapshot %d published revision %d after %d", i, snaps[i].Rev, snaps[i-1].Rev)
+		}
 	}
 }

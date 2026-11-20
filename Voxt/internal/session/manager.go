@@ -25,7 +25,9 @@ type Manager struct {
 
 	mu sync.Mutex
 	// pub orders the publication queue: one goroutine performs kept and
-	// OnChange in revision order while callers enqueue and return.
+	// OnChange in revision order while callers enqueue and return. Callers
+	// enqueue holding mu (lock order mu, then pub), so a later revision
+	// can never be queued before an earlier one.
 	pub       sync.Mutex
 	pubQ      []publication
 	pubWake   *sync.Cond
@@ -171,8 +173,8 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m.snap.Raw, m.snap.Selection = strings.TrimSpace(t.Raw), t.Selection
 	}
 	s := m.snap.clone()
-	m.mu.Unlock()
 	m.enqueue(publication{snapshot: s})
+	m.mu.Unlock()
 	r.startScene()
 	go r.main()
 	return r.id, nil
@@ -291,8 +293,8 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 		m.rev++
 		r.own.Rev = m.rev
 		s := r.own.clone()
-		m.mu.Unlock()
 		m.enqueue(publication{snapshot: s})
+		m.mu.Unlock()
 		return true
 	}
 	if m.cur != r || r.ended {
@@ -313,8 +315,8 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 	m.rev++
 	m.snap.Rev = m.rev
 	s := m.snap.clone()
-	m.mu.Unlock()
 	m.enqueue(publication{snapshot: s})
+	m.mu.Unlock()
 	return true
 }
 
@@ -340,8 +342,8 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 		r.own.Rev = m.rev
 		s := r.own.clone()
 		m.bg = nil
-		m.mu.Unlock()
 		m.enqueue(publication{snapshot: s, kept: kept})
+		m.mu.Unlock()
 		return true
 	}
 	if fn != nil {
@@ -355,8 +357,8 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 	m.rev++
 	m.snap.Rev = m.rev
 	s := m.snap.clone()
-	m.mu.Unlock()
 	m.enqueue(publication{snapshot: s, kept: kept})
+	m.mu.Unlock()
 	return true
 }
 
