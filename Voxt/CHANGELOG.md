@@ -4,6 +4,22 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
+- **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
+- **The opening plays once per app version** (#4172): it appears after an update, but not on a same-version restart or when Reduce Motion is on.
+- **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
+
+### 中文
+
+#### 变更
+
+- **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
+- **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
+- **每个版本只播放一次开场**（#4172）：更新后会播放开场，同一版本重启不会重复播放；开启“减少动态效果”时跳过。
+- **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

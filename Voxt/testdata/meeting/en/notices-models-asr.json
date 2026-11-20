@@ -7,8 +7,7 @@
       "severity": "warning",
       "title": "No speech model",
       "body": "Transcribe, Translate and Rewrite need one to hear you.",
-      "action_label": "Open Speech models",
-      "time_hint": "Jan 2 07:04"
+      "action_label": "Open Speech models"
     }
   ]
 }

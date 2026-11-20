@@ -242,7 +242,7 @@ func (a *app) shellModel(now time.Time) *shellViewState {
 		Transparent:   a.prefs.Appearance.Theme == settings.ThemeTransparent,
 		Still:         a.win == nil || a.prefs.Appearance.ReduceMotion,
 		Toasts:        a.toasts,
-		Nav:           a.navModel(), Notices: a.noticesModel(now),
+		Nav:           a.navModel(), Notices: a.noticesModel(),
 		Palette: &a.paletteView, Sheet: &a.sheetView,
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,

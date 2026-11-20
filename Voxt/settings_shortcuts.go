@@ -129,7 +129,7 @@ func shortcutIcon(code string) icons.Icon {
 	case "rewrite":
 		return icons.PenNewRound
 	default:
-		return icons.Microphone3
+		return transcribeIcon
 	}
 }
 

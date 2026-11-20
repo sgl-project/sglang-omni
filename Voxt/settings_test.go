@@ -104,6 +104,12 @@ func TestShortcutsSettings(t *testing.T) {
 	}
 }
 
+func TestShortcutsUseTheTranscribeIcon(t *testing.T) {
+	if got := shortcutIcon("transcribe"); got.Name != transcribeIcon.Name {
+		t.Fatalf("Transcribe shortcut icon = %q, want %q", got.Name, transcribeIcon.Name)
+	}
+}
+
 // TestStrictShortcutsSetting: Settings → Shortcuts has the Strict
 // shortcuts switch, off by default, with its line in English and Chinese;
 // it shows without scrolling at the default and the smallest window size
