@@ -91,7 +91,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `general.hideDock` | bool | `false` | `true` hides Voxt from the Dock | Show in the Dock (inverted) |
 | `general.closeToTray` | bool | `true` | | Keep running when the window closes |
 | `general.launchAtLogin` | bool | `false` | | Open at login |
-| `features.hidden` | array of strings | `[]` | `translate`, `rewrite`, `app-enhancement` | Shown features (inverted). A hidden feature's shortcuts are off |
+| `features.hidden` | array of strings | `[]` | `translate`, `rewrite`, `app-enhancement`, `notes`, `meetings` | Shown features (inverted). A hidden feature's shortcuts are off |
 
 ### Appearance (Settings → Appearance)
 
@@ -220,7 +220,7 @@ And their own fields:
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |
 | `features.translate.fallback` | string | `""` | a language model id; `""` = none | Fallback model |
 | `features.rewrite.cleanup` | bool | `true` | | Clean up the instruction |
-| `features.cardSizes` | object, string → integer | `{}` | `transcribe`/`translate`/`rewrite` → `0` small, `1` medium, `2` large | The answer card's size button |
+| `features.cardSizes` | object, string → integer | `{}` | `transcribe`/`translate`/`rewrite` → `0` small, `1` medium, `2` large, `3` fill (the available work-area width) | The answer card's size button |
 
 ### Meetings (Meetings → settings)
 
@@ -230,6 +230,7 @@ And their own fields:
 |---|---|---|---|---|
 | `features.meeting.mode` | string | `""` | `""` (meeting), `subtitles`, `recording` | Capture mode |
 | `features.meeting.lang` | string | `""` | a language code; `""` = the main language | Spoken language |
+| `features.meeting.correctionStyle` | string | `""` | correction rules for the language model; `""` = the built-in rules | Transcript correction |
 | `features.meeting.hideFromSharing` | bool | `false` | | Hide from screen sharing |
 | `features.meeting.collapsed` | bool | `false` | | The overlay's compact layout |
 | `features.meeting.translateTarget` | string | `""` (= `en`) | a language code | (no settings row) |
@@ -264,6 +265,7 @@ And their own fields:
 | `models.hidden` | array of strings | `[]` | speech model ids | Speech models → Hide |
 | `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed | Speech models → Faster transcription |
 | `models.llmWait` | string | `""` | `""` (Automatic), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works | Language models → Wait for the language model |
+| `models.llmSwitch` | bool | `false` | | Language models → Switch models when one fails |
 | `providers.llm` | array of providers | `[]` | one entry per language model service | Language models (one card per service set up) |
 | `providers.asr` | array of providers | `[]` | one entry per speech service | Speech models → online services |
 
@@ -325,6 +327,8 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.done` | bool | The setup guide is finished |
 | `setup.openingShown` | bool | The first-use opening was shown |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
+| `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
+| `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
 | `updates.dismissed` | string | The version whose "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |

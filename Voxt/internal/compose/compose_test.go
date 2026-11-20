@@ -380,7 +380,7 @@ func TestLayersOfTheTasks(t *testing.T) {
 	out, _ := Build(Input{Task: Rewrite, Instruction: "y", Answer: true, Previous: []Turn{{Instruction: "z", Selection: "s", Answer: Answer{Title: "T", Content: "c"}}}})
 	msgs := out.Messages()
 	if len(msgs) != 4 || msgs[1].Role != "user" || msgs[2].Content != `{"title":"T","content":"c"}` || msgs[3].Content != "<instruction>\ny\n</instruction>" ||
-		msgs[1].Content != "<instruction>\nz\n</instruction>\n\n<selected_text>\ns\n</selected_text>" {
+		msgs[1].Content != "<selected_text>\ns\n</selected_text>\n\n<instruction>\nz\n</instruction>" {
 		t.Errorf("messages %+v", msgs)
 	}
 }
@@ -606,6 +606,12 @@ func TestGlossaryInUser(t *testing.T) {
 		if out.Glossary == "" || !strings.HasPrefix(out.User, out.Glossary+"\n\n") || o2.System != out.System || strings.Contains(out.System, "Term") ||
 			!strings.Contains(out.Profile(), "glossary") || o2.Glossary != "" || !strings.Contains(out.System, "<glossary>") {
 			t.Errorf("%s: glossary %q, user %q, profiles %s / %s", c.name, out.Glossary, out.User, out.Profile(), o2.Profile())
+		}
+	}
+	for _, taskPrompt := range []string{"", "Rewrite formally"} {
+		out, err := Build(Input{Task: Rewrite, MainLanguage: "en", Glossary: large, Instruction: "make it shorter", Text: "selected", Typed: "Term03", TaskPrompt: taskPrompt})
+		if err != nil || !strings.Contains(out.Glossary, "- Term03\n") {
+			t.Errorf("typed-only glossary match %q, %v", out.Glossary, err)
 		}
 	}
 	small := Input{Task: Transcribe, MainLanguage: "en", Glossary: large[:GlossaryAllUpTo], Text: "Term01"}

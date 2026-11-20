@@ -44,6 +44,14 @@
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
       "insert_tooltip": "插入到 Slack（R）",
       "copy_tooltip": "复制（C）",
+      "inputs": [
+        {
+          "label": "选中的文字",
+          "text": "Anna: I can start the meeting.",
+          "chars": 30,
+          "lines": 1
+        }
+      ],
       "size_step": 0,
       "levels": [
         0,

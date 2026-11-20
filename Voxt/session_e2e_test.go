@@ -125,9 +125,11 @@ func (s *sessionApp) pump(what string, cond func() bool) {
 	}
 }
 
-// settle runs posted functions for d, so an action with an asynchronous
-// effect (a session's stop) has landed before a negative assertion.
-func (s *sessionApp) settle(d time.Duration) {
+// drain serves the queue for d: a wait during which nothing is
+// expected, with the posts that do come still run, so an action with an
+// asynchronous effect (a session's stop) has landed before a negative
+// assertion.
+func (s *sessionApp) drain(d time.Duration) {
 	s.t.Helper()
 	deadline := time.After(d)
 	for {
@@ -297,7 +299,7 @@ func TestSessionPasteLastOtherKeyKeepsRecording(t *testing.T) {
 	a := newSessionApp(t, ev, set, keys)
 	a.pump("the recording", func() bool { return a.sess.State == session.Recording })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "paste-last", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: a.hotkeyGen})
-	a.settle(250 * time.Millisecond)
+	a.drain(250 * time.Millisecond)
 	if a.sess.State != session.Recording {
 		t.Fatalf("Paste last on its ordinary shortcut stopped dictation: %+v", a.sess)
 	}
@@ -351,7 +353,7 @@ func TestSessionStaleFinishEvent(t *testing.T) {
 				t.Fatal("the second dictation did not start")
 			}
 			a.hotkeyFired(stale)
-			a.settle(250 * time.Millisecond) // a wrongly accepted stop lands asynchronously
+			a.drain(250 * time.Millisecond) // a wrongly accepted stop lands asynchronously
 			if a.sess.State != session.Recording {
 				t.Fatalf("a Return event from the first dictation's configuration stopped the second: %+v", a.sess)
 			}

@@ -50,6 +50,7 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 			actions.setSendClipboardImage(local.sendClipboard)
 		}
 	})
+	caption(c, i18n.T("With both on, the copied image goes, not the screenshot."))
 	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Off by default: a text selection sends only the text, so an image you copied earlier cannot take over a text rewrite. Turn it on to send the selected text and the copied image together."), func() {
 		if ui.Switch(c.Key("priv-copied-with-text"), &local.sendClipboardWithSelection).Label(i18n.T("Send both with Rewrite")).Changed() {
 			actions.setSendClipboardImageWithSelection(local.sendClipboardWithSelection)

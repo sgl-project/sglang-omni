@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // TestPrivacySendWindow: sending a screenshot of the window is off by
@@ -100,5 +101,24 @@ func TestPrivacySendClipboardImage(t *testing.T) {
 	click(t, tt, "Send both with Rewrite")
 	if a.settings.Get().Privacy.SendClipboardImageWithSelection {
 		t.Error("text and image together: still on")
+	}
+}
+
+// TestPrivacyImagePriority: under the screenshot and copied-image
+// switches, one plain sentence says which one wins when both are on, in
+// English and in Chinese.
+func TestPrivacyImagePriority(t *testing.T) {
+	for _, tc := range []struct{ lang, want string }{
+		{"en", "With both on, the copied image goes, not the screenshot."},
+		{"zh-Hans", "两个都打开时，发送复制的图片，不发送截图。"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			a.updateSettings(func(s *settings.Settings) { s.General.Language = tc.lang })
+			openPrivacy(t, a, tt)
+			if !has(tt, tc.want) {
+				t.Errorf("no %q in %q", tc.want, firstTexts(tt))
+			}
+		})
 	}
 }

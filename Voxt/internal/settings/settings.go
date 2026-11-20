@@ -307,6 +307,10 @@ type Setup struct {
 	// result once, or the history had one: Home stops offering its Try
 	// area. It stays when the history is cleared.
 	Tried bool `json:"tried,omitempty"`
+	// RewriteBoxOpens counts successful input-box opens, capped at three;
+	// RewriteBoxTipDismissed independently hides the guidance for good.
+	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
+	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
 }
 
 // Updates: what the updater offers (Settings → About → Updates). With an

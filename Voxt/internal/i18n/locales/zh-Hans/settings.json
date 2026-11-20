@@ -188,6 +188,10 @@
   "Hide from screen sharing": "在屏幕共享中隐藏",
   "Hide meeting overlay": "隐藏会议浮窗",
   "Get the other person's consent before you record them speaking.": "录制他人说话前请先征得同意。",
+  "Transcript correction": "转录稿校对",
+  "Choose how the language model corrects the transcript. It still keeps every line and uses your dictionary and Speech context.": "选择语言模型校对转录稿的风格。它仍保留每一行，并使用你的词典和识别上下文。",
+  "Correction style for meeting transcripts": "会议转录稿的校对风格",
+  "For example: keep the conversation's original tone; use concise sentences; keep English product names in English.": "例如：保留原来的对话语气；句子简洁；英文产品名保持英文。",
   "Meeting recordings": "会议录音",
   "Top centre": "顶部居中",
   "Try the start sound": "试听开始提示音",
@@ -265,5 +269,6 @@
   "Color": "颜色",
   "Reset color": "恢复默认颜色",
   "Transparent": "透明",
-  "Window transparency": "窗口透明度"
+  "Window transparency": "窗口透明度",
+  "With both on, the copied image goes, not the screenshot.": "两个都打开时，发送复制的图片，不发送截图。"
 }
