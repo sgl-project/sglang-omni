@@ -167,9 +167,9 @@ jobs:
           release_notes_by_locale="$(Voxt/scripts/release-appcast.sh notes-by-locale <<< "$body")"
 
           prepare="$(jq '{action: "prepareUpload"} + del(.sparkleVersion)' <<< "$ENTRY" \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)"
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::prepareUpload was refused: $prepare"; exit 1; }
           zip_upload="$(jq -r '.data.uploads.zip.url // empty' <<< "$prepare")"
           dmg_upload="$(jq -r '.data.uploads.dmg.url // empty' <<< "$prepare")"
           if [[ -z "$zip_upload" || -z "$dmg_upload" ]]; then
@@ -189,9 +189,9 @@ jobs:
             '. + {sha256: $sha256, size: $size, edSignature: $edSignature,
               releaseNotes: $notes.en, releaseNotesByLocale: $notes,
               releaseURL: $releaseURL, publishedAt: $publishedAt}' <<< "$ENTRY" \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)"
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::update was refused: $reply"; exit 1; }
           echo "$reply"
 
           # Sparkle skips an entry that needs arm64 on an Intel Mac. Only the
@@ -207,7 +207,7 @@ jobs:
 
           jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
             '{channel: $channel, version: $version, mode: "replace-latest"}' \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/appcast" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/appcast" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "Content-Type: application/json" --data-binary @-
           echo
 

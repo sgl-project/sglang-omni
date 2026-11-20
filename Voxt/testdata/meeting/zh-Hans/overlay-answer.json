@@ -44,6 +44,7 @@
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
       "insert_tooltip": "没有选中输入框。先点一下要插入的位置再点插入，或者复制。",
+      "copy_tooltip": "复制（C）",
       "size_step": 0,
       "levels": [
         0,

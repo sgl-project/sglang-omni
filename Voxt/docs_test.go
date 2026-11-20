@@ -10,12 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
 
 func TestDocs(t *testing.T) {
-	var docs []string
+	docs := []string{"README.md", "AGENTS.md", "helper/README.md"}
 	err := filepath.WalkDir("docs", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -27,6 +28,11 @@ func TestDocs(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, root := range []string{"README.md", "AGENTS.md", "helper/README.md"} {
+		if !slices.Contains(docs, root) {
+			t.Errorf("relative-link checks do not cover %s", root)
+		}
 	}
 
 	t.Run("relative links", func(t *testing.T) {

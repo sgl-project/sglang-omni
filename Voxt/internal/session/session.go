@@ -126,6 +126,9 @@ const (
 	ProblemInternal = "internal"
 )
 
+// ErrNotTranslated marks an answer that still looks untranslated after Translate's strict retry.
+var ErrNotTranslated = errors.New("the language model did not translate the text")
+
 // Problem is what went wrong in a session.
 type Problem struct {
 	Code string

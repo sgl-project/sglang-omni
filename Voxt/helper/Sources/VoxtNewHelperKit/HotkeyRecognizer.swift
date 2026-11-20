@@ -209,9 +209,13 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
     /// The shortcut that cancels while active (id "cancel", a tap). Nil:
     /// nothing cancels. Never judged while inactive.
     public var cancel: Binding?
+    /// The app's configuration number: it counts up per hotkey.configure,
+    /// and requests can land out of order, so a configuration only
+    /// replaces a newer one never (configure returns false for it).
+    public var generation: Int
 
     public init(bindings: [Binding], doubleTapMs: Double = 500, longPressMs: Double = 300, tapMaxMs: Double = 1500,
-                swallowFn: Bool = false, active: Bool = false, cancel: Binding? = nil) {
+                swallowFn: Bool = false, active: Bool = false, cancel: Binding? = nil, generation: Int = 0) {
         self.bindings = bindings
         self.doubleTapMs = doubleTapMs
         self.longPressMs = longPressMs
@@ -219,6 +223,39 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
         self.swallowFn = swallowFn
         self.active = active
         self.cancel = cancel
+        self.generation = generation
+    }
+}
+
+/// Orders hotkey.configure requests even when an older request finishes
+/// after a newer one or its client has already timed out.
+public final class HotkeyConfigureCoordinator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latestSequence: UInt64?
+    private var latestParams: HotkeyConfigureParams?
+
+    public init() {}
+
+    public func configure(_ params: HotkeyConfigureParams, apply: (HotkeyConfigureParams) -> Void) {
+        var current = params
+        while true {
+            let allowed = lock.withLock {
+                if current.sequence == nil, latestSequence != nil { return false }
+                if let sequence = current.sequence, let latest = latestSequence, sequence < latest { return false }
+                if let sequence = current.sequence { latestSequence = sequence }
+                latestParams = current
+                return true
+            }
+            guard allowed else { return }
+            apply(current)
+            let (stale, latest) = lock.withLock { () -> (Bool, HotkeyConfigureParams?) in
+                guard let sequence = current.sequence else { return (false, nil) }
+                return (sequence != latestSequence, latestParams)
+            }
+            if !stale { return }
+            guard let latest else { return }
+            current = latest
+        }
     }
 }
 
@@ -284,10 +321,16 @@ public struct HotkeyRecognizer: Sendable {
     /// Sets the config. Changing only the timings or "active" keeps a
     /// chord in progress (Go flips active as a session starts, while the
     /// key that started it may still be down).
-    public mutating func configure(_ c: HotkeyConfig) {
+    /// Applies c, unless c is older than the configuration in effect
+    /// (its generation is smaller): requests land out of order, and the
+    /// last state the app sent must win, not the last to arrive.
+    @discardableResult
+    public mutating func configure(_ c: HotkeyConfig) -> Bool {
+        if c.generation < config.generation { return false }
         let same = c.bindings == config.bindings
         config = c
         if !same { reset() }
+        return true
     }
 
     /// Forgets transient state (the tap was disabled, the config changed).
@@ -311,7 +354,7 @@ public struct HotkeyRecognizer: Sendable {
     }
 
     /// Feeds one event; returns what fired and whether to swallow it.
-    public mutating func handle(_ input: KeyInput) -> (events: [HotkeyEvent], swallow: Bool) {
+    public mutating func handle(_ input: KeyInput, hasMarkedText: () -> Bool = { false }) -> (events: [HotkeyEvent], swallow: Bool) {
         var out = tick(now: input.t)
         var swallow = false
         switch input {
@@ -326,12 +369,12 @@ public struct HotkeyRecognizer: Sendable {
             swallow = config.swallowFn && chordBindings.contains { $0.modifiers[.fn] != nil }
         case .keyDown(let keyCode, let flags, let isRepeat, let t):
             if !pressed.isEmpty { spoiled = true; longPressDeadline = nil }
-            swallow = handleKeyDown(.key(keyCode), flags: flags, isRepeat: isRepeat, t: t, &out)
+            swallow = handleKeyDown(.key(keyCode), flags: flags, isRepeat: isRepeat, t: t, hasMarkedText: hasMarkedText, &out)
         case .keyUp(let keyCode, _, let t):
             swallow = handleKeyUp(.key(keyCode), t: t, &out)
         case .mouseDown(let button, let flags, let t):
             if !pressed.isEmpty { spoiled = true; longPressDeadline = nil }
-            swallow = handleKeyDown(.button(button), flags: flags, isRepeat: false, t: t, &out)
+            swallow = handleKeyDown(.button(button), flags: flags, isRepeat: false, t: t, hasMarkedText: hasMarkedText, &out)
         case .mouseUp(let button, let t):
             swallow = handleKeyUp(.button(button), t: t, &out)
         }
@@ -467,12 +510,18 @@ public struct HotkeyRecognizer: Sendable {
 
     private var keyBindings: [Binding] { config.bindings.filter { $0.press != nil }.sorted { $0.specificity > $1.specificity } }
 
+    private func passesComposition(_ press: Press, _ binding: Binding, hasMarkedText: () -> Bool) -> Bool {
+        guard case .key = press, binding.modifiers.isEmpty else { return false }
+        return hasMarkedText()
+    }
+
     /// A key or a mouse button pressed.
-    private mutating func handleKeyDown(_ press: Press, flags: UInt64, isRepeat: Bool, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
+    private mutating func handleKeyDown(_ press: Press, flags: UInt64, isRepeat: Bool, t: Double, hasMarkedText: () -> Bool, _ out: inout [HotkeyEvent]) -> Bool {
         let pressed = RawFlags.pressed(flags)
         // The cancel shortcut, only while active: its keys are swallowed
         // then, and reach the app in front at any other time.
         if config.active, let c = config.cancel, c.matches(press, pressed: pressed) {
+if passesComposition(press, c, hasMarkedText: hasMarkedText) { return false }
             if !isRepeat { out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: nil, t: t)) }
             swallowedKeys.insert(press)
             return true
@@ -481,6 +530,7 @@ public struct HotkeyRecognizer: Sendable {
             if swallowedKeys.contains(press) { return true } // repeats of a swallowed key
             return false
         }
+        if passesComposition(press, b, hasMarkedText: hasMarkedText) { return false }
         let swallow = b.swallow ?? true
         if swallow { swallowedKeys.insert(press) }
         if isRepeat { return swallow }

@@ -70,10 +70,8 @@ const (
 	LinesTextW = 480
 	LinesW     = LinesTextW + 2*LivePadX
 	LinesMax   = 10
-	// After the waveform in the row, Gap before each, when they show:
-	// the time, and the matched group's name (SceneSize, at most
-	// SceneMaxW wide).
-	TimeW     = 30
+	// After the waveform in the row, Gap before the matched group's name
+	// (SceneSize, at most SceneMaxW wide).
 	SceneSize = 11
 	SceneMaxW = 88
 	// A notice: the icon's slot, Gap, its line (NoticeSize), the
@@ -110,14 +108,11 @@ func Place(wa mygo.Rectangle, o settings.Overlay, w, h int) (int, int) {
 	return x, y
 }
 
-// RowWidth is the width of the pill's row: the icon and the waveform, the
-// time when it shows, the group's name when one matched (scene DIPs
-// wide, at most SceneMaxW; 0 for none).
-func RowWidth(showTime bool, scene float32) int {
+// RowWidth is the width of the pill's row before the recording time: the
+// icon and waveform, then the group's name when one matched (scene DIPs wide,
+// at most SceneMaxW; 0 for none).
+func RowWidth(scene float32) int {
 	w := RowW
-	if showTime {
-		w += Gap + TimeW
-	}
 	if scene > 0 {
 		w += Gap + int(math.Ceil(float64(min(scene, SceneMaxW))))
 	}

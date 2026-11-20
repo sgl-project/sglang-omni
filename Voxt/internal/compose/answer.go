@@ -124,11 +124,74 @@ func partialTagSuffix(s, tag string) int {
 	return 0
 }
 
+// stripInputTags drops an <instruction>, <selected_text> or <typed_text>
+// pair a model echoed from RewriteMessage, keeping the text between: a
+// pair that wraps the whole answer, or one around exactly a text the user sent (whole
+// lines of input). Other pairs are part of the answer (a prompt template the
+// user asked for) and stay, as do the tags the user's own text has.
+func stripInputTags(s string, input ...string) string {
+	sent := "\n" + strings.Join(input, "\n") + "\n"
+	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
+		open, close := "<"+name+">", "</"+name+">"
+		if strings.Contains(sent, open) || strings.Contains(sent, close) {
+			continue
+		}
+		for from := 0; ; {
+			i := strings.Index(s[from:], open)
+			if i < 0 {
+				break
+			}
+			i += from
+			j := strings.Index(s[i+len(open):], close)
+			if j < 0 {
+				break
+			}
+			j += i + len(open)
+			inner := strings.TrimSpace(s[i+len(open) : j])
+			whole := strings.TrimSpace(s[:i]) == "" && strings.TrimSpace(s[j+len(close):]) == ""
+			if whole || inner != "" && strings.Contains(sent, "\n"+inner+"\n") {
+				s = s[:i] + inner + s[j+len(close):]
+				from = i + len(inner)
+			} else {
+				from = j + len(close)
+			}
+		}
+	}
+	return s
+}
+
+func stripPartialInputTags(s string, input ...string) string {
+	s = stripInputTags(s, input...)
+	sent := "\n" + strings.Join(input, "\n") + "\n"
+	for _, name := range []string{"instruction", "selected_text", "typed_text"} {
+		open, close := "<"+name+">", "</"+name+">"
+		if strings.Contains(sent, open) || strings.Contains(sent, close) {
+			continue
+		}
+		i := strings.LastIndex(s, open)
+		if i >= 0 {
+			rest := s[i+len(open):]
+			literalMention := strings.HasPrefix(rest, " tag") || strings.HasPrefix(rest, " 标记") || strings.HasPrefix(rest, " literally")
+			if i > strings.LastIndex(s, close) && !literalMention {
+				s = s[:i] + rest
+			}
+		}
+		if n := partialTagSuffix(s, open); n > 0 {
+			s = s[:len(s)-n]
+		}
+		if n := partialTagSuffix(s, close); n > 0 {
+			s = s[:len(s)-n]
+		}
+	}
+	return s
+}
+
 // ParseAnswer reads a model's JSON answer {title, content}: the object
 // may sit in a code fence or among other text. ok is false when there is
 // no such object; the caller then takes the text as it is (Clean),
 // without a title. An object whose content is empty is an empty answer.
-func ParseAnswer(text string) (Answer, bool) {
+// Input is what the user sent (the selection, typed text, the instruction).
+func ParseAnswer(text string, input ...string) (Answer, bool) {
 	raw := extractObject(text)
 	if raw == "" {
 		return Answer{}, false
@@ -141,8 +204,8 @@ func ParseAnswer(text string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(a.Title), `"“”#*`))
-	a.Content = strings.TrimSpace(a.Content)
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripPartialInputTags(a.Title, input...)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripPartialInputTags(a.Content, input...))
 	return a, true
 }
 
@@ -183,8 +246,9 @@ func extractObject(text string) string {
 
 // PartialAnswer reads what a streaming answer holds so far: the title and
 // the content of a JSON answer as far as they came, or, when the model
-// writes plain text instead, the text itself as content.
-func PartialAnswer(text string) Answer {
+// writes plain text instead, the text itself as content. Input is as
+// ParseAnswer's.
+func PartialAnswer(text string, input ...string) Answer {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return Answer{}
@@ -197,9 +261,9 @@ func PartialAnswer(text string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
+		return Answer{Content: strings.TrimSpace(strings.TrimSuffix(stripPartialInputTags(t, input...), "```"))}
 	}
-	return Answer{Title: strings.TrimSpace(partialField(t, "title")), Content: strings.TrimLeft(partialField(t, "content"), " \n")}
+	return Answer{Title: strings.TrimSpace(stripPartialInputTags(partialField(t, "title"), input...)), Content: strings.TrimLeft(stripPartialInputTags(partialField(t, "content"), input...), " \n")}
 }
 
 // partialField is the string value of key in a JSON object that may be
