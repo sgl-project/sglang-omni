@@ -181,6 +181,31 @@ func TestBoxInputClearedDuringWindowReviewIsNotSent(t *testing.T) {
 	}
 }
 
+// TestBoxClosedRetryKeepsTypedText: a retry from the answer card starts
+// after its input box has closed, so an empty box read must not erase the
+// typed text carried by the retry.
+func TestBoxClosedRetryKeepsTypedText(t *testing.T) {
+	model := &fakeLLM{text: "We ship on Friday."}
+	h := newHarness(t, &fakeFile{text: "unused"}, model, func(c *Config, s *settings.Settings) {
+		c.BoxInput = func(context.Context) (string, [][]byte, error) { return "", nil, nil }
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?", Typed: "and cc the team"}}); err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.State != Done || end.Typed != "and cc the team" {
+		t.Fatalf("closed retry lost its typed text: end %s, typed %q", end.State, end.Typed)
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; !strings.Contains(user, "and cc the team") {
+		t.Errorf("typed text missing from the user message:\n%s", user)
+	}
+}
+
 // TestBoxResendClearedDuringWindowReviewIsNotSent: a send again carries
 // the text typed before; the user clears the box while its window
 // screenshot waits for approval, and the old text stays out.
