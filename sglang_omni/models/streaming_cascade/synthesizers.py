@@ -85,8 +85,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
     its numbers read out as words. sentence_pause_ms of silence goes before
-    each spoken sentence after the reply's first audio, but not inside a
-    sentence cut by max_sentence_words.
+    the audio of each sentence after the reply's first audio, but not inside a
+    sentence cut by max_sentence_words, and a sentence that plays nothing
+    sends none.
     styles maps a style name to the recording a sentence of that style
     clones, and a sentence of a style it lacks clones reference_audio_path;
     the language model names a style with a tag such as [calm].
@@ -342,20 +343,11 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             emit(
                 control_chunk(REPLY_SENTENCE, turn=turn, **with_language({}, language))
             )
+            # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply; a cut inside a sentence gets no pause.
+            is_pause_due = bool(audio_ms and pause_samples and follows_sentence_end)
+            plays_audio = False
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
-                if audio_ms and pause_samples and follows_sentence_end:
-                    # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply; a cut inside a sentence gets no pause.
-                    audio_ms += pause_samples * 1000 / self.sample_rate_hz
-                    emit(
-                        audio_chunk(
-                            np.zeros(pause_samples, dtype="<f4"),
-                            self.sample_rate_hz,
-                            turn,
-                        )
-                    )
-                else:
-                    pass
                 # note (Haoling Pu): a span starts with the spacing after the sentence before it, which the model wrote before the tag of this one.
                 spoken_start = text_end + len(span) - len(span.lstrip())
                 style = next(
@@ -364,11 +356,27 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                     if text_start <= spoken_start
                 )
                 async for samples in self.speak(sentence, language, style):
+                    if is_pause_due:
+                        audio_ms += pause_samples * 1000 / self.sample_rate_hz
+                        emit(
+                            audio_chunk(
+                                np.zeros(pause_samples, dtype="<f4"),
+                                self.sample_rate_hz,
+                                turn,
+                            )
+                        )
+                        is_pause_due = False
+                    else:
+                        pass
+                    plays_audio = True
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
+            else:
+                pass
+            if plays_audio:
                 follows_sentence_end = ends_sentence
             else:
-                # note (Haoling Pu): a span with no word plays nothing, so a sentence end before it or at its end still puts a pause before the next spoken sentence.
+                # note (Haoling Pu): a span that plays nothing, with no word in it or dropped whole by drop_quiet_start, sends no pause, so a sentence end before it or at its end still puts one pause before the next audio.
                 follows_sentence_end = follows_sentence_end or ends_sentence
             text_end += len(span)
             self.progress(emit, turn, text_end, audio_ms)

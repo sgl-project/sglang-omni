@@ -1500,6 +1500,47 @@ async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
 
 
 @pytest.mark.asyncio
+async def test_openai_speech_pauses_once_across_a_sentence_that_plays_nothing():
+    """drop_quiet_start can drop a whole sentence, which then sends no pause, so the sentences around it get one pause between them and reply.progress does not move for it."""
+    sample_rate_hz = 24000
+    speech = np.full(1200, 16384, dtype="<i2")
+    room_tone = np.full(3600, 164, dtype="<i2")  # 0.005 of full scale
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["input"] == "Middle.":
+            audio = room_tone
+        else:
+            audio = speech
+        return httpx.Response(
+            200,
+            content=audio.tobytes(),
+            headers={"X-Sample-Rate": str(sample_rate_hz)},
+        )
+
+    tts = build(
+        {
+            "kind": "openai_speech",
+            **HTTP_SERVICE,
+            "drop_quiet_start": True,
+            "sentence_pause_ms": 10,
+        }
+    )
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        tts, [text_chunk("First. Middle. Last.", 1), control_chunk(TURN_DONE, turn=1)]
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    pause = [0] * 240  # 10 ms at 24 kHz
+    assert (played * 32768).round().tolist() == (
+        speech.tolist() + pause + speech.tolist()
+    )
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    assert [point["audio_ms"] for point in progress] == pytest.approx([50, 50, 110])
+
+
+@pytest.mark.asyncio
 async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(backends):
     settings, _, spoken, _ = backends
     tts = settings.component_graph().node("tts").component.model_dump()
