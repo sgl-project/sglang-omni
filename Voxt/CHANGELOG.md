@@ -6,13 +6,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Clipboard images are bounded before decoding**: the helper rejects source images over 32 MiB or 40 megapixels before creating thumbnails, including copied files and images captured from a copied selection. Pasteboard representations are copied before their byte count is checked. The Rewrite box reports rejected images instead of silently dropping them.
+- **Clipboard images are bounded before decoding**: the helper rejects source images over 32 MiB or 40 megapixels before creating thumbnails, including copied files and images captured from a copied selection. Pasteboard representations are copied before their byte count is checked. The Rewrite box reports oversized images instead of silently dropping them, and distinguishes them from files or images it cannot read.
 
 ### 中文
 
 #### 修复
 
-- **剪贴板图片在解码前限制大小**：辅助进程会在生成缩略图前拒绝超过 32 MiB 或 4000 万像素的源图片，包括复制的文件和从选中内容复制时捕获的图片。系统剪贴板仍会先复制表示数据，再检查字节数。改写输入框会提示图片已被拒绝，不再静默丢弃。
+- **剪贴板图片在解码前限制大小**：辅助进程会在生成缩略图前拒绝超过 32 MiB 或 4000 万像素的源图片，包括复制的文件和从选中内容复制时捕获的图片。系统剪贴板仍会先复制表示数据，再检查字节数。改写输入框会提示图片太大，不再静默丢弃，也会把超限图片与读不出来的文件或图片区分开。
 
 ## [2.1.2] - 2026-11-19
 
