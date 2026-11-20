@@ -371,10 +371,10 @@ sgl-omni serve \
   --port 8000
 ```
 
-Gain over the same server without a draft, on one H200 with SGLang 0.5.23 and the default sampling, streamed, 400 SeedTTS utterances per language, two passes per load, A B B A on fresh servers. Each draft ran on its own GPU of one node against its own server without a draft, with [`examples/configs/fun_cosyvoice3_dspark.yaml`](../../examples/configs/fun_cosyvoice3_dspark.yaml) or the same file naming SpeechSpec's path, and `tts-seedtts-zh` for Chinese:
+Gain over the same server without a draft, on one H200 with SGLang 0.5.23 and the default sampling, streamed, 400 SeedTTS utterances per language, two passes per load, A B B A on fresh servers. Each draft ran on its own GPU of one node against its own server without a draft, with [`examples/configs/fun_cosyvoice3_dspark.yaml`](../../examples/configs/fun_cosyvoice3_dspark.yaml) or the same file naming SpeechSpec's path, and `tts-seedtts-zh` for Chinese. The sweep runs on the one GPU in `CUDA_VISIBLE_DEVICES` and ends every process left on it after each leg, so pick a GPU nothing else uses:
 
 ```bash
-python -m benchmarks.eval.speculative_sweep \
+CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
   --draft-config examples/configs/fun_cosyvoice3_dspark.yaml \
   --workload tts-seedtts-en \
   --output-dir results/fun_cosyvoice3_dspark_en \
