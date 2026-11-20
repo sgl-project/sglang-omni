@@ -202,21 +202,35 @@ test("the caption waits for a tag still arriving instead of showing it", () => {
   assert.deepEqual(captionWords(session, "resp_0"), { heard: "Look here", pending: "" });
 });
 
-test("the screen shows the latest blocks the caption has reached, so a block shows once the speech before it has played", () => {
-  // A reply without progress from the server shows its blocks as they stream, without a tag still arriving.
-  const { session } = openSession("Here. <SCREEN>a\nb</screen> And <screen>\nc</scr", []);
-  assert.equal(session.screen, "a\nb\n\nc");
-  const text = "It's on screen. <screen>d</screen>";
+test("the screen shows a reply's blocks once a progress point past them has played, so it never runs ahead of the audio", () => {
+  const { session } = openSession("Here. <screen>a</screen>", [{ textEnd: 24, audioMs: 400 }]);
+  session.played("resp_0", 400, false);
+  assert.equal(session.screen, "a");
+  // The text arrives before the first progress event, and the caption shows it whole until then.
+  const text = "Run this. <screen>lsof -i :8080</screen> Then check.";
   session.handle({ type: "response.created", response: { id: "resp_1" } });
   session.handle({ type: "response.output_audio_transcript.delta", response_id: "resp_1", delta: text });
   session.handle({ type: "response.output_audio.delta", response_id: "resp_1", item_id: "item_1", delta: "" });
-  for (const [textEnd, audioMs] of [[15, 800], [text.length, 800]]) {
+  assert.equal(session.screen, "a");
+  // The server sums audio_ms chunk by chunk, so the last point can sit a rounding error past the player's count.
+  for (const [textEnd, audioMs] of [[9, 500], [text.length, 1500.0000000000002]]) {
     session.handle({ type: "sglang.response.progress", response_id: "resp_1", item_id: "item_1", output_index: 0, content_index: 0, text_end: textEnd, audio_ms: audioMs });
   }
-  session.played("resp_1", 700, false);
-  assert.equal(session.screen, "a\nb\n\nc");
-  session.played("resp_1", 800, false);
-  assert.equal(session.screen, "d");
+  // Late in "Then check." the caption has passed the block, but no progress point past it has played.
+  session.played("resp_1", 1400, false);
+  assert.ok(session.captionParts("resp_1").heard.includes("Then"));
+  assert.equal(session.screen, "a");
+  session.played("resp_1", 1500, false);
+  assert.equal(session.screen, "lsof -i :8080");
+});
+
+test("after a cut the screen shows the blocks in the prefix the server's history kept", () => {
+  const text = "Run this. <screen>lsof -i :8080</screen> Then check.";
+  const { session } = openSession(text, [{ textEnd: 9, audioMs: 500 }, { textEnd: text.length, audioMs: 1500 }]);
+  session.played("resp_0", 1500, true);
+  assert.equal(session.screen, "lsof -i :8080");
+  session.handle({ type: "sglang.response.heard", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, text_end: 9 });
+  assert.equal(session.screen, "");
 });
 
 function openGranted(interaction) {

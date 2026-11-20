@@ -251,7 +251,7 @@ function renderTranscript() {
 }
 
 // The caption shows the latest reply, the part already heard set apart from the rest; a cut reply keeps only the heard part.
-// The screen shows the blocks the caption has reached, so it follows playback too.
+// The screen shows the blocks a played progress point has passed, so it follows playback too.
 function renderHeard() {
   const screen = session ? session.screen : "";
   ui.screen.hidden = !screen;

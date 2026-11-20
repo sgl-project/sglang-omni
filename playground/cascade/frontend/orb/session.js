@@ -148,13 +148,21 @@ export class DuplexSession {
     return { heard: spoken.slice(0, end), pending: cut ? "" : spoken.slice(end) };
   }
 
-  // What the screen shows: the screen blocks the caption has reached in the latest reply where it has reached
-  // any. A block shows once the speech before it has played, which is also when the server's history keeps it,
-  // so a reply cut before its block never shows it.
+  // What the screen shows: the played screen blocks of the latest reply that has any. A block has played once a
+  // progress point past it has played, or, after a cut, once it lies in the prefix the server's history kept,
+  // which is when that history keeps it, so a reply cut before its block never shows it.
   get screen() {
-    for (const [responseId, reply] of [...this.replies].reverse()) {
-      // The caption's heard part keeps the reply's offsets, so its length is how far the caption has reached.
-      const reached = reply.text.slice(0, this.captionParts(responseId).heard.length);
+    for (const reply of [...this.replies.values()].reverse()) {
+      const cut = (reply.status !== null && reply.status !== "completed") || reply.stopped;
+      let reachedEnd;
+      if (cut && reply.keptEnd !== null) {
+        reachedEnd = reply.keptEnd;
+      } else {
+        // note (Haoling Pu): the caption runs ahead of the audio, over the whole reply before the first progress event and word by word between two points, so the card waits for a point that has played.
+        // note (Haoling Pu): the server sums audio_ms chunk by chunk and the player divides its sample count once, so a reply's last point can sit a rounding error, about 1e-11 ms, past the played ms; 0.01 ms is under one 24 kHz sample.
+        reachedEnd = heardTextEnd(reply.progress, reply.playedMs + 0.01);
+      }
+      const reached = reply.text.slice(0, codeUnitOffset(reply.text, reachedEnd));
       const blocks = [...reached.matchAll(SCREEN_TEXT)].map((match) => match[1].trim()).filter(Boolean);
       if (blocks.length) return blocks.join("\n\n");
     }
