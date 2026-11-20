@@ -51,6 +51,8 @@ SHORT_TIMEOUT_S = 0.3
 # note (Yi Zhao): enough packets for several whole units, so a reply has started and ended while packets remain, and the events of one session outnumber a default receive queue.
 MANY_PACKETS = 16
 SLOW_CLOSE_MS = 600.0
+# note (Yi Zhao): well under the 80 ms between two packets.
+QUICK_DELTA_MS = 20.0
 STAND_IN_PID = 4242
 # note (Yi Zhao): any nonzero sample is speech to the stand-in pipeline.
 SPEECH_PACKET = b"\x01\x00" * (PACKET_BYTES // 2)
@@ -269,6 +271,30 @@ def test_a_client_that_cancels_and_resets_at_once_is_released(tmp_path: Path) ->
     assert summary.session_outcomes == {"dropped": 2}
     assert summary.sessions_left == 0
     assert summary.checks["final_session_completed"] is True
+
+
+def test_a_client_that_cancels_and_leaves_goes_before_the_cancelled_reply_has_ended(
+    tmp_path: Path,
+) -> None:
+    """The mock ends a cancelled reply at its next delta, sooner than the client's next packet is due; turns red if the client waits for that packet before it leaves, because the reply is then over and the cancel and the disconnect no longer meet."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(
+                max_connections=2,
+                reply_chunks=5,
+                chunk_delay_ms=QUICK_DELTA_MS,
+            ),
+            tmp_path,
+            scenario="cancel",
+            leave_point="reply",
+            leave_style="reset",
+            pcm=bytes(MANY_PACKETS * PACKET_BYTES),
+        )
+    )
+    summary = summarize(samples)
+    assert summary.session_outcomes == {"dropped": 2}
+    assert (summary.drops_mid_reply, summary.drops_after_reply) == (2, 0)
+    assert summary.sessions_left == 0
 
 
 def test_cancel_waits_for_the_whole_first_unit_of_a_model_with_a_longer_unit(

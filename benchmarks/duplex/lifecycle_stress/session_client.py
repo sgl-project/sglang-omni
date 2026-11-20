@@ -180,15 +180,23 @@ async def send_packets(
     reply_started: asyncio.Event,
     last_sent_s: float,
 ) -> float:
-    """Send the plan's packets at their pace and return when the last one went out; a plan that leaves mid-reply stops at the first packet after the reply has started."""
+    """Send the plan's packets at their pace and return when the last one went out; a plan that leaves mid-reply stops the moment the reply has started."""
     first_packet_s = time.perf_counter()
     for packet_index in range(plan.packets):
         due_s = first_packet_s + packet_index * PACKET_MS / MS_PER_SECOND
-        await asyncio.sleep(max(0.0, due_s - time.perf_counter()))
-        if plan.leave_point == "reply" and reply_started.is_set():
-            break
+        wait_s = max(0.0, due_s - time.perf_counter())
+        if plan.leave_point == "reply":
+            # note (Yi Zhao): the wait for the next packet ends with the start of the reply, because a reply that is cancelled or short is over before that packet is due, and the client would then leave after it and not during it.
+            try:
+                await asyncio.wait_for(reply_started.wait(), wait_s)
+            except TimeoutError:
+                pass
+            if reply_started.is_set():
+                break
+            else:
+                pass
         else:
-            pass
+            await asyncio.sleep(wait_s)
         byte_offset = packet_index * PACKET_BYTES
         last_sent_s = time.perf_counter()
         await connection.send(
@@ -267,12 +275,12 @@ async def drive_session(
         """Wait for the first reply and cancel it if the plan says so; the packets keep going meanwhile."""
         nonlocal cancel_ms, cancel_status, cancelled_response_id, is_reply_over
         created = await receive_response(connection, "response.created")
-        reply_started.set()
         cancel_sent_s = time.perf_counter()
         if plan.should_cancel_reply:
             await connection.send(client_event("response.cancel", {}))
         else:
             pass
+        reply_started.set()
         if plan.leave_point == "reply":
             # note (Yi Zhao): a reply that is short or quick is over before the client gets to leave, and such a session did not leave mid-reply; reading on until the leave is what tells the two apart. An error event is no end of the reply, so it is read past.
             while not is_reply_over:
