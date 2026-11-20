@@ -95,10 +95,10 @@ func makeTokens(dark bool, colors paletteColors) *tokens {
 		navTint = 0.22
 		k.OnAccent = ui.Hex("#06201c")
 		k.InkHover, k.InkPressed = ui.Hex("#dcdcdc"), ui.Hex("#c4c4c4")
-		k.Record, k.Success, k.Warning = ui.Hex("#ff6b47"), ui.Hex("#3ccb7f"), ui.Hex("#f2a53a")
+		k.Record = ui.Hex("#ff6b47")
 	} else {
 		k.InkHover, k.InkPressed = ui.Hex("#2e2e2e"), ui.Hex("#454545")
-		k.Record, k.Success, k.Warning = ui.Hex("#eb5230"), ui.Hex("#1f9d55"), ui.Hex("#c27803")
+		k.Record = ui.Hex("#eb5230")
 	}
 	if colors.background != ui.Transparent {
 		g[0] = colors.background
@@ -118,6 +118,7 @@ func makeTokens(dark bool, colors paletteColors) *tokens {
 	k.Bg, k.Sidebar, k.Subtle = g[0], g[1], g[1]
 	k.Hover, k.Pressed, k.Line = g[2], g[3], g[3]
 	k.Text, k.Text2, k.Text3 = g[9], g[7], g[6]
+	k.Success, k.Warning = k.Text2, k.Text2
 	k.Ink, k.OnInk = g[9], g[0]
 	k.Accent = accent
 	k.AccentSoft = accent.Alpha(0.12)
