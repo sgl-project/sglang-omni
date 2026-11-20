@@ -6,7 +6,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **Apply a model to several features** (#4276): model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### Fixed
 
@@ -18,20 +19,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
+- **将模型批量应用到功能**（#4276）：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
+- **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
 #### 修复
 
 - **重新打开的答案卡片保留拖动后的位置**：关闭再打开卡片，包括从「重新打开卡片」恢复或重试后，现在会回到之前的位置，不再回到屏幕中央。录音和自动插入失败后回落到卡片时，也会保留这个位置；卡片宽度仍按各功能的设置，高度仍随回答内容变化。
 - **改写的回答还在写时也能转录，卡片不再被关掉**：改写或翻译的回答还在流进卡片时按转录快捷键以前没有反应，回答写完后再转录又会把卡片关掉、转录完在屏幕中央重新打开。现在回答在原地不动的卡片里继续写完，录音浮窗显示在它旁边自己的窗口里，转录不再关闭或重建卡片；回答写完前，它的“停止”和取消快捷键照旧可用。
 - **后台回答不再阻塞或丢失**：前台会话结束后，其他功能和“试一试”不能抢在后台回答完成前启动，旧卡片会等回答完成再恢复。即使首个 token 还没到，关闭和 Esc 也能取消请求。后台写历史不再卡住前台录音、开始、停止、取消和快照发布。
-- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
-
-### 中文
-
-#### 新增
-
-- **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
 ## [2.1.1] - 2026-11-17
 
