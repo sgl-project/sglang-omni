@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import _thread
 import dataclasses
+import hashlib
 import inspect
+import json
 import logging
 import queue
 import threading
@@ -13,10 +15,13 @@ from array import array
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from functools import wraps
+from pathlib import Path
 from typing import Literal, ParamSpec, TypeVar
 
 import msgspec
 import torch
+from sglang.srt.configs.load_config import LoadConfig
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
@@ -422,7 +427,47 @@ def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
             ) = values
 
 
-def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
+def dflash_checkpoint_identity(
+    target_model: ModelConfig,
+    target_loader: LoadConfig,
+    draft_model: ModelConfig,
+    draft_loader: LoadConfig,
+) -> str:
+    target_path = Path(target_model.model_path)
+    draft_directory = Path(draft_model.model_path)
+    return json.dumps(
+        {
+            "target_path": (
+                str(target_path.resolve())
+                if target_path.is_dir()
+                else target_model.model_path
+            ),
+            "target_revision": target_model.revision,
+            "target_commit": getattr(
+                target_model.hf_config,
+                "_commit_hash",  # noqa: leading-underscore -- Transformers checkpoint provenance
+                None,
+            ),
+            "target_dtype": str(target_model.dtype),
+            "target_quantization": target_model.quantization,
+            "target_overrides": target_model.model_override_args,
+            "target_load_format": target_loader.load_format,
+            "target_loader_options": target_loader.model_loader_extra_config,
+            "draft_config": json.loads((draft_directory / "config.json").read_text()),
+            "draft_dtype": str(draft_model.dtype),
+            "draft_quantization": draft_model.quantization,
+            "draft_loader_options": draft_loader.model_loader_extra_config,
+            "draft_weights": sorted(
+                str(path.resolve()) for path in draft_directory.glob("*.safetensors")
+            ),
+        },
+        sort_keys=True,
+    )
+
+
+def kv_buffer_regions(
+    token_to_kv_pool: KVCache, *, prefix: str, validate_slot_layout: bool
+) -> tuple[KVBufferRegion, ...]:
     getter = getattr(
         token_to_kv_pool, "_pd_registerable_tensors", None
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -437,26 +482,84 @@ def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
                 token_to_kv_pool.get_value_buffer(layer_id),
             )
         )
-    _, _, item_lens = token_to_kv_pool.get_contiguous_buf_infos()
+    pointers, byte_lengths, item_lens = token_to_kv_pool.get_contiguous_buf_infos()
     if not tensors or len(tensors) != len(item_lens):
         raise ValueError("SGLang KV pool exposed incompatible buffer metadata")
     else:
         pass
+    if validate_slot_layout:
+        for tensor, pointer, byte_length, item_len in zip(
+            tensors, pointers, byte_lengths, item_lens, strict=True
+        ):
+            if (
+                tensor.ndim < 2
+                or tensor.shape[0] != token_to_kv_pool.size + 1
+                or tensor.data_ptr() != pointer
+                or tensor.numel() * tensor.element_size() != byte_length
+                or tensor.stride(0) * tensor.element_size() != item_len
+                or not tensor.is_contiguous()
+            ):
+                raise ValueError("PD DFlash requires contiguous KV slot rows")
+            else:
+                pass
+    else:
+        pass
+    return tuple(
+        KVBufferRegion(
+            name=f"{prefix}.{index}",
+            tensor=tensor,
+            bytes_per_page=int(item_len),
+        )
+        for index, (tensor, item_len) in enumerate(zip(tensors, item_lens, strict=True))
+    )
+
+
+def build_kv_pool(
+    token_to_kv_pool: KVCache,
+    *,
+    pool_id: str,
+    draft_kv_pool: KVCache | None = None,
+    dflash_model_id: str | None = None,
+) -> KVPool:
+    buffers = kv_buffer_regions(
+        token_to_kv_pool,
+        prefix="kv_buffer",
+        validate_slot_layout=draft_kv_pool is not None,
+    )
+    target_type = type(token_to_kv_pool)
+    layout_id = f"{target_type.__module__}.{target_type.__qualname__}:page_size=1"
+    if draft_kv_pool is not None:
+        if not dflash_model_id or (
+            draft_kv_pool.size != token_to_kv_pool.size
+            or draft_kv_pool.page_size != 1
+            or token_to_kv_pool.page_size != 1
+        ):
+            raise ValueError(
+                "PD DFlash requires matching Target and Draft slot capacity"
+            )
+        else:
+            pass
+        buffers += kv_buffer_regions(
+            draft_kv_pool, prefix="draft_kv_buffer", validate_slot_layout=True
+        )
+        draft_type = type(draft_kv_pool)
+        layout_signature = (
+            dflash_model_id,
+            draft_type.__module__,
+            draft_type.__qualname__,
+            [
+                (str(region.tensor.dtype), tuple(region.tensor.shape[1:]))
+                for region in buffers
+            ],
+        )
+        layout_id += f":dflash:{hashlib.sha256(msgspec.msgpack.encode(layout_signature)).hexdigest()}"
+    else:
+        pass
     return KVPool(
         pool_id=pool_id,
-        layout_id=(
-            f"{type(token_to_kv_pool).__module__}."
-            f"{type(token_to_kv_pool).__qualname__}:page_size=1"
-        ),
+        layout_id=layout_id,
         page_size=1,
-        buffers=tuple(
-            KVBufferRegion(
-                name=f"kv_buffer.{index}",
-                tensor=tensor,
-                bytes_per_page=int(item_len),
-            )
-            for index, (tensor, item_len) in enumerate(zip(tensors, item_lens))
-        ),
+        buffers=buffers,
     )
 
 
