@@ -8,6 +8,23 @@ public enum ClipboardPicture {
     /// The image types read, in order of preference.
     public static let imageTypes = [UTType.png, .jpeg, .heic, .tiff, .webP].map(\.identifier)
 
+    private static let maxSourceBytes = 32 << 20
+    private static let maxSourcePixels = 40_000_000
+
+    private static func exceedsPixelLimit(_ source: CGImageSource?) -> Bool {
+        guard let source,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              height > 0 else { return false }
+        return width > maxSourcePixels / height
+    }
+
+    private static func exceedsFileSizeLimit(_ file: URL) -> Bool {
+        guard let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return false }
+        return size > maxSourceBytes
+    }
+
     /// The clipboard's picture, its longer side at most maxSide pixels:
     /// a copied file's when it is an image file (Finder also puts the
     /// file's icon and name there), else the first decodable representation
@@ -28,13 +45,21 @@ public enum ClipboardPicture {
             return CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary)
         }
         if let file {
-            guard UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true else { return nil }
-            return thumbnail(CGImageSourceCreateWithURL(file as CFURL, nil))
+            guard UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true,
+                  !exceedsFileSizeLimit(file) else { return nil }
+            let source = CGImageSourceCreateWithURL(file as CFURL, nil)
+            if exceedsPixelLimit(source) { return nil }
+            return thumbnail(source)
         }
         guard !types.contains(UTType.utf8PlainText.identifier) else { return nil }
         for type in imageTypes where types.contains(type) {
-            if let bytes = await dataForType(type), let image = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil)) {
-                return image
+            if let bytes = await dataForType(type) {
+                if bytes.count > maxSourceBytes { return nil }
+                let source = CGImageSourceCreateWithData(bytes as CFData, nil)
+                if exceedsPixelLimit(source) { return nil }
+                if let image = thumbnail(source) {
+                    return image
+                }
             }
         }
         return nil

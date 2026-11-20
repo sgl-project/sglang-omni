@@ -60,6 +60,29 @@ final class ClipboardPictureTests: XCTestCase {
         XCTAssertEqual(fallback?.width, 30)
     }
 
+    func testRejectsSourceBytesAbove32MiB() async {
+        let bytes = imageData(6000, 4000, type: .tiff)
+        XCTAssertGreaterThan(bytes.count, 32 << 20)
+        await expectNoImage(types: [UTType.tiff.identifier], data: [UTType.tiff.identifier: bytes], file: nil, maxSide: 1600,
+                            "a valid image over the source byte limit is rejected before decoding")
+    }
+
+    func testRejectsSourcePixelsAbove40MP() async {
+        let bytes = imageData(40001, 1000)
+        await expectNoImage(types: [png], data: [png: bytes], file: nil, maxSide: 1600,
+                            "a valid image over the source pixel limit is rejected before decoding")
+    }
+
+    func testRejectsCopiedFileAbove32MiB() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pic = dir.appendingPathComponent("huge.tiff")
+        try imageData(6000, 4000, type: .tiff).write(to: pic)
+        await expectNoImage(types: [UTType.fileURL.identifier], data: [:], file: pic, maxSide: 1600,
+                            "a copied file over the source byte limit is rejected before decoding")
+    }
+
     func testCopiedWebPOnly() async {
         // A 1x1 lossless WebP: ImageIO decodes WebP but cannot write it.
         let webp = UTType.webP.identifier
