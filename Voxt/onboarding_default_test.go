@@ -488,4 +488,63 @@ func TestAutomaticSpeech(t *testing.T) {
 	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast {
 		t.Errorf("the explicit choice became %s", m.ID)
 	}
+
+	// Automatic skips a model that does not know the main language
+	// (#4067): MTD is the catalogue's default and first, but it knows
+	// Chinese and English only, so ja lands on Qwen3-ASR — in the pages
+	// (featureModel) and in the session's resolver alike. An explicit
+	// MTD choice still opens MTD.
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.ASR = ""
+		s.General.MainLanguage = "ja"
+	})
+	seedModels(t, a, models.ASRMoss, models.ASRAccurate, models.VADSilero)
+	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRAccurate {
+		t.Errorf("ja: Transcribe's Automatic uses %+v, want %s", m, models.ASRAccurate)
+	}
+	lm := &automaticGateLocal{}
+	svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.ASRInfo.ID != models.ASRAccurate {
+		t.Errorf("ja: the resolver opened %s, want %s", svc.ASRInfo.ID, models.ASRAccurate)
+	}
+
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = models.ASRMoss })
+	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRMoss {
+		t.Errorf("ja: the explicit MTD choice became %s", m.ID)
+	}
+	lm.opened = ""
+	svc, err = resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.ASRInfo.ID != models.ASRMoss || lm.opened != models.ASRMoss {
+		t.Errorf("ja: the explicit MTD choice opened %s (ASRInfo %s)", lm.opened, svc.ASRInfo.ID)
+	}
+}
+
+// automaticGateLocal is MTD and Qwen3-ASR 1.7B (8bit), MTD first as the
+// catalogue's default, recording what a session's resolver opens.
+type automaticGateLocal struct {
+	local.NotInstalled
+	opened string
+}
+
+func (l *automaticGateLocal) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		return []local.Model{{Kind: local.ASR, ID: models.ASRMoss}, {Kind: local.ASR, ID: models.ASRAccurate}}
+	}
+	return nil
+}
+
+func (l *automaticGateLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	l.opened = id
+	for _, m := range l.Installed(local.ASR) {
+		if m.ID == id {
+			return &fakeTranscriptions{}, m, nil
+		}
+	}
+	return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
 }

@@ -9,9 +9,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -143,6 +145,9 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 	}
 	want = strings.TrimSpace(want)
 	ready := local.ForFeature(installed, feature)
+	if kind == local.ASR && want == "" {
+		ready = automaticSpeech(prefs, ready)
+	}
 	selected, ok := local.Choose(ready, want)
 	if kind != local.LLM || !ok || want == "" || selected.ID == want {
 		return selected, ok
@@ -155,6 +160,31 @@ func chooseFeatureModel(prefs settings.Settings, installed []local.Model, kind l
 		}
 	}
 	return local.Model{}, false
+}
+
+// automaticSpeech is installed's speech models for a feature left on
+// Automatic: a model whose catalogue spec knows languages the main
+// language is not among goes, so Automatic never lands on a model that
+// cannot recognise it (MOSS-Transcribe-Diarize knows Chinese and English
+// only, #4067). A model without language data stays, and an explicit
+// choice never comes here.
+func automaticSpeech(prefs settings.Settings, installed []local.Model) []local.Model {
+	main := session.MainLanguage(prefs, i18n.Locale())
+	if main == "" {
+		return installed
+	}
+	out := make([]local.Model, 0, len(installed))
+	for _, m := range installed {
+		spec, ok := omni.Lookup(m.ID)
+		if !ok || len(spec.Languages) == 0 {
+			out = append(out, m)
+			continue
+		}
+		if _, fit := lang.Match(spec.Languages, main); fit {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // usedBy says which features use model id of kind now, as Voxt 1.x's
