@@ -21,6 +21,7 @@ import (
 type modelActionViewState struct {
 	Kind               modelActionKind `json:"kind"`
 	ModelID            string          `json:"model_id"`
+	ModelKind          string          `json:"model_kind,omitempty"`
 	Label              string          `json:"label"`
 	AccessibilityLabel string          `json:"accessibility_label"`
 	Tooltip            string          `json:"tooltip,omitempty"`
@@ -136,16 +137,17 @@ type modelsNetworkViewState struct {
 }
 
 type modelsViewState struct {
-	ASR           []modelCardViewState    `json:"asr"`
-	Dictation     *modelCardViewState     `json:"dictation,omitempty"`
-	LLM           []modelCardViewState    `json:"llm"`
-	ShowLLM       bool                    `json:"show_llm"`
-	Hidden        []modelCardViewState    `json:"hidden"`
-	HiddenOpen    bool                    `json:"hidden_open"`
-	Advanced      modelsAdvancedViewState `json:"advanced"`
-	Delete        modelsDeleteViewState   `json:"delete"`
-	Network       modelsNetworkViewState  `json:"network"`
-	SpeechContext string                  `json:"speech_context"`
+	ASR           []modelCardViewState      `json:"asr"`
+	Dictation     *modelCardViewState       `json:"dictation,omitempty"`
+	LLM           []modelCardViewState      `json:"llm"`
+	ShowLLM       bool                      `json:"show_llm"`
+	Hidden        []modelCardViewState      `json:"hidden"`
+	HiddenOpen    bool                      `json:"hidden_open"`
+	Advanced      modelsAdvancedViewState   `json:"advanced"`
+	Delete        modelsDeleteViewState     `json:"delete"`
+	Network       modelsNetworkViewState    `json:"network"`
+	SpeechContext string                    `json:"speech_context"`
+	Assignment    *modelAssignmentViewState `json:"assignment,omitempty"`
 }
 
 type modelsViewStateInput struct {
@@ -165,6 +167,7 @@ type modelsViewStateInput struct {
 	FamilyReadOnly bool
 	AdvancedOpen   bool
 	HiddenOpen     bool
+	Assignment     *modelAssignmentStateInput
 }
 
 func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInput) modelsViewState {
@@ -175,6 +178,10 @@ func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInpu
 		Network: buildModelsNetworkViewState(translator, input), SpeechContext: input.Settings.Dictionary.SpeechContext,
 	}
 	state.Dictation = buildDictationCard(translator, input, false)
+	if input.Assignment != nil {
+		assignment := buildModelAssignmentViewState(translator, *input.Assignment)
+		state.Assignment = &assignment
+	}
 	for _, model := range input.Catalog {
 		if model.Kind == models.LLM && modelShown(model, input.Status[model.ID]) {
 			state.ShowLLM = true
@@ -268,6 +275,7 @@ func buildDictationCard(translator *i18n.Translator, input modelsViewStateInput,
 		Languages: uitext.ModelLanguagesFor(translator, dictation.ModelID), Tags: uitext.ModelTagsFor(translator, dictation.ModelID),
 	}
 	row.Actions = buildHideAction(translator, input, dictation.ModelID, usedBy)
+	row.Actions = append(row.Actions, buildAssignAction(translator, models.Model{Kind: models.ASR, ID: dictation.ModelID})...)
 	return &modelCardViewState{Key: "model-" + dictation.ModelID, Rows: []modelRowViewState{row}}
 }
 
@@ -285,6 +293,16 @@ func buildHideAction(translator *i18n.Translator, input modelsViewStateInput, id
 	return []modelActionViewState{{
 		Kind: modelActionHide, ModelID: id, Label: translator.T("Hide"), AccessibilityLabel: translator.T("Hide %s", name),
 		Tooltip: translator.T("Hide it from the features' menus"),
+	}}
+}
+
+// buildAssignAction offers Apply to on a model that is installed: the
+// features it serves may use it, without visiting each one's page.
+func buildAssignAction(translator *i18n.Translator, model models.Model) []modelActionViewState {
+	return []modelActionViewState{{
+		Kind: modelActionAssign, ModelID: model.ID, ModelKind: string(model.Kind), Label: translator.T("Apply to"),
+		AccessibilityLabel: translator.T("Apply %s to features", uitext.ModelNameFor(translator, model.ID)),
+		Tooltip:            translator.T("Choose the features that use this model"),
 	}}
 }
 
@@ -320,6 +338,9 @@ func buildModelRowViewState(translator *i18n.Translator, input modelsViewStateIn
 		}
 	}
 	row.Actions = append(row.Actions, buildModelActions(translator, input, model, status)...)
+	if status.Installed && !model.Retired {
+		row.Actions = append(row.Actions, buildAssignAction(translator, model)...)
+	}
 	row.Progress = buildModelProgress(translator, model, status)
 	if status.Err != nil && !status.Downloading {
 		message, detail := uitext.DownloadErrorTextFor(translator, status.Err)
@@ -513,5 +534,8 @@ func modelsViewCacheKey(input modelsViewStateInput, locale string) string {
 		fmt.Fprintf(&key, "%s:%d;", id, input.Memory[id])
 	}
 	fmt.Fprintf(&key, "|%t|%t", input.HiddenOpen, input.Settings.Dictionary.SpeechContext != "")
+	if assignment := input.Assignment; assignment != nil {
+		fmt.Fprintf(&key, "|%s|%s|%t|%v", assignment.Kind, assignment.ID, assignment.Remote, assignment.Selected)
+	}
 	return key.String()
 }

@@ -72,8 +72,8 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 			last = i
 		}
 	}
-	if req.Image != nil && last >= 0 {
-		oms[last].Content = o.withImage(msgs[last].Content, req.Image)
+	if len(req.Images) > 0 && last >= 0 {
+		oms[last].Content = o.withImages(msgs[last].Content, req.Images, req.ImagesRequired)
 	}
 	p := o.preset
 	switch t := req.Thinking; {
@@ -196,6 +196,7 @@ func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 		return b
 	}
 	sent := build()
+	imagesDropped := false
 	resp, err := o.send(ctx, url, sent, model, req.Timeout)
 	// Relax parameters a server rejects, once each: stream_options (older
 	// compatible servers; usage then gets estimated), temperature / top_p
@@ -215,8 +216,8 @@ relax:
 			sampling = false
 		case extra && o.mentionsExtra(detail):
 			extra = false
-		case req.Image != nil: // a model that takes no images
-			req.Image = nil
+		case req.Images != nil && !req.ImagesRequired: // a model that takes no images
+			req.Images, imagesDropped = nil, true
 		default:
 			break relax
 		}
@@ -241,20 +242,68 @@ relax:
 	}
 	out.Provider = o.preset.ID
 	out.Latency = time.Since(start)
+	out.ImagesDropped = imagesDropped
 	if out.FinishReason == FinishFilter && out.Text == "" {
 		return out, newErr(CodeFiltered, "provider", o.preset.ID)
 	}
 	return out, nil
 }
 
-// withImage is text and a JPEG as one message's content parts, in the
-// API's format.
-func (o *OpenAI) withImage(text string, jpeg []byte) []map[string]any {
-	url := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg)
-	if o.responsesAPI() {
-		return []map[string]any{{"type": "input_text", "text": text}, {"type": "input_image", "image_url": url}}
+// instructionOffset finds the spoken instruction after Rewrite's source
+// wrappers, whose contents may themselves mention <instruction>.
+func instructionOffset(text string) int {
+	offset := 0
+	for _, tag := range []string{"glossary", "selected_text", "typed_text"} {
+		prefix := "<" + tag + ">\n"
+		if !strings.HasPrefix(text[offset:], prefix) {
+			continue
+		}
+		closing := "\n</" + tag + ">"
+		end := strings.Index(text[offset+len(prefix):], closing)
+		if end < 0 {
+			return -1
+		}
+		offset += len(prefix) + end + len(closing)
+		if strings.HasPrefix(text[offset:], "\n\n") {
+			offset += 2
+		}
 	}
-	return []map[string]any{{"type": "text", "text": text}, {"type": "image_url", "image_url": map[string]any{"url": url}}}
+	if strings.HasPrefix(text[offset:], "<instruction>\n") {
+		return offset
+	}
+	return -1
+}
+
+// withImages is text and JPEGs as one message's content parts, in the
+// API's format. The box's own images go before the spoken instruction.
+func (o *OpenAI) withImages(text string, jpegs [][]byte, beforeInstruction bool) []map[string]any {
+	before, after := text, ""
+	if beforeInstruction {
+		if offset := instructionOffset(text); offset >= 0 {
+			before, after = strings.TrimSuffix(text[:offset], "\n\n"), text[offset:]
+		}
+	}
+	textType, imageType := "text", "image_url"
+	if o.responsesAPI() {
+		textType, imageType = "input_text", "input_image"
+	}
+	parts := make([]map[string]any, 0, len(jpegs)+2)
+	if before != "" {
+		parts = append(parts, map[string]any{"type": textType, "text": before})
+	}
+	for _, jpeg := range jpegs {
+		image := map[string]any{"type": imageType}
+		if o.responsesAPI() {
+			image["image_url"] = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg)
+		} else {
+			image["image_url"] = map[string]any{"url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg)}
+		}
+		parts = append(parts, image)
+	}
+	if after != "" {
+		parts = append(parts, map[string]any{"type": textType, "text": after})
+	}
+	return parts
 }
 
 // mentionsExtra reports whether a rejection names one of ExtraBody's keys
