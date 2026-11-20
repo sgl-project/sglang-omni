@@ -24,7 +24,7 @@ import (
 
 // Version is the schema version Defaults writes. Bump it when a field's
 // meaning changes, and migrate older documents in Migrate.
-const Version = 5
+const Version = 6
 
 // Settings is the whole document.
 type Settings struct {
@@ -409,6 +409,10 @@ func Migrate(data []byte) (Settings, error) {
 	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	migrateOptionsJSON(data, &s.Providers)
+	if s.Version < 6 {
+		// The old opt-in covered only servers on this Mac, not external APIs.
+		s.Models.LLMSwitch = false
+	}
 	s.Version = Version
 	return normalize(s), nil
 }

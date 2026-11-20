@@ -47,7 +47,7 @@ func TestPrivacyHistoryExplainsReopen(t *testing.T) {
 }
 
 // The list names the content and destination of each local or API request,
-// including optional images and Translate's fallback (#4159).
+// including optional images and automatic or Translate-only fallback (#4159).
 func TestPrivacyNamesBothDataPaths(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	openPrivacy(t, a, tt)
@@ -63,7 +63,7 @@ func TestPrivacyNamesBothDataPaths(t *testing.T) {
 		"A request to a language-model server on this Mac",
 		"stays on this Mac",
 		"A request to an external API goes to the provider handling it",
-		"If Translate uses your fallback model, that provider gets the same request too",
+		"If Translate uses your fallback model, or Switch models when one fails picks another configured model, that provider gets the same request too",
 	} {
 		if !has(tt, want) {
 			t.Errorf("the list does not say %q: %q", want, firstTexts(tt))
