@@ -192,13 +192,15 @@ The throughput results in the table and H100 case study are from an 80 GB H100 w
 
 ## Measured replica counts on an RTX 4090 D
 
-`examples/mps_dp/rtx4090d/` holds one config per model, measured on one 24 GB NVIDIA GeForce RTX 4090 D. Each config runs its replicas as one pipeline under native MPS:
+`sglang_omni/hardware_profiles/rtx4090d/` holds one config per model, measured on one 24 GB NVIDIA GeForce RTX 4090 D. `sgl-omni serve` applies it by default: when logical GPU 0 is that GPU and the launched model is the profiled checkpoint, it runs the listed replicas as one pipeline under native MPS:
 
 ```bash
-sgl-omni serve --config examples/mps_dp/rtx4090d/qwen3_asr_1_7b_rtx4090d_dp2.yaml --mps on
+sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B
 ```
 
-For each latency target, the table gives the replica count that delivered the most audio within it; the config for N replicas is `<config name>_rtx4090d_dp<N>.yaml`. Goodput is audio seconds per second of transcribed input audio, and the latency is the p99 request latency from arrival. The last column is one replica on the same GPU.
+The default config is kept, with one replica and no MPS, when the GPU cannot run native MPS (MIG, `nvidia-cuda-mps-control` missing from `PATH`, `CUDA_MPS_PIPE_DIRECTORY` set), when `--config` is given, or when the command line sets `--mps off` or any setting the profile writes. The log names the profile it applied or why it kept the default. A profile file also works as `--config` on another GPU.
+
+For each latency target, the table gives the replica count that delivered the most audio within it; the profile for N replicas is `<config name>_rtx4090d_dp<N>.yaml`. Goodput is audio seconds per second of transcribed input audio, and the latency is the p99 request latency from arrival. The last column is one replica on the same GPU.
 
 | Model | Config name | Replicas at 0.5 / 1 / 3 s | Goodput at 0.5 / 1 / 3 s | One replica at 0.5 / 1 / 3 s |
 |---|---|---:|---:|---:|
@@ -209,7 +211,7 @@ Every count from 1 to the most that fit on the GPU (2 for Qwen3-ASR, 3 for MOSS-
 
 Qwen3-ASR runs its default DFlash draft, which adds a second KV pool to each replica; with it a replica uses about 9.5 GB, so three replicas do not fit. For MOSS-Transcribe-Diarize, 2 replicas average 688 audio s/s, 5% below 3 replicas, but fall to 83% of the best count on one seed.
 
-CosyVoice3 has no config here because one replica was the measured best. Its latency is the p99 stall-free start: the time from arrival to the first audio packet, plus the smallest client buffer that plays the rest without a stall. Two replicas fit, at about 11 GB each, but at 1 and 3 s they averaged 17.7 and 26.8 audio s/s of generated audio, against 17.8 and 26.9 for one. In a closed-loop pass at 16 requests in flight per replica, two replicas served 1.11 times what one did. With either count, no swept rate met 0.5 s; the lowest rate was 3.8 requests/s.
+CosyVoice3 has no profile because one replica was the measured best. Its latency is the p99 stall-free start: the time from arrival to the first audio packet, plus the smallest client buffer that plays the rest without a stall. Two replicas fit, at about 11 GB each, but at 1 and 3 s they averaged 17.7 and 26.8 audio s/s of generated audio, against 17.8 and 26.9 for one. In a closed-loop pass at 16 requests in flight per replica, two replicas served 1.11 times what one did. With either count, no swept rate met 0.5 s; the lowest rate was 3.8 requests/s.
 
 The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.58.03. The host's other seven GPUs ran other measurements at the same time, other tenants' containers shared its CPUs, and replicas were not pinned to cores. Re-measure before applying a count to another version, GPU or workload.
 
