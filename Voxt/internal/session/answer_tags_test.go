@@ -42,6 +42,7 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 		return string(b)
 	}
 	template := "Use:\n<instruction>\n{task}\n</instruction>\n<selected_text>\n{text}\n</selected_text>"
+	instructionTemplate := "<instruction>\n{task}\n</instruction>"
 	for _, tc := range []struct {
 		name, raw, sel string
 		previous       []compose.Turn
@@ -63,6 +64,8 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 			answer: "<selected_text>ship friday</selected_text> sent", want: "<selected_text>ship friday</selected_text> sent"},
 		{name: "a requested template stays", raw: "write a prompt template",
 			answer: asJSON(template), want: template},
+		{name: "a whole instruction template stays", raw: "write an instruction template",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
 		{name: "a requested template stays, after a selection", raw: "turn it into a template", sel: fox,
 			answer: template, want: template},
 	} {

@@ -450,8 +450,8 @@ func ParseAnswer(text string, input ...string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Title, input...), input...)), `"“”#*`))
-	a.Content = strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Content, input...), input...))
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Title, input...), false, input...)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Content, input...), true, input...))
 	return a, true
 }
 
@@ -521,12 +521,12 @@ func PartialAnswer(text string, input ...string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		t = strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(t, input...), input...))
+		t = strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(t, input...), true, input...))
 		if !strings.HasPrefix(t, "{") {
 			return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
 		}
 	}
-	title := strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "title"), input...), input...))
-	content := strings.TrimLeft(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "content"), input...), input...), " \n")
+	title := strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "title"), input...), false, input...))
+	content := strings.TrimLeft(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "content"), input...), true, input...), " \n")
 	return Answer{Title: title, Content: content}
 }

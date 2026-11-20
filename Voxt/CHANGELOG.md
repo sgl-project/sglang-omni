@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Rewrite answer keeps a requested instruction template**: an answer consisting of one `<instruction>…</instruction>` pair no longer loses the tags. Echoed input-tag cleanup still removes a pair that exactly repeats your selection, typed text or instruction.
+
+### 中文
+
+#### 修复
+
+- **改写回答保留需要的指令模板**：回答只有一个 `<instruction>…</instruction>` 标签对时，标签不再被去掉。对于正好重复选中文字、补充输入文字或指令的标签，改写回答仍会去掉回显的输入标签。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

@@ -38,6 +38,21 @@ func TestAnswerKeepsRequestedTags(t *testing.T) {
 	checkAnswer(t, "<selected_text>"+own+"</selected_text>", own, own, "fix")
 }
 
+func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
+	template := "<instruction>\n{task}\n</instruction>"
+	checkAnswer(t, template, template, "", "Write an instruction template")
+}
+
+func TestAnswerTitleDropsWholeInstructionPair(t *testing.T) {
+	raw, _ := json.Marshal(Answer{Title: "<instruction>Greeting</instruction>", Content: "Hello"})
+	if got, ok := ParseAnswer(string(raw), "write a greeting"); !ok || got.Title != "Greeting" {
+		t.Errorf("ParseAnswer title = %q, want Greeting", got.Title)
+	}
+	if got := PartialAnswer(string(raw), "write a greeting"); got.Title != "Greeting" {
+		t.Errorf("PartialAnswer title = %q, want Greeting", got.Title)
+	}
+}
+
 func checkAnswer(t *testing.T, out, want string, input ...string) {
 	t.Helper()
 	if got := CleanRewrite(out, input, false); got != want {
