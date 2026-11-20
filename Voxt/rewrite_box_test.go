@@ -233,7 +233,10 @@ func TestRewriteBoxRetrySameBytes(t *testing.T) {
 // the same position, so the server's prefix cache reuses them.
 func TestRewriteBoxRedoSameBytes(t *testing.T) {
 	chat := &fakeChat{texts: []string{"A shorter text.", "A shorter text!"}}
-	a := newBoxApp(t, boxScript(t), chat)
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	keys.LLMModel = fakeLLMModel
+	keys.LLMModel.ID = "deepseek"
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+boxScript(t), set, keys)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
 	a.pump("the selection", func() bool { return a.box.selection == "the selected text" })
 	a.postQueue(func() { a.box.text = "and the tickets"; a.boxSync() })
@@ -340,6 +343,8 @@ func TestReopenBoxTypedAfterRestart(t *testing.T) {
 
 			chat := &fakeChat{texts: []string{"A shorter text!", "More formal."}}
 			set, models, transcriptions := fileSetup(t, "more formal", chat)
+			models.LLMModel = fakeLLMModel
+			models.LLMModel.ID = "deepseek"
 			a := newSessionAppIn(t, dir, "", func(s *settings.Settings) {
 				set(s)
 				s.Features.Rewrite.ShowCard = true

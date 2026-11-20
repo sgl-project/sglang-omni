@@ -16,6 +16,22 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func TestBoxTextSegmentLineCountIgnoresOneTerminalNewline(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		want int
+	}{
+		{text: "first\r\nsecond\r\n", want: 2},
+		{text: "one\ntwo\nthree\n", want: 3},
+		{text: "first\nsecond\n\n", want: 3},
+	} {
+		segment := newBoxTextSegment(test.text, "", true)
+		if segment.Lines != test.want {
+			t.Errorf("lines for %q = %d, want %d", test.text, segment.Lines, test.want)
+		}
+	}
+}
+
 func TestBoxPastedTextCollapseThreshold(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true}
@@ -87,6 +103,52 @@ func TestBoxSelectionUsesCollapsibleTextBlock(t *testing.T) {
 	frames(tt)
 	if !has(tt, "third line") || !has(tt, "fourth line") || !has(tt, "Show less") {
 		t.Fatalf("expanded selection texts %q", firstTexts(tt))
+	}
+}
+
+func TestBoxLongSingleLineFileShowsBoundedText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	a.boxAddFileText(strings.Repeat("word ", 4000), "long.txt")
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	longest := func() int {
+		frames(tt)
+		longest := 0
+		for _, text := range tt.Texts() {
+			longest = max(longest, utf8.RuneCountInString(text))
+		}
+		return longest
+	}
+	if got := longest(); got > boxTextCollapseChars+1 || !has(tt, "Show all") {
+		t.Fatalf("collapsed file block laid out %d characters (Show all %v)", got, has(tt, "Show all"))
+	}
+	click(t, tt, "Show all")
+	if got := longest(); got > boxTextShownChars+1 {
+		t.Fatalf("expanded file block laid out %d characters", got)
+	}
+}
+
+func TestBoxLongSingleLinePasteShowsBoundedText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	text := strings.Repeat("x", 1000)
+	tt.SetClipboardData(transfer.TextData(text))
+	tt.Command("paste")
+	frames(tt)
+	if got := a.boxTextContent(); got != text {
+		t.Fatalf("paste changed the full text length to %d", len(got))
+	}
+	if !has(tt, "Show all") {
+		t.Fatalf("long single-line paste was not collapsed: %q", firstTexts(tt))
+	}
+	longest := 0
+	for _, visible := range tt.Texts() {
+		longest = max(longest, utf8.RuneCountInString(visible))
+	}
+	if longest > boxTextCollapseChars+1 {
+		t.Fatalf("collapsed paste laid out %d characters", longest)
 	}
 }
 

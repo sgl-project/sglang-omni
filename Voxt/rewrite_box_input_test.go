@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo"
@@ -132,7 +133,7 @@ func TestRewriteBoxOversizeClipboardDoesNotReadPNG(t *testing.T) {
 	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
 		return proto.ClipboardImageResult{JPEG: make([]byte, imgconv.MaxFileBytes+1)}, nil
 	}
-	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	a.box = rewriteBox{open: true, shown: true, focusText: true, images: [][]byte{boxJPEG(t)}}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
 	read := false
@@ -145,8 +146,33 @@ func TestRewriteBoxOversizeClipboardDoesNotReadPNG(t *testing.T) {
 	if read {
 		t.Fatal("the oversized clipboard PNG was read before rejection")
 	}
-	if a.box.err != "This image is too large." || a.boxPending != 0 || len(a.box.images) != 0 {
-		t.Fatalf("oversize clipboard image was not rejected: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
+	if a.box.err != "This image is too large." || a.boxPending != 0 || len(a.box.images) != 1 {
+		t.Fatalf("oversize clipboard image was not rejected or changed the existing input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
+	}
+}
+
+func TestBoxTextTooLarge(t *testing.T) {
+	if boxTextTooLarge("small") {
+		t.Fatal("ordinary text was rejected")
+	}
+	if !boxTextTooLarge(strings.Repeat("x", (32<<20)+1)) {
+		t.Fatal("oversize text was accepted")
+	}
+}
+
+func TestRewriteBoxOversizeTextKeepsExistingInput(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true, text: "keep me", images: [][]byte{boxJPEG(t)}}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.SetClipboard(strings.Repeat("x", (32<<20)+1))
+	tt.Command("paste")
+	frames(tt)
+	if a.box.text != "keep me" || len(a.box.images) != 1 {
+		t.Fatalf("oversize text replaced the existing input: text %q, images %d", a.box.text, len(a.box.images))
+	}
+	if a.box.err != "This text is too large." {
+		t.Fatalf("oversize text error %q", a.box.err)
 	}
 }
 

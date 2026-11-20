@@ -126,6 +126,9 @@ const (
 	ProblemInternal = "internal"
 )
 
+// ErrNotTranslated marks an answer that still looks untranslated after Translate's strict retry.
+var ErrNotTranslated = errors.New("the language model did not translate the text")
+
 // Problem is what went wrong in a session.
 type Problem struct {
 	Code string
@@ -313,7 +316,8 @@ type Services struct {
 	// LLM is nil when the feature has no language model ready.
 	LLM     LLM
 	LLMInfo Model
-	// Fallback is Translate's fallback model, asked once when LLM fails;
+	// Fallback is Translate's fallback model, or with the Language models
+	// page's switch another language model, asked once when LLM fails;
 	// nil: none.
 	Fallback     LLM
 	FallbackInfo Model

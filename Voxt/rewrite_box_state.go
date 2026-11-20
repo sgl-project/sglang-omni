@@ -81,7 +81,8 @@ func (a *app) boxViewState() rewriteBoxViewState {
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
 		viewState: a.boxViewState,
-		close:     a.closeBox, send: a.boxSend, drop: a.boxDrop, paste: a.boxPaste, pasteText: a.boxPasteTextAt,
+		close:     a.closeBox, send: a.boxSend, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
+		paste: a.boxPaste, pasteText: a.boxPasteTextAt, pasteClipboard: a.boxPasteClipboard,
 		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
 		dismissTip: a.dismissBoxTip,
 		textChanged: func(text string) {

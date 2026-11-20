@@ -411,11 +411,13 @@ func TestResetInvalidatesPreviewSaves(t *testing.T) {
 }
 
 func TestPalettePreviewsUseMainSnapshotGate(t *testing.T) {
-	out, err := exec.Command("go", "test", "-list", "^TestSnapshotsPalettePreviews$").CombinedOutput()
+	// The test binary lists its own tests: running the go tool here would
+	// build the package again and unpack a module cache under the tests' HOME.
+	out, err := exec.Command(os.Args[0], "-test.list", "^TestSnapshotsPalettePreviews$").CombinedOutput()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "\nTestSnapshotsPalettePreviews\n") {
+	if !strings.Contains("\n"+string(out), "\nTestSnapshotsPalettePreviews\n") {
 		t.Errorf("palette previews are not selected by the main snapshot gate: %s", out)
 	}
 }

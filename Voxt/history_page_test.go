@@ -164,6 +164,20 @@ func TestHistoryRewriteTypedText(t *testing.T) {
 	}
 }
 
+func TestHistoryLegacyRewriteFailedCopy(t *testing.T) {
+	entry := store.Entry{Kind: store.KindRewrite, Status: store.StatusFailed, RawText: "legacy spoken text"}
+	if got := historyEntryCopyText(entry); got != "legacy spoken text" {
+		t.Errorf("legacy copy text %q, want the recognised text", got)
+	}
+	if got := historyEntryRawCopy(entry); got != "" {
+		t.Errorf("legacy raw copy %q, want no duplicate of the primary copy", got)
+	}
+	entry.Result = "legacy answer"
+	if got := historyEntryRawCopy(entry); got != "legacy spoken text" {
+		t.Errorf("legacy raw copy %q, want the recognised text", got)
+	}
+}
+
 // snapshotHistoryDetail renders the History page with an entry's details
 // (TestSnapshots), on each tab.
 func snapshotHistoryDetail(a *app, save func(string)) {

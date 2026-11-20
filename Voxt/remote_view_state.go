@@ -53,6 +53,7 @@ type remoteWaitStateInput struct {
 type remoteViewState struct {
 	BackBar *remoteBackBarViewState `json:"back_bar,omitempty"`
 	Wait    remoteWaitViewState     `json:"wait"`
+	Switch  bool                    `json:"switch,omitempty"`
 	Cards   remoteCardsViewState    `json:"cards"`
 	Dialog  *remoteDialogViewState  `json:"dialog,omitempty"`
 }
@@ -60,6 +61,7 @@ type remoteViewState struct {
 type remotePageStateInput struct {
 	BackBarText string
 	Wait        remoteWaitStateInput
+	Switch      bool
 	Cards       remoteCardsStateInput
 	Dialog      *remoteDialogStateInput
 }
@@ -124,8 +126,9 @@ type remoteServiceStateInput struct {
 
 func buildRemotePageViewState(translator *i18n.Translator, input remotePageStateInput) remoteViewState {
 	state := remoteViewState{
-		Wait:  buildRemoteWaitViewState(translator, input.Wait),
-		Cards: buildRemoteCardsViewState(translator, input.Cards),
+		Wait:   buildRemoteWaitViewState(translator, input.Wait),
+		Switch: input.Switch,
+		Cards:  buildRemoteCardsViewState(translator, input.Cards),
 	}
 	if input.BackBarText != "" {
 		state.BackBar = &remoteBackBarViewState{Text: input.BackBarText}

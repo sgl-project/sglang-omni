@@ -94,6 +94,7 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
 		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
+		a.answer.llmID = s.LLM.ID
 		a.answer.attach = s.ImageHint
 		if a.answer.attach != "box" {
 			a.answer.previews = answerInputPreviews(s, nil)
@@ -208,18 +209,21 @@ func (a *app) followUpAnswer(hold string) bool {
 }
 
 // canFollowUp says whether the card takes a follow-up now: a Rewrite
-// answer written from an instruction, or a translation, nothing running.
+// answer written from an instruction, or a translation, nothing running
+// — the current session's and the backgrounded answer's too (the card's
+// own follow-up may still be streaming there).
 func (a *app) canFollowUp() bool {
 	card := a.answer
 	ok := card.kind == store.KindRewrite && len(card.turns) > 0 || card.kind == store.KindTranslate && card.text != ""
-	return card.open && ok && card.problem == nil && !a.sess.State.Live()
+	bgLive := a.bgID != "" && a.bgSess.State.Live()
+	return card.open && ok && card.problem == nil && !a.sess.State.Live() && !bgLive
 }
 
-// closeAnswer closes the answer card (and cancels a follow-up, or another
-// language, on its way).
+// closeAnswer closes the answer card (and cancels a follow-up, another
+// language, or the backgrounded answer, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() || a.writingAnswer() {
-		a.cancelSession()
+	if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
+		a.cancelCardSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""
 	a.resurface()
@@ -245,7 +249,7 @@ func (a *app) setAside(try bool) {
 // resurface brings the card under back once no card shows and no session
 // runs, and says whether it did.
 func (a *app) resurface() bool {
-	if !a.under.open || a.answer.open || a.sess.State.Live() {
+	if !a.under.open || a.answer.open || a.sess.State.Live() || a.bgID != "" && a.bgSess.State.Live() {
 		return false
 	}
 	a.answer, a.under = a.under, answerCard{}
@@ -253,10 +257,11 @@ func (a *app) resurface() bool {
 }
 
 // cardSessionLive says whether the session running is the card's own: a
-// follow-up, or the text into another language.
+// follow-up, or the text into another language. The backgrounded answer
+// is its card's own too.
 func (a *app) cardSessionLive() bool {
-	s := a.sess
-	return a.answer.open && s.State.Live() && !s.Try && (a.followUp != "" && a.followUp == a.answer.id || s.ID == a.answer.redo)
+	s := a.cardSnapshot()
+	return a.answer.open && s.State.Live() && !s.Try && (a.followUp != "" && a.followUp == a.answer.id || s.ID == a.answer.redo || s.ID == a.answer.id)
 }
 
 // copyMark is how long Copy shows its mark (Voxt's).

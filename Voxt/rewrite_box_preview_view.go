@@ -8,6 +8,19 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
+// boxClipText keeps the first chars characters of text: laying out one
+// unbroken paragraph takes time that grows faster than its length.
+func boxClipText(text string, chars int) string {
+	count := 0
+	for index := range text {
+		if count == chars {
+			return text[:index] + "…"
+		}
+		count++
+	}
+	return text
+}
+
 func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
 	boxBlockView(context, key, segment, local, remove, false)
 }
@@ -17,9 +30,10 @@ func boxSelectionBlockView(context *ui.Context, segment boxTextSegment, local *r
 }
 
 func boxBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func(), selection bool) {
-	if !selection && (!segment.Pasted || segment.Lines <= boxTextCollapseLines) {
+	collapsible := selection || segment.Lines > boxTextCollapseLines || segment.Chars > boxTextCollapseChars
+	if !selection && (!segment.Pasted || !collapsible && !segment.File) {
 		ui.Row(context.Key(key)).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(context, segment.Text).FontSize(12).TextColor(ovText2).MaxLines(3).Grow(1).MinWidth(0)
+			ui.Text(context, boxClipText(segment.Text, boxTextCollapseChars)).FontSize(12).TextColor(ovText2).MaxLines(3).Grow(1).MinWidth(0)
 			if remove != nil {
 				if cardIconButton(context.Key("remove-text"), i18n.T("Remove pasted text"), "", icons.Close, true) {
 					remove()
@@ -44,25 +58,29 @@ func boxBlockView(context *ui.Context, key string, segment boxTextSegment, local
 				}
 			}
 		})
-		if expanded {
+		if !collapsible {
+			ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
+		} else if expanded {
 			ui.Scroll(context.Key("full-text")).MaxHeight(150).TrackScroll(&local.textScroll).Children(func() {
-				ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
+				ui.Text(context, boxClipText(segment.Text, boxTextShownChars)).FontSize(12).TextColor(ovCardText).Selectable()
 			})
 		} else {
-			lines := strings.SplitN(segment.Text, "\n", previewLines+1)
+			lines := strings.SplitN(boxClipText(segment.Text, boxTextCollapseChars), "\n", previewLines+1)
 			ui.Text(context, strings.Join(lines[:min(len(lines), previewLines)], "\n")).FontSize(12).TextColor(ovText2).MaxLines(previewLines).Shrink(0)
 		}
-		label := i18n.T("Show all")
-		if expanded {
-			label = i18n.T("Show less")
-		}
-		if ui.ButtonBase(context.Key("toggle-text")).Height(18).Label(label).Children(func() {
-			ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
-		}).Clicked() {
-			if local.expandedText == nil {
-				local.expandedText = map[string]bool{}
+		if collapsible {
+			label := i18n.T("Show all")
+			if expanded {
+				label = i18n.T("Show less")
 			}
-			local.expandedText[key] = !expanded
+			if ui.ButtonBase(context.Key("toggle-text")).Height(18).Label(label).Children(func() {
+				ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
+			}).Clicked() {
+				if local.expandedText == nil {
+					local.expandedText = map[string]bool{}
+				}
+				local.expandedText[key] = !expanded
+			}
 		}
 	})
 }

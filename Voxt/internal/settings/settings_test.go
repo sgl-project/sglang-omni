@@ -55,6 +55,22 @@ func TestMigrate(t *testing.T) {
 	}
 }
 
+func TestMeetingCorrectionStyleDocument(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"meeting":{"prompt":"Summary style"}}}`))
+	if err != nil || s.Features.Meeting.CorrectionStyle != "" || s.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("older document: %+v %v", s.Features.Meeting, err)
+	}
+	s.Features.Meeting.CorrectionStyle = "保持原语气。Keep English product names. " + strings.Repeat("Be concise. ", 100)
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || back.Features.Meeting.CorrectionStyle != s.Features.Meeting.CorrectionStyle || back.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("round trip: %+v %v", back.Features.Meeting, err)
+	}
+}
+
 // docs is a Documents in memory that can fail.
 type docs struct {
 	memDocs
@@ -150,6 +166,66 @@ func TestMemory(t *testing.T) {
 	s.Update(context.Background(), func(s *Settings) { s.Audio.Sounds = false })
 	if s.Get().Audio.Sounds {
 		t.Error("not updated")
+	}
+}
+
+func TestMigrateClipboardImageWithSelection(t *testing.T) {
+	// Documents that predate the switch never chose the old
+	// selected-text-plus-image behavior, which was the #4152 demo
+	// configuration, so they migrate to text-only like a fresh install.
+	legacy, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Privacy.SendClipboardImageWithSelection {
+		t.Error("an older document kept the selected-text-plus-image behavior of #4152")
+	}
+	versionFour, err := Migrate([]byte(`{"version":4,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versionFour.Privacy.SendClipboardImageWithSelection {
+		t.Error("a version-4 document without the new key kept the selected-text-plus-image behavior of #4152")
+	}
+	explicitOn, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !explicitOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice was not preserved")
+	}
+	rawOn, _ := json.Marshal(explicitOn)
+	reloadedOn, err := Migrate(rawOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloadedOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice did not survive a save and reload")
+	}
+	explicit, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice was not preserved")
+	}
+	raw, _ := json.Marshal(explicit)
+	reloaded, err := Migrate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice did not survive a save and reload")
+	}
+	unrelated, err := Migrate([]byte(`{"version":1,"privacy":{"notes":"sendClipboardImageWithSelection"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrelated.Privacy.SendClipboardImageWithSelection {
+		t.Error("unrelated text was mistaken for an explicit together choice")
+	}
+	if Defaults().Privacy.SendClipboardImageWithSelection {
+		t.Error("a fresh install should default to text-only")
 	}
 }
 
@@ -616,6 +692,27 @@ func TestDictionaryNotesUpgrade(t *testing.T) {
 		again, err := Migrate(out)
 		if err != nil || again.Dictionary != s.Dictionary {
 			t.Errorf("saved as %s, read back %+v (%v)", out, again.Dictionary, err)
+		}
+	}
+}
+
+// TestReturnFinishesDefault: Return finishes dictation by default and for
+// a document saved before the setting existed; an explicit choice survives.
+func TestReturnFinishesDefault(t *testing.T) {
+	if !Defaults().Features.Transcribe.ReturnFinishes {
+		t.Fatal("Return does not finish dictation by default")
+	}
+	old, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || !old.Features.Transcribe.ReturnFinishes {
+		t.Fatalf("old document: %v %v", old.Features.Transcribe.ReturnFinishes, err)
+	}
+	for _, on := range []bool{false, true} {
+		s := Defaults()
+		s.Features.Transcribe.ReturnFinishes = on
+		data, _ := json.Marshal(s)
+		back, err := Migrate(data)
+		if err != nil || back.Features.Transcribe.ReturnFinishes != on {
+			t.Errorf("%v round trip: %v %v", on, back.Features.Transcribe.ReturnFinishes, err)
 		}
 	}
 }

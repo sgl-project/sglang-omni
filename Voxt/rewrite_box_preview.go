@@ -10,8 +10,12 @@ import (
 
 const (
 	boxTextCollapseLines = 3
+	boxTextCollapseChars = 300
+	boxTextShownChars    = 10000
 	boxMaxTextBytes      = 32 << 20
 )
+
+func boxTextTooLarge(text string) bool { return len(text) > boxMaxTextBytes }
 
 // boxTextSegment is one editable typed or removable pasted part, in request order.
 type boxTextSegment struct {
@@ -19,6 +23,7 @@ type boxTextSegment struct {
 	Text   string
 	Source string
 	Pasted bool
+	File   bool
 	Chars  int
 	Lines  int
 }
@@ -27,7 +32,7 @@ func newBoxTextSegment(text, source string, pasted bool) boxTextSegment {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	lines := 0
 	if text != "" {
-		lines = strings.Count(text, "\n") + 1
+		lines = strings.Count(strings.TrimSuffix(text, "\n"), "\n") + 1
 	}
 	return boxTextSegment{Text: text, Source: source, Pasted: pasted, Chars: utf8.RuneCountInString(text), Lines: lines}
 }
@@ -49,13 +54,13 @@ func (a *app) boxPasteTextAt(index int, text string, start, end int) bool {
 	if !a.box.open {
 		return false
 	}
-	if len(text) > boxMaxTextBytes {
+	if boxTextTooLarge(text) {
 		a.box.err = i18n.T("This text is too large.")
 		a.boxSync()
 		return false
 	}
 	segment := newBoxTextSegment(text, i18n.T("Pasted text"), true)
-	if segment.Lines <= boxTextCollapseLines || index < -1 || index >= len(a.box.textSegments) {
+	if segment.Lines <= boxTextCollapseLines && segment.Chars <= boxTextCollapseChars || index < -1 || index >= len(a.box.textSegments) {
 		return false
 	}
 	editor := a.box.text
@@ -95,10 +100,22 @@ func (a *app) boxTextContent() string {
 		return a.box.textCache
 	}
 	var content strings.Builder
-	for _, segment := range a.box.textSegments {
-		content.WriteString(segment.Text)
+	afterFile := false
+	add := func(text string, file bool) {
+		if text == "" {
+			return
+		}
+		// An imported file starts and ends on its own line, or two files glue together.
+		if (file || afterFile) && content.Len() > 0 && !strings.HasSuffix(content.String(), "\n") {
+			content.WriteByte('\n')
+		}
+		content.WriteString(text)
+		afterFile = file
 	}
-	content.WriteString(a.box.text)
+	for _, segment := range a.box.textSegments {
+		add(segment.Text, segment.File)
+	}
+	add(a.box.text, false)
 	a.box.textCache = content.String()
 	a.box.cachedEditor = a.box.text
 	a.box.textCacheValid = true

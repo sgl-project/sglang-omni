@@ -267,7 +267,7 @@ func TestClockAndTail(t *testing.T) {
 	if layout.PillW != 148 || layout.PillH != 48 || layout.LiveH != 76 || layout.LiveMaxW != 300 || math.Abs(layout.WaveW-88.7) > 1e-3 {
 		t.Errorf("Voxt's sizes: pill %d×%d, live %d high, at most %d wide, the bars %v wide", layout.PillW, layout.PillH, layout.LiveH, layout.LiveMaxW, layout.WaveW)
 	}
-	if layout.RowWidth(true, 0) != layout.RowW+layout.Gap+layout.TimeW || layout.RowWidth(false, 200) != layout.RowW+layout.Gap+layout.SceneMaxW || layout.RowWidth(false, 40.2) != layout.RowW+layout.Gap+41 {
+	if layout.RowWidth(0) != layout.RowW || layout.RowWidth(200) != layout.RowW+layout.Gap+layout.SceneMaxW || layout.RowWidth(40.2) != layout.RowW+layout.Gap+41 {
 		t.Error("rowWidth")
 	}
 }

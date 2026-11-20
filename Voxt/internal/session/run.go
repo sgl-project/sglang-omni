@@ -95,6 +95,14 @@ type run struct {
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
+	// svcResolved is closed when the session's services are resolved
+	// (useServices): the early clean-up's worker waits for it (and r.ctx).
+	svcResolved chan struct{}
+	// early cleans the stretches the speech model finalised while the
+	// recording went on (asr.EventPiece), so Stop leaves only the tail
+	// (earlyclean.go); the Once makes it on the first stretch or use.
+	earlyOnce sync.Once
+	early     *earlyClean
 }
 
 type capResult struct {
@@ -319,7 +327,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	if r.asrDegraded != nil && (problem == nil || problem.Degraded) {
 		problem = r.asrDegraded
 	}
-	snap := r.m.Current()
+	snap := r.m.snapshot(r)
 	total := r.now().Sub(snap.StartedAt)
 	var highlights []dict.Span
 	if r.req.Kind == store.KindTranscribe && r.settings.Dictionary.Enabled {
@@ -358,7 +366,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 	}
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem = p
@@ -381,7 +389,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	}
 	r.cancel()
 	r.logf("info", "cancelled")
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
@@ -420,7 +428,7 @@ func (r *run) saveNote(text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt, AppName: r.req.Target.Name})
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.snapshot(r).StartedAt, AppName: r.req.Target.Name})
 }
 
 // keep writes the history entry of an ended session (and its recording),

@@ -51,6 +51,9 @@ func featureShortcuts(c *ui.Context, feature string, state *featureShortcutsView
 			featureKeyRowView(c, state.Prefix, feature, index, &state.Rows[index], state.HotkeysInstalled, state.HelperRecordsKeys, actions, &local.rows[index])
 		}
 	})
+	if state.ReturnFinish != nil {
+		trReturnFinishRow(c, state.ReturnFinish, actions)
+	}
 	if state.Paste != nil {
 		featurePasteCancelRow(c, "tr-paste", i18n.T("Paste the last result"), "", i18n.T("Keys to paste the last result"), i18n.T("Custom keys to paste the last result"), state.Paste,
 			state.HelperRecordsKeys, actions, &local.paste, actions.chooseFeaturePasteLast, actions.saveFeaturePasteLast)
@@ -63,6 +66,16 @@ func featureShortcuts(c *ui.Context, feature string, state *featureShortcutsView
 	if state.RewriteHint {
 		caption(c, i18n.T("With an answer in the card, the shortcut asks a follow-up and adds the text you select first."))
 	}
+}
+
+// trReturnFinishRow chooses whether Return finishes a Transcribe recording.
+func trReturnFinishRow(c *ui.Context, state *featureReturnFinishViewState, actions featureActions) {
+	on := state.On
+	settingRow(c, "tr-return-finish", i18n.T("Return finishes dictation"), i18n.T("While Transcribe records, Return stops recording. The key does not add a newline after the result."), func() {
+		if ui.Switch(c.Key("tr-return-finish-switch"), &on).Label(i18n.T("Return finishes dictation")).Changed() {
+			actions.setFeatureReturnFinish(on)
+		}
+	})
 }
 
 func featureKeyRowView(c *ui.Context, prefix, feature string, index int, state *featureKeyRowViewState, hotkeysInstalled, helperRecords bool, actions featureActions, local *keyRow) {

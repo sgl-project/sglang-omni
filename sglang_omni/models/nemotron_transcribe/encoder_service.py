@@ -73,6 +73,8 @@ def clips_share_a_batch(first_samples: int, candidate_samples: int) -> bool:
 class NemotronTranscribePreLMEncoderService(Qwen3ASRPreLMEncoderService):
     """Encode before admission, batching only clips of similar length."""
 
+    USE_DEFAULT_CUDA_STREAM = True
+
     ENCODE_TIMEOUT_S = 3600.0
     MODEL_NAME = "Nemotron Transcribe"
     WORKER_NAME = "nemotron-transcribe-audio-encode"

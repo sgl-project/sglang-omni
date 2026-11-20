@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -219,9 +220,13 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, checkOnly)
 
 	scenarios = append(scenarios, newMeetingSettingsFixtureScenario("meeting-settings-normal"))
+	customCorrection := newMeetingSettingsFixtureScenario("meeting-settings-custom-style")
+	customCorrection.meetingSettings.Meeting.CorrectionStyle = "Keep the conversation's tone. 保留英文产品名。"
+	customCorrection.meetingSettings.CorrectionText = customCorrection.meetingSettings.Meeting.CorrectionStyle
+	scenarios = append(scenarios, customCorrection)
 	scenarios = append(scenarios, meetingFixtureScenario{
 		name: "meeting-settings-no-models", kind: "meeting-settings",
-		meetingSettings: settingsMeetingStateInput{Meeting: settings.Meeting{Lang: "en"}},
+		meetingSettings: settingsMeetingStateInput{Meeting: settings.Meeting{Lang: "en"}, CorrectionText: meeting.DefaultCorrectionStyle},
 	})
 	for _, mode := range []string{"subtitles", "recording"} {
 		scenario := newMeetingSettingsFixtureScenario("meeting-settings-capture-" + mode)
@@ -395,7 +400,7 @@ func newMeetingSettingsFixtureScenario(name string) meetingFixtureScenario {
 				Feature: settings.Feature{ASR: "fixture-speech-two", LLM: "fixture-language-two"},
 				Lang:    "en", HideFromSharing: true,
 			},
-			ReadyASR: readyASR, ShownASR: readyASR,
+			ReadyASR: readyASR, ShownASR: readyASR, CorrectionText: meeting.DefaultCorrectionStyle,
 			ReadyLLM: []local.Model{
 				{ID: "fixture-language-one", Name: "Fixture Language One", Kind: local.LLM},
 				{ID: "fixture-language-two", Name: "Fixture Language Two", Kind: local.LLM},

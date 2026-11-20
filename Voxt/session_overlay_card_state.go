@@ -20,7 +20,6 @@ const (
 	sessionCardProblemMore   = "problem-more"
 	sessionCardSource        = "source"
 	sessionCardBubble        = "bubble"
-	sessionCardLiveUserKey   = "live-user"
 	sessionCardLiveAnswerKey = "live-answer"
 )
 
@@ -38,6 +37,7 @@ type sessionCardViewState struct {
 	ThinkingLabel  string                `json:"thinking_label,omitempty"`
 	FollowTooltip  string                `json:"follow_tooltip,omitempty"`
 	InsertTooltip  string                `json:"insert_tooltip,omitempty"`
+	CopyTooltip    string                `json:"copy_tooltip,omitempty"`
 	Attachment     string                `json:"attachment,omitempty"`
 	ThumbnailCount int                   `json:"thumbnail_count,omitempty"`
 	InputCount     int                   `json:"input_count,omitempty"`
@@ -110,6 +110,8 @@ type sessionCardProjectionInput struct {
 	ShownDraft        string
 	FollowKeys        string
 	CanFollowUp       bool
+	CopyKey           bool
+	InsertKey         bool
 	ThinkingProvider  settings.Provider
 	Generation        settings.Generation
 	SizeStep          int
@@ -204,6 +206,13 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	if !state.Failed {
 		target := cmpOr(state.TargetName, translator.T("the app"))
 		state.InsertTooltip = translator.T("Insert into %s", target)
+		state.CopyTooltip = translator.T("Copy")
+		if input.InsertKey {
+			state.InsertTooltip = translator.T("Insert into %s (R)", target)
+		}
+		if input.CopyKey {
+			state.CopyTooltip = translator.T("Copy (C)")
+		}
 		if state.Why != "" {
 			state.InsertTooltip = state.Why
 		}
@@ -413,6 +422,7 @@ type sessionCardProjectionKey struct {
 	followKeys                            string
 	own, writing, hideLiveText            bool
 	canFollowUp, copied, conversation     bool
+	copyKey, insertKey                    bool
 	redoWriting                           bool
 	problemCode, attachment               string
 	thumbnailCount, inputCount            int
@@ -451,6 +461,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		turnCount: len(card.turns), followKeys: input.FollowKeys,
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
+		copyKey: input.CopyKey, insertKey: input.InsertKey,
 		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews), highlights: highlights,
 	}
 }
@@ -464,7 +475,7 @@ func sessionCardLiveKeyFor(input sessionCardProjectionInput) sessionCardLiveProj
 }
 
 func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
-	snapshot := a.sess
+	snapshot := a.cardSnapshot()
 	kind := a.answer.kind
 	if !a.answer.open {
 		kind = snapshot.Kind
@@ -479,6 +490,15 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	}
 	input.FollowKeys = a.featureKeys(hotkey.Rewrite)
 	input.CanFollowUp = a.canFollowUp()
+	for _, binding := range hotkey.CardBindings(1, a.hotkeyPlan().Cancel) {
+		action, _, _ := hotkey.CardAction(binding.ID)
+		switch action {
+		case hotkey.CardCopy:
+			input.CopyKey = true
+		case hotkey.CardInsert:
+			input.InsertKey = true
+		}
+	}
 	input.ThinkingProvider, _ = a.llmService(a.answer.llmID)
 	input.Generation = a.llmGeneration(a.answer.llmID)
 	if sessionCardRedoWriting(input) && input.Snapshot.ImageHint != "box" {
@@ -504,8 +524,9 @@ func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection,
 		updateSessionCardLiveState(projection.translator, &projection.card, input)
 	}
 	projection.cardLiveKey = liveKey
-	projection.card.Heard = !a.sess.HeardAt.IsZero()
-	copySessionLevels(&projection.card.Levels, a.sess.Levels)
+	snapshot := a.cardSnapshot()
+	projection.card.Heard = !snapshot.HeardAt.IsZero()
+	copySessionLevels(&projection.card.Levels, snapshot.Levels)
 	next.Card = &projection.card
 }
 
@@ -517,6 +538,10 @@ func cmpOr(first, second string) string {
 }
 
 func (a *app) writingAnswer() bool {
+	if a.bgID != "" {
+		s := a.bgSess
+		return s.State.Live() && s.Card && strings.TrimSpace(s.Draft) != ""
+	}
 	snapshot := a.pillSession()
 	return !a.answer.open && snapshot.State == session.Composing && snapshot.Card && !snapshot.Try && strings.TrimSpace(snapshot.Draft) != ""
 }

@@ -23,7 +23,6 @@ package main
 // with the same instruction (StartRequest.Text).
 
 import (
-	"errors"
 	"path/filepath"
 	"slices"
 	"time"
@@ -123,8 +122,11 @@ type rewriteBoxActions struct {
 	close           func()
 	send            func()
 	drop            func([]string)
+	chooseImages    func()
+	chooseFile      func()
 	paste           func(uiServices) bool
 	pasteText       func(int, string, int, int) bool
+	pasteClipboard  func(uiServices, int, int, int)
 	remove          func(int)
 	removeText      func(int)
 	removeSelection func()
@@ -179,9 +181,10 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 }
 
 // closeBox closes the box and drops its content (Esc, its Close button,
-// the window's close); the recording is cancelled.
+// the window's close); the recording is cancelled. An answer moved to
+// the background (wall 116) is no longer the box's to cancel.
 func (a *app) closeBox() {
-	if id := a.boxSessionID(); id != "" && a.sess.State.Live() && a.sess.ID == id {
+	if id := a.boxSessionID(); id != "" && id != a.bgID && a.sess.State.Live() && a.sess.ID == id {
 		a.cancelSession()
 	}
 	a.dropBox()
@@ -262,8 +265,8 @@ func (a *app) boxEnded(s session.Snapshot) {
 	case session.Failed:
 		// Nothing of the box's is dropped: it comes back with the
 		// error, the text and the pictures kept, the instruction ready
-		// for Enter. A conversion error already says what happened.
-		if a.box.err == "" {
+		// for Enter. A model failure replaces an informational skip notice.
+		if a.box.err == "" || s.Problem != nil && s.Problem.Code == session.ProblemLLM {
 			a.box.err, _, _ = sessionProblemText(s.Problem)
 		}
 		if s.Spoken != "" {
@@ -280,18 +283,14 @@ func (a *app) boxEnded(s session.Snapshot) {
 	a.boxSync()
 }
 
-// boxLanding is one converted picture waiting for its turn (boxHeld).
-type boxLanding struct {
-	gen     int
-	jpeg    []byte
-	errText string
-	source  string
-}
-
 // boxReserve takes a dropped or pasted picture's number: the send
 // waits for it (boxPending), and it lands after every earlier number,
 // so batches keep the drop order whatever converts first.
 func (a *app) boxReserve() int {
+	// A new input replaces an earlier failure's hint; a failure within its
+	// own batch then stays when a later file of the batch lands.
+	a.box.err = ""
+	a.boxShare.clearError()
 	a.boxPending++
 	a.boxShare.start()
 	seq := a.boxSeq
@@ -421,56 +420,6 @@ func (a *app) boxDrop(files []string) {
 		}
 	})
 }
-
-// boxConverted takes one converted picture on the main thread (errText
-// when it would not read, "" on success or a silent skip): it lands
-// only in the box's own life (a close started another) and in its
-// number's turn — each batch converts on its own goroutine, so a big
-// picture of an earlier batch can finish after a later batch's, and
-// without the turn the box and the request would follow the finish
-// order, not the drop order. A send that waited for it goes now.
-func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string, source ...string) {
-	// An out-of-order landing stays pending until its turn, so later drops
-	// cannot use its slot before it reaches the box.
-	var conversionErr error
-	if gen == a.boxGen && errText != "" {
-		conversionErr = errors.New(errText)
-	}
-	if a.boxHeld == nil {
-		a.boxHeld = map[int]boxLanding{}
-	}
-	name := ""
-	if len(source) > 0 {
-		name = source[0]
-	}
-	a.boxHeld[seq] = boxLanding{gen: gen, jpeg: jpeg, errText: errText, source: name}
-	for {
-		land, ok := a.boxHeld[a.boxNext]
-		if !ok {
-			break
-		}
-		delete(a.boxHeld, a.boxNext)
-		a.boxPending--
-		a.boxNext++
-		if land.gen != a.boxGen {
-			continue
-		}
-		if land.errText != "" {
-			a.box.err = land.errText
-			a.boxSendQueued = false
-		} else {
-			a.boxAttach(land.jpeg, land.source)
-		}
-		a.boxSync()
-	}
-	// Wake the session only after boxSync has stored every landed image.
-	a.boxShare.done(conversionErr)
-	if a.boxPending == 0 && a.boxSendQueued {
-		a.boxSendQueued = false
-		a.boxSend()
-	}
-}
-
 func (a *app) boxSessionID() string {
 	if a.box.sending != "" {
 		return a.box.sending

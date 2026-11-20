@@ -66,6 +66,7 @@
       "online": "除此之外，Voxt 只在下载模型和读取公告时联网，读取公告不会发送你的任何信息。",
       "send_window": false,
       "send_clipboard": false,
+      "send_clipboard_with_selection": false,
       "keep_history": false,
       "keep_audio": false,
       "keep_audio_enabled": false,

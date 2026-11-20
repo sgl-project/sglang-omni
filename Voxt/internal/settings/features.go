@@ -30,28 +30,32 @@ type Features struct {
 	EndWord string `json:"endWord,omitempty"`
 	// Hidden are the features left out of the sidebar, Home and the
 	// command palette (Settings → General, as Voxt 1.x's home could):
-	// HideTranslate, HideRewrite, HideAppEnhancement. A hidden feature's
-	// shortcuts and scene rules are off; its settings stay.
+	// HideTranslate, HideRewrite, HideAppEnhancement, HideNotes,
+	// HideMeetings. A hidden feature's shortcuts and scene rules are off;
+	// its settings and saved data stay.
 	Hidden []string `json:"hidden,omitempty"`
 	// CardSizes are the answer card's sizes by feature (store.Kind:
-	// "transcribe", "translate", "rewrite"): 0 small (the default), 1
-	// medium, 2 large (layout.CardSizes); each feature its own (#3644 FB41).
+	// transcribe, translate, rewrite), 0 small, 1
+	// medium, 2 large, 3 fill (layout.CardSizes); each feature its own
+	// (#3644 FB41).
 	CardSizes map[string]int `json:"cardSizes,omitempty"`
 }
 
-// The features Features.Hidden can hold: Translate's and Rewrite's are
-// internal/hotkey's ids.
+// The features Features.Hidden can hold, each its page's path without the
+// slash: Translate's and Rewrite's are also internal/hotkey's ids.
 const (
 	HideTranslate      = "translate"
 	HideRewrite        = "rewrite"
 	HideAppEnhancement = "app-enhancement"
+	HideNotes          = "notes"
+	HideMeetings       = "meetings"
 )
 
 // IsHidden reports whether feature id is hidden (Features.Hidden).
 func (f Features) IsHidden(id string) bool { return slices.Contains(f.Hidden, id) }
 
 // CardSizeSteps is how many sizes the answer card has.
-const CardSizeSteps = 3
+const CardSizeSteps = 4
 
 // CardSize is the answer card's size for feature kind, 0 to
 // CardSizeSteps-1 (Features.CardSizes).
@@ -94,6 +98,9 @@ type Transcribe struct {
 	Structure bool `json:"structure,omitempty"`
 	// ShowCard shows the text in the answer card instead of typing it.
 	ShowCard bool `json:"showCard,omitempty"`
+	// ReturnFinishes stops a Transcribe recording when Return is pressed.
+	// The key is consumed, not sent after the text is inserted.
+	ReturnFinishes bool `json:"returnFinishes"`
 }
 
 // Translate: speech or selected text → a translation.

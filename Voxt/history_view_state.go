@@ -200,7 +200,7 @@ func historyEntryCopyText(entry store.Entry) string {
 	if text := strings.TrimSpace(entry.Result); text != "" {
 		return text
 	}
-	if entry.Kind == store.KindRewrite {
+	if entry.Kind == store.KindRewrite && entry.PromptText != "" {
 		return strings.TrimSpace(entry.PromptText)
 	}
 	return strings.TrimSpace(entry.RawText)
@@ -208,7 +208,7 @@ func historyEntryCopyText(entry store.Entry) string {
 
 func historyEntryRawCopy(entry store.Entry) string {
 	raw := strings.TrimSpace(entry.RawText)
-	if entry.Kind == store.KindRewrite {
+	if entry.Kind == store.KindRewrite && entry.PromptText != "" {
 		raw = strings.TrimSpace(entry.PromptText)
 	}
 	if raw != historyEntryCopyText(entry) {

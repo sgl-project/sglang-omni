@@ -237,7 +237,7 @@ func (r *run) write(raw, selection string) {
 	case err != nil && r.stopped.Load():
 		// The user stopped it: the card keeps the answer so far, nothing
 		// goes over the selection or in unseen.
-		s := r.m.Current()
+		s := r.m.snapshot(r)
 		r.logf("info", "the answer was stopped after %v: the card keeps %s", llmTime.Round(time.Millisecond), r.logText(s.Draft))
 		o.card = deliver.ReasonCard
 		r.finish(Done, nil, s.Draft, o)
@@ -250,6 +250,11 @@ func (r *run) write(raw, selection string) {
 	if err != nil {
 		r.logf("warning", "language model %s (model %s) failed after %v: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
+		return
+	}
+	if kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && compose.LanguageMismatch(source, in.TargetLanguage) {
+		r.logf("warning", "the translation still looks untranslated after the strict retry")
+		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: ErrNotTranslated}, true)
 		return
 	}
 	r.logf("info", "wrote %s in %v", r.logText(res.Content), llmTime.Round(time.Millisecond))
@@ -279,15 +284,29 @@ func (r *run) write(raw, selection string) {
 // requests, the snapshot and the history entry use it.
 func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, error) {
 	res, profile, truncated, err := r.ask(in)
-	// A used-up plan is the user's to manage: moving to another paid
-	// service without asking would spend it unseen.
-	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || llm.Code(err) == llm.CodeUsageLimit {
+	if !r.useFallback(err) {
 		return res, profile, truncated, err
 	}
+	r.swapFallback(err)
+	return r.ask(in)
+}
+
+// useFallback says a failed request may go to the fallback model once:
+// there is one, the session goes on (not cancelled, skipped, stopped or
+// asked to rethink), and the failure is not the user's to manage — a
+// used-up plan is, so moving to another paid service without asking
+// would spend it unseen.
+func (r *run) useFallback(err error) bool {
+	return err != nil && r.svc.Fallback != nil && r.ctx.Err() == nil && !r.skipped.Load() && !r.stopped.Load() && !r.rethink.Load() && llm.Code(err) != llm.CodeUsageLimit
+}
+
+// swapFallback makes the fallback the session's model: later requests,
+// the snapshot and the history entry use it. The answer starts over, as
+// when asked again: nothing of the failed model's draft or title stays.
+func (r *run) swapFallback(err error) {
 	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
 	r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, r.svc.FallbackInfo, nil
-	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft = r.svc.LLMInfo, "" })
-	return r.ask(in)
+	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft, s.Title = r.svc.LLMInfo, "", "" })
 }
 
 // ask sends one request and streams its answer into the snapshot. It
@@ -309,6 +328,11 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
+	answerInputs := []string{in.Text + "\n" + in.Typed + "\n" + in.Instruction}
+	for _, turn := range in.Previous {
+		answerInputs = append(answerInputs, turn.Instruction+"\n"+turn.Selection+"\n"+turn.Typed+"\n"+turn.Answer.Title+"\n"+turn.Answer.Content)
+	}
+	quoteSource := cmp.Or(in.Text, in.Instruction)
 	var last time.Time
 	publish := func(force bool) {
 		now := time.Now()
@@ -318,9 +342,11 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		last = now
 		var a compose.Answer
 		if in.Answer {
-			a = compose.PartialAnswer(buf.String())
+			a = compose.PartialAnswer(buf.String(), answerInputs...)
+		} else if in.Task == compose.Rewrite {
+			a.Content = compose.CleanRewrite(buf.String(), answerInputs, true, quoteSource)
 		} else {
-			a.Content = strings.TrimSpace(compose.StripControl(buf.String()))
+			a.Content = compose.PartialCleanWithInputs(buf.String(), answerInputs, quoteSource)
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
@@ -348,14 +374,16 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
-		if a, ok := compose.ParseAnswer(resp.Text); ok {
+		if a, ok := compose.ParseAnswer(resp.Text, answerInputs...); ok {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), in.Instruction)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewrite(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
 	}
-	input := in.Text
-	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), truncated, nil
+	if in.Task == compose.Rewrite {
+		return compose.Answer{Content: compose.CleanRewrite(resp.Text, answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
+	}
+	return compose.Answer{Content: compose.CleanWithInputs(resp.Text, answerInputs, quoteSource)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,
@@ -365,7 +393,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 func (r *run) endWriteFailed(p *Problem, card bool) {
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem, s.Timings.Total = p, total
 		s.Card = card && !r.req.Try
