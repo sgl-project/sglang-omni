@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
@@ -109,6 +110,12 @@ func onboardingFixtureScenarios() []meetingFixtureScenario {
 	add("try-passed", obTranscribe, func(input *onboardingViewStateInput) {
 		input.Passed[obTranscribe] = true
 		input.Session = onboardingFixtureSession(session.Done)
+		input.Tries[obTranscribe] = input.Session.ID
+	})
+	add("try-highlights", obTranscribe, func(input *onboardingViewStateInput) {
+		input.Session = onboardingFixtureSession(session.Done)
+		input.Session.Result = "The meeting moves to Thursday at four."
+		input.Session.Highlights = []dict.Span{{Start: 21, End: 29}} // "Thursday", a dictionary word (#4055)
 		input.Tries[obTranscribe] = input.Session.ID
 	})
 	add("try-language-model", obTranslate, func(input *onboardingViewStateInput) {})

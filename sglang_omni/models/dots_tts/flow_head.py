@@ -573,7 +573,7 @@ class DotsTTSFlowHead(nn.Module):
                 .gt(float(eos_threshold))
                 .reshape(())
             )
-            if eos_hit.is_cuda:
+            if eos_hit.device.type == "cuda":
                 if self.eos_pinned is None:
                     self.eos_pinned = torch.zeros((), dtype=torch.bool, pin_memory=True)
                     self.eos_event = torch.cuda.Event()
@@ -628,7 +628,7 @@ class DotsTTSFlowHead(nn.Module):
         )
         if eos_hit is None:
             finished = False
-        elif eos_hit.is_cuda:
+        elif eos_hit.device.type == "cuda":
             self.eos_event.synchronize()
             finished = bool(self.eos_pinned.item())
         else:
@@ -793,7 +793,7 @@ class DotsTTSFlowHead(nn.Module):
             return
         else:
             pass
-        if eos_hits.is_cuda:
+        if eos_hits.device.type == "cuda":
             self.ensure_batched_eos_capacity(n, eos_hits.device)
             assert self.batched_eos_pinned is not None
             assert self.batched_eos_event is not None

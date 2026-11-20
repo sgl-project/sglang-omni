@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -175,5 +176,32 @@ func TestLongTranslate(t *testing.T) {
 	reqs := model.requests()
 	if end.Result != "我们周四上午发布。" || len(reqs) != 1 || reqs[0].Messages[len(reqs[0].Messages)-1].Content != compose.UserMessage(strings.TrimSpace(en)) {
 		t.Errorf("result %q, %d requests", end.Result, len(reqs))
+	}
+}
+
+type cleanupBackend struct{ *fakeLLM }
+
+func (*cleanupBackend) Info() llm.BackendInfo { return llm.BackendInfo{ID: "cleanup-test"} }
+
+// TestCleanupProtocolFallback: tool serialization must never be pasted, while ordinary short words remain unchanged.
+func TestCleanupProtocolFallback(t *testing.T) {
+	for _, test := range []struct{ name, raw, reply, result, problem string }{
+		{"tool reply", "As.", `<|open|>tools<|sep|><|open|>call tool="thinking"<|sep|>discard`, "As.", ProblemLLM},
+		{"response tool", "你好", `<|open|>tools<|sep|><|open|>call tool="response"<|sep|>`, "你好", ProblemLLM},
+		{"single word", "As.", "<output>As.</output>", "As.", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &cleanupBackend{&fakeLLM{text: test.reply, finish: llm.FinishStop, chunk: 1}}
+			h := newHarness(t, &fakeFile{text: test.raw}, &llm.Client{Backend: backend}, nil)
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			if end.Result != test.result || end.Raw != test.raw || (end.Problem == nil) != (test.problem == "") || end.Problem != nil && end.Problem.Code != test.problem {
+				t.Fatalf("result %q, raw %q, problem %+v", end.Result, end.Raw, end.Problem)
+			}
+			pasted := h.text.pastes()
+			if len(pasted) != 1 || pasted[0] != test.result {
+				t.Fatalf("pasted %q", pasted)
+			}
+		})
 	}
 }

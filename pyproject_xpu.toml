@@ -76,6 +76,11 @@ dependencies = [
     # --- MiniCPM-o ---------------------------------------------------------
     "einops>=0.8.1",
     "onnx>=1.18.0",
+    "audioread>=3.0.0",
+    "decord==0.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+
+    # --- Zonos2 ------------------------------------------------------------
+    "nemo_text_processing==1.2.0",
 
     # --- PersonaPlex -------------------------------------------------------
     "sentencepiece>=0.2.0",

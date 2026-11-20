@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -87,7 +88,7 @@ func TestCancelKeysEsc(t *testing.T) {
 	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "" {
 		t.Fatalf("turned off: %q", k)
 	}
-	opts, byLabel := keyOptions("", true, settings.DefaultCancel)
+	opts, byLabel := keyOptionsFor(i18n.CurrentTranslator(), "", true, settings.DefaultCancel)
 	if i := slices.Index(opts, "Esc"); i != 1 || byLabel["Esc"] != "Escape" {
 		t.Fatalf("options %q", opts)
 	}
