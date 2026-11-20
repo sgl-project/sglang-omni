@@ -151,6 +151,29 @@ func TestRewriteBoxOversizeClipboardDoesNotReadPNG(t *testing.T) {
 	}
 }
 
+func TestRewriteBoxRejectedClipboardImageShowsError(t *testing.T) {
+	for _, format := range []transfer.Format{transfer.PNG, transfer.FileList} {
+		t.Run(string(format), func(t *testing.T) {
+			a, fs, _ := newTestApp(t)
+			fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+				return proto.ClipboardImageResult{}, nil
+			}
+			a.box = rewriteBox{open: true, shown: true, focusText: true, text: "keep me", images: [][]byte{boxJPEG(t)}}
+			tt := hudTester(a.boxView, boxWinW, boxWinH)
+			frames(tt)
+			tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(format, []byte("clipboard")))))
+			tt.Command("paste")
+			frames(tt)
+			if a.box.err != "This image is too large." || !has(tt, "This image is too large.") {
+				t.Fatalf("rejected clipboard image is silent: box error %q, texts %q", a.box.err, firstTexts(tt))
+			}
+			if a.box.text != "keep me" || len(a.box.images) != 1 || a.boxPending != 0 {
+				t.Fatalf("rejection changed the input: text %q, images %d, pending %d", a.box.text, len(a.box.images), a.boxPending)
+			}
+		})
+	}
+}
+
 func TestBoxTextTooLarge(t *testing.T) {
 	if boxTextTooLarge("small") {
 		t.Fatal("ordinary text was rejected")
