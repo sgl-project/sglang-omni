@@ -35,6 +35,14 @@ func TestAnswerKeepsRequestedTags(t *testing.T) {
 	checkAnswer(t, "<selected_text>"+own+"</selected_text>", own, own, "fix")
 }
 
+func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
+	template := "<instruction>\n{task}\n</instruction>"
+	checkAnswer(t, template, template, "", "Write an instruction template")
+	if got := Clean(template, "x"); got != template {
+		t.Errorf("Clean(%q) = %q, want the requested template", template, got)
+	}
+}
+
 func checkAnswer(t *testing.T, out, want, selection, instruction string) {
 	t.Helper()
 	b, _ := json.Marshal(Answer{Title: "T", Content: out})

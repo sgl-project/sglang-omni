@@ -125,10 +125,11 @@ func partialTagSuffix(s, tag string) int {
 }
 
 // stripInputTags drops an <instruction> or <selected_text> pair a model
-// echoed from RewriteMessage, keeping the text between: a pair that wraps
-// the whole answer, or one around exactly a text the user sent (whole
-// lines of input). Other pairs are part of the answer (a prompt template the
-// user asked for) and stay, as do the tags the user's own text has.
+// echoed from RewriteMessage, keeping the text between: a selected_text pair
+// that wraps the whole answer, or one around exactly a text the user sent
+// (whole lines of input). A whole instruction pair and other pairs are part
+// of the answer (a prompt template the user asked for) and stay, as do the
+// tags the user's own text has.
 func stripInputTags(s string, input ...string) string {
 	sent := "\n" + strings.Join(input, "\n") + "\n"
 	for _, name := range []string{"instruction", "selected_text"} {
@@ -149,7 +150,7 @@ func stripInputTags(s string, input ...string) string {
 			j += i + len(open)
 			inner := strings.TrimSpace(s[i+len(open) : j])
 			whole := strings.TrimSpace(s[:i]) == "" && strings.TrimSpace(s[j+len(close):]) == ""
-			if whole || inner != "" && strings.Contains(sent, "\n"+inner+"\n") {
+			if whole && name != "instruction" || inner != "" && strings.Contains(sent, "\n"+inner+"\n") {
 				s = s[:i] + inner + s[j+len(close):]
 				from = i + len(inner)
 			} else {

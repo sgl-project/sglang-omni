@@ -10,7 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Rewrite answers no longer show echoed input tags** (#4313): when the language model repeats `<selected_text>` or `<instruction>` around your selection or instruction, the answer card removes those tags and keeps the text inside them. Only a pair that wraps the whole answer or exactly your selection or instruction goes; tags that belong in the answer, such as a prompt template you asked for, stay.
+- **Rewrite answers no longer show echoed input tags** (#4313): when the language model repeats `<selected_text>` or `<instruction>` around your selection or instruction, the answer card removes those tags and keeps the text inside them. A `<selected_text>` pair that wraps the whole answer or exactly your selection or instruction goes; a whole `<instruction>` pair and tags that belong in the answer, such as a prompt template you asked for, stay.
 
 ### 中文
 
@@ -27,7 +27,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **改写回答不再显示重复的输入标签**（#4313）：语言模型重复输出 `<selected_text>` 或 `<instruction>` 标签时，答案卡片会去掉标签，保留标签内的文字。只去掉包住整段回答、或正好包住你的选中文字或指令的那一对；回答本身需要的标签（比如你要的提示词模板）保留。
+- **改写回答不再显示重复的输入标签**（#4313）：语言模型重复输出 `<selected_text>` 或 `<instruction>` 标签时，答案卡片会去掉标签，保留标签内的文字。只去掉包住整段回答、或正好包住你的选中文字或指令的 `<selected_text>` 标签；整段 `<instruction>` 标签和回答本身需要的标签（比如你要的提示词模板）保留。
 
 ## [2.1.1] - 2026-11-17
 
