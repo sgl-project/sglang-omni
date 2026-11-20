@@ -206,7 +206,7 @@ jobs:
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
-          # Qwen3-ASR-1.7B, MOSS-TD and Fun-ASR-Nano serve their DFlash drafts by default, at the revisions sglang_omni/speculative/draft_registry.py pins.
+          # Qwen3-ASR-1.7B, MOSS-TD, Fun-ASR-Nano and Fun-CosyVoice3 serve their drafts by default, at the revisions sglang_omni/speculative/draft_registry.py pins.
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
@@ -218,6 +218,7 @@ jobs:
             "${MOSS_TTS_MODEL_PATH}" \
             "${QWEN3_TTS_MODEL_PATH}" \
             "${COSYVOICE3_MODEL_PATH}" \
+            wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark@695fbc9d88a99389cbe70a26b81c5fc404dcc83a \
             "${QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}" \
             wilsonzheng0327/Fun-ASR-Nano-dflash@b3cb091f554c88274378d549d7e7d3c5a13052e6 \

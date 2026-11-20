@@ -384,15 +384,16 @@ This result is only demonstrative, since we have further optimization after the 
 
 ### Speculative Decoding
 
-The DSpark draft [`wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark`](https://huggingface.co/wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark) (Apache-2.0) proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass. It has the shape of SpeechSpec's draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark), which states no license, and is trained on English and Chinese voice-cloning requests labelled by this server's own sampler.
+On one CUDA GPU, Fun-CosyVoice3 serves with its DSpark draft [`wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark`](https://huggingface.co/wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark) (Apache-2.0) by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `FunAudioLLM/Fun-CosyVoice3-0.5B-2512`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Apple Silicon, Ascend NPUs and other platforms serve without the draft, and so does a copy outside the Hugging Face cache. To serve without the draft, add `--tts_engine.engine.disable_speculative_decoding true`:
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --tts_engine.engine.speculative_algorithm DSPARK \
-  --tts_engine.engine.speculative_draft_model_path wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark \
+  --tts_engine.engine.disable_speculative_decoding true \
   --port 8000
 ```
+
+The draft proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass. It has the shape of SpeechSpec's draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark), which states no license, and is trained on English and Chinese voice-cloning requests labelled by this server's own sampler.
 
 SpeechSpec's draft still serves by its path, which stays pinned to the revision it was measured on, `0b1b28dbb751bac3b74eea5dcc11e0570c91563b`:
 
