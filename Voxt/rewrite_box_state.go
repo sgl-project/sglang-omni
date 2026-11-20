@@ -152,7 +152,8 @@ func (a *app) boxSync() {
 		return // tests: the state is enough
 	}
 	if a.box.win == nil {
-		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, floatingWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil))
+		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, cardWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil))
+		a.box.win.SetVisibleOnAllWorkspaces(true) // on the Space the user is on, over a full-screen app too
 	}
 	style := floatingVibrancyStyle(faceRadius(a.prefs.Overlay, ovAnswer, boxWinH))
 	if style != a.box.style {
@@ -168,14 +169,12 @@ func (a *app) boxSync() {
 		a.box.win.SetContentBounds(frame)
 	}
 	if !a.box.winShown || a.box.raise {
-		// Not a floating window: it comes in front of the windows over it
-		// when it opens and with each press of the Rewrite shortcut on it,
-		// while the app the user was in stays active.
-		a.box.win.ShowInactive()
-		a.box.win.Show()
-		a.box.win.Focus()
+		// The shortcut that opens the card or sends from it is a click on
+		// it: above every window at once (cardFront).
+		a.box.front.raise(a.box.win)
 		a.box.winShown, a.box.raise = true, false
 	}
+	a.box.front.settle(a.box.win, func() cardMay { return a.cardMayTake(a.box.target.PID) })
 }
 
 // boxConversing says whether the card shows the answer card's content:

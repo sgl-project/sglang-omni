@@ -13,11 +13,13 @@ package main
 // sending. Nothing selected, typed or pasted: the request is the speech
 // alone, as before.
 //
-// The card's window is a panel (mygo WindowOptions.Panel): it takes the
-// keyboard without activating VoxtNew, so the app the user was in stays
-// active and gets the keyboard back when the card hides. It does not
-// float: the user drags it by its margins, and other windows may cover
-// it until the Rewrite shortcut brings it back in front.
+// The card's window is an ordinary window (cardWindowOptions), as any
+// app's: each press of the Rewrite shortcut on it is a click on it, so it
+// shows above every window at once and VoxtNew comes in front with it
+// once the selection is read (cardFront); the user drags it by its
+// margins, a window manager moves it, and the user's next app covers it.
+// Closing it gives the front back to the app the user was in
+// (giveFrontBack); an insert activates that app first (deliver).
 //
 // A send that fails (a model that takes no images refuses them) brings
 // the card back with the error and everything kept: Enter sends again
@@ -53,10 +55,11 @@ type rewriteBox struct {
 	// dragged is how far the user moved the card from where it opens
 	// (boxDraggedTo): it keeps that place until it closes.
 	dragged struct{ x, y int }
-	// raise brings the window in front of the windows over it at the
-	// next boxSync: each press of the Rewrite shortcut on the card (it
-	// opens it, sends, asks in it) is a click on it.
+	// raise brings the window in front at the next boxSync: each press of
+	// the Rewrite shortcut on the card (it opens it, sends, asks in it)
+	// is a click on it. front is how it takes the front (cardFront).
 	raise bool
+	front cardFront
 	// session is the recording session's id ("" when it ended); sending
 	// a resend's after a failure.
 	session, sending string
@@ -167,8 +170,9 @@ type boxWindow interface {
 	Invalidate()
 	SetContentBounds(mygo.Rectangle)
 	ContentBounds() mygo.Rectangle
+	SetAlwaysOnTop(bool)
+	SetVisibleOnAllWorkspaces(bool)
 	ShowInactive()
-	Show()
 	Focus()
 	Hide()
 	Destroy()
@@ -225,11 +229,13 @@ func (a *app) closeBox() {
 // boxCloseCard is the card's Close button (and its window's close): the
 // answer it holds closes with it.
 func (a *app) boxCloseCard() {
-	answered := a.boxAnswered()
+	answered, target := a.boxAnswered(), a.box.target.PID
 	a.closeBox()
 	if answered {
-		a.closeAnswer()
+		a.closeAnswer() // which gives the front back
+		return
 	}
+	a.giveFrontBack(target)
 }
 
 // boxEscape is Esc in the card: a follow-up on its way is cancelled and
@@ -253,8 +259,8 @@ func (a *app) boxAnswered() bool {
 // the input is emptied for the next follow-up.
 func (a *app) boxKeep() {
 	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
-	target, dragged := a.box.target, a.box.dragged
-	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, ui: ui}
+	target, dragged, front := a.box.target, a.box.dragged, a.box.front
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
 	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
