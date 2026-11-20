@@ -6,7 +6,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **Apply a model to several features** (#4276): model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### Fixed
 
@@ -16,13 +17,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
-- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
-
-### 中文
-
-#### 新增
-
+- **将模型批量应用到功能**（#4276）：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
 #### 修复

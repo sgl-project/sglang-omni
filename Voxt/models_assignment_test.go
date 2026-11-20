@@ -266,8 +266,8 @@ func TestUnavailableFeatureChoiceDoesNotFallBack(t *testing.T) {
 
 	speech := []local.Model{{Kind: local.ASR, ID: "ready-speech"}}
 	prefs.Features.Rewrite.ASR = "gone-speech"
-	if selected, ok := chooseFeatureModel(prefs, speech, local.ASR, hotkey.Rewrite); ok || selected.ID != "" {
-		t.Fatalf("ASR replaced an unavailable choice with %q", selected.ID)
+	if selected, ok := chooseFeatureModel(prefs, speech, local.ASR, hotkey.Rewrite); !ok || selected.ID != "ready-speech" {
+		t.Fatalf("ASR did not use the ready speech model: %q, %v", selected.ID, ok)
 	}
 
 	a, _, _ := newTestApp(t)
@@ -275,5 +275,26 @@ func TestUnavailableFeatureChoiceDoesNotFallBack(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.LLM = "gone" })
 	if notice := a.sessionBlocker(store.KindRewrite); notice == nil || notice.text != "No language model is set up." {
 		t.Fatalf("Rewrite preflight = %+v", notice)
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Rewrite.ASR = "gone-speech"
+		s.Features.Rewrite.LLM = ""
+	})
+	if notice := a.sessionBlocker(store.KindRewrite); notice != nil {
+		t.Fatalf("an unavailable speech choice blocks a ready replacement: %+v", notice)
+	}
+}
+
+// TestSetFeatureModelMeeting: Meetings has its own model, so setting it
+// leaves Transcribe's alone.
+func TestSetFeatureModelMeeting(t *testing.T) {
+	var s settings.Settings
+	setFeatureModel(&s, local.ASR, hotkey.Meeting, "speech")
+	setFeatureModel(&s, local.LLM, hotkey.Meeting, "language")
+	if s.Features.Meeting.ASR != "speech" || s.Features.Meeting.LLM != "language" {
+		t.Errorf("Meetings got %q and %q", s.Features.Meeting.ASR, s.Features.Meeting.LLM)
+	}
+	if s.Features.Transcribe.ASR != "" || s.Features.Transcribe.LLM != "" {
+		t.Errorf("Transcribe changed to %q and %q", s.Features.Transcribe.ASR, s.Features.Transcribe.LLM)
 	}
 }

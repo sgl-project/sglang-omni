@@ -53,8 +53,6 @@ func thinkTitleFor(translator *i18n.Translator, mode string) string {
 	return translator.T("Default")
 }
 
-func effortTitle(v string) string { return effortTitleFor(i18n.CurrentTranslator(), v) }
-
 func effortTitleFor(translator *i18n.Translator, v string) string {
 	switch v {
 	case "none":
