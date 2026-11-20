@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -376,6 +377,8 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 }
 
 func TestLatencyResultJSON(t *testing.T) {
+	previousUmask := syscall.Umask(0)
+	defer syscall.Umask(previousUmask)
 	path := filepath.Join(t.TempDir(), "latency.jsonl")
 	t.Setenv("VOXTNEW_LATENCY_OUT", path)
 	t.Setenv("VOXTNEW_LATENCY_ARM", "A")
