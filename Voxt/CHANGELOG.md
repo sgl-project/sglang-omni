@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
+
+### 中文
+
+#### 变更
+
+- **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added
