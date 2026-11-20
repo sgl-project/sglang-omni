@@ -30,7 +30,6 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
-	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
@@ -99,6 +98,9 @@ type rewriteBoxViewState struct {
 	// Conversation: the card holds an answer, or one is being written:
 	// the answer card's content shows above the text box (wall 122).
 	Conversation      bool
+	Card              *sessionCardViewState
+	CardSessionID     string
+	CardWidth         int
 	SizeStep          int
 	SelectionBlock    boxTextSegment
 	Text              string
@@ -129,8 +131,9 @@ type rewriteBoxActions struct {
 	viewState       func() rewriteBoxViewState
 	close           func()
 	escape          func()
-	conversation    func(*ui.Context)
-	cardButtons     func(*ui.Context)
+	card            sessionOverlayActions // the answer card's, for the blocks drawn here
+	cardLocal       func() sessionOverlayLocal
+	cardMeasured    func([]sessionOverlayMeasurement)
 	cycleSize       func()
 	send            func()
 	drop            func([]string)

@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"math"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -95,6 +92,9 @@ func (a *app) boxViewState() rewriteBoxViewState {
 		Recording: recording, Heard: !a.sess.HeardAt.IsZero(), Motion: a.overlayMotion(), Phase: a.overlayPhase(),
 		Radius: faceRadius(a.prefs.Overlay, ovAnswer, boxWinH), Alpha: layout.FaceAlpha(a.prefs.Overlay), Palette: a.prefs.Appearance.Palette,
 	}
+	if state.Conversation {
+		state.Card, state.CardSessionID, state.CardWidth = a.boxCardView(), a.ov.projection.view.SessionID, a.boxFaceW()
+	}
 	if a.boxAnswered() && box.instruction == "" && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
 		state.CanSend = true // a typed follow-up
 	}
@@ -110,7 +110,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
 		viewState: a.boxViewState,
-		close:     a.boxCloseCard, escape: a.boxEscape, conversation: a.boxConversation, cardButtons: a.boxCardButtons, cycleSize: a.boxCycleSize, send: a.boxSend, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
+		close:     a.boxCloseCard, escape: a.boxEscape, card: boxCardActions{a}, cardLocal: func() sessionOverlayLocal { return sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui} }, cardMeasured: a.postSessionOverlayMeasurements, cycleSize: a.boxCycleSize, send: a.boxSend, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
 		paste: a.boxPaste, pasteText: a.boxPasteTextAt, pasteClipboard: a.boxPasteClipboard,
 		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
 		dismissTip: a.dismissBoxTip,
@@ -201,36 +201,6 @@ type boxCardActions struct{ *app }
 
 func (boxCardActions) overlayTranscriptResult(*uiContext, sessionOverlayPreviewRequest) bool {
 	return false
-}
-
-// boxConversation draws the answer card's blocks (the conversation, the
-// answer being written) in the Rewrite card, scrolling under its fixed
-// height.
-func (a *app) boxConversation(context *ui.Context) {
-	card := a.boxCardView()
-	if card == nil {
-		return
-	}
-	local, count := &a.box.ui, sessionCardBlockCount(card)
-	if key := card.ID + "/" + strconv.Itoa(count); key != local.turnsKey || card.Writing && local.turnScroll.Y >= local.turnScroll.MaxY-2 {
-		local.turnsKey, local.turnScroll.Y = key, math.MaxFloat32 // the newest turn is in view
-	}
-	width := a.boxFaceW()
-	overlayLocal := sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui}
-	ui.Scroll(context.Key("box-turns")).Grow(1).MinHeight(0).MinWidth(0).TrackScroll(&local.turnScroll).Children(func() {
-		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
-			for index := range count {
-				cardBlockView(context.Key(index), a.ov.projection.view.SessionID, card, sessionCardBlockAt(card, index), index, width, boxCardActions{a}, overlayLocal, a.postSessionOverlayMeasurements)
-			}
-		})
-	})
-}
-
-// boxCardButtons draws the answer's Insert and Copy in the card's header.
-func (a *app) boxCardButtons(context *ui.Context) {
-	if card := a.boxCardView(); card != nil && !card.Failed && a.answer.open {
-		cardInsertCopy(context, card, a)
-	}
 }
 
 // boxCycleSize is the card's size button: the next card size.

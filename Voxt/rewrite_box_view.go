@@ -6,6 +6,7 @@ package main
 // instruction, and a line for an error.
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -109,8 +110,8 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 						actions.send()
 					}
 				}
-				if state.Conversation {
-					actions.cardButtons(context)
+				if card := state.Card; card != nil && !card.Failed && card.CanCopy {
+					cardInsertCopy(context, card, actions.card)
 				}
 				if cardIconButton(context.Key("box-close"), i18n.T("Close"), "", icons.Close, true) {
 					actions.close()
@@ -141,8 +142,8 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 
 			// The answer and the turns before it, as the answer card draws
 			// them: the card is the same one from the shortcut on (wall 122).
-			if state.Conversation {
-				actions.conversation(context)
+			if state.Card != nil {
+				boxConversation(context, state, actions, local)
 			}
 
 			// The text box stays at the card's foot: the list above it takes
@@ -409,6 +410,24 @@ func boxThumbView(context *ui.Context, bitmap *ui.Bitmap, info boxImageInfo, rem
 					}).Clicked() {
 					remove()
 				}
+			}
+		})
+	})
+}
+
+// boxConversation draws the answer card's blocks (the conversation, the
+// answer being written) in the Rewrite card, scrolling under its fixed
+// height.
+func boxConversation(context *ui.Context, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) {
+	card, count := state.Card, sessionCardBlockCount(state.Card)
+	if key := card.ID + "/" + strconv.Itoa(count); key != local.turnsKey || card.Writing && local.turnScroll.Y >= local.turnScroll.MaxY-2 {
+		local.turnsKey, local.turnScroll.Y = key, math.MaxFloat32 // the newest turn is in view
+	}
+	overlayLocal := actions.cardLocal()
+	ui.Scroll(context.Key("box-turns")).Grow(1).MinHeight(0).MinWidth(0).TrackScroll(&local.turnScroll).Children(func() {
+		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
+			for index := range count {
+				cardBlockView(context.Key(index), state.CardSessionID, card, sessionCardBlockAt(card, index), index, state.CardWidth, actions.card, overlayLocal, actions.cardMeasured)
 			}
 		})
 	})
