@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **A shorter explanation for the model fallback switch** (#TBD): the Language models switch is now called Retry with another model on this Mac, and its note says in three short sentences what it does.
+
+### 中文
+
+#### 变更
+
+- **模型回退开关的说明更简短**（#TBD）：语言模型页的开关改名为“出错时改用本机其他模型”，说明改成三句短话。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

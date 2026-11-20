@@ -25,8 +25,8 @@ func remoteSettingsView(c *ui.Context, state *remoteViewState, actions remoteAct
 	caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 	llmWaitView(c, &state.Wait, actions, local.wait)
 	on := state.Switch
-	settingRow(c, "llm-switch", i18n.T("Switch models when one fails"), i18n.T("When a feature's language model does not answer, Voxt asks the next language-model server on this Mac you set up, once, even one you chose for another feature. Translate asks its own fallback model first. Voxt never switches to an external API you did not choose for that feature. A used-up plan does not switch."), func() {
-		if ui.Switch(c.Key("llm-switch-switch"), &on).Label(i18n.T("Switch models when one fails")).Changed() {
+	settingRow(c, "llm-switch", i18n.T("Retry with another model on this Mac"), i18n.T("If a feature's language model does not answer, Voxt tries once more with another model you set up on this Mac. Translate tries its own fallback model first. Voxt never switches to an external API on its own."), func() {
+		if ui.Switch(c.Key("llm-switch-switch"), &on).Label(i18n.T("Retry with another model on this Mac")).Changed() {
 			actions.setLLMSwitch(on)
 		}
 	})
