@@ -15,17 +15,15 @@ import (
 // to crash.log.1 and says so in the log (issue 3814: a crash left nothing
 // to read).
 func TestKeepCrashesKeepsAPanicForTheNextRun(t *testing.T) {
-	if dir := os.Getenv("VOXT_TEST_CRASH_DIR"); dir != "" {
-		keepCrashes(dir)
-		var s []int
-		_ = s[len(os.Args)+2] // index out of range
-		return
-	}
-	dir := t.TempDir()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestKeepCrashesKeepsAPanicForTheNextRun$")
-	cmd.Env = append(os.Environ(), "VOXT_TEST_CRASH_DIR="+dir)
+	dir, tmp := t.TempDir(), t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^$") // no tests, should TestMain not crash first
+	cmd.Env = append(os.Environ(), crashDirEnv+"="+dir, "TMPDIR="+tmp)
 	if err := cmd.Run(); err == nil {
 		t.Fatal("the crashing run exited 0")
+	}
+	// A crash runs no cleanup: the crashing run must make no folders.
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Errorf("the crashing run left %q in its temporary folder", left[0].Name())
 	}
 	crash, err := os.ReadFile(filepath.Join(dir, "crash.log"))
 	if err != nil {
@@ -56,4 +54,16 @@ func TestKeepCrashesKeepsAPanicForTheNextRun(t *testing.T) {
 	if logged.Len() != 0 {
 		t.Fatalf("a clean run before logged %q", logged.String())
 	}
+}
+
+// crashDirEnv names the folder the test binary, run again by
+// TestKeepCrashesKeepsAPanicForTheNextRun, keeps its crash in.
+const crashDirEnv = "VOXT_TEST_CRASH_DIR"
+
+// crashInTest panics with crash.log kept in dir. TestMain calls it before
+// it makes the tests' folders, which a crash would leave behind.
+func crashInTest(dir string) {
+	keepCrashes(dir)
+	var s []int
+	_ = s[len(os.Args)+2] // index out of range
 }

@@ -99,7 +99,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
 - app 约 280 MB，推荐的语音识别模型需下载 2.5 GB。
-- Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉），但不会自己安装。新版本用同样的方式安装：从 dmg 安装。
+- Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉）。带更新源的构建还可以自动安装更新；没有更新源的构建只检查 GitHub Releases，新版本需从 dmg 安装。
 
 ## 你的模型，你的数据
 
@@ -141,6 +141,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **遇到问题**：“设置 → 诊断与关于 → 反馈问题”会打开一个已填好诊断信息的 GitHub issue；也可以直接[提 issue][issues]，标题带上“[Voxt]”。
 - **提问和建议**：加入 SGLang 的 [Slack][slack]。
 - **给你自己的脚本和 agent**：让这台 Mac 上的其他程序[读取听写历史](docs/history-access.md)，默认关闭。
+- **用脚本或 agent 改设置**：[每一项设置、存在哪里、怎样安全地修改](docs/settings.md)。
 - **把录音和视频转成字幕**：[`Voxt transcribe`](docs/transcribe.md) 用你的语音识别模型把本地音频或视频文件转成 SRT 或纯文本。
 
 ## 开发者

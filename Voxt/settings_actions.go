@@ -26,6 +26,7 @@ type settingsPrivacyActions interface {
 	historyAccessActions
 	setSendWindow(on bool)
 	setSendClipboardImage(on bool)
+	setSendClipboardImageWithSelection(on bool)
 	setKeepHistory(on bool)
 	setKeepAudio(on bool)
 	showHistorySettings()

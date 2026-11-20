@@ -74,14 +74,16 @@ jobs:
     timeout-minutes: 15
     outputs:
       run_self_hosted: ${{ steps.plan.outputs.run_self_hosted }}
-      run_asr: ${{ steps.plan.outputs.run_asr }}
+      run_asr_multi_speaker: ${{ steps.plan.outputs.run_asr_multi_speaker }}
+      run_asr_seedtts: ${{ steps.plan.outputs.run_asr_seedtts }}
       run_tts: ${{ steps.plan.outputs.run_tts }}
+      run_tts_serving: ${{ steps.plan.outputs.run_tts_serving }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
       run_omni: ${{ steps.plan.outputs.run_omni }}
       run_full_duplex: ${{ steps.plan.outputs.run_full_duplex }}
       run_turn_based: ${{ steps.plan.outputs.run_turn_based }}
       run_cascaded: ${{ steps.plan.outputs.run_cascaded }}
-      asr_ci_model: ${{ steps.plan.outputs.asr_ci_model }}
+      asr_seedtts_ci_model: ${{ steps.plan.outputs.asr_seedtts_ci_model }}
       tts_ci_model: ${{ steps.plan.outputs.tts_ci_model }}
       mps_ci_model: ${{ steps.plan.outputs.mps_ci_model }}
       mps_ci_config: ${{ steps.plan.outputs.mps_ci_config }}
@@ -243,10 +245,13 @@ jobs:
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
-      needs.preflight.outputs.run_asr == 'true'
+      (needs.preflight.outputs.run_asr_multi_speaker == 'true' ||
+       needs.preflight.outputs.run_asr_seedtts == 'true')
     uses: ./.github/workflows/test-asr-ci.yaml
     with:
-      asr_ci_model: ${{ needs.preflight.outputs.asr_ci_model }}
+      run_multi_speaker: ${{ needs.preflight.outputs.run_asr_multi_speaker == 'true' }}
+      run_seedtts: ${{ needs.preflight.outputs.run_asr_seedtts == 'true' }}
+      asr_ci_model: ${{ needs.preflight.outputs.asr_seedtts_ci_model }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
@@ -262,6 +267,7 @@ jobs:
       needs.preflight.outputs.run_tts == 'true'
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
+      run_serving: ${{ needs.preflight.outputs.run_tts_serving == 'true' }}
       tts_ci_model: ${{ needs.preflight.outputs.tts_ci_model }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'

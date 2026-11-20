@@ -207,8 +207,6 @@ public final class OutputWatch: @unchecked Sendable {
 
     public init() {}
 
-    public var isOn: Bool { lock.withLock { on } }
-
     /// Turns it on or off at state now (the result of output.watch).
     public func set(_ on: Bool, at now: OutputState) {
         lock.withLock {

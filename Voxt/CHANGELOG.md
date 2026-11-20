@@ -2,6 +2,65 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Added
+
+
+- **Apply a model to several features** (#4276): model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
+- **Rewrite can deliberately send selected text and a copied image together**: the new Settings → Privacy → Text and a copied image together switch sends both when you mean it. It defaults off — on fresh installs and on upgraded settings that never touched it — so an earlier copied image cannot take over a text Rewrite; an explicit choice is kept.
+- **Single-letter keys on the answer card** (#4127): while the answer card shows, press c to copy the answer and r to insert it over the selection, as the card's Copy and Insert buttons do. The keys bind from the first streaming draft and only while the card is actually visible; a notice or an insertion unbinds them, and a late event cannot act on a newer card. During IME composition bare keys go to the editor, while modified shortcuts and mouse bindings still work. If your cancel shortcut is c or r, it keeps priority and only the other card key is advertised. A stalled or timed-out open cannot reinstall c/r after a newer close unbinds them. A newer sequence always wins over an older generation value, including when generation is absent. Without Accessibility the card keys do not work, like the cancel shortcut.
+- **Return finishes dictation**: while Transcribe records, press Return to stop recording and finish through the same path as the stop shortcut. Voxt consumes that Return instead of sending it again after insertion. The Transcribe page has a Return finishes dictation switch, on by default, for users who need Return for a newline while recording.
+
+### Fixed
+
+- **Deleting a speech model's draft no longer leaves an old provider using its missing path**: Qwen3-ASR, MOSS-Transcribe-Diarize and Whisper Large v3 continue without the draft.
+- **Translate does not silently deliver an untranslated answer** (#4153): after a strict retry, Voxt rejects an answer with clear script or vocabulary evidence of no translation and shows a localized failure with Try again. Parenthesized original names, language-neutral names, numbers, same-language text, and shared vocabulary still count as valid results.
+- **History and Home refresh after a cancelled session**: cancelling a recording that kept a history entry now updates an open History page and refreshes Home instead of leaving them stale until restart or another session.
+- **A shortcut pressed on Home after your first result keeps its result** (#4199): with Voxt's window in front on Home, a Transcribe, Translate or Rewrite shortcut still ran as a Try after Home had stopped offering its Try area. The result showed nowhere and History kept no entry, so History could list fewer sessions than you ran. Once Home has no Try area, the shortcut now runs a normal session, as on History or Settings: the result shows, and History keeps it. Before your first result, Home's Try area works as before, and so do the Try areas on the Transcribe, Translate and Rewrite pages.
+- **A text selection no longer takes the copied image with it** (#4152): with Settings → Privacy → Send the copied image with Rewrite on, an image copied earlier stayed on the clipboard and went to the language model even when you had selected text, so a summarize or rewrite of the selection was handled as an image task. Now a text selection takes the text path and the image stays out, including when the same selection stays in place for a follow-up. A copied `[Image]` placeholder sends the actual image selected through ⌘C before the old clipboard is restored, not the earlier clipboard image; literal `[Image]` text without an image stays text-only.
+- **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
+- **Paste last on Return honours the opt-out**: with Paste last on Return and Return finishes dictation off, pressing Return while Transcribe records no longer stops the recording, and it never stops a Translate, Rewrite or note recording. A queued Return also does nothing after the setting or session kind changes, and one a finished dictation's replaced configuration reported on its way out never stops the next dictation, whichever shortcut Return is.
+- **Recording shortcuts keep their roles**: Paste last on a key other than Return no longer stops dictation. A timed-out hotkey configuration is retried, and with Return finishes dictation on, binding Cancel to Return no longer cancels the recording instead.
+- **The answer card lets go of a formula preview it no longer shows**: hiding or closing the card closes its previews; an answer that ends up as plain text drops the preview and the height it had measured, so the card no longer keeps a gap or a stale formula, and a finished stream measures its final height instead of keeping the half-rendered one.
+- **MOSS-Transcribe-Diarize no longer adds timestamps or invented sentences**: Voxt asks it for plain text, but it often still wrote timestamps such as `[2.12]` between phrases, and it turned a pause into words that nobody said ("The.", "Subtitles by the Amara.org community", "I'm sorry, I can't assist with that request."). After a long pause it could even answer in another language. These showed in the live text, and when the language model did not answer they were inserted with the recognised text. With voice activity detection on, MOSS now gets only the speech the voice activity model finds, with long pauses shortened; audio without speech is not sent to it, in dictation, the live text and meetings. Voxt also removes the timestamps and speaker labels it still writes from dictation and from meeting text it could not split by speaker (a bracketed number without a decimal point, like `[1]`, is kept: a reference, not a timestamp; a tag's bare tail at the start of the text, like `0.00]`, goes too). Meeting transcripts keep their speakers and times as before. And when the final recognition after Stop fails, the live text Voxt falls back to no longer loses what you said after a long pause, including the last stretch still on its way to the live server when you stop. If the live server stops reading altogether, Stop still runs the final recognition instead of waiting on it. And Stop no longer waits for the live server's wrap-up: the final recognition starts at once and the wait happens only when it fails or times out and the live text is the fallback. Speech delivered in the same buffered chunk as the following pause stays in the live text too. A full live-result queue that falls back to a failed final recognition also delivers its queued audio before Voxt chooses the fallback text.
+- **Rewrite answers no longer show echoed input tags** (#4313): when the language model repeats `<selected_text>`, `<typed_text>` or `<instruction>` around your selection, typed text or instruction, the answer card removes those tags and keeps the text inside them, including during streaming and when a stopped answer leaves a pair unclosed. Only a pair that wraps the whole answer or exactly your selection, typed text or instruction goes; tags that belong in the answer, such as a prompt template you asked for, stay. Translate and Transcribe keep the same literal tags.
+- **Recording time keeps seconds after ten minutes**: the recording preview sizes its timer to the full duration, so times such as 10:59 and 61:05 no longer lose their seconds.
+- **System dictation keeps recognized text when stopping**: an empty result from macOS no longer clears the live transcript and causes Voxt to report no speech.
+- **A feature's unavailable language model is not replaced silently**: when the model chosen for Transcribe, Translate or Rewrite is no longer ready, Voxt no longer sends the text to the first ready service. Translate can still use its explicitly selected fallback model.
+- **A saved note no longer looks like an error**: after you recorded a note with the note shortcut, the "Saved to Notes" notice showed the red error mark, so a note that was saved looked as if it had failed. The notice now shows the green tick, as "Added to the dictionary" does.
+- **Language models can use an HTTP gateway**: API-key services now accept HTTP addresses on other hosts, including a private-network gateway. HTTP sends the key and text without encryption, which the Address tip in the service's set-up dialog says; ChatGPT sign-in still requires HTTPS for remote addresses.
+
+### 中文
+
+#### 新增
+
+- **将模型批量应用到功能**（#4276）：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
+- **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+- **改写可以明确同时发送选中文字和复制的图片**：设置 → 隐私 →“同时发送选中文字和复制的图片”打开后，两者一起发送。默认关闭——新安装和升级前没碰过这个开关的设置都一样——避免早前复制的图片取代选中文字成为改写输入；明确选过的值保留。
+- **答案卡片的单字母键**（#4127）：答案卡片显示时，按 c 复制回答、按 r 把回答插入选中的位置，和卡片上的“复制”“插入”按钮一样。第一段流式文字出现时就绑定，卡片实际可见才有效；通知盖住卡片或插入时解绑，迟到的按键事件不会作用于新卡片。中文输入法有组合文字时，裸键先给编辑器，带修饰键的快捷键和鼠标绑定仍照常触发。取消键如果也是 c 或 r，取消键优先，只提示另一个卡片键。旧 open 卡住或超时后，新 close 仍会解绑，旧请求完成时不会把 c/r 装回去。较新的 sequence 总是优先于较旧的 generation，即使 generation 缺失也一样。没有辅助功能时，卡片键和取消键一样不生效。
+- **按回车完成转录**：转录录音时，按回车停止录音，走和停止快捷键相同的后续流程。这个回车会被消费，插入结果后不会再发送一次。转录页新增“按回车完成转录”开关，默认打开；录音时需要回车换行的用户可以关闭。
+
+#### 修复
+
+- **删除语音识别模型的草稿模型后，旧提供方不再使用已删除的路径**：Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 会不使用草稿模型继续转录。
+- **翻译不会再静默交付未翻译的回答**（#4153）：严格重试后，如果回答仍有明确的文字系统或常见词汇证据表明没有翻译，Voxt 会显示对应语言的失败提示，可以重试。括号中的原名、语言中立名称、数字、同语言文本和共享词仍算有效结果。
+- **取消录音后历史和首页会立即刷新**：取消一段已写入历史的录音后，当前打开的历史记录页和首页会立即刷新，不再需要重启或等下一次会话才看到变化。
+- **得到第一个结果后，在首页按快捷键的结果不再丢失**（#4199）：Voxt 窗口在前台、停在首页时，首页已经不显示「试一试」了，按转录、翻译或改写的快捷键却仍按试一试处理。结果哪里都不显示，历史里也没有记录，所以历史的条数会比实际用的次数少。现在首页没有试一试区域时，按快捷键和在历史、设置页一样走正常流程：结果照常显示，历史也会记下。第一次得到结果之前，首页的试一试不变；转录、翻译、改写页上的试一试也不变。
+- **选中文字时不再带上剪贴板里早前复制的图片**（#4152）：打开设置 → 隐私 →“改写时发送复制的图片”后，早前复制的图片留在剪贴板里，即使选中了文字也会发给语言模型，对选中内容的总结或改写被当成看图任务。现在选中文字时只走文字，图片不跟着发，追问时选区没变也一样。⌘C 回退返回 `[Image]` 占位时，发送恢复旧剪贴板之前实际选中的新图片，不是早前那张；只有 `[Image]` 文字而没有图片时仍只走文字。
+- **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
+- **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。设置或会话类型变化后，排队中的旧回车事件同样不再停止录音；上一段听写结束后来送到的旧配置回车事件，无论回车绑定在哪个快捷键上，都不会停止下一段听写。
+- **录音快捷键不再串用动作**：“粘贴最近结果”绑定回车以外的键时，不再停止转录录音；快捷键配置超时后会重试；打开“按回车完成转录”时，即使取消快捷键也设为回车，按回车仍会完成录音而不会取消。
+- **回答卡片释放不再显示的公式预览**：隐藏或关闭卡片时关闭预览；回答最终是纯文本时丢掉预览和它量出的高度，卡片不再留空白或显示过时的公式；流式输出结束后按最终渲染重新测量高度。
+- **MOSS-Transcribe-Diarize 不再插入时间戳和凭空编出的句子**：Voxt 要它只输出纯文本，但它常常还是在句子之间写上 `[2.12]` 这样的时间戳，还会把停顿识别成没人说过的话（"The."、"Subtitles by the Amara.org community"、"I'm sorry, I can't assist with that request."）。停顿较长时，它甚至会换成另一种语言输出。实时文字里会显示这些内容，语言模型没有回应时，它们还会跟着识别原文一起插入。现在开着语音活动检测时，MOSS 只收到语音活动模型找到的人声，长停顿会被缩短；没有人声的音频不再送给它，听写、实时文字和会议都是如此。它仍写出的时间戳和说话人标签，Voxt 会从听写结果里去掉；会议里没能按说话人分开的文字也会去掉（`[1]` 这种不带小数点的保留，它是引用不是时间戳；文字开头裸的 `0.00]`、`S01]` 尾巴也会去掉）。会议转录照旧保留说话人和时间。另外，停止后的完整识别失败时，用来兜底的实时文字不再漏掉长停顿之后说的话，包括停止那一刻还在送往实时服务路上的最后一段。实时服务彻底不读数据时，停止也照常跑完整识别，不再干等。停止后也不再等实时服务的收尾握手：完整识别立刻开始，只有它失败或超时、要用实时文字兜底时才等。同一次缓冲发送里，人声之后紧接停顿时，人声也会留在实时文字里。实时结果队列已满、回退到完整识别又失败时，队列里的音频也会先送达，再选择兜底文字。
+- **改写回答不再显示重复的输入标签**（#4313）：语言模型重复输出 `<selected_text>`、`<typed_text>` 或 `<instruction>` 标签时，答案卡片会去掉标签，保留标签内的文字；流式输出和停止后未闭合的标签也不会露出。只去掉包住整段回答、或正好包住你的选中文字、补充输入的文字或指令的那一对；回答本身需要的标签（比如你要的提示词模板）保留。翻译和转录会保留同样的字面标签。
+- **录音超过 10 分钟仍显示秒数**：录音预览按完整时长调整计时文字的宽度，10:59、61:05 等时长不再丢失秒数。
+- **系统听写停止后保留已识别文字**：macOS 返回空结果时，不再清空实时转录并提示没有声音。
+- **功能选用的语言模型不可用时不再静默换成其他服务**：转录、翻译或改写当前选用的模型不再可用时，Voxt 不会把文字发给列表中的第一个可用服务。翻译仍可使用明确选择的备用模型。
+- **存好的笔记不再像出错**：用笔记快捷键录完后，“已存到笔记”的通知显示的是红色的错误图标，明明存好了，看起来却像失败了。现在显示绿色的对勾，和“已加入词典”一样。
+- **语言模型可使用 HTTP 网关**：使用 API Key 的服务现在可以连接其他主机上的 HTTP 地址，包括局域网网关。HTTP 会明文传输密钥和文本，服务设置对话框里“地址”旁的提示写了这一点；ChatGPT 登录仍要求远程地址使用 HTTPS。
+
 ## [2.1.1] - 2026-11-17
 
 ### Added

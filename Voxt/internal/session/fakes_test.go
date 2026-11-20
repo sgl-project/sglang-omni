@@ -573,11 +573,12 @@ var errHelperForTest = core.ErrHelper
 // fakeSelector is the selection of the app in front: text read through
 // Accessibility, or copyText only when ⌘C is allowed.
 type fakeSelector struct {
-	text     string
-	copyText string
-	steps    []string
-	err      error
-	delay    time.Duration
+	text      string
+	copyText  string
+	copyImage []byte
+	steps     []string
+	err       error
+	delay     time.Duration
 
 	mu    sync.Mutex
 	calls []proto.SelectionParams
@@ -601,7 +602,7 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	case f.text != "":
 		return proto.SelectionResult{Text: f.text, Via: proto.ViaAX, MS: 2}, nil
 	case f.copyText != "" && p.AllowCopy:
-		return proto.SelectionResult{Text: f.copyText, Via: proto.ViaCopy, MS: 40}, nil
+		return proto.SelectionResult{Text: f.copyText, Image: f.copyImage, Via: proto.ViaCopy, MS: 40}, nil
 	}
 	return proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: f.steps}, nil
 }
