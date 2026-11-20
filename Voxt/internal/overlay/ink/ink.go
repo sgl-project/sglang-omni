@@ -38,6 +38,10 @@ type Want struct {
 	// space under a short text; a long one scrolls to the padding).
 	Card bool
 	Gap  float64
+	// CardFill is the fill size's resolved width (layout.CardFillW), 0
+	// when the card is at a fixed size: the fill size's width follows
+	// the work area, so it is not one of CardSizes' literals.
+	CardFill int
 }
 
 // Ink is what the picture shows, in DIPs from the face's top left.
@@ -253,8 +257,10 @@ func Check(img image.Image, scale float64, want Want) (Ink, []string) {
 		failf("the face is %.1f×%.1f, not %d×%d", k.faceW, k.faceH, want.W, want.H)
 	}
 	if want.Card {
-		if !slices.ContainsFunc(layout.CardSizes[:], func(s layout.CardSize) bool { return math.Abs(k.faceW-float64(s.W)) <= ovInkSizeTol }) {
-			failf("the card is %.1f wide, not a card size's width (%v)", k.faceW, layout.CardSizes)
+		cardWidth := func(s layout.CardSize) bool { return math.Abs(k.faceW-float64(s.W)) <= ovInkSizeTol }
+		fill := want.CardFill > 0 && math.Abs(k.faceW-float64(want.CardFill)) <= ovInkSizeTol
+		if !fill && !slices.ContainsFunc(layout.CardSizes[:], cardWidth) {
+			failf("the card is %.1f wide, not a card size's width (%v, fill %d)", k.faceW, layout.CardSizes, want.CardFill)
 		}
 		// The header between the card's top and the rule: as much room
 		// over its ink as under it (10-15).

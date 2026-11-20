@@ -395,7 +395,7 @@ class IncrementalDecoder:
                     )
                     module = next(modules, None)
                 elif isinstance(following, CausalConvNet):
-                    hidden_states = self.decoder.causal_conv(
+                    hidden_states = self.causal_conv(
                         following, self.decoder.snake(module, hidden_states)
                     )
                     module = next(modules, None)
@@ -433,9 +433,25 @@ class IncrementalDecoder:
         state = self.states[id(module)]
         padded = torch.cat([state.index_select(0, slots), hidden_states], dim=1)
         state.index_copy_(0, slots, padded[:, frame_count:])
-        return self.decoder.causal_conv(
-            module, padded, original_frame_count=frame_count
+        return self.causal_conv(module, padded, original_frame_count=frame_count)
+
+    def causal_conv(
+        self,
+        module: CausalConvNet,
+        hidden_states: torch.Tensor,
+        *,
+        original_frame_count: int | None = None,
+    ) -> torch.Tensor:
+        # note (Wenyao Gao): the channels-last decoder's conv leaves its bias to the
+        # next kernel, and no kernel here takes one.
+        output = self.decoder.causal_conv(
+            module, hidden_states, original_frame_count=original_frame_count
         )
+        bias = self.decoder.conv_biases[id(module.conv)]
+        if bias is None:
+            return output
+        else:
+            return output.add_(bias)
 
     def snake_and_conv(
         self,
@@ -453,9 +469,7 @@ class IncrementalDecoder:
         self.states[id(module)].index_copy_(
             0, slots, padded[:, frame_count : frame_count + history_frames]
         )
-        return self.decoder.causal_conv(
-            module, padded, original_frame_count=frame_count
-        )
+        return self.causal_conv(module, padded, original_frame_count=frame_count)
 
     def snake_with_history(
         self,

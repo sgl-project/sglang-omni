@@ -93,6 +93,9 @@ func TestRewritePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Rewrite.Cleanup {
 		t.Error("clean-up not saved")
 	}
+	if has(tt, "Input box") {
+		t.Error("the input box switch is back: the box is the only Rewrite")
+	}
 	if has(tt, "Long answers in the card") {
 		t.Error("0.1.0's card length setting is back")
 	}
@@ -174,7 +177,7 @@ func TestOverlayWriting(t *testing.T) {
 	// It records in the card, a conversation (Voxt's).
 	a.followUp = "r2"
 	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording})
-	if v := a.cardNow(); a.ov.mode != ovAnswer || !a.answer.open || !v.conversation || !v.recording || !v.canStop {
+	if v := a.cachedCard(); a.ov.mode != ovAnswer || !a.answer.open || !v.Conversation || !v.Recording || !v.CanStop {
 		t.Errorf("follow-up recording %s %+v", a.ov.mode, v)
 	}
 	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "shorter", Title: "Note", Result: "Note."})

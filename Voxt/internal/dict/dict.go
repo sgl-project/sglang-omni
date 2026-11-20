@@ -25,7 +25,6 @@ import (
 const (
 	MaxTermChars  = 80
 	MaxAliases    = 10
-	MaxNoteChars  = 500
 	MaxImportRows = 10000
 )
 

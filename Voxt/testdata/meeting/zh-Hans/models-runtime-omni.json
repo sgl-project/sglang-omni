@@ -1,0 +1,105 @@
+{
+  "name": "models-runtime-omni",
+  "kind": "models",
+  "models": {
+    "asr": [
+      {
+        "key": "model-asr.moss",
+        "rows": [
+          {
+            "id": "asr.moss",
+            "kind": "asr",
+            "name": "MOSS-Transcribe-Diarize",
+            "default": true,
+            "installed": false,
+            "size_text": "需下载 1.8 GB",
+            "about": "专为多人对话设计，边说边出文字。",
+            "languages": "中文和英语",
+            "tags": [
+              "本地",
+              "实时",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.moss",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.moss",
+                "label": "下载",
+                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "llm": null,
+    "show_llm": false,
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "zh-Hans",
+      "value": "",
+      "selection": "自动",
+      "options": [
+        {
+          "label": "自动",
+          "value": ""
+        },
+        {
+          "label": "5 分钟",
+          "value": "5m"
+        },
+        {
+          "label": "15 分钟",
+          "value": "15m"
+        },
+        {
+          "label": "30 分钟",
+          "value": "30m"
+        },
+        {
+          "label": "1 小时",
+          "value": "1h"
+        },
+        {
+          "label": "直到退出 Voxt",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
+      "source": 0,
+      "source_labels": [
+        "自动",
+        "只用 Hugging Face",
+        "只用 hf-mirror.com"
+      ],
+      "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": "",
+    "speech_context_unused": false
+  }
+}

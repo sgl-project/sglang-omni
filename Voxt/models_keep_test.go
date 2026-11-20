@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
@@ -30,8 +31,8 @@ func TestKeepIdle(t *testing.T) {
 			t.Errorf("%q: %v, want %v", c.v, got, c.idle)
 		}
 	}
-	if len(keepLabels()) != len(settings.KeepChoices) {
-		t.Errorf("%d labels for %d choices", len(keepLabels()), len(settings.KeepChoices))
+	if len(keepLabelsFor(i18n.CurrentTranslator())) != len(settings.KeepChoices) {
+		t.Errorf("%d labels for %d choices", len(keepLabelsFor(i18n.CurrentTranslator())), len(settings.KeepChoices))
 	}
 }
 
@@ -42,10 +43,11 @@ func TestKeepLoadedRow(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 4800) // the section under every card
 	a.navigate(modelsPath)
+	scrollSettingsToText(tt, "Tell the speech model who is speaking and about what.")
 	if !hasExact(tt, "Advanced") || has(tt, "Keep models loaded") {
 		t.Fatalf("the section is not folded: %q", tt.Texts())
 	}
-	click(t, tt, "Advanced")
+	clickControl(t, tt, "Advanced")
 	if !hasExact(tt, "Keep models loaded") || !hasExact(tt, "Automatic") {
 		t.Fatalf("open: %q", tt.Texts())
 	}

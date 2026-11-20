@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **说过的话不会丢。** 识别失败时录音会保留，在历史里点“重试”就能重新识别。
 - **答案卡片里自由地连续交互。** 结果可以留在浮动的卡片里，接着用语音追问，再复制或插入。
 - **充分的模型生态，数据由你定义。** 语音既能使用本地由 SGLang-Omni MLX Runtime 强力支持的 Qwen3-ASR 或 MOSS-Transcribe-Diarize，也能接入云端 ASR API。语言模型方面，任何提供 OpenAI compatible API 的模型都可以作为强力支持：无论是 SGLang MLX、Ollama，还是我们团队常用的 DeepSeek V4.1 和 Kimi K3.1。数据去哪里，由你决定。
-- **Qwen3-ASR 可选的 DFlash 转录加速。** “转录加速”加一个小的草稿模型，用推测解码让语音识别模型更快。
+- **Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 支持投机解码。** 在模型卡片打开“转录加速”即可下载对应的草稿模型。
 - **还有**：ChatGPT 登录（不用填 API Key）、翻译备用模型、自定义提示词，以及 Markdown / JSONL 历史导出。
 
 已经在用 Voxt 1.x？看[从 Voxt 1.x 升级](#从-voxt-1x-升级)。各版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
@@ -71,7 +71,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 第一次用 Voxt
 
-1. **下载** [`Voxt-2.1.0-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
+1. **下载** [`Voxt-2.1.2-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
 
 2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（MOSS-Transcribe-Diarize 及其转录加速草稿，2.1 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
@@ -99,7 +99,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
 - app 约 280 MB，推荐的语音识别模型连同草稿需下载 2.1 GB。
-- Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉），但不会自己安装。新版本用同样的方式安装：从 dmg 安装。
+- Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉）。带更新源的构建还可以自动安装更新；没有更新源的构建只检查 GitHub Releases，新版本需从 dmg 安装。
 
 ## 你的模型，你的数据
 
@@ -115,7 +115,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **更多本地模型**：Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
 - **Qwen3-ASR** 支持 30 种语言和 22 种中文方言，并且会用到你的词典；其他可下载的模型不用词典。
-- **转录加速**（DFlash）：在 Qwen3-ASR 1.7B (8bit) 和 0.6B (4bit) 的卡片上打开开关并下载一个草稿模型（726 MB 和 262 MB），它每步先提出几个词，再由语音识别模型校验。关掉开关，模型照常工作；草稿留在磁盘上，直到你删除它。
+- **转录加速**可在 Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)、MOSS-Transcribe-Diarize 和 Whisper Large v3 的卡片上开启。打开开关后，Qwen3-ASR 和 MOSS 可下载 DFlash 草稿模型（分别为 726 MB、262 MB 和 262 MB），Whisper 可下载 Distil 草稿模型（1.5 GB）。关闭开关后恢复普通解码，草稿模型留在本地。
 - **云端语音 API**，如果你更想用：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼、阶跃星辰、小米 MiMo 和 Google Gemini。
 
 ### 语言模型
@@ -130,8 +130,14 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ## 隐私
 
-- **语音留在你的 Mac 上**，除非你给某个功能设置了云端语音 API：这个功能的录音只会发给那个服务。
-- **文字只发给你设置的语言模型。** 用本机的服务时，文字也留在本机。音频从不发给语言模型。只有在“设置 → 隐私”里打开发送窗口截图或复制的图片（默认都关）时，图片才会发给它。
+本机上的模型和外部 API 是两条不同的数据路径，每个功能都可以分别选择语音识别模型和语言模型。只有处理这些内容的服务都在本机运行时，你的录音、文字和图片才都留在你的 Mac 上：
+
+| | 用本机上的模型 | 用外部 API |
+|---|---|---|
+| **语音识别** | 录音在你的 Mac 上识别，留在本机。这是默认设置。 | 这个功能把录音发给对应的语音识别服务。如果功能和模型支持，Voxt 还可能发送你写的识别上下文和识别提示词。打开“语音识别提示”后，支持这项功能的服务可能收到已启用词典里的词条，但不会收到别名。 |
+| **语言模型**（整理、翻译、改写、会议校对和总结） | 请求发给本机上的服务（Ollama、LM Studio、oMLX、SGLang MLX）时，内容留在本机。 | 处理每个请求的服务商会收到请求内容。根据功能和设置，请求可能包含语音识别出的文字、你选中或输入的文字、会议转录稿和之前的对话内容、你的识别上下文、你的规则和已启用词典里的内容，以及匹配到应用增强规则时的 App 名称。打开“发送截图”后，转录、翻译和改写可能带上目标窗口的截图；打开“发送复制的图片”后，改写可能改为带上你复制的图片。这两个开关默认都关。翻译改用备用模型时，备用模型的服务商也会收到同一个请求。 |
+
+- **音频从不发给语言模型。** 它收到的是文字，打开上面两个开关后才有图片。
 - **API Key 保存在 macOS 钥匙串里**，不会写进 Voxt 的设置或日志。
 - **不需要账号，也不做统计。** Voxt 没有接收你音频或文字的服务器。除此之外，它只在下载你选择的模型、读取 Voxt 的公告和向 GitHub 查询最新版本时联网，这些请求除了 Voxt 的版本号不带任何关于你的信息。
 - **数据在两个文件夹里**：历史、可选保存的录音、词典和设置在 `~/Library/Application Support/VoxtNew/`，模型在 `~/Library/Application Support/SGLang Omni/models`。
@@ -142,6 +148,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **遇到问题**：“设置 → 诊断与关于 → 反馈问题”会打开一个已填好诊断信息的 GitHub issue；也可以直接[提 issue][issues]，标题带上“[Voxt]”。
 - **提问和建议**：加入 SGLang 的 [Slack][slack]。
 - **给你自己的脚本和 agent**：让这台 Mac 上的其他程序[读取听写历史](docs/history-access.md)，默认关闭。
+- **用脚本或 agent 改设置**：[每一项设置、存在哪里、怎样安全地修改](docs/settings.md)。
 - **把录音和视频转成字幕**：[`Voxt transcribe`](docs/transcribe.md) 用你的语音识别模型把本地音频或视频文件转成 SRT 或纯文本。
 
 ## 开发者
@@ -161,7 +168,7 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 
 [![回到顶部][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/Voxt-2.1.0-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.2/Voxt-2.1.2-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

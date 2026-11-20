@@ -2,10 +2,12 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -65,7 +67,7 @@ func TestKeyRecorderHidden(t *testing.T) {
 	a, tt := trTester(t)
 	row := &a.fui(hotkey.Transcribe).rows[0]
 	row.sel = "Custom…"
-	a.chooseKeys(hotkey.Transcribe, 0, row, nil)
+	row.custom = true
 	frames(tt)
 	if !a.keysListening {
 		t.Fatal("not listening")
@@ -86,7 +88,7 @@ func TestCancelKeysEsc(t *testing.T) {
 	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "" {
 		t.Fatalf("turned off: %q", k)
 	}
-	opts, byLabel := keyOptions("", true, settings.DefaultCancel)
+	opts, byLabel := keyOptionsFor(i18n.CurrentTranslator(), "", true, settings.DefaultCancel)
 	if i := slices.Index(opts, "Esc"); i != 1 || byLabel["Esc"] != "Escape" {
 		t.Fatalf("options %q", opts)
 	}
@@ -96,4 +98,49 @@ func TestCancelKeysEsc(t *testing.T) {
 	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "Escape" || a.fui(hotkey.Transcribe).cancel.sel != "Esc" || !hasExact(tt, "Esc") {
 		t.Errorf("chose Esc: saved %q, shown %q", k, a.fui(hotkey.Transcribe).cancel.sel)
 	}
+}
+
+func TestKeyRecorderUIInputEquivalence(t *testing.T) {
+	modifiers := []struct {
+		flag ui.Modifiers
+		name string
+	}{{ui.Ctrl, "Control"}, {ui.Alt, "Option"}, {ui.Shift, "Shift"}, {ui.Super, "Command"}}
+	checks := 0
+	for key, keyName := range uiKeyNames {
+		for bits := 0; bits < 1<<len(modifiers); bits++ {
+			event := ui.InputEvent{Key: key}
+			var parts []string
+			for index, modifier := range modifiers {
+				if bits&(1<<index) != 0 {
+					event.Mods |= modifier.flag
+					parts = append(parts, modifier.name)
+				}
+			}
+			joined := strings.Join(append(parts, keyName), "+")
+			chord, err := hotkey.Parse(joined)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", joined, err)
+			}
+			got, ok := pressedKeys(event)
+			if !ok || got != chord.String() {
+				t.Fatalf("pressedKeys(%+v) = %q, %v; Parse(%q).String() = %q", event, got, ok, joined, chord.String())
+			}
+			checks++
+		}
+	}
+	for _, event := range []ui.InputEvent{
+		{Key: ui.KeyContextMenu, PhysicalKey: ui.KeyK},
+		{Key: ui.KeyK, PhysicalKey: ui.KeyUnknown},
+	} {
+		got, ok := pressedKeys(event)
+		if !ok || got != "K" {
+			t.Fatalf("physical-key fallback (%+v) = %q, %v", event, got, ok)
+		}
+		checks++
+	}
+	if got, ok := pressedKeys(ui.InputEvent{Key: ui.KeyContextMenu, PhysicalKey: ui.KeyUnknown}); ok || got != "" {
+		t.Fatalf("unknown key = %q, %v", got, ok)
+	}
+	checks++
+	t.Logf("%d UI-input checks matched hotkey.Parse canonicalization", checks)
 }

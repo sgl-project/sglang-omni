@@ -1,0 +1,627 @@
+{
+  "name": "settings-models-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/models",
+    "shown_path": "/settings/models",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "models": {
+      "models": {
+        "asr": [
+          {
+            "key": "model-asr.moss",
+            "rows": [
+              {
+                "id": "asr.moss",
+                "kind": "asr",
+                "name": "MOSS-Transcribe-Diarize",
+                "default": true,
+                "installed": false,
+                "size_text": "1.8 GB download",
+                "about": "Made for conversations between several people. Shows the text as you speak.",
+                "languages": "Chinese and English",
+                "tags": [
+                  "Local",
+                  "Realtime",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.moss",
+                    "label": "Hide",
+                    "accessibility_label": "Hide MOSS-Transcribe-Diarize",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.moss",
+                    "label": "Download",
+                    "accessibility_label": "Download MOSS-Transcribe-Diarize"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "key": "family-qwen3-asr",
+            "family_name": "Qwen3-ASR",
+            "count_text": "3 models",
+            "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
+            "rows": [
+              {
+                "id": "asr.accurate",
+                "kind": "asr",
+                "name": "Qwen3-ASR 1.7B (8bit)",
+                "default": false,
+                "installed": false,
+                "size_text": "2.5 GB download",
+                "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
+                "tags": [
+                  "Local",
+                  "Accurate",
+                  "Realtime",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.accurate",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Qwen3-ASR 1.7B (8bit)",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.accurate",
+                    "label": "Download",
+                    "accessibility_label": "Download Qwen3-ASR 1.7B (8bit)"
+                  }
+                ]
+              },
+              {
+                "id": "asr.fast",
+                "kind": "asr",
+                "name": "Qwen3-ASR 0.6B (4bit)",
+                "default": false,
+                "installed": false,
+                "size_text": "712.8 MB download",
+                "about": "Quicker and lighter on memory, for clear speech in a quiet place.",
+                "tags": [
+                  "Local",
+                  "Fast",
+                  "Realtime",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.fast",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Qwen3-ASR 0.6B (4bit)",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.fast",
+                    "label": "Download",
+                    "accessibility_label": "Download Qwen3-ASR 0.6B (4bit)"
+                  }
+                ]
+              },
+              {
+                "id": "asr.qwen3-6bit",
+                "kind": "asr",
+                "name": "Qwen3-ASR 1.7B (6bit)",
+                "default": false,
+                "installed": false,
+                "size_text": "2.0 GB download",
+                "about": "Qwen3-ASR 1.7B using less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.",
+                "tags": [
+                  "Local",
+                  "Accurate",
+                  "Realtime",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.qwen3-6bit",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Qwen3-ASR 1.7B (6bit)",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.qwen3-6bit",
+                    "label": "Download",
+                    "accessibility_label": "Download Qwen3-ASR 1.7B (6bit)"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "key": "family-whisper",
+            "family_name": "Whisper",
+            "count_text": "3 models",
+            "languages": "About 100 languages, including Chinese, English, Cantonese, Japanese and Korean",
+            "rows": [
+              {
+                "id": "asr.whisper-turbo",
+                "kind": "asr",
+                "name": "Whisper Large v3 Turbo",
+                "default": false,
+                "installed": false,
+                "size_text": "1.6 GB download",
+                "about": "A quicker OpenAI Whisper, good in many languages. The text shows a moment after you speak.",
+                "tags": [
+                  "Local",
+                  "Fast",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.whisper-turbo",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Whisper Large v3 Turbo",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.whisper-turbo",
+                    "label": "Download",
+                    "accessibility_label": "Download Whisper Large v3 Turbo"
+                  }
+                ]
+              },
+              {
+                "id": "asr.whisper-large",
+                "kind": "asr",
+                "name": "Whisper Large v3",
+                "default": false,
+                "installed": false,
+                "size_text": "3.1 GB download",
+                "about": "The largest Whisper: accurate in many languages, but slower and heavy on memory.",
+                "tags": [
+                  "Local",
+                  "Accurate",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.whisper-large",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Whisper Large v3",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.whisper-large",
+                    "label": "Download",
+                    "accessibility_label": "Download Whisper Large v3"
+                  }
+                ]
+              },
+              {
+                "id": "asr.whisper-small",
+                "kind": "asr",
+                "name": "Whisper Small",
+                "default": false,
+                "installed": false,
+                "size_text": "481.3 MB download",
+                "about": "A small Whisper: light on memory, less accurate.",
+                "tags": [
+                  "Local",
+                  "Fast",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.whisper-small",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Whisper Small",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.whisper-small",
+                    "label": "Download",
+                    "accessibility_label": "Download Whisper Small"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "key": "model-asr.parakeet",
+            "rows": [
+              {
+                "id": "asr.parakeet",
+                "kind": "asr",
+                "name": "Parakeet TDT 0.6B v3",
+                "default": false,
+                "installed": false,
+                "size_text": "2.5 GB download",
+                "about": "NVIDIA's Parakeet: very quick, for European languages. It does not support Chinese, Japanese or Korean.",
+                "languages": "25 European languages, including English, German, French, Spanish and Russian",
+                "tags": [
+                  "Local",
+                  "Fast",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.parakeet",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Parakeet TDT 0.6B v3",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.parakeet",
+                    "label": "Download",
+                    "accessibility_label": "Download Parakeet TDT 0.6B v3"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "key": "model-asr.sensevoice",
+            "rows": [
+              {
+                "id": "asr.sensevoice",
+                "kind": "asr",
+                "name": "SenseVoice Small",
+                "default": false,
+                "installed": false,
+                "size_text": "936.5 MB download",
+                "about": "Very quick, for Chinese, Cantonese, English, Japanese and Korean.",
+                "languages": "Chinese, Cantonese, English, Japanese and Korean",
+                "tags": [
+                  "Local",
+                  "Fast",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.sensevoice",
+                    "label": "Hide",
+                    "accessibility_label": "Hide SenseVoice Small",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.sensevoice",
+                    "label": "Download",
+                    "accessibility_label": "Download SenseVoice Small"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "key": "model-asr.cohere",
+            "rows": [
+              {
+                "id": "asr.cohere",
+                "kind": "asr",
+                "name": "Cohere Transcribe 03-2026 (fp16)",
+                "default": false,
+                "installed": false,
+                "size_text": "4.1 GB download",
+                "about": "Cohere's model: accurate, with punctuation, but large. It recognises only your main language, or English if yours is not supported.",
+                "languages": "14 languages, including Chinese, English, Japanese and Korean",
+                "tags": [
+                  "Local",
+                  "Accurate",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.cohere",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Cohere Transcribe 03-2026 (fp16)",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.cohere",
+                    "label": "Download",
+                    "accessibility_label": "Download Cohere Transcribe 03-2026 (fp16)"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "key": "model-asr.nemotron",
+            "rows": [
+              {
+                "id": "asr.nemotron",
+                "kind": "asr",
+                "name": "Nemotron 3.5 ASR 0.6B (8bit)",
+                "default": false,
+                "installed": false,
+                "size_text": "755.8 MB download",
+                "about": "NVIDIA's streaming model: shows the text as you speak, in many languages.",
+                "languages": "28 languages, including Chinese, English, Japanese and Korean",
+                "tags": [
+                  "Local",
+                  "Fast",
+                  "Realtime",
+                  "No dictionary",
+                  "Supports your main language"
+                ],
+                "actions": [
+                  {
+                    "kind": "hide",
+                    "model_id": "asr.nemotron",
+                    "label": "Hide",
+                    "accessibility_label": "Hide Nemotron 3.5 ASR 0.6B (8bit)",
+                    "tooltip": "Hide it from the features' menus"
+                  },
+                  {
+                    "kind": "download",
+                    "model_id": "asr.nemotron",
+                    "label": "Download",
+                    "accessibility_label": "Download Nemotron 3.5 ASR 0.6B (8bit)"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "llm": null,
+        "show_llm": false,
+        "hidden": null,
+        "hidden_open": false,
+        "advanced": {
+          "open": false,
+          "locale": "en",
+          "value": "",
+          "selection": "Automatic",
+          "options": [
+            {
+              "label": "Automatic",
+              "value": ""
+            },
+            {
+              "label": "5 minutes",
+              "value": "5m"
+            },
+            {
+              "label": "15 minutes",
+              "value": "15m"
+            },
+            {
+              "label": "30 minutes",
+              "value": "30m"
+            },
+            {
+              "label": "1 hour",
+              "value": "1h"
+            },
+            {
+              "label": "Until Voxt quits",
+              "value": "quit"
+            }
+          ]
+        },
+        "delete": {},
+        "network": {
+          "open": false,
+          "proxy_mode": 0,
+          "proxy_caption": "The proxy in this Mac's network settings, or one set by an environment variable.",
+          "source": 0,
+          "source_labels": [
+            "Automatic",
+            "Hugging Face only",
+            "hf-mirror.com only"
+          ],
+          "source_caption": "Whichever answers first. Every file is checked.",
+          "proxy_family": {
+            "key": "network.proxy",
+            "kind": "",
+            "text": ""
+          },
+          "source_family": {
+            "key": "network.hfEndpoints",
+            "kind": "",
+            "text": ""
+          }
+        },
+        "speech_context": "",
+        "speech_context_unused": false
+      },
+      "back_bar": {
+        "visible": false,
+        "text": "The setup guide is paused at the Welcome step."
+      },
+      "remote_cards": {
+        "kind": "asr",
+        "groups": [
+          {
+            "key": "remote-asr-online",
+            "title": "Online services",
+            "caption": "A service gets your recordings only for the features you choose it for.",
+            "cards": [
+              {
+                "kind": "asr",
+                "id": "openai",
+                "account": "asr.openai",
+                "name": "OpenAI Transcribe",
+                "model": "gpt-4o-mini-transcribe",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "asr",
+                "id": "doubao",
+                "account": "asr.doubao",
+                "name": "Doubao (Volcengine)",
+                "model": "volc.seedasr.sauc.duration",
+                "where": "Remote",
+                "realtime": true,
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "asr",
+                "id": "zhipu",
+                "account": "asr.zhipu",
+                "name": "Zhipu GLM-ASR",
+                "model": "glm-asr-2512",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "asr",
+                "id": "aliyun",
+                "account": "asr.aliyun",
+                "name": "Aliyun Bailian ASR",
+                "model": "fun-asr-realtime",
+                "where": "Remote",
+                "realtime": true,
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "asr",
+                "id": "stepfun",
+                "account": "asr.stepfun",
+                "name": "StepFun",
+                "model": "step-asr",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "asr",
+                "id": "mimo",
+                "account": "asr.mimo",
+                "name": "Xiaomi MiMo",
+                "model": "mimo-v2.5-asr",
+                "where": "Remote",
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              },
+              {
+                "kind": "asr",
+                "id": "gemini",
+                "account": "asr.gemini",
+                "name": "Google Gemini",
+                "model": "gemini-3.5-transcribe-live",
+                "where": "Remote",
+                "realtime": true,
+                "configured": false,
+                "missing": "key",
+                "status": "neutral",
+                "status_text": "Not set up",
+                "key_text": "…",
+                "key_status": "neutral"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

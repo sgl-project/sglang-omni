@@ -37,6 +37,8 @@ const (
 	kindCohere     = "cohere_transcribe"
 	kindNemotron   = "nemotron_asr"
 	kindMoss       = "moss_transcribe_diarize"
+	// mossPlain is MOSS's Instruction; it still writes timestamps (plainText).
+	mossPlain = "Transcribe the audio as plain text without timestamps or speaker labels."
 )
 
 // Spec is one curated model: what to run, and the parameters tuned for it.
@@ -111,6 +113,9 @@ type ASRTuning struct {
 	// model that takes no context: MOSS's task, plain text without its
 	// timestamps and speaker labels (the native CI's request).
 	Instruction string
+	// SpeechOnly: the model gets only the speech Silero finds (speech.go),
+	// as MOSS writes words for audio without any.
+	SpeechOnly bool
 	// A live session longer than PiecesAfter is recognised in pieces while
 	// it records (pieces.go), so that Stop leaves only the tail: a piece
 	// is cut in a pause of at least PauseMin, PieceMin to PieceSeconds
@@ -258,7 +263,8 @@ var specs = []Spec{
 		ID: ASRMoss, Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
 		Kind: kindMoss, Binary: "moss_transcribe_diarize_server", Languages: []string{"zh", "en"}, ASR: func() *ASRTuning {
 			t := streamTuning(60)
-			t.Instruction = "Transcribe the audio as plain text without timestamps or speaker labels."
+			t.Instruction = mossPlain
+			t.SpeechOnly = true
 			return t
 		}(),
 	},

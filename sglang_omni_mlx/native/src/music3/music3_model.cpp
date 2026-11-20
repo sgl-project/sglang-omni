@@ -294,7 +294,7 @@ Model::Model(const std::filesystem::path &directory,
                       : LoadWeights(checkpoint_directory_, config_),
                   config_),
       decoder_(checkpoint_, "language_model.model",
-               qwen3_asr::Qwen3DecoderConfig::FromJson(config_)),
+               omni_common::Qwen3DecoderConfig::FromJson(config_)),
       tokenizer_(checkpoint_directory_ / "tokenizer") {
   if (is_serial_offload_enabled_) {
     // Note (Akazaakane): Validate lazily before reporting readiness.
