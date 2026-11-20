@@ -181,9 +181,10 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 }
 
 // closeBox closes the box and drops its content (Esc, its Close button,
-// the window's close); the recording is cancelled.
+// the window's close); the recording is cancelled. An answer moved to
+// the background (wall 116) is no longer the box's to cancel.
 func (a *app) closeBox() {
-	if id := a.boxSessionID(); id != "" && a.sess.State.Live() && a.sess.ID == id {
+	if id := a.boxSessionID(); id != "" && id != a.bgID && a.sess.State.Live() && a.sess.ID == id {
 		a.cancelSession()
 	}
 	a.dropBox()
