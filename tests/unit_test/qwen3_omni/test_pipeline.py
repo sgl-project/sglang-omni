@@ -2882,7 +2882,11 @@ def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threa
         resource_connector: MultiModalResourceConnector,
         video_decode_threads: int,
         video_frame_pool: FramePool | None,
-    ) -> tuple[list[torch.Tensor], list[float], None]:
+    ) -> tuple[list[torch.Tensor], list[float] | None, None]:
+        if not videos:
+            return [], None, None
+        else:
+            pass
         loaded_videos = await asyncio.gather(
             *(
                 resource_connector.load_resource_async(
