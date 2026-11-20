@@ -89,6 +89,9 @@ type run struct {
 	// clip is the picture on the clipboard for Rewrite's language model
 	// (window.go), read before the selection; nil: none.
 	clip []byte
+	// typed is Rewrite's typed text: StartRequest.Text's, or the input
+	// box's (Config.BoxInput) when the answer is asked for.
+	typed string
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
@@ -177,7 +180,11 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
-	r.shootWindow()
+	// Rewrite's window picture waits for the clipboard's: the copied
+	// picture wins, and a picture that will not be sent is never taken.
+	if kind != store.KindRewrite {
+		r.shootWindow()
+	}
 
 	// The services and the dictionary, meanwhile. A typed text or a
 	// selection to translate is not heard: no speech model (#3838).
@@ -185,6 +192,7 @@ func (r *run) main() {
 	r.resolve(r.req.Text == nil && !selTranslate)
 
 	if t := r.req.Text; t != nil {
+		r.typed = t.Typed
 		if r.awaitServices() {
 			r.write(r.spoken(strings.TrimSpace(t.Raw)), t.Selection)
 		}
@@ -211,6 +219,12 @@ func (r *run) main() {
 		selDone = make(chan string, 1)
 		go func() {
 			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
+			if !r.req.Box {
+				// The box's session shoots when the answer is asked for:
+				// pictures pasted into it while it records win, and a
+				// picture that will not be sent is never taken.
+				r.shootWindow()
+			}
 			selDone <- r.readSelection()
 		}()
 	}
@@ -313,7 +327,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	if r.asrDegraded != nil && (problem == nil || problem.Degraded) {
 		problem = r.asrDegraded
 	}
-	snap := r.m.Current()
+	snap := r.m.snapshot(r)
 	total := r.now().Sub(snap.StartedAt)
 	var highlights []dict.Span
 	if r.req.Kind == store.KindTranscribe && r.settings.Dictionary.Enabled {
@@ -352,7 +366,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 	}
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem = p
@@ -375,7 +389,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	}
 	r.cancel()
 	r.logf("info", "cancelled")
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
@@ -414,7 +428,7 @@ func (r *run) saveNote(text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt, AppName: r.req.Target.Name})
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.snapshot(r).StartedAt, AppName: r.req.Target.Name})
 }
 
 // keep writes the history entry of an ended session (and its recording),
@@ -427,7 +441,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	e := store.Entry{
 		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status, Conversation: cmp.Or(r.req.Conversation, r.id), Replaces: r.req.Replaces,
 		AppBundle: s.Target.BundleID, AppName: s.Target.Name,
-		RawText: s.Raw, Result: s.Result, Title: s.Title, SourceText: s.Selection, TargetLang: s.TargetLanguage,
+		RawText: s.Raw, Result: s.Result, Title: s.Title, SourceText: s.Selection, TypedText: s.Typed, TargetLang: s.TargetLanguage,
 		ASRProvider: s.ASR.ID, ASRModel: s.ASR.Model, LLMProvider: s.LLM.ID, LLMModel: s.LLM.Model,
 		AudioMS: s.Timings.Audio.Milliseconds(), SentMS: s.Timings.Sent.Milliseconds(), ASRMS: s.Timings.ASR.Milliseconds(), LLMMS: s.Timings.LLM.Milliseconds(),
 		TotalMS: s.Timings.Total.Milliseconds(), DSP: s.DSP, GainDB: s.GainDB,
@@ -483,8 +497,8 @@ func (r *run) keep(s Snapshot, status store.Status) {
 
 // inHistory reports whether the session's history entry is written: not
 // for a try, nor for a note saved from its recognition (the Notes page
-// keeps it). A note whose recognition failed, or that was cancelled, keeps
-// its entry and recording, as a dictation does.
+// keeps it). A note whose recognition failed, or that was cancelled,
+// keeps its entry and recording, as a dictation does.
 func (r *run) inHistory(status store.Status) bool {
 	if r.req.Try || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
 		return false

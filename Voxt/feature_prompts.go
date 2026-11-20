@@ -61,7 +61,7 @@ func cardSetting(c *ui.Context, prefix, feature string, state *featureCardViewSt
 	})
 	size := state.Size
 	settingRow(c, prefix+"-card-size", i18n.T("Card size"), "", func() {
-		if ui.Segmented(c.Key(prefix+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
+		if ui.Segmented(c.Key(prefix+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large"), i18n.T("Fill")).Label(i18n.T("Card size")).Changed() {
 			actions.setCardSize(feature, size)
 		}
 	})

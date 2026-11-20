@@ -9,10 +9,10 @@ name: Mac CI
 # the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
 # Omni CI skips a pull request that changes only the MLX path, so this gate
 # fails such a pull request without a CI label. A pull request that changes
-# only Voxt's app (Voxt/** outside the helper's code) runs no Mac job here, so
-# it passes without a label, draft or not; Voxt CI tests it. A pull request
-# runs only the job whose side it changes, Markdown aside, and both when it
-# changes this file.
+# only Voxt's app (Voxt/** outside the helper's code and vendored MyGo) runs no
+# Mac job here, so it passes without a label, draft or not; Voxt CI tests it. A
+# pull request runs only the job whose side it changes, Markdown aside, and
+# both when it changes this file.
 
 on:
   pull_request:
@@ -79,10 +79,18 @@ jobs:
             const hasChangesUnder = (directory) =>
               hasWorkflowChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
             core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
-            core.setOutput("has_voxt_helper_changes", hasChangesUnder("Voxt/helper/"));
+            core.setOutput("has_voxt_helper_changes",
+              hasChangesUnder("Voxt/helper/") ||
+              hasChangesUnder("Voxt/third_party/mygo-patches/") ||
+              changedPaths.includes("Voxt/scripts/vendor-mygo.sh")
+            );
+            // App-only: every path under Voxt/, none an input of the helper job above.
+            const isVoxtHelperInput = (path) =>
+              (path.startsWith("Voxt/helper/") || path.startsWith("Voxt/third_party/mygo-patches/")) && !path.endsWith(".md") ||
+              path === "Voxt/scripts/vendor-mygo.sh";
             core.setOutput(
               "voxt_app_only",
-              changedPaths.every((path) => path.startsWith("Voxt/") && (path.endsWith(".md") || !path.startsWith("Voxt/helper/")))
+              changedPaths.every((path) => path.startsWith("Voxt/") && !isVoxtHelperInput(path))
             );
 
       - name: Block draft PR
@@ -200,6 +208,15 @@ jobs:
             echo "::error::the helper build has compiler warnings"
             exit 1
           fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - name: Vendored MyGo and native drop regressions
+        working-directory: Voxt
+        run: scripts/vendor-mygo.sh --check
 
       - name: Helper tests
         run: swift test --package-path Voxt/helper

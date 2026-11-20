@@ -377,15 +377,17 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 // streamed in pieces of chunk runes to OnDelta (0: in one), each after
 // pause; err fails every request, or only request failOn (from 1).
 type fakeLLM struct {
-	text   string
-	texts  []string
-	err    error
-	failOn int
-	hang   bool
-	hangOn int // with hang: only the hangOn-th request hangs (0: all)
-	chunk  int
-	pause  time.Duration
-	finish string // the response's FinishReason
+	text      string
+	texts     []string
+	err       error
+	failOn    int
+	hang      bool
+	hangOn    int    // with hang: only the hangOn-th request hangs (0: all)
+	hangDelta string // with hang: the delta streamed before hanging ("Half an ans" when empty)
+	chunk     int
+	pause     time.Duration
+	finish    string // the response's FinishReason
+	drop      bool   // the response reports the images dropped (llm.Response.ImagesDropped)
 	// copyExample answers with the earlier assistant message when there is
 	// one, as a model that repeats the prompt's example does.
 	copyExample bool
@@ -415,7 +417,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	f.mu.Unlock()
 	if hang {
 		if req.OnDelta != nil {
-			req.OnDelta("Half an ans")
+			req.OnDelta(cmp.Or(f.hangDelta, "Half an ans"))
 		}
 		<-ctx.Done()
 		return llm.Response{}, ctx.Err()
@@ -454,7 +456,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		f.answerCh = nil
 	}
 	f.mu.Unlock()
-	return llm.Response{Text: text, FinishReason: f.finish}, nil
+	return llm.Response{Text: text, FinishReason: f.finish, ImagesDropped: f.drop}, nil
 }
 
 func (f *fakeLLM) requests() []llm.Request {
@@ -530,12 +532,20 @@ func (f *fakeText) pastes() []string {
 
 // memHistory keeps entries in memory.
 type memHistory struct {
-	dir     string
-	mu      sync.Mutex
-	entries []store.Entry
+	dir        string
+	mu         sync.Mutex
+	entries    []store.Entry
+	putStarted chan struct{}
+	putRelease chan struct{}
+	putBlockID string
+	putOnce    sync.Once
 }
 
 func (h *memHistory) Put(_ context.Context, e store.Entry) error {
+	if h.putStarted != nil && (h.putBlockID == "" || h.putBlockID == e.ID) {
+		h.putOnce.Do(func() { close(h.putStarted) })
+		<-h.putRelease
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.entries = append(h.entries, e)

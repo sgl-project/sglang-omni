@@ -213,7 +213,7 @@ func TestWrite(t *testing.T) {
 				req := model.requests()[0]
 				user := req.Messages[len(req.Messages)-1].Content
 				if req.Skill != llm.SkillRewrite || req.Format != llm.FormatText ||
-					user != "<instruction>\nhello VoxtNew\n</instruction>\n\n<selected_text>\nhey team, ship friday?\n</selected_text>" ||
+					user != "<selected_text>\nhey team, ship friday?\n</selected_text>\n\n<instruction>\nhello VoxtNew\n</instruction>" ||
 					strings.Contains(req.Messages[0].Content, "Reading the instruction") {
 					t.Errorf("request %+v", req)
 				}
@@ -328,14 +328,14 @@ func TestWrite(t *testing.T) {
 		},
 		{
 			// Text selected since goes with the follow-up, its own block
-			// after the instruction, and with its turn (#3816).
+			// before the instruction, and with its turn (#3816).
 			name: "a follow-up with a new selection", kind: store.KindRewrite, sel: &fakeSelector{text: "Ben: tests passed"}, llm: &fakeLLM{text: "Team: Friday, tests pass."},
 			req:   StartRequest{Previous: []compose.Turn{{Instruction: "more formal", Selection: "ship friday", Answer: compose.Answer{Content: "Team: we ship on Friday."}}}},
 			speak: true, states: "recording recognizing composing done", state: Done, result: "Team: Friday, tests pass.", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				msgs := model.requests()[0].Messages
 				if len(msgs) != 4 || !strings.Contains(msgs[1].Content, "<selected_text>\nship friday") ||
-					msgs[3].Content != "<instruction>\nhello VoxtNew\n</instruction>\n\n<selected_text>\nBen: tests passed\n</selected_text>" || end.Selection != "Ben: tests passed" {
+					msgs[3].Content != "<selected_text>\nBen: tests passed\n</selected_text>\n\n<instruction>\nhello VoxtNew\n</instruction>" || end.Selection != "Ben: tests passed" {
 					t.Errorf("messages %+v, end %+v", msgs, end)
 				}
 				if e := h.hist.all()[0]; e.SourceText != "Ben: tests passed" {

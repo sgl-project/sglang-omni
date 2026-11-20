@@ -42,6 +42,10 @@ func TestDemoRewriteSelectedText(t *testing.T) {
 				set(s)
 				s.Privacy.SendWindow = tc.window
 			}, keys)
+			if tc.window { // Rewrite shows the window's picture for confirmation before the request
+				a.pump("the window review", func() bool { return a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0 })
+				a.postQueue(a.boxSend)
+			}
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
 			if a.sess.State != session.Done || a.sess.Result != answer || a.sess.Selection != selection || a.sess.SelectionVia != tc.via {
 				t.Fatalf("end %+v\n%s", a.sess, a.logText())
@@ -51,7 +55,7 @@ func TestDemoRewriteSelectedText(t *testing.T) {
 				t.Fatalf("%d chats", len(reqs))
 			}
 			msgs := chatMessages(reqs[0])
-			want := [2]string{"user", "<instruction>\n" + instruction + "\n</instruction>\n\n<selected_text>\n" + selection + "\n</selected_text>"}
+			want := [2]string{"user", "<selected_text>\n" + selection + "\n</selected_text>\n\n<instruction>\n" + instruction + "\n</instruction>"}
 			if len(msgs) == 0 || msgs[len(msgs)-1] != want {
 				t.Errorf("the model did not get the selected text with the instruction: %q", msgs)
 			}

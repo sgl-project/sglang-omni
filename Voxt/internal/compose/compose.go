@@ -131,6 +131,10 @@ type Input struct {
 	// Selected: Translate's Text is selected text, not speech (no clean-up,
 	// its form kept).
 	Selected bool
+	// Typed is Rewrite's typed text (the input box's), sent between the
+	// selection and the instruction ("" for none; only with a selection:
+	// typed text alone is the Text).
+	Typed string
 	// Instruction is Rewrite's spoken instruction.
 	Instruction string
 	// Strict asks Translate again, more firmly (Untranslated).
@@ -145,8 +149,8 @@ type Input struct {
 
 // Turn is an earlier request of a conversation and its answer.
 type Turn struct {
-	Instruction, Selection string
-	Answer                 Answer
+	Instruction, Selection, Typed string
+	Answer                        Answer
 }
 
 // Message is a chat message of a composed request.
@@ -271,6 +275,7 @@ func Build(in Input) (Output, error) {
 		"FOR_TRANSCRIBE": on(in.Task == Transcribe),
 		"FOR_TRANSLATE":  on(in.Task == Translate),
 		"SELECTED":       on(selected),
+		"TYPED":          on(in.Task == Rewrite && strings.TrimSpace(in.Typed) != ""),
 	}
 	render := func(name string, extra map[string]string) string {
 		x := maps.Clone(flags)
@@ -330,7 +335,7 @@ func Build(in Input) (Output, error) {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
 	}
 	out := Output{Language: set}
-	g := Glossary(in.Glossary, in.Instruction+"\n"+in.Text, set)
+	g := Glossary(in.Glossary, in.Instruction+"\n"+in.Text+"\n"+in.Typed, set)
 	if len(distinctTerms(in.Glossary)) <= GlossaryAllUpTo {
 		if g != "" {
 			add("glossary", render("glossary", map[string]string{"GLOSSARY": g}))
@@ -355,10 +360,10 @@ func Build(in Input) (Output, error) {
 	if in.Task == Rewrite {
 		for _, t := range in.Previous {
 			out.History = append(out.History,
-				Message{Role: "user", Content: RewriteMessage(t.Instruction, t.Selection)},
+				Message{Role: "user", Content: RewriteMessage(t.Instruction, t.Selection, t.Typed)},
 				Message{Role: "assistant", Content: t.Answer.reply(in.Answer)})
 		}
-		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text))
+		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text, in.Typed))
 	} else {
 		out.User = out.withGlossary(UserMessage(in.Text))
 		if input, answer, ok := Example(in); ok {
@@ -376,14 +381,23 @@ func (o Output) withGlossary(msg string) string {
 	return o.Glossary + "\n\n" + msg
 }
 
-// RewriteMessage is Rewrite's user message: the instruction, then the
-// selection when there is one.
-func RewriteMessage(instruction, selection string) string {
-	msg := wrap("instruction", instruction)
+// RewriteMessage is Rewrite's user message, in one fixed order: the
+// selection, then the box's typed text, then the spoken instruction.
+func RewriteMessage(instruction, selection, typed string) string {
+	var msg string
 	if strings.TrimSpace(selection) != "" {
-		msg += "\n\n" + wrap("selected_text", selection)
+		msg = wrap("selected_text", selection)
 	}
-	return msg
+	if strings.TrimSpace(typed) != "" {
+		if msg != "" {
+			msg += "\n\n"
+		}
+		msg += wrap("typed_text", typed)
+	}
+	if msg != "" {
+		msg += "\n\n"
+	}
+	return msg + wrap("instruction", instruction)
 }
 
 func wrap(tag, text string) string {

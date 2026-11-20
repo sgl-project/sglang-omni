@@ -425,7 +425,7 @@ func Build(f settings.Features, enabled []string) Plan {
 	if f.PasteLast.Keys != "" {
 		add(PasteLast, f.PasteLast, proto.BehaviorTap)
 	}
-	if f.Note.Keys != "" {
+	if f.Note.Keys != "" && !f.IsHidden(settings.HideNotes) {
 		add(Note, f.Note, proto.BehaviorTap)
 	}
 	if slices.Contains(enabled, Meeting) {
