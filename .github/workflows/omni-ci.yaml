@@ -221,8 +221,8 @@ jobs:
             "${WHISPER_ASR_MODEL_PATH}"
 
           if [[ "${ASR_CI_MODEL}" == "ark" ]]; then
-            target_model=$(omni/bin/python -c 'from tests.test_model.asr_ci_config import ASR_CI_PRESETS; preset = ASR_CI_PRESETS["ark"]; print(f"{preset.model_path}@{preset.revision}")')
-            bash .github/scripts/ensure_hf_models.sh omni "${target_model}" \
+            bash .github/scripts/ensure_hf_models.sh omni \
+              AutoArk-AI/ARK-ASR-3B@1e28271b79edc97635783bea65abc89195a09ed3 \
               wilsonzheng0327/ARK-ASR-3B-dflash@b0789bb314fab990e0f2377054c4b1947d204273
           fi
 

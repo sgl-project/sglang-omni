@@ -44,7 +44,7 @@ from sglang_omni.speculative.dflash_draft import (
     ReducedVocabularyDFlashWorker,
     materialize_draft_checkpoint,
 )
-from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils import checkpoint
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
@@ -160,7 +160,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
 
     def resolve_checkpoint(self, model_path: str) -> str:
         if "@" in model_path:
-            return resolve_checkpoint(model_path)
+            return checkpoint.resolve_checkpoint(model_path)
         else:
             return model_path
 
