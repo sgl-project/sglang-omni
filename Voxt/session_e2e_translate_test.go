@@ -122,7 +122,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	chat.mu.Unlock()
 	a.retryAnswer("ja")
 	a.pump("the second session", func() bool { return a.sess.ID != first && a.sess.State == session.Composing })
-	if v := a.cardNow(); a.ov.mode != ovAnswer || !v.busy || v.text != "See you on Thursday." || v.lang != "ja" || v.canInsert || v.canLang || !v.canCopy {
+	if v := a.cachedCard(); a.ov.mode != ovAnswer || !v.Busy || cardTextForTest(v) != "See you on Thursday." || v.Language != "ja" || v.CanInsert || v.CanLanguage || !v.CanCopy {
 		t.Errorf("on its way: %s %+v", a.ov.mode, v)
 	}
 	redoStreamed := false
@@ -145,7 +145,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if msgs := chatMessages(chat.requests()[1]); !strings.Contains(msgs[0][1], "翻译成日语") || msgs[1][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("second request %q", msgs)
 	}
-	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" {
+	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" || es[0].Kind != store.KindTranslate || es[1].Kind != store.KindTranslate {
 		t.Errorf("history %+v", es)
 	}
 	// A language that fails: the card stays as it was, and says so.
@@ -216,7 +216,7 @@ func TestTranslateContinue(t *testing.T) {
 	if a.sess.TargetLanguage != "zh-Hans" || !a.answer.open || a.answer.lang != "zh-Hans" {
 		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
 	}
-	if v := a.cardNow(); !v.canFollowUp || !v.canLang {
+	if v := a.cachedCard(); !v.CanFollowUp || !v.CanLanguage {
 		t.Errorf("the card offers no Continue: %+v", v)
 	}
 	a.retryAnswer("ja")
@@ -227,7 +227,7 @@ func TestTranslateContinue(t *testing.T) {
 		msgs[2] != [2]string{"assistant", "テストがまだ走っているので、リリースは金曜日に移ります。"} || msgs[3][1] != "<instruction>\nmake it shorter\n</instruction>" {
 		t.Errorf("follow-up messages %q", msgs)
 	}
-	if a.answer.text != "リリースは金曜日。" || len(a.answer.turns) != 2 || !a.cardNow().conversation {
+	if a.answer.text != "リリースは金曜日。" || len(a.answer.turns) != 2 || !a.cachedCard().Conversation {
 		t.Errorf("card %+v", a.answer)
 	}
 	a.insertAnswer()

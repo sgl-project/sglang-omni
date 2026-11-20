@@ -4,12 +4,16 @@
 // and decoder run in the weights' dtype.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "common/kv_cache.h"
+#include "common/layers.h"
 #include "mlx/mlx.h"
 
 namespace whisper {
@@ -29,11 +33,10 @@ struct WhisperConfig {
   int text_layer_count = 0;
 };
 
-// Self-attention keys and values grow by one token per step; cross-attention
+// Self-attention keys and values grow in the cache's steps; cross-attention
 // keys and values are projected once per window.
 struct DecoderLayerCache {
-  std::optional<mlx::core::array> self_keys;
-  std::optional<mlx::core::array> self_values;
+  omni_common::KVCache self_attention;
   std::optional<mlx::core::array> cross_keys;
   std::optional<mlx::core::array> cross_values;
 };
@@ -41,54 +44,45 @@ struct DecoderLayerCache {
 // Keeps the first token_count positions of each layer's self-attention keys
 // and values.
 void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count);
+// Keeps the batch rows at indices, int32 [rows], of every layer's keys and
+// values.
+void KeepCacheRows(std::vector<DecoderLayerCache> &caches,
+                   const mlx::core::array &rows);
 
 class WhisperModel {
 public:
   // Reads config.json and the weights (*.safetensors, else weights.npz) of an
   // mlx-community Whisper checkpoint.
   explicit WhisperModel(const std::filesystem::path &model_directory);
-  // Reads only the decoder of a draft checkpoint, in the target's dtype, to
-  // decode against the target's encoder states; refuses a draft whose decoder
-  // cannot read them.
+  // Loads the decoder of a native MLX or Transformers draft in the target's
+  // dtype to decode against the target's encoder states.
   WhisperModel(const std::filesystem::path &draft_directory,
                const WhisperModel &target);
 
   const WhisperConfig &config() const { return config_; }
-  // One window of kWindowSampleCount samples to encoder states [1, 1500,
-  // width].
-  mlx::core::array Encode(const std::vector<float> &window_samples) const;
-  // Token ids [1, length] placed from start_position on, to the logits of the
-  // last logit_count positions [logit_count, vocabulary].
+  // A batch of contiguous, padded windows to states [batch, 1500, width].
+  mlx::core::array Encode(std::span<const float> padded_samples,
+                          const std::atomic<bool> &cancel) const;
+  // Token ids [batch, length] placed from start_position on, to the logits
+  // of the last logit_count positions [batch * logit_count, vocabulary].
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
                           const mlx::core::array &encoder_states,
                           std::vector<DecoderLayerCache> &caches,
                           int logit_count) const;
 
 private:
-  const mlx::core::array &Weight(const std::string &name) const;
-  mlx::core::array Linear(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array LayerNorm(const mlx::core::array &x,
-                             const std::string &prefix) const;
-  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
-                          int stride) const;
   mlx::core::array Attention(const mlx::core::array &queries_input,
                              const mlx::core::array &keys,
                              const mlx::core::array &values,
                              const std::string &prefix, int head_count,
-                             const std::optional<mlx::core::array> &mask) const;
+                             bool is_causal) const;
   mlx::core::array EncoderLayer(const mlx::core::array &x, int layer) const;
   mlx::core::array DecoderLayer(const mlx::core::array &x, int layer,
                                 const mlx::core::array &encoder_states,
-                                const std::optional<mlx::core::array> &mask,
-                                DecoderLayerCache &cache) const;
+                                bool is_causal, DecoderLayerCache &cache) const;
 
   WhisperConfig config_;
-  // The log-mel front end's periodic Hann window [400] and mel filters
-  // [201, mel_bins].
-  mlx::core::array hann_window_;
-  mlx::core::array mel_filters_;
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 } // namespace whisper

@@ -3,9 +3,6 @@
 
 from __future__ import annotations
 
-import os
-from importlib.util import find_spec
-from pathlib import Path
 from typing import ClassVar, Literal
 
 import torch
@@ -21,6 +18,7 @@ from sglang_omni.config import (
 )
 from sglang_omni.config.path import ConfigPath
 from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.stage_residency import offload_environment
 
 from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 
@@ -136,35 +134,7 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     def resolved_env_defaults(self) -> dict[str, str]:
         environment = super().resolved_env_defaults()
         if self.stage_named("minimax_music3_ar").factory.enable_serial_offload:
-            package = find_spec("torch_memory_saver")
-            if package is None or package.origin is None or torch.version.cuda is None:
-                raise RuntimeError(
-                    "Music3 offload requires the CUDA torch_memory_saver==0.0.10 wheel"
-                )
-            else:
-                pass
-            package_directory = Path(package.origin).parent
-            cuda_major = torch.version.cuda.split(".")[0]
-            pattern = f"torch_memory_saver_hook_mode_preload_cu{cuda_major}.*.so"
-            libraries = [
-                library
-                for directory in (package_directory, package_directory.parent)
-                for library in directory.glob(pattern)
-            ]
-            if len(libraries) != 1:
-                raise RuntimeError(
-                    f"Music3 offload requires exactly one allocator library matching {pattern}"
-                )
-            else:
-                pass
-            library_path = str(libraries[0])
-            preload = os.environ.get("LD_PRELOAD", "")
-            if "torch_memory_saver" not in preload:
-                environment["LD_PRELOAD"] = (
-                    f"{library_path}:{preload}" if preload else library_path
-                )
-            else:
-                pass
+            environment = offload_environment(environment)
         else:
             pass
         return environment

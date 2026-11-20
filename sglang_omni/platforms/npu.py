@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -11,6 +12,22 @@ if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
 else:
     pass
+
+
+def validate_npu_graph_environment(model_name: str) -> None:
+    """Reject Host queue settings that would stall NPU graph streams."""
+    if (
+        os.environ.get("PER_STREAM_QUEUE") != "1"
+        or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"
+        or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
+    ):
+        raise ValueError(
+            f"{model_name} NPU graphs require PER_STREAM_QUEUE=1, "
+            "TASK_QUEUE_ENABLE unset or 1, and ASCEND_LAUNCH_BLOCKING unset or 0 "
+            "before starting the server"
+        )
+    else:
+        pass
 
 
 class NPUOmniPlatform(OmniPlatform):
@@ -28,6 +45,10 @@ class NPUOmniPlatform(OmniPlatform):
 
     def set_device(self, device: "torch.device") -> None:
         torch.npu.set_device(device)
+
+    @classmethod
+    def is_float64_supported(cls) -> bool:
+        return False
 
     def enable_code2wav_graph(self):
         return False

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -36,6 +37,19 @@ func TestAliases(t *testing.T) {
 			e := h.hist.all()
 			if end.Result != c.result || end.Raw != "hello aura link" || len(e) != 1 || e[0].RawText != "hello aura link" || e[0].Result != c.result {
 				t.Errorf("result %q, raw %q, entries %+v", end.Result, end.Raw, e)
+			}
+			wantMatches := 0
+			if c.result == "hello VoxtNew" {
+				wantMatches = 1
+			}
+			if len(end.Highlights) != wantMatches {
+				t.Fatalf("%d highlight spans, want %d", len(end.Highlights), wantMatches)
+			}
+			if wantMatches == 1 {
+				span := end.Highlights[0]
+				if got := end.Result[span.Start:span.End]; got != "VoxtNew" {
+					t.Errorf("highlighted %q, want VoxtNew", got)
+				}
 			}
 		})
 	}
@@ -116,6 +130,37 @@ func TestLongDictation(t *testing.T) {
 	}
 }
 
+// TestOnlyTheCleanedText (#4086): the model wraps the cleaned text in
+// the <output> tags the contract asks for and adds its own commentary
+// about the edits outside them; only the tags' content is streamed into
+// the card, shown and inserted. The request asks for the tags and the
+// example turn answers with them.
+func TestOnlyTheCleanedText(t *testing.T) {
+	text := "算计算量，就是说，用 bf16 单元算和 int8 有区别吗"
+	cleaned := "算计算量（FLOPs）—— 用 bf16 单元算和 int8 有区别吗？"
+	commentary := "清理时我删掉了“就是说”这个语气词。"
+	model := &fakeLLM{text: "<output>\n" + cleaned + "\n</output>\n\n" + commentary, chunk: 3, pause: 5 * time.Millisecond}
+	h := newHarness(t, &fakeFile{text: text}, model, nil)
+	h.speak(h.start(), 5)
+	end := h.rec.wait(t)
+	if end.Result != cleaned {
+		t.Errorf("result %q", end.Result)
+	}
+	for _, s := range h.rec.all() {
+		if strings.Contains(s.Draft, "<output") || strings.Contains(s.Draft, commentary) {
+			t.Errorf("a draft with the tags or the commentary: %q", s.Draft)
+		}
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	m := reqs[0].Messages
+	if !strings.Contains(m[0].Content, "<output>") || len(m) != 4 || !strings.Contains(m[2].Content, "<output>") {
+		t.Errorf("the contract or the example lacks the tags: %d messages", len(m))
+	}
+}
+
 // TestLongTranslate: long spoken Translate stays one request (its
 // target is one language; in pieces it was no better, docs/eval.md).
 func TestLongTranslate(t *testing.T) {
@@ -131,5 +176,32 @@ func TestLongTranslate(t *testing.T) {
 	reqs := model.requests()
 	if end.Result != "我们周四上午发布。" || len(reqs) != 1 || reqs[0].Messages[len(reqs[0].Messages)-1].Content != compose.UserMessage(strings.TrimSpace(en)) {
 		t.Errorf("result %q, %d requests", end.Result, len(reqs))
+	}
+}
+
+type cleanupBackend struct{ *fakeLLM }
+
+func (*cleanupBackend) Info() llm.BackendInfo { return llm.BackendInfo{ID: "cleanup-test"} }
+
+// TestCleanupProtocolFallback: tool serialization must never be pasted, while ordinary short words remain unchanged.
+func TestCleanupProtocolFallback(t *testing.T) {
+	for _, test := range []struct{ name, raw, reply, result, problem string }{
+		{"tool reply", "As.", `<|open|>tools<|sep|><|open|>call tool="thinking"<|sep|>discard`, "As.", ProblemLLM},
+		{"response tool", "你好", `<|open|>tools<|sep|><|open|>call tool="response"<|sep|>`, "你好", ProblemLLM},
+		{"single word", "As.", "<output>As.</output>", "As.", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &cleanupBackend{&fakeLLM{text: test.reply, finish: llm.FinishStop, chunk: 1}}
+			h := newHarness(t, &fakeFile{text: test.raw}, &llm.Client{Backend: backend}, nil)
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			if end.Result != test.result || end.Raw != test.raw || (end.Problem == nil) != (test.problem == "") || end.Problem != nil && end.Problem.Code != test.problem {
+				t.Fatalf("result %q, raw %q, problem %+v", end.Result, end.Raw, end.Problem)
+			}
+			pasted := h.text.pastes()
+			if len(pasted) != 1 || pasted[0] != test.result {
+				t.Fatalf("pasted %q", pasted)
+			}
+		})
 	}
 }

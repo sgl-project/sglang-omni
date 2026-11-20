@@ -88,7 +88,7 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 		want                   []string
 		absent                 []string
 	}{
-		{"setup only", codexSetup, "", []string{"Codex setup: sign in to ChatGPT (Codex) on the Language models page"}, []string{"used by", "not available"}},
+		{"setup only", codexSetup, "", []string{"Codex setup: sign in to ChatGPT (Codex) in Settings → Language models"}, []string{"used by", "not available"}},
 		{"all features", codexSetup, `{"transcription":{"llmEnabled":true,"llmSelectionID":"remote-llm:codex"},"translation":{"modelSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
 			[]string{"Codex (used by Transcribe, Translate, Rewrite): sign in to ChatGPT (Codex) or choose another language model"}, []string{"Codex setup", "not available"}},
 		{"Transcribe had clean-up off", codexSetup, `{"transcription":{"llmEnabled":false,"llmSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
@@ -121,20 +121,29 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 
 func TestLegacyHTTPGatewayDocs(t *testing.T) {
 	for _, check := range []struct {
-		file, want, old string
+		file        string
+		wants, olds []string
 	}{
-		{"docs/voxt-migration.md", "API-key language models can use HTTP on another host", "Voxt 2 only connects over https, or http to this Mac"},
-		{"docs/manual-test.md", "另一台机器的 http 地址可以继续使用", "另一台机器的 http 地址写“要改"},
-		{"docs/behavior.md", "API-key 服务接受 http 或 https", "地址只接受 https 或指向本机的 http"},
-		{"docs/architecture.md", "API-key services: http or https; Codex: https off this Mac", "ProviderConfig.Resolve (https, or http to this Mac)"},
+		{"docs/voxt-migration.md", []string{"API-key language models can use HTTP on another host", "the Address tip in the service's set-up dialog says so, and the import's result and the Language models settings show no warning"}, []string{"Voxt 2 only connects over https, or http to this Mac", "the Language models page warns that HTTP sends the API key and text without encryption"}},
+		{"docs/manual-test.md", []string{"另一台机器的 http 地址可以继续使用", "结果和语言模型设置里都没有 HTTP 的警告"}, []string{"另一台机器的 http 地址写“要改", "语言模型页说明 HTTP 会不加密地发送 API Key 和文字"}},
+		{"docs/behavior.md", []string{"API-key 服务接受 http 或 https", "页面和卡片上没有警告"}, []string{"地址只接受 https 或指向本机的 http", "http 不加密地发送 API key 和文字，页面给出警告"}},
+		{"docs/architecture.md", []string{"API-key services: http or https; Codex: https off this Mac"}, []string{"ProviderConfig.Resolve (https, or http to this Mac)"}},
+		{"CHANGELOG.md", []string{"which the Address tip in the service's set-up dialog says"}, []string{"Voxt warns that HTTP sends the key and text without encryption"}},
 	} {
 		doc, err := os.ReadFile(check.file)
 		if err != nil {
 			t.Fatal(err)
 		}
 		text := string(doc)
-		if !strings.Contains(text, check.want) || strings.Contains(text, check.old) {
-			t.Errorf("%s does not describe the HTTP gateway behavior", check.file)
+		for _, want := range check.wants {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s lacks %q", check.file, want)
+			}
+		}
+		for _, old := range check.olds {
+			if strings.Contains(text, old) {
+				t.Errorf("%s still says %q", check.file, old)
+			}
 		}
 	}
 }

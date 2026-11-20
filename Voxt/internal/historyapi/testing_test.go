@@ -81,11 +81,11 @@ func entryID(i int) string {
 	return "e" + string(rune('a'+i/676)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
 }
 
-// socketPath avoids t.TempDir(), whose path holds the test's name and can
-// overflow the 104-byte socket path limit on macOS.
+// socketPath is in /tmp: t.TempDir() holds the test's name and TMPDIR can
+// be long, and either can overflow the 104-byte socket path limit on macOS.
 func socketPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "vx")
+	dir, err := os.MkdirTemp("/tmp", "vx")
 	if err != nil {
 		t.Fatal(err)
 	}
