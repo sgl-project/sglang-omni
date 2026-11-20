@@ -43,8 +43,9 @@ func (a *app) meetingSettingsModel() settingsMeetingViewState {
 	meeting.HideFromSharing = a.meetingUI.hide
 	readyASR := a.installed(local.ASR)
 	shownASR := slices.DeleteFunc(slices.Clone(readyASR), func(model local.Model) bool { return a.modelHidden(model.ID) })
+	automaticASR, _ := local.Choose(automaticSpeechFor(a.meetingLang(), readyASR), "")
 	return buildSettingsMeetingViewState(i18n.CurrentTranslator(), settingsMeetingStateInput{
-		Meeting: meeting, ReadyASR: readyASR, ShownASR: shownASR, ReadyLLM: a.installed(local.LLM), CorrectionText: a.meetingUI.correction.text,
+		Meeting: meeting, ReadyASR: readyASR, ShownASR: shownASR, AutomaticASR: automaticASR, ReadyLLM: a.installed(local.LLM), CorrectionText: a.meetingUI.correction.text,
 	})
 }
 

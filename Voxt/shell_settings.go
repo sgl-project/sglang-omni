@@ -289,7 +289,7 @@ func modelsSettingsSection(c *ui.Context, state *settingsModelsViewState, action
 		modelCard(c, *models.Dictation, actions)
 	}
 	remoteProviderCards(c, &state.RemoteCards, actions, settingsSectionWidth(c))
-	speechContextSection(c, models.SpeechContext, actions, &local.speechContext)
+	speechContextSection(c, models.SpeechContextUnused, models.SpeechContext, actions, &local.speechContext)
 	if models.ShowLLM {
 		sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
 		modelCards(c, models.LLM, actions)

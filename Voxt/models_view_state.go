@@ -137,17 +137,20 @@ type modelsNetworkViewState struct {
 }
 
 type modelsViewState struct {
-	ASR           []modelCardViewState      `json:"asr"`
-	Dictation     *modelCardViewState       `json:"dictation,omitempty"`
-	LLM           []modelCardViewState      `json:"llm"`
-	ShowLLM       bool                      `json:"show_llm"`
-	Hidden        []modelCardViewState      `json:"hidden"`
-	HiddenOpen    bool                      `json:"hidden_open"`
-	Advanced      modelsAdvancedViewState   `json:"advanced"`
-	Delete        modelsDeleteViewState     `json:"delete"`
-	Network       modelsNetworkViewState    `json:"network"`
-	SpeechContext string                    `json:"speech_context"`
-	Assignment    *modelAssignmentViewState `json:"assignment,omitempty"`
+	ASR           []modelCardViewState    `json:"asr"`
+	Dictation     *modelCardViewState     `json:"dictation,omitempty"`
+	LLM           []modelCardViewState    `json:"llm"`
+	ShowLLM       bool                    `json:"show_llm"`
+	Hidden        []modelCardViewState    `json:"hidden"`
+	HiddenOpen    bool                    `json:"hidden_open"`
+	Advanced      modelsAdvancedViewState `json:"advanced"`
+	Delete        modelsDeleteViewState   `json:"delete"`
+	Network       modelsNetworkViewState  `json:"network"`
+	SpeechContext string                  `json:"speech_context"`
+	// SpeechContextUnused: every feature's speech model takes no context
+	// (#4067), so the editor says so.
+	SpeechContextUnused bool                      `json:"speech_context_unused"`
+	Assignment          *modelAssignmentViewState `json:"assignment,omitempty"`
 }
 
 type modelsViewStateInput struct {
@@ -168,6 +171,9 @@ type modelsViewStateInput struct {
 	AdvancedOpen   bool
 	HiddenOpen     bool
 	Assignment     *modelAssignmentStateInput
+	// SpeechContextUnused: Transcribe, Translate and Rewrite all use a
+	// local speech model that takes no context.
+	SpeechContextUnused bool
 }
 
 func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInput) modelsViewState {
@@ -176,6 +182,7 @@ func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInpu
 		Hidden: buildHiddenModelCards(translator, input), HiddenOpen: input.HiddenOpen,
 		Advanced: buildModelsAdvancedViewState(translator, input), Delete: buildModelsDeleteViewState(translator, input),
 		Network: buildModelsNetworkViewState(translator, input), SpeechContext: input.Settings.Dictionary.SpeechContext,
+		SpeechContextUnused: input.SpeechContextUnused,
 	}
 	state.Dictation = buildDictationCard(translator, input, false)
 	if input.Assignment != nil {

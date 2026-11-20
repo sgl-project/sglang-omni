@@ -40,8 +40,8 @@
         "on_disk": true,
         "installed_by": "Installed · from AudioSmith",
         "size_label": "2.5 GB still to download",
-        "show_download": false,
-        "download_label": "Download (2.5 GB)",
+        "show_download": true,
+        "download_label": "Download (725.7 MB)",
         "downloading": false,
         "download_fraction": 0,
         "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak."

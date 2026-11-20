@@ -4,6 +4,42 @@
   "models": {
     "asr": [
       {
+        "key": "model-asr.moss",
+        "rows": [
+          {
+            "id": "asr.moss",
+            "kind": "asr",
+            "name": "MOSS-Transcribe-Diarize",
+            "default": true,
+            "installed": false,
+            "size_text": "需下载 1.8 GB",
+            "about": "专为多人对话设计，边说边出文字。",
+            "languages": "中文和英语",
+            "tags": [
+              "本地",
+              "实时",
+              "不支持词典",
+              "不支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.moss",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.moss",
+                "label": "下载",
+                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+              }
+            ]
+          }
+        ]
+      },
+      {
         "key": "family-qwen3-asr",
         "family_name": "Qwen3-ASR",
         "count_text": "3 个模型 · 已安装 1 个",
@@ -13,10 +49,9 @@
             "id": "asr.accurate",
             "kind": "asr",
             "name": "Qwen3-ASR 1.7B (8bit)",
-            "default": true,
+            "default": false,
             "installed": true,
             "size_text": "占用 2.5 GB",
-            "used_by": "用于转录 · 翻译 · 改写 · 会议",
             "memory_text": "已载入 · 占用内存 2.3 GB",
             "family_text": "与 AudioSmith 共用",
             "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
@@ -27,6 +62,13 @@
               "不支持主要语言"
             ],
             "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.accurate",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Qwen3-ASR 1.7B (8bit)",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
               {
                 "kind": "delete",
                 "model_id": "asr.accurate",
@@ -358,42 +400,6 @@
             ]
           }
         ]
-      },
-      {
-        "key": "model-asr.moss",
-        "rows": [
-          {
-            "id": "asr.moss",
-            "kind": "asr",
-            "name": "MOSS-Transcribe-Diarize",
-            "default": false,
-            "installed": false,
-            "size_text": "需下载 1.8 GB",
-            "about": "专为多人对话设计，边说边出文字。",
-            "languages": "中文和英语",
-            "tags": [
-              "本地",
-              "实时",
-              "不支持词典",
-              "不支持主要语言"
-            ],
-            "actions": [
-              {
-                "kind": "hide",
-                "model_id": "asr.moss",
-                "label": "隐藏",
-                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                "tooltip": "不在功能页的模型菜单里列出"
-              },
-              {
-                "kind": "download",
-                "model_id": "asr.moss",
-                "label": "下载",
-                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
-              }
-            ]
-          }
-        ]
       }
     ],
     "dictation": {
@@ -406,6 +412,7 @@
           "default": false,
           "installed": false,
           "size_text": "内置",
+          "used_by": "用于转录 · 翻译 · 改写 · 会议",
           "about": "macOS 自带的语音识别，在这台 Mac 上运行。速度快，不用下载，但不如 Qwen3-ASR 准确，支持的语言也更少。只识别你的主要语言。",
           "languages": "这台 Mac 可在本机识别的 macOS 听写语言（系统设置 → 键盘 → 听写）",
           "tags": [
@@ -414,13 +421,6 @@
             "实时"
           ],
           "actions": [
-            {
-              "kind": "hide",
-              "model_id": "asr.system",
-              "label": "隐藏",
-              "accessibility_label": "隐藏 系统听写",
-              "tooltip": "不在功能页的模型菜单里列出"
-            },
             {
               "kind": "assign",
               "model_id": "asr.system",
@@ -517,6 +517,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

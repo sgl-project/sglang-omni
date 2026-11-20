@@ -217,6 +217,9 @@ type onboardingModelStateInput struct {
 	InstalledASR  []local.Model
 	Language      local.Model
 	LanguageReady bool
+	// PackLeft is what the pack's speech model and its catalogue draft
+	// still have to download, formatted (the pack counts both, #4067).
+	PackLeft string
 }
 
 type onboardingWelcomeCacheKey struct {
@@ -428,6 +431,7 @@ func (a *app) onboardingModelsInput() onboardingModelStateInput {
 	return onboardingModelStateInput{
 		SpeechID: a.obSpeech(), PackIDs: a.obPack(), Status: a.modelStatus, Found: a.ob.found,
 		InstalledASR: a.installed(local.ASR), Language: language, LanguageReady: languageReady,
+		PackLeft: a.obDownloadLeft(),
 	}
 }
 

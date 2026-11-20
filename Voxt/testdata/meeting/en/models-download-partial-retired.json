@@ -4,6 +4,42 @@
   "models": {
     "asr": [
       {
+        "key": "model-asr.moss",
+        "rows": [
+          {
+            "id": "asr.moss",
+            "kind": "asr",
+            "name": "MOSS-Transcribe-Diarize",
+            "default": true,
+            "installed": false,
+            "size_text": "1.8 GB download",
+            "about": "Made for conversations between several people. Shows the text as you speak.",
+            "languages": "Chinese and English",
+            "tags": [
+              "Local",
+              "Realtime",
+              "No dictionary",
+              "Supports your main language"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.moss",
+                "label": "Hide",
+                "accessibility_label": "Hide MOSS-Transcribe-Diarize",
+                "tooltip": "Hide it from the features' menus"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.moss",
+                "label": "Download",
+                "accessibility_label": "Download MOSS-Transcribe-Diarize"
+              }
+            ]
+          }
+        ]
+      },
+      {
         "key": "family-qwen3-asr",
         "family_name": "Qwen3-ASR",
         "count_text": "3 models · 1 installed",
@@ -13,7 +49,7 @@
             "id": "asr.accurate",
             "kind": "asr",
             "name": "Qwen3-ASR 1.7B (8bit)",
-            "default": true,
+            "default": false,
             "installed": true,
             "size_text": "2.5 GB on disk",
             "used_by": "Used by Transcribe · Translate · Rewrite · Meetings",
@@ -358,42 +394,6 @@
             ]
           }
         ]
-      },
-      {
-        "key": "model-asr.moss",
-        "rows": [
-          {
-            "id": "asr.moss",
-            "kind": "asr",
-            "name": "MOSS-Transcribe-Diarize",
-            "default": false,
-            "installed": false,
-            "size_text": "1.8 GB download",
-            "about": "Made for conversations between several people. Shows the text as you speak.",
-            "languages": "Chinese and English",
-            "tags": [
-              "Local",
-              "Realtime",
-              "No dictionary",
-              "Supports your main language"
-            ],
-            "actions": [
-              {
-                "kind": "hide",
-                "model_id": "asr.moss",
-                "label": "Hide",
-                "accessibility_label": "Hide MOSS-Transcribe-Diarize",
-                "tooltip": "Hide it from the features' menus"
-              },
-              {
-                "kind": "download",
-                "model_id": "asr.moss",
-                "label": "Download",
-                "accessibility_label": "Download MOSS-Transcribe-Diarize"
-              }
-            ]
-          }
-        ]
       }
     ],
     "dictation": {
@@ -541,6 +541,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

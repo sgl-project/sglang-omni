@@ -4,36 +4,36 @@
   "models": {
     "asr": [
       {
-        "key": "model-asr.accurate",
+        "key": "model-asr.moss",
         "rows": [
           {
-            "id": "asr.accurate",
+            "id": "asr.moss",
             "kind": "asr",
-            "name": "Qwen3-ASR 1.7B (8bit)",
+            "name": "MOSS-Transcribe-Diarize",
             "default": true,
             "installed": false,
-            "size_text": "2.5 GB download",
-            "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
-            "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
+            "size_text": "1.8 GB download",
+            "about": "Made for conversations between several people. Shows the text as you speak.",
+            "languages": "Chinese and English",
             "tags": [
               "Local",
-              "Accurate",
               "Realtime",
+              "No dictionary",
               "Supports your main language"
             ],
             "actions": [
               {
                 "kind": "hide",
-                "model_id": "asr.accurate",
+                "model_id": "asr.moss",
                 "label": "Hide",
-                "accessibility_label": "Hide Qwen3-ASR 1.7B (8bit)",
+                "accessibility_label": "Hide MOSS-Transcribe-Diarize",
                 "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
-                "model_id": "asr.accurate",
+                "model_id": "asr.moss",
                 "label": "Download",
-                "accessibility_label": "Download Qwen3-ASR 1.7B (8bit)"
+                "accessibility_label": "Download MOSS-Transcribe-Diarize"
               }
             ]
           }
@@ -99,6 +99,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

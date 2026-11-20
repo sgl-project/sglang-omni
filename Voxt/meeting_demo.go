@@ -521,6 +521,7 @@ func (host *meetingDemoHost) onboardingTryLanguage() { host.record("onboardingTr
 func (host *meetingDemoHost) onboardingDownloadAndContinue() {
 	host.record("onboardingDownloadAndContinue")
 }
+func (host *meetingDemoHost) obDownload() { host.record("obDownload") }
 func (host *meetingDemoHost) obUse(ids ...string) {
 	host.record("obUse %s", strings.Join(ids, ","))
 }

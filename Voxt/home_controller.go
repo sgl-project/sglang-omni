@@ -249,7 +249,7 @@ func (a *app) copyHomeRecent(id string) {
 func (a *app) fixHomeReadiness(fix string) {
 	switch fix {
 	case homeFixSpeechDownload:
-		a.downloadModel(a.obSpeech())
+		a.obDownload()
 	case homeFixSpeechModels:
 		a.navigate(modelsPath)
 	case homeFixLanguageModels:

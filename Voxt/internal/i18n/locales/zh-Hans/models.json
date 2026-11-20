@@ -99,5 +99,6 @@
   "This model is no longer available. Close this dialog and set it up again.": "此模型已不可用，请关闭对话框并重新设置。",
   "Transcribe clean-up": "转录整理",
   "Unavailable: %s": "不可用：%s",
-  "Recordings from the selected features will be sent to this speech service.": "所选功能的录音将发送到此语音识别服务。"
+  "Recordings from the selected features will be sent to this speech service.": "所选功能的录音将发送到此语音识别服务。",
+  "The speech models in use do not take it while they recognise. The language model still gets it when it corrects a meeting's transcript, and your dictionary still guides its clean-up.": "正在用的语音识别模型识别时不用它。语言模型校对会议转录稿时仍会用到它，词典也仍会用于语言模型整理。"
 }
