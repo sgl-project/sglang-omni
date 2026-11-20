@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Meeting audio meters keep updating during system silence** (#4198): when the Mac stops delivering system audio buffers, the waveform returns to silence and the existing sustained-silence reminder can still appear.
+
+### 中文
+
+#### 修复
+
+- **系统静音时会议音量表继续更新**（#4198）：Mac 不再提供系统音频缓冲区时，波形会回到静音状态，已有的持续静音提醒也能正常触发。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

@@ -455,6 +455,40 @@ func TestMacHelperMicrophoneSelection(t *testing.T) {
 	}
 }
 
+func TestMacHelperIdleSystemLevels(t *testing.T) {
+	if os.Getenv("VOXTNEW_MAC_SYSTEM_IDLE") != "1" {
+		t.Skip("set VOXTNEW_MAC_SYSTEM_IDLE=1 with system audio permission and idle output")
+	}
+	h := startMacHelper(t, macE2E(t), "VOXTNEW_HELPER_SYSTEM_FILE=")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	audio := session.HelperAudio{H: h, Method: proto.MethodCaptureSystem}
+	var pcm []byte
+	var levels []proto.LevelParams
+	result, err := audio.Record(ctx, "idle-system", proto.CaptureParams{SampleRate: 16000, LevelHz: 20, MaxSeconds: 2}, func(event session.AudioEvent) {
+		if event.PCM != nil {
+			pcm = append(pcm, event.PCM.Data...)
+		}
+		if event.Level != nil {
+			levels = append(levels, *event.Level)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != proto.CaptureMaxSeconds || result.Samples < 32000 || len(pcm) != result.Samples*2 || len(bytes.Trim(pcm, "\x00")) != 0 {
+		t.Fatalf("expected two seconds of idle system audio, got %+v and %d PCM bytes", result, len(pcm))
+	}
+	if len(levels) != result.Samples/800 {
+		t.Fatalf("got %d levels for %d samples, want one per 50 ms", len(levels), result.Samples)
+	}
+	for i, level := range levels {
+		if level.RMS != -120 || level.Peak != -120 || math.Abs(level.Seconds-float64(i+1)/20) > 1e-9 {
+			t.Fatalf("level %d: %+v, want silence at %.2f seconds", i, level, float64(i+1)/20)
+		}
+	}
+}
+
 // TestMacHelperCaptureFile: the helper records the speech sample through
 // its capture path (the test-only file input), at 4× speed: the frames
 // match the file, stop, cancel and maxSeconds end the job as they end a
