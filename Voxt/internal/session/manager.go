@@ -20,20 +20,72 @@ type publication struct {
 	kept     func(Snapshot)
 }
 
+type publisher struct {
+	mu       sync.Mutex
+	queue    []publication
+	wake     *sync.Cond
+	done     chan struct{}
+	closed   bool
+	onChange func(Snapshot)
+}
+
+func newPublisher(onChange func(Snapshot)) *publisher {
+	p := &publisher{done: make(chan struct{}), onChange: onChange}
+	p.wake = sync.NewCond(&p.mu)
+	go p.loop()
+	return p
+}
+
+func (p *publisher) enqueue(publication publication) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.queue = append(p.queue, publication)
+	p.wake.Signal()
+}
+
+func (p *publisher) close() {
+	p.mu.Lock()
+	p.closed = true
+	p.wake.Signal()
+	p.mu.Unlock()
+	<-p.done
+}
+
+func (p *publisher) loop() {
+	defer close(p.done)
+	for {
+		p.mu.Lock()
+		for len(p.queue) == 0 && !p.closed {
+			p.wake.Wait()
+		}
+		if len(p.queue) == 0 && p.closed {
+			p.mu.Unlock()
+			return
+		}
+		publication := p.queue[0]
+		p.queue = p.queue[1:]
+		p.mu.Unlock()
+		if publication.kept != nil {
+			publication.kept(publication.snapshot)
+		}
+		if p.onChange != nil {
+			p.onChange(publication.snapshot)
+		}
+	}
+}
+
 type Manager struct {
 	cfg Config
 
 	mu sync.Mutex
-	// pub orders the publication queue: one goroutine performs kept and
-	// OnChange in revision order while callers enqueue and return. Callers
-	// enqueue holding mu (lock order mu, then pub), so a later revision
-	// can never be queued before an earlier one.
-	pub       sync.Mutex
-	pubQ      []publication
-	pubWake   *sync.Cond
-	pubDone   chan struct{}
-	pubClosed bool
-	cur       *run
+	// Each lane publishes in revision order, allocated and queued under mu.
+	// A background lane's history write never holds up the foreground lane.
+	foregroundPub *publisher
+	backgroundPub *publisher
+	cur           *run
 	// bg is the backgrounded run; its snapshots are its own (run.own),
 	// published like the current session's (their IDs differ).
 	bg   *run
@@ -81,9 +133,9 @@ func New(cfg Config) *Manager {
 	def(&cfg.StopGrace, DefaultStopGrace)
 	def(&cfg.EndWordPause, DefaultEndWordPause)
 	def(&cfg.WaitNote, DefaultWaitNote)
-	m := &Manager{cfg: cfg, snap: Snapshot{State: Idle}, pubDone: make(chan struct{})}
-	m.pubWake = sync.NewCond(&m.pub)
-	go m.publishLoop()
+	m := &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
+	m.foregroundPub = newPublisher(cfg.OnChange)
+	m.backgroundPub = newPublisher(cfg.OnChange)
 	return m
 }
 
@@ -173,7 +225,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m.snap.Raw, m.snap.Selection = strings.TrimSpace(t.Raw), t.Selection
 	}
 	s := m.snap.clone()
-	m.enqueue(publication{snapshot: s})
+	m.foregroundPub.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
 	r.startScene()
 	go r.main()
@@ -293,7 +345,7 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 		m.rev++
 		r.own.Rev = m.rev
 		s := r.own.clone()
-		m.enqueue(publication{snapshot: s})
+		m.backgroundPub.enqueue(publication{snapshot: s})
 		m.mu.Unlock()
 		return true
 	}
@@ -315,7 +367,7 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 	m.rev++
 	m.snap.Rev = m.rev
 	s := m.snap.clone()
-	m.enqueue(publication{snapshot: s})
+	m.foregroundPub.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
 	return true
 }
@@ -342,7 +394,7 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 		r.own.Rev = m.rev
 		s := r.own.clone()
 		m.bg = nil
-		m.enqueue(publication{snapshot: s, kept: kept})
+		m.backgroundPub.enqueue(publication{snapshot: s, kept: kept})
 		m.mu.Unlock()
 		return true
 	}
@@ -357,50 +409,14 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 	m.rev++
 	m.snap.Rev = m.rev
 	s := m.snap.clone()
-	m.enqueue(publication{snapshot: s, kept: kept})
+	m.foregroundPub.enqueue(publication{snapshot: s, kept: kept})
 	m.mu.Unlock()
 	return true
 }
 
-// Close drains the publication queue and stops its publisher. Late session
-// events are ignored after shutdown.
+// Close drains both publication queues and stops their publishers. Late
+// session events are ignored after shutdown.
 func (m *Manager) Close() {
-	m.pub.Lock()
-	m.pubClosed = true
-	m.pubWake.Signal()
-	m.pub.Unlock()
-	<-m.pubDone
-}
-
-func (m *Manager) enqueue(p publication) {
-	m.pub.Lock()
-	defer m.pub.Unlock()
-	if m.pubClosed {
-		return
-	}
-	m.pubQ = append(m.pubQ, p)
-	m.pubWake.Signal()
-}
-
-func (m *Manager) publishLoop() {
-	defer close(m.pubDone)
-	for {
-		m.pub.Lock()
-		for len(m.pubQ) == 0 && !m.pubClosed {
-			m.pubWake.Wait()
-		}
-		if len(m.pubQ) == 0 && m.pubClosed {
-			m.pub.Unlock()
-			return
-		}
-		p := m.pubQ[0]
-		m.pubQ = m.pubQ[1:]
-		m.pub.Unlock()
-		if p.kept != nil {
-			p.kept(p.snapshot)
-		}
-		if m.cfg.OnChange != nil {
-			m.cfg.OnChange(p.snapshot)
-		}
-	}
+	m.foregroundPub.close()
+	m.backgroundPub.close()
 }

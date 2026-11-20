@@ -12,7 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Reopened answer cards keep their moved position**: closing and reopening a card, including from Reopen card or after a retry, now restores its previous position instead of centering it. The position also survives recording and a failed automatic insertion that falls back to a card; the chosen card width still follows the feature setting, and the height still follows the answer.
 - **Transcribe works while a Rewrite answer streams, and the card stays put**: pressing the Transcribe shortcut while a Rewrite or Translate answer was still streaming into its card did nothing, and a transcription after it finished closed the card and reopened it at the screen's center when done. The answer now keeps streaming into the unmoved card, the recording window shows beside it in its own window, and the card is never closed or recreated by a transcription. The answer's Stop and the cancel shortcut still work on it while it finishes.
-- **Background answers no longer block or get lost**: after the foreground session ends, other features and Try cannot start over a streaming answer, and old cards wait until it finishes. Close and Escape cancel a request even before its first token. Background history writes no longer stall foreground recording, Start, Stop or Cancel.
+- **Background answers no longer block or get lost**: after the foreground session ends, other features and Try cannot start over a streaming answer, and old cards wait until it finishes. Close and Escape cancel a request even before its first token. Background history writes no longer stall foreground recording, Start, Stop, Cancel or snapshot delivery.
 
 ### 中文
 
@@ -24,7 +24,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **重新打开的答案卡片保留拖动后的位置**：关闭再打开卡片，包括从「重新打开卡片」恢复或重试后，现在会回到之前的位置，不再回到屏幕中央。录音和自动插入失败后回落到卡片时，也会保留这个位置；卡片宽度仍按各功能的设置，高度仍随回答内容变化。
 - **改写的回答还在写时也能转录，卡片不再被关掉**：改写或翻译的回答还在流进卡片时按转录快捷键以前没有反应，回答写完后再转录又会把卡片关掉、转录完在屏幕中央重新打开。现在回答在原地不动的卡片里继续写完，录音浮窗显示在它旁边自己的窗口里，转录不再关闭或重建卡片；回答写完前，它的“停止”和取消快捷键照旧可用。
-- **后台回答不再阻塞或丢失**：前台会话结束后，其他功能和“试一试”不能抢在后台回答完成前启动，旧卡片会等回答完成再恢复。即使首个 token 还没到，关闭和 Esc 也能取消请求。后台写历史不再卡住前台录音、开始、停止和取消。
+- **后台回答不再阻塞或丢失**：前台会话结束后，其他功能和“试一试”不能抢在后台回答完成前启动，旧卡片会等回答完成再恢复。即使首个 token 还没到，关闭和 Esc 也能取消请求。后台写历史不再卡住前台录音、开始、停止、取消和快照发布。
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### 中文

@@ -487,11 +487,12 @@ type memHistory struct {
 	entries    []store.Entry
 	putStarted chan struct{}
 	putRelease chan struct{}
+	putBlockID string
 	putOnce    sync.Once
 }
 
 func (h *memHistory) Put(_ context.Context, e store.Entry) error {
-	if h.putStarted != nil {
+	if h.putStarted != nil && (h.putBlockID == "" || h.putBlockID == e.ID) {
 		h.putOnce.Do(func() { close(h.putStarted) })
 		<-h.putRelease
 	}

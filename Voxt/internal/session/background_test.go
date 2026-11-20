@@ -129,6 +129,7 @@ func TestBackgroundPersistenceDoesNotBlockForeground(t *testing.T) {
 	}
 	h.hist.putStarted = make(chan struct{})
 	h.hist.putRelease = make(chan struct{})
+	h.hist.putBlockID = id
 	defer func() {
 		select {
 		case <-h.hist.putRelease:
@@ -152,6 +153,9 @@ func TestBackgroundPersistenceDoesNotBlockForeground(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a foreground update waited for background history")
 	}
+	h.rec.waitFor(t, "the foreground levels snapshot", func(s Snapshot) bool {
+		return s.ID == other && len(s.Levels) == 1 && s.Levels[0] == 0.5
+	})
 	startDone := make(chan error, 1)
 	go func() {
 		_, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
@@ -185,6 +189,7 @@ func TestBackgroundPersistenceDoesNotBlockForeground(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Cancel waited for background history")
 	}
+	h.rec.waitFor(t, "the foreground end snapshot", func(s Snapshot) bool { return s.ID == other && s.State.Ended() })
 	close(h.hist.putRelease)
 	end := h.rec.waitFor(t, "the backgrounded answer's end", func(s Snapshot) bool { return s.ID == id && s.State.Ended() })
 	if end.State != Done || len(h.hist.all()) == 0 {
