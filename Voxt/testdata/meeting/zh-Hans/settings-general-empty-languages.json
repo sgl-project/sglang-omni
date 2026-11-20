@@ -224,6 +224,16 @@
           "id": "app-enhancement",
           "title": "应用增强",
           "shown": true
+        },
+        {
+          "id": "notes",
+          "title": "笔记",
+          "shown": true
+        },
+        {
+          "id": "meetings",
+          "title": "会议",
+          "shown": true
         }
       ]
     }

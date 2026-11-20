@@ -126,6 +126,58 @@ func seedWriteHistory(t *testing.T, a *app) {
 	}
 }
 
+func TestHistoryRewriteTypedText(t *testing.T) {
+	entry := store.Entry{Kind: store.KindRewrite, TypedText: "typed context", PromptText: "spoken instruction", Result: "Polished"}
+	if got := historyEntryRawCopy(entry); got != "spoken instruction" {
+		t.Errorf("raw copy %q, want the spoken instruction", got)
+	}
+	entry.Result = ""
+	if got := historyEntryCopyText(entry); got != "spoken instruction" {
+		t.Errorf("copy text %q, want the spoken instruction", got)
+	}
+	state := buildHistoryDetailViewState(i18n.CurrentTranslator(), historyDetailStateInput{Entry: entry}, time.Now())
+	typed, mislabeled := false, false
+	for _, block := range state.TextBlocks {
+		if block.Title == "Typed text" && block.CopyLabel == "Copy typed text" && block.Text == "typed context" {
+			typed = true
+		}
+		if block.Title == "Recognised text" && block.Text == "typed context" {
+			mislabeled = true
+		}
+	}
+	if !typed || mislabeled {
+		t.Errorf("typed block present %v, typed text mislabeled %v: %+v", typed, mislabeled, state.TextBlocks)
+	}
+	legacy := store.Entry{Kind: store.KindRewrite, RawText: "legacy answer", Result: "legacy answer"}
+	state = buildHistoryDetailViewState(i18n.CurrentTranslator(), historyDetailStateInput{Entry: legacy}, time.Now())
+	typed, recognised := false, false
+	for _, block := range state.TextBlocks {
+		if block.Title == "Typed text" {
+			typed = true
+		}
+		if block.Title == "Recognised text" && block.Text == "legacy answer" {
+			recognised = true
+		}
+	}
+	if typed || !recognised {
+		t.Errorf("legacy typed %v, recognised %v: %+v", typed, recognised, state.TextBlocks)
+	}
+}
+
+func TestHistoryLegacyRewriteFailedCopy(t *testing.T) {
+	entry := store.Entry{Kind: store.KindRewrite, Status: store.StatusFailed, RawText: "legacy spoken text"}
+	if got := historyEntryCopyText(entry); got != "legacy spoken text" {
+		t.Errorf("legacy copy text %q, want the recognised text", got)
+	}
+	if got := historyEntryRawCopy(entry); got != "" {
+		t.Errorf("legacy raw copy %q, want no duplicate of the primary copy", got)
+	}
+	entry.Result = "legacy answer"
+	if got := historyEntryRawCopy(entry); got != "legacy spoken text" {
+		t.Errorf("legacy raw copy %q, want the recognised text", got)
+	}
+}
+
 // snapshotHistoryDetail renders the History page with an entry's details
 // (TestSnapshots), on each tab.
 func snapshotHistoryDetail(a *app, save func(string)) {
