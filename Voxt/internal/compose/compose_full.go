@@ -46,6 +46,14 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 			out.Glossary = wrap("glossary", g)
 		}
 	}
+	if in.Task == Transcribe && in.Cleanup {
+		// note (luojiaxuan): a prompt edited from the built-in one already
+		// ends with the example.
+		example := render("example-transcribe", nil)
+		if !strings.Contains(full, strings.SplitN(example, "\n", 2)[0]) {
+			add("example", example)
+		}
+	}
 	out.System, out.Layers, out.Dictionary = strings.Join(parts, "\n\n"), layers, dictionary
 	if in.Task == Rewrite {
 		for _, t := range in.Previous {
