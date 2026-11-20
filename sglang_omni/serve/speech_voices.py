@@ -20,6 +20,11 @@ from typing import Literal, Protocol, TypedDict
 import numpy as np
 
 from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_wav
+from sglang_omni.preprocessing.audio import (
+    AudioTooLongError,
+    decode_audio_bytes,
+    resample_audio,
+)
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerArtifactCache,
     SpeakerCacheKey,
@@ -526,18 +531,12 @@ def decode_reference_audio(
     audio_bytes: bytes,
 ) -> tuple[np.ndarray[tuple[int, ...], np.dtype[np.float32]], int]:
     try:
-        from sglang_omni.preprocessing.audio import (
-            AudioTooLongError,
-            decode_audio_bytes,
-            resample_linear,
-        )
-
         # note (Richard Wang): the decode stops at the reference limit, so a
         # short but very long compressed upload never decodes in full.
         audio, source_rate = decode_audio_bytes(
             audio_bytes, max_seconds=MAX_REFERENCE_AUDIO_SECONDS
         )
-        samples = resample_linear(audio, source_rate, DEFAULT_SAMPLE_RATE)
+        samples = resample_audio(audio, source_rate, DEFAULT_SAMPLE_RATE)
         sample_rate = DEFAULT_SAMPLE_RATE
     except AudioTooLongError as exc:
         raise bad_request(
