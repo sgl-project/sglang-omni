@@ -81,6 +81,7 @@ SileroVAD::SileroVAD(const std::filesystem::path &model_directory)
   StreamState warmup;
   const std::vector<float> quiet(8 * kChunkSamples, 0.0f);
   Feed(quiet.data(), 8, warmup);
+  warmed_up_ = true;
 }
 
 std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,

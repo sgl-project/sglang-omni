@@ -68,6 +68,9 @@ int main(int argc, char **argv) {
   const std::vector<float> samples = Signal();
 
   silero_vad::SileroVAD model(argv[1]);
+  Require(model.WarmedUp(),
+          "the constructor must prime the kernels with its throwaway "
+          "warmup stream (reverting the warmup fails this check)");
   silero_vad::StreamState state;
   const std::vector<float> probabilities =
       model.Feed(samples.data(), kChunks, state);
