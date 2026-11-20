@@ -46,6 +46,27 @@ def test_hf_config_round_trip(tmp_path: Path) -> None:
     assert restored.architectures == configuration.architectures
     assert restored.audio_token_id == configuration.audio_token_id
     assert restored.eos_token_id == configuration.eos_token_id
+    assert not hasattr(restored, "quantization_config")
+
+
+def test_checkpoint_quantization_config_survives_the_shim(tmp_path: Path) -> None:
+    """SGLang's NemotronH setup reads the mixed-precision layer map from the model config."""
+    register_nemotron_transcribe_hf_config()
+    quantization = {
+        "quant_method": "modelopt",
+        "quant_algo": "MIXED_PRECISION",
+        "quantized_layers": {
+            "language_model.model.layers.1.mixer.experts": {
+                "quant_algo": "NVFP4",
+                "group_size": 16,
+            }
+        },
+    }
+    checkpoint = raw_checkpoint_config()
+    checkpoint["quantization_config"] = quantization
+    NemotronTranscribeConfig.from_nemo_dict(checkpoint).save_pretrained(tmp_path)
+    restored = AutoConfig.from_pretrained(tmp_path)
+    assert restored.quantization_config == quantization
 
 
 @pytest.mark.parametrize(
@@ -55,6 +76,7 @@ def test_hf_config_round_trip(tmp_path: Path) -> None:
         ("perception", []),
         ("pe_encoder_config", None),
         ("audio_token_estimator", 1),
+        ("quantization_config", []),
     ],
 )
 def test_malformed_checkpoint_sections_are_rejected(

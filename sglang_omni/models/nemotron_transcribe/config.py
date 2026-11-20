@@ -17,7 +17,7 @@ from sglang_omni.config import (
 )
 
 PACKAGE = "sglang_omni.models.nemotron_transcribe"
-ARCHITECTURE = "NeMoSpeechLMForConditionalGeneration"
+ARCHITECTURE = "Nemotron3_5TranscribeForConditionalGeneration"
 MAX_AUDIO_SECONDS = 3600
 DECODER_CONTEXT_TOKENS = 73728
 DEFAULT_MAX_RUNNING_REQUESTS = 64
@@ -37,6 +37,7 @@ class NemotronTranscribeFactoryArgs(FactoryArgs):
     compile_perception: bool | None = None
     perception_cuda_graphs: bool | None = None
     perception_compile_mode: EncoderCompileMode | None = None
+    perception_fp8: bool | None = None
 
 
 class NemotronTranscribeStageConfig(EngineStageConfig):
@@ -49,6 +50,9 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
     """Whole-file transcription. Audio up to one hour is one decoder request."""
 
     architecture: ClassVar[str] = ARCHITECTURE
+    architecture_aliases: ClassVar[tuple[str, ...]] = (
+        "NeMoSpeechLMForConditionalGeneration",
+    )
     allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float] = float(MAX_AUDIO_SECONDS)
 
@@ -94,6 +98,7 @@ class NemotronTranscribePipelineConfig(PipelineConfig):
                 compile_perception=False,
                 perception_cuda_graphs=False,
                 perception_compile_mode="default",
+                perception_fp8=True,
             ),
             engine=EngineArgs(
                 max_running_requests=DEFAULT_MAX_RUNNING_REQUESTS,
