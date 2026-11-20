@@ -109,7 +109,11 @@ MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
 default target is 4 requests with a 12 ms oldest-request deadline. While more
 request builds are pending, the scheduler waits for either limit; after build
 work drains, it releases immediately only when decode is idle. During active
-decode, it continues coalescing until the target or deadline. Override the two
+decode, it continues coalescing until the target or deadline. With a draft
+(DFlash or DFlash2), a ready prefill is released as soon as build work drains,
+whether or not decode is active; set
+`--asr.factory.prefill_coalesce_after_builds_during_decode true` to keep
+coalescing during decode. Override the two
 limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
 set the request target to `0` to disable coalescing.
 
