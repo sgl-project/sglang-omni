@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/png"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
 
 func stubBoxDialog(t *testing.T, paths []string) chan mygo.OpenDialogOptions {
@@ -222,6 +224,15 @@ func TestBoxChooseScannedPDFUsesPagesWithinCap(t *testing.T) {
 	}
 }
 
+func TestRewriteBoxPDFSkipNoticeDoesNotHideModelFailure(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, sending: "rewrite-1", err: "Skipped 3 PDF pages beyond the 4-image limit"}
+	a.boxEnded(session.Snapshot{ID: "rewrite-1", State: session.Failed, Problem: &session.Problem{Code: session.ProblemLLM, Err: errors.New("fallback failed")}})
+	if a.box.err == "Skipped 3 PDF pages beyond the 4-image limit" || !strings.Contains(a.box.err, "The language model failed") {
+		t.Fatalf("model failure was hidden by the PDF notice: %q", a.box.err)
+	}
+}
+
 func TestRewriteBoxAddMenuPastesShortClipboardText(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true}
@@ -234,6 +245,25 @@ func TestRewriteBoxAddMenuPastesShortClipboardText(t *testing.T) {
 	frames(tt)
 	if got := a.boxTextContent(); got != "short" {
 		t.Fatalf("clipboard text %q, want short", got)
+	}
+}
+
+func TestRewriteBoxAddMenuPastesLongSingleLineAsBlock(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	text := strings.Repeat("x", 1000)
+	tt.SetClipboardData(transfer.TextData(text))
+	click(t, tt, "Add")
+	if err := tt.ClickControl("Paste clipboard"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if got := a.boxTextContent(); got != text {
+		t.Fatalf("clipboard text length = %d, want %d", len(got), len(text))
+	}
+	if !has(tt, "Show all") {
+		t.Fatalf("long single-line clipboard text was not collapsed: %q", firstTexts(tt))
 	}
 }
 

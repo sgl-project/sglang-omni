@@ -94,6 +94,7 @@ func (a *app) endRedo(s session.Snapshot) {
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
 		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
+		a.answer.llmID = s.LLM.ID
 		a.answer.attach = s.ImageHint
 		if a.answer.attach != "box" {
 			a.answer.previews = answerInputPreviews(s, nil)

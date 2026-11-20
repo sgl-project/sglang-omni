@@ -128,6 +128,30 @@ func TestBoxLongSingleLineFileShowsBoundedText(t *testing.T) {
 	}
 }
 
+func TestBoxLongSingleLinePasteShowsBoundedText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	text := strings.Repeat("x", 1000)
+	tt.SetClipboardData(transfer.TextData(text))
+	tt.Command("paste")
+	frames(tt)
+	if got := a.boxTextContent(); got != text {
+		t.Fatalf("paste changed the full text length to %d", len(got))
+	}
+	if !has(tt, "Show all") {
+		t.Fatalf("long single-line paste was not collapsed: %q", firstTexts(tt))
+	}
+	longest := 0
+	for _, visible := range tt.Texts() {
+		longest = max(longest, utf8.RuneCountInString(visible))
+	}
+	if longest > boxTextCollapseChars+1 {
+		t.Fatalf("collapsed paste laid out %d characters", longest)
+	}
+}
+
 func TestBoxShortSelectionCanBeRemoved(t *testing.T) {
 	for _, selection := range []string{"hello", "first\nsecond\nthird"} {
 		a, _, _ := newTestApp(t)

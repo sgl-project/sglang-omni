@@ -117,6 +117,37 @@ func TestBypassProxyThisMac(t *testing.T) {
 	}
 }
 
+func TestProxyForNeverProxiesLoopback(t *testing.T) {
+	proxyURL, _ := url.Parse("http://proxy.example:3128")
+	system := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+	for _, mode := range []string{"", "direct", "http://proxy.example:3128"} {
+		t.Run(mode, func(t *testing.T) {
+			proxy := ProxyFor(mode, url.UserPassword("name", "password"), system)
+			for _, rawURL := range []string{"http://ollama.localhost", "http://localhost", "http://127.0.0.1"} {
+				request, _ := http.NewRequest("GET", rawURL, nil)
+				got, err := proxy(request)
+				if err != nil || got != nil {
+					t.Errorf("%s proxy = %v, %v; want direct", rawURL, got, err)
+				}
+			}
+			request, _ := http.NewRequest("GET", "https://example.com", nil)
+			got, err := proxy(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "direct" && got != nil {
+				t.Errorf("direct mode proxied an external URL: %v", got)
+			}
+			if mode != "direct" && got == nil {
+				t.Error("external URL did not use the configured proxy")
+			}
+			if strings.HasPrefix(mode, "http://") && got != nil && got.User == nil {
+				t.Errorf("custom proxy lost its credentials: %v", got)
+			}
+		})
+	}
+}
+
 // TestSystemProxyEnvironmentWins: a developer's https_proxy is used
 // before the system's, which is not even read.
 func TestSystemProxyEnvironmentWins(t *testing.T) {

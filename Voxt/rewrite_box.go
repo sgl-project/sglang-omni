@@ -264,8 +264,8 @@ func (a *app) boxEnded(s session.Snapshot) {
 	case session.Failed:
 		// Nothing of the box's is dropped: it comes back with the
 		// error, the text and the pictures kept, the instruction ready
-		// for Enter. A conversion error already says what happened.
-		if a.box.err == "" {
+		// for Enter. A model failure replaces an informational skip notice.
+		if a.box.err == "" || s.Problem != nil && s.Problem.Code == session.ProblemLLM {
 			a.box.err, _, _ = sessionProblemText(s.Problem)
 		}
 		if s.Spoken != "" {

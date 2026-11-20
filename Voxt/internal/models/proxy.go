@@ -120,16 +120,17 @@ func bypassProxy(host string, proxies SystemProxies) bool {
 // user name and password: the Transport sends them (Proxy-Authorization,
 // or SOCKS5's own), so the URL with them must never be logged.
 func ProxyFor(mode string, user *url.Userinfo, system func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
-	if strings.TrimSpace(mode) == "" && system != nil {
-		return system
-	}
 	proxy := hfhub.ProxyFunc(mode)
-	if user == nil {
-		return proxy
+	if strings.TrimSpace(mode) == "" && system != nil {
+		proxy = system
+		user = nil
 	}
 	return func(request *http.Request) (*url.URL, error) {
+		if bypassProxy(request.URL.Hostname(), SystemProxies{}) {
+			return nil, nil
+		}
 		proxyURL, err := proxy(request)
-		if proxyURL == nil || err != nil {
+		if proxyURL == nil || err != nil || user == nil {
 			return proxyURL, err
 		}
 		withUser := *proxyURL

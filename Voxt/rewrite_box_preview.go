@@ -60,7 +60,7 @@ func (a *app) boxPasteTextAt(index int, text string, start, end int) bool {
 		return false
 	}
 	segment := newBoxTextSegment(text, i18n.T("Pasted text"), true)
-	if segment.Lines <= boxTextCollapseLines || index < -1 || index >= len(a.box.textSegments) {
+	if segment.Lines <= boxTextCollapseLines && segment.Chars <= boxTextCollapseChars || index < -1 || index >= len(a.box.textSegments) {
 		return false
 	}
 	editor := a.box.text

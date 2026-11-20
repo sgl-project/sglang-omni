@@ -30,7 +30,8 @@ type fakeLocal struct {
 	ASRP asr.Provider
 	Chat local.Chat
 	// MoreLLM are more language models installed (their opens get Chat).
-	MoreLLM []local.Model
+	MoreLLM  []local.Model
+	LLMModel local.Model
 	// NoStream: its speech model gets the recording once it stops.
 	NoStream bool
 }
@@ -41,6 +42,13 @@ func readyLocal() *fakeLocal {
 	return &fakeLocal{ASRP: &fakeTranscriptions{}, Chat: &llm.Client{Backend: &fakeChat{}}}
 }
 
+func (f *fakeLocal) languageModel() local.Model {
+	if f.LLMModel.ID != "" {
+		return f.LLMModel
+	}
+	return fakeLLMModel
+}
+
 func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 	switch {
 	case kind == local.ASR && f.ASRP != nil:
@@ -48,7 +56,7 @@ func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 		m.Stream = !f.NoStream
 		return []local.Model{m}
 	case kind == local.LLM && f.Chat != nil:
-		return append([]local.Model{fakeLLMModel}, f.MoreLLM...)
+		return append([]local.Model{f.languageModel()}, f.MoreLLM...)
 	}
 	return nil
 }
@@ -64,7 +72,7 @@ func (f *fakeLocal) LLM(_ context.Context, id string) (local.Chat, local.Model, 
 	if f.Chat == nil {
 		return nil, local.Model{}, local.NotInstalledError(local.LLM, id)
 	}
-	return f.Chat, fakeLLMModel, nil
+	return f.Chat, f.languageModel(), nil
 }
 
 // withChat is s with chat as its language model (a fakeChat behind
