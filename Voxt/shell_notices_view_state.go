@@ -108,12 +108,7 @@ func announcementSummary(content string) []string {
 	return lines
 }
 
-// cardActionLabel names a card's action by its link.
-func cardActionLabel(link string) string {
-	return cardActionLabelFor(i18n.CurrentTranslator(), link)
-}
-
-// cardActionLabelFor is cardActionLabel in a translator's language.
+// cardActionLabelFor names a card's action by its link.
 func cardActionLabelFor(translator *i18n.Translator, link string) string {
 	switch link {
 	case linkRestartHelper:

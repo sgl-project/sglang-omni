@@ -260,3 +260,17 @@ func TestModelAssignmentRemoteCard(t *testing.T) {
 		t.Error("the assignment opened the provider dialog")
 	}
 }
+
+// TestSetFeatureModelMeeting: Meetings has its own model, so setting it
+// leaves Transcribe's alone.
+func TestSetFeatureModelMeeting(t *testing.T) {
+	var s settings.Settings
+	setFeatureModel(&s, local.ASR, hotkey.Meeting, "speech")
+	setFeatureModel(&s, local.LLM, hotkey.Meeting, "language")
+	if s.Features.Meeting.ASR != "speech" || s.Features.Meeting.LLM != "language" {
+		t.Errorf("Meetings got %q and %q", s.Features.Meeting.ASR, s.Features.Meeting.LLM)
+	}
+	if s.Features.Transcribe.ASR != "" || s.Features.Transcribe.LLM != "" {
+		t.Errorf("Transcribe changed to %q and %q", s.Features.Transcribe.ASR, s.Features.Transcribe.LLM)
+	}
+}

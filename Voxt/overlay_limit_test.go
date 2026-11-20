@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
 
@@ -34,7 +35,7 @@ func TestLimitNote(t *testing.T) {
 		{"both near", rec(13*time.Minute, 13*time.Minute), 12*time.Minute + 30*time.Second, "The length limit stops the recording in 0:30"},
 		{"stopped", stopped, 9*time.Minute + 30*time.Second, ""},
 	} {
-		if got := limitNote(c.s, heard.Add(c.at)); got != c.want {
+		if got := limitNoteFor(i18n.CurrentTranslator(), c.s, heard.Add(c.at)); got != c.want {
 			t.Errorf("%s: %q; want %q", c.name, got, c.want)
 		}
 	}

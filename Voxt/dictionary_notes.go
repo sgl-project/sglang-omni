@@ -65,15 +65,3 @@ func dictionaryNotesView(c *ui.Context, state *dictionaryNotesViewState, actions
 		})
 	})
 }
-
-// promptCard is a part of a request: its title and its text, in a card.
-func promptCard(c *ui.Context, key, title, text string) {
-	t := c.Theme()
-	colors := tok(t)
-	ui.Column(c.Key(key)).Gap(px(t, 4)).Children(func() {
-		ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(colors.Text2)
-		fillCard(c).Padding(px(t, sp3)).Children(func() {
-			ui.Text(c, text).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
-		})
-	})
-}

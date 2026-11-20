@@ -46,43 +46,6 @@ def find_repository_root(command_runner: CommandRunner) -> Path:
         )
 
 
-def classify_file(
-    repository_root: Path, file_path: str, command_runner: CommandRunner
-) -> FileCategory:
-    if (
-        file_path.endswith("_test.go")
-        or file_path.endswith(".md")
-        or file_path.startswith("Voxt/docs/")
-        or file_path.startswith("Voxt/helper/")
-        or file_path.startswith("Voxt/testdata/")
-        or file_path.startswith("Voxt/internal/i18n/locales/")
-    ):
-        return "other"
-    elif (
-        file_path.startswith("Voxt/")
-        and file_path.count("/") == 1
-        and file_path.endswith(".go")
-    ):
-        try:
-            source_text = (repository_root / file_path).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            command_result = command_runner(
-                ["git", "show", f"origin/main:{file_path}"], repository_root
-            )
-            if command_result.returncode == 0:
-                source_text = command_result.stdout
-            else:
-                return "unknown"
-        if MYGO_IMPORT_PATTERN.search(source_text):
-            return "view"
-        else:
-            return "logic"
-    elif file_path.startswith("Voxt/internal/") and file_path.endswith(".go"):
-        return "logic"
-    else:
-        return "other"
-
-
 def classify_file_at_revision(
     repository_root: Path, file_path: str, revision: str, command_runner: CommandRunner
 ) -> FileCategory:

@@ -49,7 +49,7 @@ func TestFeatureFixtureCoverage(t *testing.T) {
 
 func checkFeatureFixtureValues(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
 	t.Helper()
-	for _, name := range []string{"feature-empty", "feature-loading", "feature-normal", "feature-error"} {
+	for _, name := range []string{"feature-empty", "feature-loading", "feature-normal", "feature-error", "feature-try-highlights"} {
 		if _, ok := fixtures[name]; !ok {
 			t.Errorf("%s: missing required feature fixture %s", locale, name)
 		}
