@@ -35,8 +35,10 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -245,9 +247,18 @@ func (a *app) obGo(step int) {
 	}
 }
 
-// obSpeech is the pack's speech model, the same on every Mac: the
-// catalogue's recommended one, MOSS-Transcribe-Diarize (#4067).
-func (a *app) obSpeech() string { return models.ASRMoss }
+// obSpeech is the pack's speech model: the catalogue's recommended one,
+// MOSS-Transcribe-Diarize (#4067). MTD knows only Chinese and English, so
+// a user whose main language it does not know gets Qwen3-ASR 1.7B (8bit),
+// which runs well with 8 GB of memory too.
+func (a *app) obSpeech() string {
+	if spec, ok := omni.Lookup(models.ASRMoss); ok {
+		if _, fit := lang.Match(spec.Languages, session.MainLanguage(a.prefs, i18n.Locale())); fit {
+			return models.ASRMoss
+		}
+	}
+	return models.ASRAccurate
+}
 
 // obPack is the recommended pack: what the guide downloads. The speech
 // model's draft comes with it, so that Faster transcription is on from

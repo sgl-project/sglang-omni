@@ -161,6 +161,24 @@ func TestObPackWithDraft(t *testing.T) {
 	}
 }
 
+// TestObPackMainLanguageGate: MOSS-Transcribe-Diarize knows Chinese and
+// English only, so a main language it does not know makes the guide's
+// pack Qwen3-ASR 1.7B (8bit) and the VAD, with no MTD in it.
+func TestObPackMainLanguageGate(t *testing.T) {
+	a, _ := obTester(t)
+	a.prefs.General.MainLanguage = "ja"
+	if got := a.obSpeech(); got != models.ASRAccurate {
+		t.Errorf("ja: obSpeech %s, want %s", got, models.ASRAccurate)
+	}
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRAccurate, models.ASRAccurateDraft, models.VADSilero}) {
+		t.Errorf("ja: pack %v, want Qwen3-ASR 1.7B, its draft and the VAD, no MTD", got)
+	}
+	a.prefs.General.MainLanguage = "zh"
+	if got := a.obSpeech(); got != models.ASRMoss {
+		t.Errorf("zh: obSpeech %s, want %s", got, models.ASRMoss)
+	}
+}
+
 // findPrefix is the text on screen that starts with s.
 func findPrefix(t *testing.T, tt *ui.Tester, s string) string {
 	t.Helper()
