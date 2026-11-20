@@ -82,22 +82,23 @@ def reset_sampler_row(
 
     num_codebooks = last_codes.shape[1]
     block_size = triton.next_power_of_2(num_codebooks)
-    reset_sampler_row_kernel[(1,)](
-        delay_count,
-        eoc_countdown,
-        generation_done,
-        last_codes,
-        seeds,
-        step_count,
-        row,
-        no_seed,
-        # Row stride rather than ``num_codebooks``: a row-sliced view of
-        # ``last_codes`` is reset in place instead of past its own row.
-        last_codes.stride(0),
-        num_codebooks,
-        block_size,
-        num_warps=1,
-    )
+    with torch.cuda.device(delay_count.device):
+        reset_sampler_row_kernel[(1,)](
+            delay_count,
+            eoc_countdown,
+            generation_done,
+            last_codes,
+            seeds,
+            step_count,
+            row,
+            no_seed,
+            # Row stride rather than ``num_codebooks``: a row-sliced view of
+            # ``last_codes`` is reset in place instead of past its own row.
+            last_codes.stride(0),
+            num_codebooks,
+            block_size,
+            num_warps=1,
+        )
     return True
 
 

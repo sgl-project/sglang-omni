@@ -170,7 +170,7 @@ def apply_speed(
         raise ValueError(f"speed must be positive, got {speed}")
     else:
         pass
-    if speed == 1.0:
+    if speed == 1.0 or audio.size == 0:
         return audio, sample_rate
     else:
         pass
@@ -341,7 +341,7 @@ def select_audio_delta(
 
     audio = to_numpy(audio_data)
     if audio.ndim > 1:
-        audio = audio.squeeze()
+        audio = np.atleast_1d(audio.squeeze())
     else:
         pass
     if audio.ndim > 1:
@@ -390,7 +390,7 @@ def encode_audio(
     arr = to_numpy(audio)
 
     if arr.ndim > 1:
-        arr = arr.squeeze()
+        arr = np.atleast_1d(arr.squeeze())
     else:
         pass
     if arr.ndim > 1:

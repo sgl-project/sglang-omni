@@ -1,4 +1,5 @@
 import io
+import wave
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from sglang_omni.client.audio import (
     encode_audio,
     encode_pcm,
     resample_linear,
+    select_audio_delta,
     to_numpy,
 )
 
@@ -89,6 +91,60 @@ def test_encode_pcm():
     expected = np.array([0, 16383, -32767, 32767], dtype=np.int16)
     actual = np.frombuffer(pcm_bytes, dtype=np.int16)
     assert np.array_equal(expected, actual)
+
+
+@pytest.mark.parametrize("is_terminal", [False, True])
+def test_select_single_sample_audio_delta(is_terminal: bool) -> None:
+    """A one-sample mono chunk must not disappear or be replayed at completion."""
+    audio = np.array([[0.5]], dtype=np.float32)
+    delta, emitted_samples = select_audio_delta(
+        audio, emitted_samples=0, is_terminal=is_terminal
+    )
+
+    assert delta is not None
+    assert delta.shape == (1,)
+    np.testing.assert_array_equal(delta, np.array([0.5], dtype=np.float32))
+    assert emitted_samples == 1
+    terminal_delta, terminal_samples = select_audio_delta(
+        audio, emitted_samples=emitted_samples, is_terminal=True
+    )
+    assert terminal_delta is None
+    assert terminal_samples == 1
+
+
+def test_encode_single_sample_audio_with_speed() -> None:
+    """A speed change must not fail on one-sample mono audio."""
+    audio = np.array([[0.5]], dtype=np.float32)
+    encoded, mime = encode_audio(
+        audio, response_format="wav", sample_rate=24000, speed=0.5
+    )
+
+    assert mime == FORMAT_MIME_TYPES["wav"]
+    with wave.open(io.BytesIO(encoded)) as waveform:
+        assert waveform.getframerate() == 24000
+        assert waveform.getnchannels() == 1
+        assert waveform.getnframes() == 2
+        assert waveform.readframes(2) == b"\xff\x3f\xff\x3f"
+
+
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+def test_encode_empty_audio_with_speed(response_format: str) -> None:
+    """Changing speed must not try to interpolate an empty mono waveform."""
+    encoded, mime = encode_audio(
+        np.array([], dtype=np.float32),
+        response_format=response_format,
+        sample_rate=24000,
+        speed=1.5,
+    )
+
+    assert mime == FORMAT_MIME_TYPES[response_format]
+    if response_format == "wav":
+        with wave.open(io.BytesIO(encoded)) as waveform:
+            assert waveform.getnframes() == 0
+            assert waveform.getnchannels() == 1
+            assert waveform.getframerate() == 24000
+    else:
+        assert encoded == b""
 
 
 def test_resample_linear_preserves_stereo_channels():
