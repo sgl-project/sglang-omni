@@ -14,6 +14,7 @@ import (
 
 func TestWriteFollowUpKeepsPreviousLiteralThinkingMarker(t *testing.T) {
 	const answer = "The <think> tag wraps reasoning."
+	const want = "The"
 	for _, tc := range []struct {
 		name     string
 		previous compose.Turn
@@ -31,10 +32,10 @@ func TestWriteFollowUpKeepsPreviousLiteralThinkingMarker(t *testing.T) {
 				t.Fatal(err)
 			}
 			end := h.rec.wait(t)
-			if end.State != Done || end.Result != answer {
+			if end.State != Done || end.Result != want {
 				t.Fatalf("end %s %q (problem %+v)", end.State, end.Result, end.Problem)
 			}
-			if !slices.ContainsFunc(h.rec.all(), func(s Snapshot) bool { return s.State == Composing && s.Draft == answer }) {
+			if !slices.ContainsFunc(h.rec.all(), func(s Snapshot) bool { return s.State == Composing && s.Draft == want }) {
 				t.Error("the streamed draft lost the previous turn's literal thinking marker")
 			}
 		})

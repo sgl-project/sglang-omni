@@ -180,17 +180,11 @@ func onlyControlMarkup(s, input string, previous ...string) bool {
 // marker whose block has not closed. Ordinary angle-bracket text and
 // control markup that occurred in the user's input stay.
 func stripControlMarkup(s string, inputs ...string) string {
-	input := ""
-	var previous []string
+	input, previous := "", []string(nil)
 	if len(inputs) > 0 {
 		input, previous = inputs[0], inputs[1:]
 	}
-	literalMarker := ""
-	markLiteral := func(index int, token string) {
-		if literalMarker == "" {
-			literalMarker = s[index : index+len(token)]
-		}
-	}
+	literalMarker, literalPairOpen := "", false
 	trimmed := strings.TrimLeft(s, " \t\r\n")
 	if strings.HasPrefix(trimmed, assistantAnswerPrefix) {
 		s = strings.TrimLeft(trimmed[len(assistantAnswerPrefix):], " \t\r\n")
@@ -241,7 +235,7 @@ func stripControlMarkup(s string, inputs ...string) string {
 			rest := s[i+len(tag[0]):]
 			j = strings.Index(rest, tag[1])
 			if nested := strings.Index(rest, tag[0]); nested >= 0 && (j < 0 || nested < j) {
-				markLiteral(i, tag[0])
+				markLiteral(s, &literalMarker, i, tag[0])
 				openSearchFrom = i + len(tag[0]) + nested
 				closeSearchFrom = openSearchFrom
 				continue
@@ -254,23 +248,29 @@ func stripControlMarkup(s string, inputs ...string) string {
 					continue
 				}
 				end := i + len(tag[0]) + j + len(tag[1])
-				if literalThinkingPair(s[i:end], tag, input, previous) {
+				pair := s[i:end]
+				if exactThinkingPair(pair, input, previous) || !strings.ContainsAny(pair, " \t") && literalThinkingPair(pair, tag, input, previous) {
 					openSearchFrom, closeSearchFrom = end, end
+					continue
+				}
+				if literalThinkingPair(pair, tag, input, previous) {
+					literalPairOpen = true
+					markLiteral(s, &literalMarker, i, tag[0])
+					s = s[:i+len(tag[0])] + rest[:j]
+					openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 					continue
 				}
 			}
 			if proseTokenMention(s, i, tag[0], inputs...) {
-				markLiteral(i, tag[0])
+				markLiteral(s, &literalMarker, i, tag[0])
 				literalOpen = i
 				openSearchFrom = i + len(tag[0])
 				closeSearchFrom = openSearchFrom
 				continue
 			}
 			if j < 0 {
-				if literalMarker != "" && strings.HasPrefix(s[i:], literalMarker) && strings.Index(s, literalMarker) == i {
-					openSearchFrom = i + len(tag[0])
-					closeSearchFrom = openSearchFrom
-					continue
+				if literalPairOpen && literalMarker != "" && strings.HasPrefix(s[i:], literalMarker) && strings.Index(s, literalMarker) == i {
+					break
 				}
 				s = s[:i]
 				break

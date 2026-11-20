@@ -23,6 +23,12 @@ func inlineLiteral(s string, start int, token string) bool {
 	return start+len(token) < len(s) && (strings.ContainsRune(" \t", next) || unicode.IsPunct(next))
 }
 
+func markLiteral(s string, marker *string, index int, token string) {
+	if *marker == "" {
+		*marker = s[index : index+len(token)]
+	}
+}
+
 func fieldStart(s string, start int) bool {
 	return strings.TrimSpace(s[:start]) == ""
 }
@@ -31,15 +37,6 @@ func inlineLiteralAtStart(s, token string) bool {
 	s = strings.TrimLeft(s, " \t\r\n")
 	next, _ := utf8.DecodeRuneInString(s[len(token):])
 	return len(s) > len(token) && (strings.ContainsRune(" \t\r\n", next) || unicode.IsPunct(next))
-}
-
-func completeProse(rest string) bool {
-	trimmed := strings.TrimSpace(rest)
-	if trimmed == "" {
-		return false
-	}
-	last, _ := utf8.DecodeLastRuneInString(trimmed)
-	return strings.ContainsRune(".!?。！？", last)
 }
 
 func proseContinuation(rest string) bool {
@@ -92,26 +89,13 @@ func structuralControlSuffix(s string) bool {
 	return false
 }
 
-func literalControlPrefix(s string, start int, token, input string, previous []string) bool {
-	for _, other := range controlTokens {
-		if other == token || !strings.Contains(s[:start], other) {
-			continue
-		}
-		if preservedControlToken(other, input) || previousControlToken(other, previous) {
-			return true
-		}
-	}
-	return false
-}
-
 func proseTokenMention(s string, start int, token string, inputs ...string) bool {
 	if quotedControlToken(s, start, token) {
 		return true
 	}
-	input := ""
 	var previous []string
 	if len(inputs) > 0 {
-		input, previous = inputs[0], inputs[1:]
+		previous = inputs[1:]
 	}
 	rest := s[start+len(token):]
 	for _, tag := range thinkingTags {
@@ -122,34 +106,16 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 			return proseContinuation(rest)
 		}
 		if token == tag[0] {
-			if inlineLiteral(s, start, token) && proseContinuation(rest) && literalControlPrefix(s, start, token, input, previous) {
-				return true
-			}
 			close := strings.Index(rest, tag[1])
-			if close < 0 {
-				if fieldStart(s, start) && previousControlToken(token, previous) && inlineLiteralAtStart(s, token) && proseContinuation(rest) {
-					return true
-				}
-				return completeProse(rest) && (fieldStart(s, start) && proseContinuation(rest) || inlineLiteral(s, start, token) && proseContinuation(rest))
-			}
-			if fieldStart(s, start) {
+			if close < 0 || fieldStart(s, start) {
 				return false
 			}
 			after := rest[close+len(tag[1]):]
-			if strings.TrimSpace(after) != "" {
-				return lowerOrHan(rest) && proseContinuation(after)
-			}
-			if !completeProse(rest[:close]) {
-				return false
-			}
-			return inlineLiteral(s, start, token) && proseContinuation(rest)
+			return strings.TrimSpace(after) != "" && lowerOrHan(rest) && proseContinuation(after)
 		}
 	}
 	if structuralControlSuffix(rest) {
 		return false
-	}
-	if fieldStart(s, start) && previousControlToken(token, previous) && inlineLiteralAtStart(s, token) && proseContinuation(rest) {
-		return true
 	}
 	if structuralControlToken(token, rest) {
 		if !strings.HasPrefix(token, "<|tool") {
@@ -162,21 +128,35 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 			return false
 		}
 	}
+	if !trailingControlToken(token) {
+		return false
+	}
 	if inlineLiteral(s, start, token) {
 		return true
 	}
-	return completeProse(rest) && !structuralControlToken(token, rest)
+	return false
 }
 
 func bracketedToolPayload(rest string) bool {
-	if rest == "" {
+	index := strings.IndexAny(rest, "{[")
+	if index < 0 {
 		return false
 	}
-	if strings.ContainsRune("{[\"", rune(rest[0])) {
+	before := strings.TrimSpace(rest[:index])
+	if before == "" {
 		return true
 	}
-	fields := strings.Fields(rest)
-	return len(fields) > 1 && strings.ContainsRune("{[\"", rune(fields[1][0]))
+	last, _ := utf8.DecodeLastRuneInString(before)
+	return !strings.ContainsRune(".!?。！？", last)
+}
+
+func exactThinkingPair(pair string, input string, previous []string) bool {
+	for _, context := range append([]string{input}, previous...) {
+		if strings.Contains(context, pair) {
+			return true
+		}
+	}
+	return false
 }
 
 func literalThinkingPair(pair string, tag [2]string, input string, previous []string) bool {
