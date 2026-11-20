@@ -289,6 +289,8 @@ def test_image_audio_commit_atomically(
     bridge.drain = Mock()
     bridge.sessions = {IDENTITY.id: session}
     bridge.units_by_request_id = {"unit": unit}
+    bridge.speculative_reserve_tokens = 0
+    bridge.draft_kv = None
     bridge.bridge_scheduler = Mock(max_req_len=8191)
     bridge.bridge_scheduler.session_controller.get.return_value = native
     bridge.create_session_request(payload, request)

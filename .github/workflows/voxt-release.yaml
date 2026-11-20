@@ -135,6 +135,13 @@ jobs:
           else
             :
           fi
+          # MyGo signs a beta's update only with notes under its version, which no CHANGELOG.md names.
+          if [[ "$IS_BETA" == "true" ]]; then
+            scripts/release-appcast.sh beta-changelog "$version" "$GITHUB_SHA" < CHANGELOG.md > CHANGELOG.md.tmp
+            mv CHANGELOG.md.tmp CHANGELOG.md
+          else
+            :
+          fi
           if [[ "$IS_RELEASE" == "true" || "$IS_BETA" == "true" ]]; then
             feed_base="$(scripts/release-appcast.sh feed-base)"
             jq -n --arg url "$feed_base" --arg publicKey "PPX1glcG71+Xyk/V2veU1p0QeyX1RKRFPeAG2++lUEE=" \

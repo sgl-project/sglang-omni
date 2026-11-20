@@ -112,6 +112,39 @@ Measured on an Apple M5 (24 GB, macOS 26.3.1), warm, over 8 utterances (76 s of 
 
 For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../other_platforms/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
 
+## Ascend NPU
+
+On Ascend NPU, prepare the software stack and SGLang as described in the
+[Ascend NPU installation guide](../other_platforms/installation_npu.md), then
+install the Fun-CosyVoice3 extra with the repository installer:
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+bash scripts/npu/install_npu.sh --extras fun-cosyvoice3
+```
+
+Install SoX and clone CosyVoice with its Matcha-TTS submodule as in
+[Prerequisites](#prerequisites); the editable install there uses the CUDA
+requirements manifest on Linux, so use the installer above instead.
+
+Then serve with the NPU example configuration:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b_npu.yaml \
+  --port 8000
+```
+
+That example keeps the three stages colocated on one card with `attention_backend: ascend` and 16 concurrent requests. It has been validated on Ascend910_9362 with PyTorch 2.10.0, torch_npu 2.10.0.post6, and SGLang 0.5.23.
+
+Two paths differ from CUDA on this platform:
+
+- The DiT backbone stays eager. Inductor's value-range analysis fails while compiling its dynamic shapes, so the backbone cannot be `torch.compile`d here.
+- Decode graphs stay on. The pipeline exports `PER_STREAM_QUEUE=1` before the stage process starts; with a shared host task queue a graph replay can overlap the update that rebinds KV lengths, and a multi-row decode bucket stalls after its first step. Any other value brings that deadlock back, so an override must be paired with `disable_cuda_graph: true`, or with both `cuda_graph_max_bs: 1` and `max_running_requests: 1`. That single-row workaround only covers the queue setting; `TASK_QUEUE_ENABLE=2` or `ASCEND_LAUNCH_BLOCKING=1` still fails capture. Startup rejects NPU decode graphs above one row with any other queue setting instead of hanging after the first batch.
+
+HiFT's F0 branch also runs on the CPU, because Ascend has no float64 kernel; the rest of the vocoder stays on the device.
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
