@@ -443,7 +443,7 @@ func (r *run) warmLLM() {
 	var skill llm.Skill
 	switch r.req.Kind {
 	case store.KindTranscribe:
-		if !r.settings.Features.Transcribe.Enhance {
+		if !r.transcribeCleanup() {
 			return
 		}
 		in, skill = r.transcribeInput(""), llm.SkillTranscribeEnhance

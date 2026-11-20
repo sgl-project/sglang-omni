@@ -129,7 +129,8 @@
         "custom_label": "自定义…",
         "custom": true,
         "text": "command+return"
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     "preview": {
       "app": {

@@ -131,7 +131,8 @@
         "text": "Shift+Fn",
         "error": "Enter one key, with or without modifiers: Return, Command+Return, Tab.",
         "error_code": "autoKey"
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     "preview": {
       "app": {
