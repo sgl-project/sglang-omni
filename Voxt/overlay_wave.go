@@ -4,8 +4,6 @@ package main
 // loader and the recording's clock.
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -41,10 +39,13 @@ func waveform(c *ui.Context, levels []float64, heard bool, look pillLook) {
 // overlayLoader is the working pill's loader in the waveform's place,
 // centred in its slot: five dots of 5, 4 apart, that swell and brighten
 // in turn (Voxt's: 1.2 s, 0.12 s apart); still, all half bright, without
-// motion.
-func overlayLoader(c *ui.Context, label string, look pillLook) {
-	ui.Row(c.Key("ov-loader")).Width(layout.WaveSlotW).Height(layout.RowH).Shrink(0).Gap(4).AlignItems(ui.Center).Justify(ui.Center).
-		Label(label).Children(func() {
+// motion. w is the slot's width, 0 for just the dots.
+func overlayLoader(c *ui.Context, label string, look pillLook, w float32) {
+	row := ui.Row(c.Key("ov-loader")).Height(layout.RowH).Shrink(0).Gap(4).AlignItems(ui.Center).Justify(ui.Center)
+	if w > 0 {
+		row.Width(w)
+	}
+	row.Label(label).Children(func() {
 		for i := range 5 {
 			scale, alpha := 1.0, 0.7
 			if look.motion {
@@ -54,10 +55,4 @@ func overlayLoader(c *ui.Context, label string, look pillLook) {
 			ui.Box(c).Size(d, d).Radius(d / 2).Background(ui.RGBA(255, 255, 255, float32(alpha))).Shrink(0)
 		}
 	})
-}
-
-// clock shows a duration as m:ss.
-func clock(d time.Duration) string {
-	sec := int(d.Seconds())
-	return itoa(sec/60) + ":" + string(rune('0'+sec%60/10)) + string(rune('0'+sec%10))
 }

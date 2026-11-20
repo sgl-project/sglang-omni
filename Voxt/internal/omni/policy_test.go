@@ -12,7 +12,7 @@ import (
 
 func TestModels(t *testing.T) {
 	asrs := ASRModels()
-	if len(asrs) != 2 || asrs[0].ID != ASRAccurate || asrs[1].ID != ASRFast {
+	if len(asrs) != 11 || asrs[0].ID != ASRAccurate || asrs[1].ID != ASRFast {
 		t.Fatalf("speech models %+v", asrs)
 	}
 	for _, s := range Models() {
@@ -184,6 +184,34 @@ func TestJoinParts(t *testing.T) {
 		if got := joinParts(c.in); got != c.want {
 			t.Errorf("join(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestPlainText: MOSS's timestamps and speaker labels go, though its
+// instruction asks for none; its other tasks and other models keep them.
+func TestPlainText(t *testing.T) {
+	moss := &ASR{spec: again(ASRMoss)}
+	for _, c := range []struct{ in, want string }{
+		{"[0.25]然后现在我们的[2.12][3.35]这个[4.12][4.45]MTD[5.45][6.52]有一些非常weird的[8.52][9.87]事情[10.62]", "然后现在我们的这个MTD有一些非常weird的事情"},
+		{"[0.00][S01]Hello[1.20][1.50][S02]world.[2,40]", "Hello world."},
+		{"0.00]Hello", "Hello"},
+		{"S01]Hello world.", "Hello world."},
+		{"0.00]Sentence number zero: [1.20]one.", "Sentence number zero: one."},
+		{"非常weird[7.98] [9.85]事情。", "非常weird事情。"},
+		{"see [1] and [x]", "see [1] and [x]"},
+		{"a 3.5] rating", "a 3.5] rating"},
+		{"no tags", "no tags"},
+	} {
+		if got := moss.plainText(c.in); got != c.want {
+			t.Errorf("plainText(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	raw := "[0.25][S01]你好[1.00]"
+	if got := moss.WithInstruction("").plainText(raw); got != raw {
+		t.Errorf("diarization text changed: %q", got)
+	}
+	if got := (&ASR{spec: again(ASRAccurate)}).plainText(raw); got != raw {
+		t.Errorf("another model's text changed: %q", got)
 	}
 }
 

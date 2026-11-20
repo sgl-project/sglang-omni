@@ -9,6 +9,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+// Span is a match's byte range in the original text.
+type Span struct {
+	Start, End int
+}
+
 // Replace writes the enabled terms' spelling for their aliases in text,
 // a transcript: aliases are, by definition, what speech recognition
 // writes for a term ("Or Link" for Auralink). Latin aliases match whole
@@ -18,6 +23,22 @@ import (
 // changes its own output no further). An alias two terms share goes to
 // the first.
 func Replace(text string, terms []store.Term) string {
+	text, _ = matchText(text, terms, false)
+	return text
+}
+
+// HighlightSpans finds enabled terms and their aliases in text with the
+// same matching and overlap rules as Replace. Its spans are byte ranges
+// in text, with the longest match at each place from left to right.
+func HighlightSpans(text string, terms []store.Term) []Span {
+	_, spans := matchText(text, terms, true)
+	return spans
+}
+
+// matchText is the dictionary's one matcher. highlight keeps the input
+// and collects its matches, including terms without aliases; otherwise it
+// performs Replace's alias substitution.
+func matchText(text string, terms []store.Term, highlight bool) (string, []Span) {
 	type pattern struct {
 		words []string // the alias (or term), split at its spaces
 		term  string   // "" for a term itself: kept as written
@@ -42,20 +63,31 @@ func Replace(text string, terms []store.Term) string {
 				replaced = true
 			}
 		}
-		if replaced {
+		if replaced || highlight {
 			add(term, "")
 		}
 	}
 	if len(patterns) == 0 {
-		return text
+		return text, nil
 	}
 	sort.SliceStable(patterns, func(i, j int) bool { return patterns[i].size > patterns[j].size })
+	// Each place tries only the patterns that start with its letter, in
+	// any case, in the same order.
+	byFirst := map[rune][]pattern{}
+	for _, p := range patterns {
+		r, _ := utf8.DecodeRuneInString(p.words[0])
+		byFirst[foldKey(r)] = append(byFirst[foldKey(r)], p)
+	}
 	var b strings.Builder
+	var spans []Span
 	for i := 0; i < len(text); {
+		r, _ := utf8.DecodeRuneInString(text[i:])
 		matched := false
-		for _, p := range patterns {
+		for _, p := range byFirst[foldKey(r)] {
 			if n := matchAt(text, i, p.words); n > 0 {
-				if p.term == "" {
+				if highlight {
+					spans = append(spans, Span{Start: i, End: i + n})
+				} else if p.term == "" {
 					b.WriteString(text[i : i+n])
 				} else {
 					b.WriteString(p.term)
@@ -67,11 +99,16 @@ func Replace(text string, terms []store.Term) string {
 		}
 		if !matched {
 			_, n := utf8.DecodeRuneInString(text[i:])
-			b.WriteString(text[i : i+n])
+			if !highlight {
+				b.WriteString(text[i : i+n])
+			}
 			i += n
 		}
 	}
-	return b.String()
+	if highlight {
+		return text, spans
+	}
+	return b.String(), nil
 }
 
 // matchAt is the length in bytes of words matched at text[i:] (0 for
@@ -126,6 +163,16 @@ func prefixFold(s, w string) int {
 		j += n
 	}
 	return j
+}
+
+// foldKey is the same rune for every case of r (foldEqual): the least
+// of them.
+func foldKey(r rune) rune {
+	k := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		k = min(k, f)
+	}
+	return k
 }
 
 // foldEqual: a and b are the same letter, ignoring case.

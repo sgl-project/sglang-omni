@@ -52,6 +52,9 @@ type Model struct {
 	// Features are the only features it serves ("translate"), nil for
 	// every one (ForFeature).
 	Features []string
+	// Stream: a speech model that recognises while the user speaks, so
+	// the text shows as it comes (Voxt 1.x's Realtime tag).
+	Stream bool
 }
 
 // For says whether m serves feature ("transcribe", "translate",

@@ -36,12 +36,13 @@
 #include <string_view>
 #include <vector>
 
+#include "common/asr_service.h"
+#include "common/generation.h"
 #include "common/reference_audio.h"
+#include "common/speech_service.h"
 #include "common/text.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "fish_s2_pro/fish_s2_pro_stream.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/speech_service.h"
 
 namespace {
 
@@ -60,12 +61,12 @@ constexpr double kMaxRepetitionPenalty = 2.0;
 // Fields of CUDA's CreateSpeechRequest this model does not use, each counted
 // as given by the CUDA server's rule: text fields when not null or "", flags
 // and counts when not null, and stage_params when not empty.
-constexpr std::array<const char *, 3> kUnsupportedTextFields = {
-    "instructions", "language", "task_type"};
-constexpr std::array<const char *, 6> kUnsupportedValueFields = {
-    "duration_tokens",     "initial_codec_chunk_frames",
-    "stream_codec_output", "suppress_bootstrap_silence",
-    "token_count",         "x_vector_only_mode"};
+const speech_service::UnsupportedFields kUnsupportedFields = {
+    {"duration_tokens", "initial_codec_chunk_frames", "stream_codec_output",
+     "suppress_bootstrap_silence", "token_count", "x_vector_only_mode"},
+    {"instructions", "language", "task_type"},
+    {{"stage_params", Json::value_t::object, "an object"}},
+};
 
 // A reference as the request gives it: its WAV at its own rate, or the codes
 // the client gave, in plain values so that only the worker makes MLX arrays.
@@ -83,45 +84,6 @@ struct SpeechRequest {
   fish_s2_pro::SamplingOptions sampling;
   std::vector<ParsedReference> references;
 };
-
-// Throws naming every unsupported field body gives, in sorted order.
-void RejectUnsupportedFields(const Json &body) {
-  std::vector<std::string> given;
-  for (const char *field : kUnsupportedTextFields) {
-    const Json value = FieldOr(body, field, Json());
-    if (!value.is_null() && value != "") {
-      given.push_back(field);
-    } else {
-    }
-  }
-  for (const char *field : kUnsupportedValueFields) {
-    if (!FieldOr(body, field, Json()).is_null()) {
-      given.push_back(field);
-    } else {
-    }
-  }
-  const Json stage_params = FieldOr(body, "stage_params", Json());
-  if (!stage_params.is_null() && !stage_params.is_object()) {
-    throw std::invalid_argument("stage_params must be an object");
-  } else if (!stage_params.is_null() && !stage_params.empty()) {
-    given.push_back("stage_params");
-  } else {
-  }
-  if (given.empty()) {
-    return;
-  } else {
-  }
-  std::sort(given.begin(), given.end());
-  std::string fields;
-  for (const std::string &field : given) {
-    fields += (fields.empty() ? "" : ", ") + field;
-  }
-  throw std::invalid_argument(
-      "Fish S2-Pro does not support these /v1/audio/speech fields: " + fields +
-      ". Supported model-specific fields are ref_audio, ref_text, references, "
-      "max_new_tokens, temperature, top_p, top_k, repetition_penalty and "
-      "seed.");
-}
 
 // Whether value is a JSON integer too large for int64, which nlohmann would
 // wrap to a negative number.
@@ -151,13 +113,7 @@ double NumberOr(const Json &body, const char *name, double fallback) {
 std::string ReferencePayload(const std::string &audio,
                              const std::string &field) {
   if (audio.rfind("data:", 0) == 0) {
-    const size_t comma = audio.find(',');
-    if (comma == std::string::npos ||
-        audio.substr(0, comma).find(";base64") == std::string::npos) {
-      throw std::invalid_argument(field + " must be a base64 data: URL");
-    } else {
-      return audio.substr(comma + 1);
-    }
+    return omni_common::AudioDataUrlPayload(audio, field);
   } else if (audio.rfind("http://", 0) == 0 ||
              audio.rfind("https://", 0) == 0 ||
              audio.rfind("file://", 0) == 0 || audio.rfind("/", 0) == 0 ||
@@ -337,7 +293,10 @@ private:
   }
 
   speech_service::SpeechJob ParseSpeech(const Json &body) override {
-    RejectUnsupportedFields(body);
+    speech_service::RejectUnsupportedFields(
+        body, kUnsupportedFields, "Fish S2-Pro",
+        "ref_audio, ref_text, references, max_new_tokens, temperature, top_p, "
+        "top_k, repetition_penalty and seed");
     const Json input = FieldOr(body, "input", Json());
     if (!input.is_string() ||
         omni_common::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
@@ -452,7 +411,7 @@ private:
     for (const ParsedReference &reference : request.references) {
       context.check_deadline();
       if (context.cancel.load()) {
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       if (reference.codes.empty()) {
@@ -474,7 +433,7 @@ private:
     fish_s2_pro::VocoderStream stream(model_.codec());
     std::vector<mlx::core::array> frames;
     int frame_count = 0;
-    const qwen3_asr::FinishReason finish_reason =
+    const omni_common::FinishReason finish_reason =
         model_.Generate(prompt, request.max_frames, request.sampling,
                         context.cancel, [&](const mlx::core::array &codes) {
                           context.check_deadline();

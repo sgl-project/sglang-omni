@@ -16,6 +16,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
+    try_resolve_arch_from_zonos3_layout,
     try_resolve_ming3_dense_tts,
 )
 
@@ -69,6 +70,10 @@ def resolve_config_cls_for_model_path(model_path: str):
         pass
     if arch is None:
         arch = try_resolve_arch_from_personaplex_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_zonos3_layout(repo_id, revision=revision)
     else:
         pass
     if arch is None:
@@ -175,17 +180,13 @@ class ConfigManager:
         return ConfigManager(config)
 
     @staticmethod
-    def from_file(file_path: str) -> "ConfigManager":
-        """
-        Load the configuration from the file path.
-
-        The file's stages: mapping entries are folded into the
-        configuration that comes back, so callers holding a ConfigManager
-        see one settled config rather than a config plus a pile of pending
-        overrides. sgl-omni config explain wants the opposite and calls
-        sources_from_config_file directly.
-        """
-        config, patches = sources_from_config_file(file_path)
+    def from_file(
+        file_path: str, *, model_path_override: str | None = None
+    ) -> "ConfigManager":
+        """Load the file with stage settings and any model path override applied."""
+        config, patches = sources_from_config_file(
+            file_path, model_path_override=model_path_override
+        )
         if not patches:
             return ConfigManager(config)
         else:

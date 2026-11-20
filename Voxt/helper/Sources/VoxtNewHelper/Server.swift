@@ -9,6 +9,10 @@ final class Writer: @unchecked Sendable {
     private let lock = NSLock()
     private let encoder = makeEncoder()
 
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
     init() {
         let fd = dup(STDOUT_FILENO)
         dup2(STDERR_FILENO, STDOUT_FILENO)
@@ -104,12 +108,12 @@ final class Server: @unchecked Sendable {
     let front: FrontApps
     let capture: CaptureManager
     let hotkeys: HotkeyTap
+    let keyRecorder: HotkeyRecorder
     let textio: TextIO
     let output: Output
     let speech: SpeechJobs
     private let lock = NSLock()
     private var ready = false
-    private var debug = false
 
     /// Requests slower than this are logged on stderr with where they waited.
     static let slowMs = 250.0
@@ -119,6 +123,7 @@ final class Server: @unchecked Sendable {
         front = FrontApps(out: out)
         capture = CaptureManager(out: out)
         hotkeys = HotkeyTap(out: out, front: front)
+        keyRecorder = HotkeyRecorder()
         textio = TextIO(front: front)
         output = Output(out: out)
         speech = SpeechJobs(out: out)
@@ -184,6 +189,15 @@ final class Server: @unchecked Sendable {
                 }
             }
             return
+        case Method.captureSystem:
+            Task {
+                do {
+                    try await capture.start(job: id, try msg.decodeParams(SystemParams.self).capture, system: true, clock: clock)
+                } catch {
+                    out.fail(id, rpcError(error))
+                }
+            }
+            return
         case Method.speechRecognize:
             Task {
                 do {
@@ -242,6 +256,12 @@ final class Server: @unchecked Sendable {
             return hotkeys.configure(try msg.decodeParams(HotkeyConfigureParams.self))
         case Method.hotkeyStatus:
             return hotkeys.status()
+        case Method.hotkeyRecord:
+            let p = try msg.decodeParams(HotkeyRecordParams.self)
+            return try await keyRecorder.record(timeoutSeconds: p.timeoutSeconds ?? 15)
+        case Method.hotkeyCancelRecord:
+            keyRecorder.cancel()
+            return Empty()
         case Method.appFrontmost:
             return await front.current()
         case Method.textFocus:
@@ -256,6 +276,10 @@ final class Server: @unchecked Sendable {
             return await AppList.list(installed: try msg.decodeParams(AppListParams.self).installed ?? false)
         case Method.appIcons:
             return try AppIcons.icons(try msg.decodeParams(AppIconsParams.self))
+        case Method.screenWindow:
+            return try await ScreenWindow.capture(try msg.decodeParams(ScreenWindowParams.self))
+        case Method.clipboardImage:
+            return await ClipboardImage.read(try msg.decodeParams(ClipboardImageParams.self))
         case Method.appConfigure:
             front.configure(try msg.decodeParams(AppConfigureParams.self))
             return Empty()
@@ -285,10 +309,7 @@ final class Server: @unchecked Sendable {
             return out.fail(id, RPCError(Code.protocolMismatch, "This helper speaks protocol \(protocolVersion)",
                                          data: .object(["supported": .array([.int(Int64(protocolVersion))])])))
         }
-        lock.withLock {
-            ready = true
-            debug = p.logLevel == "debug"
-        }
+        lock.withLock { ready = true }
         front.start()
         output.start(exiting: { [self] why in exiting(why) })
         let version = helperVersion()

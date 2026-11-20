@@ -31,6 +31,15 @@ func (f *fake) hotkeys(m proto.Message) {
 		return
 	}
 	f.mu.Lock()
+	if p.Generation < f.hkGen {
+		// A configuration older than the one in effect (requests land
+		// out of order) changes nothing, as the real helper.
+		f.mu.Unlock()
+		f.result(m.ID, f.hotkeyStatus())
+		return
+	}
+	f.hkGen = p.Generation
+	f.hkBindings = p.Bindings
 	f.bindings = len(p.Bindings)
 	f.hkCancel = p.Cancel != nil
 	f.installed = (f.bindings > 0 || f.hkCancel) && f.trusted
@@ -44,6 +53,23 @@ func (f *fake) hotkeys(m proto.Message) {
 	if install {
 		go f.playScript(p.Bindings)
 	}
+}
+
+func (f *fake) hotkeyRecord(m proto.Message) {
+	if !f.isTrusted() {
+		f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionAccessibility},
+			"Accessibility is required to record shortcuts")
+		return
+	}
+	if k := f.opts["record-keys"]; k != "" {
+		f.result(m.ID, proto.HotkeyRecordResult{Keys: k})
+		return
+	}
+	if f.has("record-timeout") {
+		f.fail(m.ID, proto.CodeTimeout, "Recording timed out")
+		return
+	}
+	f.result(m.ID, proto.HotkeyRecordResult{Keys: "RightOption+Space"})
 }
 
 // trust grants Accessibility (trust-after): a configured tap installs and
@@ -134,10 +160,17 @@ func (f *fake) textio(m proto.Message) {
 		var p proto.SelectionParams
 		m.DecodeParams(&p)
 		res := proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: []string{"focus=AXTextArea"}}
-		if sel := f.opts["selection"]; sel != "" {
-			res.Text, res.Via = sel, proto.ViaAX
+		if path := f.opts["selection-file"]; path != "" {
+			if b, _ := os.ReadFile(path); len(b) > 0 {
+				res.Text, res.Via = string(b), proto.ViaAX
+			}
+		} else if sel := f.opts["selection"]; strings.TrimSpace(sel) != "" {
+			res.Text, res.Via = sel, proto.ViaAX // a blank one is not text (the helper's SelectionRead.hasText): on to the copy
 		} else if sel := f.opts["copy-selection"]; sel != "" && p.AllowCopy {
 			res.Text, res.Via, res.Steps = sel, proto.ViaCopy, append(res.Steps, "copy: changed")
+			if f.has("copy-selection-image") {
+				res.Image = Shot(812)
+			}
 		}
 		f.result(m.ID, res)
 	case proto.MethodTextPaste:

@@ -37,9 +37,12 @@ type SelectionParams struct {
 	CopyTimeoutMS int  `json:"copyTimeoutMs,omitempty"`
 }
 
-// SelectionResult is the text ("" for none) and how it was read.
+// SelectionResult is the text ("" for none) and how it was read. Image
+// is the JPEG from the image the copy fallback captured before restoring
+// the old clipboard, so a selected image is not an earlier copied one.
 type SelectionResult struct {
 	Text  string   `json:"text,omitempty"`
+	Image []byte   `json:"image,omitempty"`
 	Via   string   `json:"via"` // Via*
 	MS    float64  `json:"ms"`
 	Steps []string `json:"steps,omitempty"` // what was tried, for the log
@@ -65,8 +68,9 @@ type PasteParams struct {
 	// KeepClipboard leaves Text on the clipboard instead of restoring.
 	KeepClipboard  bool `json:"keepClipboard,omitempty"`
 	RestoreDelayMS int  `json:"restoreDelayMs,omitempty"` // default 500
-	// TargetPID, when set, must be the app in front: otherwise nothing is
-	// pasted (Posted false, Front says who is in front). The app activates
+	// TargetPID, when set, must be the app in front or own the focused
+	// element (a non-activating panel such as Raycast's): otherwise nothing
+	// is pasted (Posted false, Front says who is in front). The app activates
 	// the target itself (macx.Activate) when it has to.
 	TargetPID int `json:"targetPid,omitempty"`
 	// Press are keys posted after ⌘V (app enhancement's auto key: Return,

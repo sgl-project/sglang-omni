@@ -64,10 +64,14 @@ const (
 	LiveMaxW   = LiveTextW + 2*LivePadX
 	LiveH      = RowH + LiveGap + LineH + 2*LivePadY
 	FadeW      = 16 // the line's left edge fades out over this, scrolled
-	// After the waveform in the row, Gap before each, when they show:
-	// the time, and the matched group's name (SceneSize, at most
-	// SceneMaxW wide).
-	TimeW     = 30
+	// With Overlay.LiveLines: the text wraps at LinesTextW from the first
+	// word, so the face is LinesW wide, and grows by its lines up to
+	// LinesMax of them (LineH each); past that the newest show.
+	LinesTextW = 480
+	LinesW     = LinesTextW + 2*LivePadX
+	LinesMax   = 10
+	// After the waveform in the row, Gap before the matched group's name
+	// (SceneSize, at most SceneMaxW wide).
 	SceneSize = 11
 	SceneMaxW = 88
 	// A notice: the icon's slot, Gap, its line (NoticeSize), the
@@ -104,14 +108,11 @@ func Place(wa mygo.Rectangle, o settings.Overlay, w, h int) (int, int) {
 	return x, y
 }
 
-// RowWidth is the width of the pill's row: the icon and the waveform, the
-// time when it shows, the group's name when one matched (scene DIPs
-// wide, at most SceneMaxW; 0 for none).
-func RowWidth(showTime bool, scene float32) int {
+// RowWidth is the width of the pill's row before the recording time: the
+// icon and waveform, then the group's name when one matched (scene DIPs wide,
+// at most SceneMaxW; 0 for none).
+func RowWidth(scene float32) int {
 	w := RowW
-	if showTime {
-		w += Gap + TimeW
-	}
 	if scene > 0 {
 		w += Gap + int(math.Ceil(float64(min(scene, SceneMaxW))))
 	}
@@ -124,6 +125,14 @@ func RowWidth(showTime bool, scene float32) int {
 func LiveWidth(row int, text float32) int {
 	line := int(math.Ceil(float64(min(text, LiveTextW))))
 	return max(row, line) + 2*LivePadX
+}
+
+// LinesHeight is the face's height with live text wrapped in lines
+// (Overlay.LiveLines) text DIPs high: the row, LiveGap, the lines up to
+// LinesMax of them, and the padding.
+func LinesHeight(text float32) int {
+	lines := min(int(math.Ceil(float64(text))), LinesMax*LineH)
+	return RowH + LiveGap + max(lines, LineH) + 2*LivePadY
 }
 
 // NoticeWidth fits a notice's line, text DIPs wide: the pill's padding,
@@ -158,7 +167,9 @@ const (
 	CardRuleTop = 12 // the header to the rule
 	CardRuleGap = 10 // the rule to the text
 	// Where the rule is.
-	CardRuleY   = CardPadTop + CardHeadH + CardRuleTop
+	CardRuleY = CardPadTop + CardHeadH + CardRuleTop
+	// CardBodyMax is the least text a card shows before it scrolls, on a
+	// work area too short to hold more (Voxt's).
 	CardBodyMax = 220
 	CardInset   = 10 // the text's right inset: the scroller's room
 	CardBodyW   = AnswerW - 2*CardPadX - CardInset
@@ -166,7 +177,13 @@ const (
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
 	CardMsgGap = 8
 	CardMsgH   = 16
-	// CardMaxH is the highest card: the text at its most, and a line.
+	// CardAttachH is the height of the row that says which picture went
+	// to the language model (a thumbnail 24 high, its gap).
+	CardAttachH = 28
+	// CardAttachThumb is a thumbnail's size in that row.
+	CardAttachThumb = 24
+	// CardMaxH is the highest card on such a work area: CardBodyMax of
+	// text, and a line.
 	CardMaxH = CardChrome + CardBodyMax + CardMsgGap + CardMsgH
 
 	CardIcon       = 20
@@ -175,8 +192,16 @@ const (
 	CardTextWeight = 500
 	CardBtn        = 24
 	CardBtnIcon    = 15
-	CardLangMaxW   = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
-	CardWaveW      = 96  // a conversation's waveform
+	// The size button sits in the card's corner, in the padding under
+	// the text (CardPadY), CardSizeBtnInset from the edges: far enough
+	// in that the whole button stays inside the rounded corner at the
+	// widest corner radius (40: its corner's centre is 40 from each
+	// edge, and (40-12)·√2 < 40).
+	CardSizeBtn      = 20
+	CardSizeBtnIcon  = 14
+	CardSizeBtnInset = 12
+	CardLangMaxW     = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
+	CardWaveW        = 96  // a conversation's waveform
 
 	// A conversation's bubbles.
 	BubbleW         = 340
@@ -191,6 +216,42 @@ const (
 	ProblemIcon = 16
 	ProblemGap  = 8
 )
+
+// CardSize is a size of the answer card (settings.Features.CardSizes);
+// its height follows its text. W is the width, or 0 for fill: as wide
+// as the work area leaves room for (CardFillW).
+type CardSize struct{ W int }
+
+// CardSizes are the card's sizes, by settings.Features.CardSize: small
+// (Voxt's 440), medium and large, for long answers (#3644 FB41: an
+// explained PR was hard to read in the small one), and fill, for a
+// card as wide as the screen (the large card was still narrow on a big
+// display).
+var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}, {}}
+
+// CardFillW is the fill size's width in the work area wa. It never makes
+// the card narrower when the largest fixed size already fits; past that it
+// leaves the frame's margins (Overlay.Margin and the shadow's Pad on each side).
+func CardFillW(wa mygo.Rectangle, margin float64) int {
+	availableWidth := wa.Width - 2*(int(math.Round(margin))+Pad)
+	fitWidth := max(AnswerW, wa.Width-2*Pad)
+	return max(AnswerW, availableWidth, min(CardSizes[len(CardSizes)-2].W, fitWidth))
+}
+
+// Width is the size's width in the work area: the fixed one, or
+// CardFillW for fill.
+func (s CardSize) Width(wa mygo.Rectangle, margin float64) int {
+	if s.W > 0 {
+		return s.W
+	}
+	return CardFillW(wa, margin)
+}
+
+// BubbleTextWidth fits a Rewrite input's text, heading and selection widths,
+// rounded up to whole DIPs and capped at the conversation bubble's maximum.
+func BubbleTextWidth(text, title, quote, maxWidth float32) float32 {
+	return min(float32(math.Ceil(float64(max(text, title, quote)))), maxWidth)
+}
 
 // Bars of the waveform (Voxt's): WaveW wide in all, centred in the
 // waveform's slot.

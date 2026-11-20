@@ -1,0 +1,123 @@
+{
+  "name": "card-redo",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "t2",
+    "state": "composing",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "t1",
+      "kind": "translate",
+      "title": "Translation",
+      "why": "The selection in Arc cannot be edited. Copy the result, or click where it should go and insert.",
+      "target_name": "Arc",
+      "language": "ja",
+      "language_label": "Japanese",
+      "thinking": {},
+      "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "insert_tooltip": "The selection in Arc cannot be edited. Copy the result, or click where it should go and insert.",
+      "copy_tooltip": "Copy (C)",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "answer",
+          "kind": "body",
+          "turn": 0,
+          "text": "goroutine 是由 Go 运行时管理的轻量级线程。",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": true,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": false,
+      "can_copy": true,
+      "can_follow_up": false,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

@@ -231,7 +231,7 @@ func (e *node) SetTextSelection(start, end int) *node {
 	ed.editorSelection = editorSelection{anchor: start, caret: end}
 	ed.hasDesired = false
 	if ed.area != nil {
-		ed.area.reveal = true
+		ed.area.reveal, ed.area.page = true, true
 	}
 	e.c.rt.requestFrame()
 	return e

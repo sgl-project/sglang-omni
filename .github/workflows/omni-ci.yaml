@@ -5,11 +5,12 @@ name: Omni CI
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
-# any stage label, including run-unit-test-ci-only, runs pr-test, and each model
-# suite runs only when its stage is selected. run-lint-only passes the gate and
-# skips setup. Model suites, including MPS, start after pr-test and use always()
-# so a failed or skipped suite never skips another one. Only setup blocks all
-# downstream model CI.
+# any stage label except run-mac-ci, including run-unit-test-ci-only, runs
+# pr-test, and each model suite runs only when its stage is selected.
+# run-lint-only and run-mac-ci alone pass the gate and skip setup. Model
+# suites, including MPS, start after pr-test and use always() so a failed or
+# skipped suite never skips another one. Only setup blocks all downstream
+# model CI.
 #
 # MPS has no result dependency on other model suites and uses the same
 # workflow SHA, so it does not wait for those suites to finish.
@@ -28,6 +29,12 @@ name: Omni CI
 on:
   pull_request:
     types: [opened, labeled, synchronize, reopened, ready_for_review]
+    # A pull request that changes only the MLX path is tested by Mac CI and Voxt CI, and Mac CI checks its labels.
+    paths-ignore:
+      - "sglang_omni_mlx/**"
+      - "Voxt/**"
+      - ".github/workflows/mac-ci.yaml"
+      - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
     inputs:
       ci_labels:
@@ -67,14 +74,16 @@ jobs:
     timeout-minutes: 15
     outputs:
       run_self_hosted: ${{ steps.plan.outputs.run_self_hosted }}
-      run_asr: ${{ steps.plan.outputs.run_asr }}
+      run_asr_multi_speaker: ${{ steps.plan.outputs.run_asr_multi_speaker }}
+      run_asr_seedtts: ${{ steps.plan.outputs.run_asr_seedtts }}
       run_tts: ${{ steps.plan.outputs.run_tts }}
+      run_tts_serving: ${{ steps.plan.outputs.run_tts_serving }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
       run_omni: ${{ steps.plan.outputs.run_omni }}
       run_full_duplex: ${{ steps.plan.outputs.run_full_duplex }}
       run_turn_based: ${{ steps.plan.outputs.run_turn_based }}
       run_cascaded: ${{ steps.plan.outputs.run_cascaded }}
-      asr_ci_model: ${{ steps.plan.outputs.asr_ci_model }}
+      asr_seedtts_ci_model: ${{ steps.plan.outputs.asr_seedtts_ci_model }}
       tts_ci_model: ${{ steps.plan.outputs.tts_ci_model }}
       mps_ci_model: ${{ steps.plan.outputs.mps_ci_model }}
       mps_ci_config: ${{ steps.plan.outputs.mps_ci_config }}
@@ -196,10 +205,12 @@ jobs:
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
+          # Qwen3-ASR-1.7B serves its DFlash draft by default, at the revision sglang_omni/speculative/draft_registry.py pins.
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
             "${QWEN3_ASR_MODEL_PATH}" \
+            wilsonzheng0327/Qwen3-ASR-1.7B-dflash@d62bd4051e68282e02f93de774036a35f22f1373 \
             "${MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH}" \
             "${TTS_MODEL_PATH}" \
             "${MOSS_TTS_MODEL_PATH}" \
@@ -234,10 +245,13 @@ jobs:
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
-      needs.preflight.outputs.run_asr == 'true'
+      (needs.preflight.outputs.run_asr_multi_speaker == 'true' ||
+       needs.preflight.outputs.run_asr_seedtts == 'true')
     uses: ./.github/workflows/test-asr-ci.yaml
     with:
-      asr_ci_model: ${{ needs.preflight.outputs.asr_ci_model }}
+      run_multi_speaker: ${{ needs.preflight.outputs.run_asr_multi_speaker == 'true' }}
+      run_seedtts: ${{ needs.preflight.outputs.run_asr_seedtts == 'true' }}
+      asr_ci_model: ${{ needs.preflight.outputs.asr_seedtts_ci_model }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
@@ -253,6 +267,7 @@ jobs:
       needs.preflight.outputs.run_tts == 'true'
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
+      run_serving: ${{ needs.preflight.outputs.run_tts_serving == 'true' }}
       tts_ci_model: ${{ needs.preflight.outputs.tts_ci_model }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'

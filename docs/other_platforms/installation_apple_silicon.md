@@ -87,5 +87,23 @@ Activate the environment printed by the installer if it is not already active.
 export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
+macOS may remove `DYLD_*` variables when a SIP-protected system executable
+launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
+for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
+`/usr/bin/time`. Test a compressed input such as M4A or MP3, since WAV decoding
+can succeed without loading FFmpeg.
+
+Before downloading a model, check that both Metal and FFmpeg load:
+
+```bash
+python - <<'PY'
+import torch
+from torchcodec.decoders import AudioDecoder
+
+assert torch.backends.mps.is_available()
+print("PyTorch MPS and TorchCodec FFmpeg loading are available")
+PY
+```
+
 - [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon).
 - [Run Fun-ASR with Torch/MPS](../cookbook/fun_asr.md#apple-silicon).

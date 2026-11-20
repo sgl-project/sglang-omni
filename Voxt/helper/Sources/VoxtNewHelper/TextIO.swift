@@ -97,11 +97,16 @@ final class TextIO: @unchecked Sendable {
         func done(_ text: String?, _ via: String) -> SelectionResult {
             SelectionResult(text: text, via: via, ms: round1(monotonicMs() - t0), steps: steps)
         }
+        // A web editor's block selection reads as one blank space from
+        // every AX attribute (Lark docs in Chrome): not text, but a sign
+        // that something is selected, so the read goes on to ⌘C.
+        var blankAX = false
         if let e = focusedElement(pid: pid_t(pid)) {
             let role = string(e, kAXRoleAttribute)
             steps.append("focus=\(role ?? "?")")
             if let s = string(e, kAXSelectedTextAttribute), !s.isEmpty {
-                return done(s, SelectionVia.ax)
+                if SelectionRead.hasText(s) { return done(s, SelectionVia.ax) }
+                blankAX = true
             }
             let r = range(e)
             steps.append("range=\(r.map { "\($0.location),\($0.length)" } ?? "nil")")
@@ -111,7 +116,8 @@ final class TextIO: @unchecked Sendable {
                 if let axr = AXValueCreate(.cfRange, &rr),
                    AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
                    let s = v as? String, !s.isEmpty {
-                    return done(s, SelectionVia.axRange)
+                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axRange) }
+                    blankAX = true
                 }
             }
             // WebKit's and Chromium's text markers.
@@ -120,12 +126,16 @@ final class TextIO: @unchecked Sendable {
                 var v: CFTypeRef?
                 if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
                    let s = v as? String, !s.isEmpty {
-                    return done(s, SelectionVia.axMarker)
+                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axMarker) }
+                    blankAX = true
+                } else {
+                    steps.append("marker=empty")
                 }
-                steps.append("marker=empty")
             }
-            if let r, r.length == 0 {
-                // A caret and no selection: ⌘C would copy nothing, or a whole line.
+            var settable = DarwinBoolean(false)
+            AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
+            if SelectionRead.endsAtCaret(range: r.map { TextRange(location: $0.location, length: $0.length) },
+                                         editable: settable.boolValue || inEditableRegion(e), blankSelection: blankAX) {
                 steps.append("caret-only")
                 return done(nil, SelectionVia.none)
             }
@@ -135,12 +145,15 @@ final class TextIO: @unchecked Sendable {
         guard p.allowCopy ?? false else { return done(nil, SelectionVia.none) }
         let copied = await copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300))
         steps.append(copied.note)
-        return done(copied.text, copied.text != nil ? SelectionVia.copy : SelectionVia.none)
+        return SelectionResult(text: copied.text, image: copied.image, via: copied.text != nil ? SelectionVia.copy : SelectionVia.none,
+                               ms: round1(monotonicMs() - t0), steps: steps)
     }
 
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
-    private func copySelection(timeoutMs: Double) async -> (text: String?, note: String) {
+    private func copySelection(timeoutMs: Double) async -> (text: String?, image: Data?, note: String) {
         let (snap, c0) = await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) }
+        // Keys the user still holds (Control of a Control+C shortcut), for the log: the app may see them with ⌘C.
+        let held = flags(CGEventSource.flagsState(.hidSystemState))
         postKey(UInt16(kVK_ANSI_C), flags: .maskCommand)
         let deadline = monotonicMs() + timeoutMs
         var changed = false
@@ -151,14 +164,21 @@ final class TextIO: @unchecked Sendable {
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        guard changed else { return (nil, "copy: clipboard unchanged") }
-        let text = await onMain { () -> String? in
+        guard changed else { return (nil, nil, "copy: clipboard unchanged" + held) }
+        let (text, types, data, file) = await onMain { () -> (String?, [String], [String: Data], URL?) in
             let pb = NSPasteboard.general
-            let s = pb.string(forType: .string)
+            let text = pb.string(forType: .string)
+            let types = (pb.types ?? []).map(\.rawValue)
+            let data = ClipboardPicture.copiedSelectionImageData(types: types, text: text) {
+                pb.data(forType: NSPasteboard.PasteboardType($0))
+            }
+            let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
             Clipboard.restore(pb, snap)
-            return s
+            return (text, types, data, file)
         }
-        return (text?.isEmpty == false ? text : nil, "copy: changed")
+        let selected = ClipboardPicture.imageForCopiedSelection(types: types, data: data, file: file, maxSide: screenMaxSide, text: text)
+        let image = selected.flatMap { ScreenWindow.jpeg($0) }
+        return (text?.isEmpty == false ? text : nil, image, "copy: changed" + held)
     }
 
     func paste(_ p: PasteParams) async throws -> PasteResult {
@@ -167,7 +187,9 @@ final class TextIO: @unchecked Sendable {
         var frontPid = 0
         if let target = p.targetPid, target != 0 {
             let now = await front.current()
-            if now.pid != target {
+            var owner: pid_t = 0
+            if now.pid != target, let e = focusedElement(pid: pid_t(now.pid)) { AXUIElementGetPid(e, &owner) }
+            if !PasteChecker.targetReached(target, front: now.pid, focusOwner: owner != 0 ? Int(owner) : nil) {
                 return PasteResult(posted: false, restored: false, clipboardTaken: false, ms: round1(monotonicMs() - t0), front: now)
             }
             frontPid = now.pid
@@ -225,6 +247,12 @@ final class TextIO: @unchecked Sendable {
                 if !saw, let now = focusedElement(pid: pid_t(frontPid)) { moved = !CFEqual(now, e) }
             }
             check = PasteChecker.outcome(sawChange: saw, before: before, last: last, focusMoved: moved)
+            if check == PasteCheck.unchanged, let e = watched,
+               string(e, kAXRoleAttribute) == "AXWebArea" || inEditableRegion(e) {
+                // Chromium/GitHub editors often accept ⌘V while AX still reads the same length.
+                check = PasteCheck.unknown
+                checkMs = nil
+            }
             if check != PasteCheck.unknown { checkMs = round1(monotonicMs() - posted) }
             field = PasteField(role: watched.flatMap { string($0, kAXRoleAttribute) }, before: before.state, after: last?.state)
         }
@@ -359,6 +387,13 @@ final class TextIO: @unchecked Sendable {
         guard IsSecureEventInputEnabled() || pid != 0 else { return nil }
         if pid > 0, let a = NSRunningApplication(processIdentifier: pid_t(pid)) { return FrontApps.describe(a) }
         return App(pid: pid, bundleId: nil, name: nil)
+    }
+
+    /// The modifiers in f besides ⌘, as " held=control+shift"; "" for none.
+    private func flags(_ f: CGEventFlags) -> String {
+        let names = [(CGEventFlags.maskControl, "control"), (.maskAlternate, "option"), (.maskShift, "shift"), (.maskSecondaryFn, "fn")]
+            .filter { f.contains($0.0) }.map(\.1)
+        return names.isEmpty ? "" : " held=" + names.joined(separator: "+")
     }
 
     private func flags(_ modifiers: [String]) -> CGEventFlags {

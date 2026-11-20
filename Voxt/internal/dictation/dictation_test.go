@@ -107,6 +107,9 @@ func TestServices(t *testing.T) {
 	if got := ids(); !slices.Equal(got, []string{qwen.ID, ModelID}) || len(s.Installed(local.LLM)) != 0 {
 		t.Fatalf("with a helper %v", got)
 	}
+	if !s.Installed(local.ASR)[1].Stream {
+		t.Error("System dictation does not stream")
+	}
 	p, m, err := s.ASR(context.Background(), ModelID)
 	if _, ok := p.(Provider); !ok || err != nil || m.Name != "name of "+ModelID {
 		t.Fatalf("ASR %T %+v %v", p, m, err)

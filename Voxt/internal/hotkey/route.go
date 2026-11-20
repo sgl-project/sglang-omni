@@ -13,6 +13,9 @@ const (
 	// Busy: recognising, composing or delivering; only the cancel
 	// shortcut acts.
 	Busy
+	// Composing: an answer card is still streaming; it can finish in the
+	// background, so a feature's binding starts its session as in Idle.
+	Composing
 )
 
 // Action is what a hotkey event does.
@@ -58,15 +61,32 @@ type Decision struct {
 //   - Idle: a tap or double tap of a feature's binding starts it; a long
 //     press starts it on "down" and its "up" stops it; PasteLast pastes;
 //     Note starts a note (Decision.Feature Note).
-//   - Recording: any feature's binding stops (the "common stop"): a tap
-//     fires at once while active; the "up" of the long press that started
-//     the session stops it, other "up"s do nothing. The cancel shortcut
-//     cancels.
+//   - Recording: the shortcut that started the session fixed its mode; any
+//     feature's binding only stops (the "common stop"), never switches
+//     mode. A tap fires at once while active; the "up" of the long press
+//     that started the session stops it, other "up"s do nothing. Cancel
+//     cancels. With Strict shortcuts on (strict is the session's feature),
+//     only that feature's bindings stop; another feature's do nothing.
+//     PasteLast stops only when its own chord is Return and Return
+//     finishing is live (its Return may be the finish the plan dropped);
+//     otherwise it waits.
 //   - Busy: the cancel shortcut cancels; everything else waits.
+//   - Composing: an answer streams into its card; a feature's binding
+//     starts its session as in Idle (the answer finishes in the
+//     background), the cancel shortcut acts on the streaming session.
 //
 // holdBinding is the binding whose long press started the session ("":
-// none).
-func Route(e proto.HotkeyEventParams, phase Phase, holdBinding string) Decision {
+// none); strict is the feature that started it with Strict shortcuts on
+// ("": off); finish is whether the recording's plan has Return finishing
+// (a Transcribe one, not a note, with the setting on). For PasteLast the
+// caller also requires its own chord to be Return.
+func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string, finish bool) Decision {
+	if e.Binding == FinishID {
+		if phase == Recording && e.Phase == proto.PhaseTrigger && finish {
+			return Decision{Action: Stop}
+		}
+		return Decision{}
+	}
 	if e.Binding == proto.HotkeyCancel {
 		if phase != Idle {
 			return Decision{Action: Cancel}
@@ -78,13 +98,21 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding string) Decision 
 		return Decision{}
 	}
 	if feature == PasteLast {
-		if phase == Idle && e.Phase == proto.PhaseTrigger {
+		if e.Phase != proto.PhaseTrigger {
+			return Decision{}
+		}
+		switch phase {
+		case Idle:
 			return Decision{Action: Paste}
+		case Recording:
+			if finish {
+				return Decision{Action: Stop} // its Return may be the finish the plan dropped
+			}
 		}
 		return Decision{}
 	}
 	switch phase {
-	case Idle:
+	case Idle, Composing:
 		switch e.Phase {
 		case proto.PhaseTrigger:
 			return Decision{Action: Start, Feature: feature}
@@ -92,6 +120,9 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding string) Decision 
 			return Decision{Action: Start, Feature: feature, Hold: true}
 		}
 	case Recording:
+		if strict != "" && feature != strict {
+			return Decision{}
+		}
 		switch e.Phase {
 		case proto.PhaseTrigger, proto.PhaseDown:
 			return Decision{Action: Stop}

@@ -13,12 +13,21 @@ type Caller interface {
 }
 
 // HelperAudio is the microphone through the helper (capture.start as a
-// job named by the session's id, capture.stop).
-type HelperAudio struct{ H Caller }
+// job named by the caller's id: a session's, capture.stop), or the
+// system's sound (Method proto.MethodCaptureSystem, which takes no
+// devices).
+type HelperAudio struct {
+	H      Caller
+	Method string // "": capture.start
+}
 
 func (h HelperAudio) Record(ctx context.Context, id string, p proto.CaptureParams, fn func(AudioEvent)) (proto.CaptureResult, error) {
 	var out proto.CaptureResult
-	raw, err := h.H.Call(ctx, id, proto.MethodCaptureStart, p, func(m proto.Message) {
+	method, params := proto.MethodCaptureStart, any(p)
+	if h.Method == proto.MethodCaptureSystem {
+		method, params = h.Method, proto.SystemParams{SampleRate: p.SampleRate, FrameMS: p.FrameMS, LevelHz: p.LevelHz, MaxSeconds: p.MaxSeconds}
+	}
+	raw, err := h.H.Call(ctx, id, method, params, func(m proto.Message) {
 		var ev AudioEvent
 		switch m.Method {
 		case proto.MethodCapturePCM:

@@ -32,7 +32,7 @@ const (
 	Assistant Role = "assistant"
 )
 
-// Message is one chat turn. Text only: VoxtNew sends no images.
+// Message is one chat turn: text (Request.Images adds pictures).
 type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
@@ -51,6 +51,14 @@ type Request struct {
 	// Model is the backend's model id. Empty: the backend's default.
 	Model    string
 	Messages []Message
+	// Images, JPEGs, go with the last user message, for a model that
+	// takes images (the window the user speaks into, a copied picture,
+	// the Rewrite box's). A server that refuses the request (400) gets
+	// it again without the images, unless ImagesRequired: then the
+	// refusal is the request's error (the box's images are the user's
+	// own: dropping them silently would answer about nothing).
+	Images         [][]byte
+	ImagesRequired bool
 
 	Temperature *float64 // nil: the backend's default
 	TopP        *float64
@@ -80,13 +88,17 @@ type Request struct {
 	FirstTokenTimeout time.Duration
 	StallTimeout      time.Duration
 
-	// Skill tags the call for usage accounting and its default
-	// temperature (DefaultTemperature).
+	// Thinking, when set, replaces the service's thinking mode, effort
+	// and budget for this request (the answer card's thinking menu).
+	Thinking *Thinking
+	// InputChars is the length of the user's input (the dictation, the
+	// selection and the instruction), for Generation.ThinkOffUnder; 0:
+	// unknown.
+	InputChars int
+
+	// Skill tags the call for usage accounting.
 	Skill Skill
 }
-
-// F64 returns a pointer to v, for Request.Temperature and TopP.
-func F64(v float64) *float64 { return &v }
 
 // Usage is the token count of a call. Estimated is true when the
 // backend reported none and the counts come from EstimateTokens.
@@ -125,6 +137,9 @@ type Response struct {
 	Latency      time.Duration // of the successful attempt
 	Attempts     int           // 1 + retries (Client)
 	Repairs      int           // JSON repair turns (Client.JSON)
+	// ImagesDropped: the model refused the images and the answer came
+	// from the text alone (only the session may claim an image went).
+	ImagesDropped bool
 	// JSON is the validated value for FormatJSON requests made through
 	// Client.JSON (the extracted JSON text otherwise empty).
 	JSON json.RawMessage

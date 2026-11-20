@@ -27,20 +27,20 @@ func DeliveryText(res deliver.Result, target proto.App) string {
 	case deliver.ReasonNoAccess:
 		return i18n.T("Allow Accessibility to insert results where you type.")
 	case deliver.ReasonNotFront, deliver.ReasonNoTarget:
-		return i18n.T("%s is not in front any more.", name)
+		return i18n.T("%s is no longer the frontmost app.", name)
 	case deliver.ReasonNotEditable:
-		return i18n.T("No text field is focused: click where the text should go, then insert.")
+		return i18n.T("No text field is focused. Click where the text should go, then insert.")
 	case deliver.ReasonSecure:
-		return i18n.T("A password field is focused: Voxt never types into one.")
+		return i18n.T("Voxt never types into password fields.")
 	case deliver.ReasonFailed:
 		return i18n.T("Could not insert: %v", res.Err)
 	case deliver.ReasonUnconfirmed:
-		return i18n.T("The text did not show up where you type: it is on the clipboard, press ⌘V.")
+		return i18n.T("The text did not show up where you type. Press ⌘V to paste it from the clipboard.")
 	case deliver.ReasonSecureInput:
 		if s := res.Paste.SecureInput; s != nil && s.Name != "" {
-			return i18n.T("Secure input is on in %s, which can block the keys Voxt sends: the text is on the clipboard, press ⌘V.", s.Name)
+			return i18n.T("Secure input is on in %s and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard.", s.Name)
 		}
-		return i18n.T("Secure input is on, which can block the keys Voxt sends: the text is on the clipboard, press ⌘V.")
+		return i18n.T("Secure input is on and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard.")
 	}
 	return ""
 }
@@ -74,75 +74,87 @@ func SceneShort(s session.Snapshot) string {
 // WorkingText says what a session does after recording (the loader's
 // description).
 func WorkingText(s session.Snapshot) string {
+	return WorkingTextFor(i18n.CurrentTranslator(), s)
+}
+
+func WorkingTextFor(translator *i18n.Translator, s session.Snapshot) string {
 	switch s.State {
 	case session.Reading:
-		return i18n.T("Reading the selection…")
+		return translator.T("Reading the selection…")
 	case session.Composing:
 		switch {
 		case s.Kind == store.KindTranslate && s.Selection != "":
-			return i18n.T("Translating the selection…")
+			return translator.T("Translating the selection…")
 		case s.Kind == store.KindTranslate:
-			return i18n.T("Translating…")
+			return translator.T("Translating…")
 		case s.Kind == store.KindRewrite && s.Selection != "":
-			return i18n.T("Rewriting the selection…")
+			return translator.T("Rewriting the selection…")
 		case s.Kind == store.KindRewrite:
-			return i18n.T("Writing…")
+			return translator.T("Writing…")
 		}
-		return i18n.T("Cleaning up…")
+		return translator.T("Cleaning up…")
 	case session.Delivering:
-		return i18n.T("Inserting…")
+		return translator.T("Inserting…")
 	}
-	return i18n.T("Recognizing…")
+	return translator.T("Recognising…")
 }
 
 // WaitText says what a session waits for (session.Snapshot.Waiting): the
 // starting icon's accessibility label, and the pill's line for WaitMic
 // until the live text comes; "" for nothing.
 func WaitText(s session.Snapshot) string {
+	return WaitTextFor(i18n.CurrentTranslator(), s)
+}
+
+func WaitTextFor(translator *i18n.Translator, s session.Snapshot) string {
 	switch {
 	case s.Waiting == session.WaitMic && s.State == session.Recording:
-		return i18n.T("Starting the microphone…")
+		return translator.T("Starting the microphone…")
 	case s.Waiting == session.WaitModel && (s.State == session.Recording || s.State == session.Recognizing):
-		return i18n.T("Loading the speech model…")
+		return translator.T("Loading the speech model…")
 	}
 	return ""
 }
 
 func KindTitle(k store.Kind) string {
-	switch k {
-	case store.KindTranslate:
-		return i18n.T("Translate")
-	case store.KindRewrite:
-		return i18n.T("Rewrite")
-	}
-	return i18n.T("Transcribe")
+	return KindTitleFor(i18n.CurrentTranslator(), k)
 }
 
-// TimingsText is a try's stage times and models: "Recording 3.2 s ·
+func KindTitleFor(translator *i18n.Translator, k store.Kind) string {
+	switch k {
+	case store.KindTranslate:
+		return translator.T("Translate")
+	case store.KindRewrite:
+		return translator.T("Rewrite")
+	}
+	return translator.T("Transcribe")
+}
+
+// TimingsTextFor is a try's stage times and models: "Recording 3.2 s ·
 // Recognition 0.8 s · Clean-up 1.1 s · Accurate speech recognition,
 // Balanced language model".
-func TimingsText(s session.Snapshot) string {
-	secs := func(d time.Duration) string { return i18n.T("%.1f s", d.Seconds()) }
+func TimingsTextFor(translator *i18n.Translator, s session.Snapshot) string {
+	secs := func(d time.Duration) string { return translator.T("%.1f s", d.Seconds()) }
 	var parts []string
 	tm := s.Timings
 	if tm.Audio > 0 {
-		parts = append(parts, i18n.T("Recording %s", secs(tm.Audio)))
+		parts = append(parts, translator.T("Recording %s", secs(tm.Audio)))
 	}
 	if tm.ASR > 0 {
-		parts = append(parts, i18n.T("Recognition %s", secs(tm.ASR)))
+		parts = append(parts, translator.T("Recognition %s", secs(tm.ASR)))
 	}
 	if tm.LLM > 0 {
 		switch s.Kind {
 		case store.KindTranslate:
-			parts = append(parts, i18n.T("Translation %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Translation %s", secs(tm.LLM)))
 		case store.KindRewrite:
-			parts = append(parts, i18n.T("Writing %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Writing %s", secs(tm.LLM)))
 		default:
-			parts = append(parts, i18n.T("Clean-up %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Clean-up %s", secs(tm.LLM)))
 		}
 	}
 	if tm.Total > 0 {
-		parts = append(parts, i18n.T("Total %s", secs(tm.Total)))
+		parts = append(parts, translator.T("Total %s", secs(tm.Total)))
 	}
 	var svc []string
 	for _, m := range []session.Model{s.ASR, s.LLM} {
@@ -154,21 +166,6 @@ func TimingsText(s session.Snapshot) string {
 		parts = append(parts, strings.Join(svc, ", "))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// CardTitle is the card's heading: a Rewrite answer's own title, else
-// what the card holds.
-func CardTitle(kind store.Kind, title string) string {
-	if t := strings.TrimSpace(title); t != "" {
-		return t
-	}
-	switch kind {
-	case store.KindTranslate:
-		return i18n.T("Translation")
-	case store.KindRewrite:
-		return i18n.T("AI Answer") // Voxt's, a rewritten selection's too
-	}
-	return i18n.T("Transcription")
 }
 
 // TargetLanguageLabel names a target language in the UI's language.
@@ -186,20 +183,20 @@ func WhyInCard(r deliver.Reason, selection bool, name string) string {
 	}
 	switch r {
 	case deliver.ReasonNotFront, deliver.ReasonNoTarget:
-		return i18n.T("%s is not in front any more: insert it there, or copy it.", name)
+		return i18n.T("%s is no longer in front. Switch back to insert there, or copy the text.", name)
 	case deliver.ReasonNotEditable:
 		if selection {
-			return i18n.T("The selection in %s cannot be edited: copy the result, or click where it should go and insert.", name)
+			return i18n.T("The selection in %s cannot be edited. Copy the result, or click where it should go and insert.", name)
 		}
-		return i18n.T("No text field is focused: click where it should go, then insert, or copy it.")
+		return i18n.T("No text field is focused. Click where the text should go and insert, or copy it.")
 	case deliver.ReasonSecure:
-		return i18n.T("A password field is focused, and Voxt never types into one: copy it, or click another field and insert.")
+		return i18n.T("Voxt never types into password fields. Copy the text, or click another field and insert.")
 	case deliver.ReasonNoAccess:
 		return i18n.T("Allow Accessibility to insert results where you type.")
 	case deliver.ReasonUnconfirmed:
-		return i18n.T("The text did not show up where you type. It is on the clipboard: press ⌘V, or insert it again.")
+		return i18n.T("The text did not show up where you type. Press ⌘V to paste it from the clipboard, or insert it again.")
 	case deliver.ReasonSecureInput:
-		return i18n.T("Secure input is on in another app, which can block the keys Voxt sends. The text is on the clipboard: press ⌘V, or insert it again.")
+		return i18n.T("Secure input is on in another app and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard, or insert it again.")
 	}
 	return ""
 }

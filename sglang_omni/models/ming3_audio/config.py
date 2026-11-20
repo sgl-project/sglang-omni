@@ -43,7 +43,7 @@ def default_stages() -> list[StageConfig]:
             engine=EngineArgs(
                 mem_fraction_static=0.93,
                 max_running_requests=8,
-                disable_cuda_graph=True,
+                disable_cuda_graph=False,
                 enable_torch_compile=False,
             ),
             next=["decode", "talker"],

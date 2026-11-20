@@ -41,6 +41,10 @@ func Main() {
 			os.Exit(2)
 		}
 	}
+	if o.NoDraft && arg(args, "--draft-model-path") != "" {
+		fmt.Fprintln(os.Stderr, "unknown argument --draft-model-path")
+		os.Exit(2)
+	}
 	record(o, Record{Event: "launch", Args: args, Binary: filepath.Base(os.Args[0])})
 	emit := func(v map[string]any) {
 		b, _ := json.Marshal(v)
@@ -64,6 +68,9 @@ func Main() {
 	if err != nil {
 		emit(map[string]any{"event": "failed", "reason": err.Error()})
 		os.Exit(1)
+	}
+	if o.LiveStall {
+		ln = &smallRecvListener{ln}
 	}
 	kind := arg(args, "--model-kind")
 	// A shutdown ends the open live sessions and waits for their records
@@ -129,7 +136,7 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 			audio = base64.StdEncoding.EncodeToString(b[min(44, len(b)):])
 		}
 	}
-	record(o, Record{Event: "final", Fields: fields, Samples: samples, Audio: audio})
+	record(o, Record{Event: "final", Host: r.Host, Fields: fields, Samples: samples, Audio: audio})
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
@@ -147,6 +154,10 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		os.Exit(3)
 	}
 	for end := time.Now().Add(o.Delay); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if r.Context().Err() != nil {
+			record(o, Record{Event: "final-cancelled", Samples: samples})
+			return
+		}
 		_, _ = io.WriteString(w, ":\n\n")
 		flush()
 	}
@@ -163,10 +174,45 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	if o.Echo && fields["prompt"] != "" {
 		text += strings.Join(strings.Split(fields["prompt"], "\n"), "，") + "。"
 	}
-	done, _ := json.Marshal(map[string]any{"type": "transcript.text.done", "text": text,
-		"generation_metadata": map[string]any{"generated_token_count": 10, "language": language, "finish_reason": "stop"}})
+	finish := "stop"
+	if o.TokenLimit {
+		finish = "length"
+	}
+	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
+	if o.WindowTexts != nil {
+		metadata["window_texts"] = o.WindowTexts
+	}
+	body := map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata}
+	if o.Segments {
+		first, second := "first", "second"
+		if o.SegmentTags {
+			first, second = "[0.25][S01]first[1.00]", "[1.25][S02]second[2.00]"
+		}
+		body["segments"] = []map[string]any{
+			{"start": 0.5, "end": 1.5, "speaker": "S01", "text": first},
+			{"start": 1.5, "end": 2.5, "speaker": "S02", "text": second},
+		}
+	}
+	done, _ := json.Marshal(body)
 	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", done)
 	flush()
+}
+
+// smallRecvListener gives accepted sockets a small receive buffer, so a
+// client whose server stopped reading (Opts.LiveStall) blocks on its
+// socket writes quickly and for certain. A buffer the kernel refuses
+// fails the accept: the stall tests prove nothing without it.
+type smallRecvListener struct{ net.Listener }
+
+func (l *smallRecvListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); err == nil && ok {
+		if err := tc.SetReadBuffer(16 << 10); err != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("smallRecvListener: %w", err)
+		}
+	}
+	return c, err
 }
 
 // realtime is a manual-turn session: a partial after the first 100 ms of
@@ -188,11 +234,20 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(v)
 		_ = c.Write(ctx, websocket.MessageText, b)
 	}
-	samples, next, language := 0, 1600, ""
+	samples, next, language, prompt := 0, 1600, "", ""
+	segs := 0
+	stalled := false
 	defer func() {
-		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language}})
+		record(o, Record{Event: "live", Host: r.Host, Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
+		// The runtime forwards stderr to its log: a test can wait for
+		// the session's end instead of polling the record file.
+		fmt.Fprintf(os.Stderr, "live session ended: %d samples\n", samples)
 	}()
 	for {
+		if stalled {
+			<-ctx.Done() // a hung server: it never reads again
+			return
+		}
 		_, b, err := c.Read(ctx)
 		if err != nil {
 			return
@@ -206,7 +261,9 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		switch ev.Type {
 		case "session.update":
 			language, _ = ev.Session["language"].(string)
+			prompt, _ = ev.Session["prompt"].(string)
 			send(map[string]any{"type": "transcription_session.updated"})
+			stalled = o.LiveStall
 		case "input_audio_buffer.append":
 			pcm, err := base64.StdEncoding.DecodeString(ev.Audio)
 			if err != nil {
@@ -216,12 +273,22 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			samples += len(pcm) / 2
 			if samples >= next {
 				next = samples + 16000
+				if segs > 0 && o.LiveSegDelay > 0 {
+					select {
+					case <-time.After(o.LiveSegDelay):
+					case <-ctx.Done():
+						return
+					}
+				}
+				segs++
 				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
 			}
 		case "input_audio_buffer.commit":
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":
-			send(map[string]any{"type": "transcription.completed", "text": "live final"})
+			if !o.LiveDrop {
+				send(map[string]any{"type": "transcription.completed", "text": "live final"})
+			}
 			return
 		}
 	}
@@ -263,7 +330,7 @@ func timestamps(o Opts, w http.ResponseWriter, r *http.Request) {
 	for k, v := range r.MultipartForm.Value {
 		fields[k] = v[0]
 	}
-	record(o, Record{Event: "vad-timestamps", Fields: fields, Samples: len(pcm) / 2})
+	record(o, Record{Event: "vad-timestamps", Host: r.Host, Fields: fields, Samples: len(pcm) / 2})
 	type ts struct {
 		Start int `json:"start"`
 		End   int `json:"end"`
@@ -293,7 +360,7 @@ func vadStream(o Opts, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	total := 0
-	defer func() { record(o, Record{Event: "vad-stream", Samples: total}) }()
+	defer func() { record(o, Record{Event: "vad-stream", Host: r.Host, Samples: total}) }()
 	for {
 		_, b, err := c.Read(ctx)
 		if err != nil {

@@ -2,17 +2,22 @@
 // The servers' shared protocol around stand-in models, for the protocol tests:
 // no checkpoint is read and no model runs.
 //
-//   stub_server --supervised --model-kind stub_asr|stub_speech|stub_chat
+//   stub_server --supervised
+//       --model-kind stub_asr|stub_speech|stub_ming_tts|stub_chat
 //       --model-directory DIR [--load-delay-ms N] [--max-queued-requests N]
 //       [--request-timeout-s S]
 //
 // stub_asr transcribes audio to its decoded sample count, with the language
 // and max_new_tokens fields as its generation metadata, and serves
 // /v1/realtime, where transcription.done answers the sample count appended.
-// stub_speech answers chunks chunks of chunk_samples silent samples. Both
-// read an outcome field: "fail" throws, "block" runs, past any chunks, until it
-// is cancelled or its deadline passes, and stub_asr's "segments" returns one
-// speaker segment.
+// stub_speech answers chunks chunks of chunk_samples silent samples, on
+// /v1/audio/speech and as /generate's JSON. Both read an outcome field: "fail"
+// throws, "block" runs, past any chunks, until it is cancelled or its deadline
+// passes, and stub_asr's "segments" returns one speaker segment.
+// stub_ming_tts reads a request as ming_tts_server does and answers its
+// reference's 16 kHz samples as silence, with the acoustic patch limit as its
+// completion tokens and the reference's 44.1 kHz sample count as its prompt
+// tokens.
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -25,12 +30,15 @@
 #include <thread>
 #include <vector>
 
+#include "common/asr_service.h"
+#include "common/generation.h"
 #include "common/http.h"
+#include "common/realtime_connection.h"
 #include "common/service.h"
+#include "common/speech_service.h"
+#include "common/transcription.h"
 #include "ming3_audio/ming3_audio_service.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/realtime.h"
-#include "qwen3_asr/speech_service.h"
+#include "ming_tts/ming_tts_request.h"
 
 namespace {
 
@@ -44,7 +52,7 @@ constexpr size_t kMaxRequestBodyBytes = 64 * 1024;
 constexpr int kChatPromptTokenCount = 17;
 constexpr int kChatCompletionTokenCount = 3;
 
-class StubRealtimeConnection : public qwen3_asr::RealtimeConnection {
+class StubRealtimeConnection : public omni_server::RealtimeConnection {
 public:
   using RealtimeConnection::RealtimeConnection;
 
@@ -96,19 +104,23 @@ public:
         while (!cancel.load()) {
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
-      qwen3_asr::TranscriptionResult result;
+      omni_common::TranscriptionResult result;
       result.text = std::to_string(sample_count);
       result.language = language;
       result.generated_token_count = max_new_tokens;
-      result.finish_reason = qwen3_asr::FinishReason::kStop;
+      result.finish_reason = omni_common::FinishReason::kStop;
       if (outcome == "segments") {
         result.segments.push_back({.start_seconds = 0.5,
                                    .end_seconds = 1.5,
                                    .speaker = "S01",
                                    .text = result.text});
+      } else if (outcome == "draft") {
+        result.verify_round_count = 2;
+        result.proposed_draft_token_count = 7;
+        result.accepted_draft_token_count = 3;
       } else {
       }
       return result;
@@ -116,13 +128,13 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     asr_service::AddRealtimeHandler(context, realtime_factory_);
   }
 
 private:
   const asr_service::RealtimeFactory realtime_factory_ =
-      [](qwen3_asr::RealtimeConnection::Sender sender) {
+      [](omni_server::RealtimeConnection::Sender sender) {
         return std::make_shared<StubRealtimeConnection>(std::move(sender));
       };
 };
@@ -131,6 +143,12 @@ class StubSpeechModel : public speech_service::SpeechServedModel {
 public:
   using SpeechServedModel::SpeechServedModel;
   void ReleaseIdleMemory() override {}
+
+  void AddHandlers(mg_context *context,
+                   omni_server::TranscriptionWorker &worker) override {
+    SpeechServedModel::AddHandlers(context, worker);
+    mg_set_request_handler(context, "/generate$", HandleGenerate, this);
+  }
 
 protected:
   speech_service::SpeechJob ParseSpeech(const Json &body) override {
@@ -159,11 +177,11 @@ protected:
           context.check_deadline();
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       speech_service::SpeechResult result;
-      result.finish_reason = qwen3_asr::FinishReason::kStop;
+      result.finish_reason = omni_common::FinishReason::kStop;
       result.completion_token_count = chunk_count;
       return result;
     };
@@ -171,6 +189,43 @@ protected:
   }
 
   int SampleRate() const override { return kSpeechSampleRate; }
+
+private:
+  static int HandleGenerate(mg_connection *connection, void *data) {
+    auto *model = static_cast<StubSpeechModel *>(data);
+    return model->Speak(connection, [model](const Json &body) {
+      speech_service::SpeechJob job = model->ParseSpeech(body);
+      job.is_generate_response = true;
+      return job;
+    });
+  }
+};
+
+class StubMingSpeechModel : public speech_service::SpeechServedModel {
+public:
+  using SpeechServedModel::SpeechServedModel;
+  void ReleaseIdleMemory() override {}
+
+protected:
+  speech_service::SpeechJob ParseSpeech(const Json &body) override {
+    speech_service::SpeechJob job = speech_service::ParseCommonFields(body);
+    job.model = speech_service::ParseModel(body);
+    const ming_tts::SpeechRequest request = ming_tts::ParseSpeechRequest(body);
+    job.synthesize = [request](const speech_service::SpeechContext &context) {
+      speech_service::SpeechResult result;
+      if (request.reference_audio.has_value()) {
+        context.send(std::vector<float>(
+            request.reference_audio->samples_16k.size(), 0.0f));
+        result.prompt_token_count = request.reference_audio->samples_44k.size();
+      } else {
+      }
+      result.completion_token_count = request.max_patches;
+      return result;
+    };
+    return job;
+  }
+
+  int SampleRate() const override { return ming_tts::kAudioSampleRate; }
 };
 
 class StubChatService : public omni_server::Service {
@@ -288,6 +343,15 @@ int main(int argc, char **argv) {
         kMaxRequestBodyBytes, max_queued_requests, request_timeout_seconds);
   });
   speech.flags["--load-delay-ms"] = set_load_delay;
+  asr_service::ServedKind ming_speech;
+  ming_speech.model_kind = "stub_ming_tts";
+  speech_service::AddSpeechFlags(
+      ming_speech, [](const std::filesystem::path &, int max_queued_requests,
+                      double request_timeout_seconds) {
+        return std::make_unique<StubMingSpeechModel>(
+            ming_tts::kMaxRequestBodyBytes, max_queued_requests,
+            request_timeout_seconds);
+      });
   const omni_server::ServedKind chat{
       "stub_chat",
       [](const std::filesystem::path &) {
@@ -297,5 +361,6 @@ int main(int argc, char **argv) {
       {}};
   return omni_server::Serve(argc, argv,
                             {asr_service::CreateServedKind(asr),
-                             asr_service::CreateServedKind(speech), chat});
+                             asr_service::CreateServedKind(speech),
+                             asr_service::CreateServedKind(ming_speech), chat});
 }

@@ -59,6 +59,8 @@ type Opts struct {
 	// Text is a Final's text (default "fake transcript"); "{n}" in it is
 	// the request's number (1 for the server's first Final).
 	Text string
+	// WindowTexts adds Whisper's per-window metadata to a Final.
+	WindowTexts []string
 	// FailFrom: the Finals from this one on (1 = the first) answer an
 	// error event, as ModeError does; 0: none.
 	FailFrom int
@@ -75,6 +77,25 @@ type Opts struct {
 	// Older is a server from before --cache-limit-mb: it refuses the flag
 	// as an unknown argument (a newer one only refuses a value below -1).
 	Older bool
+	// LiveDrop: the realtime socket closes at transcription.done without
+	// its answer, as a server that crashed.
+	LiveDrop bool
+	// LiveSegDelay slows the realtime partials after the first: the
+	// server's recognition of the later audio lags behind the socket.
+	LiveSegDelay time.Duration
+	// LiveStall: the realtime socket answers the session update, then
+	// never reads again (a hung server). Accepted sockets get a small
+	// receive buffer, so the client's writer blocks on the socket.
+	LiveStall bool
+	// NoDraft is a server from before --draft-model-path: it refuses the
+	// flag as an unknown argument.
+	NoDraft bool
+	// Segments adds two speaker segments to every Final answer.
+	Segments bool
+	// SegmentTags puts MOSS timestamp and speaker tags in those segments.
+	SegmentTags bool
+	// TokenLimit ends the Final at the generation budget.
+	TokenLimit bool
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -83,12 +104,20 @@ func Env(o Opts) []string {
 	v.Set("mode", o.Mode)
 	v.Set("log", o.Log)
 	v.Set("text", o.Text)
+	v["windows"] = o.WindowTexts
 	v.Set("delay", o.Delay.String())
 	v.Set("load", o.Load.String())
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
 	v.Set("older", strconv.FormatBool(o.Older))
+	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
+	v.Set("segments", strconv.FormatBool(o.Segments))
+	v.Set("segmenttags", strconv.FormatBool(o.SegmentTags))
+	v.Set("tokenlimit", strconv.FormatBool(o.TokenLimit))
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
+	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
+	v.Set("livesegdelay", o.LiveSegDelay.String())
+	v.Set("livestall", strconv.FormatBool(o.LiveStall))
 	return []string{EnvFake + "=" + v.Encode()}
 }
 
@@ -97,13 +126,20 @@ func Enabled() bool { return os.Getenv(EnvFake) != "" }
 
 func opts() Opts {
 	v, _ := url.ParseQuery(os.Getenv(EnvFake))
-	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text")}
+	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), WindowTexts: v["windows"]}
 	o.Delay, _ = time.ParseDuration(v.Get("delay"))
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
+	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
+	o.Segments, _ = strconv.ParseBool(v.Get("segments"))
+	o.SegmentTags, _ = strconv.ParseBool(v.Get("segmenttags"))
+	o.TokenLimit, _ = strconv.ParseBool(v.Get("tokenlimit"))
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
+	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
+	o.LiveSegDelay, _ = time.ParseDuration(v.Get("livesegdelay"))
+	o.LiveStall, _ = strconv.ParseBool(v.Get("livestall"))
 	if o.Text == "" {
 		o.Text = "fake transcript"
 	}
@@ -116,6 +152,7 @@ func opts() Opts {
 // Record is one line of the log.
 type Record struct {
 	Event  string            `json:"event"` // launch, final, live, vad-timestamps, vad-stream, shutdown
+	Host   string            `json:"host,omitempty"`
 	Args   []string          `json:"args,omitempty"`
 	Fields map[string]string `json:"fields,omitempty"`
 	// Samples is the audio a request carried (a live session: all it got).

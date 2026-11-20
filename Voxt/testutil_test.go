@@ -7,7 +7,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,10 +36,19 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // The test binary is also the fake helper (helpertest) and the fake
 // Omni server (omnitest).
+// failListModels stands for runListModels in tests: no dialog asks a
+// real server on this Mac which models it has.
+func failListModels(context.Context, settings.Provider, string, *http.Client) ([]string, error) {
+	return nil, errors.New("no model servers in tests")
+}
+
 func TestMain(m *testing.M) {
 	if helpertest.Enabled() {
 		helpertest.Main()
@@ -42,6 +56,10 @@ func TestMain(m *testing.M) {
 	if omnitest.Enabled() {
 		omnitest.Main()
 	}
+	if dir := os.Getenv(crashDirEnv); dir != "" {
+		crashInTest(dir) // shell_crash_test.go
+	}
+	runListModels = failListModels
 	os.Exit(runIsolated(m))
 }
 
@@ -50,12 +68,32 @@ func TestMain(m *testing.M) {
 // in its data folder (familyConfig), and the environment points
 // elsewhere too, for what resolves the defaults.
 func runIsolated(m *testing.M) int {
+	// A Unix socket's path holds at most 104 bytes on macOS, and the tests
+	// bind sockets in their temporary folders: keep those short however
+	// long TMPDIR is.
+	short, err := os.MkdirTemp("/tmp", "vx")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(short)
+	os.Setenv("TMPDIR", short)
 	tmp, err := os.MkdirTemp("", "voxtnew-family-")
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(tmp)
 	realHub = models.Hub()
+	realCache, _ := os.UserCacheDir()
+	// LegacyHubs always considers ~/.cache/huggingface/hub; point HOME away so
+	// unit tests do not import catalogue models from the developer machine.
+	os.Setenv("HOME", tmp)
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+	// mygo's sqlite plugin finds its dylib only under UserCacheDir; keep the
+	// real one so each run does not download it from GitHub again.
+	if cache, err := os.UserCacheDir(); err == nil && realCache != "" && cache != realCache {
+		if _, err := os.Stat(filepath.Join(realCache, "mygo")); err == nil && os.MkdirAll(cache, 0o755) == nil {
+			os.Symlink(filepath.Join(realCache, "mygo"), filepath.Join(cache, "mygo"))
+		}
+	}
 	os.Setenv(family.EnvDir, filepath.Join(tmp, "ActNow"))
 	os.Setenv("HF_HUB_CACHE", filepath.Join(tmp, "hub"))
 	os.Unsetenv("HF_HOME")
@@ -69,7 +107,34 @@ func runIsolated(m *testing.M) int {
 		return actnow.Config{Dir: family.At(filepath.Join(d, "ActNow")), Hub: hub,
 			BundleID: "dev.hehehai.voxtnew", Version: "0.1.0-test", System: noApps{}}
 	}
-	return m.Run()
+	code := m.Run()
+	// A test that leaves undeletable files in the tests' HOME (a read-only
+	// Go module cache, say) fills the disk one run at a time: fail the run.
+	if err := os.RemoveAll(tmp); err != nil && code == 0 {
+		fmt.Fprintln(os.Stderr, "the tests' HOME could not be removed:", err)
+		code = 1
+	}
+	return code
+}
+
+func TestIsolatedHomeDoesNotLinkAMissingMyGoCache(t *testing.T) {
+	if os.Getenv("VOXT_TEST_EMPTY_MYGO_CACHE") == "1" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(filepath.Join(cache, "mygo")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the isolated cache must not link a missing real cache: %v", err)
+		}
+		return
+	}
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestIsolatedHomeDoesNotLinkAMissingMyGoCache$")
+	cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "VOXT_TEST_EMPTY_MYGO_CACHE=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("clean-cache test run: %v\n%s", err, output)
+	}
 }
 
 // testHubs are the model libraries of test apps that use another than
@@ -98,6 +163,8 @@ type fakeSupervisor struct {
 	status   helper.Status
 	calls    []proto.Message
 	handlers map[string]func(json.RawMessage) (any, error)
+	// asked are the permissions permissions.request asked for, in turn.
+	asked []string
 	// out answers output.*: pretend speakers (the default) and AirPods,
 	// with the Swift helper's rules (helpertest.OutputHelper).
 	out *helpertest.OutputHelper
@@ -135,6 +202,9 @@ func newFakeSupervisor(bus *core.Bus) *fakeSupervisor {
 	f.handlers[proto.MethodPermissionsRequest] = func(raw json.RawMessage) (any, error) {
 		var p proto.PermissionsRequestParams
 		json.Unmarshal(raw, &p)
+		f.mu.Lock()
+		f.asked = append(f.asked, p.Permission)
+		f.mu.Unlock()
 		switch p.Permission {
 		case proto.PermissionMicrophone:
 			perms.Microphone = proto.PermGranted
@@ -230,7 +300,9 @@ func newTestAppIn(t *testing.T, dir string) (*app, *fakeSupervisor, *ui.Tester) 
 	a.connectUpdates()
 	a.startHelper()
 	t.Cleanup(a.quit)
-	return a, fs, ui.NewTester(a.view, windowWidth, windowHeight)
+	tester := ui.NewTester(a.view, windowWidth, windowHeight)
+	a.copyText = func(text string) error { tester.SetClipboard(text); return nil }
+	return a, fs, tester
 }
 
 // requireCJKFont fails a test that measures Chinese text's pixels when
@@ -364,6 +436,104 @@ func (f *fakeTimers) advance(d time.Duration) {
 // overlay view (measureHook is guessText).
 func guessWidth(k ovSized) float32 { w, _ := guessText(k); return w }
 
+func (a *app) ovTextHeight(key ovSized) (float32, bool) {
+	measured, ok := a.ovText(key)
+	return measured.h, ok
+}
+
+func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
+	pill := sessionPillViewState{Title: uitext.KindTitle(snapshot.Kind), Starting: snapshot.Waiting != session.WaitNone}
+	scene := float32(0)
+	if name := uitext.SceneShort(snapshot); name != "" {
+		scene = float32(textWidth(name, float64(layout.SceneSize)))
+	}
+	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
+		return float32(textWidth(key.text, float64(key.size))), true
+	})
+	return row + 2*layout.PillPadX
+}
+
+func (a *app) cardBodyHeight(card *sessionCardViewState) (int, bool) {
+	body, streamHeight, exact := sessionOverlayCardBodyHeight(a.ov.projection.view.SessionID, card, a.ovTextHeight, a.sessionOverlayPreviewHeights(&a.ov.projection.view), a.cardBodyMax(card), a.ov.stream.h, layout.CardSizes[card.SizeStep].Width(a.ov.area, a.prefs.Overlay.Margin))
+	a.ov.stream.h = streamHeight
+	return body, exact
+}
+
+func (a *app) cardBodyMax(card *sessionCardViewState) int {
+	return sessionOverlayCardBodyMax(card, a.ov.area.Height, a.prefs.Overlay.Margin)
+}
+
+func (a *app) cachedCard() sessionCardViewState {
+	a.refreshSessionOverlay(time.Now())
+	if a.ov.projection.view.Card == nil {
+		return sessionCardViewState{}
+	}
+	return *a.ov.projection.view.Card
+}
+
+func (a *app) cachedCardRef() *sessionCardViewState {
+	a.refreshSessionOverlay(time.Now())
+	return a.ov.projection.view.Card
+}
+
+func cardTextForTest(card sessionCardViewState) string {
+	if len(card.Blocks) > 0 && card.Blocks[0].Kind == sessionCardBody {
+		return card.Blocks[0].Text
+	}
+	for index := sessionCardBlockCount(&card) - 1; index >= 0; index-- {
+		block := sessionCardBlockAt(&card, index)
+		if block.Kind == sessionCardBody || block.Kind == sessionCardBubble && !block.User {
+			return block.Text
+		}
+	}
+	return ""
+}
+
+type cardBubbleForTest struct {
+	user        bool
+	title, text string
+	live        bool
+	quote       string
+	cut, open   bool
+	turn        int
+}
+
+func cardBubblesForTest(card sessionCardViewState) []cardBubbleForTest {
+	blocks := make([]cardBubbleForTest, 0, sessionCardBlockCount(&card))
+	for index := 0; index < sessionCardBlockCount(&card); index++ {
+		block := sessionCardBlockAt(&card, index)
+		blocks = append(blocks, cardBubbleForTest{user: block.User, title: block.Title, text: block.Text,
+			live: block.Live, quote: block.Quote, cut: block.Cut, open: block.Open, turn: block.Turn})
+	}
+	return blocks
+}
+
+func (a *app) overlayView(context *ui.Context) {
+	previousCopy := a.copyText
+	a.copyText = func(text string) error { context.Services().WriteClipboard(text); return nil }
+	defer func() { a.copyText = previousCopy }()
+	a.overlayBenchmarkView(context)
+}
+
+// overlayBenchmarkView skips the interactive HUD clipboard adapter so the
+// timed path matches the production content closure.
+func (a *app) overlayBenchmarkView(context *ui.Context) {
+	a.refreshSessionOverlay(time.Now())
+	sessionOverlayView(context, &a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
+		sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()},
+		a.postSessionOverlayMeasurements, func() { a.ov.reveal = false; a.post(a.revealOverlay) })
+}
+
+func (a *app) langMenuView(context *ui.Context) {
+	a.refreshSessionOverlay(time.Now())
+	if a.ov.projection.view.Menu == nil {
+		sessionLanguageMenuView(context, sessionMenuViewState{SelectedIndex: -1}, a.prefs.Appearance.Palette, a, &a.ov.ui)
+		return
+	}
+	sessionLanguageMenuView(context, *a.ov.projection.view.Menu, a.prefs.Appearance.Palette, a, &a.ov.ui)
+}
+
 // hudTester tests a view of a floating window (floating.go), whose text
 // is drawn as hudContent draws it.
 func hudTester(view func(*ui.Context), w, h int) *ui.Tester {
@@ -373,7 +543,34 @@ func hudTester(view func(*ui.Context), w, h int) *ui.Tester {
 }
 
 // cardTester is a tester of the overlay's window as large as the
-// highest answer card.
-func cardTester(a *app) *ui.Tester {
+// highest answer card on a short screen (shortScreen), which it makes the
+// work area.
+func cardTester(t *testing.T, a *app) *ui.Tester {
+	shortScreen(t, a)
 	return hudTester(a.overlayView, layout.AnswerW+2*layout.Pad, layout.CardMaxH+2*layout.Pad)
+}
+
+// shortScreen makes the tests' work area just high enough for a card of
+// layout.CardBodyMax text, as a short screen's: there a long answer
+// scrolls, as the tests of the card's scroll and images want.
+func shortScreen(t *testing.T, a *app) {
+	saved := ovTestArea
+	t.Cleanup(func() { ovTestArea = saved })
+	ovTestArea.Height = layout.CardBodyMax + int(math.Round(a.prefs.Overlay.Margin)) + layout.Pad + layout.CardChrome
+	a.ov.area = ovTestArea
+}
+
+// testCardNow is the answer card's view state in the field names of the
+// tests written before the card moved to view state (#4063's tests).
+type testCardNow struct {
+	kind                                              store.Kind
+	text, lang                                        string
+	writing, canStopAnswer, canUseTranscript, canCopy bool
+	canInsert                                         bool
+}
+
+func (a *app) cardNow() testCardNow {
+	v := a.cachedCard()
+	return testCardNow{kind: store.Kind(v.Kind), text: cardTextForTest(v), lang: v.Language, writing: v.Writing,
+		canStopAnswer: v.CanStopAnswer, canUseTranscript: v.CanUseTranscript, canCopy: v.CanCopy, canInsert: v.CanInsert}
 }

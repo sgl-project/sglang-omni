@@ -4,7 +4,7 @@
 // the realtime API on /v1/realtime.
 //
 //   moss_transcribe_diarize_server --model-path DIR [--model-name NAME]
-//     [--host H] [--port P]
+//     [--host H] [--port P] [--max-batch N]
 //   moss_transcribe_diarize_server --supervised
 //     --model-kind moss_transcribe_diarize --model-directory DIR
 //
@@ -14,9 +14,9 @@
 #include <memory>
 #include <stdexcept>
 
+#include "common/asr_service.h"
 #include "moss/moss_realtime.h"
 #include "moss/moss_transcriber.h"
-#include "qwen3_asr/asr_service.h"
 
 namespace {
 
@@ -45,6 +45,11 @@ public:
         asr_service::TextField(form, "stop_at_end_of_text"));
     options.stop_on_token_loop = omni_common::FormFlag(
         asr_service::TextField(form, "stop_on_token_loop"));
+    if (transcriber_.CanBatch(samples, options)) {
+      return moss::BatchableTranscription{&transcriber_, std::move(samples),
+                                          std::move(options)};
+    } else {
+    }
     return [this, samples = std::move(samples),
             options = std::move(options)](const std::atomic<bool> &cancel) {
       return transcriber_.Transcribe(samples, options, cancel);
@@ -52,7 +57,7 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     realtime_sessions_ = [this,
                           &worker](moss::MossRealtimeSession::Sender sender) {
       return std::make_shared<moss::MossRealtimeSession>(worker, transcriber_,
@@ -71,6 +76,7 @@ private:
 int main(int argc, char **argv) {
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
+  int max_batch = 1;
   asr_service::ServedKind kind;
   kind.model_kind = "moss_transcribe_diarize";
   kind.flags = {
@@ -80,6 +86,8 @@ int main(int argc, char **argv) {
        [&](const std::string &value) {
          draft_quantization_bits = std::stoi(value);
        }},
+      {"--max-batch",
+       [&](const std::string &value) { max_batch = std::stoi(value); }},
   };
   kind.check_flags = [&]() {
     if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
@@ -87,9 +95,13 @@ int main(int argc, char **argv) {
       throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
     } else if (draft_quantization_bits != 0 && draft_directory.empty()) {
       throw std::invalid_argument("--draft-bits needs --draft-model-path");
+    } else if (max_batch < 1) {
+      throw std::invalid_argument("--max-batch must be at least 1");
     } else {
     }
   };
+  kind.max_batch = [&]() { return max_batch; };
+  kind.batch_runner = moss::BatchableTranscriptionRunner();
   kind.load = [&](const std::filesystem::path &model_directory) {
     return std::make_unique<MossModelService>(model_directory, draft_directory,
                                               draft_quantization_bits);

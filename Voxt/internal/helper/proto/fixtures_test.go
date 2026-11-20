@@ -203,7 +203,7 @@ func TestFixtures(t *testing.T) {
 						if ParamsFor(method) == nil && m.Error.Code != CodeMethodNotFound {
 							t.Fatalf("%s: %s must answer method_not_found", where, method)
 						}
-						if m.Error.Code == CodeCancelled && !IsJob(method) {
+						if m.Error.Code == CodeCancelled && !IsJob(method) && method != MethodHotkeyRecord {
 							t.Fatalf("%s: cancelled error for control request %s", where, method)
 						}
 						break
@@ -294,6 +294,44 @@ func validEvent(e HotkeyEventParams) bool {
 		return e.Phase == PhaseDown || e.Phase == PhaseUp
 	}
 	return false
+}
+
+// TestHotkeyGenerationFixture: the shared golden transcript proves both
+// directions carry the configuration generation, not only the Go and Swift
+// types' optional fields.
+func TestHotkeyGenerationFixture(t *testing.T) {
+	var generation int64
+	var configured, event bool
+	for i, line := range readFixture(t, filepath.Join(fixturesDir, "hotkey.jsonl")) {
+		m, err := Decode(line.Msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch m.Method {
+		case MethodHotkeyConfigure:
+			var params HotkeyConfigureParams
+			if err := m.DecodeParams(&params); err != nil {
+				t.Fatal(err)
+			}
+			if params.Generation > 0 {
+				generation, configured = params.Generation, true
+			}
+		case MethodHotkeyEvent:
+			var params HotkeyEventParams
+			if err := m.DecodeParams(&params); err != nil {
+				t.Fatal(err)
+			}
+			if params.Generation > 0 {
+				if params.Generation != generation {
+					t.Errorf("line %d: event generation %d, configure generation %d", i+1, params.Generation, generation)
+				}
+				event = true
+			}
+		}
+	}
+	if !configured || !event {
+		t.Errorf("generation missing from the hotkey fixture: configure %v, event %v", configured, event)
+	}
 }
 
 // TestStopAnswersAfterTheJob: a capture.stop or job.cancel that found its
@@ -404,7 +442,7 @@ func TestErrors(t *testing.T) {
 			t.Errorf("notification %s", m)
 		}
 	}
-	if !IsJob(MethodCaptureStart) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
+	if !IsJob(MethodCaptureStart) || !IsJob(MethodCaptureSystem) || !IsJob(MethodSpeechRecognize) || IsJob(MethodSpeechAudio) || IsJob(MethodBrowserURL) {
 		t.Error("IsJob")
 	}
 }

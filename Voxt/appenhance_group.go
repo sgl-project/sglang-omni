@@ -1,8 +1,7 @@
 package main
 
-// A group's details on the App enhancement page (appenhance_page.go): its
-// name and scene prompt, its apps, its addresses and the key pressed after a
-// paste.
+// A selected group's editor. Draft text and dialog choices stay in local UI
+// state; committed values and display options come from view state.
 
 import (
 	"fmt"
@@ -10,270 +9,183 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// ---- The group ----
-
-// aeSyncFields sets the fields from the group when another group shows,
-// or the group changed elsewhere and nothing typed waits.
-func (a *app) aeSyncFields(g appctx.Group) {
-	p := &a.aePage
-	if p.editFor == g.ID {
+func appEnhancementSyncFields(state *appEnhancementGroupDetail, local *appEnhancementLocalUI) {
+	if local.editFor == state.ID {
 		return
 	}
-	p.editFor = g.ID
-	p.name, p.prompt = g.Name, g.Prompt
-	p.urlIn, p.urlErr = "", ""
-	p.keyCustom, p.keyErr = false, ""
-	p.keyText = g.AutoKey
-	p.keySel = uitext.AutoKeyLabel(g.AutoKey)
+	local.editFor = state.ID
+	local.name, local.prompt = state.Name, state.Prompt
+	local.urlIn, local.urlErr = state.URLInput, state.URLError
+	local.keyCustom, local.keyErr = state.AutoKey.Custom, state.AutoKey.Error
+	local.keyText = state.AutoKey.Text
+	local.keySel = state.AutoKey.CurrentLabel
 }
 
-func (a *app) aeDetail(c *ui.Context, g appctx.Group) {
-	t := c.Theme()
-	p := &a.aePage
-	a.aeSyncFields(g)
+func appEnhancementDetail(c *ui.Context, state *appEnhancementGroupDetail, actions appEnhancementActions, local *appEnhancementLocalUI, iconSource appEnhancementIconSource) {
+	theme := c.Theme()
+	appEnhancementSyncFields(state, local)
 	card(c.Key("ae-group")).Children(func() {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-			in := ui.TextInput(c.Key("ae-name"), &p.name).Label(i18n.T("Group name")).Placeholder(i18n.T("Group name")).Grow(1).MinWidth(0)
-			if in.Changed() {
-				name := p.name
-				a.updateGroup(g.ID, func(g *appctx.Group) { g.Name = name })
+		ui.Row(c).Gap(px(theme, sp2)).AlignItems(ui.Center).Children(func() {
+			input := ui.TextInput(c.Key("ae-name"), &local.name).Label(i18n.T("Group name")).Placeholder(i18n.T("Group name")).Grow(1).MinWidth(0)
+			if input.Changed() {
+				actions.setAppEnhancementGroupName(state.ID, local.name)
 			}
-			on := g.Enabled // derived: committed in OnChange, while it holds the new value
-			ui.Switch(c.Key("ae-enabled"), &on).Label(i18n.T("Group on")).Tooltip(i18n.T("Group on")).OnChange(func() {
-				v := on
-				a.updateGroup(g.ID, func(g *appctx.Group) { g.Enabled = v })
+			on := state.Enabled
+			ui.Switch(c.Key("ae-enabled"), &on).Label(i18n.T("Group enabled")).Tooltip(i18n.T("Group enabled")).OnChange(func() {
+				actions.setAppEnhancementGroupEnabled(state.ID, on)
 			})
-			moreMenu(c.Key("ae-more"), "", func(m *ui.Menu) {
-				if m.Item(i18n.T("Delete the group…")).Chosen() {
-					p.delAsk = true
+			moreMenu(c.Key("ae-more"), "", func(menu *ui.Menu) {
+				if menu.Item(i18n.T("Delete group…")).Chosen() {
+					local.delAsk = true
 				}
 			})
 		})
-		// The features it applies to.
-		ui.Row(c).Wrap().GapX(px(t, sp4)).GapY(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Wrap().GapX(px(theme, sp4)).GapY(px(theme, sp1)).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(px(theme, 6)).AlignItems(ui.Center).Children(func() {
 				caption(c, i18n.T("Applies to"))
-				infoTip(c, i18n.T("Transcribe: the scene shapes the clean-up. Rewrite: it helps read your spoken instruction. Translate: off by default, since a scene's tone rarely belongs in a translation."))
+				infoTip(c, i18n.T("Translate is off by default, since a scene's tone rarely suits a translation."))
 			})
-			for _, f := range []struct {
-				key, label string
-				get        func(appctx.Features) bool
-				set        func(*appctx.Features, bool)
-			}{
-				{"ae-f-transcribe", i18n.T("Transcribe"), func(f appctx.Features) bool { return f.Transcribe }, func(f *appctx.Features, v bool) { f.Transcribe = v }},
-				{"ae-f-translate", i18n.T("Translate"), func(f appctx.Features) bool { return f.Translate }, func(f *appctx.Features, v bool) { f.Translate = v }},
-				{"ae-f-rewrite", i18n.T("Rewrite"), func(f appctx.Features) bool { return f.Rewrite }, func(f *appctx.Features, v bool) { f.Rewrite = v }},
-			} {
-				v := f.get(g.Features)
-				set := f.set
-				ui.Checkbox(c.Key(f.key), &v, f.label).Label(i18n.T("Use the group for %s", f.label)).OnChange(func() {
-					on := v
-					a.updateGroup(g.ID, func(g *appctx.Group) { set(&g.Features, on) })
+			for _, feature := range state.Features {
+				on := feature.Checked
+				ui.Checkbox(c.Key("ae-f-"+feature.ID), &on, feature.Label).Label(i18n.T("Use the group for %s", feature.Label)).OnChange(func() {
+					actions.setAppEnhancementGroupFeature(state.ID, feature.ID, on)
 				})
 			}
 		})
 	})
-	a.aeScene(c, g)
-	a.aeApps(c, g)
-	a.aeURLs(c, g)
-	a.aeAutoKey(c, g)
+	appEnhancementScene(c, state, actions, local)
+	appEnhancementApps(c, state, actions, iconSource)
+	appEnhancementURLs(c, state, actions, local)
+	appEnhancementAutoKeyEditor(c, state, actions, local)
 }
 
-// aeScene is the scene prompt.
-func (a *app) aeScene(c *ui.Context, g appctx.Group) {
-	t := c.Theme()
-	k := tok(t)
-	p := &a.aePage
-	sectionTitleTip(c, i18n.T("Scene prompt"), i18n.T("Added on top of the features' basic clean-up and your rules, never instead of them: say what is special here (tone, format, names)."))
-	in := ui.TextArea(c.Key("ae-prompt"), &p.prompt).Label(i18n.T("Scene prompt of the group")).
-		Placeholder(i18n.T("For example: this is a team chat; keep it short and casual, no greetings or sign-offs.")).MinHeight(px(t, 88))
-	if in.Changed() {
-		v := p.prompt
-		a.updateGroup(g.ID, func(g *appctx.Group) { g.Prompt = v })
+func appEnhancementScene(c *ui.Context, state *appEnhancementGroupDetail, actions appEnhancementActions, local *appEnhancementLocalUI) {
+	theme := c.Theme()
+	colors := tok(theme)
+	sectionTitleTip(c, i18n.T("Group prompt"), i18n.T("Added on top of each feature's own rules."))
+	input := ui.TextArea(c.Key("ae-prompt"), &local.prompt).Label(i18n.T("Prompt for this group")).
+		Placeholder(i18n.T("For example: this is a team chat; keep it short and casual, no greetings or sign-offs.")).MinHeight(px(theme, 88))
+	if input.Changed() {
+		actions.setAppEnhancementGroupPrompt(state.ID, local.prompt)
 	}
-	ui.Row(c.Key("ae-vars")).Wrap().Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+	ui.Row(c.Key("ae-vars")).Wrap().Gap(px(theme, sp1)).AlignItems(ui.Center).Children(func() {
 		caption(c, i18n.T("Variables:"))
-		for _, name := range compose.VariableNames {
-			token := "{{" + name + "}}"
-			b := ui.ButtonBase(c.Key("ae-var-"+name)).Padding(px(t, 2), px(t, 6)).Radius(px(t, 4)).Background(k.Hover).
-				Label(token).Tooltip(variableInfo(name)).Shrink(0)
-			if b.Hovered() {
-				b.Background(k.Pressed)
+		for _, variable := range state.Variables {
+			button := ui.ButtonBase(c.Key("ae-var-"+variable.Name)).Padding(px(theme, 2), px(theme, 6)).Radius(px(theme, 4)).Background(colors.Hover).
+				Label(variable.Token).Tooltip(variable.Tooltip).Shrink(0)
+			if button.Hovered() {
+				button.Background(colors.Pressed)
 			}
-			b.Children(func() {
-				ui.Text(c, token).FontSize(px(t, fsCaption)).Font("monospace").SingleLine()
+			button.Children(func() {
+				ui.Text(c, variable.Token).FontSize(px(theme, fsCaption)).Font("monospace").SingleLine()
 			})
-			if b.Clicked() {
-				c.Services().WriteClipboard(token)
-				a.toast(i18n.T("Copied"))
+			if button.Clicked() {
+				actions.copyAppEnhancementVariable(variable.Token)
 			}
 		}
 	})
 }
 
-// aeApps are the member apps.
-func (a *app) aeApps(c *ui.Context, g appctx.Group) {
-	t := c.Theme()
-	k := tok(t)
-	p := &a.aePage
-	if sectionTitleAdd(c, "ae-add-app", i18n.T("Apps"), i18n.T("Dictating in one of these apps uses the group. A browser here covers the websites no website rule of any group matches."), i18n.T("Add apps…")) {
-		p.appsOpen, p.appsQuery, p.bundleIn = true, "", ""
-		a.loadApps()
+func appEnhancementApps(c *ui.Context, state *appEnhancementGroupDetail, actions appEnhancementActions, iconSource appEnhancementIconSource) {
+	theme := c.Theme()
+	colors := tok(theme)
+	if sectionTitleAdd(c, "ae-add-app", i18n.T("Apps"), i18n.T("A browser added here covers the websites no website rule matches."), i18n.T("Add apps…")) {
+		actions.openAppEnhancementApps()
 	}
-	card(c.Key("ae-apps")).Gap(px(t, sp1)).Children(func() {
-		if len(g.Apps) == 0 {
+	card(c.Key("ae-apps")).Gap(px(theme, sp1)).Children(func() {
+		if len(state.Apps) == 0 {
 			caption(c, i18n.T("No apps yet."))
 		}
-		for i, m := range g.Apps {
-			ui.Row(c.Key("ae-app-" + m.BundleID)).Gap(px(t, sp2)).AlignItems(ui.Center).MinHeight(px(t, 28)).Children(func() {
-				a.appIcon(c, proto.AppRef{BundleID: m.BundleID, Path: a.appPath(m.BundleID)}, 20, true)
-				name := m.Name
-				if name == "" {
-					name = m.BundleID
-				}
-				ui.Text(c, name).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
-				truncText(c, m.BundleID).FontSize(px(t, fsCaption)).TextColor(k.Text3).Grow(1)
-				if appctx.IsBrowser(m.BundleID, a.prefs.AppEnhancement.Browsers) {
+		for _, app := range state.Apps {
+			ui.Row(c.Key("ae-app-" + app.Ref.BundleID)).Gap(px(theme, sp2)).AlignItems(ui.Center).MinHeight(px(theme, 28)).Children(func() {
+				appIcon(c, iconSource, app.Ref, 20, true)
+				ui.Text(c, app.Ref.Name).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+				truncText(c, app.Ref.BundleID).FontSize(px(theme, fsCaption)).TextColor(colors.Text3).Grow(1)
+				if app.Browser {
 					tagChip(c, i18n.T("Browser"))
 				}
-				if iconButton(c.Key("remove"), icons.Close, i18n.T("Remove %s", name)).Clicked() {
-					idx := i
-					a.updateGroup(g.ID, func(g *appctx.Group) {
-						if idx < len(g.Apps) {
-							g.Apps = slices.Delete(g.Apps, idx, idx+1)
-						}
-					})
+				if iconButton(c.Key("remove"), icons.Close, i18n.T("Remove %s", app.Ref.Name)).Clicked() {
+					actions.removeAppEnhancementApp(state.ID, app.Ref.BundleID)
 				}
 			})
 		}
 	})
 }
 
-// aeURLs are the website rules.
-func (a *app) aeURLs(c *ui.Context, g appctx.Group) {
-	t := c.Theme()
-	k := tok(t)
-	p := &a.aePage
-	sectionTitleTip(c, i18n.T("Websites"), i18n.T("In a browser, the address of the tab in front is matched against these rules: a site (github.com), a part of it (github.com/acme/*), any subdomain (*.notion.so). * stands for anything. A website rule wins over the browser's own group; the most specific rule wins."))
-	card(c.Key("ae-urls")).Gap(px(t, sp1)).Children(func() {
-		if len(g.URLs) == 0 {
+func appEnhancementURLs(c *ui.Context, state *appEnhancementGroupDetail, actions appEnhancementActions, local *appEnhancementLocalUI) {
+	theme := c.Theme()
+	colors := tok(theme)
+	sectionTitleTip(c, i18n.T("Websites"), i18n.T("Match a site (github.com), part of it (github.com/acme/*) or its subdomains (*.notion.so). A website rule wins over the browser's group."))
+	card(c.Key("ae-urls")).Gap(px(theme, sp1)).Children(func() {
+		if len(state.URLs) == 0 {
 			caption(c, i18n.T("No website rules yet."))
 		}
-		for i, u := range g.URLs {
-			ui.Row(c.Key(fmt.Sprintf("ae-url-%d", i))).Gap(px(t, sp2)).AlignItems(ui.Center).MinHeight(px(t, 28)).Children(func() {
-				ui.Icon(c, icons.LinkMinimalistic2.Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2).Shrink(0)
-				ui.Text(c, u).Font("monospace").FontSize(px(t, fsCaption)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
-				canon := appctx.CanonicalPattern(u)
-				if err := appctx.CheckPattern(u); err != nil {
-					iconMark(c, icons.DangerTriangle, k.Warning, uitext.PatternErrorText(err))
-				} else if canon != strings.ToLower(strings.TrimSpace(u)) {
-					truncText(c, i18n.T("matches %s", canon)).FontSize(px(t, fsCaption)).TextColor(k.Text3)
+		for index, pattern := range state.URLs {
+			ui.Row(c.Key(fmt.Sprintf("ae-url-%d", index))).Gap(px(theme, sp2)).AlignItems(ui.Center).MinHeight(px(theme, 28)).Children(func() {
+				ui.Icon(c, icons.LinkMinimalistic2.Linear).Size(px(theme, 16), px(theme, 16)).TextColor(colors.Text2).Shrink(0)
+				ui.Text(c, pattern.Text).Font("monospace").FontSize(px(theme, fsCaption)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+				if pattern.Warning != "" {
+					iconMark(c, icons.DangerTriangle, colors.Warning, pattern.Warning)
+				} else if pattern.Canonical != "" {
+					truncText(c, pattern.Canonical).FontSize(px(theme, fsCaption)).TextColor(colors.Text3)
 				}
 				ui.Spacer(c)
-				if iconButton(c.Key("remove"), icons.Close, i18n.T("Remove %s", u)).Clicked() {
-					idx := i
-					a.updateGroup(g.ID, func(g *appctx.Group) {
-						if idx < len(g.URLs) {
-							g.URLs = slices.Delete(g.URLs, idx, idx+1)
-						}
-					})
+				if iconButton(c.Key("remove"), icons.Close, i18n.T("Remove %s", pattern.Text)).Clicked() {
+					actions.removeAppEnhancementURL(state.ID, index)
 				}
 			})
 		}
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-			in := ui.TextInput(c.Key("ae-url-in"), &p.urlIn).Label(i18n.T("New website rule")).Placeholder("github.com/acme/*").
-				Font("monospace").Grow(1).MinWidth(0).MaxWidth(px(t, 360))
-			if in.Changed() {
-				p.urlErr = ""
+		ui.Row(c).Gap(px(theme, sp2)).AlignItems(ui.Center).Children(func() {
+			input := ui.TextInput(c.Key("ae-url-in"), &local.urlIn).Label(i18n.T("New website rule")).Placeholder("github.com/acme/*").
+				Font("monospace").Grow(1).MinWidth(0).MaxWidth(px(theme, 360))
+			if input.Changed() {
+				local.urlErr = ""
 			}
-			add := ui.Button(c.Key("ae-url-add"), i18n.T("Add")).Label(i18n.T("Add the website rule")).Disabled(strings.TrimSpace(p.urlIn) == "")
-			if add.Clicked() || in.Submitted() {
-				a.aeAddURL(g)
+			add := ui.Button(c.Key("ae-url-add"), i18n.T("Add")).Label(i18n.T("Add website rule")).Disabled(strings.TrimSpace(local.urlIn) == "")
+			if add.Clicked() || input.Submitted() {
+				actions.addAppEnhancementURL(state.ID, local.urlIn)
 			}
 		})
-		if p.urlErr != "" {
-			warnLine(c, p.urlErr)
+		if local.urlErr != "" {
+			warnLine(c, local.urlErr)
 		}
 	})
 }
 
-// aeAddURL adds the typed rule, if it is valid and new.
-func (a *app) aeAddURL(g appctx.Group) {
-	p := &a.aePage
-	u := strings.TrimSpace(p.urlIn)
-	if u == "" {
-		return
-	}
-	if err := appctx.CheckPattern(u); err != nil {
-		p.urlErr = uitext.PatternErrorText(err)
-		return
-	}
-	if slices.ContainsFunc(g.URLs, func(v string) bool { return appctx.CanonicalPattern(v) == appctx.CanonicalPattern(u) }) {
-		p.urlErr = i18n.T("This rule is in the group already.")
-		return
-	}
-	a.updateGroup(g.ID, func(g *appctx.Group) { g.URLs = append(g.URLs, u) })
-	p.urlIn, p.urlErr = "", ""
-}
-
-// autoKeys are the auto key choices besides None and Custom.
-var autoKeys = []string{"Return", "Command+Return", "Shift+Return", "Control+Return", "Option+Return"}
-
-// aeAutoKey is the key after inserting.
-func (a *app) aeAutoKey(c *ui.Context, g appctx.Group) {
-	t := c.Theme()
-	p := &a.aePage
+func appEnhancementAutoKeyEditor(c *ui.Context, state *appEnhancementGroupDetail, actions appEnhancementActions, local *appEnhancementLocalUI) {
+	theme := c.Theme()
 	sectionTitle(c, i18n.T("After inserting"))
-	settingRow(c, "ae-key", i18n.T("Press a key"), i18n.T("Pressed right after the text is inserted, as when a chat app sends with Return. Not pressed when the result shows in the answer card."), func() {
-		opts := []string{i18n.T("None")}
-		byLabel := map[string]string{i18n.T("None"): ""}
-		for _, k := range autoKeys {
-			l := uitext.AutoKeyLabel(k)
-			opts = append(opts, l)
-			byLabel[l] = k
+	settingRow(c, "ae-key", i18n.T("Press a key"), i18n.T("For example, Return to send in a chat app."), func() {
+		options := make([]string, len(state.AutoKey.Options))
+		labels := make(map[string]string, len(state.AutoKey.Options))
+		for index, option := range state.AutoKey.Options {
+			options[index] = option.Label
+			labels[option.Label] = option.Value
 		}
-		if cur := appctx.CanonicalAutoKey(g.AutoKey); cur != "" && !slices.Contains(autoKeys, cur) {
-			l := uitext.AutoKeyLabel(cur)
-			opts = append(opts, l)
-			byLabel[l] = cur
+		if local.keyCustom {
+			local.keySel = state.AutoKey.CustomLabel
+		} else if !slices.Contains(options, local.keySel) {
+			local.keySel = state.AutoKey.CurrentLabel
 		}
-		opts = append(opts, i18n.T("Custom…"))
-		if p.keyCustom {
-			p.keySel = i18n.T("Custom…")
-		} else if !slices.Contains(opts, p.keySel) {
-			p.keySel = uitext.AutoKeyLabel(g.AutoKey)
-		}
-		if ui.Select(c.Key("ae-key-sel"), &p.keySel, opts).Label(i18n.T("Key after inserting")).Width(px(t, 180)).Changed() {
-			if p.keySel == i18n.T("Custom…") {
-				p.keyCustom, p.keyText, p.keyErr = true, g.AutoKey, ""
+		if ui.Select(c.Key("ae-key-sel"), &local.keySel, options).Label(i18n.T("Key after inserting")).Width(px(theme, 180)).Changed() {
+			if local.keySel == state.AutoKey.CustomLabel {
+				local.keyCustom, local.keyText, local.keyErr = true, state.AutoKey.Value, ""
 				return
 			}
-			keys := byLabel[p.keySel]
-			p.keyCustom, p.keyErr = false, ""
-			a.updateGroup(g.ID, func(g *appctx.Group) { g.AutoKey = keys })
+			actions.setAppEnhancementAutoKey(state.ID, labels[local.keySel])
 		}
 	})
-	if p.keyCustom {
-		in := ui.TextInput(c.Key("ae-key-custom"), &p.keyText).Placeholder("Command+Return").Label(i18n.T("Custom key after inserting")).Font("monospace").MaxWidth(px(t, 300))
-		if in.Submitted() || in.Changed() && !in.Focused() {
-			if _, err := appctx.ParseAutoKey(p.keyText); err != nil || strings.TrimSpace(p.keyText) == "" {
-				p.keyErr = i18n.T("One key, with modifiers or not: Return, Command+Return, Tab.")
-			} else {
-				keys := appctx.CanonicalAutoKey(p.keyText)
-				p.keyErr, p.keyCustom, p.keySel = "", false, uitext.AutoKeyLabel(keys)
-				a.updateGroup(g.ID, func(g *appctx.Group) { g.AutoKey = keys })
-			}
+	if local.keyCustom {
+		input := ui.TextInput(c.Key("ae-key-custom"), &local.keyText).Placeholder("Command+Return").Label(i18n.T("Custom key after inserting")).Font("monospace").MaxWidth(px(theme, 300))
+		if input.Submitted() || input.Changed() && !input.Focused() {
+			actions.commitAppEnhancementCustomAutoKey(state.ID, local.keyText)
 		}
-		if p.keyErr != "" {
-			warnLine(c, p.keyErr)
+		if local.keyErr != "" {
+			warnLine(c, local.keyErr)
 		} else {
 			caption(c, i18n.T("Type the keys and press Return: Command+Return, Control+Return, Tab."))
 		}

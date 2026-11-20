@@ -25,6 +25,9 @@ type Notification struct {
 	Link     string    `json:"link,omitempty"` // router path or voxtnew:// deep link, e.g. "/settings/models"
 	Time     time.Time `json:"time"`
 	Read     bool      `json:"read,omitempty"`
+	// Version is the app version an announcement is about ("" for other
+	// notifications).
+	Version string `json:"version,omitempty"`
 }
 
 // LogEntry is one line of the logs panel: from the app or from the helper

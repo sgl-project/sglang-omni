@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,14 +46,6 @@ func sendAll(t *testing.T, st asr.Stream, pcm []byte) {
 			t.Fatal(err)
 		}
 	}
-}
-
-// piecesDone is how many pieces a live stream recognised.
-func piecesDone(st asr.Stream) int {
-	s := st.(*live)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.pc.texts)
 }
 
 // lookedAtAll returns once a live stream's pieces loop has looked at all
@@ -109,6 +102,44 @@ func TestLivePieces(t *testing.T) {
 	}
 	if !f.logged("4 pieces while it recorded") {
 		t.Error("the Final's line does not say what the pieces did")
+	}
+}
+
+// TestLivePiecesEvents: every piece recognised while recording reports
+// the final text so far (asr.EventPiece), growing, before the Final,
+// each a prefix of it, so the session can start its clean-up of the
+// finished stretches.
+func TestLivePiecesEvents(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, nil)
+	a := piecesASR(t, f)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "zh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm := speechAndPauses(5)
+	sendAll(t, st, pcm)
+	f.waitLogged(t, "piece 4 of the recording")
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	final := evs[len(evs)-1]
+	if final.Kind != asr.EventFinal {
+		t.Fatalf("last %+v", final)
+	}
+	var pieces []string
+	for _, ev := range evs[:len(evs)-1] {
+		if ev.Kind == asr.EventPiece {
+			pieces = append(pieces, ev.Text)
+		}
+	}
+	if want := []string{"p1", "p1 p2", "p1 p2 p3", "p1 p2 p3 p4"}; !slices.Equal(pieces, want) {
+		t.Fatalf("pieces %q, want %q", pieces, want)
+	}
+	for _, p := range pieces {
+		if !strings.HasPrefix(final.Text, p) {
+			t.Errorf("%q is not a prefix of the final %q", p, final.Text)
+		}
 	}
 }
 
@@ -179,8 +210,8 @@ func TestLiveFinalFailsWithText(t *testing.T) {
 	}{
 		{"error", omnitest.Opts{FailFrom: 1}, "transcription_failed"},
 		{"error after two pieces", omnitest.Opts{FailFrom: 3}, "transcription_failed"},
-		// A piece stalls first: its server is killed, and the Final finds it gone.
-		{"stall", omnitest.Opts{Mode: omnitest.ModeStall}, "exited"},
+		// A piece stalls first: its server is killed, the Final finds it gone and stalls again on a new one.
+		{"stall", omnitest.Opts{Mode: omnitest.ModeStall}, "stopped answering"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake(t, tc.o, func(c *Config) { c.StallTimeout = 300 * time.Millisecond })

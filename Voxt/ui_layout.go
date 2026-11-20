@@ -27,6 +27,58 @@ func pageHeader(c *ui.Context, title string, trailing func()) {
 	})
 }
 
+// pageMaxW is the widest a page of one column (pageColumn) reads: wider,
+// the column stays this wide in the middle of the page.
+const pageMaxW = 880
+
+// columnPageHeader is pageHeader over a pageColumn: in a window wider
+// than the column, its title and trailing line up with the column's
+// content instead of the window's edges (#3644: in full screen the title
+// sat far left of the content and the actions far right of it). The wide
+// pages do the same at widePageMaxW (widePageHeader, pageBody).
+func columnPageHeader(c *ui.Context, title string, trailing func()) {
+	centeredPageHeader(c, pageMaxW, title, trailing)
+}
+
+// widePageMaxW is the widest a page of lists and panes (History,
+// Dictionary, Notes, App enhancement) reads: wider, it stays this wide in
+// the middle of the page (pageBody), its header lined up with it.
+const widePageMaxW = 1120
+
+// widePageHeader is pageHeader over a pageBody.
+func widePageHeader(c *ui.Context, title string, trailing func()) {
+	centeredPageHeader(c, widePageMaxW, title, trailing)
+}
+
+// pageBody is a wide page under its header: the page's width up to
+// widePageMaxW, in the middle of a wider page. Give it children.
+func pageBody(c *ui.Context) ui.Element {
+	t := c.Theme()
+	return ui.Column(c).FillWidth().MaxWidth(px(t, widePageMaxW)).AlignSelf(ui.Center).Grow(1).MinHeight(0)
+}
+
+// centeredPageHeader is a page's header whose title and trailing line up
+// with content at most maxW DIPs wide in the middle of the page.
+func centeredPageHeader(c *ui.Context, maxW float32, title string, trailing func()) {
+	t := c.Theme()
+	ui.Row(c).Height(titleBarHeight).Shrink(0).AlignItems(ui.Stretch).Justify(ui.Center).Padding(0, 0, 0, headerInset).DragWindow().Children(func() {
+		ui.Row(c).Grow(1).MaxWidth(px(t, maxW)).AlignItems(ui.Center).Padding(0, px(t, sp6)).Gap(px(t, sp2)).Children(func() {
+			ui.Text(c, title).FontSize(px(t, fsTitle)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+			if trailing != nil {
+				trailing()
+			}
+		})
+	})
+}
+
+// pageColumn is a page's one column of content, in its scroll view: the
+// page's width up to pageMaxW, in the middle of a wider page, with the
+// page's side padding. Give it a gap and children.
+func pageColumn(c *ui.Context) ui.Element {
+	t := c.Theme()
+	return ui.Column(c).FillWidth().MaxWidth(px(t, pageMaxW)).AlignSelf(ui.Center).Padding(0, px(t, sp6), px(t, sp6))
+}
+
 // card is a flat card: the page's background inside a hairline border,
 // radius 12. Give it children.
 func card(c *ui.Context) ui.Element {
@@ -79,7 +131,7 @@ func formRow(c *ui.Context, key, title, info string, control func()) {
 	// The control goes under the name when both do not fit on a line.
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Row(c).Grow(1).Basis(px(t, 160)).MinWidth(px(t, 120)).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).MinWidth(0)
+			settingsName(c, title).MinWidth(0)
 			if info != "" {
 				infoTip(c, info)
 			}
@@ -121,27 +173,6 @@ func searchField(c *ui.Context, key string, value *string, placeholder string, m
 		})
 	})
 	return in
-}
-
-// filterBar is the bar of a page's search field and its filters
-// (segmented controls, selects, a selection button): on one line when
-// the search keeps 240 DIPs beside the filters (filtersW wide, in DIPs at
-// 100 %) in room (the bar's width), else the search on a line of its own
-// and the filters under it. It returns whether it took two lines.
-func filterBar(c *ui.Context, room, filtersW float32, search, filters func()) (twoLines bool) {
-	t := c.Theme()
-	if room-px(t, filtersW+sp2) >= px(t, 240) {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
-			search()
-			filters()
-		})
-		return false
-	}
-	ui.Column(c).Gap(px(t, sp2)).Shrink(0).Children(func() {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(search)
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(filters)
-	})
-	return true
 }
 
 // emptyState is a page's or a list's empty state: a large icon, a title,

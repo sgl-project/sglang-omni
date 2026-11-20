@@ -110,7 +110,7 @@ func formatted(a *app, i ...int) string {
 
 func TestLogsHover(t *testing.T) {
 	_, tt := logsApp(t, 5)
-	k := lightTokens
+	k := paletteTokens("", false)
 	plain := rowFill(t, tt, 2)
 	if !near(plain, k.Bg) {
 		t.Errorf("plain row %v, want %v", plain, k.Bg)
@@ -155,7 +155,7 @@ func TestLogsClickCopiesLine(t *testing.T) {
 
 func TestLogsShiftAndCmd(t *testing.T) {
 	a, tt := logsApp(t, 8)
-	k := lightTokens
+	k := paletteTokens("", false)
 	plain := rowFill(t, tt, 8)
 	clickLine(t, tt, 0, 6)
 	clickLine(t, tt, ui.Shift, 2) // upwards
@@ -334,7 +334,7 @@ func TestLogsKeys(t *testing.T) {
 	}
 	wantSelected(t, a)
 	// The filter keeps its own ⌘A.
-	if err := tt.Click("Filter the logs"); err != nil {
+	if err := tt.Click("Filter logs"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Key(ui.Cmd, ui.KeyA)
@@ -380,7 +380,7 @@ func TestLogsChinese(t *testing.T) {
 	}
 	x, y := lineAt(t, tt, 2)
 	tt.RightClickAt(x, y)
-	if got := tt.Menu(); !slices.Equal(got, []string{"复制这一行", "复制选中的 3 行", "复制全部显示的行"}) {
+	if got := tt.Menu(); !slices.Equal(got, []string{"复制这一行", "复制选中的 3 行", "复制显示的全部行"}) {
 		t.Errorf("menu %q", got)
 	}
 	tt.CloseMenu()
@@ -441,6 +441,27 @@ func TestLogsHeaderFits(t *testing.T) {
 		}
 		if r, _ := tt.Find(selected); r.W < wide.W-0.5 {
 			t.Errorf("%s: %q squeezed to %.1f (%.1f)", lang, selected, r.W, wide.W)
+		}
+	}
+}
+
+// A filter that matches no line says so and offers to clear it, on the
+// page and in the panel: the log is not empty (issue 3778).
+func TestLogsFilterNoMatch(t *testing.T) {
+	a, tt := logsApp(t, 3)
+	for _, panel := range []bool{false, true} {
+		if panel {
+			a.navigate("/history")
+			a.logsPanel = true
+		}
+		a.logsQuery = "zzqx"
+		frames(tt)
+		if has(tt, "No log lines yet.") || !has(tt, "Nothing matches “zzqx”") {
+			t.Fatalf("panel %v: %q", panel, firstTexts(tt))
+		}
+		click(t, tt, "Clear filter")
+		if a.logsQuery != "" || !has(tt, "line 3") {
+			t.Fatalf("panel %v, after Clear filter: %q, %q", panel, a.logsQuery, firstTexts(tt))
 		}
 	}
 }

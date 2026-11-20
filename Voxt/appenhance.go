@@ -22,6 +22,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -105,7 +106,9 @@ type appEnhanceState struct {
 	urlReads  map[string]urlRead
 	aePrev    aePreview
 	aeSaveSeq int
-	aePage    aePageState // appenhance_page.go
+	aeCache   appEnhancementModelCache
+	aeUI      appEnhancementLocalUI
+	aeCatalog appEnhancementCatalog
 	// treesSent is the app.configure last sent (its bundle ids), so the
 	// same list is not sent twice; "" after a helper (re)start.
 	treesSent string
@@ -166,7 +169,10 @@ func (a *app) setRules(r appctx.Rules) {
 func (a *app) sceneConfig() *session.SceneConfig {
 	book, st, sup := a.aeBook, a.settings, a.host.sup
 	return &session.SceneConfig{
-		Rules: func() (appctx.Rules, bool) { return book.get(), st.Get().AppEnhancement.Enabled },
+		Rules: func() (appctx.Rules, bool) {
+			s := st.Get()
+			return book.get(), s.AppEnhancement.Enabled && !s.Features.IsHidden(settings.HideAppEnhancement)
+		},
 		IsBrowser: func(id string) bool {
 			return appctx.IsBrowser(id, st.Get().AppEnhancement.Browsers)
 		},
@@ -209,7 +215,7 @@ func (a *app) syncTrees() {
 		return
 	}
 	var ids []string
-	if a.prefs.AppEnhancement.Enabled {
+	if a.prefs.AppEnhancement.Enabled && !a.prefs.Features.IsHidden(settings.HideAppEnhancement) {
 		ids = appctx.TreeOnDemand(a.prefs.AppEnhancement.Browsers)
 	}
 	key := "[" + strings.Join(ids, ",") + "]"
@@ -279,16 +285,6 @@ func (a *app) refreshPreview(force bool) {
 				a.aePrev.err = err.Error()
 			}
 		})
-}
-
-// previewMatch is the group the preview app falls in, for Transcribe.
-func (a *app) previewMatch() appctx.Match {
-	app := a.previewApp()
-	in := appctx.Context{App: app, Browser: appctx.IsBrowser(app.BundleID, a.prefs.AppEnhancement.Browsers)}
-	if in.Browser && a.aePrev.app == app {
-		in.URL = a.aePrev.url
-	}
-	return appctx.Resolve(a.aeRules, in, appctx.Transcribe)
 }
 
 // newGroupID makes a group's id.

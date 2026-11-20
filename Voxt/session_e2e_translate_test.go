@@ -61,6 +61,49 @@ func TestTranslateSelectionEndToEnd(t *testing.T) {
 	}
 }
 
+// TestTranslateUnchangedAnswer: a Chinese-to-English request that gets the
+// Chinese source back twice fails instead of replacing the selection with it.
+func TestTranslateUnchangedAnswer(t *testing.T) {
+	const source = "我们周五发布"
+	chat := &fakeChat{text: source}
+	set, keys, _ := fileSetup(t, "unused", chat)
+	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", source)+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Translate.Target = "en"
+	}, keys)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.State != session.Failed || a.sess.Result != "" || a.sess.Inserted || a.sess.Problem == nil || a.sess.Problem.Code != session.ProblemLLM || !a.answer.open {
+		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
+	}
+	if pasted := a.pasted(); len(pasted) != 0 {
+		t.Errorf("pasted %+v", pasted)
+	}
+	reqs := chat.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	for i, req := range reqs {
+		msgs := chatMessages(req)
+		if !strings.Contains(msgs[0][1], "into English") || msgs[1][1] != "<input>\n"+source+"\n</input>" || i == 1 && !strings.Contains(msgs[0][1], "Strict:") {
+			t.Errorf("request %d: %q", i+1, msgs)
+		}
+	}
+	if entries := a.history(); len(entries) != 1 || entries[0].Status != store.StatusFailed || entries[0].SourceText != source {
+		t.Errorf("history %+v", entries)
+	}
+	card := a.cachedCard()
+	if len(card.Blocks) == 0 || card.Blocks[0].Text != "The language model did not translate the text. Try again." {
+		t.Errorf("failure text %+v", card.Blocks)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	a.applyLocale()
+	card = a.cachedCard()
+	if len(card.Blocks) == 0 || card.Blocks[0].Text != "语言模型没有翻译这段文字，请重试。" {
+		t.Errorf("zh-Hans failure text %+v", card.Blocks)
+	}
+}
+
 // TestTranslateCopySelection: Accessibility shows no selection, ⌘C is
 // allowed in Slack: the selection comes through the clipboard.
 func TestTranslateCopySelection(t *testing.T) {
@@ -75,8 +118,8 @@ func TestTranslateCopySelection(t *testing.T) {
 }
 
 // TestTranslateSpeechCard: nothing selected, the speech is translated
-// into the card (the setting); the card's language select translates the
-// same text again, into Japanese, without recording.
+// into the card (the setting), streaming; the card's language select
+// translates the same text again, into Japanese, without recording.
 func TestTranslateSpeechCard(t *testing.T) {
 	chat := &fakeChat{texts: []string{"See you on Thursday.", "木曜日に会いましょう。"}}
 	set, keys, tr := fileSetup(t, "周四见", chat)
@@ -87,16 +130,20 @@ func TestTranslateSpeechCard(t *testing.T) {
 		s.Features.Translate.Cleanup = true
 		s.General.MainLanguage = "zh" // the target is English
 	}, keys)
-	// The draft shows in the pill while the model writes; the card comes
-	// with the result, not before.
-	streamed, early := false, false
+	// The draft stays out of the pill (FB6); the translation streams into
+	// the card, in its language, from its first words. It used to wait in
+	// the pill until the whole translation was in.
+	draftInPill, streamed := false, false
 	a.pump("the end", func() bool {
-		streamed = streamed || a.sess.State == session.Composing && a.ov.mode == ovWorking && liveLineText(a.sess) == strings.TrimSpace(a.sess.Draft) && a.sess.Draft != ""
-		early = early || a.sess.State.Live() && a.ov.mode == ovAnswer
+		draftInPill = draftInPill || a.sess.State == session.Composing && liveLineText(a.sess) == strings.TrimSpace(a.sess.Draft) && a.sess.Draft != ""
+		if a.sess.State == session.Composing && a.ov.mode == ovAnswer {
+			v := a.cardNow()
+			streamed = streamed || v.writing && v.lang == "en" && v.canStopAnswer && strings.HasPrefix(a.sess.Draft, v.text)
+		}
 		return a.sess.State.Ended()
 	})
-	if !streamed || early {
-		t.Errorf("the draft in the pill %v, a card before the end %v", streamed, early)
+	if draftInPill || !streamed {
+		t.Errorf("the draft in the pill %v, streamed into the card %v", draftInPill, streamed)
 	}
 	if a.sess.Result != "See you on Thursday." || a.sess.Raw != "周四见" || a.sess.Inserted || !a.answer.open || a.answer.lang != "en" || a.ov.mode != ovAnswer {
 		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
@@ -104,12 +151,13 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if len(a.pasted()) != 0 || tr.count() != 1 {
 		t.Errorf("pasted %+v, %d uploads", a.pasted(), tr.count())
 	}
-	if msgs := chatMessages(chat.requests()[0]); !strings.Contains(msgs[0][1], "基础清理") || len(msgs) != 4 || msgs[3][1] != "<input>\n周四见\n</input>" {
+	if msgs := chatMessages(chat.requests()[0]); len(msgs) != 4 || msgs[2][0] != "assistant" || msgs[3][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("first request %q", msgs)
 	}
 	// Another language: into the card whatever the setting (Voxt's menu
-	// replaces the card's answer); the card keeps its text meanwhile,
-	// with a spinner and the new language in its menu.
+	// replaces the card's answer); the card keeps its text, with a spinner
+	// and the new language in its menu, until the new translation's first
+	// words stream in over it.
 	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ShowCard = false })
 	first := a.sess.ID
 	chat.mu.Lock()
@@ -117,10 +165,20 @@ func TestTranslateSpeechCard(t *testing.T) {
 	chat.mu.Unlock()
 	a.retryAnswer("ja")
 	a.pump("the second session", func() bool { return a.sess.ID != first && a.sess.State == session.Composing })
-	if v := a.cardNow(); a.ov.mode != ovAnswer || !v.busy || v.text != "See you on Thursday." || v.lang != "ja" || v.canInsert || v.canLang || !v.canCopy {
+	if v := a.cachedCard(); a.ov.mode != ovAnswer || !v.Busy || cardTextForTest(v) != "See you on Thursday." || v.Language != "ja" || v.CanInsert || v.CanLanguage || !v.CanCopy {
 		t.Errorf("on its way: %s %+v", a.ov.mode, v)
 	}
-	a.pump("the second end", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
+	redoStreamed := false
+	a.pump("the second end", func() bool {
+		if a.sess.ID != first && a.sess.State == session.Composing && a.sess.Draft != "" {
+			v := a.cardNow()
+			redoStreamed = redoStreamed || v.writing && v.lang == "ja" && !v.canCopy && !v.canInsert && strings.HasPrefix(a.sess.Draft, v.text)
+		}
+		return a.sess.ID != first && a.sess.State.Ended()
+	})
+	if !redoStreamed {
+		t.Error("the new language did not stream into the card")
+	}
 	if a.sess.Result != "木曜日に会いましょう。" || a.sess.TargetLanguage != "ja" || !a.answer.open || a.answer.lang != "ja" || tr.count() != 1 {
 		t.Errorf("again %+v, card %+v", a.sess, a.answer)
 	}
@@ -130,7 +188,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if msgs := chatMessages(chat.requests()[1]); !strings.Contains(msgs[0][1], "翻译成日语") || msgs[1][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("second request %q", msgs)
 	}
-	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" {
+	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" || es[0].Kind != store.KindTranslate || es[1].Kind != store.KindTranslate {
 		t.Errorf("history %+v", es)
 	}
 	// A language that fails: the card stays as it was, and says so.
@@ -178,6 +236,46 @@ func TestTranslateFailureRetry(t *testing.T) {
 		t.Errorf("retry %+v card %+v", a.sess, a.answer)
 	}
 	if p := a.pasted(); len(p) != 1 || p[0].Text != "你好" {
+		t.Errorf("pasted %+v", p)
+	}
+}
+
+// TestTranslateContinue: the tester's case 4 (#3897). English selected,
+// the main language Chinese: Translate writes Chinese, into the card,
+// which offers Continue; a spoken follow-up changes that translation, the
+// request holding the source and the translation the card shows (here
+// into Japanese, picked on the card); Insert pastes the changed one.
+func TestTranslateContinue(t *testing.T) {
+	const src = "Good morning, team. The release moves to Friday because the tests are still running."
+	chat := &fakeChat{texts: []string{"早上好，团队。测试还在跑，发布改到周五。", "テストがまだ走っているので、リリースは金曜日に移ります。", "リリースは金曜日。"}}
+	set, keys, tr := fileSetup(t, "unused", chat)
+	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", src)+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Translate.ShowCard = true
+		s.General.MainLanguage = "zh"
+	}, keys)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.TargetLanguage != "zh-Hans" || !a.answer.open || a.answer.lang != "zh-Hans" {
+		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
+	}
+	if v := a.cachedCard(); !v.CanFollowUp || !v.CanLanguage {
+		t.Errorf("the card offers no Continue: %+v", v)
+	}
+	a.retryAnswer("ja")
+	a.pump("Japanese", func() bool { return a.answer.redo == "" && a.answer.lang == "ja" })
+	a.recordFollowUp(t, tr, "make it shorter")
+	msgs := chatMessages(chat.requests()[2])
+	if len(msgs) != 4 || !strings.Contains(msgs[1][1], "Japanese") || !strings.Contains(msgs[1][1], "<selected_text>\n"+src+"\n</selected_text>") ||
+		msgs[2] != [2]string{"assistant", "テストがまだ走っているので、リリースは金曜日に移ります。"} || msgs[3][1] != "<instruction>\nmake it shorter\n</instruction>" {
+		t.Errorf("follow-up messages %q", msgs)
+	}
+	if a.answer.text != "リリースは金曜日。" || len(a.answer.turns) != 2 || !a.cachedCard().Conversation {
+		t.Errorf("card %+v", a.answer)
+	}
+	a.insertAnswer()
+	a.pump("the insert", func() bool { return !a.answer.open })
+	if p := a.pasted(); len(p) != 1 || p[0].Text != "リリースは金曜日。" {
 		t.Errorf("pasted %+v", p)
 	}
 }

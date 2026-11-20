@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reduced-vocabulary DFlash drafts loaded from speculators checkpoints."""
+"""DFlash and DFlash2 drafts loaded from speculators checkpoints."""
 
 from __future__ import annotations
 
@@ -8,13 +8,18 @@ from pathlib import Path
 
 import pytest
 import torch
+from sglang.srt.speculative.dflash_worker_v2 import DFlashWorkerV2
 from torch import nn
 
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.speculative.dflash_draft import (
     DRAFT_ARCHITECTURE,
+    SELECTOR_DRAFT_ARCHITECTURE,
     DraftBlockSampler,
     ReducedVocabularyDFlashDraftModel,
     ReducedVocabularyDFlashWorker,
+    draft_worker_class,
     materialize_draft_checkpoint,
 )
 
@@ -96,6 +101,48 @@ def test_flat_config_captures_before_the_layers_the_draft_was_trained_on(
         assert (draft_dir / weight_file).resolve() == (tmp_path / weight_file).resolve()
 
 
+def test_selector_draft_keeps_the_target_vocabulary_and_runs_under_the_shared_worker(
+    tmp_path: Path,
+) -> None:
+    """A DFlash2 draft proposes through the target head, so a copied draft vocabulary or a missing selector field would build the wrong draft, and the reduced-vocabulary worker would sample from a head it does not have."""
+    write_speculators_checkpoint(
+        tmp_path,
+        speculators_model_type="dflash2",
+        draft_vocab_size=151936,
+        conv_kernel_size=2,
+        conv_group_size=16,
+        selector_rank=256,
+        selector_top_k=16,
+    )
+    reduced_vocabulary_directory = tmp_path / "reduced_vocabulary"
+    reduced_vocabulary_directory.mkdir()
+    write_speculators_checkpoint(reduced_vocabulary_directory)
+
+    selector_checkpoint = materialize_draft_checkpoint(str(tmp_path), None)
+    reduced_vocabulary_checkpoint = materialize_draft_checkpoint(
+        str(reduced_vocabulary_directory), None
+    )
+
+    config = json.loads((Path(selector_checkpoint.name) / "config.json").read_text())
+    assert config["architectures"] == [SELECTOR_DRAFT_ARCHITECTURE]
+    assert "draft_vocab_size" not in config
+    assert config["dflash_config"] == {
+        "target_layer_ids": [1, 13, 24],
+        "mask_token_id": 151705,
+        "block_size": 8,
+        "sample_from_anchor": False,
+        "conv_kernel_size": 2,
+        "conv_group_size": 16,
+        "selector_rank": 256,
+        "selector_top_k": 16,
+    }
+    assert draft_worker_class(selector_checkpoint.name) is DFlashWorkerV2
+    assert (
+        draft_worker_class(reduced_vocabulary_checkpoint.name)
+        is ReducedVocabularyDFlashWorker
+    )
+
+
 @pytest.mark.parametrize(
     "config_fields",
     [
@@ -112,6 +159,19 @@ def test_checkpoint_the_draft_cannot_reproduce_is_refused(
 
     with pytest.raises(ValueError):
         materialize_draft_checkpoint(str(tmp_path), None)
+
+
+def test_checkpoint_without_anchor_sampling_setting(tmp_path: Path) -> None:
+    """Early DFlash checkpoints omit this field and never sample the anchor row."""
+    write_speculators_checkpoint(tmp_path)
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config.pop("sample_from_anchor")
+    config_path.write_text(json.dumps(config))
+
+    with materialize_draft_checkpoint(str(tmp_path), None) as draft_directory:
+        flattened = json.loads((Path(draft_directory) / "config.json").read_text())
+        assert flattened["dflash_config"]["sample_from_anchor"] is False
 
 
 def make_draft_model() -> ReducedVocabularyDFlashDraftModel:
@@ -170,3 +230,75 @@ def test_eager_sampler_setting_keeps_the_head_out_of_the_graph(
         worker._maybe_build_draft_sampler()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         is None
     )
+
+
+def test_draft_sampler_reuses_storage_across_changed_inputs_and_batch_sizes() -> None:
+    draft_model = make_draft_model()
+    sampler = DraftBlockSampler(draft_model, block_size=3, max_batch_size=2)
+    output_address = sampler.out.data_ptr()
+    for batch_size, proposal, target_token in [
+        (2, [2.0, 0.0], 2),
+        (1, [0.0, 2.0], 5),
+        (2, [-2.0, -2.0], 9),
+    ]:
+        hidden = torch.tensor([[9.0, 0.0], proposal, proposal] * batch_size)
+        sampler(hidden)
+        assert sampler.out[: batch_size * 2].tolist() == [target_token] * (
+            batch_size * 2
+        )
+        assert sampler.out.data_ptr() == output_address
+
+
+@pytest.mark.accelerator
+def test_draft_sampler_graph_replay_updates_mapped_tokens_in_shared_storage() -> None:
+    """Replayed proposals must use new hidden states and retain the target-id mapping."""
+    # Graph capability is independent of the narrower audio staging policy.
+    device = torch.device(current_platform.device_type)
+    backend = current_platform.get_device_graph_backend(device)
+    if backend is None:
+        pytest.skip("The selected accelerator has no graph backend")
+    device_module = torch.get_device_module(device)
+    device = torch.device(device.type, device_module.current_device())
+    draft_model = make_draft_model().to(device=device, dtype=torch.bfloat16)
+    sampler = DraftBlockSampler(draft_model, block_size=3, max_batch_size=2)
+    output_address = sampler.out.data_ptr()
+    inputs = {
+        batch_size: torch.zeros(batch_size * 3, 2, device=device, dtype=torch.bfloat16)
+        for batch_size in (1, 2)
+    }
+    graphs: dict[int, ReplayableGraph] = {}
+    pool = backend.graph_pool_handle()
+    stream = device_module.Stream(device=device)
+    stream.wait_stream(device_module.current_stream(device))
+    try:
+        with torch.no_grad(), device_module.stream(stream):
+            for batch_size, hidden in inputs.items():
+                for _ in range(2):
+                    sampler(hidden)
+                with backend.capture(pool=pool, stream=stream) as graph:
+                    sampler(hidden)
+                graphs[batch_size] = graph
+        device_module.current_stream(device).wait_stream(stream)
+        for batch_size, proposal, target_token in [
+            (2, [2.0, 0.0], 2),
+            (1, [0.0, 2.0], 5),
+            (2, [-2.0, -2.0], 9),
+        ]:
+            hidden = inputs[batch_size]
+            hidden.copy_(
+                torch.tensor(
+                    [[9.0, 0.0], proposal, proposal] * batch_size,
+                    device=device,
+                    dtype=hidden.dtype,
+                )
+            )
+            graphs[batch_size].replay()
+            device_module.synchronize(device)
+            assert sampler.out[: batch_size * 2].tolist() == [target_token] * (
+                batch_size * 2
+            )
+            assert sampler.out.data_ptr() == output_address
+    finally:
+        device_module.synchronize(device)
+        for graph in graphs.values():
+            graph.reset()

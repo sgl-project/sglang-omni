@@ -1,8 +1,13 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"slices"
 	"testing"
+
+	"github.com/egoist/mygo"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -38,5 +43,54 @@ func TestDockSwitch(t *testing.T) {
 	frames(tt)
 	if g = a.settings.Get().General; g.HideDock || g.MenuBar || !slices.Equal(shown, []bool{false, true}) {
 		t.Fatalf("menu bar off: %+v, shown %v", g, shown)
+	}
+}
+
+// TestDockBeforeLaunch: main applies Show in the Dock before the app runs,
+// with no window yet, so Voxt launches with the policy it keeps (#3918):
+// one that starts in the Dock and turns accessory once launched may keep
+// its Dock icon.
+func TestDockBeforeLaunch(t *testing.T) {
+	var got []mygo.ActivationPolicy
+	old := setActivationPolicy
+	setActivationPolicy = func(p mygo.ActivationPolicy) { got = append(got, p) }
+	t.Cleanup(func() { setActivationPolicy = old })
+	a := &app{shellState: newShellState()}
+	a.prefs.General.HideDock = true
+	a.applyDock()
+	a.prefs.General.HideDock = false
+	a.applyDock()
+	if want := []mygo.ActivationPolicy{mygo.ActivationPolicyAccessory, mygo.ActivationPolicyRegular}; !slices.Equal(got, want) {
+		t.Fatalf("policies %v, want %v", got, want)
+	}
+}
+
+// TestMainAppliesDockBeforeReady: main calls applyDock before WhenReady,
+// not only inside it (#3918). Voxt cannot launch in a test, so this reads
+// main.go: the statements of main, in order.
+func TestMainAppliesDockBeforeReady(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "main" {
+			continue
+		}
+		for _, st := range fn.Body.List {
+			if e, ok := st.(*ast.ExprStmt); ok {
+				if c, ok := e.X.(*ast.CallExpr); ok {
+					if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+						calls = append(calls, sel.Sel.Name)
+					}
+				}
+			}
+		}
+	}
+	dock, ready := slices.Index(calls, "applyDock"), slices.Index(calls, "WhenReady")
+	if dock < 0 || ready < 0 || dock > ready {
+		t.Fatalf("main calls %v: want applyDock before WhenReady", calls)
 	}
 }

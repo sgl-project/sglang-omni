@@ -1,0 +1,222 @@
+name: Mac CI
+
+# Builds the native MLX runtime (sglang_omni_mlx/native) on GitHub's macOS
+# runners, then checks what the app relies on without running a model: the
+# supervisor protocol, the transcription, speech, chat and realtime APIs (served by
+# the stub server around stand-in models) and each server's startup checks; and
+# Voxt's Swift helper. No
+# checkpoint is downloaded. Model outputs are checked by hand per model PR with
+# the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
+# Omni CI skips a pull request that changes only the MLX path, so this gate
+# fails such a pull request without a CI label. A pull request that changes
+# only Voxt's app (Voxt/** outside the helper's code and vendored MyGo) runs no
+# Mac job here, so it passes without a label, draft or not; Voxt CI tests it. A
+# pull request runs only the job whose side it changes, Markdown aside, and
+# both when it changes this file.
+
+on:
+  pull_request:
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+    paths:
+      - "sglang_omni_mlx/**"
+      - "Voxt/**"
+      - ".github/workflows/mac-ci.yaml"
+      - ".github/workflows/voxt*.yaml"
+  workflow_dispatch:
+  workflow_call:
+
+# One run per pull request; a new push replaces it. The calling workflow's name keeps the nightly's run apart.
+concurrency:
+  group: mac-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+
+jobs:
+  preflight:
+    name: mac-ci-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      # Only a pull request goes through the label gate: a run by hand or from the nightly's schedule always tests.
+      run_mac: ${{ github.event_name != 'pull_request' && 'true' || steps.plan.outputs.run_mac }}
+      # A run off a pull request, or from Voxt Nightly, tests both sides.
+      run_native_runtime: ${{ (github.event_name != 'pull_request' || github.workflow != 'Mac CI') && 'true' || steps.pr.outputs.has_native_runtime_changes }}
+      run_voxt_helper: ${{ (github.event_name != 'pull_request' || github.workflow != 'Mac CI') && 'true' || steps.pr.outputs.has_voxt_helper_changes }}
+    steps:
+      - name: Fetch latest PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const labels = pr.data.labels.map((label) => label.name);
+            core.setOutput("labels", JSON.stringify(labels));
+            core.setOutput("draft", pr.data.draft ? "true" : "false");
+            core.setOutput("is_selected", labels.includes("run-mac-ci"));
+
+            const changedFiles = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const changedPaths = changedFiles.flatMap((file) =>
+              file.previous_filename ? [file.filename, file.previous_filename] : [file.filename]
+            );
+            const hasWorkflowChanges = changedPaths.includes(".github/workflows/mac-ci.yaml");
+            const hasChangesUnder = (directory) =>
+              hasWorkflowChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
+            core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
+            core.setOutput("has_voxt_helper_changes",
+              hasChangesUnder("Voxt/helper/") ||
+              hasChangesUnder("Voxt/third_party/mygo-patches/") ||
+              changedPaths.includes("Voxt/scripts/vendor-mygo.sh")
+            );
+            // App-only: every path under Voxt/, none an input of the helper job above.
+            const isVoxtHelperInput = (path) =>
+              (path.startsWith("Voxt/helper/") || path.startsWith("Voxt/third_party/mygo-patches/")) && !path.endsWith(".md") ||
+              path === "Voxt/scripts/vendor-mygo.sh";
+            core.setOutput(
+              "voxt_app_only",
+              changedPaths.every((path) => path.startsWith("Voxt/") && !isVoxtHelperInput(path))
+            );
+
+      - name: Block draft PR
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) && steps.pr.outputs.voxt_app_only != 'true' }}
+        run: |
+          echo "PR is draft. Blocking Mac CI."
+          exit 1
+
+      - name: Checkout CI label rules
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v4
+
+      # Fails without a CI label, as Omni CI's gate does.
+      - name: Resolve CI stages
+        if: ${{ github.event_name == 'pull_request' }}
+        id: plan
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+          VOXT_APP_ONLY: ${{ steps.pr.outputs.voxt_app_only }}
+        run: |
+          if resolved=$(python .github/scripts/resolve_ci_labels.py resolve \
+            --labels-json "${LABELS_JSON}" \
+            --seed "${GITHUB_RUN_ID}" \
+            --github-output "${GITHUB_OUTPUT}"); then
+            echo "${resolved}"
+            exit 0
+          fi
+          if [ "${VOXT_APP_ONLY}" != "true" ]; then
+            echo "${resolved}"
+            exit 1
+          fi
+          echo "::notice::Only Voxt's app changed: no Mac job runs, so no CI label is needed. Voxt CI tests it."
+          echo "run_mac=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_mac == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+  native-runtime:
+    name: native runtime (build + protocol)
+    needs: [preflight]
+    if: needs.preflight.outputs.run_mac == 'true' && needs.preflight.outputs.run_native_runtime == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install ccache
+        run: |
+          set -euo pipefail
+          if ! command -v ccache > /dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ccache
+          fi
+          ccache --version | head -1
+
+      # This keeps the objects of the runtime's own C and C++ and of its FetchContent dependencies.
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-${{ github.run_id }}
+          restore-keys: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-
+
+      # build_runtime.sh builds MLX from the commit and patches it pins, Metal kernels included, which ccache does not keep: this keeps the installed build.
+      - name: Restore the MLX build
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/runtime-build/mlx
+          key: voxt-native-mlx-${{ env.DEVELOPER_DIR }}-${{ hashFiles('sglang_omni_mlx/native/scripts/build_runtime.sh', 'sglang_omni_mlx/native/scripts/mlx-patches/**') }}
+
+      - name: Build the runtime and checkpoint-free tests
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: |
+          ccache --zero-stats > /dev/null
+          sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe
+          "$RUNNER_TEMP/runtime-build/cmake/audio_chunk_test"
+          ccache --show-stats
+
+      - name: Set up the test Python
+        run: |
+          uv venv -q -p 3.12 "$RUNNER_TEMP/test-venv"
+          VIRTUAL_ENV="$RUNNER_TEMP/test-venv" uv pip install -q -r sglang_omni_mlx/native/tests/requirements.lock
+
+      - name: Protocol and startup tests
+        env:
+          NATIVE_STUB_SERVER: ${{ runner.temp }}/runtime-build/cmake/stub_server
+          NATIVE_MING3_MTP_PROBE: ${{ runner.temp }}/runtime-build/cmake/ming3_mtp_probe
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+        run: |
+          "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
+
+  voxtnew-swift:
+    name: Voxt helper tests
+    needs: [preflight]
+    if: needs.preflight.outputs.run_mac == 'true' && needs.preflight.outputs.run_voxt_helper == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # -warnings-as-errors leaves Swift 6 concurrency warnings as warnings, so the log is searched instead.
+      - name: Helper builds without warnings
+        run: |
+          set -o pipefail
+          swift build --package-path Voxt/helper 2>&1 | tee helper-build.log
+          if grep -q 'warning:' helper-build.log; then
+            echo "::error::the helper build has compiler warnings"
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - name: Vendored MyGo and native drop regressions
+        working-directory: Voxt
+        run: scripts/vendor-mygo.sh --check
+
+      - name: Helper tests
+        run: swift test --package-path Voxt/helper

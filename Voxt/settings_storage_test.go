@@ -59,7 +59,7 @@ func TestStorageModels(t *testing.T) {
 	}
 	a.askErase()
 	frames(tt)
-	if !has(tt, "These models are also used by other apps and will be kept: Qwen3-ASR 0.6B (4bit) (712.8 MB)") {
+	if !has(tt, "Other apps also use these models, so they are kept: Qwen3-ASR 0.6B (4bit) (712.8 MB)") {
 		t.Fatalf("no kept models: %q", tt.Texts())
 	}
 	a.resetText = "DELETE"
@@ -75,6 +75,28 @@ func TestStorageModels(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(a.home(), datadir.ResetFile)); err != nil {
 		t.Errorf("no reset: %v", err)
+	}
+}
+
+func TestStorageReopenKeepsReport(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	measurements := 0
+	oldDiskFree := diskFree
+	diskFree = func(string) int64 {
+		measurements++
+		return 65536
+	}
+	t.Cleanup(func() { diskFree = oldDiskFree })
+
+	a.navigate("/settings/storage")
+	report := a.stReport
+	if report == nil || measurements != 1 {
+		t.Fatalf("first open: report=%p, measurements=%d", report, measurements)
+	}
+	a.navigate("/settings/general")
+	a.navigate("/settings/storage")
+	if a.stReport != report || measurements != 1 {
+		t.Fatalf("reopen measured again: report=%p, want %p; measurements=%d, want 1", a.stReport, report, measurements)
 	}
 }
 

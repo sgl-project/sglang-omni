@@ -4,6 +4,8 @@ package main
 // badges, the ⌘1–⌘6 shortcuts and the paths that moved.
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
@@ -16,7 +18,7 @@ type navPage struct {
 
 // navGroup is a section of the sidebar; the first has no title.
 type navGroup struct {
-	id    string // English title, translated by groupTitle; "" for none
+	id    string // English title, translated by groupTitleFor; "" for none
 	pages []navPage
 }
 
@@ -32,26 +34,41 @@ var navGroups = []navGroup{
 		{"/translate", "Translate", translateIcon},
 		{"/rewrite", "Rewrite", rewriteIcon},
 		{"/notes", "Notes", notesIcon},
+		{"/meetings", "Meetings", meetingIcon},
 		{"/app-enhancement", "App enhancement", appEnhancementIcon},
 	}},
 	{"Resources", []navPage{
-		{modelsPath, "Speech models", modelsIcon},
-		{remotePath, "Language models", remoteIcon},
 		{"/dictionary", "Dictionary", dictionaryIcon},
 	}},
 	{"System", []navPage{
 		{"/logs", "Logs", logsIcon},
+		{settingsPath, "Settings", settingsIcon}, // the dialog over the page, not a page of the router
 	}},
 }
+
+// settingsPath opens the settings dialog (navigate), at the section shown
+// last.
+const settingsPath = "/settings"
 
 // shortcutPages are the pages ⌘1…⌘6 open, in that order.
 var shortcutPages = []string{"/home", "/history", "/transcribe", "/translate", "/rewrite", "/app-enhancement"}
 
-// pages are every page of the sidebar, in its order.
+// pageHidden reports whether path is the page of a feature the user hid
+// (settings.Features.Hidden, whose ids are the pages' paths).
+func (a *app) pageHidden(path string) bool {
+	return a.prefs.Features.IsHidden(strings.TrimPrefix(path, "/"))
+}
+
+// pages are every page of the sidebar, in its order: the router's pages,
+// so not Settings, whose item opens its dialog.
 var pages = func() []navPage {
 	var out []navPage
 	for _, g := range navGroups {
-		out = append(out, g.pages...)
+		for _, p := range g.pages {
+			if p.path != settingsPath {
+				out = append(out, p)
+			}
+		}
 	}
 	return out
 }()
@@ -66,15 +83,14 @@ func pageKeys(path string) string {
 	return ""
 }
 
-// groupTitle translates a sidebar section's title.
-func groupTitle(id string) string {
+func groupTitleFor(translator *i18n.Translator, id string) string {
 	switch id {
 	case "Features":
-		return i18n.T("Features")
+		return translator.T("Features")
 	case "Resources":
-		return i18n.T("Resources")
+		return translator.T("Resources")
 	case "System":
-		return i18n.T("System")
+		return translator.T("System")
 	}
 	return id
 }
@@ -82,36 +98,43 @@ func groupTitle(id string) string {
 // navBadge is what a page's sidebar item shows after its title: a count
 // or a state, "" for nothing. Areas answer for their pages.
 func (a *app) navBadge(path string) string {
+	if path == "/dictionary" && len(a.suggestions) > 0 {
+		return itoa(len(a.suggestions))
+	}
 	return ""
 }
 
 // pageTitle translates a page's title (literal calls, for the key scan).
-func pageTitle(path string) string {
+func pageTitle(path string) string { return pageTitleFor(i18n.CurrentTranslator(), path) }
+
+func pageTitleFor(translator *i18n.Translator, path string) string {
 	switch path {
 	case "/home":
-		return i18n.T("Home")
+		return translator.T("Home")
 	case "/history":
-		return i18n.T("History")
+		return translator.T("History")
 	case "/transcribe":
-		return i18n.T("Transcribe")
+		return translator.T("Transcribe")
 	case "/translate":
-		return i18n.T("Translate")
+		return translator.T("Translate")
 	case "/rewrite":
-		return i18n.T("Rewrite")
+		return translator.T("Rewrite")
 	case "/notes":
-		return i18n.T("Notes")
+		return translator.T("Notes")
+	case "/meetings":
+		return translator.T("Meetings")
 	case "/app-enhancement":
-		return i18n.T("App enhancement")
+		return translator.T("App enhancement")
 	case modelsPath:
-		return i18n.T("Speech models")
+		return translator.T("Speech models")
 	case remotePath:
-		return i18n.T("Language models")
+		return translator.T("Language models")
 	case "/dictionary":
-		return i18n.T("Dictionary")
+		return translator.T("Dictionary")
 	case "/logs":
-		return i18n.T("Logs")
-	case "/settings":
-		return i18n.T("Settings")
+		return translator.T("Logs")
+	case settingsPath:
+		return translator.T("Settings")
 	}
 	return path
 }
@@ -119,7 +142,10 @@ func pageTitle(path string) string {
 // movedPaths are pages that moved, and where they are now: links,
 // notifications and old settings may still name them.
 var movedPaths = map[string]string{
-	"/permissions": "/settings/permissions", // a page of the sidebar until 10-2026
+	"/permissions":     "/settings/permissions", // a page of the sidebar until 10-2026
+	"/models":          modelsPath,
+	"/models/network":  networkPath,
+	"/language-models": remotePath,
 }
 
 // The pages' and the shell's icons (Solar; internal/icons/names.txt).
@@ -134,7 +160,9 @@ var (
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
 	notesIcon          = icons.Notes
+	meetingIcon        = icons.MicrophoneLarge
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList
+	settingsIcon       = icons.Settings
 	searchIcon         = icons.Magnifer
 )

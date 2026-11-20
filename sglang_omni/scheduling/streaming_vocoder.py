@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from types import ModuleType
@@ -814,6 +815,31 @@ class StreamingVocoderBase(
             failed = self.pump_one_step() or []
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
+
+    def ingest_queued_stream_chunks(self) -> None:
+        """Ingest the stream chunks still queued, keeping every other message in
+        order, so a ready-step decision sees the streams they make ready. With
+        pump_on_chunk_batch False this decodes nothing."""
+        queued = list(self.pending_messages)
+        self.pending_messages.clear()
+        while True:
+            try:
+                queued.append(self.inbox.get_nowait())
+            except queue.Empty:
+                break
+        self.pending_messages.extend(
+            message for message in queued if message.type != "stream_chunk"
+        )
+        chunks = [
+            message
+            for message in queued
+            if message.type == "stream_chunk"
+            and not self.is_aborted(message.request_id)
+        ]
+        if chunks:
+            self.handle_stream_chunk_batch(chunks)
+        else:
+            pass
 
     @abstractmethod
     def create_stream_state(self, request_id: str) -> StreamStateT:

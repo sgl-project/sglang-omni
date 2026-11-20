@@ -7,12 +7,14 @@ The small Swift process VoxtNew runs beside its window, for what MyGo cannot do 
 - **text in and out**: what is focused in the app in front, its selected text (Accessibility, else ⌘C when the app allows), and pasting through the clipboard with keys after it and the clipboard put back (`textio.*`);
 - **the app in front**: kept from NSWorkspace and told to the app (`app.frontmost`, `app.activated`, and `front` in each `hotkey.event`);
 - **browser URLs**: the front tab's URL from the Accessibility tree only, with no Automation consent to ask (`browser.url`), and the apps to pick from for app enhancement (`app.list`) with their icons (`app.icons`);
-- **permissions**: the Microphone and Accessibility as the helper sees them, and macOS's prompts (`permissions.*`);
+- **a window's picture**: a JPEG of the window the user speaks into, for a language model that reads images, only when the user turned that on (`screen.window`, Screen Recording);
+- **the clipboard's picture**: a JPEG of the copied image, for Rewrite's language model, only when the user turned that on (`clipboard.image`);
+- **permissions**: Microphone, Accessibility, Speech Recognition, Screen Recording and System Audio Recording as the helper sees them, and macOS's prompts (`permissions.*`);
 - **the output's mute**: the default output device's mute while VoxtNew records (`output.*`), the mutes it made kept in a journal and undone when the app goes away, before sleep, or by the next helper.
 
 It speaks [helper protocol 1](../docs/helper-protocol.md) over stdin and stdout; `internal/helper` supervises it (handshake, restarts, stderr to `~/Library/Logs/VoxtNew/helper.log`, call timings). The helper keeps no settings: Go decides (which device, when ⌘C may run, the delays, the keys) and passes it in the params. Its shapes come from the M0 spikes on a Mac (the project's `research/spikes.md`).
 
-macOS checks the helper's permissions against VoxtNew.app, its responsible process: the prompts and System Settings name VoxtNew, and a helper outside the bundle (`VOXTNEW_HELPER`) has the app's grants too.
+macOS checks the helper's permissions against Voxt.app, its responsible process: the prompts and System Settings name Voxt, and a helper outside the bundle (`VOXTNEW_HELPER`) has the app's grants too.
 
 ## Layout
 
@@ -35,7 +37,9 @@ helper/
     TextIO.swift                  focus, selection, paste
     Browser.swift                 browser URLs (AX), app.list
     AppIcons.swift                app.icons: apps' icons as PNGs
-    Permissions.swift             Microphone, Accessibility
+    ScreenWindow.swift            screen.window: a JPEG of an app's front window (ScreenCaptureKit)
+    ClipboardImage.swift          clipboard.image: the copied image as a JPEG
+    Permissions.swift             Microphone, Accessibility, Speech Recognition, Screen Recording, System Audio Recording
     Output.swift                  Core Audio's output devices, their listeners, undoing on exit and sleep
   Tests/VoxtNewHelperKitTests/  FixtureTests (helper/Fixtures), the recognizer, the framer, the file input, ManualAccessibility, OutputMute
   Fixtures/                  golden transcripts, shared with Go; audio/ for the file input's tests
@@ -52,7 +56,7 @@ scripts/build-helper.sh --out DIR        # elsewhere: a helper outside the app (
 cd helper && swift test                  # the Kit: fixtures, recognizer, framer
 ```
 
-`go tool mygo build` ships `resources/darwin-arm64/helper/voxtnew-helper` as `VoxtNew.app/Contents/Resources/helper/voxtnew-helper`, signed with `Support/helper.entitlements` (mygo.json `macos.helperEntitlements`: the microphone under the hardened runtime). The version in `Support/Info.plist` follows mygo.json's (the build script checks).
+`go tool mygo build` ships `resources/darwin-arm64/helper/voxtnew-helper` as `Voxt.app/Contents/Resources/helper/voxtnew-helper`, signed with `Support/helper.entitlements` (mygo.json `macos.helperEntitlements`: the microphone under the hardened runtime). The version in `Support/Info.plist` follows mygo.json's (the build script checks).
 
 Without Xcode, the fake helper stands in (it records a tone): `go build -o /tmp/fakehelper ./internal/helper/helpertest/cmd/fakehelper`, then `VOXTNEW_HELPER=/tmp/fakehelper`.
 

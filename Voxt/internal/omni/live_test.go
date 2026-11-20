@@ -2,8 +2,14 @@ package omni
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net"
+	"net/http"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -30,6 +36,26 @@ func drain(t *testing.T, st asr.Stream) []asr.Event {
 	}
 }
 
+// waitIdle waits until the preview's writer has nothing queued: the
+// idle token only triggers a re-check, so a stale one cannot pass early.
+func waitIdle(t *testing.T, s *live) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		s.mu.Lock()
+		q := s.queued
+		s.mu.Unlock()
+		if q == 0 {
+			return
+		}
+		select {
+		case <-s.idle:
+		case <-deadline:
+			t.Fatal("the preview's writer did not go idle")
+		}
+	}
+}
+
 // watchLog makes c's Log look for a line with sub; the func it returns
 // waits for the first one.
 func watchLog(c *Config, sub string) func(*testing.T) {
@@ -46,6 +72,17 @@ func watchLog(c *Config, sub string) func(*testing.T) {
 		case <-seen:
 		case <-time.After(10 * time.Second):
 			t.Fatalf("no log line with %q", sub)
+		}
+	}
+}
+
+// TestAudioBytes: the PCM an append message carries, for base64 lengths
+// with 0, 1 and 2 padding bytes (DecodedLen counts the padding as data).
+func TestAudioBytes(t *testing.T) {
+	for _, n := range []int{0, 3, 4, 5, 6, 3198, 3199, 3200} {
+		msg, _ := json.Marshal(map[string]string{"type": "input_audio_buffer.append", "audio": base64.StdEncoding.EncodeToString(make([]byte, n))})
+		if got := audioBytes(msg); got != n {
+			t.Errorf("%d bytes of PCM: got %d", n, got)
 		}
 	}
 }
@@ -98,6 +135,87 @@ func TestLive(t *testing.T) {
 	st.Close()
 }
 
+// TestLiveResult: with LiveResult the live socket's whole text is the
+// result and no Final runs: the second pass over the whole recording made
+// every dictation wait (#3644 FB7). When the socket ends without the text,
+// the Final runs on the whole recording, as without LiveResult.
+func TestLiveResult(t *testing.T) {
+	for _, drop := range []bool{false, true} {
+		f := newFake(t, omnitest.Opts{Text: "最终文本", LiveDrop: drop}, nil)
+		a := f.asr(t, ASRFast)
+		st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh", LiveResult: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sendAll(t, st, tone(2500*time.Millisecond, 0.3))
+		if err := st.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		evs := drain(t, st)
+		want, finals := "live final", 0
+		if drop {
+			want, finals = "最终文本", 1
+		}
+		if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != want || last.Result.Duration != 2500*time.Millisecond {
+			t.Errorf("dropped %v: last event %+v", drop, last)
+		}
+		if got := f.records("final"); len(got) != finals || finals == 1 && got[0].Samples != 40000 {
+			t.Errorf("dropped %v: Finals %+v", drop, got)
+		}
+		st.Close()
+	}
+}
+
+// TestLiveResultFullQueueSalvagesAfterFinalFails: a full preview queue
+// sends LiveResult through its Final fallback. If that Final also fails,
+// the queued audio still reaches the preview before Salvage chooses it.
+func TestLiveResultFullQueueSalvagesAfterFinalFails(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}", FailFrom: 1, Delay: 100 * time.Millisecond}, nil)
+	st, err := f.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := st.(*live)
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+	s.writeGate = gate
+	if err := st.Send(tone(10*time.Millisecond, 0.3)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the writer holding the first message", func() bool { return len(s.out) == 0 })
+	for range cap(s.out) {
+		if err := st.Send(tone(10*time.Millisecond, 0.3)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.mu.Lock()
+	queued, preview := len(s.out), s.preview
+	s.mu.Unlock()
+	if queued != cap(s.out) || !preview {
+		t.Fatalf("preview queue has %d of %d messages, preview %v", queued, cap(s.out), preview)
+	}
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	f.waitLogged(t, "the socket's queue is full")
+	f.waitLogged(t, "failed after")
+	s.mu.Lock()
+	finalOnly := s.finalOnly
+	s.mu.Unlock()
+	release()
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+	if !finalOnly {
+		t.Error("the LiveResult fallback did not allow the preview wrap-up")
+	}
+	if got := st.(asr.Salvager).Salvage(); !strings.Contains(got, "partial ") {
+		t.Errorf("salvaged %q, want the queued audio's preview", got)
+	}
+}
+
 // TestLiveLargeFirstSend: when the model is slow to load, the audio
 // recorded meanwhile goes in the stream's first Send, a second or more of
 // it. The preview must take it and send partials. The fake server
@@ -122,6 +240,164 @@ func TestLiveLargeFirstSend(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no partial: the preview did not take the first second of audio")
+	}
+}
+
+// TestLiveFinalWhenTheSocketStalls: the server takes the live session,
+// then hangs (it never reads the socket again), so the preview's writer
+// blocks on the socket with audio still queued. Stop must still run the
+// Final: a succeeding Final never waits for the stuck writer (the
+// wrap-up is for Salvage only), and the socket closes under it.
+func TestLiveFinalWhenTheSocketStalls(t *testing.T) {
+	// A small send buffer on this end too (the fake caps its receive
+	// buffer): the kernels' autotuning would otherwise take the whole
+	// recording without the writer ever blocking.
+	old := loopback
+	loopback = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := new(net.Dialer).DialContext(ctx, network, addr)
+			if tc, ok := c.(*net.TCPConn); err == nil && ok {
+				if err := tc.SetWriteBuffer(16 << 10); err != nil {
+					_ = c.Close()
+					return nil, err // without it the writer never blocks: no stall to test
+				}
+			}
+			return c, err
+		},
+	}}
+	defer func() { loopback = old }()
+	f := newFake(t, omnitest.Opts{Text: "最终文本", LiveStall: true}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 800 KB of PCM (over 1 MB on the socket): past the most a loopback
+	// socket buffers even with the small buffers above, so the writer
+	// blocks on it. The queue still takes it (maxQueued is 30 s).
+	pcm := tone(25*time.Second, 0.3)
+	sendAll(t, st, pcm)
+	stopped := time.Now()
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if took := time.Since(stopped); took > previewDrain+5*time.Second {
+		t.Errorf("the stream ended %v after Stop, over the %v drain bound", took, previewDrain)
+	}
+	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != "最终文本" {
+		t.Fatalf("final %+v", last)
+	}
+	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples != 25*sampleRate {
+		t.Errorf("finals %+v: the whole recording goes to the Final", finals)
+	}
+	st.Close()
+}
+
+// TestLiveFinalFailsWhenTheSocketStalls: the server answers the session
+// update, then hangs, and the Final fails. The wrap-up's wait for an
+// answer gives up on a quiet server (previewQuiet) instead of running
+// the full previewCompleteTimeout behind a dead one, so the error ends
+// the stream within the quiet bound. The queue is empty at Stop (the
+// kernel took the small send), so this is the drain-succeeds path.
+func TestLiveFinalFailsWhenTheSocketStalls(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sendAll(t, st, tone(100*time.Millisecond, 0.3))
+	stopped := time.Now()
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if took := time.Since(stopped); took > previewQuiet+3*time.Second {
+		t.Errorf("the error came %v after Stop, over the %v quiet bound", took, previewQuiet)
+	}
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+}
+
+// TestLiveFinalFailsWhenTheDrainTimesOut: the stall of
+// TestLiveFinalWhenTheSocketStalls, but the Final fails: the writer is
+// provably blocked (800 KB queued, a held writer, a server that never
+// reads — kernel buffer sizes differ per platform, the gate does not),
+// the drain gives up after previewDrain (the log says so) and closes
+// the socket, the wrap-up is skipped, and the error ends the stream
+// within the bound.
+func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
+	old := loopback
+	loopback = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := new(net.Dialer).DialContext(ctx, network, addr)
+			if tc, ok := c.(*net.TCPConn); err == nil && ok {
+				if err := tc.SetWriteBuffer(16 << 10); err != nil {
+					_ = c.Close()
+					return nil, err // without it the writer never blocks: no stall to test
+				}
+			}
+			return c, err
+		},
+	}}
+	defer func() { loopback = old }()
+	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1, Delay: 5 * time.Second}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// Hold the writer: the whole recording stays queued whatever the
+	// kernels' buffers; released once the drain has given up.
+	s := st.(*live)
+	gate := make(chan struct{})
+	s.writeGate = gate
+	defer close(gate)
+	sendAll(t, st, tone(25*time.Second, 0.3))
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	// The Final may take as long as the drain. Wait for it first so the
+	// log wait and the bound cannot expire between the two timeouts.
+	f.waitLogged(t, "failed after")
+	failed := time.Now()
+	f.waitLogged(t, "did not drain") // the drain really timed out
+	evs := drain(t, st)
+	if took := time.Since(failed); took > previewDrain+5*time.Second {
+		t.Errorf("the error came %v after the Final failed, over the %v drain bound", took, previewDrain)
+	}
+	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
+		t.Fatalf("last %+v", last)
+	}
+}
+
+// TestLiveResultSalvageAfterFinish: a LiveResult stream's finishLive
+// owns s.out (transcription.done goes through it) until it ends the
+// stream, so a Salvage after Finish must not close s.out under it
+// (it panicked with send on closed channel). LiveDrop keeps finishLive
+// pending on the server's answer. One goroutine at a time, a few
+// rounds: the race needs the close to land before the send.
+func TestLiveResultSalvageAfterFinish(t *testing.T) {
+	old := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(old)
+	for range 5 {
+		f := newFake(t, omnitest.Opts{LiveDrop: true}, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		st, err := f.asr(t, ASRFast).Open(ctx, asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sendAll(t, st, tone(500*time.Millisecond, 0.3))
+		if err := st.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		_ = st.(asr.Salvager).Salvage()
+		st.Close()
+		cancel()
 	}
 }
 
@@ -274,5 +550,33 @@ func TestVADFails(t *testing.T) {
 	}
 	if ferr == nil {
 		t.Error("the broken stream did not fail")
+	}
+}
+
+// TestLiveServerDies: the server dies while the session records (a
+// crash, memory pressure). The Final runs on a new server over the whole
+// recording instead of failing: the dictation is not lost.
+func TestLiveServerDies(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "最终文本"}, nil)
+	st, err := f.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: 16000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm := tone(2500*time.Millisecond, 0.3)
+	sendAll(t, st, pcm)
+	pid := f.records("launch")[0].PID
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	f.waitLogged(t, "exited unexpectedly")
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != "最终文本" {
+		t.Fatalf("final %+v", last)
+	}
+	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples != 40000 || finals[0].PID == pid {
+		t.Errorf("finals %+v: the whole recording goes to the new server", finals)
 	}
 }

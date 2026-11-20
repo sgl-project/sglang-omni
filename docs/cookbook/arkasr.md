@@ -29,8 +29,7 @@ processing with the next GPU decode forward. Use `--asr.factory.enable_async_dec
 it, or tune the crossover with `--async-lookahead-min-batch-size`.
 Request concurrency and audio-encoder batching are controlled separately:
 
-- `max_running_requests` defaults to `32` and limits requests admitted by the
-  ASR scheduler.
+- `max_running_requests` defaults to `64` and limits requests admitted by the ASR scheduler. With a cap of 32, a full cap admitted queued requests one or two per prefill: on one H200 the server without a draft served 141 SeedTTS English clips/s at 64 concurrent requests, against 263 with a cap of 64, and the two caps match from 1 to 32 requests.
 - `encoder_max_batch_size` defaults to `8` and limits the number of uncached
   audio items processed by one encoder forward. Larger cache-miss batches are
   processed as sequential encoder microbatches, so request concurrency does
@@ -68,6 +67,29 @@ sgl-omni serve \
   --asr.factory.enable_async_decode false \
   --port 8000
 ```
+
+### Speculative Decoding
+
+The decoder can verify tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU.
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.engine.speculative_algorithm DFLASH \
+  --asr.engine.speculative_draft_model_path wilsonzheng0327/ARK-ASR-3B-dflash \
+  --port 8000
+```
+
+Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with SGLang 0.5.23, greedy decoding, the prefix cache off and streamed output, SeedTTS clips sent once each, three passes per load, A B B A on fresh servers (`python -m benchmarks.eval.speculative_sweep`), the draft against the server without one:
+
+| Concurrent requests | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SeedTTS English, synchronous | 1.94x | 1.92x | 1.82x | 1.56x | 1.18x | 1.21x | 1.05x |
+| SeedTTS English, overlapped | 2.07x | 2.04x | 1.95x | 1.65x | 1.24x | 1.22x | 1.07x |
+| SeedTTS Chinese, synchronous | 1.77x | 1.74x | 1.63x | 1.58x | 1.27x | 1.22x | 1.06x |
+| SeedTTS Chinese, overlapped | 1.89x | 1.92x | 1.81x | 1.74x | 1.31x | 1.29x | 1.09x |
+
+WER stays at 1.15-1.17% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. Streamed first text arrives later with the draft: first-output p95 against the server without a draft is +3%, +4% and +21% at 1, 4 and 16 concurrent requests synchronous on English (+4%, +20% and +14% on Chinese), and +17%, +14% and +31% overlapped (+17%, +25% and +26%). The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
 
 ### Prefill Coalescing
 
@@ -211,6 +233,19 @@ sgl-omni serve \
 This path was validated on a MacBook Air with an M4 and 16 GB of unified
 memory using the official checkpoint and `tests/data/query_to_cars.wav`. The
 server returned the expected transcript through `/v1/audio/transcriptions`.
+
+## Ascend NPU
+
+ARK-ASR-3B runs on Ascend 910 with the provided NPU configuration:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --config examples/configs/arkasr_npu.yaml \
+  --port 8000
+```
+
+See the [NPU installation guide](../other_platforms/installation_npu.md) for environment setup.
 
 ## Marker-Token Suppression
 

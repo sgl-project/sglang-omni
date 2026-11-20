@@ -13,29 +13,45 @@ class PinnedDraft:
 
     A cookbook command, an example config or a model's defaults that serve this
     draft give the keys from engine_overrides. They can leave out the revision,
-    which EngineArgs.overrides fills from this entry.
+    which EngineArgs.overrides fills from this entry for a separate draft.
+    For bundled MTP, the recipe pins the target revision instead.
     """
 
     model_path: str
     stage: str
-    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE"]
+    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE", "NEXTN"]
     draft_model_path: str
     draft_model_revision: str
-    engine_settings: dict[str, int] = field(default_factory=dict)
+    engine_settings: dict[str, int | str] = field(default_factory=dict)
     # note (Haoling Pu): None means the model card states no license, so the draft stays off by default.
     license: str | None
     is_default_on: bool = False
 
     def engine_overrides(self) -> dict[str, str | int]:
-        return {
-            "speculative_algorithm": self.algorithm,
-            "speculative_draft_model_path": self.draft_model_path,
-            "speculative_draft_model_revision": self.draft_model_revision,
-            **self.engine_settings,
-        }
+        if self.draft_model_path == self.model_path:
+            return {
+                "speculative_algorithm": self.algorithm,
+                "revision": self.draft_model_revision,
+                **self.engine_settings,
+            }
+        else:
+            return {
+                "speculative_algorithm": self.algorithm,
+                "speculative_draft_model_path": self.draft_model_path,
+                "speculative_draft_model_revision": self.draft_model_revision,
+                **self.engine_settings,
+            }
 
 
 DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-asr-tiny",
+        stage="thinker",
+        algorithm="DSPARK",
+        draft_model_path="wirybeaver/Ming-3.0-asr-tiny-dspark",
+        draft_model_revision="3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
+        license="mit",
+    ),
     PinnedDraft(
         model_path="Qwen/Qwen3-ASR-1.7B",
         stage="asr",
@@ -44,6 +60,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_revision="d62bd4051e68282e02f93de774036a35f22f1373",
         engine_settings={"speculative_num_draft_tokens": 8},
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
@@ -51,6 +68,32 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DFLASH",
         draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash",
         draft_model_revision="2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+        # note (wilsonzheng0327): the 5-layer draft adds 18% to each token's KV; fp8 halves that, which long meetings on 80 GB cards need to fit.
+        engine_settings={"speculative_draft_kv_cache_dtype": "fp8_e4m3"},
+        license="apache-2.0",
+    ),
+    PinnedDraft(
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2",
+        draft_model_revision="201410d4b9c89e86d97af160658766206959ad40",
+        license="apache-2.0",
+    ),
+    PinnedDraft(
+        model_path="FunAudioLLM/Fun-ASR-Nano-2512-hf",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Fun-ASR-Nano-dflash",
+        draft_model_revision="b3cb091f554c88274378d549d7e7d3c5a13052e6",
+        license="apache-2.0",
+    ),
+    PinnedDraft(
+        model_path="AutoArk-AI/ARK-ASR-3B",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/ARK-ASR-3B-dflash",
+        draft_model_revision="b0789bb314fab990e0f2377054c4b1947d204273",
         license="apache-2.0",
     ),
     PinnedDraft(
@@ -99,5 +142,22 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm",
         draft_model_revision="c4c310aca2c768343165261cb22c21b90c1f79e0",
         license=None,
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-audio-flash",
+        stage="thinker",
+        algorithm="NEXTN",
+        draft_model_path="inclusionAI/Ming-3.0-audio-flash",
+        draft_model_revision="db94e0de19f6d05adc0413c255a28eb480cd1fae",
+        license="mit",
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-audio-flash",
+        stage="thinker",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Ming-3.0-audio-flash-dflash",
+        draft_model_revision="0286123b6ce56a691b37fba0220d1e979f08ffff",
+        engine_settings={"speculative_num_draft_tokens": 16},
+        license="mit",
     ),
 )

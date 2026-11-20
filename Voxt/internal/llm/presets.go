@@ -30,6 +30,9 @@ type Preset struct {
 	BaseURL string `json:"baseURL"` // the API root ("…/v1"); "" for custom: the user supplies it
 	// KeyOptional: it works without a key (a server on this Mac).
 	KeyOptional bool `json:"keyOptional,omitempty"`
+	// SignIn: reached with the user's sign-in (OpenAI.WithTokens) rather
+	// than a key, by streamed requests with only the fields bareBody keeps.
+	SignIn bool `json:"signIn,omitempty"`
 	// Models are the suggested models, for the model menu (any id may be
 	// typed).
 	Models       []string          `json:"models,omitempty"`
@@ -50,6 +53,9 @@ type Preset struct {
 	// Generation is the user's request settings (ProviderConfig), not
 	// the preset's.
 	Generation Generation `json:"-"`
+	// API is the API format: "" chat completions, APIResponses; the
+	// user's ProviderConfig.API replaces it.
+	API string `json:"api,omitempty"`
 }
 
 // Custom is the preset of a server the user names (any OpenAI-compatible
@@ -91,17 +97,20 @@ type ProviderConfig struct {
 	Model   string // overrides the preset's default
 	// Generation is the user's request settings (Voxt 1.x's fields).
 	Generation Generation
+	API        string // Preset.API
 }
 
-// Resolve merges cfg over its preset and checks the address: keys go
-// over https only, plain http only to this Mac (a local server), and
-// never with a user or password in the URL. A full chat completions URL
-// is taken for its API root.
+// Resolve merges cfg over its preset and checks the address: HTTP is
+// allowed for API-key services, while sign-in tokens require HTTPS off
+// this Mac. URLs cannot contain a user or password. A full chat completions
+// or Responses URL is taken for its API root; a host on this Mac with no
+// path gets the preset's.
 func (cfg ProviderConfig) Resolve() (Preset, error) {
 	p, ok := LookupPreset(cfg.ID)
 	if !ok {
 		return Preset{}, newErr(CodeUnknown, "provider", cfg.ID)
 	}
+	root := p.BaseURL
 	if b := strings.TrimSpace(cfg.BaseURL); b != "" {
 		p.BaseURL = b
 	}
@@ -109,13 +118,22 @@ func (cfg ProviderConfig) Resolve() (Preset, error) {
 		p.DefaultModel = m
 	}
 	p.Generation = cfg.Generation
-	p.BaseURL = strings.TrimSuffix(strings.TrimRight(p.BaseURL, "/"), "/chat/completions")
+	if cfg.API != "" {
+		p.API = cfg.API
+	}
+	p.BaseURL = strings.TrimSuffix(strings.TrimSuffix(strings.TrimRight(p.BaseURL, "/"), "/chat/completions"), "/responses")
 	if p.BaseURL == "" {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
 	}
 	u, err := url.Parse(p.BaseURL)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && core.IsLoopback(u.Hostname()))) {
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && (u.Scheme != "http" || p.SignIn && !core.IsLoopback(u.Hostname()))) {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
+	}
+	// A bare host on this Mac (the root Ollama prints, "http://localhost:11434")
+	// takes the preset's API path, as the 1.x settings import does (#3950).
+	// A remote one may be a proxy that serves the API at its root.
+	if r, err := url.Parse(root); u.Path == "" && core.IsLoopback(u.Hostname()) && err == nil {
+		p.BaseURL += r.Path
 	}
 	return p, nil
 }

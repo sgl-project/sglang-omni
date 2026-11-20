@@ -84,7 +84,7 @@ func runSmoke(dir string) int {
 		}
 		a.importLegacyFrom(legacy)
 		if !pump(time.Minute, func() bool { return !a.dv.importing }) || !a.ob.legacyDone {
-			say("FAIL the import: %s", a.ob.legacyMsg)
+			say("FAIL the import: %s", a.ob.legacy.text())
 			return quit(1)
 		}
 		ctx := context.Background()
@@ -98,7 +98,7 @@ func runSmoke(dir string) int {
 			say("FAIL the history: %v", err)
 			return quit(1)
 		}
-		say("legacy import: %d terms, %d history entries (%s)", len(terms), len(entries), a.ob.legacyMsg)
+		say("legacy import: %d terms, %d history entries (%s)", len(terms), len(entries), a.ob.legacy.text())
 		return quit(0)
 	}
 	a.connectHelper()

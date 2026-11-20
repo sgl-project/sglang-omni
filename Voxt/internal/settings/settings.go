@@ -24,7 +24,7 @@ import (
 
 // Version is the schema version Defaults writes. Bump it when a field's
 // meaning changes, and migrate older documents in Migrate.
-const Version = 4
+const Version = 5
 
 // Settings is the whole document.
 type Settings struct {
@@ -74,11 +74,13 @@ type General struct {
 	CopyResult bool `json:"copyResult,omitempty"`
 }
 
-// Appearance: theme, scale and the sidebar.
+// Appearance: the main window's visual settings.
 type Appearance struct {
-	Theme        string  `json:"theme"`        // "system" | "light" | "dark"
-	Scale        float64 `json:"scale"`        // UI scale, 0.9–1.25 (1 = 100 %)
-	ReduceMotion bool    `json:"reduceMotion"` // in addition to the system setting
+	Theme              string  `json:"theme"`              // "system" | "light" | "dark" | "transparent"
+	Palette            string  `json:"palette"`            // user-selected color as #rrggbb
+	WindowTransparency int     `json:"windowTransparency"` // percent, used in transparent mode
+	Scale              float64 `json:"scale"`              // UI scale, 0.9–1.25 (1 = 100 %)
+	ReduceMotion       bool    `json:"reduceMotion"`       // in addition to the system setting
 	// Rail shows the sidebar as icons only. Without it the sidebar is
 	// automatic (icons only in a narrow window) unless RailChosen: the
 	// user chose names and icons. SidebarWidth is its width in DIPs at
@@ -99,6 +101,23 @@ type Privacy struct {
 	// LogText writes recognised and generated text to the log; off, the
 	// log has only lengths and timings.
 	LogText bool `json:"logText,omitempty"`
+	// HistoryAccess opens `Voxt history` to programs on this Mac
+	// (docs/history-access.md); HistorySelection adds the selected text to
+	// what they and Export text get.
+	HistoryAccess    bool `json:"historyAccess,omitempty"`
+	HistorySelection bool `json:"historySelection,omitempty"`
+	// SendWindow sends a picture of the window the user speaks into to
+	// the language model, with the text (session/window.go); off by
+	// default.
+	SendWindow bool `json:"sendWindow,omitempty"`
+	// SendClipboardImage sends the picture on the clipboard with
+	// Rewrite's text to the language model (session/window.go); off by
+	// default.
+	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
+	// SendClipboardImageWithSelection deliberately includes that picture
+	// with selected text too; off unless the user turns it on, in fresh
+	// installs and in documents migrated from before version 5 alike.
+	SendClipboardImageWithSelection bool `json:"sendClipboardImageWithSelection,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.
@@ -134,6 +153,19 @@ type Audio struct {
 	// Clean is the light sound processing of the speech model's copy
 	// of a recording (10-16).
 	Clean Clean `json:"clean,omitzero"`
+	// LiveResult makes a local speech model's live text the result: after
+	// Stop it finishes the last few seconds instead of recognising the
+	// whole recording once more (the Final), so the text comes sooner and
+	// is a little less accurate (#3644 FB7). Off: the Final runs.
+	LiveResult bool `json:"liveResult,omitempty"`
+	// UploadMB caps each upload to a speech service that takes the whole
+	// recording and splits long ones (OpenAI, Doubao): pieces of at most
+	// this many MB (1 MB = 2^20 bytes). 0, or more than the service's own
+	// limit: the service's (25 MB, 100 MB). MaxSeconds stops a recording
+	// at this length, as Stop does (0: no limit). Settings → Audio shows
+	// it in minutes; the overlay warns as either limit nears (#3840).
+	UploadMB   int `json:"uploadMB,omitempty"`
+	MaxSeconds int `json:"maxSeconds,omitempty"`
 }
 
 // MuteOn reports whether recordings mute the system's output: the user's
@@ -209,6 +241,12 @@ type Overlay struct {
 	// recording, and the answer as the model writes it (Voxt 1.x's
 	// "Show Realtime Text" off).
 	HideLiveText bool `json:"hideLiveText,omitempty"`
+	// LiveLines shows the live text in lines that wrap, in a wide face
+	// from the first word, growing up to ten lines, then the newest ones
+	// (#3644 FB5); off, one line that scrolls sideways. On by default
+	// since 11-09 (the user: the pill should grow in lines, not sideways);
+	// no omitempty, so One line is kept.
+	LiveLines bool `json:"liveLines"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
@@ -235,88 +273,6 @@ const (
 	TriggerLong   = "long"
 )
 
-// Features: the three features and the shared paste-last and cancel
-// shortcuts.
-type Features struct {
-	Transcribe Transcribe `json:"transcribe"`
-	Translate  Translate  `json:"translate"`
-	Rewrite    Rewrite    `json:"rewrite"`
-	// PasteLast pastes the latest result again (⌃⌥V by default).
-	PasteLast Hotkey `json:"pasteLast"`
-	// Cancel cancels the session while it records or the answer card
-	// shows (Escape by default; empty keys: off). Only a tap, and only
-	// through the helper's event tap: it never takes the keys while
-	// nothing records.
-	Cancel Hotkey `json:"cancel"`
-	// Note records a note (Voxt 1.x's noteHotkeyBindings): a Transcribe
-	// session whose text goes to the Notes page instead of where the
-	// cursor is. Only a tap; empty keys: off.
-	Note Hotkey `json:"note"`
-}
-
-// Feature is what every feature has: its shortcuts, the models it uses
-// (internal/local's Model.ID: a local model's, or LLM a remote one's,
-// Provider.ID; "" = the first one installed, the recommended one) and the
-// user's addition to its task prompt, which the composer merges with the
-// built-in rules.
-type Feature struct {
-	Hotkeys []Hotkey `json:"hotkeys,omitempty"`
-	ASR     string   `json:"asr,omitempty"`
-	LLM     string   `json:"llm,omitempty"`
-	Prompt  string   `json:"prompt,omitempty"`
-}
-
-// Transcribe: speech → text, inserted where the cursor is.
-type Transcribe struct {
-	Feature
-	// Enhance runs the LLM over the transcript; Cleanup and Structure
-	// are the composer's capability layers it uses.
-	Enhance   bool `json:"enhance"`
-	Cleanup   bool `json:"cleanup"`
-	Structure bool `json:"structure,omitempty"`
-}
-
-// Translate: speech or selected text → a translation.
-type Translate struct {
-	Feature
-	Cleanup bool `json:"cleanup"`
-	// Target is the language to translate into (a lang code, "zh-Hans",
-	// "zh-Hant"); "" = English, or Chinese when the main language is
-	// English (session.TranslateTarget).
-	Target string `json:"target,omitempty"`
-	// ShowCard shows the result in a card instead of inserting it (speech
-	// and selections alike).
-	ShowCard bool `json:"showCard,omitempty"`
-	// Fallback is the language model asked once more when LLM fails or
-	// does not open; "" = none.
-	Fallback string `json:"fallback,omitempty"`
-}
-
-// Rewrite: a spoken instruction rewrites the selection, or writes new
-// text when nothing is selected.
-type Rewrite struct {
-	Feature
-	// Cleanup reads past fillers and self-corrections in the spoken
-	// instruction (never applied to the selection). Every answer shows in
-	// the answer card (Voxt's; the field cardChars of 0.1.0 is dropped).
-	Cleanup bool `json:"cleanup"`
-}
-
-// AppEnhancement: scene rules by app and URL. The groups are the
-// document "appctx:rules"; these are the switches around them.
-type AppEnhancement struct {
-	Enabled bool `json:"enabled"`
-	// Browsers are browsers the user added to the built-in ones, whose
-	// tab URL VoxtNew tries to read.
-	Browsers []Browser `json:"browsers,omitempty"`
-}
-
-// Browser is a browser by bundle id.
-type Browser struct {
-	BundleID string `json:"bundleID"`
-	Name     string `json:"name,omitempty"`
-}
-
 // Dictionary: the user's terms. The terms are a table of the store
 // (dictionary_terms); these say where they go.
 type Dictionary struct {
@@ -329,26 +285,51 @@ type Dictionary struct {
 	// what) that the speech model gets before the hints, with the
 	// dictionary on or off; a service that takes no prompt ignores it.
 	SpeechContext string `json:"speechContext,omitempty"`
+	// Notes is the personal dictionary: Markdown the user writes once (a
+	// table of standard spelling, what recognition makes of it, and when
+	// it applies, or any notes) that goes into the language model's
+	// system prompt for Transcribe, Translate and Rewrite, never to
+	// speech recognition (compose.Input.Dictionary). NotesOff keeps it
+	// out of the prompt; notes are sent by default once written.
+	Notes    string `json:"notes,omitempty"`
+	NotesOff bool   `json:"notesOff,omitempty"`
+	// Learn watches the field a Transcribe result was pasted into for
+	// 30 s and proposes a term when the user corrects a word of it
+	// (internal/learn). Off by default.
+	Learn bool `json:"learn,omitempty"`
 }
 
 // Setup: the first-run guide.
 type Setup struct {
-	Done bool `json:"done,omitempty"`
+	Done         bool `json:"done,omitempty"`
+	OpeningShown bool `json:"openingShown,omitempty"`
 	// Tried: a session (a try or a real one, any feature) has given a
 	// result once, or the history had one: Home stops offering its Try
 	// area. It stays when the history is cleared.
 	Tried bool `json:"tried,omitempty"`
+	// RewriteBoxOpens counts successful input-box opens, capped at three;
+	// RewriteBoxTipDismissed independently hides the guidance for good.
+	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
+	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
 }
 
-// Updates: what the updater offers (Settings → About → Updates). Its
-// other preferences (automatic checks and installs) are the updater
-// plugin's, in its own updater.json.
+// Updates: what the updater offers (Settings → About → Updates). With an
+// update feed, its other preferences (automatic checks and installs) are
+// the updater plugin's, in its own updater.json; without one, the check
+// of GitHub's releases (updates_github.go) keeps its own here.
 type Updates struct {
 	// Beta offers beta versions (the feed's beta channel) too. Nil until the
 	// user chooses: then on while the running version is a beta (BetaOn),
 	// so that a beta's users get the next one. No migration: older
 	// documents have none.
 	Beta *bool `json:"beta,omitempty"`
+	// NoAutoCheck turns off the daily check of GitHub's releases (on by
+	// default); LastCheck is when one last succeeded.
+	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
+	LastCheck   time.Time `json:"lastCheck,omitzero"`
+	// Dismissed is the version whose "is available" card the user
+	// dismissed: no card for it again, one for a newer version.
+	Dismissed string `json:"dismissed,omitempty"`
 }
 
 // BetaOn reports whether updates include betas for the app of version
@@ -384,14 +365,14 @@ func Defaults() Settings {
 	return Settings{
 		Version:    Version,
 		General:    General{MenuBar: true, CloseToTray: true},
-		Appearance: Appearance{Theme: "system", Scale: 1},
+		Appearance: Appearance{Theme: ThemeSystem, Palette: DefaultPalette, WindowTransparency: DefaultWindowTransparency, Scale: 1},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
-		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96},
+		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
-			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
+			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true, ReturnFinishes: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
-			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
+			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
 			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
@@ -425,7 +406,9 @@ func Migrate(data []byte) (Settings, error) {
 		migrateShortcuts(&s.Features)
 	}
 	migrateNoteKeys(data, &s.Features)
+	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
+	migrateOptionsJSON(data, &s.Providers)
 	s.Version = Version
 	return normalize(s), nil
 }
@@ -556,6 +539,11 @@ type Service interface {
 type Network struct {
 	Proxy       string `json:"proxy,omitempty"`
 	HFEndpoints string `json:"hfEndpoints,omitempty"`
+	// ProxyUser is a custom proxy's user name and ProxyAuthHost the proxy
+	// host it and its password (the Keychain's "proxy.<host>") are for:
+	// Voxt's only, never the family's (models_proxy_auth.go).
+	ProxyUser     string `json:"proxyUser,omitempty"`
+	ProxyAuthHost string `json:"proxyAuthHost,omitempty"`
 }
 
 // Family is VoxtNew's part in the ActNow family (internal/actnow).

@@ -59,6 +59,10 @@ def audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="audio_encoder",
         process=process,
         factory_path=f"{PKG}.stages.create_audio_encoder_executor",
+        # note (wirybeaver): the frame budget admits eight full 30-second chunks.
+        factory=FactoryArgs(
+            max_batch_size=8, max_batch_wait_ms=0, max_batch_mel_frames=24000
+        ),
         gpu=gpu,
         disable_direct_cuda_ipc_payload=True,
         next="thinker",
@@ -119,8 +123,9 @@ def talker_stage(*, gpu: int, process: str) -> StageConfig:
 
 
 class MiniCPMOCode2WavFactoryArgs(FactoryArgs):
-    """Optional Flow execution settings for Code2Wav."""
+    """Optional Flow and HiFT execution settings for Code2Wav."""
 
+    hift_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = ()
     enable_flow_cuda_graph: bool = True
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = Field(
         default_factory=build_default_flow_cuda_graph_shapes
@@ -201,6 +206,9 @@ class MiniCPMOPipelineConfig(PipelineConfig):
     """Text-output pipeline with image and audio encoder fan-in."""
 
     architecture: ClassVar[str] = "MiniCPMO"
+    # note(justkyriecai): Realtime-Venus checkpoints are MiniCPM-o 4.5 fine-tunes under their own architecture name.
+    architecture_aliases: ClassVar[tuple[str, ...]] = ("RealtimeVenusOmni",)
+
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         THINKER_STAGE: EngineStageConfig,
     }

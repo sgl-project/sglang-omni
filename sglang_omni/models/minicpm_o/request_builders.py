@@ -125,11 +125,11 @@ def build_sglang_thinker_request(
     request_id: str | None = None,
 ) -> SGLangARRequestData:
     """Build a thinker request with sampling parameters and media embeddings."""
-    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     from sglang_omni.scheduling.sglang_backend.request_data import (
         SGLangARRequestData,
+        ThinkerRequest,
         validate_prompt_token_ids,
     )
 
@@ -184,7 +184,7 @@ def build_sglang_thinker_request(
         )
     else:
         pass
-    req = Req(
+    req = ThinkerRequest(
         rid=request_id or "req-0",
         origin_input_text="",
         origin_input_ids=input_ids.tolist(),

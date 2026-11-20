@@ -25,7 +25,8 @@ func TestMigrate(t *testing.T) {
 	// A partial document keeps what it has and gains the defaults.
 	s, err = Migrate([]byte(`{"version":1,"general":{"language":"zh-Hans","menuBar":false},"privacy":{"keepHistory":false},"unknown":1}`))
 	if err != nil || s.General.Language != "zh-Hans" || s.General.MenuBar || s.Privacy.KeepHistory || s.Appearance.Scale != 1 ||
-		s.Appearance.Theme != "system" || len(s.Features.Transcribe.Hotkeys) != 1 || s.Features.Cancel.Keys != DefaultCancel {
+		s.Appearance.Theme != ThemeSystem || s.Appearance.Palette != DefaultPalette || s.Appearance.WindowTransparency != DefaultWindowTransparency ||
+		len(s.Features.Transcribe.Hotkeys) != 1 || s.Features.Cancel.Keys != DefaultCancel {
 		t.Fatalf("partial: %+v %v", s, err)
 	}
 	// A cancel the user turned off stays off; a chosen key stays.
@@ -38,6 +39,12 @@ func TestMigrate(t *testing.T) {
 			t.Errorf("%s: cancel %+v %v", tc.doc, s.Features.Cancel, err)
 		}
 	}
+	// The dropped inputBox switch (never released: the input box is the
+	// only Rewrite now) loads without a word.
+	s, err = Migrate([]byte(`{"version":4,"features":{"rewrite":{"inputBox":true,"cleanup":false}}}`))
+	if err != nil || s.Features.Rewrite.Cleanup {
+		t.Errorf("inputBox: %+v %v", s.Features.Rewrite, err)
+	}
 	data, _ := json.Marshal(s)
 	again, err := Migrate(data)
 	if err != nil || !reflect.DeepEqual(again, s) {
@@ -45,6 +52,22 @@ func TestMigrate(t *testing.T) {
 	}
 	if _, err := Migrate([]byte(`{`)); err == nil {
 		t.Error("bad JSON accepted")
+	}
+}
+
+func TestMeetingCorrectionStyleDocument(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"meeting":{"prompt":"Summary style"}}}`))
+	if err != nil || s.Features.Meeting.CorrectionStyle != "" || s.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("older document: %+v %v", s.Features.Meeting, err)
+	}
+	s.Features.Meeting.CorrectionStyle = "保持原语气。Keep English product names. " + strings.Repeat("Be concise. ", 100)
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || back.Features.Meeting.CorrectionStyle != s.Features.Meeting.CorrectionStyle || back.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("round trip: %+v %v", back.Features.Meeting, err)
 	}
 }
 
@@ -73,6 +96,8 @@ func TestStore(t *testing.T) {
 		s.General.Language = "zh-Hans"
 		s.Appearance.Scale = 1.12
 		s.Appearance.Theme = "sepia"
+		s.Appearance.Palette = " #B25280 "
+		s.Appearance.WindowTransparency = 25
 		s.Appearance.SidebarWidth = 900
 		s.General.OtherLanguages = []string{" en ", "en", ""}
 		s.Features.Translate.Hotkeys = append(s.Features.Translate.Hotkeys, Hotkey{Keys: " "}, Hotkey{Keys: "Option+T", Trigger: "weird"})
@@ -81,7 +106,7 @@ func TestStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := s.Get()
-	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != "system" ||
+	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != ThemeSystem || got.Appearance.Palette != "#b25280" || got.Appearance.WindowTransparency != MaxWindowTransparency ||
 		got.Appearance.SidebarWidth != MaxSidebarWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
 		len(got.Features.Translate.Hotkeys) != 2 || got.Features.Translate.Hotkeys[1].Trigger != TriggerTap || got.Overlay.Opacity != 0.5 {
 		t.Fatalf("normalized: %+v", got)
@@ -119,11 +144,88 @@ func TestStore(t *testing.T) {
 	}
 }
 
+func TestWindowTransparencyBounds(t *testing.T) {
+	for _, c := range []struct{ input, want int }{{-10, MinWindowTransparency}, {0, MinWindowTransparency}, {8, 8}, {35, MaxWindowTransparency}} {
+		s := Defaults()
+		s.Appearance.WindowTransparency = c.input
+		if got := normalize(s).Appearance.WindowTransparency; got != c.want {
+			t.Errorf("transparency %d normalized to %d, want %d", c.input, got, c.want)
+		}
+	}
+}
+
+func TestMigrateLegacyAppearance(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":1,"appearance":{"theme":"system","windowTransparency":35}}`))
+	if err != nil || s.Appearance.Theme != ThemeSystem || s.Appearance.WindowTransparency != MaxWindowTransparency {
+		t.Fatalf("legacy appearance = %+v, %v", s.Appearance, err)
+	}
+}
+
 func TestMemory(t *testing.T) {
 	s := NewMemory()
 	s.Update(context.Background(), func(s *Settings) { s.Audio.Sounds = false })
 	if s.Get().Audio.Sounds {
 		t.Error("not updated")
+	}
+}
+
+func TestMigrateClipboardImageWithSelection(t *testing.T) {
+	// Documents that predate the switch never chose the old
+	// selected-text-plus-image behavior, which was the #4152 demo
+	// configuration, so they migrate to text-only like a fresh install.
+	legacy, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Privacy.SendClipboardImageWithSelection {
+		t.Error("an older document kept the selected-text-plus-image behavior of #4152")
+	}
+	versionFour, err := Migrate([]byte(`{"version":4,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versionFour.Privacy.SendClipboardImageWithSelection {
+		t.Error("a version-4 document without the new key kept the selected-text-plus-image behavior of #4152")
+	}
+	explicitOn, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !explicitOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice was not preserved")
+	}
+	rawOn, _ := json.Marshal(explicitOn)
+	reloadedOn, err := Migrate(rawOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloadedOn.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit together choice did not survive a save and reload")
+	}
+	explicit, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice was not preserved")
+	}
+	raw, _ := json.Marshal(explicit)
+	reloaded, err := Migrate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice did not survive a save and reload")
+	}
+	unrelated, err := Migrate([]byte(`{"version":1,"privacy":{"notes":"sendClipboardImageWithSelection"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unrelated.Privacy.SendClipboardImageWithSelection {
+		t.Error("unrelated text was mistaken for an explicit together choice")
+	}
+	if Defaults().Privacy.SendClipboardImageWithSelection {
+		t.Error("a fresh install should default to text-only")
 	}
 }
 
@@ -414,8 +516,30 @@ func TestShortcutPresets(t *testing.T) {
 	if !ApplyPreset(&f, PresetOption) || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("mixed to right Option: %+v", f)
 	}
-	if ApplyPreset(&f, "command") || !reflect.DeepEqual(f, Defaults().Features) {
+	if ApplyPreset(&f, "unknown") || !reflect.DeepEqual(f, Defaults().Features) {
 		t.Fatalf("unknown preset: %+v", f)
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetCommand) {
+		t.Fatal("command changed nothing")
+	}
+	wantCmd := Defaults().Features
+	wantCmd.Transcribe.Hotkeys, wantCmd.Translate.Hotkeys, wantCmd.Rewrite.Hotkeys = tap("RightCommand"), tap("RightCommand+Shift"), tap("RightCommand+Option")
+	wantCmd.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantCmd) || PresetOf(f) != PresetCommand {
+		t.Fatalf("command: %+v preset %q", f, PresetOf(f))
+	}
+	f = Defaults().Features
+	if !ApplyPreset(&f, PresetMouseMiddle) {
+		t.Fatal("mouse middle changed nothing")
+	}
+	wantMouse := Defaults().Features
+	wantMouse.Transcribe.Hotkeys = tap("Mouse3")
+	wantMouse.Translate.Hotkeys = tap("Fn+Shift")
+	wantMouse.Rewrite.Hotkeys = []Hotkey{{Keys: "Mouse3", Trigger: TriggerDouble}}
+	wantMouse.PasteLast = Hotkey{Keys: "Control+Command+V", Trigger: TriggerTap}
+	if !reflect.DeepEqual(f, wantMouse) || PresetOf(f) != PresetMouseMiddle {
+		t.Fatalf("mouse middle: %+v preset %q", f, PresetOf(f))
 	}
 }
 
@@ -475,5 +599,138 @@ func TestMuteOutput(t *testing.T) {
 		if m.Audio.MuteOn() != on {
 			t.Fatal("clone shares the choice")
 		}
+	}
+}
+
+// TestMigrateShowCard: each feature has its own card switch. The one
+// switch of the 2.0.3 betas (features.showCard), on, turns all three on;
+// Translate's own (2.0.1's) is read as it is; Rewrite's is on unless the
+// document says off.
+func TestMigrateShowCard(t *testing.T) {
+	type cards struct{ transcribe, translate, rewrite bool }
+	for _, tc := range []struct {
+		doc  string
+		want cards
+	}{
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, cards{false, true, true}},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, cards{false, false, true}},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, cards{true, true, true}},
+		{`{"version":4,"features":{"rewrite":{"showCard":false}}}`, cards{false, false, false}},
+		{`{"version":4,"features":{"transcribe":{"showCard":true},"rewrite":{"showCard":false}}}`, cards{true, false, false}},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		f := s.Features
+		if got := (cards{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}); err != nil || got != tc.want {
+			t.Errorf("%s: cards %+v, want %+v (%v)", tc.doc, got, tc.want, err)
+		}
+		if f.ShowsCard("transcribe") != f.Transcribe.ShowCard || f.ShowsCard("translate") != f.Translate.ShowCard || f.ShowsCard("rewrite") != f.Rewrite.ShowCard {
+			t.Errorf("%s: ShowsCard disagrees with the fields", tc.doc)
+		}
+		// Saved and read again, Rewrite's off stays off.
+		out, _ := json.Marshal(s)
+		again, err := Migrate(out)
+		if g := again.Features; err != nil || (cards{g.Transcribe.ShowCard, g.Translate.ShowCard, g.Rewrite.ShowCard}) != tc.want {
+			t.Errorf("%s: saved as %s, read back %+v", tc.doc, out, g)
+		}
+	}
+}
+
+// TestMigrateOptionsJSON: a setup's Options JSON becomes the request
+// parameters' "options"; the parameters' own "options" wins.
+func TestMigrateOptionsJSON(t *testing.T) {
+	doc := `{"version":4,"providers":{"llm":[
+		{"id":"ollama","generation":{"optionsJSON":"{\"num_ctx\": 8192}","extraBodyJSON":"{\"user\": \"me\"}"}},
+		{"id":"omlx","generation":{"optionsJSON":"{\"num_ctx\": 1}","extraBodyJSON":"{\"options\": {}}"}}]}}`
+	s, err := Migrate([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if json.Unmarshal([]byte(s.Providers.LLM[0].Generation.ExtraBodyJSON), &got) != nil || got["user"] != "me" || got["options"].(map[string]any)["num_ctx"] != 8192.0 {
+		t.Errorf("folded %q", s.Providers.LLM[0].Generation.ExtraBodyJSON)
+	}
+	if s.Providers.LLM[1].Generation.ExtraBodyJSON != `{"options": {}}` {
+		t.Errorf("kept %q", s.Providers.LLM[1].Generation.ExtraBodyJSON)
+	}
+}
+
+// TestLiveLinesDefault: Lines is the default live text layout (11-09),
+// for a document saved before too (it had no key unless Lines was
+// chosen); One line, chosen, is written and read back.
+func TestLiveLinesDefault(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		want bool
+	}{
+		{`{"version":4}`, true},
+		{`{"version":4,"overlay":{"liveLines":true}}`, true},
+		{`{"version":4,"overlay":{"liveLines":false}}`, false},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: LiveLines %v, want %v (%v)", tc.doc, s.Overlay.LiveLines, tc.want, err)
+		}
+		out, _ := json.Marshal(s)
+		if again, err := Migrate(out); err != nil || again.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: saved as %s, read back %v", tc.doc, out, again.Overlay.LiveLines)
+		}
+	}
+}
+
+// TestDictionaryNotesUpgrade: 2.0.3's settings, which have no personal
+// dictionary, read with none and its switch on; notes and the switch
+// round-trip.
+func TestDictionaryNotesUpgrade(t *testing.T) {
+	old, err := Migrate([]byte(`{"version":4,"dictionary":{"enabled":true,"asrHints":true,"glossary":true,"speechContext":"Leo"}}`))
+	if d := old.Dictionary; err != nil || d.Notes != "" || d.NotesOff || !d.Enabled || !d.Glossary || d.SpeechContext != "Leo" {
+		t.Fatalf("2.0.3's dictionary: %+v %v", d, err)
+	}
+	for _, off := range []bool{false, true} {
+		s := Defaults()
+		s.Dictionary.Notes, s.Dictionary.NotesOff = "| 101 | `幺零幺` → 101 |\n\n```\nx | y\n```", off
+		out, _ := json.Marshal(s)
+		again, err := Migrate(out)
+		if err != nil || again.Dictionary != s.Dictionary {
+			t.Errorf("saved as %s, read back %+v (%v)", out, again.Dictionary, err)
+		}
+	}
+}
+
+// TestReturnFinishesDefault: Return finishes dictation by default and for
+// a document saved before the setting existed; an explicit choice survives.
+func TestReturnFinishesDefault(t *testing.T) {
+	if !Defaults().Features.Transcribe.ReturnFinishes {
+		t.Fatal("Return does not finish dictation by default")
+	}
+	old, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || !old.Features.Transcribe.ReturnFinishes {
+		t.Fatalf("old document: %v %v", old.Features.Transcribe.ReturnFinishes, err)
+	}
+	for _, on := range []bool{false, true} {
+		s := Defaults()
+		s.Features.Transcribe.ReturnFinishes = on
+		data, _ := json.Marshal(s)
+		back, err := Migrate(data)
+		if err != nil || back.Features.Transcribe.ReturnFinishes != on {
+			t.Errorf("%v round trip: %v %v", on, back.Features.Transcribe.ReturnFinishes, err)
+		}
+	}
+}
+
+// TestStrictShortcutsDefault: Strict shortcuts is off by default and for
+// a document saved before it existed (Voxt 1.x's common stop); on is
+// written and read back (#3823).
+func TestStrictShortcutsDefault(t *testing.T) {
+	if Defaults().Features.StrictShortcuts {
+		t.Error("on by default")
+	}
+	s, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || s.Features.StrictShortcuts {
+		t.Fatalf("old document: %v %v", s.Features.StrictShortcuts, err)
+	}
+	s.Features.StrictShortcuts = true
+	data, _ := json.Marshal(s)
+	if back, err := Migrate(data); err != nil || !back.Features.StrictShortcuts {
+		t.Errorf("round trip: %v %v", back.Features.StrictShortcuts, err)
 	}
 }

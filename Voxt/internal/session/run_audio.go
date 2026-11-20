@@ -9,6 +9,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dsp"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -18,34 +21,46 @@ func (r *run) streamer() (asr.Streamer, bool) {
 	return st, ok && r.svc.ASR.Caps().Stream
 }
 
-// hints are the dictionary's terms for the speech model (dict.Hints:
-// the enabled ones, the most recently changed first).
+// hints are the dictionary's terms for the speech model (SpeechHints).
 func (r *run) hints() []string {
-	if !r.settings.Dictionary.Enabled || !r.settings.Dictionary.ASRHints {
+	return SpeechHints(r.settings, r.terms)
+}
+
+// SpeechHints are the dictionary's terms for the speech model when the
+// settings send them (dict.Hints: the enabled ones, the most recently
+// changed first). Meetings use it too.
+func SpeechHints(s settings.Settings, terms []store.Term) []string {
+	if !s.Dictionary.Enabled || !s.Dictionary.ASRHints {
 		return nil
 	}
-	return dict.Hints(r.terms)
+	return dict.Hints(terms)
 }
 
-// speechContext is the user's text about the speech for the speech model
-// (Dictionary.SpeechContext), with the dictionary on or off.
+// speechContext is the free-text prompt for the speech model: the global
+// speech context on the Speech models page, then the active remote
+// service's recognition prompt template when the session uses one.
 func (r *run) speechContext() string {
-	return strings.TrimSpace(r.settings.Dictionary.SpeechContext)
+	global := strings.TrimSpace(r.settings.Dictionary.SpeechContext)
+	tpl := r.remoteRecognitionPrompt()
+	main := MainLanguage(r.settings, r.m.cfg.Locale())
+	return asr.BuildSpeechPrompt(global, tpl, main, r.settings.General.OtherLanguages, r.hints())
 }
 
-// speechLang is the language hint of the speech model: the user's main
-// language (General.MainLanguage, else the UI's), but an English UI is no
-// hint. English is the UI of every system language but Simplified
-// Chinese, so it says nothing about what the user speaks, and forcing it
-// turned Chinese dictation into English (#3398); the Chinese UI's "zh"
-// costs nothing on English speech and keeps a long mixed dictation
-// Chinese (docs/eval.md). The model decides whether to use it.
-func (r *run) speechLang() string {
-	l := MainLanguage(r.settings, r.m.cfg.Locale())
-	if r.settings.General.MainLanguage == "" && l == "en" {
+func (r *run) remoteRecognitionPrompt() string {
+	id := strings.TrimSpace(r.svc.ASRInfo.ID)
+	if id == "" {
 		return ""
 	}
-	return l
+	for _, p := range r.settings.Providers.ASR {
+		if p.ID == id {
+			return p.RecognitionPrompt
+		}
+	}
+	return ""
+}
+
+func (r *run) speechLang() string {
+	return SpeechLang(r.settings, r.m.cfg.Locale())
 }
 
 // onAudio handles the recording's events (on the helper's reader
@@ -72,7 +87,11 @@ func (r *run) onAudio(ev AudioEvent) {
 			}
 		})
 	case ev.Restarted != nil:
-		r.logf("warning", "the input restarted (%s, attempt %d)", ev.Restarted.Reason, ev.Restarted.Attempt)
+		rs := ev.Restarted
+		r.logf("warning", "the input restarted (%s, attempt %d)", rs.Reason, rs.Attempt)
+		if rs.Reason == proto.CaptureDeviceLost && rs.DeviceName != "" {
+			r.m.update(r, func(s *Snapshot) { s.Device, s.Switched = rs.DeviceName, s.Switched+1 })
+		}
 	}
 }
 
@@ -172,6 +191,9 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				case asr.EventPartial:
 					text := ev.Text
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
+					r.hearPartial(text)
+				case asr.EventPiece:
+					r.hearPiece(ev.Text)
 				case asr.EventFinal:
 					res := ev.Result
 					res.Text = ev.Text

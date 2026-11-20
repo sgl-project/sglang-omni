@@ -16,6 +16,7 @@
     {"id": "dashscope", "name": "Qwen (Alibaba Cloud Model Studio)", "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1", "jsonMode": "object", "defaultModel": "qwen-plus", "models": ["qwen-plus", "qwen-plus-latest", "qwen-max-latest", "qwen-turbo-latest", "qwen-flash"], "extraBody": {"enable_thinking": false}, "keyURL": "https://bailian.console.aliyun.com/?tab=model#/api-key"},
     {"id": "stepfun", "name": "StepFun", "baseURL": "https://api.stepfun.com/v1", "jsonMode": "prompt", "defaultModel": "step-3.5-flash", "models": ["step-3.5-flash", "step-3.5-flash-2603"], "keyURL": "https://platform.stepfun.com/interface-key"},
     {"id": "mimo", "name": "Xiaomi MiMo", "baseURL": "https://api.xiaomimimo.com/v1", "jsonMode": "prompt", "defaultModel": "mimo-v2.5-pro", "models": ["mimo-v2.5-pro", "mimo-v2.5"], "extraBody": {"thinking": {"type": "disabled"}}, "keyURL": "https://platform.xiaomimimo.com/"},
+    {"id": "codex", "name": "ChatGPT (Codex)", "baseURL": "https://chatgpt.com/backend-api/codex", "api": "responses", "signIn": true, "jsonMode": "prompt", "defaultModel": "gpt-6.1-sol", "models": ["gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-luna"], "headers": {"originator": "codex_cli_rs", "User-Agent": "codex_cli_rs/0.0.0 (Voxt)", "Accept": "text/event-stream, application/json"}},
     {"id": "custom", "name": "Custom (OpenAI-compatible)", "baseURL": "", "keyOptional": true, "jsonMode": "prompt"}
   ]
 }

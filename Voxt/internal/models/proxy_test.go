@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/hehehai/actnowkit/hfhub"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 )
 
 // testProxy is a systemProxy with no environment's proxy, the given
@@ -102,6 +105,49 @@ func TestSystemProxy(t *testing.T) {
 	}
 }
 
+// TestBypassProxyThisMac: a host goes direct, with no exceptions, exactly
+// when the local-only checks (core.IsLoopback) call it this Mac.
+func TestBypassProxyThisMac(t *testing.T) {
+	proxies := SystemProxies{HTTPS: "127.0.0.1:7897"}
+	for _, host := range []string{"localhost", "localhost.", "LocalHost", "ollama.localhost", "Ollama.LocalHost.", "127.0.0.2", "::1",
+		"localhost.example.com", "foolocalhost", "huggingface.co", "10.0.0.2"} {
+		if got, want := bypassProxy(host, proxies), core.IsLoopback(host); got != want {
+			t.Errorf("%s: bypass %v, IsLoopback %v", host, got, want)
+		}
+	}
+}
+
+func TestProxyForNeverProxiesLoopback(t *testing.T) {
+	proxyURL, _ := url.Parse("http://proxy.example:3128")
+	system := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+	for _, mode := range []string{"", "direct", "http://proxy.example:3128"} {
+		t.Run(mode, func(t *testing.T) {
+			proxy := ProxyFor(mode, url.UserPassword("name", "password"), system)
+			for _, rawURL := range []string{"http://ollama.localhost", "http://localhost", "http://127.0.0.1"} {
+				request, _ := http.NewRequest("GET", rawURL, nil)
+				got, err := proxy(request)
+				if err != nil || got != nil {
+					t.Errorf("%s proxy = %v, %v; want direct", rawURL, got, err)
+				}
+			}
+			request, _ := http.NewRequest("GET", "https://example.com", nil)
+			got, err := proxy(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "direct" && got != nil {
+				t.Errorf("direct mode proxied an external URL: %v", got)
+			}
+			if mode != "direct" && got == nil {
+				t.Error("external URL did not use the configured proxy")
+			}
+			if strings.HasPrefix(mode, "http://") && got != nil && got.User == nil {
+				t.Errorf("custom proxy lost its credentials: %v", got)
+			}
+		})
+	}
+}
+
 // TestSystemProxyEnvironmentWins: a developer's https_proxy is used
 // before the system's, which is not even read.
 func TestSystemProxyEnvironmentWins(t *testing.T) {
@@ -117,24 +163,31 @@ func TestSystemProxyEnvironmentWins(t *testing.T) {
 	}
 }
 
-// TestDownloadThroughProxy: with the automatic proxy, a Manager fetches
-// every file through the system's proxy (a proxy in front of the fake
-// Hub, for a Hub of a name of its own); "direct" never uses it.
-func TestDownloadThroughProxy(t *testing.T) {
-	e := newEnv(t, testCatalog(), Options{})
+// hubProxy is an HTTP proxy in front of the fake Hub at hubURL, for a Hub
+// of a name of its own (hub.example). With user ("name:password") it is a
+// proxy that wants them: a request without them gets 407. It returns the
+// requests it got, each with its Proxy-Authorization.
+func hubProxy(t *testing.T, hubURL, user string) (*httptest.Server, func() []string) {
 	var mu sync.Mutex
 	var proxied []string
-	target, _ := url.Parse(e.hub.URL)
+	target, _ := url.Parse(hubURL)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Proxy-Authorization")
 		mu.Lock()
-		proxied = append(proxied, r.RequestURI)
+		proxied = append(proxied, r.RequestURI+" "+auth)
 		mu.Unlock()
-		if r.URL.Host != "hub.example" {
+		switch {
+		case r.URL.Host != "hub.example":
 			http.Error(w, "not proxied: "+r.RequestURI, http.StatusBadGateway)
+			return
+		case user != "" && auth != "Basic "+base64.StdEncoding.EncodeToString([]byte(user)):
+			w.Header().Set("Proxy-Authenticate", `Basic realm="proxy"`)
+			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 			return
 		}
 		out, _ := http.NewRequestWithContext(r.Context(), r.Method, target.String()+r.URL.RequestURI(), nil)
 		out.Header = r.Header.Clone()
+		out.Header.Del("Proxy-Authorization")
 		res, err := http.DefaultTransport.RoundTrip(out)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -147,27 +200,71 @@ func TestDownloadThroughProxy(t *testing.T) {
 		w.WriteHeader(res.StatusCode)
 		io.Copy(w, res.Body)
 	}))
-	defer proxy.Close()
+	t.Cleanup(proxy.Close)
+	return proxy, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(proxied)
+	}
+}
+
+// TestDownloadThroughProxy: with the automatic proxy, a Manager fetches
+// every file through the system's proxy (a proxy in front of the fake
+// Hub); "direct" never uses it.
+func TestDownloadThroughProxy(t *testing.T) {
+	e := newEnv(t, testCatalog(), Options{})
+	proxy, requests := hubProxy(t, e.hub.URL, "")
 	var logged []string
 	read := func() SystemProxies { return SystemProxies{HTTP: strings.TrimPrefix(proxy.URL, "http://")} }
 	s := &systemProxy{env: func(*http.Request) (*url.URL, error) { return nil, nil }, read: read, now: time.Now,
 		logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
-	if ProxyFor(hfhub.ProxyDirect, s.proxy) == nil {
+	if ProxyFor(hfhub.ProxyDirect, nil, s.proxy) == nil {
 		t.Fatal("no rule for direct")
 	}
-	e.m.SetNetwork(Network{Endpoints: []string{"http://hub.example"}, Client: NewHTTPClient(ProxyFor("", s.proxy))})
+	e.m.SetNetwork(Network{Endpoints: []string{"http://hub.example"}, Client: NewHTTPClient(ProxyFor("", nil, s.proxy))})
 	if err := e.m.Download("llm"); err != nil {
 		t.Fatal(err)
 	}
 	if st := wait(t, e.m, "llm"); !st.Installed || st.Err != nil {
 		t.Fatalf("%+v", st)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(proxied) < 4 || !strings.HasPrefix(proxied[0], "http://hub.example/") {
+	if proxied := requests(); len(proxied) < 4 || !strings.HasPrefix(proxied[0], "http://hub.example/") {
 		t.Errorf("proxied %q", proxied)
 	}
 	if len(logged) != 1 || !strings.Contains(logged[0], "system proxy http 127.0.0.1:") {
 		t.Errorf("log %q", logged)
+	}
+}
+
+// TestDownloadThroughAuthProxy: a custom proxy that wants a user name and
+// password, as Voxt 1.x's could: without them it answers 407 and the
+// download fails, with an error that names no password; with them every
+// request of the download carries them and it installs.
+func TestDownloadThroughAuthProxy(t *testing.T) {
+	const password = "Pr0xy-pass-5521"
+	e := newEnv(t, testCatalog(), Options{})
+	proxy, requests := hubProxy(t, e.hub.URL, "alice:"+password)
+	network := func(user *url.Userinfo) Network {
+		return Network{Endpoints: []string{"http://hub.example"}, Client: NewHTTPClient(ProxyFor(proxy.URL, user, nil))}
+	}
+	e.m.SetNetwork(network(nil))
+	if err := e.m.Download("llm"); err != nil {
+		t.Fatal(err)
+	}
+	if st := wait(t, e.m, "llm"); st.Installed || st.Err == nil || strings.Contains(st.Err.Error(), password) {
+		t.Fatalf("without the user: %+v", st)
+	}
+	refused := len(requests())
+	e.m.SetNetwork(network(url.UserPassword("alice", password)))
+	if err := e.m.Download("llm"); err != nil {
+		t.Fatal(err)
+	}
+	if st := wait(t, e.m, "llm"); !st.Installed || st.Err != nil {
+		t.Fatalf("with the user: %+v", st)
+	}
+	want := " Basic " + base64.StdEncoding.EncodeToString([]byte("alice:"+password))
+	proxied := requests()[refused:]
+	if len(proxied) < 4 || slices.ContainsFunc(proxied, func(r string) bool { return !strings.HasSuffix(r, want) }) {
+		t.Errorf("proxied %q", proxied)
 	}
 }

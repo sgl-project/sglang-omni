@@ -1,6 +1,7 @@
 package main
 
-// Settings → Privacy: what leaves this Mac (only text, to the language
+// Settings → Privacy: what leaves this Mac (text, and a screenshot of the
+// window or the copied image when the user turns that on, to the language
 // model the user set up; the speech models run here; the network is also
 // for update checks and model downloads), and what VoxtNew keeps here:
 // the history, its recordings, the text in the logs.
@@ -8,103 +9,101 @@ package main
 // the History settings dialog (history_settings.go), which a row opens.
 
 import (
-	"context"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-func (a *app) privacySettings(c *ui.Context) {
+type settingsPrivacyLocalUI struct {
+	keepHistory                bool
+	keepAudio                  bool
+	logText                    bool
+	sendWindow                 bool
+	sendClipboard              bool
+	sendClipboardWithSelection bool
+	clearHistoryAsk            bool
+}
+
+func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions settingsPrivacyActions, local *settingsPrivacyLocalUI, historyLocal *historyAccessLocalUI) {
 	t := c.Theme()
 	sectionTitle(c, i18n.T("What leaves this Mac"))
-	online := i18n.T("Otherwise Voxt goes online only to download models.")
-	if a.upd != nil { // a build with an update feed (updates.go)
-		online = i18n.T("Otherwise Voxt goes online only to check for updates and to download models.")
-	}
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
-			i18n.T("Your recordings are recognised on this Mac, unless a feature uses a speech service you set up (the Speech models page): its recordings then go to that service. Voxt has no server of its own."),
-			i18n.T("The text to clean up, translate or rewrite goes to the language model you set up (the Language models page): it stays on this Mac with a server here, such as Ollama, and goes to the service otherwise."),
-			online,
-			i18n.T("The address of the browser tab in front is read only to pick your app enhancement rules: the language model never sees it, only the app's name."),
+			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up in Settings → Speech models, its recordings go to that service. Voxt has no server of its own."),
+			i18n.T("The language model you set up in Settings → Language models can get text Voxt recognised, text you selected or typed, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content. With the switches below on, it can also get a screenshot of the window or an image you copied."),
+			i18n.T("A request to a language-model server on this Mac, such as Ollama, stays on this Mac. A request to an external API goes to the provider handling it. If Translate uses your fallback model, that provider gets the same request too."),
+			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your account and its terms."),
+			state.Online,
+			i18n.T("Voxt reads the address of the current browser tab only to pick your app enhancement rules. The language model never sees it, only the app's name."),
 			i18n.T("Voxt collects no usage data, crash reports or identifiers."),
+			i18n.T("If you let programs on this Mac read the history (below), where that text goes next is up to them."),
 		} {
 			ui.Text(c, "• "+s).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 		}
 	})
+	settingRow(c, "priv-window", i18n.T("Send a screenshot"), i18n.T("For language models that read images: when you start speaking, Voxt takes a screenshot of the window you speak into and sends it to the language model with the text, so names on screen come out right. Needs Screen Recording permission. A model that takes no images gets the text alone."), func() {
+		if ui.Switch(c.Key("priv-window"), &local.sendWindow).Label(i18n.T("Send the window to the language model")).Changed() {
+			actions.setSendWindow(local.sendWindow)
+		}
+	})
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. With text selected, only the text goes unless Text and a copied image together is also on. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
+		if ui.Switch(c.Key("priv-copied"), &local.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
+			actions.setSendClipboardImage(local.sendClipboard)
+		}
+	})
+	caption(c, i18n.T("With both on, the copied image goes, not the screenshot."))
+	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Off by default: a text selection sends only the text, so an image you copied earlier cannot take over a text rewrite. Turn it on to send the selected text and the copied image together."), func() {
+		if ui.Switch(c.Key("priv-copied-with-text"), &local.sendClipboardWithSelection).Label(i18n.T("Send both with Rewrite")).Changed() {
+			actions.setSendClipboardImageWithSelection(local.sendClipboardWithSelection)
+		}
+	})
 
 	sectionTitle(c, i18n.T("Kept on this Mac"))
-	settingRow(c, "priv-history", i18n.T("Keep a history"), i18n.T("Each transcription, translation and rewrite is saved with its source text, so you can find, copy or redo it."), func() {
-		if ui.Switch(c.Key("priv-history"), &a.settingsForm.keepHistory).Label(i18n.T("Save each result")).Changed() {
-			on := a.settingsForm.keepHistory
-			a.updateSettings(func(s *settings.Settings) {
-				s.Privacy.KeepHistory = on
-				if !on {
-					s.Privacy.KeepAudio = false
-				}
-			})
+	settingRow(c, "priv-history", i18n.T("Keep a history"), i18n.T("When off, the menu bar and Dock menus do not list cards to reopen."), func() {
+		if ui.Switch(c.Key("priv-history"), &local.keepHistory).Label(i18n.T("Save each result")).Changed() {
+			actions.setKeepHistory(local.keepHistory)
 		}
 	})
-	settingRow(c, "priv-audio", i18n.T("Keep the recordings"), i18n.T("Saves the audio with each history entry, to listen again or recognise it once more. When this is off, a recording whose recognition failed, or that you cancelled, is still kept for 7 days, so that you can retry it."), func() {
-		if ui.Switch(c.Key("priv-audio"), &a.settingsForm.keepAudio).Label(i18n.T("Save each recording")).Disabled(!a.prefs.Privacy.KeepHistory).Changed() {
-			on := a.settingsForm.keepAudio
-			a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepAudio = on })
+	settingRow(c, "priv-audio", i18n.T("Keep recordings"), i18n.T("When off, failed or cancelled recordings are still kept for 7 days so you can retry them."), func() {
+		if ui.Switch(c.Key("priv-audio"), &local.keepAudio).Label(i18n.T("Save each recording")).Disabled(!state.KeepAudioEnabled).Changed() {
+			actions.setKeepAudio(local.keepAudio)
 		}
 	})
-	settingRow(c, "priv-hist-settings", i18n.T("History settings"), i18n.T("Where the recordings are kept, exporting them, and the automatic clean-up of old entries."), func() {
+	settingRow(c, "priv-hist-settings", i18n.T("History settings"), "", func() {
 		if ui.Button(c.Key("priv-hist-settings"), i18n.T("Open…")).Clicked() {
-			a.showHistorySettings()
+			actions.showHistorySettings()
 		}
 	})
-	settingRow(c, "priv-clear", i18n.T("Clear the history"), i18n.T("Deletes every entry and its recording. Your dictionary and settings stay."), func() {
+	settingRow(c, "priv-clear", i18n.T("Clear history"), i18n.T("Deletes every entry and its recording. Your dictionary and settings stay."), func() {
 		if ui.Button(c.Key("priv-clear"), i18n.T("Clear…")).Clicked() {
-			a.clearHistoryAsk = true
+			local.clearHistoryAsk = true
 		}
 	})
 
+	historyAccessSection(c, &state.HistoryAccess, actions, historyLocal) // history_access.go
+
 	sectionTitle(c, i18n.T("Logs"))
-	settingRow(c, "priv-log-text", i18n.T("Write text to the log"), i18n.T("Off, the log records only lengths and timings of what you said and got back, never the text. Turn it on to report a problem, then off again."), func() {
-		if ui.Switch(c.Key("priv-log-text"), &a.settingsForm.logText).Label(i18n.T("Log what was said")).Changed() {
-			on := a.settingsForm.logText
-			a.updateSettings(func(s *settings.Settings) { s.Privacy.LogText = on })
+	settingRow(c, "priv-log-text", i18n.T("Write text to the log"), i18n.T("When off, the log has no text, only lengths and timings. Turn it on only to report a problem."), func() {
+		if ui.Switch(c.Key("priv-log-text"), &local.logText).Label(i18n.T("Log what was said")).Changed() {
+			actions.setLogText(local.logText)
 		}
 	})
-	a.clearHistoryDialog(c)
+	clearHistoryDialog(c, actions, local)
 }
 
 // clearHistoryDialog confirms Clear the history.
-func (a *app) clearHistoryDialog(c *ui.Context) {
+func clearHistoryDialog(c *ui.Context, actions settingsPrivacyActions, local *settingsPrivacyLocalUI) {
 	t := c.Theme()
-	ui.Modal(c.Key("priv-clear-ask"), &a.clearHistoryAsk, func() {
-		ui.Text(c, i18n.T("Clear the history?")).Bold()
-		ui.Text(c, i18n.T("Every transcription, translation and rewrite, and their recordings, are deleted. This cannot be undone.")).Width(px(t, 380))
+	ui.Modal(c.Key("priv-clear-ask"), &local.clearHistoryAsk, func() {
+		ui.Text(c, i18n.T("Clear history?")).Bold()
+		ui.Text(c, i18n.T("All transcriptions, translations and rewrites are deleted, with their recordings. This cannot be undone.")).Width(px(t, 380))
 		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
 			if ui.Button(c.Key("priv-clear-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
-				a.clearHistoryAsk = false
+				local.clearHistoryAsk = false
 			}
-			if recordButton(c.Key("priv-clear-ok"), i18n.T("Delete the history")).Clicked() {
-				a.clearHistoryAsk = false
-				a.clearHistory()
+			if recordButton(c.Key("priv-clear-ok"), i18n.T("Delete history")).Clicked() {
+				local.clearHistoryAsk = false
+				actions.clearHistory()
 			}
-		})
-	})
-}
-
-// clearHistory deletes every history entry, in the background.
-func (a *app) clearHistory() {
-	h := a.lib.store.History()
-	a.async(func() {
-		n, err := h.DeleteAll(context.Background(), "")
-		a.post(func() {
-			if n > 0 {
-				a.historyChanged() // history_page.go
-			}
-			if err != nil {
-				a.toast(i18n.T("Could not clear the history: %v", err))
-				return
-			}
-			a.toast(i18n.N(n, "Deleted %d entry", "Deleted %d entries", n))
 		})
 	})
 }

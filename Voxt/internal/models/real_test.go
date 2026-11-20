@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +110,8 @@ func waitReal(t *testing.T, m *Manager, id string, limit time.Duration) Status {
 // it by (its SHA-256 when in LFS, else its git blob id), the snapshot is
 // linked beside its place and renamed in holding the repo lock, as hfhub
 // finishes one, and VoxtNew claims it (origin migrated) as $VOXTNEW_MOVE_AS
-// (default dev.hehehai.voxtnew). A model already in $HUB is only claimed.
+// (default dev.hehehai.voxtnew). A model already in $HUB is only claimed;
+// VOXTNEW_MOVE_ONLY=id,… moves those models only.
 //
 //	VOXTNEW_MOVE_FROM=$HOME/voxtnew-models go test -count=1 -v -run TestRealMoveToHub ./internal/models
 func TestRealMoveToHub(t *testing.T) {
@@ -128,8 +130,9 @@ func TestRealMoveToHub(t *testing.T) {
 	hub := Hub()
 	store := &fammodels.Store{Family: fam, Hub: hub, BundleID: as, AppID: "voxtnew"}
 	ctx := context.Background()
+	only := os.Getenv("VOXTNEW_MOVE_ONLY")
 	for _, m := range Catalog() {
-		if m.Borrowed {
+		if m.Borrowed || only != "" && !slices.Contains(strings.Split(only, ","), m.ID) {
 			continue
 		}
 		if Installed(hub, m) == "" {

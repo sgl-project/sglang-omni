@@ -27,14 +27,16 @@ from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from functools import partial
 from itertools import islice
-from typing import Callable, Generic
+from typing import Callable, Generic, Literal
 
+import sglang.srt.runtime_context as runtime_context
 import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import get_dp_tp_group
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.managers.io_struct import AbortReq
 from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 from sglang.srt.managers.schedule_batch import (
@@ -58,7 +60,11 @@ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
-from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import (
+    HybridReqToTokenPool,
+    MHATokenToKVPool,
+    ReqToTokenPool,
+)
 from sglang.srt.runtime_context import get_model, get_parallel, get_serving, get_spec
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
@@ -99,6 +105,10 @@ from sglang_omni.proto.admin import (
 )
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    get_prefill_cuda_graph_backend,
+)
 from sglang_omni.scheduling.message import (
     IncomingMessage,
     OutgoingMessage,
@@ -110,6 +120,7 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
     SessionUnit,
     is_close_request,
 )
+from sglang_omni.scheduling.sglang_backend.history_cut import DraftSessionKV
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import (
     ARRequestData,
@@ -122,6 +133,7 @@ from sglang_omni.scheduling.types import (
     SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.process import terminate_gpu_worker
 
 logger = logging.getLogger(__name__)
@@ -264,6 +276,16 @@ class NoOpGrammarManager:
 _REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
 
+@dataclass(kw_only=True)
+class DecodeBatchState:
+    """Batch ownership retained while the other decode path runs."""
+
+    running_batch: ScheduleBatch
+    last_batch: ScheduleBatch | None = None
+    chunked_request: Req | None = None
+    pending_chunked_abort_request: Req | None = None
+
+
 class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     tp_worker: ModelWorker
     tree_cache: BasePrefixCache
@@ -286,6 +308,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     request_finished_callback: Callable[[str], None] | None
     enable_overlap: bool
     enable_async_decode: bool
+    enable_plain_fallback: bool
     async_decode_min_batch_size: int
     async_decode_resolve_before_prefill: bool
     async_prefill: bool
@@ -326,6 +349,7 @@ class OmniScheduler(Generic[RequestDataT]):
         one; the KV is still retained and the row still reused.
     """
 
+    model_runner: ModelRunner[RequestDataT] | None = None
     session_bridge: ARSessionBridge | None = None
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
@@ -333,6 +357,9 @@ class OmniScheduler(Generic[RequestDataT]):
     draft_worker: BaseSpecWorker | None = None
     async_prefill: bool = False
     request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
+    enable_plain_fallback: bool = False
+    speculative_steps_since_plain: int = 0
+    decode_batch_states: dict[Literal["plain", "spec"], DecodeBatchState] | None = None
 
     def __init__(
         self,
@@ -361,6 +388,7 @@ class OmniScheduler(Generic[RequestDataT]):
         request_finished_callback: Callable[[str], None] | None = None,
         enable_overlap: bool = False,
         enable_async_decode: bool = False,
+        enable_plain_fallback: bool = False,
         async_decode_min_batch_size: int = 1,
         async_decode_resolve_before_prefill: bool = False,
         async_prefill: bool = False,
@@ -386,6 +414,8 @@ class OmniScheduler(Generic[RequestDataT]):
         self.continuation_aware_admission = continuation_aware_admission
         if session_adapter is not None and not server_args.enable_streaming_session:
             raise ValueError("session_adapter requires enable_streaming_session")
+        elif session_adapter is not None and enable_plain_fallback:
+            raise ValueError("Plain fallback does not support sessions")
         else:
             pass
         self.request_builder = request_builder
@@ -462,9 +492,7 @@ class OmniScheduler(Generic[RequestDataT]):
             tp_worker.speculative_worker is not None and enable_async_decode
         )
         self.enable_async_decode = enable_async_decode
-        # Ordinary decode batches smaller than this run as a plain synchronous step
-        # instead of the lookahead. The default 1 sends every decode batch the
-        # runner allows through the lookahead.
+        # note (Haoling Pu): decode batches with fewer requests run synchronously, so a light load streams each round's tokens without waiting on the next launch.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         self.async_decode_resolve_before_prefill = async_decode_resolve_before_prefill
         # Plain prefill batches join the lookahead: launch, then resolve after
@@ -481,10 +509,6 @@ class OmniScheduler(Generic[RequestDataT]):
             raise ValueError(
                 "enable_overlap requires a speculative worker; use "
                 "enable_async_decode for ordinary decoding"
-            )
-        elif self.enable_overlap and self.async_decode_min_batch_size != 1:
-            raise ValueError(
-                "Speculative async decode requires async_decode_min_batch_size=1"
             )
         else:
             pass
@@ -656,8 +680,6 @@ class OmniScheduler(Generic[RequestDataT]):
         self.draft_worker = tp_worker.speculative_worker
         if self.draft_worker is None:
             self.spec_algorithm = SpeculativeAlgorithm.NONE
-        elif session_adapter is not None:
-            raise ValueError("speculative decoding does not support sessions")
         elif server_args.enable_mixed_chunk:
             raise ValueError(
                 "speculative decoding verifies whole blocks; disable enable_mixed_chunk"
@@ -666,6 +688,56 @@ class OmniScheduler(Generic[RequestDataT]):
             self.spec_algorithm = SpeculativeAlgorithm.from_string(
                 get_spec().speculative_algorithm
             )
+        if self.draft_worker is None or self.session_adapter is None:
+            self.session_draft_kv: DraftSessionKV | None = None
+        else:
+            self.session_draft_kv = self.speculative_session_draft_kv(
+                self.req_to_token_pool, self.token_to_kv_pool_allocator
+            )
+        self.draft_algorithm = self.spec_algorithm
+        self.enable_plain_fallback = enable_plain_fallback
+        self.decode_path: Literal["plain", "spec"] = "spec"
+        self.decode_batch_states = {}
+        if enable_plain_fallback:
+            if (
+                self.draft_worker is None
+                or self.draft_algorithm != SpeculativeAlgorithm.DFLASH
+                or not current_platform.is_cuda()
+                or server_args.tp_size != 1
+                or self.pp_size != 1
+                or self.enable_overlap
+                or self.enable_async_decode
+                or server_args.enable_mixed_chunk
+                or get_prefill_cuda_graph_backend(server_args)
+                != CudaGraphBackend.DISABLED
+                or get_parallel().attn_dp_enabled
+            ):
+                raise ValueError(
+                    "Plain fallback requires DFLASH, CUDA, TP=1, PP=1, "
+                    "synchronous execution, "
+                    "and disabled prefill CUDA graphs, mixed chunks, and DP attention"
+                )
+            else:
+                self.decode_batch_states = {
+                    "spec": DecodeBatchState(running_batch=self.running_batch),
+                    "plain": DecodeBatchState(
+                        running_batch=ScheduleBatch(reqs=[], batch_is_full=False)
+                    ),
+                }
+                if not server_args.disable_cuda_graph:
+                    free_bytes_before, _ = torch.cuda.mem_get_info(self.device)
+                    tp_worker.model_runner.init_plain_decode_graphs()
+                    free_bytes_after, _ = torch.cuda.mem_get_info(self.device)
+                    logger.info(
+                        f"Plain decode CUDA graph: "
+                        f"gpu_memory_delta_bytes={free_bytes_before - free_bytes_after} "
+                        f"gpu_free_bytes={free_bytes_after} "
+                        f"kv_capacity_tokens={effective_max_total_num_tokens}"
+                    )
+                else:
+                    pass
+        else:
+            pass
         # note (ratish): the borrowed init_overlap starts this copy thread under confidential compute; shutdown_resources stops it.
         self.async_d2h_worker = None
         if self.enable_overlap:
@@ -692,6 +764,16 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.req_to_token_pool,
                 needs_cpu_seq_lens=True,
             )
+        self.speculative_future_map = self.future_map
+        self.plain_future_map = (
+            SpeculativeAlgorithm.NONE.create_future_map(
+                torch.device(self.device),
+                self.req_to_token_pool,
+                needs_cpu_seq_lens=True,
+            )
+            if self.enable_plain_fallback
+            else self.future_map
+        )
         self.dllm_config = None
         self.execution_bridge = None
         if model_runner is not None:
@@ -800,7 +882,7 @@ class OmniScheduler(Generic[RequestDataT]):
             device=torch.device(self.device),
             worker=self.tp_worker,
             spec_algorithm=SpeculativeAlgorithm.NONE,
-            future_map=self.future_map,
+            future_map=self.plain_future_map,
         )
         model_runner.async_enabled = (
             self.enable_async_decode and self.draft_worker is None
@@ -814,6 +896,72 @@ class OmniScheduler(Generic[RequestDataT]):
         # but make the custom ModelRunner the sole owner of relay.
         self.model_runner = model_runner
         self.execution_bridge = bridge
+
+    def speculative_session_draft_kv(
+        self,
+        req_to_token_pool: ReqToTokenPool,
+        token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
+    ) -> DraftSessionKV:
+        """Return the draft KV that session history cuts move with the target's; raise for a draft sessions cannot keep."""
+        if self.spec_algorithm not in (
+            SpeculativeAlgorithm.DFLASH,
+            SpeculativeAlgorithm.EAGLE3,
+        ):
+            raise ValueError(
+                "speculative sessions support DFLASH and EAGLE3 drafts, "
+                f"not {self.spec_algorithm.name}"
+            )
+        elif self.enable_overlap:
+            raise ValueError(
+                "speculative sessions require synchronous decoding; disable enable_async_decode"
+            )
+        elif self.spec_algorithm == SpeculativeAlgorithm.DFLASH:
+            draft_runner = self.draft_worker.draft_model_runner
+            draft_layers = self.draft_worker.draft_model.layers
+        elif get_spec().enable_multi_layer_eagle:
+            raise ValueError(
+                "speculative sessions require a single-runner EAGLE3 draft; "
+                "disable enable_multi_layer_eagle"
+            )
+        else:
+            draft_runner = self.draft_worker.draft_worker.draft_runner
+            draft_layers = draft_runner.model.model.layers
+        target_pool = token_to_kv_pool_allocator.get_kvcache()
+        draft_pool = draft_runner.token_to_kv_pool
+        if (
+            get_spec().speculative_draft_window_size is not None
+            or draft_runner.req_to_token_pool is not req_to_token_pool
+            or any(
+                type(pool) is not MHATokenToKVPool
+                or pool.page_size != 1
+                or pool.is_quantized_kv_cache
+                or pool.kv_cache_layout != "nhd"
+                for pool in (target_pool, draft_pool)
+            )
+        ):
+            raise ValueError(
+                "speculative sessions require static NHD token pools without draft windowing"
+            )
+        else:
+            pass
+        rotary_embeddings = [layer.self_attn.rotary_emb for layer in draft_layers]
+        rotary_embedding = rotary_embeddings[0]
+        if any(
+            type(rotary) is not RotaryEmbedding
+            or rotary is not rotary_embedding
+            or rotary.rotary_dim != rotary.head_size
+            or not rotary.is_neox_style
+            or rotary.position_start != 0
+            for rotary in rotary_embeddings
+        ):
+            raise ValueError(
+                "speculative sessions require a draft with shared full Neox RoPE"
+            )
+        else:
+            return DraftSessionKV(
+                cache=draft_pool,
+                cos_sin_cache=rotary_embedding.cos_sin_cache,
+            )
 
     def init_upstream_compat_flags(self, server_args: ServerArgs) -> None:
         self.enable_hisparse = bool(server_args.enable_hisparse)
@@ -849,10 +997,17 @@ class OmniScheduler(Generic[RequestDataT]):
         from types import SimpleNamespace
 
         self.session_controller = SessionController(self.tree_cache)
-        if self.session_adapter is not None:
+        if self.session_adapter is None:
+            pass
+        elif self.draft_worker is None:
             self.session_bridge = ARSessionBridge(self, self.session_adapter)
         else:
-            pass
+            self.session_bridge = ARSessionBridge(
+                self,
+                self.session_adapter,
+                speculative_reserve_tokens=get_alloc_reserve_per_decode(),
+                draft_kv=self.session_draft_kv,
+            )
         self.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
         self.load_snapshot_writer = None
         self.kv_events_publisher = SimpleNamespace(
@@ -1388,7 +1543,7 @@ class OmniScheduler(Generic[RequestDataT]):
             try:
                 req_data = self.run_request_builder(payload, active_stage)
             except Exception as exc:
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -1411,6 +1566,15 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         self.drain_request_build_results()
         self.drain_request_admission_results()
+
+    def log_request_builder_failure(self, request_id: str, error: Exception) -> None:
+        if is_bad_request_error(error):
+            # note (ruiling): the caller already gets this message with a 400, so the traceback is noise.
+            logger.warning(
+                f"OmniScheduler: request builder rejected {request_id}: {error}"
+            )
+        else:
+            logger.exception(f"OmniScheduler: request builder failed for {request_id}")
 
     def request_build_queue_fits_workers(self) -> bool:
         """True when pending+backlog still fits in the request-build pool.
@@ -1633,7 +1797,7 @@ class OmniScheduler(Generic[RequestDataT]):
                         continue
                     else:
                         pass
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -1772,14 +1936,25 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         if req_data.enforce_request_limits:
-            error_msg = self.prepare_request_limits(req_data)
+            speculative_reserve_tokens = (
+                self.session_bridge.speculative_reserve_tokens
+                if session_unit is not None and self.session_bridge is not None
+                else 0
+            )
+            error_msg = self.prepare_request_limits(
+                req_data,
+                speculative_reserve_tokens=speculative_reserve_tokens,
+            )
             if error_msg:
                 if session_unit is not None:
+                    max_input_tokens = max(
+                        0, self.max_req_input_len - speculative_reserve_tokens
+                    )
                     error = ContextExhaustedError(
                         f"{ContextExhaustedError.CODE}: the session reached the "
                         f"thinker context length of {self.model_config.context_len} "
                         f"tokens (the next unit needs {len(req.origin_input_ids)} "
-                        f"tokens, limit {self.max_req_input_len}). "
+                        f"tokens, limit {max_input_tokens}). "
                         "Start a new session."
                     )
                 else:
@@ -1805,9 +1980,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
         else:
             pass
-        admission_error = self.request_kv_capacity_error(
-            req, session_capacity_checked=session_unit is not None
-        ) or self.speculative_request_error(req, req_data)
+        admission_error = self.select_decode_path(req, req_data)
+        admission_error = admission_error or self.request_kv_capacity_error(
+            req,
+            session_capacity_checked=session_unit is not None,
+            decode_path=req_data.decode_path,
+        )
         if admission_error is not None:
             logger.warning(
                 f"Rejecting request {req_id} before scheduling: {admission_error}"
@@ -1909,12 +2087,35 @@ class OmniScheduler(Generic[RequestDataT]):
     def prepare_request_limits(
         self,
         req_data: RequestDataT | SGLangARRequestData,
+        *,
+        speculative_reserve_tokens: int = 0,
     ) -> str | None:
         req = req_data.req
         self.init_req_max_new_tokens(req)
+        if speculative_reserve_tokens > 0:
+            available_new_tokens = max(
+                0,
+                self.max_req_len
+                - len(req.origin_input_ids)
+                - 1
+                - speculative_reserve_tokens,
+            )
+            if int(req.sampling_params.max_new_tokens) > available_new_tokens:
+                req.sampling_params.max_new_tokens = available_new_tokens
+                if req.sampling_params.min_new_tokens > available_new_tokens:
+                    req.sampling_params.min_new_tokens = available_new_tokens
+                else:
+                    pass
+            else:
+                pass
+            max_input_tokens = max(
+                0, self.max_req_input_len - speculative_reserve_tokens
+            )
+        else:
+            max_input_tokens = self.max_req_input_len
         error_msg = validate_input_length(
             req,
-            self.max_req_input_len,
+            max_input_tokens,
             allow_auto_truncate=False,
         )
         if error_msg:
@@ -1971,14 +2172,21 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
 
     def request_kv_capacity_error(
-        self, req: Req, *, session_capacity_checked: bool = False
+        self,
+        req: Req,
+        *,
+        session_capacity_checked: bool = False,
+        decode_path: Literal["plain", "spec"] | None = None,
     ) -> str | None:
         input_len = len(req.origin_input_ids)
         max_new_tokens = int(req.sampling_params.max_new_tokens or 0)
         # note (wilsonzheng0327): each speculative step reserves token slots past
         # the committed tokens in the request's token row.
         speculative_reserve_tokens = (
-            0 if self.draft_worker is None else get_alloc_reserve_per_decode()
+            0
+            if self.draft_worker is None
+            or (self.enable_plain_fallback and decode_path == "plain")
+            else get_alloc_reserve_per_decode()
         )
         required_tokens = input_len + max_new_tokens + speculative_reserve_tokens
         # note (ZaneZhang-67): the bridge prices physical PureSWA growth but does not include speculative draft reserves.
@@ -2019,28 +2227,91 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
 
-        from sglang.srt.runtime_context import get_schedule
-
         kv_cache_bytes = getattr(
             getattr(self, "tp_worker", None), "kv_cache_bytes", None
         )
-        mem_fraction = get_schedule().mem_fraction_static
-        if kv_cache_bytes is not None:
-            mem_hint = " Try raising engine.kv_cache_bytes."
-        elif mem_fraction is not None:
-            mem_hint = (
-                f" Current mem_fraction_static is {mem_fraction:.3f}; try setting "
-                "--thinker-mem-fraction-static higher."
+        schedule = runtime_context.get_schedule()
+        context_len = int(self.model_config.context_len)
+        if request_capacity == context_len - 1 and self.draft_worker is not None:
+            capacity_hint = (
+                f" The {context_len}-token context sets this limit, not the KV "
+                "pool; a speculative draft keeps it within the draft's own "
+                "context. Lower max_tokens or shorten the input."
+            )
+        elif request_capacity == context_len - 1:
+            capacity_hint = (
+                f" The {context_len}-token model context sets this limit, not the "
+                "KV pool; lower max_tokens or shorten the input."
+            )
+        elif kv_cache_bytes is not None:
+            capacity_hint = " Try raising engine.kv_cache_bytes."
+        # note (evanderfan): SGLang caps the pool at max_total_tokens only when memory allows more, then aligns it down to a page.
+        elif (
+            schedule.max_total_tokens is not None
+            and schedule.max_total_tokens < self.max_total_num_tokens + self.page_size
+        ):
+            capacity_hint = (
+                f" engine.max_total_tokens={schedule.max_total_tokens} caps the "
+                "KV pool; try raising it."
+            )
+        elif schedule.mem_fraction_static is not None:
+            capacity_hint = (
+                f" Current engine.mem_fraction_static is "
+                f"{schedule.mem_fraction_static:.3f}; try raising it."
             )
         else:
-            mem_hint = " Try setting a higher --thinker-mem-fraction-static value."
+            capacity_hint = " Try raising engine.mem_fraction_static."
 
         return (
             "Request requires more tokens than the thinker KV cache can hold "
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
             f"required_tokens={required_tokens}, kv_capacity={request_capacity})."
-            f"{mem_hint}"
+            f"{capacity_hint}"
         )
+
+    def select_decode_path(
+        self, request: Req, request_data: RequestDataT | SGLangARRequestData
+    ) -> str | None:
+        """Fix the request's execution path before its first prefill."""
+        fallback_reason = self.speculative_request_error(request, request_data)
+        if (
+            self.enable_plain_fallback
+            and self.draft_worker is not None
+            and fallback_reason is None
+        ):
+            required_tokens = len(request.origin_input_ids) + int(
+                request.sampling_params.max_new_tokens or 0
+            )
+            if (
+                required_tokens
+                <= self.max_req_len
+                < required_tokens + get_alloc_reserve_per_decode()
+            ):
+                fallback_reason = "speculative_kv_reserve"
+            else:
+                pass
+        else:
+            pass
+        if self.draft_worker is None:
+            request_data.decode_path = "plain"
+        elif fallback_reason is None:
+            request_data.decode_path = "spec"
+        elif self.enable_plain_fallback:
+            request_data.decode_path = "plain"
+        else:
+            return fallback_reason
+        request_data.fallback_reason = fallback_reason
+        if self.enable_plain_fallback:
+            request.cache_salt = (
+                f"omni:{request_data.decode_path}:{request.cache_salt!r}"
+            )
+            logger.info(
+                f"Request {request.rid}: decode_path={request_data.decode_path} "
+                f"fallback_reason={fallback_reason}"
+            )
+        else:
+            pass
+        return None
 
     def speculative_request_error(
         self, request: Req, request_data: RequestDataT | SGLangARRequestData
@@ -2071,7 +2342,7 @@ class OmniScheduler(Generic[RequestDataT]):
                     "seed",
                     sampling_params.sampling_seed is not None
                     and sampling_params.top_k != 1
-                    and self.spec_algorithm
+                    and self.draft_algorithm
                     in (SpeculativeAlgorithm.DFLASH, SpeculativeAlgorithm.DSPARK)
                     and self.model_runner.speculative_ignores_request_seed,
                 ),
@@ -2080,7 +2351,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 (
                     "repetition_penalty",
                     sampling_params.repetition_penalty != 1.0
-                    and not self.model_runner.speculative_verifies_repetition_penalty,
+                    and self.model_runner.speculative_repetition_penalty_owner is None,
                 ),
             )
             if is_set
@@ -2106,29 +2377,189 @@ class OmniScheduler(Generic[RequestDataT]):
             )
         )
 
-    def get_next_batch_to_run(self):
-        """Bridge Omni's batch-owning loops to the upstream scheduler contract.
+    def get_next_batch_to_run(self) -> ScheduleBatch | None:
+        """Keep batch ownership in Omni while borrowing native batch selection."""
+        for attempt in range(2 if self.enable_plain_fallback else 1):
+            if self.enable_plain_fallback:
+                with self.request_admission_lock:
+                    self.select_next_decode_path(force_other_path=attempt == 1)
+            else:
+                pass
+            running_batch = self.running_batch
+            # note (Junnan Li): An empty mixed-chunk batch can retain a stale full flag.
+            if (
+                running_batch.is_empty()
+                and running_batch.batch_is_full
+                and self.waiting_queue
+                and self.chunked_req is None
+                and self.get_num_allocatable_reqs(0, running_batch=running_batch) > 0
+            ):
+                running_batch.batch_is_full = False
+            else:
+                pass
+            batch_plan = _Upstream.get_next_batch_to_run(
+                self, running_batch, self.last_batch
+            )
+            self.running_batch = batch_plan.running_batch
+            if batch_plan.batch_to_run is not None or not self.enable_plain_fallback:
+                return batch_plan.batch_to_run
+            else:
+                self.last_batch = None
+        return None
 
-        Upstream takes running_batch and last_batch as arguments instead of
-        reading them off self and returns a NextBatchPlan instead of the batch. Omni's event loops
-        own that state, so feed it in and write the (possibly rebuilt) running
-        batch back before handing the runnable batch to the caller.
-        """
-        running_batch = self.running_batch
-        # note (Junnan Li): An empty mixed-chunk batch can retain a stale full flag.
-        if (
-            running_batch.is_empty()
-            and running_batch.batch_is_full
-            and self.waiting_queue
-            and self.chunked_req is None
-            and self.get_num_allocatable_reqs(0, running_batch=running_batch) > 0
-        ):
-            running_batch.batch_is_full = False
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        if not self.enable_plain_fallback:
+            return _Upstream.update_running_batch(self, batch)
         else:
             pass
-        plan = _Upstream.get_next_batch_to_run(self, running_batch, self.last_batch)
-        self.running_batch = plan.running_batch
-        return plan.batch_to_run
+
+        parked_requests = {
+            id(request): request
+            for pending_batch in self.pending_batches()
+            for request in pending_batch.reqs
+            if not request.finished()
+        }
+        if (
+            not any(request.kv.holds_kv for request in parked_requests.values())
+            or batch.check_decode_mem()
+        ):
+            return _Upstream.update_running_batch(self, batch)
+        else:
+            pass
+
+        with self.request_admission_lock:
+            # Note (Akazaakane): Native retraction aborts the last row if its
+            # next step cannot fit. Give it access to the parked KV first.
+            remaining_indices = batch._get_decode_retraction_order(  # noqa: leading-underscore  # native retraction order
+                batch.reqs
+            )
+            retracted_requests: list[Req] = []
+            while len(remaining_indices) > 1:
+                request_index = remaining_indices.pop()
+                batch.release_req(
+                    request_index, len(remaining_indices), offload_kv=False
+                )
+                retracted_requests.append(batch.reqs[request_index])
+                if batch.check_decode_mem(selected_indices=remaining_indices):
+                    break
+                else:
+                    pass
+            batch.filter_batch(keep_indices=remaining_indices)
+            if len(remaining_indices) == 1 and not batch.check_decode_mem():
+                parked_rows = list(parked_requests.values())
+                self.retract_parked_decode_requests(parked_rows)
+                retracted_requests.extend(parked_rows)
+            else:
+                pass
+
+            for request in retracted_requests:
+                self._add_request_to_queue(request, is_retracted=True)
+            updated_batch = _Upstream.update_running_batch(self, batch)
+            if retracted_requests:
+                batch.batch_is_full = False
+                self.new_token_ratio_tracker.current = (
+                    self.new_token_ratio_tracker.estimate_new_token_ratio_after_retract(
+                        batch.reqs
+                    )
+                )
+                self.metrics_reporter.num_retracted_reqs = len(retracted_requests)
+                if self.metrics_reporter.enable_metrics:
+                    self.metrics_reporter.metrics_collector.increment_retracted_reqs(
+                        num_retracted_reqs=len(retracted_requests),
+                        num_retracted_input_tokens=sum(
+                            len(request.origin_input_ids)
+                            for request in retracted_requests
+                        ),
+                        num_retracted_output_tokens=sum(
+                            len(request.output_ids) for request in retracted_requests
+                        ),
+                    )
+                else:
+                    pass
+            else:
+                pass
+            return updated_batch
+
+    def retract_parked_decode_requests(self, requests: list[Req]) -> None:
+        retract_all(
+            reqs=requests,
+            req_to_token_pool=self.req_to_token_pool,
+            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+            tree_cache=self.tree_cache,
+            hisparse_coordinator=self.hisparse_coordinator,
+            offload_kv=False,
+        )
+        parked_path = "plain" if self.decode_path == "spec" else "spec"
+        self.decode_batch_states[parked_path] = DecodeBatchState(
+            running_batch=ScheduleBatch(reqs=[], batch_is_full=False)
+        )
+
+    def select_next_decode_path(self, *, force_other_path: bool = False) -> None:
+        """Weight speculative turns by live rows, with at most two before plain."""
+        decode_batch_states = self.decode_batch_states
+        assert decode_batch_states is not None
+        decode_batch_states[self.decode_path] = DecodeBatchState(
+            running_batch=self.running_batch,
+            last_batch=self.last_batch,
+            chunked_request=self.chunked_req,
+            pending_chunked_abort_request=self._pending_chunked_abort_req,  # noqa: leading-underscore  # upstream scheduler contract
+        )
+        path_requests: dict[str, set[int]] = {"plain": set(), "spec": set()}
+        for path, state in decode_batch_states.items():
+            for batch in (state.running_batch, state.last_batch):
+                if batch is not None:
+                    path_requests[path].update(
+                        id(request) for request in batch.reqs if not request.finished()
+                    )
+                else:
+                    pass
+            if state.chunked_request is not None:
+                path_requests[path].add(id(state.chunked_request))
+            else:
+                pass
+        for request in self.waiting_queue:
+            if not request.finished():
+                path_requests[request.omni_data.decode_path].add(id(request))
+            else:
+                pass
+        plain_rows = len(path_requests["plain"])
+        speculative_rows = len(path_requests["spec"])
+        if force_other_path:
+            self.decode_path = "plain" if self.decode_path == "spec" else "spec"
+            self.speculative_steps_since_plain = 0
+        elif plain_rows and speculative_rows:
+            speculative_turns = min(2, max(1, speculative_rows // plain_rows))
+            if self.speculative_steps_since_plain >= speculative_turns:
+                self.decode_path = "plain"
+                self.speculative_steps_since_plain = 0
+            else:
+                self.decode_path = "spec"
+                self.speculative_steps_since_plain += 1
+        elif plain_rows:
+            self.decode_path = "plain"
+            self.speculative_steps_since_plain = 0
+        elif speculative_rows:
+            self.decode_path = "spec"
+            self.speculative_steps_since_plain = 0
+        else:
+            self.speculative_steps_since_plain = 0
+        selected_batch_state = decode_batch_states[self.decode_path]
+        self.running_batch = selected_batch_state.running_batch
+        self.last_batch = selected_batch_state.last_batch
+        self.chunked_req = selected_batch_state.chunked_request
+        self._pending_chunked_abort_req = (
+            selected_batch_state.pending_chunked_abort_request
+        )  # noqa: leading-underscore  # upstream scheduler contract
+        self.spec_algorithm = (
+            SpeculativeAlgorithm.NONE
+            if self.decode_path == "plain"
+            else self.draft_algorithm
+        )
+        self.future_map = (
+            self.plain_future_map
+            if self.decode_path == "plain"
+            else self.speculative_future_map
+        )
 
     def get_num_allocatable_reqs(
         self,
@@ -2137,6 +2568,16 @@ class OmniScheduler(Generic[RequestDataT]):
         running_batch: ScheduleBatch | None = None,
         num_held_rows: int = 0,
     ) -> int:
+        if self.enable_plain_fallback:
+            other_request_identities = {
+                id(request)
+                for batch in self.pending_batches()
+                for request in batch.reqs
+                if not request.finished()
+            }
+            running_bs += len(other_request_identities)
+        else:
+            pass
         bridge = self.session_bridge
         if (
             bridge is None
@@ -2274,7 +2715,29 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         return now_s - oldest_enqueue_s < self.prefill_coalesce_wait_s
 
-    def get_new_batch_prefill(self, running_batch):
+    def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
+        if not self.enable_plain_fallback:
+            return self.get_coalesced_batch_prefill(running_batch)
+        else:
+            with self.request_admission_lock:
+                parked_requests = [
+                    request
+                    for request in self.waiting_queue
+                    if request.omni_data.decode_path != self.decode_path
+                ]
+                self.waiting_queue = [
+                    request
+                    for request in self.waiting_queue
+                    if request.omni_data.decode_path == self.decode_path
+                ]
+                try:
+                    return self.get_coalesced_batch_prefill(running_batch)
+                finally:
+                    self.waiting_queue = parked_requests + self.waiting_queue
+
+    def get_coalesced_batch_prefill(
+        self, running_batch: ScheduleBatch
+    ) -> NextBatchPlan:
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
         #
@@ -2382,7 +2845,7 @@ class OmniScheduler(Generic[RequestDataT]):
         del pp_proxy_tensors
         self.emit_prefill_start_for_batch(batch)
         self.stamp_batch_launch(batch)
-        if self.draft_worker is not None:
+        if not batch.spec_algorithm.is_none():
             result = self.run_speculative_batch(batch)
             if not self.enable_overlap:
                 self.emit_prefill_end_for_batch(batch)
@@ -2419,6 +2882,7 @@ class OmniScheduler(Generic[RequestDataT]):
             with self.forward_stream_ctx:
                 self.forward_stream.wait_stream(self.schedule_stream)
                 resolve_forward_inputs(batch, self.future_map)
+                self.publish_verify_requests(batch)
                 with _Upstream._forward_isolation(
                     self, batch, overlap=True
                 ):  # noqa: leading-underscore  # native scheduler contract
@@ -2433,6 +2897,14 @@ class OmniScheduler(Generic[RequestDataT]):
                         )
                     else:
                         pass
+                self.model_runner.after_speculative_step(
+                    batch,
+                    is_prefill=is_prefill,
+                    num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+                )
+                self.model_runner.record_speculative_output(
+                    batch, result, is_prefill=is_prefill
+                )
                 result.copy_done = self.device_module.Event()
                 _Upstream._relay_forward_payload(
                     self, batch, future_indices, result
@@ -2453,13 +2925,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
-        if self.model_runner.speculative_verify_takes_logits_hooks:
-            # The next step of this loop replaces the list the verify reads here.
-            self.tp_worker.speculative_target_worker.verify_requests = (
-                self.build_sched_output(batch).requests
-            )
-        else:
-            pass
+        self.publish_verify_requests(batch)
         with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self, batch, overlap=False
         ):
@@ -2468,6 +2934,9 @@ class OmniScheduler(Generic[RequestDataT]):
             batch,
             is_prefill=is_prefill,
             num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+        )
+        self.model_runner.record_speculative_output(
+            batch, result, is_prefill=is_prefill
         )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
@@ -2491,6 +2960,21 @@ class OmniScheduler(Generic[RequestDataT]):
             return_hidden_states=batch.return_hidden_states,
         )
         return result
+
+    def publish_verify_requests(self, batch: ScheduleBatch) -> None:
+        """Hand this step's verify its requests in row order, when the runner hooks or penalizes verify rows."""
+        if (
+            self.model_runner.speculative_verify_takes_logits_hooks
+            or self.model_runner.speculative_penalized_rows(batch.reqs)
+        ):
+            self.tp_worker.speculative_target_worker.verify_requests = (
+                self.build_sched_output(batch).requests
+            )
+        elif self.model_runner.speculative_repetition_penalty_owner == "verify_logits":
+            # An earlier step's list would penalize this step's rows.
+            self.tp_worker.speculative_target_worker.verify_requests = []
+        else:
+            pass
 
     def build_sched_output(self, batch):
         """Wrap a ScheduleBatch into the SchedulerOutput the model runner
@@ -2764,7 +3248,10 @@ class OmniScheduler(Generic[RequestDataT]):
                             or req._omni_terminal_claimed  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                             else req.omni_data
                         )
-                        if request_data is not None:
+                        if request_data is not None and (
+                            not self.enable_plain_fallback
+                            or request_data.decode_path == "spec"
+                        ):
                             try:
                                 self.emit_speculative_tokens(req, request_data)
                             except Exception as exc:
@@ -2833,7 +3320,9 @@ class OmniScheduler(Generic[RequestDataT]):
             result = None
             terminal_error = None
             try:
-                if self.draft_worker is not None:
+                if self.draft_worker is not None and (
+                    not self.enable_plain_fallback or data.decode_path == "spec"
+                ):
                     self.emit_speculative_tokens(req, data)
                 else:
                     pass
@@ -2853,6 +3342,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 data.output_ids = list(
                     req.output_ids
                     if self.draft_worker is None
+                    or (self.enable_plain_fallback and data.decode_path == "plain")
                     else req.output_ids_through_stop
                 )
                 data.weight_version = get_serving().weight_version
@@ -2957,19 +3447,31 @@ class OmniScheduler(Generic[RequestDataT]):
         scheduler_request = SchedulerRequest(request_id=request_id, data=request_data)
         self.model_runner.on_speculative_tokens(scheduler_request, new_token_ids)
         stream_output_builder = self.stream_output_builder
-        if stream_output_builder is None:
+        bridge = self.session_bridge
+        session_unit = self.active_session_unit(request_id)
+        is_session_output = (
+            session_unit is not None and _get_active_stage() == session_unit.stages[-1]
+        )
+        if stream_output_builder is None and not is_session_output:
             return
         else:
             pass
         messages: list[OutgoingMessage] = []
         for token_id in new_token_ids:
-            messages.extend(
-                stream_output_builder(
-                    request_id,
-                    request_data,
-                    RequestOutput(request_id=request_id, data=token_id),
+            output = RequestOutput(request_id=request_id, data=token_id)
+            if is_session_output:
+                assert bridge is not None
+                messages.extend(
+                    bridge.stream_messages(request_id, request_data, output)
                 )
-            )
+            else:
+                messages.extend(
+                    stream_output_builder(
+                        request_id,
+                        request_data,
+                        output,
+                    )
+                )
         self.put_stream_messages(request_id, messages)
 
     def on_stream_chunk(self, request_id: str, chunk: StreamItem) -> None:
@@ -3697,7 +4199,12 @@ class OmniScheduler(Generic[RequestDataT]):
             # coordinator however the admin call itself turns out.
             self.emit_request_error(request_id, AdminDroppedRequestError())
         seen: set[int] = set()
-        for batch in (self.running_batch, self.cur_batch, self.last_batch):
+        for batch in (
+            self.running_batch,
+            self.cur_batch,
+            self.last_batch,
+            *self.pending_batches(),
+        ):
             if batch is None or id(batch) in seen:
                 continue
             else:
@@ -3709,6 +4216,9 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
         self.chunked_req = None
+        for state in (self.decode_batch_states or {}).values():
+            state.chunked_request = None
+            state.pending_chunked_abort_request = None
         return request_ids
 
     def active_request_ids(self) -> list[str]:
@@ -3769,6 +4279,10 @@ class OmniScheduler(Generic[RequestDataT]):
             compact_decode_input_history(
                 req.omni_data
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            if self.model_runner is not None:
+                self.model_runner.on_request_retracted(req.rid)
+            else:
+                pass
         else:
             pass
         _Upstream._add_request_to_queue(self, req, is_retracted=is_retracted)
@@ -3777,6 +4291,8 @@ class OmniScheduler(Generic[RequestDataT]):
         """Retract and requeue each unfinished request holding KV, including one cut
         between chunked extends, which sits only in last_batch and chunked_req."""
         candidate_requests = list(self.running_batch.reqs)
+        for batch in self.pending_batches():
+            candidate_requests.extend(batch.reqs)
         last_batch = self.last_batch
         if last_batch is not None and last_batch.forward_mode.is_extend():
             candidate_requests.extend(last_batch.reqs)
@@ -3803,12 +4319,19 @@ class OmniScheduler(Generic[RequestDataT]):
         self.running_batch.batch_is_full = False
         self.last_batch = None
         self.chunked_req = None
+        for state in (self.decode_batch_states or {}).values():
+            state.running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
+            state.last_batch = None
+            state.chunked_request = None
+            state.pending_chunked_abort_request = None
         for request in retracted_requests:
             self._add_request_to_queue(request)
         return len(retracted_requests)
 
     def flush_cache(self, empty_cache: bool = True) -> bool:
         if self.session_bridge is not None and self.session_bridge.sessions:
+            return False
+        elif self.enable_plain_fallback and self.active_request_ids():
             return False
         else:
             return _Upstream.flush_cache(self, empty_cache=empty_cache)
@@ -3977,7 +4500,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     @DynamicGradMode()
     def event_loop_spec_overlap(self) -> None:
-        """Submit the next speculative round before consuming the previous result."""
+        """Submit the next speculative round before consuming the previous result, except that a decode batch under async_decode_min_batch_size is consumed right after its own launch, and a prefill after which fewer requests than it are decoding is consumed before the next batch is chosen."""
         self.enable_skip_finishing_decode = True
         while self.running:
             self.process_admin_requests()
@@ -3997,9 +4520,29 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
 
+            # note (Haoling Pu): when the decode set stays under the minimum, the pending prefill is processed before choosing, so its first tokens stream without waiting on a launch.
+            if (
+                self.async_decode_min_batch_size > 1
+                and self.result_queue
+                and self.last_batch is not None
+                and self.last_batch.forward_mode.is_extend()
+                and sum(not request.finished() for request in self.running_batch.reqs)
+                + len(self.last_batch.reqs)
+                < self.async_decode_min_batch_size
+            ):
+                pending_batch, pending_result = self.result_queue.popleft()
+                self.process_batch_result(pending_batch, pending_result)
+            else:
+                pass
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
             has_pending_result = bool(self.result_queue)
+            # note (Haoling Pu): after an overlapped round a small batch still launches first, since processing that round can finish and detach a request the batch holds.
+            is_synchronous_decode = (
+                batch is not None
+                and self.batch_is_decode(batch)
+                and len(batch.reqs) < self.async_decode_min_batch_size
+            )
             # note (YzXiao): only result processing decrements inflight_middle_chunks; prefill hooks use it to recognize the final chunk.
             consume_before_launch = has_pending_result and (
                 self.is_disable_overlap_for_batch(batch, last_batch=self.last_batch)
@@ -4037,6 +4580,11 @@ class OmniScheduler(Generic[RequestDataT]):
             if has_pending_result and not consume_before_launch:
                 pending_batch, pending_result = self.result_queue.popleft()
                 self.process_batch_result(pending_batch, pending_result)
+            else:
+                pass
+            if is_synchronous_decode:
+                launched_batch, launched_result = self.result_queue.popleft()
+                self.process_batch_result(launched_batch, launched_result)
             else:
                 pass
             self.last_batch = batch
@@ -4090,6 +4638,21 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def pending_batches(self) -> Iterable[ScheduleBatch]:
         """Expose submitted batches to request lookup and cancellation."""
+        for decode_path, state in (self.decode_batch_states or {}).items():
+            if decode_path != self.decode_path:
+                yield state.running_batch
+                if state.last_batch is not None:
+                    yield state.last_batch
+                else:
+                    pass
+                if state.chunked_request is not None:
+                    yield ScheduleBatch(
+                        reqs=[state.chunked_request], batch_is_full=False
+                    )
+                else:
+                    pass
+            else:
+                pass
         for pending_decode in (self.previous_pending_decode, self.async_pending):
             if pending_decode is not None:
                 yield pending_decode.batch

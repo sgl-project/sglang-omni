@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "common/audio.h"
-#include "qwen3_asr/qwen3_audio.h"
 
 namespace ming3_audio {
 namespace mx = mlx::core;
@@ -59,10 +58,32 @@ AudioConfig AudioConfig::FromJson(const nlohmann::json &config) {
 
 namespace {
 
+// Note (XXXXRT666): quantized at load, the experts (the shared one too) to 4
+// bits and the text layers' other linear weights and the untied head to 8,
+// which keeps the transcripts.
+constexpr int kExpertQuantizationBits = 4;
+constexpr int kLinearQuantizationBits = 8;
+constexpr int kQuantizationGroupSize = 64;
+
+// Silu(gate) * up with the Silu in float32, one kernel.
+mx::array FloatSwiglu(const mx::array &gate, const mx::array &up) {
+  static const auto compiled = mx::compile(
+      [](const std::vector<mx::array> &inputs) {
+        const mx::array gate_float = mx::astype(inputs[0], mx::float32);
+        return std::vector<mx::array>{mx::multiply(
+            mx::astype(mx::multiply(gate_float, mx::sigmoid(gate_float)),
+                       inputs[1].dtype()),
+            inputs[1])};
+      },
+      true);
+  return compiled({gate, up})[0];
+}
+
 omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
                                    const nlohmann::json &config,
                                    const TextConfig &text_config,
-                                   const AudioConfig &audio_config) {
+                                   const AudioConfig &audio_config,
+                                   bool loads_prediction_layer) {
   const auto &text = config.at("text_config");
   if (config.at("model_type") != "bailing_moe_v3_audio" ||
       config.contains("quantization") || !text.at("no_kda_lora").get<bool>() ||
@@ -77,6 +98,11 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
       config.at("audio_config").at("n_mels") != 128) {
     throw std::invalid_argument(
         "expected an unquantized Ming-3.0-audio-tiny checkpoint");
+  } else if (loads_prediction_layer &&
+             (text.at("num_nextn_predict_layers") != 1 ||
+              text.at("mtp_use_kda").get<bool>())) {
+    throw std::invalid_argument(
+        "speculative decoding needs one latent-attention prediction layer");
   } else {
   }
   auto weights = omni_common::LoadSafetensors(directory);
@@ -84,10 +110,13 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
       "model.layers." + std::to_string(text_config.num_hidden_layers) + ".";
   std::erase_if(weights, [&](const auto &parameter) {
     return parameter.first.starts_with("linear_proj.") ||
-           parameter.first.starts_with(prediction_prefix);
+           (!loads_prediction_layer &&
+            parameter.first.starts_with(prediction_prefix));
   });
-  for (int layer = text_config.first_k_dense_replace;
-       layer < text_config.num_hidden_layers; ++layer) {
+  const int moe_layers =
+      text_config.num_hidden_layers + (loads_prediction_layer ? 1 : 0);
+  for (int layer = text_config.first_k_dense_replace; layer < moe_layers;
+       ++layer) {
     const std::string prefix =
         "model.layers." + std::to_string(layer) + ".mlp.experts.";
     for (const auto *projection : {"gate_proj", "up_proj", "down_proj"}) {
@@ -98,11 +127,25 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
         experts.push_back(weights.at(name));
         weights.erase(name);
       }
-      // note (altale): gather_mm needs [expert, in, out], unlike checkpoint
-      // linear weights.
-      auto stacked = mx::swapaxes(mx::stack(experts), -1, -2);
-      mx::async_eval({stacked});
-      weights.emplace(prefix + projection + ".weight", std::move(stacked));
+      if (omni_common::LoadTimeQuantization() &&
+          experts.front().shape(-1) % kQuantizationGroupSize == 0) {
+        // Note (XXXXRT666): the experts stack as [expert, out, in], quantized
+        // along in, for gather_qmm; experts whose rows do not split into whole
+        // groups stay as stored.
+        const std::vector<mx::array> parts =
+            mx::quantize(mx::stack(experts), kQuantizationGroupSize,
+                         kExpertQuantizationBits);
+        mx::async_eval(parts);
+        weights.emplace(prefix + projection + ".weight", parts[0]);
+        weights.emplace(prefix + projection + ".scales", parts[1]);
+        weights.emplace(prefix + projection + ".biases", parts[2]);
+      } else {
+        // note (altale): gather_mm needs [expert, in, out], unlike checkpoint
+        // linear weights.
+        auto stacked = mx::swapaxes(mx::stack(experts), -1, -2);
+        mx::async_eval({stacked});
+        weights.emplace(prefix + projection + ".weight", std::move(stacked));
+      }
     }
   }
   // note (altale): Prepare fixed layouts and FP32 parameters once for the
@@ -187,16 +230,36 @@ std::string ChatPrompt(const ChatRequest &request, int audio_tokens) {
 
 } // namespace
 
-Model::Model(const std::filesystem::path &directory, int context_tokens)
+Model::Model(const std::filesystem::path &directory, int context_tokens,
+             SpeculativeAlgorithm speculative_algorithm)
     : Model(directory, omni_common::ReadJson(directory / "config.json"),
-            context_tokens) {}
+            context_tokens, speculative_algorithm) {}
 
 Model::Model(const std::filesystem::path &directory,
-             const nlohmann::json &config, int context_tokens)
+             const nlohmann::json &config, int context_tokens,
+             SpeculativeAlgorithm speculative_algorithm)
     : text_(TextConfig::FromJson(config.at("text_config"))),
       audio_(AudioConfig::FromJson(config.at("audio_config"))),
       context_tokens_(std::min(context_tokens, text_.max_position_embeddings)),
-      checkpoint_(LoadWeights(directory, config, text_, audio_), config),
+      speculative_algorithm_(speculative_algorithm),
+      checkpoint_(omni_common::QuantizedCheckpoint(
+          LoadWeights(directory, config, text_, audio_,
+                      speculative_algorithm == SpeculativeAlgorithm::kNextN),
+          config, kQuantizationGroupSize,
+          // Note (XXXXRT666): the router stays in float32 and the
+          // embeddings in bfloat16.
+          [](const std::string &name) {
+            if (name == "lm_head.weight") {
+              return kLinearQuantizationBits;
+            } else if (!name.starts_with("model.layers.") ||
+                       name.ends_with(".gate.weight")) {
+              return 0;
+            } else if (name.find(".shared_experts.") != std::string::npos) {
+              return kExpertQuantizationBits;
+            } else {
+              return kLinearQuantizationBits;
+            }
+          })),
       tokenizer_(directory),
       stop_tokens_(omni_common::ReadJson(directory / "generation_config.json")
                        .at("eos_token_id")
@@ -298,18 +361,13 @@ mx::array Model::Embed(const mx::array &token_ids) const {
 
 mx::array Model::RmsNorm(const mx::array &hidden,
                          const std::string &prefix) const {
-  const auto normalized = mx::fast::rms_norm(mx::astype(hidden, mx::float32),
-                                             std::nullopt, text_.rms_norm_eps);
-  return mx::multiply(mx::astype(normalized, hidden.dtype()),
-                      checkpoint_.Weight(prefix + ".weight"));
+  return checkpoint_.RmsNorm(hidden, prefix, text_.rms_norm_eps);
 }
 
 mx::array Model::Mlp(const mx::array &hidden, const std::string &prefix) const {
-  const auto gate = mx::astype(
-      checkpoint_.Linear(hidden, prefix + ".gate_proj"), mx::float32);
-  const auto up = checkpoint_.Linear(hidden, prefix + ".up_proj");
   return checkpoint_.Linear(
-      mx::multiply(mx::astype(omni_common::Silu(gate), hidden.dtype()), up),
+      FloatSwiglu(checkpoint_.Linear(hidden, prefix + ".gate_proj"),
+                  checkpoint_.Linear(hidden, prefix + ".up_proj")),
       prefix + ".down_proj");
 }
 
@@ -349,40 +407,25 @@ mx::array Model::Moe(const mx::array &hidden, const std::string &prefix) const {
                                const mx::array &row_experts, bool sorted) {
     const auto project = [&](const mx::array &input,
                              const std::string &projection) {
-      return mx::gather_mm(
-          input,
-          checkpoint_.Weight(prefix + ".experts." + projection + ".weight"),
-          std::nullopt, row_experts, sorted);
+      const std::string name = prefix + ".experts." + projection;
+      if (!checkpoint_.Has(name + ".scales")) {
+        return mx::gather_mm(input, checkpoint_.Weight(name + ".weight"),
+                             std::nullopt, row_experts, sorted);
+      } else {
+      }
+      return mx::gather_qmm(input, checkpoint_.Weight(name + ".weight"),
+                            checkpoint_.Weight(name + ".scales"),
+                            checkpoint_.Weight(name + ".biases"), std::nullopt,
+                            row_experts, true, kQuantizationGroupSize,
+                            kExpertQuantizationBits, "affine", std::nullopt,
+                            sorted);
     };
-    const auto gate = mx::astype(project(rows, "gate_proj"), mx::float32);
-    const auto up = project(rows, "up_proj");
     return project(
-        mx::multiply(mx::astype(omni_common::Silu(gate), hidden.dtype()), up),
+        FloatSwiglu(project(rows, "gate_proj"), project(rows, "up_proj")),
         "down_proj");
   };
-  const auto restored = [&] {
-    // Note (XXXXRT666): A decode token's experts are all distinct, so sorting
-    // leaves gather_mm nothing to group.
-    if (tokens > 1) {
-      const auto flat_indices = mx::reshape(indices, {-1});
-      const auto order = mx::argsort(flat_indices);
-      const auto token_indices =
-          mx::floor_divide(order, mx::array(selected_experts, mx::uint32));
-      const auto expanded = mx::expand_dims(
-          mx::take(mx::reshape(hidden, {tokens, width}), token_indices, 0), 1);
-      const auto routed =
-          run_experts(expanded, mx::take(flat_indices, order, 0), true);
-      const auto inverse_order = mx::put_along_axis(
-          mx::zeros(order.shape(), mx::uint32), order,
-          mx::arange(tokens * selected_experts, mx::uint32), 0);
-      return mx::reshape(mx::take(routed, inverse_order, 0),
-                         {tokens, selected_experts, width});
-    } else {
-      return mx::squeeze(run_experts(mx::reshape(hidden, {tokens, 1, 1, width}),
-                                     indices, false),
-                         -2);
-    }
-  }();
+  const auto restored = omni_common::RouteToExperts(
+      mx::reshape(hidden, {tokens, width}), indices, run_experts);
   const auto output =
       mx::astype(mx::sum(mx::multiply(mx::astype(restored, mx::float32),
                                       mx::expand_dims(routing, -1)),
@@ -410,12 +453,15 @@ mx::array Model::Forward(const mx::array &embeddings,
                                  ? Mlp(mlp_input, prefix + ".mlp")
                                  : Moe(mlp_input, prefix + ".mlp"));
   }
-  hidden = RmsNorm(hidden, "model.norm");
-  return mx::reshape(
-      checkpoint_.Linear(
-          mx::slice(hidden, {0, hidden.shape(1) - 1, 0}, hidden.shape()),
-          "lm_head"),
-      {-1});
+  return RmsNorm(hidden, "model.norm");
+}
+
+mx::array Model::LastPosition(const mx::array &hidden) {
+  return mx::slice(hidden, {0, hidden.shape(1) - 1, 0}, hidden.shape());
+}
+
+mx::array Model::Logits(const mx::array &hidden) const {
+  return checkpoint_.Linear(hidden, "lm_head");
 }
 
 PreparedChatRequest Model::Prepare(ChatRequest request) const {
@@ -454,8 +500,8 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   } else {
   }
   const auto &request = prepared.request;
-  const auto mel = mx::transpose(
-      qwen3_asr::LogMel(request.samples, qwen3_asr::AudioLayout::kReference));
+  const auto mel = mx::transpose(omni_common::LogMel(
+      request.samples, omni_common::FinalStftFrame::kDropped));
   const auto audio = Encode(mel);
   const auto prompt_ids =
       mx::array(prepared.prompt_ids.data(),
@@ -464,7 +510,6 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   embeddings = mx::slice_update(
       embeddings, mx::expand_dims(audio, 0), {0, prepared.audio_start, 0},
       {1, prepared.audio_start + prepared.audio_tokens, embeddings.shape(2)});
-  std::vector<LayerCache> caches(text_.num_hidden_layers);
   ChatResult result;
   result.prompt_tokens = prepared.prompt_ids.size();
   std::vector<int> generated;
@@ -472,32 +517,48 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
     throw Cancelled();
   } else {
   }
-  auto next_token = mx::argmax(Forward(embeddings, caches));
-  mx::async_eval({next_token});
-  for (int step = 0; step < request.max_new_tokens; ++step) {
-    if (cancel()) {
-      throw Cancelled();
-    } else {
+  if (speculative_algorithm_ == SpeculativeAlgorithm::kNextN) {
+    auto drafted = GenerateWithDraft(embeddings, prepared.prompt_ids,
+                                     request.max_new_tokens, cancel);
+    generated = std::move(drafted.token_ids);
+    result.draft_tokens = drafted.draft_tokens;
+    result.accepted_draft_tokens = drafted.accepted_draft_tokens;
+  } else {
+    std::vector<LayerCache> caches(text_.num_hidden_layers);
+    auto next_token =
+        mx::argmax(Logits(LastPosition(Forward(embeddings, caches))));
+    mx::async_eval({next_token});
+    for (int step = 0; step < request.max_new_tokens; ++step) {
+      if (cancel()) {
+        throw Cancelled();
+      } else {
+      }
+      const auto token = next_token;
+      if (step + 1 < request.max_new_tokens) {
+        next_token = mx::argmax(
+            Logits(Forward(Embed(mx::reshape(token, {1, 1})), caches)));
+        mx::async_eval({next_token});
+      } else {
+      }
+      generated.push_back(token.item<int>());
+      if (IsStopToken(generated.back())) {
+        break;
+      } else {
+      }
     }
-    const auto token = next_token;
-    if (step + 1 < request.max_new_tokens) {
-      next_token =
-          mx::argmax(Forward(Embed(mx::reshape(token, {1, 1})), caches));
-      mx::async_eval({next_token});
-    } else {
-    }
-    const int token_id = token.item<int>();
-    generated.push_back(token_id);
-    if (std::find(stop_tokens_.begin(), stop_tokens_.end(), token_id) !=
-        stop_tokens_.end()) {
-      result.finish_reason = "stop";
-      break;
-    } else {
-    }
+  }
+  if (IsStopToken(generated.back())) {
+    result.finish_reason = "stop";
+  } else {
   }
   result.text = tokenizer_.Decode(generated, true);
   result.completion_tokens = generated.size();
   return result;
+}
+
+bool Model::IsStopToken(int token) const {
+  return std::find(stop_tokens_.begin(), stop_tokens_.end(), token) !=
+         stop_tokens_.end();
 }
 
 } // namespace ming3_audio

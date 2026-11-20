@@ -38,7 +38,7 @@ func seedModels(t *testing.T, a *app, ids ...string) {
 }
 
 // reopenModels reads the models on disk again, with the environment's
-// options (VOXTNEW_HF_ENDPOINT).
+// options (HF_ENDPOINT).
 func reopenModels(a *app) {
 	a.models.Close()
 	a.models, a.local, a.modelStatus = nil, nil, nil
@@ -47,25 +47,35 @@ func reopenModels(a *app) {
 
 func TestModelsPage(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600) // every card on screen
+	tt.SetSize(windowWidth, 4800) // the retired models are below the speech model cards
 	a.navigate(modelsPath)
+	frames(tt)
+	frames(tt)
+	texts := tt.Texts()
+	for _, family := range []string{"Qwen3-ASR", "Whisper"} {
+		i := slices.Index(texts, family)
+		if i < 0 || i+1 == len(texts) || texts[i+1] != "3 models" {
+			t.Errorf("expected a card with three %s models: %q", family, texts)
+		}
+	}
 	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download",
-		"Local", "Accurate", "Fast", "Realtime", "Supports main language",
+		"Local", "Accurate", "Fast", "Realtime", "Supports your main language",
 		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") {
-		t.Error("the VAD or a language model is listed, or a model is installed")
+	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") || has(tt, "Faster transcription") {
+		t.Error("the VAD, a language model or a draft is listed, or a model is installed")
 	}
 
-	// Installed models: the page, the features' choices. A language model
-	// Voxt 2.0 downloaded is retired: listed, to be deleted, and offered
-	// to no feature.
+	// Installed models: the page (a speech model's draft with it), the
+	// features' choices. A language model Voxt 2.0 downloaded is retired:
+	// listed, to be deleted, and offered to no feature.
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
-	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
-		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") {
+	if !has(tt, "3 models · 1 installed") || !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
+		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") ||
+		!has(tt, "Faster transcription") || !has(tt, "262.5 MB download") {
 		t.Errorf("installed: %q", tt.Texts())
 	}
 	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRFast || m.Name != "Qwen3-ASR 0.6B (4bit)" {
@@ -75,13 +85,16 @@ func TestModelsPage(t *testing.T) {
 		t.Errorf("translate uses a retired model: %+v", m)
 	}
 	a.navigate("/translate")
-	if !has(tt, "No language model is set up: set one up to translate.") || has(tt, "Automatic: Hy-MT2 1.8B (Q4_K_M)") {
+	if !has(tt, "No language model is set up. Set one up to translate.") || has(tt, "Automatic (now: Hy-MT2 1.8B (Q4_K_M))") {
 		t.Errorf("translate: %q", tt.Texts())
 	}
 
 	// Deleting asks first.
+	a.navigate("/home")
 	a.navigate(modelsPath)
-	click(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	frames(tt)
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
 	if !has(tt, "Delete Qwen3-ASR 0.6B (4bit)?") || !has(tt, "This frees 712.8 MB. You can download it again later.") {
 		t.Fatalf("no confirmation: %q", tt.Texts())
 	}
@@ -97,6 +110,34 @@ func TestModelsPage(t *testing.T) {
 	}
 }
 
+// TestModelsPageDraftAlone: a draft on disk without its speech model
+// (the model deleted first) keeps its row, so it can be deleted too; so
+// does a draft still downloading.
+func TestModelsPageDraftAlone(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	seedModels(t, a, models.ASRFastDraft)
+	a.navigate(modelsPath)
+	frames(tt)
+	if !has(tt, "Faster transcription") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
+		t.Fatalf("the draft alone: %q", tt.Texts())
+	}
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
+	if has(tt, "Faster transcription") || a.models.Installed(models.ASRFastDraft) {
+		t.Errorf("after the delete: %q", tt.Texts())
+	}
+	draft, _ := models.Lookup(models.ASRFastDraft)
+	a.modelStatus[models.ASRFastDraft] = models.Status{Downloading: true, Done: draft.Size() / 4, Total: draft.Size()}
+	a.navigate("/home")
+	a.navigate(modelsPath)
+	frames(tt)
+	if !has(tt, "Faster transcription") || !has(tt, "Cancel") {
+		t.Errorf("downloading: %q", tt.Texts())
+	}
+}
+
 // TestModelsPageSystemDictation: System dictation's card says it is
 // built in and which features use it; once a speech model is downloaded,
 // Automatic moves the features to that one.
@@ -105,6 +146,7 @@ func TestModelsPageSystemDictation(t *testing.T) {
 	tt.SetSize(windowWidth, 1600)
 	a.dictation.SetHelper(fs) // as helperChanged does for a helper with speech.*
 	a.navigate(modelsPath)
+	frames(tt)
 	used := func() int {
 		return strings.Count(strings.Join(tt.Texts(), "\n"), "· Used by Transcribe · Translate · Rewrite")
 	}
@@ -124,7 +166,7 @@ func TestModelsPageSystemDictation(t *testing.T) {
 // has no Hide, and one in use since it was hidden is listed again.
 func TestHideModel(t *testing.T) {
 	a, fs, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 2400)
+	tt.SetSize(windowWidth, 4800) // the hidden models under every card
 	seedModels(t, a, models.ASRFast, models.VADSilero)
 	a.dictation.SetHelper(fs) // System dictation after the speech model: not in use
 	fast, systemDictation, accurate := uitext.ModelName(models.ASRFast), uitext.ModelName(dictation.ModelID), uitext.ModelName(models.ASRAccurate)
@@ -137,7 +179,21 @@ func TestHideModel(t *testing.T) {
 		frames(tt)
 		return texts
 	}
-	labels := func() []string { a.navigate(modelsPath); frames(tt); return tt.AccessLabels() }
+	labels := func() []string {
+		a.navigate("/home")
+		a.navigate(modelsPath)
+		frames(tt)
+		frames(tt)
+		return tt.AccessLabels()
+	}
+	modelClick := func(label string) {
+		t.Helper()
+		a.navigate("/home")
+		a.navigate(modelsPath)
+		frames(tt)
+		scrollSettingsToText(tt, label)
+		clickControl(t, tt, label)
+	}
 	if l := labels(); slices.Contains(l, "Hide "+fast) || !slices.Contains(l, "Hide "+systemDictation) || !slices.Contains(l, "Hide "+accurate) {
 		t.Fatalf("Hide on the model in use, or not on the others: %q", l)
 	}
@@ -145,14 +201,13 @@ func TestHideModel(t *testing.T) {
 		t.Fatalf("System dictation is not offered: %q", tt.Texts())
 	}
 
-	a.navigate(modelsPath)
-	click(t, tt, "Hide "+systemDictation)
-	click(t, tt, "Hide "+accurate)
+	modelClick("Hide " + accurate)
+	modelClick("Hide " + systemDictation)
 	if has(tt, systemDictation) || has(tt, accurate) || !has(tt, "Hidden models") {
 		t.Fatalf("hidden cards still listed, or no Hidden models: %q", tt.Texts())
 	}
 	for _, f := range []struct{ path, label string }{{"/transcribe", "Speech model for Transcribe"}, {"/translate", "Speech model for Translate"}} {
-		if texts := menu(f.path, f.label); slices.Contains(texts, systemDictation) || !slices.Contains(texts, "Automatic: "+fast) {
+		if texts := menu(f.path, f.label); slices.Contains(texts, systemDictation) || !slices.Contains(texts, "Automatic (now: "+fast+")") {
 			t.Errorf("%s offers a hidden model: %q", f.path, texts)
 		}
 	}
@@ -170,14 +225,12 @@ func TestHideModel(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ASR = "" })
 
 	// Show, in the folded section; the section goes with the last one.
-	a.navigate(modelsPath)
-	click(t, tt, "Hidden models")
-	click(t, tt, "Show "+systemDictation)
+	modelClick("Hidden models")
+	modelClick("Show " + systemDictation)
 	if !slices.Contains(menu("/transcribe", "Speech model for Transcribe"), systemDictation) {
 		t.Errorf("shown again but not offered: %q", tt.Texts())
 	}
-	a.navigate(modelsPath)
-	click(t, tt, "Show "+accurate)
+	modelClick("Show " + accurate)
 	if !has(tt, systemDictation) || !has(tt, accurate) || has(tt, "Hidden models") {
 		t.Errorf("after Show: %q", tt.Texts())
 	}
@@ -235,9 +288,11 @@ func TestModelDownloadStates(t *testing.T) {
 	reopenModels(a)
 	seedModels(t, a, models.VADSilero) // the speech models' voice detection: only the model downloads
 	a.navigate(modelsPath)
+	frames(tt)
 
 	mode.Store("hold")
-	click(t, tt, "Download Qwen3-ASR 0.6B (4bit)")
+	scrollSettingsToText(tt, "Download Qwen3-ASR 0.6B (4bit)")
+	clickControl(t, tt, "Download Qwen3-ASR 0.6B (4bit)")
 	deadline := time.Now().Add(5 * time.Second)
 	for !(has(tt, "Downloading: ") && partialBytes(a, models.ASRFast) > 0) && time.Now().Before(deadline) { // bytes came: a cancel keeps them
 		drain()
@@ -245,7 +300,8 @@ func TestModelDownloadStates(t *testing.T) {
 	if !has(tt, "Cancel") || !a.modelStatus[models.ASRFast].Downloading {
 		t.Fatalf("downloading: %+v %+v %q", a.modelStatus[models.ASRFast], a.models.Status(models.ASRFast), tt.Texts()[25:])
 	}
-	click(t, tt, "Cancel downloading Qwen3-ASR 0.6B (4bit)")
+	scrollSettingsToText(tt, "Cancel downloading Qwen3-ASR 0.6B (4bit)")
+	clickControl(t, tt, "Cancel downloading Qwen3-ASR 0.6B (4bit)")
 	drain()
 	st := a.modelStatus[models.ASRFast]
 	if st.Downloading || st.Done == 0 || st.Err != nil || !has(tt, "Resume") || !has(tt, "Stopped: ") {
@@ -254,7 +310,8 @@ func TestModelDownloadStates(t *testing.T) {
 
 	// A failure: what the card says, and Try again.
 	mode.Store("missing")
-	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
+	scrollSettingsToText(tt, "Download Qwen3-ASR 1.7B (8bit)")
+	clickControl(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	deadline = time.Now().Add(5 * time.Second)
 	for !has(tt, "The download server does not have this model.") && time.Now().Before(deadline) {
 		drain()
@@ -264,7 +321,8 @@ func TestModelDownloadStates(t *testing.T) {
 	}
 
 	// Deleting what a stopped download kept.
-	click(t, tt, "Delete what was downloaded of Qwen3-ASR 0.6B (4bit)")
+	scrollSettingsToText(tt, "Delete the partial download of Qwen3-ASR 0.6B (4bit)")
+	clickControl(t, tt, "Delete the partial download of Qwen3-ASR 0.6B (4bit)")
 	drain()
 	if st := a.modelStatus[models.ASRFast]; st.Done != 0 || has(tt, "Resume") {
 		t.Errorf("kept: %+v", st)
@@ -336,8 +394,8 @@ func fakeFileSize(p string) int64 {
 
 // modelShots saves the Speech models page with a model of each state
 // (TestSnapshots): installed (one shared with another ActNow app),
-// downloading (waiting for a file another app downloads), stopped,
-// failed, another app's model VoxtNew can use; the family's states
+// downloading (waiting for a file another app downloads), a draft
+// downloading, stopped, failed, another app's model VoxtNew can use; the family's states
 // (downloading elsewhere, deleted elsewhere); the delete dialog of a
 // shared model, the Network dialog; and Settings → Storage with the
 // model folder and Erase everything keeping a shared model.
@@ -359,19 +417,23 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	a.modelStatus[models.ASRFast] = models.Status{Done: fast.Size() / 3, Total: fast.Size()}
 	a.modelStatus[models.LLMBalanced] = models.Status{Downloading: true, Done: balanced.Size() * 2 / 5, Total: balanced.Size(), WaitingFor: dictaID}
 	a.modelStatus[models.LLMFast] = models.Status{Total: 1, Err: fmt.Errorf("needs 1.7 GB: %w", hfhub.ErrDiskSpace)}
+	draft, _ := models.Lookup(models.ASRAccurateDraft) // its bar under the row's text
+	a.modelStatus[models.ASRAccurateDraft] = models.Status{Downloading: true, Done: draft.Size() / 2, Total: draft.Size()}
 	a.navigate(modelsPath)
+	frames(tt)
 	// Two of them loaded (models_memory.go), as a session leaves them.
 	a.modelMem = map[string]int64{models.ASRAccurate: 2_469_606_195, models.LLMTranslate: 1_234_173_952}
 	save("models-states")
-	scrollToText(tt, i18n.T("Language models"))
+	scrollSettingsToText(tt, i18n.T("Language models no longer used"))
 	save("models-states-language")
 	// The family's states: another app downloads one, another deleted one.
 	a.modelStatus[models.ASRFast] = models.Status{Elsewhere: audioSmithID, Done: fast.Size() / 4}
 	a.modelStatus[models.LLMFast] = models.Status{DeletedBy: dictaID}
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	frames(tt)
 	save("models-family")
-	scrollToText(tt, uitext.ModelName(models.LLMFast))
+	scrollSettingsToText(tt, uitext.ModelName(models.LLMFast))
 	save("models-family-language") // deleted elsewhere, another app's model to use
 	a.askDeleteModel(models.ASRAccurate)
 	save("models-delete-shared")
@@ -402,25 +464,144 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	// The Advanced section under the cards, folded and open
 	// (models_keep.go).
 	a.navigate(modelsPath)
-	scrollToText(tt, i18n.T("Advanced"))
+	frames(tt)
+	scrollSettingsToText(tt, i18n.T("Advanced"))
 	save("models-advanced")
 	a.modelAdvanced = true
-	scrollToText(tt, i18n.T("Advanced"))
+	scrollSettingsToText(tt, i18n.T("Advanced"))
 	save("models-advanced-open")
 	a.modelAdvanced = false
 	// A hidden model, in its section opened (models_cards.go).
-	fastName := uitext.ModelName(models.ASRFast)
+	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = append(s.Models.Hidden, models.ASRFast) })
+	a.modelHiddenOpen = true
 	a.navigate("/home")
 	a.navigate(modelsPath)
-	click(t, tt, i18n.T("Hide %s", fastName))
-	scrollToText(tt, i18n.T("Hidden models"))
-	click(t, tt, i18n.T("Hidden models"))
-	scrollToText(tt, i18n.T("Hidden models"))
+	frames(tt)
+	scrollSettingsToText(tt, i18n.T("Hidden models"))
 	save("models-hidden")
-	click(t, tt, i18n.T("Show %s", fastName))
+	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = nil })
 	// The page as it was: the setup guide's shots show it behind them.
 	a.navigate("/home")
 	a.navigate(modelsPath)
 	frames(tt)
-	scrollToText(tt, uitext.ModelName(models.LLMFast))
+	frames(tt)
+	scrollSettingsToText(tt, uitext.ModelName(models.LLMFast))
+}
+
+// TestModelsPageFaster (#3873): Faster transcription is a switch on the
+// speech model's card. Off, the card offers no draft download; on
+// without the draft, it says the draft is needed and offers it; the
+// draft's download does not turn it on, and off keeps the draft on disk
+// (deletable) but unused. A model never switched follows its draft.
+func TestModelsPageFaster(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	seedModels(t, a, models.ASRFast)
+	a.navigate(modelsPath)
+	frames(tt)
+	const sw, dl = "Faster transcription for Qwen3-ASR 0.6B (4bit)", "Download Qwen3-ASR 0.6B DFlash draft"
+	drain := queuePosts(a)
+	if !has(tt, "Faster transcription") || has(tt, "Download the draft model to use this.") || tt.HasText(dl) {
+		t.Fatalf("off: %q", tt.Texts())
+	}
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
+	if !a.settings.Get().Models.Faster[models.ASRFast] || !has(tt, "Download the draft model to use this.") || !has(tt, "262.5 MB download") || !tt.HasText(dl) {
+		t.Fatalf("on without the draft: %+v %q", a.settings.Get().Models, tt.Texts())
+	}
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
+	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on {
+		t.Fatalf("switched off: %+v", a.settings.Get().Models)
+	}
+
+	// The draft arrives with the switch off: installed, unused.
+	seedModels(t, a, models.ASRFast, models.ASRFastDraft)
+	a.navigate("/home")
+	a.navigate(modelsPath)
+	frames(tt)
+	if !has(tt, "262.5 MB on disk") || has(tt, "Download the draft model to use this.") || a.omniDraft(models.ASRFast) != "" {
+		t.Fatalf("installed, off: %q, omniDraft %q", tt.Texts(), a.omniDraft(models.ASRFast))
+	}
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
+	if a.omniDraft(models.ASRFast) == "" {
+		t.Error("switched on with the draft: unused")
+	}
+
+	// Never switched: the installed draft is used, the switch shows on.
+	a.updateSettings(func(s *settings.Settings) { s.Models.Faster = nil })
+	frames(tt)
+	if a.omniDraft(models.ASRFast) == "" {
+		t.Error("never switched, installed: unused")
+	}
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
+	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on || a.omniDraft(models.ASRFast) != "" {
+		t.Errorf("never switched, then off: %+v", a.settings.Get().Models)
+	}
+}
+
+func TestModelsPageWhisperDraft(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	seedModels(t, a, models.ASRWhisperLarge, models.AuxWhisperLarge)
+	a.navigate(modelsPath)
+	frames(tt)
+	// The models page is a Settings section on the release branch.
+	const toggle = "Faster transcription for Whisper Large v3"
+	drain := queuePosts(a)
+	scrollSettingsToText(tt, toggle)
+	clickControl(t, tt, toggle)
+	drain()
+	frames(tt)
+	if !tt.HasText("Download Whisper Large v3 Distil draft") {
+		t.Fatalf("Whisper draft download missing: %q", tt.Texts())
+	}
+}
+
+// TestModelCardsLineUp: a speech model in a card of its own starts its
+// text at the card's edge, as the models of a family card do, its icon
+// beside its name (#3854: the text sat after an empty icon column). The
+// same holds for System dictation and the language models' cards, in
+// Chinese, and at the narrowest window.
+func TestModelCardsLineUp(t *testing.T) {
+	for _, loc := range []string{"en", "zh-Hans"} {
+		for _, w := range []int{windowWidth, windowMinWidth} {
+			a, fs, tt := newTestApp(t)
+			i18n.SetLocale(loc)
+			t.Cleanup(func() { i18n.SetLocale("en") })
+			tt.SetSize(w, 6000)
+			a.dictation.SetHelper(fs)
+			a.navigate(modelsPath)
+			frames(tt)
+			frames(tt)
+			ids := []string{dictation.ModelID}
+			for _, m := range models.Catalog() {
+				if (m.Kind == models.ASR || m.Kind == models.LLM) && a.modelShown(m) {
+					ids = append(ids, m.ID)
+				}
+			}
+			var x0 float32
+			for i, id := range ids {
+				r, ok := tt.Find(uitext.ModelAbout(id))
+				if !ok {
+					t.Fatalf("%s %d wide: no about text for %s in %q", loc, w, id, firstTexts(tt))
+				}
+				if i == 0 {
+					x0 = r.X
+				} else if d := r.X - x0; d < -1 || d > 1 {
+					t.Errorf("%s %d wide: %s's text at x %.0f, System dictation's at %.0f", loc, w, id, r.X, x0)
+				}
+			}
+		}
+	}
 }

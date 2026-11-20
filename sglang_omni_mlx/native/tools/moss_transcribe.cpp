@@ -4,6 +4,10 @@
 //
 //   moss_transcribe --model-path DIR [--prompt TEXT] [--max-new-tokens N]
 //     [--stop-at-end-of-text] [--stop-on-token-loop] a.wav...
+//
+// --full-precision loads the weights as stored, without load-time
+// quantization.
+
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -14,6 +18,9 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
+#include "common/layers.h"
+#include "common/transcription.h"
 #include "moss/moss_transcriber.h"
 #include "nlohmann/json.hpp"
 
@@ -33,7 +40,9 @@ int main(int argc, char **argv) {
       }
       return std::string(argv[++i]);
     };
-    if (argument == "--model-path") {
+    if (argument == "--full-precision") {
+      omni_common::SetLoadTimeQuantization(false);
+    } else if (argument == "--model-path") {
       model_path = value();
     } else if (argument == "--draft-model-path") {
       draft_model_path = value();
@@ -86,9 +95,9 @@ int main(int argc, char **argv) {
                          ? nlohmann::ordered_json(*result.language)
                          : nlohmann::ordered_json()},
         {"generated_token_count", result.generated_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"verify_rounds", result.verify_round_count},
-        {"segments", qwen3_asr::SpeakerSegmentsJson(result.segments)},
+        {"segments", omni_common::SpeakerSegmentsJson(result.segments)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},

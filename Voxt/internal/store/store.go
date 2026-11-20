@@ -31,6 +31,7 @@ type Store interface {
 	History() History
 	Dictionary() Dictionary
 	Notes() Notes
+	Meetings() Meetings
 	Close() error
 }
 
@@ -83,13 +84,15 @@ type Entry struct {
 	// (appctx.Source); "" for none.
 	RuleSource string
 
-	// RawText is the recognised speech; SourceText the selected text
-	// (translate, rewrite); PromptText the spoken instruction (rewrite);
-	// Result what was delivered; TargetLang the translation's target.
+	// RawText is the recognised speech; SourceText the selected text and
+	// TypedText the Rewrite input box's typed text; PromptText the spoken
+	// instruction (rewrite); Result what was delivered; TargetLang the target.
 	RawText    string
 	SourceText string
+	TypedText  string
 	PromptText string
 	Result     string
+	Title      string // Rewrite's answer title; "" for other kinds and older entries
 	TargetLang string
 	// Delivery: "insert" (pasted where the cursor was), "copy" or "card"
 	// (shown in the answer card).
@@ -110,6 +113,12 @@ type Entry struct {
 	// out (0: unknown, or none was sent).
 	AudioMS, ASRMS, LLMMS, TotalMS int64
 	SentMS                         int64
+
+	// Conversation is the ID of the first session of the answer card's
+	// conversation this one belongs to (its own ID when it began one);
+	// "" for older entries. Replaces is the answer a redo superseded;
+	// "" for a new turn and older entries.
+	Conversation, Replaces string
 
 	// DSP is the sound processing the speech model's copy of the
 	// recording went through (internal/dsp): "highpass", "level" or
@@ -132,12 +141,23 @@ type Entry struct {
 // HistoryQuery selects history entries: the zero value is every entry,
 // newest first.
 type HistoryQuery struct {
-	Kind   Kind   // "" = every kind
-	Search string // full text over the texts; under 3 characters a substring match
-	Limit  int    // 0 = no limit
-	Offset int
+	Kind         Kind   // "" = every kind
+	Conversation string // "" = every conversation
+	Search       string // full text over the texts; under 3 characters a substring match
+	Limit        int    // 0 = no limit
+	Offset       int
 	// WithAudio selects only the entries with a recording kept.
 	WithAudio bool
+	// After (inclusive) and Before (exclusive) bound CreatedAt; zero means
+	// no bound. With AfterID, After is the last row of a page: the list
+	// resumes strictly past (After, AfterID) in Oldest's order.
+	After   time.Time
+	AfterID string
+	Before  time.Time
+	// Oldest lists oldest first instead of newest first.
+	Oldest bool
+	// Finished selects only entries that ended well and have a result.
+	Finished bool
 }
 
 // Retention is what the history keeps (its automatic clean-up): the
@@ -158,6 +178,8 @@ type History interface {
 	Put(ctx context.Context, e Entry) error
 	Get(ctx context.Context, id string) (Entry, error)
 	List(ctx context.Context, q HistoryQuery) ([]Entry, error)
+	// Count is how many entries q selects (its Limit and Offset ignored).
+	Count(ctx context.Context, q HistoryQuery) (int, error)
 	// Delete removes the entry and its audio file.
 	Delete(ctx context.Context, id string) error
 	// DeleteAll removes every entry of kind ("" = all) and their audio,
@@ -203,17 +225,38 @@ type Term struct {
 	Enabled   bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ProfileID binds a write to the profile the term was opened from
+	// ("": the active one, as sessions, imports and learning use).
+	ProfileID string
 }
 
-// Dictionary stores the user's terms.
+// DictionaryProfile is a named set of dictionary terms. Active is true
+// for the one profile Transcribe, Translate and Rewrite use.
+type DictionaryProfile struct {
+	ID     string
+	Name   string
+	Active bool
+}
+
+// Dictionary stores the active profile's terms.
 type Dictionary interface {
-	// Put inserts or replaces a term (by ID); another term with the same
-	// spelling (ignoring case) is core.ErrExists.
+	// Put inserts or replaces a term (by ID); another term in this profile
+	// with the same spelling (ignoring case) is core.ErrExists.
 	Put(ctx context.Context, t Term) error
 	Get(ctx context.Context, id string) (Term, error)
-	// List returns the terms matching search ("" = all), A to Z.
+	// List returns the active profile's terms matching search ("" = all), A to Z.
 	List(ctx context.Context, search string) ([]Term, error)
-	Delete(ctx context.Context, id string) error
+	// Delete removes the term from profileID ("" = the active profile).
+	Delete(ctx context.Context, id, profileID string) error
+	// Profiles lists every profile, A to Z.
+	Profiles(ctx context.Context) ([]DictionaryProfile, error)
+	// CreateProfile adds an inactive profile with a unique, non-empty name.
+	CreateProfile(ctx context.Context, profile DictionaryProfile) error
+	RenameProfile(ctx context.Context, id, name string) error
+	// DeleteProfile removes a profile and its terms, choosing another active
+	// profile when needed. Removing the last profile is core.ErrInvalid.
+	DeleteProfile(ctx context.Context, id string) error
+	ActivateProfile(ctx context.Context, id string) error
 }
 
 // Note is what the user said after the note shortcut (Voxt 1.x's notes):
@@ -222,6 +265,7 @@ type Note struct {
 	ID        string
 	Text      string
 	CreatedAt time.Time
+	AppName   string // app in front when the shortcut was pressed; "" for old notes or unknown
 }
 
 // Notes stores the user's notes.
@@ -231,4 +275,88 @@ type Notes interface {
 	// List returns every note, newest first.
 	List(ctx context.Context) ([]Note, error)
 	Delete(ctx context.Context, id string) error
+}
+
+// MeetingStatus is where a meeting is in its lifecycle.
+type MeetingStatus string
+
+const (
+	MeetingRecording   MeetingStatus = "recording"
+	MeetingInterrupted MeetingStatus = "interrupted"
+	MeetingAsking      MeetingStatus = "asking"
+	MeetingFinishing   MeetingStatus = "finishing"
+	MeetingDone        MeetingStatus = "done"
+	MeetingFailed      MeetingStatus = "failed"
+)
+
+// MeetingMode is what the user chose when the meeting started.
+type MeetingMode string
+
+const (
+	MeetingModeMeeting   MeetingMode = "meeting"
+	MeetingModeSubtitles MeetingMode = "subtitles"
+	MeetingModeRecording MeetingMode = "recording"
+)
+
+// SegmentSource is which audio track produced a segment.
+type SegmentSource string
+
+const (
+	SegmentMic    SegmentSource = "mic"
+	SegmentSystem SegmentSource = "system"
+)
+
+// Meeting is one recorded session (rows in meetings; C1-1b-store).
+type Meeting struct {
+	Seq        int64 // the database rowid meetings_fts may index later
+	ID         string
+	CreatedAt  time.Time
+	EndedAt    time.Time
+	Status     MeetingStatus
+	Mode       MeetingMode
+	Title      string
+	DurationMS int64
+	ASRModel   string
+	DiarModel  string
+	LLMModel   string
+	Speakers   string // JSON object, e.g. {"s1":"Alice"}
+	Summary    string // JSON {title, body, todos, generated_at}
+	Chat       string // JSON array of Q&A (C1-7)
+	Audio      string // folder name under <data>/meetings/; "" when deleted
+	AudioUntil time.Time
+}
+
+// MeetingSegment is one sentence on a track.
+type MeetingSegment struct {
+	MeetingSeq  int64
+	Idx         int // meeting_segments.idx; <0 lets AppendSegments assign the next index
+	Source      SegmentSource
+	Speaker     string
+	StartMS     int64
+	EndMS       int64
+	Text        string
+	Translation string
+	Final       bool
+}
+
+// MeetingQuery lists meetings; zero lists all, newest first.
+type MeetingQuery struct {
+	Search string // full text on segment text and translation
+	Limit  int
+	Offset int
+}
+
+// Meetings stores meeting metadata and segments (no call site in C1-1b-store).
+type Meetings interface {
+	CreateMeeting(ctx context.Context, m Meeting) (Meeting, error)
+	UpdateMeeting(ctx context.Context, m Meeting) error
+	AppendSegments(ctx context.Context, seq int64, segs []MeetingSegment) error
+	UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error
+	UpdateSegmentTexts(ctx context.Context, seq int64, texts map[int]string) error
+	ReplaceSegments(ctx context.Context, seq int64, src SegmentSource, segs []MeetingSegment) error
+	Meeting(ctx context.Context, id string) (Meeting, []MeetingSegment, error)
+	ListMeetings(ctx context.Context, q MeetingQuery) ([]Meeting, error)
+	DeleteMeeting(ctx context.Context, id string) error
+	Unfinished(ctx context.Context) ([]Meeting, error)
+	ExpiredAudio(ctx context.Context, now time.Time) ([]Meeting, error)
 }

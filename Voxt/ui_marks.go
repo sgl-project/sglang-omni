@@ -12,18 +12,31 @@ import (
 // ---- Text, marks and chips ----
 
 // infoTip is a ⓘ that tells text as a tooltip, in place of a line of
-// help under a control. It takes the keyboard focus, so the tip shows
-// from the keyboard too.
+// help under a control. A click (or Space from the keyboard) keeps the
+// tip open in a popover until a click elsewhere or Escape: people click
+// an ⓘ rather than rest the pointer on it.
 func infoTip(c *ui.Context, text string) ui.Element {
 	t := c.Theme()
 	k := tok(t)
-	b := ui.ButtonBase(c).Size(px(t, 18), px(t, 18)).Center().Radius(px(t, 9)).Label(text).Tooltip(text)
+	b := ui.ButtonBase(c).Size(px(t, 18), px(t, 18)).Center().Radius(px(t, 9)).Label(text)
+	open := ui.Local(b, "open", func() bool { return false })
+	if b.Clicked() {
+		*open = !*open
+	}
+	if !*open { // the popover says it already
+		b.Tooltip(text)
+	}
 	b.Children(func() {
 		col := k.Text3
-		if b.Hovered() {
+		if b.Hovered() || *open {
 			col = k.Text2
 		}
 		ui.Icon(c, icons.InfoCircle.Linear).Size(px(t, 14), px(t, 14)).TextColor(col)
+	})
+	ui.Popover(c, b, open, func() {
+		ui.Column(c).MaxWidth(px(t, 320)).Padding(px(t, sp1)).Children(func() {
+			ui.Text(c, text).FontSize(px(t, fsCaption))
+		})
 	})
 	return b
 }
@@ -61,41 +74,6 @@ func keycap(c *ui.Context, keys string) ui.Element {
 	k := tok(t)
 	return ui.Text(c, keys).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text).Padding(px(t, 1), px(t, 7)).
 		Radius(px(t, 5)).Background(k.Subtle).Border(1, k.Line).SingleLine().Shrink(0)
-}
-
-// chip is a filter chip: plain text, on the grey fill while on; count
-// ("" for none) follows its label in the tertiary grey.
-func chip(c *ui.Context, label, count string, on bool) ui.Element {
-	t := c.Theme()
-	k := tok(t)
-	name := label
-	if count != "" {
-		name += " " + count
-	}
-	b := ui.ButtonBase(c).Padding(px(t, 4), px(t, 10)).Radius(px(t, radiusControl)).Gap(px(t, 6)).AlignItems(ui.Center).
-		Label(name).Checked(on).Shrink(0)
-	switch {
-	case on:
-		b.Background(k.Pressed)
-	case b.Pressed():
-		b.Background(k.Pressed)
-	case b.Hovered():
-		b.Background(k.Hover)
-	}
-	b.Children(func() {
-		col := k.Text2
-		if on {
-			col = k.Text
-		}
-		tx := ui.Text(c, label).FontSize(px(t, fsCaption)).TextColor(col).SingleLine()
-		if on {
-			tx.FontWeight(600)
-		}
-		if count != "" {
-			ui.Text(c, count).FontSize(px(t, fsMicro)).TextColor(k.Text3).SingleLine()
-		}
-	})
-	return b
 }
 
 // statusDot is a 6 px dot of a state's colour.
