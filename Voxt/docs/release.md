@@ -145,7 +145,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 - **不降级**：只会更新到比当前更新的版本。beta 用户关掉开关后，要等到比当前 beta 新的正式版才会更新。
 - **还没有正式版时**，正式版通道的清单是 404，关着开关检查更新显示“已是最新”，不报错（`mygo.ErrNotPublished`）。
 
-**更新服务需要提供的新接口**：`POST /api/pkg/voxt2/update` 接收 `{channel, version, mode: "replace-latest", manifest}`，用现有 `VOXT_RELEASE_API_KEY` 鉴权，保存成功时返回 `{"ok":true}`。服务在上面的 stable 和 beta URL 原样返回 MyGo JSON 清单；正式版同时更新 stable，并且只在它较新时更新 beta，beta 只更新 beta，版本比较遵循 semver，不能覆盖更新的版本。清单只含 Voxt 2，Voxt 1.x 的 Sparkle 只读 `/updates/{stable,beta}/appcast.xml`，不会读这两个新地址。tar.gz 和 delta 仍从 GitHub Release 下载，服务不需要保存它们。现有 1.x appcast 仍要保留 `hardwareRequirements` 并输出 `sparkle:hardwareRequirements`，它的拦截逻辑不变。
+**更新服务需要提供的新接口**：`POST /api/pkg/voxt2/update` 接收 `{channel, version, mode: "replace-latest", manifest}`，用现有 `VOXT_RELEASE_API_KEY` 鉴权，保存成功时返回 `{"ok":true}`。服务在上面的 stable 和 beta URL 原样返回 MyGo JSON 清单；正式版同时更新 stable，并且只在它较新时更新 beta，beta 只更新 beta，版本比较遵循 semver，不能覆盖更新的版本。清单只含 Voxt 2，Voxt 1.x 的 Sparkle 只读 `/updates/{stable,beta}/appcast.xml`，不会读这两个新地址。tar.gz 和 delta 仍从 GitHub Release 下载，服务不需要保存它们。现有 1.x appcast 仍要保留 `hardwareRequirements` 并输出 `sparkle:hardwareRequirements`，它的拦截逻辑不变。截至 11-20 这个接口还没上线：它和两个更新源都回官网的 404 页面。接口上线前，Voxt 2 job 收到不是 JSON 的 404 时只留一条 warning，不发清单、不检查更新源，beta 和正式版的运行不因此失败；返回 JSON 的 404、鉴权失败、5xx 或 `ok` 不是 true 仍然失败。接口上线后工作流不用改，下一次运行就会发清单并检查更新源。
 
 ## 1. 一次性准备
 
