@@ -25,10 +25,12 @@ package main
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
@@ -44,7 +46,9 @@ const boxMaxImages = 4
 // rewriteBox is the input box's state (rewrite_box_view.go draws it).
 type rewriteBox struct {
 	open   bool
-	shown  bool      // the window shows (it hides while the send runs)
+	shown  bool           // the window shows
+	area   mygo.Rectangle // the screen the window opened on
+	frame  mygo.Rectangle
 	target proto.App // the app in front when the box opened
 	// session is the recording session's id ("" when it ended); sending
 	// a resend's after a failure.
@@ -91,7 +95,11 @@ type rewriteBox struct {
 
 // rewriteBoxViewState is the input box's display state.
 type rewriteBoxViewState struct {
-	Selection         string
+	Selection string
+	// Conversation: the card holds an answer, or one is being written:
+	// the answer card's content shows above the text box (wall 122).
+	Conversation      bool
+	SizeStep          int
 	SelectionBlock    boxTextSegment
 	Text              string
 	TextSegments      []boxTextSegment
@@ -120,6 +128,10 @@ type rewriteBoxViewState struct {
 type rewriteBoxActions struct {
 	viewState       func() rewriteBoxViewState
 	close           func()
+	escape          func()
+	conversation    func(*ui.Context)
+	cardButtons     func(*ui.Context)
+	cycleSize       func()
 	send            func()
 	drop            func([]string)
 	chooseImages    func()
@@ -141,7 +153,7 @@ type rewriteBoxActions struct {
 // (*mygo.Window; a fake in tests, so a close's hide is observable).
 type boxWindow interface {
 	Invalidate()
-	Center()
+	SetContentBounds(mygo.Rectangle)
 	Show()
 	Focus()
 	Hide()
@@ -162,6 +174,11 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 	if n != nil || id == "" {
 		return // the notice says what is missing
 	}
+	a.showBox(target, id)
+}
+
+// showBox shows the box for its session id.
+func (a *app) showBox(target proto.App, id string) {
 	if !a.box.open {
 		a.box = rewriteBox{showTip: !a.prefs.Setup.RewriteBoxTipDismissed && a.prefs.Setup.RewriteBoxOpens < 3}
 		if a.prefs.Setup.RewriteBoxOpens < 3 {
@@ -180,15 +197,54 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 	a.boxSync()
 }
 
-// closeBox closes the box and drops its content (Esc, its Close button,
-// the window's close); the recording is cancelled. An answer moved to
-// the background (wall 116) is no longer the box's to cancel.
+// closeBox closes the box and drops its content: the session running is
+// cancelled. An answer moved to the background (wall 116) is no longer
+// the box's to cancel.
 func (a *app) closeBox() {
 	if id := a.boxSessionID(); id != "" && id != a.bgID && a.sess.State.Live() && a.sess.ID == id {
 		a.cancelSession()
 	}
 	a.dropBox()
 	a.boxSync()
+}
+
+// boxCloseCard is the card's Close button (and its window's close): the
+// answer it holds closes with it.
+func (a *app) boxCloseCard() {
+	answered := a.boxAnswered()
+	a.closeBox()
+	if answered {
+		a.closeAnswer()
+	}
+}
+
+// boxEscape is Esc in the card: a follow-up on its way is cancelled and
+// the card keeps its answer; otherwise the card closes.
+func (a *app) boxEscape() {
+	if id := a.boxSessionID(); a.boxAnswered() && id != "" && a.sess.ID == id && a.sess.State.Live() {
+		a.cancelSession()
+		return
+	}
+	a.boxCloseCard()
+}
+
+// boxAnswered says whether the card holds a Rewrite answer, or the
+// answer its follow-up changes (a translation's too): it then shows the
+// conversation, and what is typed is a follow-up.
+func (a *app) boxAnswered() bool {
+	return a.box.open && a.answer.open && (a.answer.kind == store.KindRewrite || a.followUp != "" && a.followUp == a.answer.id)
+}
+
+// boxKeep keeps the card open for its answer once a session of its ends:
+// the input is emptied for the next follow-up.
+func (a *app) boxKeep() {
+	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
+	target := a.box.target
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, ui: ui}
+	a.boxShare.reset()
+	a.boxShare.suppressAutomatic(false, false)
+	a.boxGen++
+	a.boxSendQueued = false
 }
 
 // dropBox drops the box's state, closing the window first: zeroing win
@@ -231,8 +287,14 @@ func (a *app) boxSend() {
 	if a.box.sending != "" {
 		if a.sess.ID == a.box.sending && a.box.shown && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
 			a.boxShare.approveReview()
-			a.box.shown = false
 			a.boxSync()
+		}
+		return
+	}
+	if a.box.instruction == "" && !a.sess.State.Live() && a.boxAnswered() {
+		// The card holds an answer: what is typed is the follow-up.
+		if typed := strings.TrimSpace(a.boxTextContent()); typed != "" {
+			a.followUpTyped(typed)
 		}
 		return
 	}
@@ -241,10 +303,13 @@ func (a *app) boxSend() {
 	}
 	a.boxShare.clearReview()
 	in := session.TextInput{Raw: a.box.instruction, Selection: a.box.selection}
-	id, n := a.startSessionID(session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in})
+	req := session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in}
+	if a.followUp != "" && a.followUp == a.answer.id {
+		req.Previous, req.Conversation, req.Images = a.answer.turns, a.answer.conv, a.answer.images // still the card's follow-up
+	}
+	id, n := a.startSessionID(req)
 	if n == nil && id != "" {
 		a.box.sending, a.box.err = id, ""
-		a.box.shown = false
 		a.boxSync()
 	}
 }
@@ -261,7 +326,11 @@ func (a *app) boxEnded(s session.Snapshot) {
 	}
 	switch s.State {
 	case session.Done:
-		a.dropBox() // sent: the card holds the answer
+		if a.boxAnswered() {
+			a.boxKeep() // the answer is in the card, which takes the next follow-up
+		} else {
+			a.dropBox() // inserted, or nothing to show
+		}
 	case session.Failed:
 		// Nothing of the box's is dropped: it comes back with the
 		// error, the text and the pictures kept, the instruction ready
@@ -277,8 +346,12 @@ func (a *app) boxEnded(s session.Snapshot) {
 			a.box.selectionVia = s.SelectionVia
 		}
 		a.box.shown = true
-	default: // cancelled: as Esc always did
-		a.dropBox()
+	default: // cancelled: as Esc always did; a follow-up's leaves the answer
+		if a.boxAnswered() {
+			a.boxKeep()
+		} else {
+			a.dropBox()
+		}
 	}
 	a.boxSync()
 }
