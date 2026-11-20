@@ -171,6 +171,24 @@ def test_compute_speed_metrics_reports_all_single_chunk_streams() -> None:
     assert metrics["c200"] is None
 
 
+def test_request_token_rate_requires_tokens_and_time_on_the_same_request() -> None:
+    """Partial usage reports mixed tokens from one request with time from another."""
+    partial_usage = [
+        RequestResult(is_success=True, completion_tokens=100),
+        RequestResult(is_success=True, engine_time_s=5.0),
+    ]
+    assert "output_tok_per_req_s" not in compute_speed_metrics(partial_usage)
+
+    complete_usage = [
+        RequestResult(is_success=True, completion_tokens=10, engine_time_s=1.0),
+        RequestResult(is_success=True, completion_tokens=30, engine_time_s=4.0),
+    ]
+    metrics = compute_speed_metrics(complete_usage + partial_usage, wall_clock_s=10.0)
+    assert metrics["output_tok_per_req_s"] == 8.0
+    assert metrics["output_tokens_total"] == 140
+    assert metrics["output_throughput"] == 14.0
+
+
 def test_compute_speed_metrics_counts_max_token_hits() -> None:
     def request_result(finish_reason: FinishReason) -> RequestResult:
         return RequestResult(

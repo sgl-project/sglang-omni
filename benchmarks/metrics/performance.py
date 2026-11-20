@@ -13,7 +13,8 @@ Metric semantics:
 ``output_throughput``
     Completion tokens divided by measured benchmark wall-clock seconds.
 ``output_tok_per_req_s``
-    Completion tokens divided by summed per-request engine/request-time seconds.
+    Completion tokens divided by summed engine/request-time seconds across
+    successful requests with both a positive token count and a positive time.
 ``output_token_rate``
     Per-request completion tokens divided by that request's engine/request time.
 ``rtf_mean``
@@ -100,16 +101,24 @@ def _compute_token_metrics(
         o.completion_tokens for o in successes if o.completion_tokens > 0
     ]
     total_tokens = sum(output_token_counts)
-    total_engine_time = sum(o.engine_time_s for o in successes if o.engine_time_s > 0)
+    timed_requests = [
+        request
+        for request in successes
+        if request.completion_tokens > 0 and request.engine_time_s > 0
+    ]
 
     prompt_token_counts = [o.prompt_tokens for o in successes if o.prompt_tokens > 0]
 
     token_metrics: dict = {}
-    if total_engine_time > 0 and total_tokens > 0:
+    if timed_requests:
+        timed_tokens = sum(request.completion_tokens for request in timed_requests)
+        total_engine_time_s = sum(request.engine_time_s for request in timed_requests)
         token_metrics["output_tok_per_req_s"] = round(
-            total_tokens / total_engine_time,
+            timed_tokens / total_engine_time_s,
             1,
         )
+    else:
+        pass
     if wall_clock_s is not None and wall_clock_s > 0 and total_tokens > 0:
         token_metrics["output_throughput"] = round(total_tokens / wall_clock_s, 1)
     if output_token_counts:
