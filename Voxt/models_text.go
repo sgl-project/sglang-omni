@@ -28,7 +28,7 @@ func modelShown(m models.Model, status models.Status) bool {
 
 func modelsUsedBy(translator *i18n.Translator, prefs settings.Settings, installedASR, installedLLM []local.Model, kind local.Kind, id string) string {
 	var names []string
-	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite, hotkey.Meeting} {
 		if kind == local.LLM && feature == hotkey.Transcribe && !prefs.Features.Transcribe.Enhance {
 			continue
 		}

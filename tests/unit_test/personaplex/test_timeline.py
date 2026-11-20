@@ -138,3 +138,80 @@ def test_caller_frames_appended_one_by_one_match_the_whole_timeline():
     assert torch.equal(timeline.user_frames, whole.user_frames)
     assert torch.equal(timeline.user_rows, whole.user_rows)
     assert timeline.num_frames == whole.num_frames
+
+
+@pytest.mark.parametrize("voice_frames", [0, 4])
+@pytest.mark.parametrize("chunking", ["single", "multiple", "random"])
+def test_incremental_history_matches_full_delay_after_every_append(
+    voice_frames, chunking
+):
+    prompt = build_prompt_frames(
+        voice_frames=voice_frames,
+        text_prompt_ids=[7, 8],
+        voice_codes=make_voice_codes(voice_frames),
+    )
+    caller = make_user_codes(513)
+    timeline = build_timeline(prompt, caller[:0])
+    generator = torch.Generator().manual_seed(31)
+    appended_frames = 0
+    saved_views = []
+    while appended_frames < caller.shape[0]:
+        if chunking == "single":
+            chunk_frames = 1
+        elif chunking == "multiple":
+            chunk_frames = 37
+        else:
+            chunk_frames = int(torch.randint(1, 60, (), generator=generator))
+        end_frame = min(appended_frames + chunk_frames, caller.shape[0])
+        external_codes = caller[appended_frames:end_frame].clone().float()
+        previous_frames = timeline.user_frames
+        previous_rows = timeline.user_rows
+        previous_storage = timeline.user_rows_storage
+        saved_views.append(
+            (
+                previous_frames,
+                previous_rows,
+                previous_frames.clone(),
+                previous_rows.clone(),
+            )
+        )
+        timeline.append_caller_frames(external_codes)
+        external_codes.fill_(-99)
+        whole = build_timeline(prompt, caller[:end_frame])
+        assert torch.equal(timeline.user_frames, whole.user_frames)
+        assert torch.equal(timeline.user_rows, whole.user_rows)
+        assert timeline.num_frames == end_frame
+        if whole.user_rows.shape[0] <= previous_storage.shape[0]:
+            assert timeline.user_rows_storage is previous_storage
+        else:
+            assert timeline.user_rows_storage.shape[0] == max(
+                whole.user_rows.shape[0], 2 * previous_storage.shape[0]
+            )
+        timeline.append_caller_frames(caller[:0])
+        assert timeline.user_rows.shape == whole.user_rows.shape
+        appended_frames = end_frame
+    for frames_view, rows_view, frames_copy, rows_copy in saved_views:
+        assert torch.equal(frames_view, frames_copy)
+        assert torch.equal(rows_view, rows_copy)
+
+
+def test_empty_append_keeps_valid_views_and_storage():
+    prompt = build_prompt_frames(voice_frames=0, text_prompt_ids=[])
+    timeline = build_timeline(prompt, make_user_codes(0))
+    frames, rows = timeline.user_frames, timeline.user_rows
+    timeline.append_caller_frames(make_user_codes(0))
+    assert timeline.user_frames is frames
+    assert timeline.user_rows is rows
+    assert timeline.user_frames_storage is frames
+    assert timeline.user_rows_storage is rows
+    assert timeline.num_frames == 0
+
+
+@pytest.mark.parametrize("shape", [(2, 1), (8,), (1, 8, 1)])
+def test_append_rejects_broadcastable_caller_codes(shape):
+    timeline = build_timeline(
+        build_prompt_frames(voice_frames=0, text_prompt_ids=[]), make_user_codes(0)
+    )
+    with pytest.raises(ValueError, match="shape"):
+        timeline.append_caller_frames(torch.zeros(shape))
+    assert timeline.num_frames == 0
