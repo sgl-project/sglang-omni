@@ -57,7 +57,7 @@
   "Voxt sends the language model the recognised or selected text, never your audio.": "Voxt 只把识别出的文字或选中的文字发给语言模型，不发送音频。",
   "Wait for the language model": "等待语言模型",
   "Retry with another model on this Mac": "出错时改用本机其他模型",
-  "If a feature's language model does not answer, Voxt tries once more with another model you set up on this Mac. Translate tries its own fallback model first. Voxt never switches to an external API on its own.": "功能所用的语言模型没有回应时，Voxt 会改用你在这台 Mac 上设置的另一个模型再试一次。翻译会先用它自己的备用模型。Voxt 不会自行切换到外部 API。",
+  "If the language model does not answer, Voxt tries once more with another model you set up on this Mac. Translate tries its own fallback model first. Voxt never switches to an external API on its own.": "语言模型没有回应时，Voxt 会改用你在这台 Mac 上设置的另一个模型再试一次。翻译会先用它自己的备用模型。Voxt 不会自行切换到外部 API。",
   "Your recordings are sent to %s to be recognised.": "你的录音会发给 %s 识别。",
   "%s is not a number.": "%s 只能填数字。",
   "Budget tokens": "预算 Token 数",
