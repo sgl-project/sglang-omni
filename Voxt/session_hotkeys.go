@@ -208,7 +208,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		a.startSession(req)
 	case hotkey.Stop:
 		if a.box.open && a.box.session != "" && a.box.session == a.sess.ID {
-			a.boxSend()
+			a.boxShortcutSend()
 		} else {
 			a.stopSession()
 		}

@@ -82,6 +82,11 @@ func TestWrite(t *testing.T) {
 				if end.Selection != "Good morning" || end.SelectionVia != proto.ViaAX || e.SourceText != "Good morning" || e.RawText != "" || e.AudioMS != 0 || e.ASRProvider != "" {
 					t.Errorf("end %+v entry %+v", end, e)
 				}
+				// VoxtNew's card waits for the read before it takes the front.
+				h.rec.waitFor(t, "the selection being read", func(s Snapshot) bool { return s.ReadingSelection })
+				if end.ReadingSelection {
+					t.Error("the selection is still being read at the end")
+				}
 			},
 		},
 		{
