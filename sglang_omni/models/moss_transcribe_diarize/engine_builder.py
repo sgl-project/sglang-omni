@@ -88,7 +88,7 @@ class MossTranscribeDiarizeEngineBuilder(
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         encoder_chunk_buckets: list[int],
         encoder_torch_compile: bool,
         encoder_max_batch_size: int,
@@ -369,8 +369,11 @@ class MossTranscribeDiarizeEngineBuilder(
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (Zhenning Guo): with a draft this defaults to off, because each drafted decode round is 2-3x longer, so a prefill held during decode delays the first output, with or without overlap.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.speculative_worker_class is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
