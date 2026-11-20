@@ -104,6 +104,52 @@ func TestCorrectTranscript(t *testing.T) {
 	}
 }
 
+func TestCorrectSystemBlankStyleUsesDefault(t *testing.T) {
+	for _, style := range []string{"", " \n\t"} {
+		if got := correctSystem(TranscriptContext{}, "Box", style); got != correctPrompt {
+			t.Fatalf("blank style %q changed the prompt:\n%s", style, got)
+		}
+	}
+}
+
+// #4134: every correction batch uses the chosen style, while the summary
+// keeps its own prompt and the JSON correction contract stays intact.
+func TestCorrectTranscriptCustomStyle(t *testing.T) {
+	var segs []store.MeetingSegment
+	for i := range 35 {
+		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentMic, Text: "Box"})
+	}
+	m, _, chat := correctFixture(t, segs...)
+	style := strings.TrimSpace(strings.Repeat("保持原语气，句子简洁。Keep English product names. ", 20))
+	m.cfg.Settings = func() settings.Meeting {
+		return settings.Meeting{CorrectionStyle: style, Feature: settings.Feature{Prompt: "SUMMARY STYLE ONLY"}}
+	}
+	m.correctAndSummarize(context.Background(), "m")
+	if len(chat.reqs) != 3 {
+		t.Fatalf("%d requests, want two correction batches and a summary", len(chat.reqs))
+	}
+	for i, req := range chat.reqs[:2] {
+		sys := req.Messages[0].Content
+		for _, want := range []string{style, "You proofread a meeting transcript", "Answer with only a JSON array", "We say Voxt."} {
+			if !strings.Contains(sys, want) {
+				t.Fatalf("batch %d system prompt lacks %q:\n%s", i, want, sys)
+			}
+		}
+		for _, unwanted := range []string{"Drop stutters", "SUMMARY STYLE ONLY"} {
+			if strings.Contains(sys, unwanted) {
+				t.Fatalf("batch %d system prompt contains %q:\n%s", i, unwanted, sys)
+			}
+		}
+	}
+	var summary string
+	for _, msg := range chat.reqs[2].Messages {
+		summary += msg.Content
+	}
+	if !strings.Contains(summary, "SUMMARY STYLE ONLY") || strings.Contains(summary, style) {
+		t.Fatalf("summary mixed up the prompts:\n%s", summary)
+	}
+}
+
 // After a meeting the summary reads the corrected transcript.
 func TestSummaryReadsCorrectedTranscript(t *testing.T) {
 	m, repo, chat := correctFixture(t, store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box ships today"})

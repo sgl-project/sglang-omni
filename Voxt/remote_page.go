@@ -24,6 +24,12 @@ func remoteSettingsView(c *ui.Context, state *remoteViewState, actions remoteAct
 	}
 	caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 	llmWaitView(c, &state.Wait, actions, local.wait)
+	on := state.Switch
+	settingRow(c, "llm-switch", i18n.T("Switch models when one fails"), i18n.T("When a feature's language model does not answer, Voxt asks the next language-model server on this Mac you set up, once, even one you chose for another feature. Translate asks its own fallback model first. Voxt never switches to an external API you did not choose for that feature. A used-up plan does not switch."), func() {
+		if ui.Switch(c.Key("llm-switch-switch"), &on).Label(i18n.T("Switch models when one fails")).Changed() {
+			actions.setLLMSwitch(on)
+		}
+	})
 	remoteProviderCards(c, &state.Cards, actions, width)
 	if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
 		actions.openLLMDebug()
@@ -102,8 +108,11 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 				if state.Test != nil {
 					remoteTestStatus(c, *state.Test, false)
 				}
-				if ghostButton(c.Key("remote-test-"+state.Account), i18n.T("Test")).Label(i18n.T("Test %s", state.Name)).Disabled(state.TestDisabled).Clicked() {
+				if ghostButton(c.Key("remote-test-"+state.Account), i18n.T("Test")).Label(i18n.T("Test %s", state.Name)).Shrink(0).Disabled(state.TestDisabled).Clicked() {
 					actions.testRemoteProvider(state.Kind, state.ID)
+				}
+				if ghostButton(c.Key("remote-assign-"+state.Account), i18n.T("Apply to")).Label(i18n.T("Apply %s to features", state.Name)).Shrink(0).Tooltip(i18n.T("Choose the features that use this service")).Clicked() {
+					actions.openModelAssignment(state.Kind, state.ID)
 				}
 			} else if ghostButton(c.Key("remote-complete-"+state.Account), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", state.Name)).Clicked() {
 				actions.openRemoteProvider(state.Kind, state.ID)

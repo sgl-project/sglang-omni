@@ -140,7 +140,7 @@ func modelActions(c *ui.Context, actions []modelActionViewState, intents modelsA
 	for _, action := range actions {
 		clicked := false
 		switch action.Kind {
-		case modelActionHide, modelActionShow, modelActionDelete, modelActionDiscard:
+		case modelActionHide, modelActionShow, modelActionDelete, modelActionDiscard, modelActionAssign:
 			clicked = ghostButton(c.Key(string(action.Kind)), action.Label).Label(action.AccessibilityLabel).Tooltip(action.Tooltip).Disabled(action.Disabled).Clicked()
 		case modelActionDownload:
 			clicked = secondaryIconButton(c.Key(string(action.Kind)), icons.DownloadMinimalistic, action.Label).Label(action.AccessibilityLabel).Disabled(action.Disabled).Clicked()
@@ -163,6 +163,8 @@ func modelActions(c *ui.Context, actions []modelActionViewState, intents modelsA
 			intents.discardModelDownload(action.ModelID)
 		case modelActionUse:
 			intents.useModel(action.ModelID)
+		case modelActionAssign:
+			intents.openModelAssignment(action.ModelKind, action.ModelID)
 		case modelActionDownload:
 			intents.downloadModel(action.ModelID)
 		}
