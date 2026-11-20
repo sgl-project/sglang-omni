@@ -396,6 +396,35 @@ func TestPartialAnswerStripsLeadingThinkingWithLiteralInput(t *testing.T) {
 	}
 }
 
+func TestAnswerCleanupKeepsStructuralControlMarkup(t *testing.T) {
+	assertAnswerCleanup(t, "Visible<think>secret plan</think> Final answer.", "x", "Visible Final answer.")
+	assertAnswerCleanup(t, "Visible<|channel>secret plan<channel|> Final answer.", "x", "Visible Final answer.")
+	assertAnswerCleanupWithPrevious(t, "Visible <|im_start|> user\nNext turn.", "history", "Visible")
+	assertAnswerCleanupWithPrevious(t, `Visible <|tool_call|> view_image {"path":"secret.png"}`, "history", "Visible")
+	assertAnswerCleanup(t, "secret plan </think> Final answer.", "x", "Final answer.")
+	assertAnswerCleanupWithPrevious(t, "Visible <think>private</think>", "Example <think>public</think>", "Visible")
+	assertAnswerCleanup(t, "Keep <think> this</think>", "Keep <think> this</think>", "Keep <think> this</think>")
+	assertAnswerCleanup(t, "<think> The user is asking for medical advice. I should avoid diagnosis", "x", "")
+	assertAnswerCleanupWithPrevious(t, "Visible <think>The user wants private medical advice</think>", "history", "Visible")
+	assertAnswerCleanup(t, "The user asked which confidential details to respond with </think> Final answer.", "x", "Final answer.")
+	assertAnswerCleanup(t, "I will respond as <think>The user needs confidential medical guidance</think> a numbered list.", "x", "I will respond as  a numbered list.")
+	assertAnswerCleanupWithPrevious(t, `Visible <|tool_call|> view_image ["/private/secret.png"]`, "history", "Visible")
+	assertAnswerCleanupWithPrevious(t, "Visible <|tool_call|> view_image secret.png", "history", "Visible")
+	assertAnswerCleanup(t, `The marker <|tool_call|> starts a tool call. Example: {"name":"view_image"}.`, "q", `The marker <|tool_call|> starts a tool call. Example: {"name":"view_image"}.`)
+	if got := PartialClean("Visible <thi", "Explain <think>"); got != "Visible" {
+		t.Errorf("PartialClean exposed a marker fragment: %q", got)
+	}
+	if got := PartialClean("Visible <|im_end", "Explain <|im_end|>"); got != "Visible" {
+		t.Errorf("PartialClean exposed a control fragment: %q", got)
+	}
+	plain := "Visible<think>secret plan</think> Final answer."
+	for index := 1; index <= len(plain); index++ {
+		if got := PartialClean(plain[:index], "x"); strings.Contains(got, "secret") {
+			t.Fatalf("at %d: reasoning leaked in %q", index, got)
+		}
+	}
+}
+
 func TestAnswerCleanupThinkingClose(t *testing.T) {
 	for _, tc := range []struct{ name, text, want string }{
 		{"answer after thinking close", "reasoning here</think>Final answer", "Final answer"},

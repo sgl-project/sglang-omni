@@ -243,10 +243,8 @@ func stripControlMarkup(s string, inputs ...string) string {
 					openSearchFrom, closeSearchFrom = end, end
 					continue
 				}
-				preservedLiteral := strings.Contains(input, tag[0]) || strings.Contains(input, tag[1]) ||
-					previousControlToken(tag[0], previous) || previousControlToken(tag[1], previous)
-				if preservedLiteral && strings.ContainsRune(" \t\r\n", rune(s[i-1])) && rest == strings.TrimLeft(rest, " \t") {
-					end := i + len(tag[0]) + j + len(tag[1])
+				end := i + len(tag[0]) + j + len(tag[1])
+				if literalThinkingPair(s[i:end], tag, input, previous) {
 					openSearchFrom, closeSearchFrom = end, end
 					continue
 				}
@@ -281,22 +279,19 @@ func stripPartialControlMarkup(s string, inputs ...string) string {
 	}
 	start := -1
 	for _, token := range controlTokens {
-		if preservedControlToken(token, input) {
-			continue
-		}
 		if n := partialTagSuffix(s, token); n > 1 {
-			if i := len(s) - n; start < 0 || i < start {
+			i := len(s) - n
+			if i == 0 && preservedControlToken(token, input) {
+				continue
+			}
+			if start < 0 || i < start {
 				start = i
 			}
 		}
 	}
 	for _, tag := range thinkingTags {
 		if n := partialTagSuffix(s, tag[0]); n > 0 {
-			i := len(s) - n
-			if i > 0 && (strings.Contains(input, tag[0]) || strings.Contains(input, tag[1])) {
-				continue
-			}
-			if start < 0 || i < start {
+			if i := len(s) - n; start < 0 || i < start {
 				start = i
 			}
 		}

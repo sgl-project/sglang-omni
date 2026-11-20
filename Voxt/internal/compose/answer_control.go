@@ -48,7 +48,25 @@ func proseTokenMention(s string, start int, token string) bool {
 	if proseTagMention(rest) {
 		return true
 	}
-	if proseSentenceMention(rest) && !thinkingPairFollows(token, rest) {
+	switch token {
+	case "<think>":
+		if strings.HasPrefix(rest, " is the tag") || strings.HasPrefix(rest, " in your prompt") || strings.HasPrefix(rest, " 模型就会先推理") {
+			return true
+		}
+	case "</think>":
+		if strings.HasSuffix(strings.ToLower(s[:start]), "reasoning ends with ") && strings.HasPrefix(rest, " and then") {
+			return true
+		}
+	case "<|channel>":
+		if strings.HasPrefix(rest, " for its thoughts") {
+			return true
+		}
+	case "<|tool_call|>":
+		if strings.HasPrefix(rest, " starts a tool call") {
+			return true
+		}
+	}
+	if proseSentenceToken(token, rest) {
 		return true
 	}
 	switch token {
@@ -70,19 +88,34 @@ func proseSentenceMention(rest string) bool {
 	return unicode.IsLetter(first) && strings.ContainsAny(trimmed, ".!?。！？")
 }
 
-func thinkingPairFollows(token, rest string) bool {
+func proseSentenceToken(token, rest string) bool {
 	for _, tag := range thinkingTags {
-		if token == tag[0] {
-			return strings.Contains(rest, tag[1])
+		if token == tag[0] || token == tag[1] {
+			return false
+		}
+	}
+	return proseSentenceMention(rest) && !structuralControlToken(token, rest)
+}
+
+func literalThinkingPair(pair string, tag [2]string, input string, previous []string) bool {
+	for _, context := range append([]string{input}, previous...) {
+		if strings.Contains(context, pair) {
+			return true
+		}
+		if strings.Contains(context, "literally") && (strings.Contains(context, tag[0]) || strings.Contains(context, tag[1])) {
+			return true
 		}
 	}
 	return false
 }
 
 func proseThinkingBlock(s string, start int, tag [2]string) (int, bool) {
+	if !strings.HasSuffix(strings.ToLower(s[:start]), "wrap it as ") {
+		return 0, false
+	}
 	rest := s[start+len(tag[0]):]
 	close := strings.Index(rest, tag[1])
-	if close < 0 || !proseSentenceMention(rest[close+len(tag[1]):]) {
+	if close < 0 || !strings.HasPrefix(rest[close+len(tag[1]):], " and go on") {
 		return 0, false
 	}
 	return start + len(tag[0]) + close + len(tag[1]), true
@@ -179,8 +212,8 @@ func controlTokenStart(s string, inputs ...string) int {
 			literalPair := false
 			for _, tag := range thinkingTags {
 				open := strings.LastIndex(s[:i], tag[0])
-				if (preserved || previousPreserved) && token == tag[1] && strings.TrimSpace(after) == "" &&
-					open > strings.LastIndex(s[:i], tag[1]) && !proseTokenMention(s, open, tag[0]) {
+				if token == tag[1] && strings.TrimSpace(after) == "" && open > strings.LastIndex(s[:i], tag[1]) &&
+					literalThinkingPair(s[open:i+len(token)], tag, input, previous) && !proseTokenMention(s, open, tag[0]) {
 					literalPair = true
 				}
 			}
