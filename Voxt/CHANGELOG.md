@@ -18,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Hidden Meetings cannot start from a menu** (#4224): while Meetings is hidden and no meeting is active, Start meeting leaves both the menu-bar and Voxt app menus; an active meeting can still be ended from the menu bar.
 - **Rewrite keeps crowded warnings visible and bounds file reads**: image-limit and error messages stay outside scrolling previews. Text and Markdown files over 1 MiB are rejected before reading, and one trailing newline no longer counts as an extra pasted line.
 - **Rewrite resend and oversized inputs stay safe**: with Send the window on, Enter after a failed send keeps the screenshot visible and allows confirmation before the request; Esc cancels the resend, and repeated Enter cannot pre-approve the next screenshot. A new box no longer keeps earlier removed automatic inputs. Images over 32 MiB or 40 megapixels and pasted text over 32 MiB are refused with an error instead of being read or decoded.
 - **Rewrite honors cleared resend text and bounds clipboard image reads**: clearing the input during a resend's screenshot review removes it from the request. Clipboard PNGs use the helper conversion path instead of a raw MyGo read, and oversized clipboard results are rejected before they enter the box.
@@ -47,6 +48,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **隐藏的会议不会再从菜单启动**（#4224）：会议已隐藏且没有进行中的会议时，菜单栏和 Voxt 应用菜单都不再显示“开始会议”；进行中的会议仍可从菜单栏结束。
 - **改写拥挤时仍显示提示，并限制文件读取量**：图片数量和错误提示固定在滚动预览之外；TXT/Markdown 文件超过 1 MiB 时先报错，不读取；末尾一个规范化换行不再多算一行粘贴文字。
 - **改写重发和超大输入更安全**：开启“发送窗口”后，发送失败再按 Enter 会保留窗口截图，确认后才发请求；Esc 会取消重发，重复按 Enter 不会预先批准下一张截图。新打开的输入框不再沿用上一次被移除的自动输入。超过 32 MiB 或 4000 万像素的图片、超过 32 MiB 的粘贴文字会报错拒绝，不再直接读取或解码。
 - **改写重发时清空文字不再发旧内容，并限制剪贴板图片读取**：重发等待窗口截图确认时清空输入，发送请求不会再带上旧文字。剪贴板 PNG 改走辅助进程的转换路径，不再先经 MyGo 读取原始数据；超大的剪贴板图片结果在进入输入框前就会被拒绝。
