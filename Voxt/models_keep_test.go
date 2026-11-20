@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
@@ -30,8 +31,8 @@ func TestKeepIdle(t *testing.T) {
 			t.Errorf("%q: %v, want %v", c.v, got, c.idle)
 		}
 	}
-	if len(keepLabels()) != len(settings.KeepChoices) {
-		t.Errorf("%d labels for %d choices", len(keepLabels()), len(settings.KeepChoices))
+	if len(keepLabelsFor(i18n.CurrentTranslator())) != len(settings.KeepChoices) {
+		t.Errorf("%d labels for %d choices", len(keepLabelsFor(i18n.CurrentTranslator())), len(settings.KeepChoices))
 	}
 }
 

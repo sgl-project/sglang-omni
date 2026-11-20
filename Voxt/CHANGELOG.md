@@ -6,7 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
+- **Apply a model to several features** (#4276): model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 - **Switch models when one fails**: a new switch on the Language models page, off by default. When it is on and the language model a feature uses fails or does not open, Transcribe, Translate and Rewrite ask the next language-model server on this Mac you set up, once, even one chosen for another feature, and that session and its history entry keep the new one. Translate's own fallback model goes first. The switch never moves to an external API you did not choose for that feature. A used-up plan does not switch, so Voxt never spends another paid service without asking.
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 - **Choose a meeting transcript's correction style** (#4134): Meeting settings now include an editable correction style. Your style replaces the built-in correction rules, while Voxt still corrects each line in place with your dictionary and Speech context and keeps the summary prompt separate. Reset to default prompt, or save a blank style, to restore the previous behavior.
@@ -35,7 +35,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **将模型批量应用到功能**：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
+- **将模型批量应用到功能**（#4276）：设置里的模型卡片新增“应用到”，可一次选择转录、翻译、改写和会议，不改变其他设置。
 - **模型出错时自动换一个**：语言模型页新增一个开关，默认关闭。打开后，如果某个功能所用的语言模型出错或打不开，转录、翻译和改写会改问你在这台 Mac 上设置的下一个语言模型服务，只换一次，即使它是给别的功能选的，这次会话和它的历史记录都改用新模型。翻译自己设的备用模型优先。这个开关不会换到你没给这个功能选的外部 API。套餐额度用完时不换，免得 Voxt 不经你同意就花另一家付费服务的钱。
 - **可以隐藏笔记和会议**（#4224）：设置 → 通用 → 显示的功能里新增了笔记和会议。取消勾选后，它们的页面会从侧边栏和命令面板中移除，笔记的快捷键也会停用；相关设置、笔记和会议记录都会保留。
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
