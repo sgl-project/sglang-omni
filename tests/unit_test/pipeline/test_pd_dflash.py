@@ -190,10 +190,18 @@ def test_dflash_identity_uses_the_loaded_target_revision(tmp_path: Path) -> None
         (directory / "config.json").write_text("{}")
         (directory / "model.safetensors").symlink_to(weight)
         draft = SimpleNamespace(
-            model_path=str(directory), dtype=torch.bfloat16, quantization=None
+            model_path=str(directory),
+            dtype=torch.bfloat16,
+            quantization=None,
+            model_override_args={},
         )
         identities.append(dflash_checkpoint_identity(target, loader, draft, loader))
     assert identities[0] == identities[1]
+    safetensors_loader = LoadConfig(load_format="safetensors")
+    assert (
+        dflash_checkpoint_identity(target, loader, draft, safetensors_loader)
+        != identities[0]
+    )
     target.revision = "second"
     assert dflash_checkpoint_identity(target, loader, draft, loader) != identities[0]
 

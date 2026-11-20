@@ -456,6 +456,8 @@ def dflash_checkpoint_identity(
             "draft_config": json.loads((draft_directory / "config.json").read_text()),
             "draft_dtype": str(draft_model.dtype),
             "draft_quantization": draft_model.quantization,
+            "draft_overrides": draft_model.model_override_args,
+            "draft_load_format": draft_loader.load_format,
             "draft_loader_options": draft_loader.model_loader_extra_config,
             "draft_weights": sorted(
                 str(path.resolve()) for path in draft_directory.glob("*.safetensors")
