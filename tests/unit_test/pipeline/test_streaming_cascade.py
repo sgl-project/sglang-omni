@@ -9,6 +9,7 @@ import yaml
 
 from examples.streaming_cascade.run import run
 from sglang_omni.models.streaming_cascade.base import control_chunk
+from sglang_omni.models.streaming_cascade.generators import WAIT_REPLY_NOTE
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import SessionLimits, TimedChunk
@@ -288,8 +289,8 @@ async def test_configure_preserves_running_reply_and_updates_next_prompt(
             lambda: any(control_type(o) == TURN_DONE for o in session.outputs)
         )
         await session.audio(eos=True)
-        assert messages[0][0]["content"] != "Answer with one word."
-        assert messages[1][0]["content"] == "Answer with one word."
+        assert messages[0][0]["content"] != f"Answer with one word. {WAIT_REPLY_NOTE}"
+        assert messages[1][0]["content"] == f"Answer with one word. {WAIT_REPLY_NOTE}"
         assert messages[1][-2]["content"] == "Hello world."
         assert backend_requests[-1]["temperature"] == 0.1
         assert backend_requests[-1]["max_tokens"] == 64
@@ -313,8 +314,8 @@ async def test_configure_during_a_reply_reaches_the_queued_turn(backends):
                 control_type(o) == TURN_DONE and o.turn == 2 for o in session.outputs
             )
         )
-        assert messages[0][0]["content"] != "Answer with one word."
-        assert messages[1][0]["content"] == "Answer with one word."
+        assert messages[0][0]["content"] != f"Answer with one word. {WAIT_REPLY_NOTE}"
+        assert messages[1][0]["content"] == f"Answer with one word. {WAIT_REPLY_NOTE}"
 
 
 @pytest.mark.asyncio
