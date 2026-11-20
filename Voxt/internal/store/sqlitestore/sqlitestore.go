@@ -144,6 +144,29 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	start := v
+	legacyDictionary := false
+	if v == 9 {
+		rows, err := db.Query(ctx, "PRAGMA table_info(notes)")
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		hasAppName := false
+		for _, row := range rows.Values {
+			hasAppName = hasAppName || asString(row[1]) == "app_name"
+		}
+		if !hasAppName {
+			// Import and dictionary previews both used version 9 before notes did.
+			start = 8
+			rows, err = db.Query(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dictionary_profiles'`)
+			if err != nil {
+				db.Close()
+				return nil, err
+			}
+			legacyDictionary = len(rows.Values) != 0
+		}
+	}
 	latest := Version()
 	if v > latest {
 		db.Close()
@@ -161,7 +184,14 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 			return nil, err
 		}
 	}
-	for _, m := range migrations[v:] {
+	for _, m := range migrations[start:] {
+		if legacyDictionary && m.version == 11 {
+			if _, err := db.Execute(ctx, "PRAGMA user_version = 11"); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("sqlitestore: migration %d: %w", m.version, err)
+			}
+			continue
+		}
 		stmts := make([]sqlite.Statement, 0, len(m.statements)+1)
 		for _, s := range m.statements {
 			stmts = append(stmts, sqlite.Statement{SQL: s})

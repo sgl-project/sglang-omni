@@ -20,7 +20,6 @@ import (
 	"github.com/hehehai/actnowkit/registry"
 	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -32,11 +31,16 @@ import (
 // test runs a.familyFound(a.fam.Discover()).
 func addPeer(t *testing.T, a *app, bundleID string, links map[string]string, sc ...shortcuts.Shortcut) *fammodels.Store {
 	t.Helper()
+	return addPeerIn(t, a, bundleID, t.TempDir(), links, sc...)
+}
+
+func addPeerIn(t *testing.T, a *app, bundleID, directory string, links map[string]string, sc ...shortcuts.Shortcut) *fammodels.Store {
+	t.Helper()
 	fa, _, err := family.ParseBundleID(bundleID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := conformance.FakeApp(t.TempDir(), fa.Name, bundleID)
+	path, err := conformance.FakeApp(directory, fa.Name, bundleID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +110,7 @@ func TestOnboardingReuse(t *testing.T) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if !a.obReuseShown() {
+	if !a.onboardingViewState().Models.ReuseShown {
 		t.Error("Continue stays the primary button")
 	}
 	click(t, tt, "Use them")
@@ -115,7 +119,9 @@ func TestOnboardingReuse(t *testing.T) {
 			t.Errorf("%s: claim %+v %v", id, c, ok)
 		}
 	}
-	if has(tt, "Use them") || !has(tt, "Ready: MOSS-Transcribe-Diarize") || !has(tt, "Set up a language model") || hasPrefix(tt, "Download (") {
+	// The pack's draft is not on this Mac, so the guide offers its
+	// download (TestGuidePackDraftLeft drives it); nothing downloads yet.
+	if has(tt, "Use them") || !has(tt, "Ready: MOSS-Transcribe-Diarize") || !has(tt, "Set up a language model") || !has(tt, "Download (262.5 MB)") || !hasPrefix(tt, "Download and continue (262.5 MB)") {
 		t.Errorf("after Use them: %q", tt.Texts())
 	}
 	for _, m := range models.Catalog() {
@@ -323,6 +329,7 @@ func TestShortcutRecorderUsedBy(t *testing.T) {
 	conflictPeers(t, a)
 	a.famStarted = true // the manifest and conflicts follow the settings (family.go)
 	a.scPrompt = nil
+	tt.SetSize(windowWidth, 900) // the keys menu's last item, Custom…, is below 520 DIPs with Linux fonts
 	a.navigate("/translate")
 	if !has(tt, "Also used by AudioSmith (Dictation)") {
 		t.Errorf("translate: %q", tt.Texts())
@@ -331,9 +338,8 @@ func TestShortcutRecorderUsedBy(t *testing.T) {
 	if has(tt, "Also used by Auralink (Rewrite)") {
 		t.Fatal("warned before")
 	}
-	row := &a.fui(hotkey.Rewrite).rows[0]
-	row.sel = "Custom…"
-	a.chooseKeys(hotkey.Rewrite, 0, row, nil)
+	click(t, tt, "Keys of shortcut 1")
+	click(t, tt, "Custom…")
 	frames(tt)
 	click(t, tt, "Custom keys of shortcut 1")
 	tt.Key(ui.Ctrl|ui.Alt, ui.KeyK)

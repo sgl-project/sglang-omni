@@ -1,0 +1,530 @@
+{
+  "name": "models-delete-plain",
+  "kind": "models",
+  "models": {
+    "asr": [
+      {
+        "key": "model-asr.moss",
+        "rows": [
+          {
+            "id": "asr.moss",
+            "kind": "asr",
+            "name": "MOSS-Transcribe-Diarize",
+            "default": true,
+            "installed": false,
+            "size_text": "需下载 1.8 GB",
+            "about": "专为多人对话设计，边说边出文字。",
+            "languages": "中文和英语",
+            "tags": [
+              "本地",
+              "实时",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.moss",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.moss",
+                "label": "下载",
+                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "family-qwen3-asr",
+        "family_name": "Qwen3-ASR",
+        "count_text": "3 个模型 · 已安装 1 个",
+        "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
+        "rows": [
+          {
+            "id": "asr.accurate",
+            "kind": "asr",
+            "name": "Qwen3-ASR 1.7B (8bit)",
+            "default": false,
+            "installed": true,
+            "size_text": "占用 2.5 GB",
+            "used_by": "用于转录 · 翻译 · 改写 · 会议",
+            "memory_text": "已载入 · 占用内存 2.3 GB",
+            "family_text": "与 AudioSmith 共用",
+            "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
+            "tags": [
+              "本地",
+              "准确",
+              "实时",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "delete",
+                "model_id": "asr.accurate",
+                "label": "删除",
+                "accessibility_label": "删除 Qwen3-ASR 1.7B (8bit)…"
+              },
+              {
+                "kind": "assign",
+                "model_id": "asr.accurate",
+                "model_kind": "asr",
+                "label": "应用到",
+                "accessibility_label": "将 Qwen3-ASR 1.7B (8bit) 应用到功能",
+                "tooltip": "选择使用此模型的功能"
+              }
+            ],
+            "draft": {
+              "model_id": "asr.accurate.draft",
+              "parent_id": "asr.accurate",
+              "help": "使用推测解码：一个小的草稿模型（725.7 MB）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
+              "installed": false,
+              "needs_download": false,
+              "size_text": "需下载 725.7 MB",
+              "on": false,
+              "switch_label": "Qwen3-ASR 1.7B (8bit) 的转录加速",
+              "actions": null
+            }
+          },
+          {
+            "id": "asr.fast",
+            "kind": "asr",
+            "name": "Qwen3-ASR 0.6B (4bit)",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 712.8 MB",
+            "about": "更快、占用内存更少，适合在安静环境中清晰地说话。",
+            "tags": [
+              "本地",
+              "快速",
+              "实时",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.fast",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.fast",
+                "label": "下载",
+                "accessibility_label": "下载 Qwen3-ASR 0.6B (4bit)"
+              }
+            ]
+          },
+          {
+            "id": "asr.qwen3-6bit",
+            "kind": "asr",
+            "name": "Qwen3-ASR 1.7B (6bit)",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 2.0 GB",
+            "about": "Qwen3-ASR 1.7B，比 8bit 版本占用更少内存，准确度相差无几。边说边出文字。",
+            "tags": [
+              "本地",
+              "准确",
+              "实时",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.qwen3-6bit",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Qwen3-ASR 1.7B (6bit)",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.qwen3-6bit",
+                "label": "下载",
+                "accessibility_label": "下载 Qwen3-ASR 1.7B (6bit)"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "family-whisper",
+        "family_name": "Whisper",
+        "count_text": "3 个模型",
+        "languages": "约 100 种语言，包括中文、英语、粤语、日语和韩语",
+        "rows": [
+          {
+            "id": "asr.whisper-turbo",
+            "kind": "asr",
+            "name": "Whisper Large v3 Turbo",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 1.6 GB",
+            "about": "OpenAI 的 Whisper 加速版，多种语言都识别得好。说完片刻后出文字。",
+            "tags": [
+              "本地",
+              "快速",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.whisper-turbo",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Whisper Large v3 Turbo",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.whisper-turbo",
+                "label": "下载",
+                "accessibility_label": "下载 Whisper Large v3 Turbo"
+              }
+            ]
+          },
+          {
+            "id": "asr.whisper-large",
+            "kind": "asr",
+            "name": "Whisper Large v3",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 3.1 GB",
+            "about": "最大的 Whisper，多种语言都识别得准，但更慢，内存占用大。",
+            "tags": [
+              "本地",
+              "准确",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.whisper-large",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Whisper Large v3",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.whisper-large",
+                "label": "下载",
+                "accessibility_label": "下载 Whisper Large v3"
+              }
+            ]
+          },
+          {
+            "id": "asr.whisper-small",
+            "kind": "asr",
+            "name": "Whisper Small",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 481.3 MB",
+            "about": "小号 Whisper，内存占用小，准确度低一些。",
+            "tags": [
+              "本地",
+              "快速",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.whisper-small",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Whisper Small",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.whisper-small",
+                "label": "下载",
+                "accessibility_label": "下载 Whisper Small"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "model-asr.parakeet",
+        "rows": [
+          {
+            "id": "asr.parakeet",
+            "kind": "asr",
+            "name": "Parakeet TDT 0.6B v3",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 2.5 GB",
+            "about": "NVIDIA 的 Parakeet，速度很快，适合欧洲语言。不支持中文、日语和韩语。",
+            "languages": "25 种欧洲语言，包括英语、德语、法语、西班牙语和俄语",
+            "tags": [
+              "本地",
+              "快速",
+              "不支持词典",
+              "不支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.parakeet",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Parakeet TDT 0.6B v3",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.parakeet",
+                "label": "下载",
+                "accessibility_label": "下载 Parakeet TDT 0.6B v3"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "model-asr.sensevoice",
+        "rows": [
+          {
+            "id": "asr.sensevoice",
+            "kind": "asr",
+            "name": "SenseVoice Small",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 936.5 MB",
+            "about": "速度很快，适合中文、粤语、英语、日语和韩语。",
+            "languages": "中文、粤语、英语、日语和韩语",
+            "tags": [
+              "本地",
+              "快速",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.sensevoice",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 SenseVoice Small",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.sensevoice",
+                "label": "下载",
+                "accessibility_label": "下载 SenseVoice Small"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "model-asr.cohere",
+        "rows": [
+          {
+            "id": "asr.cohere",
+            "kind": "asr",
+            "name": "Cohere Transcribe 03-2026 (fp16)",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 4.1 GB",
+            "about": "Cohere 的模型，准确、带标点，但体积大。只识别你的主要语言，不支持时按英语识别。",
+            "languages": "14 种语言，包括中文、英语、日语和韩语",
+            "tags": [
+              "本地",
+              "准确",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.cohere",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Cohere Transcribe 03-2026 (fp16)",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.cohere",
+                "label": "下载",
+                "accessibility_label": "下载 Cohere Transcribe 03-2026 (fp16)"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "model-asr.nemotron",
+        "rows": [
+          {
+            "id": "asr.nemotron",
+            "kind": "asr",
+            "name": "Nemotron 3.5 ASR 0.6B (8bit)",
+            "default": false,
+            "installed": false,
+            "size_text": "需下载 755.8 MB",
+            "about": "NVIDIA 的流式模型，支持多种语言，边说边出文字。",
+            "languages": "28 种语言，包括中文、英语、日语和韩语",
+            "tags": [
+              "本地",
+              "快速",
+              "实时",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.nemotron",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Nemotron 3.5 ASR 0.6B (8bit)",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.nemotron",
+                "label": "下载",
+                "accessibility_label": "下载 Nemotron 3.5 ASR 0.6B (8bit)"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "dictation": {
+      "key": "model-asr.system",
+      "rows": [
+        {
+          "id": "asr.system",
+          "kind": "asr",
+          "name": "系统听写",
+          "default": false,
+          "installed": false,
+          "size_text": "内置",
+          "about": "macOS 自带的语音识别，在这台 Mac 上运行。速度快，不用下载，但不如 Qwen3-ASR 准确，支持的语言也更少。只识别你的主要语言。",
+          "languages": "这台 Mac 可在本机识别的 macOS 听写语言（系统设置 → 键盘 → 听写）",
+          "tags": [
+            "本地",
+            "内置",
+            "实时"
+          ],
+          "actions": [
+            {
+              "kind": "hide",
+              "model_id": "asr.system",
+              "label": "隐藏",
+              "accessibility_label": "隐藏 系统听写",
+              "tooltip": "不在功能页的模型菜单里列出"
+            },
+            {
+              "kind": "assign",
+              "model_id": "asr.system",
+              "model_kind": "asr",
+              "label": "应用到",
+              "accessibility_label": "将 系统听写 应用到功能",
+              "tooltip": "选择使用此模型的功能"
+            }
+          ]
+        }
+      ]
+    },
+    "llm": [
+      {
+        "key": "model-llm.translate",
+        "rows": [
+          {
+            "id": "llm.translate",
+            "kind": "llm",
+            "name": "Hy-MT2 1.8B (Q4_K_M)",
+            "default": false,
+            "installed": true,
+            "size_text": "占用 1.1 GB",
+            "about": "专门做翻译，快而自然。只有翻译功能用它。",
+            "languages": "33 种语言互译，包括中文、英语、日语、韩语和粤语",
+            "tags": null,
+            "actions": [
+              {
+                "kind": "delete",
+                "model_id": "llm.translate",
+                "label": "删除",
+                "accessibility_label": "删除 Hy-MT2 1.8B (Q4_K_M)…"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "show_llm": true,
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "zh-Hans",
+      "value": "",
+      "selection": "自动",
+      "options": [
+        {
+          "label": "自动",
+          "value": ""
+        },
+        {
+          "label": "5 分钟",
+          "value": "5m"
+        },
+        {
+          "label": "15 分钟",
+          "value": "15m"
+        },
+        {
+          "label": "30 分钟",
+          "value": "30m"
+        },
+        {
+          "label": "1 小时",
+          "value": "1h"
+        },
+        {
+          "label": "直到退出 Voxt",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {
+      "plain": {
+        "id": "asr.accurate",
+        "name": "Qwen3-ASR 1.7B (8bit)",
+        "prompt": "删除 Qwen3-ASR 1.7B (8bit)？",
+        "detail": "会释放 2.5 GB，之后可以重新下载。"
+      }
+    },
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
+      "source": 0,
+      "source_labels": [
+        "自动",
+        "只用 Hugging Face",
+        "只用 hf-mirror.com"
+      ],
+      "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": "",
+    "speech_context_unused": false
+  }
+}

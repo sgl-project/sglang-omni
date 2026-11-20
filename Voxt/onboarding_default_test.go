@@ -14,6 +14,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/openai"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -161,6 +162,59 @@ func TestObPackWithDraft(t *testing.T) {
 	}
 }
 
+// TestObPackMainLanguageGate: MOSS-Transcribe-Diarize knows Chinese and
+// English only, so a main language it does not know makes the guide's
+// pack Qwen3-ASR 1.7B (8bit) and the VAD, with no MTD in it.
+func TestObPackMainLanguageGate(t *testing.T) {
+	a, _ := obTester(t)
+	a.prefs.General.MainLanguage = "ja"
+	if got := a.obSpeech(); got != models.ASRAccurate {
+		t.Errorf("ja: obSpeech %s, want %s", got, models.ASRAccurate)
+	}
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRAccurate, models.ASRAccurateDraft, models.VADSilero}) {
+		t.Errorf("ja: pack %v, want Qwen3-ASR 1.7B, its draft and the VAD, no MTD", got)
+	}
+	a.prefs.General.MainLanguage = "zh"
+	if got := a.obSpeech(); got != models.ASRMoss {
+		t.Errorf("zh: obSpeech %s, want %s", got, models.ASRMoss)
+	}
+}
+
+// TestGuidePackDraftLeft: with the recommended speech model and the VAD
+// on this Mac but its catalogue draft missing, the guide offers the
+// draft's download — the pack's Faster transcription would never start
+// otherwise (#4067) — and once the models are claimed the click
+// downloads the draft alone.
+func TestGuidePackDraftLeft(t *testing.T) {
+	countingHub(t)
+	a, tt := obTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	a.obGo(obModels)
+	drain()
+	frames(tt)
+	if !has(tt, "Use them") || !has(tt, "Download (262.5 MB)") || hasPrefix(tt, "Download and continue") {
+		t.Fatalf("on disk: %q", tt.Texts())
+	}
+	click(t, tt, "Use them")
+	drain()
+	frames(tt)
+	if !has(tt, "Ready: MOSS-Transcribe-Diarize") || !hasPrefix(tt, "Download and continue (262.5 MB)") {
+		t.Fatalf("claimed: %q", tt.Texts())
+	}
+	click(t, tt, findPrefix(t, tt, "Download and continue"))
+	downloadAsked(t, a, drain, models.ASRMossDraft)
+	for _, m := range models.Catalog() {
+		if m.ID == models.ASRMossDraft {
+			continue
+		}
+		if s := a.models.Status(m.ID); s.Err != nil || s.Downloading {
+			t.Errorf("%s downloaded too: %+v", m.ID, s)
+		}
+	}
+}
+
 // findPrefix is the text on screen that starts with s.
 func findPrefix(t *testing.T, tt *ui.Tester, s string) string {
 	t.Helper()
@@ -198,7 +252,7 @@ func TestGuideOnDiskNoDownload(t *testing.T) {
 	if hasPrefix(tt, "Download and continue") {
 		t.Errorf("offers what is on disk: %q", tt.Texts())
 	}
-	if r := homeSpeech(a); r.action != "Open Speech models" {
+	if r := homeSpeech(a); r.Action != "Open Speech models" {
 		t.Errorf("Home: %+v", r)
 	}
 }
@@ -216,7 +270,9 @@ func TestGuideAlternativeNoDownloadButton(t *testing.T) {
 }
 
 // TestGuideReuseUnchanged: with the recommended model on this Mac the
-// reuse card's Use them stays the step's primary button.
+// reuse card's Use them stays the step's primary button. Its catalogue
+// draft is not on this Mac, so the body offers the draft's download
+// (TestGuidePackDraftLeft drives it).
 func TestGuideReuseUnchanged(t *testing.T) {
 	asked := countingHub(t)
 	a, tt := obTester(t)
@@ -227,7 +283,7 @@ func TestGuideReuseUnchanged(t *testing.T) {
 	a.familyFound(a.fam.Discover())
 	a.models.Refresh()
 	a.obGo(obModels)
-	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || hasPrefix(tt, "Download (") {
+	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || !has(tt, "Download (262.5 MB)") {
 		t.Fatalf("%q", tt.Texts())
 	}
 	click(t, tt, "Continue")
@@ -384,13 +440,13 @@ func TestTranslateByVoiceWaits(t *testing.T) {
 	}
 }
 
-func homeSpeech(a *app) readiness {
+func homeSpeech(a *app) homeReadinessViewState {
 	for _, r := range a.readinessList() {
-		if r.key == "home-asr" {
+		if r.Key == "home-asr" {
 			return r
 		}
 	}
-	return readiness{}
+	return homeReadinessViewState{}
 }
 
 func TestHomeSpeechRow(t *testing.T) {
@@ -398,10 +454,10 @@ func TestHomeSpeechRow(t *testing.T) {
 	a, tt := homeTester(t)
 	drain := queuePosts(a)
 	reopenModels(a)
-	if r := homeSpeech(a); r.ok || !strings.HasPrefix(r.action, "Download (") {
+	if r := homeSpeech(a); r.OK || !strings.HasPrefix(r.Action, "Download (") {
 		t.Fatalf("no model: %+v", r)
 	}
-	click(t, tt, "Speech recognition: "+homeSpeech(a).action)
+	click(t, tt, "Speech recognition: "+homeSpeech(a).Action)
 	if a.shownPath() == modelsPath {
 		t.Error("the line left Home instead of downloading")
 	}
@@ -413,7 +469,7 @@ func TestHomeSpeechRow(t *testing.T) {
 	a.local = onlyDictation{&fakeLocal{}}
 	a.modelStatus = map[string]models.Status{}
 	r := homeSpeech(a)
-	if r.ok || r.kind != noticeInfo || r.text != "Using System dictation for now." || !strings.HasPrefix(r.action, "Download the recommended model (") {
+	if r.OK || r.Kind != "info" || r.Text != "Using System dictation for now." || !strings.HasPrefix(r.Action, "Download the recommended model (") {
 		t.Errorf("automatic on System dictation: %+v", r)
 	}
 	if missing, _ := homeMissing(a.readinessList()); !containsKey(missing, "home-asr") {
@@ -421,20 +477,20 @@ func TestHomeSpeechRow(t *testing.T) {
 	}
 
 	downloading(a, a.obSpeech())
-	if r := homeSpeech(a); r.ok || r.text != "The speech model is still downloading (33%)." {
+	if r := homeSpeech(a); r.OK || r.Text != "The speech model is still downloading (33%)." {
 		t.Errorf("downloading: %+v", r)
 	}
 
 	a.modelStatus = map[string]models.Status{}
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = dictation.ModelID })
-	if r := homeSpeech(a); !r.ok || r.text != "System dictation" {
+	if r := homeSpeech(a); !r.OK || r.Text != "System dictation" {
 		t.Errorf("System dictation chosen: %+v", r)
 	}
 }
 
-func containsKey(list []readiness, key string) bool {
+func containsKey(list []homeReadinessViewState, key string) bool {
 	for _, r := range list {
-		if r.key == key {
+		if r.Key == key {
 			return true
 		}
 	}
@@ -470,4 +526,143 @@ func TestAutomaticSpeech(t *testing.T) {
 	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast {
 		t.Errorf("the explicit choice became %s", m.ID)
 	}
+
+	// Automatic skips a model that does not know the main language
+	// (#4067): MTD is the catalogue's default and first, but it knows
+	// Chinese and English only, so ja lands on Qwen3-ASR — in the pages
+	// (featureModel) and in the session's resolver alike. An explicit
+	// MTD choice still opens MTD.
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.ASR = ""
+		s.General.MainLanguage = "ja"
+	})
+	seedModels(t, a, models.ASRMoss, models.ASRAccurate, models.VADSilero)
+	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRAccurate {
+		t.Errorf("ja: Transcribe's Automatic uses %+v, want %s", m, models.ASRAccurate)
+	}
+	lm := &automaticGateLocal{}
+	svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.ASRInfo.ID != models.ASRAccurate {
+		t.Errorf("ja: the resolver opened %s, want %s", svc.ASRInfo.ID, models.ASRAccurate)
+	}
+
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = models.ASRMoss })
+	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRMoss {
+		t.Errorf("ja: the explicit MTD choice became %s", m.ID)
+	}
+	lm.opened = ""
+	svc, err = resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.ASRInfo.ID != models.ASRMoss || lm.opened != models.ASRMoss {
+		t.Errorf("ja: the explicit MTD choice opened %s (ASRInfo %s)", lm.opened, svc.ASRInfo.ID)
+	}
+}
+
+// automaticGateLocal is MTD and Qwen3-ASR 1.7B (8bit), MTD first as the
+// catalogue's default, recording what a session's resolver opens.
+type automaticGateLocal struct {
+	local.NotInstalled
+	opened string
+}
+
+func (l *automaticGateLocal) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		return []local.Model{{Kind: local.ASR, ID: models.ASRMoss}, {Kind: local.ASR, ID: models.ASRAccurate}}
+	}
+	return nil
+}
+
+func (l *automaticGateLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	l.opened = id
+	for _, m := range l.Installed(local.ASR) {
+		if m.ID == id {
+			return &fakeTranscriptions{}, m, nil
+		}
+	}
+	return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+}
+
+// TestAutomaticSpeechRemoteGuard: Automatic never promotes a remote
+// speech service over an installed on-device model the language gate
+// removed — a remote service is a feature's explicit choice, or the
+// fallback when no local model is installed (providers.Services,
+// #4067). With MTD (Chinese and English) installed, a ready remote
+// service and the main language ja, the resolver opens nothing, or
+// System dictation when it is there; only with no on-device model at
+// all does Automatic open the remote service.
+func TestAutomaticSpeechRemoteGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		system     bool
+		wantOpened string // "": the resolver opens no speech model
+	}{
+		{"local MTD installed, the remote service stays unopened", false, ""},
+		{"System dictation is the on-device fallback", true, dictation.ModelID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.prefs.General.MainLanguage = "ja"
+			lm := &remoteGateLocal{system: tc.system}
+			svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lm.opened != tc.wantOpened {
+				t.Errorf("opened %q, want %q", lm.opened, tc.wantOpened)
+			}
+			if tc.wantOpened == "" && svc.ASR != nil {
+				t.Errorf("the session got a speech model: %+v", svc.ASRInfo)
+			}
+		})
+	}
+	t.Run("no on-device model: Automatic opens the remote service", func(t *testing.T) {
+		a, _, _ := newTestApp(t)
+		a.prefs.General.MainLanguage = "ja"
+		lm := &remoteGateLocal{remoteOnly: true}
+		svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lm.opened != openai.ID || svc.ASRInfo.ID != openai.ID {
+			t.Errorf("opened %q (ASRInfo %q), want %s", lm.opened, svc.ASRInfo.ID, openai.ID)
+		}
+	})
+}
+
+// remoteGateLocal is MTD and a ready remote speech service (System
+// dictation with system; the remote service alone with remoteOnly),
+// recording what a session's resolver opens.
+type remoteGateLocal struct {
+	local.NotInstalled
+	opened     string
+	system     bool
+	remoteOnly bool
+}
+
+func (l *remoteGateLocal) Installed(kind local.Kind) []local.Model {
+	if kind != local.ASR {
+		return nil
+	}
+	var out []local.Model
+	if !l.remoteOnly {
+		out = append(out, local.Model{Kind: local.ASR, ID: models.ASRMoss, Name: "MOSS-Transcribe-Diarize", Stream: true})
+	}
+	if l.system {
+		out = append(out, local.Model{Kind: local.ASR, ID: dictation.ModelID, Name: "System dictation", Stream: true})
+	}
+	return append(out, local.Model{Kind: local.ASR, ID: openai.ID, Name: "OpenAI Transcribe", Stream: true})
+}
+
+func (l *remoteGateLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	m, ok := local.Choose(l.Installed(local.ASR), id)
+	if !ok {
+		return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+	}
+	l.opened = m.ID
+	return &fakeTranscriptions{}, m, nil
 }

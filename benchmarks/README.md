@@ -233,6 +233,8 @@ raw summary.
 `--fingerprint` records the client environment and the server `/v1/models`
 identity.
 
+`--mixture 48+16,48+0,0+16 --generate-only` runs non streaming and streaming closed loop clients at the same time, one load after another on one server, and measures each load over a fixed window (`--mixture-duration-s`, default 120, after `--mixture-settle-s`, default 10). Each load writes `ns<NS>_s<S>[_r<k>]/speed_results.json` with per class `summary_by_class` and a `mixture` block, and `mixture_sweep.json` aggregates the loads. One load without `--generate-only` writes to `--output-dir` and then scores WER on every request in `generated.json`. See [the TTS benchmark runbook](../docs/developer_reference/tts_bench.md#mixed-streaming-and-non-streaming-load) for the fields and caveats.
+
 Chat-completion speed runs forward `--seed` on the request when it is set
 (MMSU, MMAU, and MMAR also use it to shuffle the dataset) and accept
 `--fingerprint`. `benchmark_omni_streaming_ttft.py` uses one `--seed` for

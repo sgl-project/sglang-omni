@@ -192,8 +192,8 @@ func Lookup(id string) (Model, bool) {
 // The borrowed models are Dicta's and AudioSmith's, whole snapshots.
 var catalog = []Model{
 	{
-		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Default: true, Needs: []string{VADSilero}, Draft: ASRMossDraft,
-		Family: "moss-transcribe-diarize", Quant: "bf16", Alternatives: []string{ASRAccurate, ASRFast},
+		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Default: true, Needs: []string{VADSilero},
+		Family: "moss-transcribe-diarize", Quant: "bf16", Draft: ASRMossDraft, Alternatives: []string{ASRAccurate, ASRFast},
 		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
 		Files: []File{
 			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},

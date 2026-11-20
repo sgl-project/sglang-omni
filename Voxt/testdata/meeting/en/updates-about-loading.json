@@ -1,0 +1,17 @@
+{
+  "name": "updates-about-loading",
+  "kind": "updates-settings",
+  "updates_settings": {
+    "available": true,
+    "known": false,
+    "enabled": true,
+    "check_only": false,
+    "bundle_updated": false,
+    "auto_check": true,
+    "auto_install": false,
+    "beta": false,
+    "check_description": "",
+    "automatic_description": "Once a day. Voxt asks before installing.",
+    "beta_note": "Releases only."
+  }
+}

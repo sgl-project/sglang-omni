@@ -11,7 +11,7 @@
 
 ## 从源码构建
 
-需要 Go 1.27.1（`GOTOOLCHAIN=auto` 会自动下载）；构建 app 需要 Apple 芯片、macOS 15 及以上的 Mac，Xcode（编译辅助进程），以及 [uv](https://docs.astral.sh/uv/) 或 Python 3（Omni 运行时的构建工具：`scripts/build-omni.sh` 编译 `sglang_omni_mlx/native`，第一次还会编译它固定的 MLX commit；git 和 CMake 会从 GitHub 下载 MLX 和 C++ 依赖，从 developer.apple.com 下载 metal-cpp，需要时走 shell 的 `https_proxy`）。在 `Voxt/` 下执行：
+需要 Go 1.27.4（`GOTOOLCHAIN=auto` 会自动下载）；构建 app 需要 Apple 芯片、macOS 15 及以上的 Mac，Xcode（编译辅助进程），以及 [uv](https://docs.astral.sh/uv/) 或 Python 3（Omni 运行时的构建工具：`scripts/build-omni.sh` 编译 `sglang_omni_mlx/native`，第一次还会编译它固定的 MLX commit；git 和 CMake 会从 GitHub 下载 MLX 和 C++ 依赖，从 developer.apple.com 下载 metal-cpp，需要时走 shell 的 `https_proxy`）。在 `Voxt/` 下执行：
 
 ```sh
 scripts/build-helper.sh              # Swift 辅助进程，输出到 resources/darwin-arm64/helper/
@@ -22,7 +22,7 @@ go tool mygo build                   # 生成 build/darwin-arm64/Voxt.app 和 dm
 
 `go tool mygo build` 和 `mygo dev` 之前必须先编好辅助进程：`mygo.json` 给它指定了 entitlement，缺了就会失败。没有 Omni 运行时 app 也能运行，但不能识别语音（也可以把 `VOXTNEW_OMNI_RUNTIME` 指向 `scripts/build-omni.sh --out DIR` 编出的运行时）。
 
-**发布版本**在 Mac 上用一条命令构建：`scripts/release.sh` 编译辅助进程和 Omni 运行时，打包、签名 app 并检查结果（`--runtimes DIR` 直接用编好的运行时；有 Developer ID 时，`--notarize` 做公证（Voxt 2 没有更新通道，不用 `--publish`）；ssh 里经 `scripts/mac-gui.sh` 运行）。正式版就是在 GitHub 上跑这个构建：推一个 `voxt-vX.Y.Z` tag，Voxt Release 工作流用 RY2TQTYSKQ 团队的 Developer ID 签名、公证，把磁盘映像放进 GitHub 的草稿 Release。见 [docs/release.md](release.md)。
+**发布版本**在 Mac 上用一条命令构建：`scripts/release.sh` 编译辅助进程和 Omni 运行时，打包、签名 app 并检查结果（`--runtimes DIR` 直接用编好的运行时；有 Developer ID 时，`--notarize` 做公证；ssh 里经 `scripts/mac-gui.sh` 运行）。正式版就是在 GitHub 上跑这个构建：推一个 `voxt-vX.Y.Z` tag，Voxt Release 工作流用 RY2TQTYSKQ 团队的 Developer ID 签名、公证，把磁盘映像和签名的更新文件放进 GitHub 的草稿 Release。没有更新源的本地构建保留 GitHub 更新检查。见 [docs/release.md](release.md)。
 
 在 Linux 上，`scripts/mac.sh <命令>` 会把项目同步到 Mac（`MAC_HOST` 默认 `mac-air`，`MAC_DIR` 默认 `code/VoxtNew`）并在那里执行，例如 `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`。
 
@@ -57,6 +57,19 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 ```
 
 存储的测试用 MyGo 的 SQLite 插件，它会下载一次自己的库（按 SHA-256 校验），或者用 `MYGO_SQLITE_LIBRARY`。在 Linux 上，浮窗中文文字的像素检查需要 CJK 字体（Ubuntu：`fonts-noto-cjk`）。
+
+## 环境变量
+
+Go 代码、Swift helper 和 `scripts/` 读取的每个 `VOXTNEW_*` 变量，用途和默认值都列在[英文版的环境变量表](development.md#environment-variables)里。哪个变量没有对应的行，`TestDocsEnvironmentVariables` 就失败。
+
+## 修改 fixture 驱动的 view state 和 actions
+
+[UI 开发指南](ui-development.zh-CN.md) 说明了如何在不使用辅助进程和模型的情况下渲染 fixture、修改会议、历史、会话浮窗、更新、首页、引导、应用增强、词典、笔记、语言模型、模型、功能页、设置或 shell 视图。功能侧改动遵守同一条边界：
+
+1. 把显示数据加入会议构造器、历史构造器、`session_overlay_state.go`、`session_overlay_card_state.go`、`session_overlay_menu_state.go` 中会话构造器、`buildUpdatesViewState` 和 `buildReleaseViewState`、`buildHomeViewState`、`buildOnboardingViewState`、`buildAppEnhancementViewState`、词典和笔记构造器、`buildRemotePageViewState`、`buildRemoteDialogViewState`、`buildLLMDebugViewState`、`buildModelsViewState`、`feature_view_state.go`、`feature_shortcut_view_state.go`、`feature_prompt_view_state.go`、`feature_page_view_state.go`、`try_view_state.go` 中功能构造器、设置分节构造器，或 `shell_nav_view_state.go`、`shell_notices_view_state.go`、`shell_logs_view_state.go`、`shell_commands_view_state.go`、`shell_announcement_view_state.go`、`shell_view_state.go` 中 shell 构造器的输入和结果。view state 里不放领域类型，也不做 I/O。
+2. 在 `meeting_fixture_scenarios_test.go`、`history_fixture_scenarios_test.go`、`session_fixture_scenarios_test.go`、`updates_fixture_scenarios_test.go`、`home_fixture_scenarios_test.go`、`onboarding_fixture_scenarios_test.go`、`appenhance_fixture_scenarios_test.go`、`dictionary_fixture_scenarios_test.go`、`remote_fixture_scenarios_test.go`、`models_fixture_scenarios_test.go`、`feature_fixture_scenarios_test.go`、`settings_fixture_scenarios_test.go` 或 `shell_fixture_test.go` 中加入场景，然后执行 `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .` 重新生成 fixture。
+3. 新增用户意图时，在 `meeting_actions.go`、`history_actions.go`、`sessionOverlayActions`、`updates_actions.go`、`home_actions.go`、`onboarding_actions.go`、`appenhance_actions.go`、`dictionary_actions.go`、`remote_actions.go`、`models_actions.go`、`feature_actions.go`、`try_actions.go`、`settings_actions.go`、`settings_dialog_actions.go`、`settings_about_actions.go`、`permissions.go` 或 `shell_actions.go` 中加入所属区域的 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。视图只调用一个意图，不在视图里拼装业务流程。
+4. 在 `TestMeetingDemoActionControls`、`TestHistoryDemoActionControls`、`TestSessionDemoActionControls`、`TestUpdatesDemoActionControls`、`TestHomeDemoActionControls`、`TestOnboardingDemoActionControls`、`TestAppEnhancementDemoActionControls`、`TestDictionaryDemoActionControls`、`TestRemoteDemoActionControls`、`TestModelsDemoActionControls`、`TestFeatureDemoActionControls`、`TestSettingsDemoActionControls` 或 `TestShellDemoActionControls` 中加入点击测试，然后运行 `go test ./internal/archtest` 和 `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage|TestOnboardingFixtureCoverage|TestAppEnhancementFixtureCoverage|TestDictionaryFixtureCoverage|TestRemoteFixtureCoverage|TestModelsFixtureCoverage|TestFeatureFixtureCoverage|TestSettingsFixtureCoverage|TestShellFixtureCoverage)$' .`。
 
 - [docs/architecture.md](architecture.md)：包结构、线程、会话、运行时、磁盘上的数据、测试。
 - [docs/plan.md](plan.md)：这个 app 是什么，以及里程碑。

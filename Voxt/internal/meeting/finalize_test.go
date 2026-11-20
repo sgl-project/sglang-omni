@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -297,6 +298,7 @@ func TestFinalizeDiarizesSystemAndReloadsSpeakerLabels(t *testing.T) {
 	}
 	micASR := &seqFileASR{texts: []string{"final mic"}}
 	sysASR := &seqFileASR{texts: []string{"plain system"}}
+	wantHints := []string{"SGLang", "Voxt"}
 	diarizer := &fakeDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
 		{Start: 500 * time.Millisecond, End: 1500 * time.Millisecond, Speaker: "S01", Text: "first"},
 		{Start: 1500 * time.Millisecond, End: 2500 * time.Millisecond, Speaker: "S02", Text: "second"},
@@ -315,7 +317,7 @@ func TestFinalizeDiarizesSystemAndReloadsSpeakerLabels(t *testing.T) {
 			if src == meeting.SourceMic {
 				return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
 			}
-			return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR}, nil
+			return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR, Hints: wantHints}, nil
 		},
 		Diarizer: func(context.Context) (asr.Diarizer, error) {
 			if hold.holds != 0 {
@@ -334,6 +336,9 @@ func TestFinalizeDiarizesSystemAndReloadsSpeakerLabels(t *testing.T) {
 	}
 	if len(diarizer.requests) != 1 || len(diarizer.requests[0].Audio) != rateSamples(5*time.Second)*2 {
 		t.Fatalf("diarizer requests %+v", diarizer.requests)
+	}
+	if !slices.Equal(diarizer.requests[0].Hints, wantHints) {
+		t.Errorf("diarizer hot words = %q, want %q", diarizer.requests[0].Hints, wantHints)
 	}
 	if sysASR.n != 0 {
 		t.Fatal("the plain system transcriber ran instead of MTD")

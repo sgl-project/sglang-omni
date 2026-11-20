@@ -1,9 +1,12 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // fakeWindow is the main window in a test. Close runs the close listeners as
@@ -67,6 +70,69 @@ func TestCloseWindowMenu(t *testing.T) {
 		} else if it.Accelerator != acc {
 			t.Errorf("%q has %q, want %q", label, it.Accelerator, acc)
 		}
+	}
+}
+
+// TestHiddenMeetingsLeaveStartMenus: hiding Meetings removes its start
+// actions without taking away the active meeting's stop action (#4224).
+func TestHiddenMeetingsLeaveStartMenus(t *testing.T) {
+	a := newMenuApp(t)
+	a.hotkeys.Installed = true // the helper owns the keys; no Carbon registration in this test
+	trayHas := func(label string) bool {
+		return slices.ContainsFunc(a.trayItems(), func(item *mygo.MenuItem) bool { return item.Label == label })
+	}
+	appHasStart := func() bool { return findMenuItem(mygo.App.Menu().Items(), "Start meeting") != nil }
+
+	a.buildMenu()
+	if !appHasStart() || !trayHas("Start meeting") {
+		t.Fatal("a visible Meetings feature has no start action")
+	}
+	a.setFeatureShown(settings.HideMeetings, false)
+	if appHasStart() || trayHas("Start meeting") {
+		t.Fatal("hidden Meetings still offers a start action")
+	}
+
+	a.meetSnap.ID, a.meetSnap.State = "m1", meeting.StateRecording
+	if !trayHas("End meeting") {
+		t.Fatal("hiding Meetings removes the active meeting's stop action")
+	}
+	a.meetSnap.State = meeting.StateIdle
+	a.setFeatureShown(settings.HideMeetings, true)
+	if !appHasStart() || !trayHas("Start meeting") {
+		t.Fatal("showing Meetings does not restore its start actions")
+	}
+}
+
+// TestGoMenuLeavesOutHiddenPages: the Go menu lists a feature's page only
+// while the feature is shown, as the sidebar and ⌘K do. The settings-change
+// path rebuilds it without a restart.
+func TestGoMenuLeavesOutHiddenPages(t *testing.T) {
+	a := newMenuApp(t)
+	a.hotkeys.Installed = true // keep this test off MyGo's Carbon main loop
+	goMenu := func() []*mygo.MenuItem {
+		return findMenuItem(mygo.App.Menu().Items(), "Go").Submenu
+	}
+	a.buildMenu()
+	if findMenuItem(goMenu(), "Translate") == nil {
+		t.Fatal("Translate is shown and not in the Go menu")
+	}
+	oldPreferences := a.prefs
+	newPreferences := oldPreferences
+	newPreferences.Features.Hidden = []string{settings.HideTranslate}
+	a.settingsChanged(oldPreferences, newPreferences)
+	items := goMenu()
+	if findMenuItem(items, "Translate") != nil {
+		t.Error("the Go menu lists the hidden Translate")
+	}
+	if findMenuItem(items, "Transcribe") == nil {
+		t.Error("the Go menu lost Transcribe")
+	}
+	oldPreferences = newPreferences
+	newPreferences = oldPreferences
+	newPreferences.Features.Hidden = nil
+	a.settingsChanged(oldPreferences, newPreferences)
+	if findMenuItem(goMenu(), "Translate") == nil {
+		t.Error("the Go menu did not restore Translate")
 	}
 }
 

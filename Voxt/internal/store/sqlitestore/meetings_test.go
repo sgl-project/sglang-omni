@@ -284,9 +284,9 @@ func TestMeetingsReplaceFailsMidTransaction(t *testing.T) {
 	}
 }
 
-// Migration 12 lets a meeting be an imported recording and keeps the
+// Migration 14 lets a meeting be an imported recording and keeps the
 // meetings and their lines a version-8 database had.
-func TestMigration12ImportMode(t *testing.T) {
+func TestMigration14ImportMode(t *testing.T) {
 	dir := t.TempDir()
 	saved := migrations
 	t.Cleanup(func() { migrations = saved })
@@ -310,7 +310,7 @@ func TestMigration12ImportMode(t *testing.T) {
 
 	migrations = saved
 	s = openTest(t, dir)
-	if v, _ := userVersion(ctx, s.db); v != 12 {
+	if v, _ := userVersion(ctx, s.db); v != 14 {
 		t.Fatalf("user_version %d", v)
 	}
 	m = s.Meetings()

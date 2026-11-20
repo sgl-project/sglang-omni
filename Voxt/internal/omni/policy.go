@@ -235,24 +235,6 @@ func spaced(r rune) bool {
 	return true
 }
 
-// mossMarkup is MOSS's diarization markup, a speaker turn ([S01]) or a
-// timestamp ([2.62]): the model sometimes writes it even on its
-// plain-text instruction (single-speaker English dictation), and
-// dictation inserts plain text only.
-var (
-	mossMarkup       = regexp.MustCompile(`\[S\d{1,2}\]|\[\d{1,4}\.\d{1,2}\]`)
-	mossMarkupSpaces = regexp.MustCompile(` {2,}`)
-)
-
-// plainText is a plain-text answer of spec's model without the
-// diarization markup (other models' text is unchanged).
-func (s Spec) plainText(t string) string {
-	if s.Kind != kindMoss {
-		return t
-	}
-	return strings.TrimSpace(mossMarkupSpaces.ReplaceAllString(mossMarkup.ReplaceAllString(t, ""), " "))
-}
-
 // joinParts joins transcript pieces as the server joins segments: each
 // trimmed, a space only between two other characters.
 func joinParts(parts []string) string {
@@ -272,6 +254,30 @@ func joinParts(parts []string) string {
 		b.WriteString(p)
 	}
 	return b.String()
+}
+
+// mossTag is a timestamp ([12.34]) or speaker label ([S01]): MOSS writes
+// them even when its instruction asks for plain text. A bare integer
+// ([1]) stays: a reference, not a timestamp.
+var mossTag = regexp.MustCompile(`\[(?:\d+[.,]\d+|S\d+)\]`)
+
+// mossTail is a tag's end at the text's start (0.00], S01]): MOSS also
+// writes it bare, and a piece's text can begin with it. Mid-text it
+// stays: a real 3.5] is the user's.
+var mossTail = regexp.MustCompile(`^\s*(?:\d+[.,]\d+|S\d+)\]`)
+
+// plainText is MOSS's text without those tags when it was asked for
+// plain text; other models', and MOSS's other tasks', as it is.
+func (a *ASR) plainText(text string) string {
+	if a.spec.Kind != kindMoss || a.spec.ASR.Instruction != mossPlain {
+		return text
+	}
+	return stripTags(text)
+}
+
+// stripTags is text without MOSS's tags.
+func stripTags(text string) string {
+	return joinParts(mossTag.Split(mossTail.ReplaceAllString(text, ""), -1))
 }
 
 func itoa(v int) string { return strconv.Itoa(v) }

@@ -106,6 +106,18 @@ func (a *ASR) WithTuning(t Tuning) (*ASR, error) {
 	return &c, nil
 }
 
+// WithInstruction is a copy of a whose requests and live sessions carry
+// instruction as the prompt instead of the model's own Instruction: the
+// evals run a model that takes no context at another of its tasks
+// (MOSS's diarization, "" for the server's built-in task). A model with
+// a context ignores it (its prompt is the request's).
+func (a *ASR) WithInstruction(instruction string) *ASR {
+	c := *a
+	c.spec = a.spec.clone()
+	c.spec.ASR.Instruction = instruction
+	return &c
+}
+
 // WithVAD is a copy of a that comes with v, Silero (nil: none), for the
 // session's speech detection (VAD, local.VoiceActivity).
 func (a *ASR) WithVAD(v *VAD) *ASR {
@@ -209,6 +221,9 @@ func (a *ASR) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, err
 	}
 	defer l.release()
 	start := time.Now()
+	if a.noSpeech(ctx, pcm) {
+		return asr.Result{Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Acquire: acquire, Latency: time.Since(start)}, nil
+	}
 	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), context: req.Prompt, layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
 	if err != nil {
 		return asr.Result{}, err
@@ -216,11 +231,13 @@ func (a *ASR) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, err
 	if r.length {
 		return asr.Result{}, &asr.Error{Kind: asr.KindServer, Provider: Provider, Detail: "speaker diarization reached the token limit", Retryable: true}
 	}
-	res := asr.Result{Text: r.text, Lang: r.language, Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Acquire: acquire, Latency: time.Since(start), Draft: r.draft}
+	// The tags are in the segments' times and speakers; a text the server
+	// could not split into segments still carries them.
+	res := asr.Result{Text: stripTags(r.text), Lang: r.language, Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Acquire: acquire, Latency: time.Since(start), Draft: r.draft}
 	for _, seg := range r.segments {
 		res.Segments = append(res.Segments, asr.SpeakerSegment{
 			Start: time.Duration(seg.Start * float64(time.Second)), End: time.Duration(seg.End * float64(time.Second)),
-			Speaker: seg.Speaker, Text: seg.Text,
+			Speaker: seg.Speaker, Text: stripTags(seg.Text),
 		})
 	}
 	return res, nil
@@ -289,12 +306,16 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		}
 		c := chunks[0]
 		chunks = chunks[1:]
-		req := finalRequest{pcm: c.pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
+		pcm, ok := a.speechOnly(ctx, c.pcm)
+		if !ok {
+			continue
+		}
+		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
 		r, err := transcribe(ctx, l, req, a.rt.cfg.StallTimeout)
 		if err != nil {
 			return "", "", nil, err
 		}
-		r.text = a.trimEcho(ctx, l, req, r.text, r.length, b.terms)
+		r.text = a.trimEcho(ctx, l, req, a.plainText(r.text), r.length, b.terms)
 		if shared {
 			budget -= r.tokens
 		}
@@ -311,7 +332,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		}
 		parts = append(parts, r.text)
 	}
-	return a.spec.plainText(joinParts(parts)), language, draft, nil
+	return joinParts(parts), language, draft, nil
 }
 
 // transcribeWhisperBatch reassembles each quiet-cut chunk before joinParts

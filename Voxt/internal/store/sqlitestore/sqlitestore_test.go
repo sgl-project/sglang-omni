@@ -74,6 +74,26 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	}
 }
 
+func TestNotesMigrateWithoutAppName(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = saved[:8]
+	s := openTest(t, dir)
+	at := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	if _, err := s.db.Execute(ctx, `INSERT INTO notes (id, text, created_at) VALUES (?, ?, ?)`, "old", "buy milk", at.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	migrations = saved
+	s = openTest(t, dir)
+	list, err := s.Notes().List(ctx)
+	if err != nil || len(list) != 1 || list[0].Text != "buy milk" || !list[0].CreatedAt.Equal(at) || list[0].AppName != "" {
+		t.Fatalf("old note %+v, %v", list, err)
+	}
+}
+
 func TestBackupBeforeMigrating(t *testing.T) {
 	dir := t.TempDir()
 	saved := migrations
@@ -170,7 +190,9 @@ func TestHistory(t *testing.T) {
 		entry("b", store.KindTranslate, t0.Add(time.Minute), "send the draft to Anna", "把草稿发给 Anna"),
 		entry("c", store.KindRewrite, t0.Add(2*time.Minute), "", "Dear team, the release moves to Friday."),
 	}
-	es[2].SourceText, es[2].PromptText = "release friday", "改正式一点"
+	es[2].SourceText, es[2].TypedText, es[2].PromptText = "release friday", "and cc the clipboard", "改正式一点"
+	es[0].Conversation, es[1].Conversation, es[2].Conversation = "first", "first", "second"
+	es[2].Title, es[2].Replaces = "Release", "b"
 	es[0].Audio = "a.wav"
 	es[0].SentMS, es[0].DSP, es[0].GainDB = 3100, "highpass+level", 7.5
 	if err := os.WriteFile(filepath.Join(h.AudioDir(), "a.wav"), []byte("RIFF"), 0o644); err != nil {
@@ -194,6 +216,9 @@ func TestHistory(t *testing.T) {
 	if got != want {
 		t.Errorf("round trip:\n%+v\n%+v", got, want)
 	}
+	if got, err := h.Get(ctx, "c"); err != nil || got.Title != "Release" || got.Replaces != "b" || got.SourceText != "release friday" || got.TypedText != "and cc the clipboard" {
+		t.Errorf("rewrite round trip: %+v, %v", got, err)
+	}
 	ids := func(q store.HistoryQuery) string {
 		list, err := h.List(ctx, q)
 		if err != nil {
@@ -208,10 +233,13 @@ func TestHistory(t *testing.T) {
 	for q, want := range map[store.HistoryQuery]string{
 		{}:                                        "c,b,a",
 		{Kind: store.KindTranslate}:               "b",
+		{Conversation: "first"}:                   "b,a",
 		{Search: "十点开会"}:                          "a", // trigram, CJK
 		{Search: "开会"}:                            "a", // under 3 characters: LIKE
 		{Search: "Anna"}:                          "b",
 		{Search: "改正式"}:                           "c", // the spoken instruction
+		{Search: "clipboard"}:                     "c", // only in the typed text: trigram
+		{Search: "cc"}:                            "c", // only in the typed text: LIKE
 		{Search: "release", Limit: 1}:             "c",
 		{Limit: 2, Offset: 1}:                     "b,a",
 		{Search: "nothing like this"}:             "",
@@ -226,6 +254,14 @@ func TestHistory(t *testing.T) {
 	h.Put(ctx, es[1])
 	if got := ids(store.HistoryQuery{Search: "交给 Anna"}); got != "b" {
 		t.Errorf("after update: %q", got)
+	}
+	es[2].TypedText = "and cc the notebook"
+	h.Put(ctx, es[2])
+	if got := ids(store.HistoryQuery{Search: "clipboard"}); got != "" {
+		t.Errorf("typed text kept an old index entry: %q", got)
+	}
+	if got := ids(store.HistoryQuery{Search: "notebook"}); got != "c" {
+		t.Errorf("typed text update was not indexed: %q", got)
 	}
 	if err := h.Put(ctx, store.Entry{ID: "x", Kind: "meeting"}); !errors.Is(err, core.ErrInvalid) {
 		t.Errorf("bad kind: %v", err)
@@ -499,7 +535,7 @@ func TestNotes(t *testing.T) {
 	n := s.Notes()
 	t0 := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
 	for i, text := range []string{" buy milk ", "call Ana", "写周报"} {
-		if err := n.Put(ctx, store.Note{ID: strconv.Itoa(i + 1), Text: text, CreatedAt: t0.Add(time.Duration(i) * time.Minute)}); err != nil {
+		if err := n.Put(ctx, store.Note{ID: strconv.Itoa(i + 1), Text: text, CreatedAt: t0.Add(time.Duration(i) * time.Minute), AppName: []string{"Notes", "", ""}[i]}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -520,7 +556,7 @@ func TestNotes(t *testing.T) {
 	if got := texts(); got != "写周报,call Ana,buy milk" { // newest first, trimmed
 		t.Errorf("list: %q", got)
 	}
-	if list, _ := n.List(ctx); !list[2].CreatedAt.Equal(t0) || list[2].ID != "1" {
+	if list, _ := n.List(ctx); !list[2].CreatedAt.Equal(t0) || list[2].ID != "1" || list[2].AppName != "Notes" {
 		t.Errorf("oldest %+v", list[2])
 	}
 	if err := n.Delete(ctx, "2"); err != nil {
@@ -599,5 +635,36 @@ func TestHistoryInsertedInto(t *testing.T) {
 		if err != nil || len(rows.Values) != 1 || asString(rows.Values[0][0]) != want {
 			t.Errorf("%s: the column %v %v", id, rows, err)
 		}
+	}
+}
+
+// The notes change's migration 9 ran first; upgrading then applies the
+// history reopen migration (the two share no number).
+func TestHistoryReopenMigratesAfterNotesAppName(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = slices.Clone(saved[:9])
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 9 {
+		t.Fatalf("user_version %d", v)
+	}
+	s.Close()
+	migrations = saved
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != Version() {
+		t.Fatalf("user_version %d", v)
+	}
+	// Migration 9 is the notes one: its column is there beside 10's.
+	if _, err := s.db.Query(ctx, `SELECT app_name FROM notes LIMIT 1`); err != nil {
+		t.Fatalf("migration 9's column: %v", err)
+	}
+	e := store.Entry{ID: "e1", Kind: store.KindRewrite, Status: store.StatusDone, Result: "body", Title: "A title", Replaces: "e0"}
+	if err := s.History().Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.History().Get(ctx, "e1")
+	if err != nil || got.Title != "A title" || got.Replaces != "e0" {
+		t.Fatalf("entry %+v, %v", got, err)
 	}
 }

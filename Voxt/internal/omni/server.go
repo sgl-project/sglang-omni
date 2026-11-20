@@ -3,6 +3,7 @@ package omni
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -166,6 +167,12 @@ func (s *server) startProcess() (*process, error) {
 // spawnReady spawns the process verifying draft and waits for its ready
 // line; a server retired meanwhile is killed.
 func (s *server) spawnReady(draft string) (*process, error) {
+	if draft != "" {
+		if info, err := os.Stat(draft); err != nil || !info.IsDir() {
+			s.rt.logf("warning", "%s has no draft folder (%s): starting without it", s.spec.ID, draft)
+			draft = ""
+		}
+	}
 	p, ready, err := spawn(s.rt.cfg, s.spec, s.dir, draft, s.draftBits, s.rt.cacheLimit(s.spec))
 	if err != nil {
 		return nil, err

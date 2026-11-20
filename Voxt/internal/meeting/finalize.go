@@ -96,12 +96,14 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 		_ = markFinalizeFailed(ctx, cfg, mt)
 		return first
 	}
-	if err := applyAudioRetention(ctx, cfg, mt, mode, true); err != nil {
-		return err
-	}
-	if !cfg.Privacy().KeepAudio && !mode.KeepsAudio() {
-		mt.Audio = ""
-		mt.AudioUntil = time.Time{}
+	if mode != ModeImport {
+		if err := applyAudioRetention(ctx, cfg, mt, mode, true); err != nil {
+			return err
+		}
+		if !cfg.Privacy().KeepAudio && !mode.KeepsAudio() {
+			mt.Audio = ""
+			mt.AudioUntil = time.Time{}
+		}
 	}
 	mt.Status = store.MeetingDone
 	return cfg.Store.UpdateMeeting(ctx, mt)

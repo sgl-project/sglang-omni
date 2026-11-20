@@ -4,7 +4,8 @@ package omni
 // markup anyway (a speaker turn [S01] or a timestamp [2.62], seen on
 // single-speaker English dictation): the plain-text path (dictation,
 // Transcribe, the meeting's mic track) drops it, so what is inserted and
-// shown is plain text. The diarization path keeps everything.
+// shown is plain text. The diarization path handles the tags its own way
+// (asr.go's Diarize).
 
 import (
 	"context"
@@ -39,6 +40,19 @@ func TestMossPlainTextLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	sendAll(t, st, tone(1500*time.Millisecond, 0.3))
+	// A marked-up partial must arrive and come back clean, or the
+	// segment path went unproven (review).
+	select {
+	case ev := <-st.Events():
+		if ev.Kind != asr.EventPartial {
+			t.Fatalf("first event %+v", ev)
+		}
+		if strings.ContainsAny(ev.Text, "[]") || !strings.Contains(ev.Text, "partial") {
+			t.Errorf("partial %q carries markup or lost the text", ev.Text)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no partial: the segment path went unproven")
+	}
 	if sv, ok := st.(asr.Salvager); ok {
 		if text := sv.Salvage(); strings.ContainsAny(text, "[]") {
 			t.Fatalf("Salvage %q carries markup", text)
@@ -59,18 +73,5 @@ func TestMossPlainTextLive(t *testing.T) {
 	want := "So, um, the first thing is we need to update the docs."
 	if got := evs[len(evs)-1].Text; got != want {
 		t.Errorf("final %q, want %q", got, want)
-	}
-}
-
-// The diarization request keeps the markup: it is the segments' source.
-func TestMossDiarizeKeepsMarkup(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Segments: true, Text: mossMarkedUp}, withServers(t, "moss_transcribe_diarize_server"))
-	a := f.asr(t, ASRMoss)
-	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Text != mossMarkedUp || len(res.Segments) != 2 {
-		t.Fatalf("result %+v", res)
 	}
 }

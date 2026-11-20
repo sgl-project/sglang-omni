@@ -24,6 +24,7 @@ func (s *live) finishLive(pcm []byte) {
 		s.a.rt.logf("warning", "%s: live result: %s; recognising the whole recording", s.a.spec.ID, why)
 		s.mu.Lock()
 		s.preview = false
+		s.finalOnly = true
 		s.mu.Unlock()
 		s.finalPass(pcm)
 	}
@@ -53,8 +54,7 @@ func (s *live) finishLive(pcm []byte) {
 		return
 	}
 	took := time.Since(start)
-	s.a.rt.logf("info", "%s: live result of %v of audio in %v", s.a.spec.ID, asr.Duration(pcm, sampleRate).Round(time.Millisecond), took.Round(time.Millisecond))
-	text = s.a.spec.plainText(text)
+	s.a.rt.logf("info", "%s: live result of %v of audio in %v", s.a.spec.ID, asr.Duration(pcm, sampleRate).Round(100*time.Millisecond), took.Round(time.Millisecond))
 	res := asr.Result{Text: text, Lang: s.language, Duration: asr.Duration(pcm, sampleRate), Model: s.a.spec.ID, Latency: took}
 	s.end(asr.Event{Kind: asr.EventFinal, Text: text, Result: res})
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -139,23 +140,24 @@ func TestMeetingLongTranscriptBuildsRowsInView(t *testing.T) {
 
 func TestMeetingGroupAndDuration(t *testing.T) {
 	now := time.Date(2026, 11, 8, 23, 0, 0, 0, time.Local)
+	translator := i18n.NewTranslator("en")
 	for at, want := range map[time.Time]string{
 		time.Date(2026, 11, 8, 0, 0, 0, 0, time.Local):   "Today",
 		time.Date(2026, 11, 7, 23, 59, 0, 0, time.Local): "Yesterday",
 		time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local):   "Previous 7 days",
 		time.Date(2026, 10, 31, 23, 0, 0, 0, time.Local): "2026-10",
 	} {
-		if got := meetingGroup(at, now); got != want {
+		if got := meetingGroup(translator, at, now); got != want {
 			t.Errorf("meetingGroup(%v) = %q, want %q", at, got, want)
 		}
 	}
 	for ms, want := range map[int64]string{20_000: "Under a minute", 31 * 60_000: "31 min", 95 * 60_000: "1 h 35 min"} {
-		if got := meetingDuration(ms); got != want {
+		if got := meetingDuration(translator, ms); got != want {
 			t.Errorf("meetingDuration(%d) = %q, want %q", ms, got, want)
 		}
 	}
 	// An untitled meeting's header says "Untitled meeting", so the line under it keeps the date.
-	if got, want := meetingMeta(store.Meeting{CreatedAt: now, DurationMS: 6 * 60_000}), "2026-11-08 23:00 · 6 min · Microphone and system audio"; got != want {
+	if got, want := meetingMeta(translator, store.Meeting{CreatedAt: now, DurationMS: 6 * 60_000}), "2026-11-08 23:00 · 6 min · Microphone and system audio"; got != want {
 		t.Errorf("meetingMeta = %q, want %q", got, want)
 	}
 }
@@ -227,6 +229,31 @@ func TestMeetingDetailExplainsSpeakerLabelsWithoutMTD(t *testing.T) {
 	}
 }
 
+// Installing MTD while a finished meeting is open hides the hint at once.
+func TestMeetingDetailHidesSpeakerHintOnceMTDInstalled(t *testing.T) {
+	const guidance = "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4."
+	a, _, tt := newTestApp(t)
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+	if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+		ID: "m-speaker-install", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	a.openMeetingDetail("m-speaker-install")
+	frames(tt)
+	if _, ok := tt.Find(guidance); !ok {
+		t.Fatalf("no guidance before MTD (%q)", firstTexts(tt))
+	}
+	a.local = &meetingMTDLocal{provider: &meetingDiarizerFake{}}
+	frames(tt)
+	if _, ok := tt.Find(guidance); ok {
+		t.Fatalf("guidance still shows with MTD installed (%q)", firstTexts(tt))
+	}
+}
+
 // #4019: an open meeting gets the room beside a narrow list, or the page
 // alone in a narrow window, and its details scroll as one: the transcript
 // is not a scroll box of its own under the summary.
@@ -259,7 +286,7 @@ func TestMeetingDetailIsWideAndScrollsOnce(t *testing.T) {
 	if !ok {
 		t.Fatalf("the first line is not shown (%q)", firstTexts(tt))
 	}
-	listEnd := a.sideW + meetingListW
+	listEnd := a.navUI.sideW + meetingListW
 	if first.X < listEnd || first.W < 600 {
 		t.Fatalf("the first line is at x=%v, %v wide: want right of the list (x>%v), over 600 wide", first.X, first.W, listEnd)
 	}
@@ -275,7 +302,7 @@ func TestMeetingDetailIsWideAndScrollsOnce(t *testing.T) {
 	}
 	tt.SetSize(windowWidth, 900)
 	frames(tt)
-	if r, ok := tt.Find("line 299 " + long); !ok || r.X > a.sideW+sp6+80 {
+	if r, ok := tt.Find("line 299 " + long); !ok || r.X > a.navUI.sideW+sp6+80 {
 		t.Fatalf("in a narrow window the details are not the page alone: %v %v", r, ok)
 	}
 }

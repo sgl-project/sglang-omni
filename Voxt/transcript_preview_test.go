@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -64,10 +65,10 @@ func TestCopyFormattedTranscriptFromHistory(t *testing.T) {
 			if err := a.lib.store.History().Put(context.Background(), e); err != nil {
 				t.Fatal(err)
 			}
-			a.hist.tab = len(store.Kinds)
+			a.histUI.tab = len(store.Kinds)
 			a.navigate("/history")
 			frames(tt)
-			a.hist.sel = e.ID
+			a.histUI.sel = e.ID
 			frames(tt)
 			click(t, tt, "Copy result")
 			if got := tt.Clipboard(); got != source {
@@ -148,17 +149,22 @@ func TestFormattedTranscriptCardPalette(t *testing.T) {
 					a.sess.State = session.Composing
 					a.sess.Draft = source
 				}
+				entry := store.Entry{ID: "formatted", Kind: store.KindTranscribe, Status: store.StatusDone, Result: source}
 				tt := ui.NewTester(func(c *ui.Context) {
-					a.applyTheme(c)
+					th := *c.Theme()
+					styleTheme(&th, a.prefs.Appearance.Palette)
+					c.SetTheme(&th)
 					ui.Column(c).Fill().Children(func() {
 						if view == "history" {
-							a.historyDetail(c, store.Entry{ID: "formatted", Kind: store.KindTranscribe, Status: store.StatusDone, Result: source})
+							state := buildHistoryDetailViewState(i18n.CurrentTranslator(), historyDetailStateInput{Entry: entry}, time.Now())
+							historyDetail(c, state, a, &a.histUI)
 						} else {
 							var block *sessionNotice
 							a.tryCard(c, tryOpts{prefix: "formatted", mine: true, block: &block})
 						}
 					})
 				}, 600, 700)
+				a.copyText = func(text string) error { tt.SetClipboard(text); return nil }
 				tt.SetDark(dark)
 				frames(tt)
 				r, ok := tt.Find(source)
@@ -182,5 +188,11 @@ func TestFormattedTranscriptCardPalette(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDefaultPaletteMatchesSettings(t *testing.T) {
+	if defaultPalette != settings.DefaultPalette {
+		t.Fatalf("defaultPalette %q, settings.DefaultPalette %q", defaultPalette, settings.DefaultPalette)
 	}
 }

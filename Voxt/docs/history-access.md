@@ -52,6 +52,7 @@ The command opens no window and no database, and leaves Voxt's windows alone.
 | `instruction` | The spoken instruction of a rewrite | When there was one |
 | `target_lang` | The translation's target language | For a translation |
 | `selection` | Text you selected in the app | **Only** with Settings → Privacy → Also include the text you selected |
+| `typed` | Text typed into Rewrite's input box | **Only** with Settings → Privacy → Also include the text you selected |
 
 Only entries that finished with a result are listed; failed or cancelled ones are not. Never exported, by this command or by Export text: recordings, the URL host, error messages, rule names, model names, timings. Within schema 1 fields are only added, never removed. The socket's own wire format is internal to Voxt and can change; the command's output and exit codes are the contract.
 

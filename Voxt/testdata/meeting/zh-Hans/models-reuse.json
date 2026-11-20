@@ -1,0 +1,63 @@
+{
+  "name": "models-reuse",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 2,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "模型",
+    "subtitle": "Voxt 用这台 Mac 上的模型识别语音，用你设置的语言模型整理、翻译和改写。下面这个模型最适合起步，“设置 → 语音识别模型”里还有其他模型。",
+    "recording": false,
+    "models": {
+      "reuse_shown": true,
+      "reuse_ids": [
+        "asr.accurate",
+        "vad.silero"
+      ],
+      "reuse_subtitle": "由 AudioSmith 安装 · 2.5 GB · 无需下载",
+      "reuse_names": "Qwen3-ASR 1.7B (8bit) · Silero VAD v6",
+      "speech": {
+        "id": "asr.accurate",
+        "name": "Qwen3-ASR 1.7B (8bit)",
+        "ready": false,
+        "on_disk": true,
+        "installed_by": "已安装 · 来自 AudioSmith",
+        "size_label": "还需下载 2.5 GB",
+        "show_download": true,
+        "download_label": "下载（725.7 MB）",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。"
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": "2.5 GB"
+    },
+    "footer": {
+      "mode": "reuse",
+      "busy": false,
+      "back": true,
+      "continue_label": "继续",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

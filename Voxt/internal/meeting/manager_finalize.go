@@ -38,6 +38,9 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if fromStoreMode(mt.Mode) == ModeImport {
+		return m.finishImport(ctx, mt, !m.cfg.Settings().NoAutoSummary)
+	}
 	// The correction and the summary run as after a live finalize; a
 	// failure surfaces to the caller (the meeting menu corrects again).
 	var cerr error

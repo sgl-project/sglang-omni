@@ -1,0 +1,14 @@
+{
+  "name": "notices-models-asr",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/models",
+      "severity": "warning",
+      "title": "No speech model",
+      "body": "Transcribe, Translate and Rewrite need one to hear you.",
+      "action_label": "Open Speech models",
+      "time_hint": "Jan 2 07:04"
+    }
+  ]
+}

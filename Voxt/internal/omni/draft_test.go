@@ -63,7 +63,11 @@ func TestDraftBitsAndTuning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := tuned.WithDraftBits(filepath.Join(f.dir, "draft"), 4)
+	draft := filepath.Join(f.dir, "draft")
+	if err := os.MkdirAll(draft, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a, err := tuned.WithDraftBits(draft, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,11 +103,15 @@ func TestTuningChangesRestartServer(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, nil)
 	base := f.asr(t, ASRFast)
 	zero, defaultCache := 0, 512
+	draft := filepath.Join(f.dir, "draft")
+	if err := os.MkdirAll(draft, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	first, err := base.WithTuning(Tuning{DecodeInterval: 250 * time.Millisecond, CacheLimitMB: &zero})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err = first.WithDraftBits(filepath.Join(f.dir, "draft"), 4)
+	first, err = first.WithDraftBits(draft, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +119,7 @@ func TestTuningChangesRestartServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err = second.WithDraftBits(filepath.Join(f.dir, "draft"), 4)
+	second, err = second.WithDraftBits(draft, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,11 +146,44 @@ func TestTuningChangesRestartServer(t *testing.T) {
 	}
 }
 
+func TestDraftDeletedOldProvider(t *testing.T) {
+	req := asr.FileRequest{Audio: tone(2*time.Second, 0.3), Format: "pcm", SampleRate: 16000}
+	for _, model := range []string{ASRFast, ASRMoss, ASRWhisperLarge} {
+		t.Run(model, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{}, withServers(t, "moss_transcribe_diarize_server", "whisper_server"))
+			a := f.asr(t, model)
+			draft := filepath.Join(f.dir, "draft")
+			if err := os.MkdirAll(draft, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			a = a.WithDraft(draft)
+			if _, err := a.Transcribe(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(draft); err != nil {
+				t.Fatal(err)
+			}
+			f.rt.Unload(model)
+			if _, err := a.Transcribe(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			launches := f.records("launch")
+			if len(launches) != 2 || slices.Contains(launches[1].Args, "--draft-model-path") {
+				t.Errorf("launches after the draft was deleted: %+v", launches)
+			}
+		})
+	}
+}
+
 // TestDraftRefused: a server from before --draft-model-path refuses the
 // flag; the model starts again without it and the log says so.
 func TestDraftRefused(t *testing.T) {
 	f := newFake(t, omnitest.Opts{NoDraft: true}, nil)
-	a := f.asr(t, ASRFast).WithDraft(filepath.Join(f.dir, "draft"))
+	draft := filepath.Join(f.dir, "draft")
+	if err := os.MkdirAll(draft, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := f.asr(t, ASRFast).WithDraft(draft)
 	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(2*time.Second, 0.3), Format: "pcm"}); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +191,7 @@ func TestDraftRefused(t *testing.T) {
 	if len(launches) != 1 || slices.Contains(launches[0].Args, "--draft-model-path") {
 		t.Errorf("launches %+v", launches)
 	}
-	f.waitLogged(t, "starting without it")
+	f.waitLogged(t, "did not start with its draft")
 }
 
 // TestDraftDeleted: deleting the draft unloads its model's server
