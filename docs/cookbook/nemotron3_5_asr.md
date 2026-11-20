@@ -56,6 +56,18 @@ Within each scheduler batch, complete-file requests with the same
 `max_new_tokens` value share one model `generate()` call. Different token limits
 are processed in separate batches to preserve each request's output limit.
 
+### Ascend NPU
+
+Follow the [NPU installation guide](../other_platforms/installation_npu.md), then start the single-stage pipeline with the BF16 example:
+
+```bash
+sgl-omni serve --config examples/configs/nemotron3_5_asr_npu.yaml --port 8000
+```
+
+The example keeps `enable_encoder_cuda_graph: false` because NPU is not yet in the streaming encoder's graph-capture device set, so the encoder runs eager. The first request compiles CANN kernels and can take tens of seconds; later windows reuse them for the lifetime of the process. On hosts with a small system-memory cgroup, serialize TBE compilation with `TBE_PARALLEL_COMPILER=0` and `MAX_COMPILE_CORE_NUMBER=1` to avoid compile-process OOM.
+
+Offline transcription and native `/v1/realtime` use the same eager model path; add `--enable-realtime` to mount the WebSocket endpoint. Results recorded for this model used a single Ascend 910B4 (A2, 32 GB HBM), and every performance claim should name the tested SKU.
+
 ## Transcribe Audio
 
 Upload a complete audio file; the server converts it to mono 16 kHz audio:

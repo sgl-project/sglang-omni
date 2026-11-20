@@ -253,26 +253,6 @@ def variant_outcomes(recording: Path) -> Counter[str]:
     return outcomes
 
 
-def count_speech_failures(run_root: Path) -> int:
-    """Replies of the run's first repeat, v1.5 and v1.0, that ended failed/speech_error, which the oracle accepts and counts apart from protocol failures."""
-    repeat = run_root / "repeat-1"
-    failures = 0
-    runs = [
-        *(repeat / "recording").glob("shard-*/run.json"),
-        *(repeat / "v10" / "recording").glob("shard-*/run.json"),
-    ]
-    for run in runs:
-        for sample in read_json(run)["samples"]:
-            for variant in sample["variants"].values():
-                report = run.parent / variant["directory"] / "report.json"
-                if report.is_file():
-                    (case,) = read_json(report)["cases"]
-                    failures += case["metrics"].get("responses_speech_failed", 0)
-                else:
-                    pass
-    return failures
-
-
 def is_speaking_at(segments: JsonValue, time_s: float) -> bool:
     return any(start_s <= time_s < end_s for start_s, end_s in segments)
 
