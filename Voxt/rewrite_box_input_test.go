@@ -158,14 +158,17 @@ func TestRewriteBoxRejectedClipboardImageShowsError(t *testing.T) {
 			fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
 				return proto.ClipboardImageResult{TooLarge: true}, nil
 			}
-			a.box = rewriteBox{open: true, shown: true, focusText: true}
+			a.box = rewriteBox{open: true, shown: true, focusText: true, text: "keep me", images: [][]byte{boxJPEG(t)}}
 			tt := hudTester(a.boxView, boxWinW, boxWinH)
 			frames(tt)
-			tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(format, boxPNG(t)))))
+			tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(format, []byte("clipboard")))))
 			tt.Command("paste")
 			frames(tt)
-			if a.box.err != "This image is too large." || !has(tt, "This image is too large.") || a.boxPending != 0 || len(a.box.images) != 0 {
-				t.Fatalf("rejected clipboard image is silent or changed the input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
+			if a.box.err != "This image is too large." || !has(tt, "This image is too large.") {
+				t.Fatalf("rejected clipboard image is silent: box error %q, texts %q", a.box.err, firstTexts(tt))
+			}
+			if a.box.text != "keep me" || len(a.box.images) != 1 || a.boxPending != 0 {
+				t.Fatalf("rejection changed the input: text %q, images %d, pending %d", a.box.text, len(a.box.images), a.boxPending)
 			}
 		})
 	}
@@ -176,14 +179,14 @@ func TestRewriteBoxUnreadableClipboardImageShowsError(t *testing.T) {
 	fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
 		return proto.ClipboardImageResult{}, nil
 	}
-	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	a.box = rewriteBox{open: true, shown: true, focusText: true, text: "keep me", images: [][]byte{boxJPEG(t)}}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
 	tt.SetClipboardData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, []byte("not a png")))))
 	tt.Command("paste")
 	frames(tt)
-	if a.box.err != "This image could not be read." || !has(tt, "This image could not be read.") || a.boxPending != 0 || len(a.box.images) != 0 {
-		t.Fatalf("unreadable clipboard image has the wrong error or changed the input: error %q, pending %d, images %d", a.box.err, a.boxPending, len(a.box.images))
+	if a.box.err != "This image could not be read." || !has(tt, "This image could not be read.") || a.boxPending != 0 || a.box.text != "keep me" || len(a.box.images) != 1 {
+		t.Fatalf("unreadable clipboard image has the wrong error or changed the input: error %q, pending %d, text %q, images %d", a.box.err, a.boxPending, a.box.text, len(a.box.images))
 	}
 }
 
