@@ -4,7 +4,7 @@ This tool opens, closes, drops, cancels, idles out, reconnects and interrupts `/
 
 ## GPU run
 
-This is the part that is still open: the tool has only run against a model-free mock. One script runs every cell against a turn-based Qwen3-Omni server, with the client on the server's host and no other job on the GPU.
+This is the part that is still open: the tool has not run against a model that replies. One script runs every cell against a turn-based Qwen3-Omni server, with the client on the server's host and no other job on the GPU.
 
 ```bash
 MODEL=$MODEL MAX_SESSIONS=$MAX_SESSIONS SERVER_PID=$SERVER_PID SERVER_LOG=$SERVER_LOG PAIR=$FDB_WORK/dataset/v1.5/user_interruption/1 bash benchmarks/duplex/lifecycle_stress/gpu_matrix.sh runs/gpu
@@ -46,8 +46,36 @@ Setup notes:
 ## Mock results
 
 - A run passes five checks: `no_sessions_left`, `slots_recovered`, `final_session_completed`, `no_errored_sessions` and `no_unexpected_denials`. A check the server gives no data for is reported as unmeasured, not as passed.
-- The matrix of mock runs is not recorded with this version of the tool yet. Its commands are under Results; the table goes here once they have run.
+- The matrix below is 21 cells, each run three times against a mock of its own: 63 runs and 174,240 sessions at commit `c4deef32e`.
+- On the shared-session path every cell left no session behind, got all 64 slots back after every cycle and completed its final session, in all three runs. That holds for clients that reset the connection or send a close frame after `session.update`, after their packets or in the middle of a reply, for replies that are cancelled or interrupted, for idle sessions and for reconnects.
+- Two cells did not pass every run. `legacy_drop_frame` leaves all of its 1,280 sessions on the server in every run on `main`, and none with the serving change of #3504 applied. One of the three `reconnect_reply_reset` runs had 3 of 9,600 sessions fail on the client, whose host ran out of local ports; the server is not involved.
 - The mock is model-free and runs on one CPU host. It replaces only the model adapter; the route, the admission check, the session manager and the session runtime are the code a model server runs. So it says how the serving layer cleans up, and nothing about races between the stages of a model pipeline, which is where #3565 was found.
+
+| Cell | Sessions per run | Outcome per run | Left | Cleanup p50 / p99 ms | Scenario figures | Checks |
+|---|---|---|---|---|---|---|
+| `probe_only` | 0 | no clients | 0 | 12 to 13 / 15 to 20 | - | pass |
+| `churn_fill` | 3200 | 3200 completed | 0 | 16 to 17 / 19 to 27 | - | pass |
+| `churn_overflow` | 4000 | 3200 completed, 800 denied | 0 | 15 to 17 / 20 to 25 | - | pass |
+| `drop_update_reset` | 3200 | 3200 dropped | 0 | 38 to 39 / 138 to 157 | - | pass |
+| `drop_update_frame` | 3200 | 3200 dropped | 0 | 32 to 36 / 38 to 42 | - | pass |
+| `drop_append_reset` | 3200 | 3200 dropped | 0 | 38 to 39 / 41 to 77 | - | pass |
+| `drop_reply_reset` | 3200 | 3200 dropped | 0 | 33 to 36 / 39 to 130 | 3200 left mid-reply, 0 after | pass |
+| `drop_reply_frame` | 3200 | 3200 dropped | 0 | 32 to 36 / 38 to 49 | 3200 left mid-reply, 0 after | pass |
+| `cancel` | 3200 | 3200 completed | 0 | 16 to 17 / 21 to 24 | cancelled in 50 / 51 ms; 0 late outputs | pass |
+| `cancel_reply_reset` | 3200 | 3200 dropped | 0 | 33 to 36 / 39 to 125 | 3200 left mid-reply, 0 after | pass |
+| `reconnect_goodbye` | 9600 | 9600 completed | 0 | 15 to 17 / 20 to 24 | 0 of 6400 reconnects denied first, readmitted at once | pass |
+| `reconnect_reply_reset` | 9600 | 9600 dropped; in one run 9597 dropped and 3 errored on the client | 0 | 13 to 14 / 37 to 52 | all left mid-reply; 794 to 1074 of 6400 reconnects denied first, readmitted in 0 / 120 to 137 ms | `no_errored_sessions` failed in 1 of 3 |
+| `idle_created` | 1280 | 1280 expired | 0 | 17 to 20 / 26 to 35 | closed 22 to 23 / 29 to 134 ms after the limit, 0 early | pass |
+| `idle_open` | 1280 | 1280 expired | 0 | 16 to 19 / 19 to 41 | closed 11 to 12 / 18 to 20 ms after the limit, 0 early | pass |
+| `long` | 320 | 320 completed | 0 | 16 to 18 / 16 to 22 | - | pass |
+| `cancel_unit_1000` | 1280 | 1280 completed | 0 | 17 to 18 / 19 to 23 | cancelled in 48 to 49 / 51 ms; 0 late outputs | pass |
+| `cancel_not_supported` | 1280 | 1280 completed | 0 | 17 / 19 to 23 | not_supported in 2 / 4 ms | pass |
+| `interrupt` | 640 | 640 completed | 0 | 15 to 16 / 17 to 18 | 640 replies interrupted, 0 late outputs | pass |
+| `interrupt_control` | 640 | 640 completed | 0 | 15 / 16 to 18 | 0 replies interrupted, 0 late outputs | pass |
+| `legacy_churn` | 1280 | 1280 completed | 0 | 18 to 19 / 20 to 25 | - | pass |
+| `legacy_drop_frame` | 1280 | 1280 dropped | 1280 | timed out | - | `no_sessions_left` failed in 3 of 3 |
+
+A figure that differed between the three runs is given as its range. Cleanup and cancel times are p50 / p99 in ms. Results has how to read the columns and the commands.
 
 Try it against the mock:
 
@@ -117,7 +145,30 @@ A summary has five checks: `no_sessions_left`, `slots_recovered`, `final_session
 
 ## Results
 
-Not recorded yet. The matrix has one row per cell; each cell runs three times against a mock of its own, and a figure that differs between the three is given as its range. These are the commands:
+How to read the matrix under Mock results:
+
+- The cap is 64 connections and a cycle has 64 clients, 80 in `churn_overflow`. The first twelve cells run 50 cycles, `long` 5, the interrupt cells 10 and the others 20.
+- Cleanup is the time from the last client leaving until the server's session count is zero. On this host each poll of that count takes about 18 ms, so 15 to 20 ms of every cleanup figure is the poll itself, and the rows near 16 ms mean no more than one poll. The rows that leave early are about 20 ms above them, and their p99 reaches 157 ms after a reset.
+- `churn_overflow` admits 64 and denies 16 in every cycle of every run; the cap is exact.
+- In the three cells that leave at the reply, every session left while the reply was in progress: `drops_after_reply` is zero. That includes `cancel_reply_reset`, where the cancel and the disconnect arrive together.
+- The mock ends a cancelled reply at its next delta, which is 50 ms away, hence the cancel time. What carries over to a model is that every cancel got a `cancelled` `response.done` and no event of that reply followed. `cancel_not_supported` gets the refusal instead and its sessions still complete.
+- `interrupt` and its control run against the mock's turn-taking stand-in, which proves the counting: every reply the user talks over is counted, none in the control. Whether a model gives way is for the GPU run.
+- Both idle limits close the session with 1008 and the name of the limit, never before it.
+- After a goodbye no reconnect was denied. After a reset in the middle of a reply, 794 to 1,074 of 6,400 reconnects were denied first, because the server still holds the old session's slot while it closes it; 99% were back in within 137 ms. The figure depends on the mock's settings and does not carry over to a model.
+- The 3 errored sessions of one `reconnect_reply_reset` run are `OSError: [Errno 49] Can't assign requested address` at the connect. That cell opens 9,600 connections per run from one host and resets them, and the host ran out of local ports once. The other two runs of the cell had none.
+- Resident memory on this macOS host moved by more than 100 MB in either direction within some runs, so the table has no memory column. The one run with a steady slope is the leaking cell below.
+
+`legacy_drop_frame` on `main` and with the serving change of #3504, three runs each:
+
+| | `main` | with #3504 at `074ab1d86` |
+|---|---|---|
+| Sessions left of 1,280 | 1,280 | 0 |
+| Cleanup p50 / p99 ms | timed out in 20 of 20 cycles | 12 to 13 / 15 to 18 |
+| Server resident memory per cycle | +1.93 MB | +0.06 to +0.07 MB |
+
+The second column ran the same tool against the serving code of `c4deef32e` with the `sglang_omni` diff of #3504 applied.
+
+Each cell runs against a mock of its own. These are the commands:
 
 ```bash
 start_mock() { python -m benchmarks.duplex.lifecycle_stress mock --port 8801 "$@" > mock.log & mock_pid=$!; until grep -q listening mock.log; do sleep 0.1; done; }
@@ -164,7 +215,7 @@ The other drop, idle, reconnect and legacy rows differ from these only in `--lea
 
 ## Environment
 
-Where the tool was developed and its tests ran:
+Where the matrix ran, on 2026-11-20 UTC at commit `c4deef32e`:
 
 - Host: Apple M4 Pro, 48 GB, macOS 27.2; client and mock on the same host.
 - Python 3.12.15, websockets 17.2, uvicorn 0.54.0, starlette 1.7.0, fastapi 0.142.2.
