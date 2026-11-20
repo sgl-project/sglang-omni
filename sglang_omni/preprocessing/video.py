@@ -550,9 +550,9 @@ def read_video_torchcodec(
         return frames, sample_fps
     else:
         pass
-    # note (ratish): torch runs a new thread's parallel ops on the process's intra-op threads, so the shares decode on the pool's threads instead of threads started for this video.
+    # note (ratish): torch runs a new thread's parallel ops on the process's intra-op threads, so the shares decode on the pool's decode threads instead of threads started for this video.
     share_futures = [
-        frame_pool.executor.submit(decode_share, share_index)
+        frame_pool.decode_executor.submit(decode_share, share_index)
         for share_index in busy_shares
     ]
     wait(share_futures)
@@ -689,7 +689,7 @@ def load_video_path(
         )
 
     slice_futures = [
-        frame_pool.executor.submit(
+        frame_pool.frame_executor.submit(
             resize_frames,
             nframes * slice_index // slice_count,
             nframes * (slice_index + 1) // slice_count,

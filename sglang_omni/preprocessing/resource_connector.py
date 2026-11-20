@@ -48,9 +48,10 @@ atexit.register(global_thread_pool.shutdown)
 
 @dataclass(frozen=True, kw_only=True)
 class FramePool:
-    """Threads that decode and resize a video's frames in pieces, its resize split evenly among frame_workers of them."""
+    """Threads that work on a video's frames in pieces: decode_executor decodes its keyframe groups, and frame_executor resizes it split evenly among frame_workers threads."""
 
-    executor: Executor
+    decode_executor: Executor
+    frame_executor: Executor
     frame_workers: int
 
 

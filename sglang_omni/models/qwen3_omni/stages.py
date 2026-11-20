@@ -49,6 +49,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_encoder_request,
 )
 from sglang_omni.preprocessing.resource_connector import FramePool
+from sglang_omni.preprocessing.video import READER_FFMPEG_THREADS
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -1084,8 +1085,20 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
             intraop_threads=video_intraop_threads,
             thread_name_prefix="prep-media",
         )
+        # note (ratish): a split video decodes each keyframe group on a decoder of its own beside the reader, so every video running can split into as many decode threads as its FFmpeg threads past the reader's; their torch ops run on one thread, since FFmpeg is their work.
+        lone_video_decode_threads = (
+            min(MAX_VIDEO_DECODE_THREADS, stage_cpu_count)
+            if video_decode_threads is None
+            else video_decode_threads
+        )
         self.frame_pool = FramePool(
-            executor=thread_pool_with_intraop_threads(
+            decode_executor=thread_pool_with_intraop_threads(
+                max_workers=video_request_worker_count
+                * max(1 + lone_video_decode_threads - READER_FFMPEG_THREADS, 1),
+                intraop_threads=1,
+                thread_name_prefix="prep-decode",
+            ),
+            frame_executor=thread_pool_with_intraop_threads(
                 max_workers=frame_worker_count,
                 intraop_threads=video_intraop_threads,
                 thread_name_prefix="prep-frames",
@@ -1101,7 +1114,8 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         for executor in (
             self.video_executor,
             self.media_executor,
-            self.frame_pool.executor,
+            self.frame_pool.decode_executor,
+            self.frame_pool.frame_executor,
         ):
             executor.shutdown(wait=False, cancel_futures=True)
 

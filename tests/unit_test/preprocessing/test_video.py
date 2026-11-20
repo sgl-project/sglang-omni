@@ -515,17 +515,22 @@ def test_a_frame_pool_decodes_every_share_of_a_split_video_on_its_threads(
             return super().get_frames_at(indices)
 
     monkeypatch.setattr(video, "VideoDecoder", ThreadRecordingDecoder)
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="frames") as executor:
+    with (
+        ThreadPoolExecutor(max_workers=3, thread_name_prefix="decode") as decoders,
+        ThreadPoolExecutor(max_workers=3, thread_name_prefix="frames") as frames_pool,
+    ):
         frames, sample_fps = video.read_video_torchcodec(
             dict(video_options),
             16,
-            FramePool(executor=executor, frame_workers=3),
+            FramePool(
+                decode_executor=decoders, frame_executor=frames_pool, frame_workers=3
+            ),
         )
 
     assert torch.equal(frames, expected_frames)
     assert sample_fps == expected_fps
     assert len(share_threads) > 1
-    assert all(name.startswith("frames") for name in share_threads)
+    assert all(name.startswith("decode") for name in share_threads)
 
 
 @pytest.mark.skipif(
@@ -589,7 +594,9 @@ def test_a_frame_pool_resizes_a_lone_video_on_every_thread_into_the_bytes_of_one
         sliced_video, sliced_fps = video.load_video_path(
             path,
             decode_threads=16,
-            frame_pool=FramePool(executor=executor, frame_workers=3),
+            frame_pool=FramePool(
+                decode_executor=executor, frame_executor=executor, frame_workers=3
+            ),
         )
 
     assert sliced_video.dtype == whole_video.dtype == torch.float32

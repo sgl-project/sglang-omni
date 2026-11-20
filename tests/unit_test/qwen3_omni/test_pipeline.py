@@ -2491,7 +2491,9 @@ def single_thread_video_lane(
 ) -> preprocessor_mod.VideoLane:
     return preprocessor_mod.VideoLane(
         media_executor=lane_executor,
-        frame_pool=FramePool(executor=lane_executor, frame_workers=1),
+        frame_pool=FramePool(
+            decode_executor=lane_executor, frame_executor=lane_executor, frame_workers=1
+        ),
         decode_threads=16,
     )
 
@@ -3070,7 +3072,9 @@ def test_preprocessing_video_lane_splits_the_stage_cpus_among_its_threads(
             lanes[payload.request_id] = (
                 video_lane.decode_threads,
                 video_lane.frame_pool.frame_workers,
-                video_lane.frame_pool.executor.submit(torch.get_num_threads).result(),
+                video_lane.frame_pool.frame_executor.submit(
+                    torch.get_num_threads
+                ).result(),
                 video_lane.media_executor.submit(torch.get_num_threads).result(),
             )
             if payload.request_id == "first":
@@ -3135,9 +3139,16 @@ def test_preprocessing_video_lane_leaves_later_threads_the_process_intraop_threa
             if video_lane is None:
                 intraop_threads_seen["scheduler"] = torch.get_num_threads()
             else:
-                intraop_threads_seen["frames"] = video_lane.frame_pool.executor.submit(
-                    torch.get_num_threads
-                ).result()
+                intraop_threads_seen["frames"] = (
+                    video_lane.frame_pool.frame_executor.submit(
+                        torch.get_num_threads
+                    ).result()
+                )
+                intraop_threads_seen["decode"] = (
+                    video_lane.frame_pool.decode_executor.submit(
+                        torch.get_num_threads
+                    ).result()
+                )
                 intraop_threads_seen["media"] = video_lane.media_executor.submit(
                     torch.get_num_threads
                 ).result()
@@ -3167,6 +3178,7 @@ def test_preprocessing_video_lane_leaves_later_threads_the_process_intraop_threa
 
     assert intraop_threads_seen == {
         "frames": lane_intraop_threads,
+        "decode": 1,
         "media": lane_intraop_threads,
         "scheduler": process_intraop_threads,
         "later": process_intraop_threads,

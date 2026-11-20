@@ -353,7 +353,7 @@ class ChatRequestInputs:
 
 @dataclass(frozen=True, kw_only=True)
 class VideoLane:
-    """Where a video request preprocesses: its media loads on media_executor, its frame decode pieces, frame resizes and HF processor call on frame_pool, and each video's decoders on decode_threads FFmpeg threads."""
+    """Where a video request preprocesses: its media loads on media_executor, its keyframe group decodes, frame resizes and HF processor call on frame_pool, and each video's decoders on decode_threads FFmpeg threads."""
 
     media_executor: Executor
     frame_pool: FramePool
@@ -1064,7 +1064,9 @@ class Qwen3OmniPreprocessor:
             )
         else:
             # note (ratish): on the video lane the processor runs on a frame thread, so its intra-op threads count among the lane's, and this thread hashes the frames beside it.
-            processor_future = video_lane.frame_pool.executor.submit(run_processor)
+            processor_future = video_lane.frame_pool.frame_executor.submit(
+                run_processor
+            )
             try:
                 video_cache_key = compute_video_cache_key(videos) if videos else None
             finally:
