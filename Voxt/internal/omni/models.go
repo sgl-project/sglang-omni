@@ -39,6 +39,8 @@ const (
 	kindMoss       = "moss_transcribe_diarize"
 	// mossPlain is MOSS's Instruction; it still writes timestamps (plainText).
 	mossPlain = "Transcribe the audio as plain text without timestamps or speaker labels."
+	// mossDiarizePrompt is the native server's default when no prompt is sent.
+	mossDiarizePrompt = "Transcribe the audio into text. Start each segment with the start timestamp and speaker label ([S01], [S02], [S03], ...), write the corresponding spoken content, and end each segment with the ending timestamp to clearly mark the segment range."
 )
 
 // Spec is one curated model: what to run, and the parameters tuned for it.
@@ -113,6 +115,8 @@ type ASRTuning struct {
 	// model that takes no context: MOSS's task, plain text without its
 	// timestamps and speaker labels (the native CI's request).
 	Instruction string
+	// Hotwords sends the dictionary in MOSS's final-only prompt suffix.
+	Hotwords bool
 	// SpeechOnly: the model gets only the speech Silero finds (speech.go),
 	// as MOSS writes words for audio without any.
 	SpeechOnly bool
@@ -263,6 +267,8 @@ var specs = []Spec{
 		ID: ASRMoss, Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
 		Kind: kindMoss, Binary: "moss_transcribe_diarize_server", Languages: []string{"zh", "en"}, ASR: func() *ASRTuning {
 			t := streamTuning(60)
+			t.ContextTerms, t.ContextChars = 500, 8000
+			t.Hotwords = true
 			t.Instruction = mossPlain
 			t.SpeechOnly = true
 			return t

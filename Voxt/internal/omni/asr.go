@@ -146,7 +146,7 @@ func (a *ASR) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, 
 	}
 	defer l.release()
 	start := time.Now()
-	text, language, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.spec.ASR.contextBias(req.Hints, req.Prompt))
+	text, language, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.finalBias(a.spec.ASR.contextBias(req.Hints, req.Prompt)))
 	if err != nil {
 		return asr.Result{}, err
 	}
@@ -172,7 +172,9 @@ func (a *ASR) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, err
 	if a.noSpeech(ctx, pcm) {
 		return asr.Result{Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Latency: time.Since(start)}, nil
 	}
-	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), context: req.Prompt, layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
+	b := a.spec.ASR.contextBias(req.Hints, req.Prompt)
+	b.context = req.Prompt
+	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), context: a.finalBias(b).context, layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
 	if err != nil {
 		return asr.Result{}, err
 	}
@@ -210,6 +212,19 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 		return req.Audio, nil
 	}
 	return nil, &asr.Error{Kind: asr.KindAudio, Provider: Provider, Detail: "unknown audio format " + req.Format}
+}
+
+// finalBias adds MOSS's hotwords only to post-stop Finals, keeping them out
+// of live and intermediate previews.
+func (a *ASR) finalBias(b bias) bias {
+	if len(b.hotwords) > 0 {
+		if b.context == "" {
+			b.context = mossDiarizePrompt
+		}
+		b.context += " Hotwords: " + strings.Join(b.hotwords, ", ")
+		b.terms = b.hotwords
+	}
+	return b
 }
 
 // final transcribes quiet-cut chunks in order, with a shared token budget

@@ -96,11 +96,12 @@ func TestWhisperFinalSkipsDigitalSilenceTail(t *testing.T) {
 
 // TestKinds: Voxt 1.x's other speech models run on servers of their own
 // with only the common launch flags (their servers refuse Qwen3-ASR's),
-// take no context, and spell the language hint their server's way.
+// MOSS takes dictionary hotwords, and language hints use each server's spelling.
 func TestKinds(t *testing.T) {
 	for _, s := range ASRModels() {
 		qwen := s.Kind == kindQwen3ASR
-		if qwen != (s.Binary == "") || qwen != (s.ASR.ContextTerms > 0) || qwen != (s.ASR.TokensPerSecond > 0) {
+		takesContext := qwen || s.Kind == kindMoss
+		if qwen != (s.Binary == "") || takesContext != (s.ASR.ContextTerms > 0) || qwen != (s.ASR.TokensPerSecond > 0) {
 			t.Errorf("%s: kind %s, binary %q, context %d, %v tokens a second", s.ID, s.Kind, s.Binary, s.ASR.ContextTerms, s.ASR.TokensPerSecond)
 		}
 		if args := strings.Join(s.launchArgs(true), " "); !qwen && args != "--model-kind "+s.Kind {
@@ -235,12 +236,12 @@ func TestWhisperFinishCancelsInFlightPreview(t *testing.T) {
 	}
 }
 
-// TestMossLive: MOSS's live session and Final carry its plain-text
-// instruction, not the dictionary.
+// TestMossLive: MOSS's live preview carries only its plain-text instruction;
+// its post-stop Final also carries the dictionary as hotwords.
 func TestMossLive(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, withServers(t, "moss_transcribe_diarize_server"))
 	a := f.asr(t, ASRMoss)
-	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "en", Hints: []string{"Voxt"}})
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "en", Hints: []string{"Zephyria"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,13 +252,45 @@ func TestMossLive(t *testing.T) {
 	if evs := drain(t, st); len(evs) == 0 || evs[len(evs)-1].Kind != asr.EventFinal {
 		t.Fatalf("events %+v", evs)
 	}
-	want := again(ASRMoss).ASR.Instruction
-	if finals := f.records("final"); len(finals) != 1 || finals[0].Fields["prompt"] != want {
+	instruction := again(ASRMoss).ASR.Instruction
+	if finals := f.records("final"); len(finals) != 1 || finals[0].Fields["prompt"] != instruction+" Hotwords: Zephyria" {
 		t.Errorf("finals %+v", finals)
 	}
 	f.rt.Close()
-	if l := f.records("live"); len(l) != 1 || l[0].Fields["prompt"] != want || l[0].Fields["language"] != "en" {
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["prompt"] != instruction || l[0].Fields["language"] != "en" {
 		t.Errorf("live %+v", l)
+	}
+}
+
+// TestMossTranscribeHotwords: a direct Final gets the dictionary in MOSS's
+// hotword format; an empty dictionary leaves its instruction untouched.
+func TestMossTranscribeHotwords(t *testing.T) {
+	f := newFake(t, omnitest.Opts{}, withServers(t, "moss_transcribe_diarize_server"))
+	a := f.asr(t, ASRMoss)
+	instruction := again(ASRMoss).ASR.Instruction
+	for _, tc := range []struct {
+		name  string
+		hints []string
+		want  string
+	}{
+		{"one rare term", []string{"Zephyria"}, instruction + " Hotwords: Zephyria"},
+		{"empty dictionary", nil, instruction},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Hints: tc.hints}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if _, err := a.WithInstruction("").Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Hints: []string{"Zephyria"}}); err != nil {
+		t.Fatal(err)
+	}
+	finals := f.records("final")
+	if len(finals) != 3 || finals[0].Fields["prompt"] != instruction+" Hotwords: Zephyria" || finals[1].Fields["prompt"] != instruction {
+		t.Errorf("finals %+v", finals)
+	}
+	if got := finals[2].Fields["prompt"]; !strings.HasPrefix(got, "Transcribe the audio into text. Start each segment") || !strings.HasSuffix(got, " Hotwords: Zephyria") {
+		t.Errorf("default diarization prompt = %q", got)
 	}
 }
 
@@ -267,7 +300,7 @@ func TestMossLive(t *testing.T) {
 func TestMossDiarize(t *testing.T) {
 	f := newFake(t, omnitest.Opts{Segments: true}, withServers(t, "moss_transcribe_diarize_server"))
 	a := f.asr(t, ASRMoss)
-	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: tone(65*time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Prompt: "the instruction"})
+	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: tone(65*time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Prompt: "the instruction", Hints: []string{"Zephyria"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +308,7 @@ func TestMossDiarize(t *testing.T) {
 		t.Fatalf("segments %+v", res.Segments)
 	}
 	finals := f.records("final")
-	if len(finals) != 1 || finals[0].Samples != 65*16000 || finals[0].Fields["prompt"] != "the instruction" || finals[0].Fields["language"] != "en" {
+	if len(finals) != 1 || finals[0].Samples != 65*16000 || finals[0].Fields["prompt"] != "the instruction Hotwords: Zephyria" || finals[0].Fields["language"] != "en" {
 		t.Errorf("finals %+v", finals)
 	}
 }

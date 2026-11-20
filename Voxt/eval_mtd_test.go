@@ -294,9 +294,8 @@ func mtdAccuracy(name string, runs []*mtdRun) string {
 
 // mtdTerms counts the dictionary's terms each config wrote exactly on the
 // clips that say them (dict and dict2), once with the whole dictionary as
-// the context bias (the set's nine terms and the user's own, as the app
-// sends them) and once without. MTD takes no context: its two columns are
-// one request (the hints never reach it).
+// the context bias or MOSS hotwords (the set's nine terms and the user's own,
+// as the app sends them) and once without.
 func mtdTerms(t *testing.T, ctx context.Context, a *omni.ASR, cfg mtdConfig, e *evalRun, runs []*mtdRun) string {
 	t.Helper()
 	full := append(slices.Clone(e.set.Dictionary), e.set.MoreTerms...)
@@ -311,17 +310,15 @@ func mtdTerms(t *testing.T, ctx context.Context, a *omni.ASR, cfg mtdConfig, e *
 		if err != nil {
 			t.Fatalf("%s %s: %v", cfg.name, r.clip.ID, err)
 		}
-		plain := res.Text
-		if cfg.id != models.ASRMoss {
-			res, err := a.Transcribe(ctx, asr.FileRequest{Audio: r.clip.PCM, Format: "pcm", Lang: r.clip.Lang})
-			if err != nil {
-				t.Fatalf("%s %s without the dictionary: %v", cfg.name, r.clip.ID, err)
-			}
-			plain = res.Text
+		withHotwords := res.Text
+		res, err = a.Transcribe(ctx, asr.FileRequest{Audio: r.clip.PCM, Format: "pcm", Lang: r.clip.Lang})
+		if err != nil {
+			t.Fatalf("%s %s without the dictionary: %v", cfg.name, r.clip.ID, err)
 		}
-		w, wo := len(eval.TermsFound(r.clip.Terms, res.Text)), len(eval.TermsFound(r.clip.Terms, plain))
+		plain := res.Text
+		w, wo := len(eval.TermsFound(r.clip.Terms, withHotwords)), len(eval.TermsFound(r.clip.Terms, plain))
 		total, with, without = total+len(r.clip.Terms), with+w, without+wo
-		rows.add(r.clip.ID, strings.Join(r.clip.Terms, ", "), mdText(res.Text), mdText(plain))
+		rows.add(r.clip.ID, strings.Join(r.clip.Terms, ", "), mdText(withHotwords), mdText(plain))
 	}
 	fmt.Fprintf(&b, "\nDictionary terms written exactly: %d of %d with the context bias, %d without.\n\n%s", with, total, without, rows.String())
 	return b.String()
