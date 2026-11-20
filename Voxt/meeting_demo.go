@@ -403,6 +403,9 @@ func (host *meetingDemoHost) openHistoryFeature(feature string) {
 	host.record("openHistoryFeature %s", feature)
 }
 func (host *meetingDemoHost) openHistoryPrivacy() { host.record("openHistoryPrivacy") }
+func (host *meetingDemoHost) saveHistoryDetailWidth(width float64) {
+	host.record("saveHistoryDetailWidth %g", width)
+}
 func (host *meetingDemoHost) openHistorySettingsDialog() {
 	host.historySettingsUI.open = true
 	host.record("openHistorySettingsDialog")
