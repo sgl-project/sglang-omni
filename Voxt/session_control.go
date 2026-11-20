@@ -90,6 +90,9 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 	if a.mgr == nil {
 		return "", nil
 	}
+	if a.bgID != "" && a.bgSess.State.Live() && (req.Kind != store.KindTranscribe || req.Try) {
+		return "", nil // only an ordinary Transcribe may run beside the background answer
+	}
 	if n := a.sessionBlocker(req.Kind); n != nil {
 		if !req.Try {
 			a.showNotice(*n)
@@ -102,10 +105,11 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 	if a.sess.State.Live() {
 		// A Transcribe starts beside a streaming Rewrite or Translate
 		// answer: the answer finishes in the background (wall 116).
-		// Anything else waits, as before. The answer backgrounds only
-		// once the session can start, or a refused start would leave
-		// a.sess frozen on the answer's last live snapshot.
-		if req.Kind != store.KindTranscribe || !a.backgroundAnswer() {
+		// Anything else waits, as before, a try too: it would clear the
+		// card. The answer backgrounds only once the session can start,
+		// or a refused start would leave a.sess frozen on the answer's
+		// last live snapshot.
+		if req.Kind != store.KindTranscribe || req.Try || !a.backgroundAnswer() {
 			return "", nil
 		}
 	}

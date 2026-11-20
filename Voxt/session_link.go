@@ -450,6 +450,9 @@ func (a *app) closeSessions() {
 	if a.mgr != nil && a.bgID != "" {
 		a.mgr.Cancel(a.bgID)
 	}
+	if a.mgr != nil {
+		a.mgr.Close()
+	}
 	if a.hasMenu {
 		for _, acc := range a.carbon {
 			mygo.GlobalShortcut.Unregister(acc)

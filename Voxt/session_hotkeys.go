@@ -25,6 +25,9 @@ import (
 // into its card is Composing: the transcribe shortcut can start beside
 // it (wall 116); the other busy states wait.
 func (a *app) hotkeyPhase() hotkey.Phase {
+	if a.bgID != "" && a.bgSess.State.Live() && !a.sess.State.Live() {
+		return hotkey.Composing
+	}
 	switch a.sess.State {
 	case session.Recording:
 		return hotkey.Recording
@@ -69,10 +72,14 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.writingAnswer() && a.cardSnapshot().CanStop() {
+	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgID != "" && a.bgSess.State.Live() {
 		// The backgrounded answer still streams (the session beside it
-		// ended): the cancel shortcut stops it there, as #3886's.
-		a.stopLLM()
+		// ended): stop a partial answer, cancel one with no text yet.
+		if a.cardSnapshot().CanStop() {
+			a.stopLLM()
+		} else {
+			a.cancelCardSession()
+		}
 		return
 	}
 	if e.Binding == proto.HotkeyCancel && a.answer.open {

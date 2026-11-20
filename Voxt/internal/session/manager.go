@@ -15,14 +15,25 @@ import (
 // Manager runs one session at a time, plus at most one backgrounded one
 // (Background): an answer still composing keeps streaming into its card
 // while a new session records. Goroutine-safe.
+type publication struct {
+	snapshot Snapshot
+	kept     func(Snapshot)
+}
+
 type Manager struct {
 	cfg Config
 
 	mu sync.Mutex
-	// pub orders publication: taken before mu is released, so snapshots
-	// reach OnChange in the order of their revisions.
-	pub sync.Mutex
-	cur *run
+	// pub orders the publication queue: one goroutine performs kept and
+	// OnChange in revision order while callers enqueue and return. Callers
+	// enqueue holding mu (lock order mu, then pub), so a later revision
+	// can never be queued before an earlier one.
+	pub       sync.Mutex
+	pubQ      []publication
+	pubWake   *sync.Cond
+	pubDone   chan struct{}
+	pubClosed bool
+	cur       *run
 	// bg is the backgrounded run; its snapshots are its own (run.own),
 	// published like the current session's (their IDs differ).
 	bg   *run
@@ -70,7 +81,10 @@ func New(cfg Config) *Manager {
 	def(&cfg.StopGrace, DefaultStopGrace)
 	def(&cfg.EndWordPause, DefaultEndWordPause)
 	def(&cfg.WaitNote, DefaultWaitNote)
-	return &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
+	m := &Manager{cfg: cfg, snap: Snapshot{State: Idle}, pubDone: make(chan struct{})}
+	m.pubWake = sync.NewCond(&m.pub)
+	go m.publishLoop()
+	return m
 }
 
 func itoa(n int) string {
@@ -122,9 +136,14 @@ func (m *Manager) SetLast(text string) {
 }
 
 // Start begins a session: it records at once, and resolves the services
-// meanwhile. It fails with ErrBusy while a session is live.
+// meanwhile. It fails with ErrBusy while the current session is live, or
+// while a background answer is live and the new one is not Transcribe.
 func (m *Manager) Start(req StartRequest) (string, error) {
 	m.mu.Lock()
+	if m.bg != nil && m.bg.own.State.Live() && (req.Kind != store.KindTranscribe || req.Try) {
+		m.mu.Unlock()
+		return "", ErrBusy
+	}
 	if m.cur != nil && m.snap.State.Live() {
 		m.mu.Unlock()
 		return "", ErrBusy
@@ -154,10 +173,8 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m.snap.Raw, m.snap.Selection = strings.TrimSpace(t.Raw), t.Selection
 	}
 	s := m.snap.clone()
-	m.pub.Lock()
+	m.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
-	m.publish(s)
-	m.pub.Unlock()
 	r.startScene()
 	go r.main()
 	return r.id, nil
@@ -276,10 +293,8 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 		m.rev++
 		r.own.Rev = m.rev
 		s := r.own.clone()
-		m.pub.Lock()
+		m.enqueue(publication{snapshot: s})
 		m.mu.Unlock()
-		m.publish(s)
-		m.pub.Unlock()
 		return true
 	}
 	if m.cur != r || r.ended {
@@ -300,10 +315,8 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 	m.rev++
 	m.snap.Rev = m.rev
 	s := m.snap.clone()
-	m.pub.Lock()
+	m.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
-	m.publish(s)
-	m.pub.Unlock()
 	return true
 }
 
@@ -329,13 +342,8 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 		r.own.Rev = m.rev
 		s := r.own.clone()
 		m.bg = nil
-		m.pub.Lock()
+		m.enqueue(publication{snapshot: s, kept: kept})
 		m.mu.Unlock()
-		if kept != nil {
-			kept(s)
-		}
-		m.publish(s)
-		m.pub.Unlock()
 		return true
 	}
 	if fn != nil {
@@ -349,18 +357,50 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 	m.rev++
 	m.snap.Rev = m.rev
 	s := m.snap.clone()
-	m.pub.Lock()
+	m.enqueue(publication{snapshot: s, kept: kept})
 	m.mu.Unlock()
-	if kept != nil {
-		kept(s)
-	}
-	m.publish(s)
-	m.pub.Unlock()
 	return true
 }
 
-func (m *Manager) publish(s Snapshot) {
-	if m.cfg.OnChange != nil {
-		m.cfg.OnChange(s)
+// Close drains the publication queue and stops its publisher. Late session
+// events are ignored after shutdown.
+func (m *Manager) Close() {
+	m.pub.Lock()
+	m.pubClosed = true
+	m.pubWake.Signal()
+	m.pub.Unlock()
+	<-m.pubDone
+}
+
+func (m *Manager) enqueue(p publication) {
+	m.pub.Lock()
+	defer m.pub.Unlock()
+	if m.pubClosed {
+		return
+	}
+	m.pubQ = append(m.pubQ, p)
+	m.pubWake.Signal()
+}
+
+func (m *Manager) publishLoop() {
+	defer close(m.pubDone)
+	for {
+		m.pub.Lock()
+		for len(m.pubQ) == 0 && !m.pubClosed {
+			m.pubWake.Wait()
+		}
+		if len(m.pubQ) == 0 && m.pubClosed {
+			m.pub.Unlock()
+			return
+		}
+		p := m.pubQ[0]
+		m.pubQ = m.pubQ[1:]
+		m.pub.Unlock()
+		if p.kept != nil {
+			p.kept(p.snapshot)
+		}
+		if m.cfg.OnChange != nil {
+			m.cfg.OnChange(p.snapshot)
+		}
 	}
 }
