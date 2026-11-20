@@ -4108,10 +4108,11 @@ def test_qwen3_tts_streams_and_whole_requests_keep_to_their_own_rows(
     )
 
 
-@pytest.mark.parametrize("codec_state_slots,whole_request_slots", [(128, 8), (2, 2)])
-def test_qwen3_tts_whole_requests_keep_the_rows_one_replay_takes(
-    monkeypatch: pytest.MonkeyPatch, codec_state_slots: int, whole_request_slots: int
+@pytest.mark.parametrize("codec_state_slots", [128, 2])
+def test_qwen3_tts_whole_requests_keep_as_many_rows_as_streams(
+    monkeypatch: pytest.MonkeyPatch, codec_state_slots: int
 ) -> None:
+    """Whole requests kept only one replay's batch of rows, so long requests holding them all made shorter ones wait behind every long window."""
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
     scheduler.decodes_whole_requests = True
 
@@ -4120,7 +4121,7 @@ def test_qwen3_tts_whole_requests_keep_the_rows_one_replay_takes(
     )
 
     assert arena.num_slots == codec_state_slots
-    assert len(arena.reserved_slots) == whole_request_slots
+    assert len(arena.reserved_slots) == codec_state_slots
 
 
 def test_qwen3_tts_whole_request_after_a_failed_capture_keeps_the_batch_path(
