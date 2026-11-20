@@ -84,6 +84,7 @@ class MossTranscribeDiarizeEngineBuilder(
         enable_async_decode: bool | None,
         enable_plain_fallback: bool,
         async_decode_min_batch_size: int,
+        prefill_drain_below_batch_size: int | None,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
@@ -108,6 +109,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.enable_async_decode = enable_async_decode
         self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.prefill_drain_below_batch_size = prefill_drain_below_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
@@ -355,6 +357,7 @@ class MossTranscribeDiarizeEngineBuilder(
             "enable_async_decode": self.enable_async_decode,
             "enable_plain_fallback": self.enable_plain_fallback,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            "prefill_drain_below_batch_size": self.prefill_drain_below_batch_size,
             # The scheduler otherwise idles on every prefill's sampled-token
             # copy while the next decode could already launch.
             # note (wilsonzheng0327): the speculative overlap loop never takes the async prefill path, so it stays a no-draft setting.
