@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -156,6 +157,37 @@ func TestEarlyCleanWhileRecording(t *testing.T) {
 		if len(m) != 2 || m[1].Content != compose.UserMessage(f.segs[i]) { // system and the segment: Transcribe sends no example (#4244)
 			t.Errorf("request %d cleaned %q, want segment %d", i+1, m[len(m)-1].Content, i+1)
 		}
+	}
+}
+
+// TestEarlyCleanPerAppOn: with the global clean-up off but the matched
+// group's override on, finalized stretches are still cleaned during the
+// recording, as with the global setting on (reverted, none is).
+func TestEarlyCleanPerAppOn(t *testing.T) {
+	f := newEarlyFixture(t)
+	model := &fakeLLM{text: "clean"}
+	h := newHarness(t, &fakeStreamer{final: f.full, pieces: f.stable}, model, func(c *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = false
+		rules := appctx.Rules{Groups: []appctx.Group{{ID: "g-chat", Enabled: true, TranscribeCleanup: appctx.CleanupOn,
+			Apps: []appctx.App{{BundleID: slack.BundleID, Name: "Slack"}}, Features: appctx.Features{Transcribe: true}}}}
+		c.Scene = &SceneConfig{Rules: func() (appctx.Rules, bool) { return rules, true }}
+	})
+	h.audio.notifyAt, h.audio.notified = 3, make(chan struct{})
+	id := h.start()
+	waitEarly(t, model, 1)
+	select {
+	case <-h.audio.notified: // three frames recorded
+	case <-time.After(5 * time.Second):
+		t.Fatal("too few frames recorded")
+	}
+	h.m.Stop(id)
+	if end := h.rec.wait(t); end.State != Done || end.Problem != nil {
+		t.Fatalf("end %+v", end)
+	}
+	reqs := model.requests()
+	m := reqs[0].Messages
+	if len(m) != 2 || m[1].Content != compose.UserMessage(f.segs[0]) {
+		t.Errorf("the early request cleaned %q, want the first stretch", m[len(m)-1].Content)
 	}
 }
 

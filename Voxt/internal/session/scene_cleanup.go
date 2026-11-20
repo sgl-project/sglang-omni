@@ -38,6 +38,25 @@ func (r *run) transcribeCleanup() bool {
 	return global
 }
 
+// windowCleanup is the choice for taking the window picture as the
+// recording starts: the scene's when it is decided. While a browser's
+// address is still pending, the picture goes when an override could
+// turn clean-up on — the recording must not wait for the address, and
+// a picture the ended-up-off choice does not need is never sent.
+func (r *run) windowCleanup() bool {
+	global := r.settings.Features.Transcribe.Enhance
+	if r.req.Kind != store.KindTranscribe || r.req.Note || r.req.Try {
+		return global
+	}
+	if m, known := r.knownScene(); known {
+		if m.Matched() {
+			return m.Group.TranscribeCleanup.Enabled(global)
+		}
+		return global
+	}
+	return global || r.sc.cleanupPending
+}
+
 // resolveServices passes the effective choice in a private settings copy.
 // The recording starts alongside this work, including any URL wait.
 // speech: as Resolver's.
