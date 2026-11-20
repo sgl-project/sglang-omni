@@ -8,6 +8,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Apply a model to several features**: model cards in Settings offer Apply to, letting you choose Transcribe, Translate, Rewrite and Meetings together without changing their other settings.
 
+### Fixed
+
+- **A feature's unavailable language model is not replaced silently**: when the model chosen for Transcribe, Translate or Rewrite is no longer ready, Voxt no longer sends the text to the first ready service. Translate can still use its explicitly selected fallback model.
+
 ### 中文
 
 #### 新增
@@ -20,6 +24,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+
+#### 修复
+
+- **功能选用的语言模型不可用时不再静默换成其他服务**：转录、翻译或改写当前选用的模型不再可用时，Voxt 不会把文字发给列表中的第一个可用服务。翻译仍可使用明确选择的备用模型。
 
 ## [2.1.1] - 2026-11-17
 

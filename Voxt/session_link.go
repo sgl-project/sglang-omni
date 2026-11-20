@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -226,14 +227,22 @@ func resolver(lm local.Services) session.Resolver {
 		// A model that serves the feature (the translation model only
 		// translates).
 		ready := local.ForFeature(lm.Installed(local.LLM), string(kind))
-		m, ok := local.Choose(ready, f.LLM)
+		want := strings.TrimSpace(f.LLM)
+		m, ok := local.Choose(ready, want)
 		if !ok {
 			return svc, nil
 		}
+		// An unavailable explicit choice stays unavailable; only Translate's
+		// own fallback may stand in.
+		if want != "" && m.ID != want {
+			m = local.Model{}
+		}
 		// When it does not open, there is no language model: the text goes
 		// on as recognised.
-		if c, ml, err := lm.LLM(ctx, m.ID); err == nil {
-			svc.LLM, svc.LLMInfo = c, sessionModel(ml)
+		if m.ID != "" {
+			if c, ml, err := lm.LLM(ctx, m.ID); err == nil && ml.ID == m.ID {
+				svc.LLM, svc.LLMInfo = c, sessionModel(ml)
+			}
 		}
 		// Translate's fallback model, or its model when that one did not open.
 		fb := s.Features.Translate.Fallback
@@ -241,7 +250,7 @@ func resolver(lm local.Services) session.Resolver {
 			return svc, nil
 		}
 		c, ml, err := lm.LLM(ctx, fb)
-		if err != nil {
+		if err != nil || ml.ID != fb {
 			return svc, nil
 		}
 		if svc.LLM == nil {
