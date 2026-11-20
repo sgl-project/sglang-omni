@@ -376,6 +376,12 @@ func TestLatencyResultJSON(t *testing.T) {
 }
 
 func latencyMainSHA() string {
+	// The runner passes the source SHA explicitly: test binaries built
+	// with -buildvcs=false or without VCS stamps would else report
+	// "unknown" and break the measurement provenance gate.
+	if sha := os.Getenv("VOXTNEW_MAIN_SHA"); sha != "" {
+		return sha
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"
