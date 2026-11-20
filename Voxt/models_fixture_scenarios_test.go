@@ -8,6 +8,7 @@ import (
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -261,6 +262,45 @@ func modelsFixtureScenarios() []meetingFixtureScenario {
 	add("models-network-readonly", func(input *modelsViewStateInput) {
 		input.NetworkOpen = true
 		input.FamilyReadOnly = true
+	})
+
+	assign := func(id string, kind local.Kind, selected [4]bool) modelAssignmentStateInput {
+		input := modelAssignmentStateInput{Kind: kind, ID: id, Selected: selected, Settings: settings.Defaults()}
+		switch kind {
+		case local.ASR:
+			input.Installed = []local.Model{
+				{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Stream: true},
+				{Kind: local.ASR, ID: dictation.ModelID, Name: "System dictation", Stream: true},
+			}
+		default:
+			input.Installed = []local.Model{
+				{Kind: local.LLM, ID: "translate-only", Name: "Translation only", Features: []string{hotkey.Translate}},
+			}
+		}
+		return input
+	}
+	add("models-assign-asr", func(input *modelsViewStateInput) {
+		assignment := assign(models.ASRAccurate, local.ASR, [4]bool{true, false, true, false})
+		input.Assignment = &assignment
+	})
+	add("models-assign-llm", func(input *modelsViewStateInput) {
+		assignment := assign("translate-only", local.LLM, [4]bool{false, true, false, false})
+		input.Assignment = &assignment
+	})
+	add("models-assign-remote", func(input *modelsViewStateInput) {
+		assignment := assign(models.ASRAccurate, local.ASR, [4]bool{true, true, true, true})
+		assignment.Remote = true
+		input.Assignment = &assignment
+	})
+	add("models-assign-unavailable", func(input *modelsViewStateInput) {
+		assignment := assign("asr.gone", local.ASR, [4]bool{true, false, false, false})
+		input.Assignment = &assignment
+	})
+	add("models-assign-cleanup-off", func(input *modelsViewStateInput) {
+		assignment := assign("llm.all", local.LLM, [4]bool{true, false, false, false})
+		assignment.Installed = []local.Model{{Kind: local.LLM, ID: "llm.all", Name: "Fixture language model"}}
+		assignment.Settings.Features.Transcribe.Enhance = false
+		input.Assignment = &assignment
 	})
 
 	return scenarios

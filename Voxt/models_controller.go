@@ -28,6 +28,7 @@ type modelsLocalUI struct {
 	modelKeepFor    string
 	modelHiddenOpen bool
 	speechContext   speechContextState
+	assign          modelAssignmentLocalUI
 }
 
 // modelsState is the local models and the state of Settings → Speech models.
@@ -150,31 +151,31 @@ func (a *app) usedBy(kind local.Kind, id string) string {
 	return modelsUsedBy(i18n.CurrentTranslator(), a.prefs, a.installed(local.ASR), a.installed(local.LLM), kind, id)
 }
 
-// featureOf is a feature's part of the settings (hotkey.Transcribe…).
-func featureOf(s settings.Settings, feature string) settings.Feature {
+// featurePart is a feature's part of the settings (hotkey.Transcribe…),
+// the one place that maps a feature to it.
+func featurePart(s *settings.Settings, feature string) *settings.Feature {
 	switch feature {
 	case hotkey.Translate:
-		return s.Features.Translate.Feature
+		return &s.Features.Translate.Feature
 	case hotkey.Rewrite:
-		return s.Features.Rewrite.Feature
+		return &s.Features.Rewrite.Feature
+	case hotkey.Meeting:
+		return &s.Features.Meeting.Feature
 	}
-	return s.Features.Transcribe.Feature
+	return &s.Features.Transcribe.Feature
+}
+
+func featureOf(s settings.Settings, feature string) settings.Feature {
+	return *featurePart(&s, feature)
 }
 
 // setFeatureModel sets the model of kind a feature uses ("": the first
 // installed).
 func setFeatureModel(s *settings.Settings, kind local.Kind, feature, id string) {
-	f := &s.Features.Transcribe.Feature
-	switch feature {
-	case hotkey.Translate:
-		f = &s.Features.Translate.Feature
-	case hotkey.Rewrite:
-		f = &s.Features.Rewrite.Feature
-	}
 	if kind == local.ASR {
-		f.ASR = id
+		featurePart(s, feature).ASR = id
 	} else {
-		f.LLM = id
+		featurePart(s, feature).LLM = id
 	}
 }
 
@@ -240,10 +241,6 @@ func (a *app) applyKeepLoaded(m settings.Models) {
 	})
 }
 
-func keepLabels() []string {
-	return keepLabelsFor(i18n.CurrentTranslator())
-}
-
 func keepLabel(value string) string {
 	return keepLabelFor(i18n.CurrentTranslator(), value)
 }
@@ -274,6 +271,21 @@ func (a *app) modelsViewStateInput() modelsViewStateInput {
 		ModelAsk: a.modelAsk, ModelAskFree: a.modelAskFree, ModelShared: a.modelShared, ModelDeciding: a.modelDeciding,
 		NetworkOpen: a.netOpen, NetworkForm: a.netForm, FamilyOthers: familyOthers, FamilyReadOnly: readOnly,
 		AdvancedOpen: a.modelAdvanced, HiddenOpen: a.modelHiddenOpen,
+		Assignment: a.assignmentStateInput(),
+	}
+}
+
+// assignmentStateInput is the Apply to dialog's state, nil while it is
+// closed.
+func (a *app) assignmentStateInput() *modelAssignmentStateInput {
+	assign := a.modelsLocalUI.assign
+	if !assign.open {
+		return nil
+	}
+	_, remote := a.setupOf(assign.kind, assign.id)
+	return &modelAssignmentStateInput{
+		Kind: assign.kind, ID: assign.id, Installed: a.installed(assign.kind), Settings: a.prefs,
+		Selected: assign.selected, Remote: remote,
 	}
 }
 
@@ -292,17 +304,6 @@ func (a *app) saveSpeechContext() {
 	if v != a.prefs.Dictionary.SpeechContext {
 		a.updateSettings(func(s *settings.Settings) { s.Dictionary.SpeechContext = v })
 	}
-}
-
-type autosaveField interface {
-	Changed() bool
-	Focused() bool
-}
-
-// autosave runs save promptSaveDelay after the last change to field in,
-// whose typing st tracks, or when it loses the focus.
-func (a *app) autosave(in autosaveField, st *speechContextState, save func()) {
-	a.autosaveState(in.Changed(), in.Focused(), st, save)
 }
 
 func (a *app) autosaveState(changed, focused bool, st *speechContextState, save func()) {

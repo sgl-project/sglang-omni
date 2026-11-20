@@ -50,6 +50,8 @@ Metric semantics:
 ``max_playback_underrun_mean_s`` / ``max_playback_underrun_p95_s`` /
 ``max_playback_underrun_p99_s``
     Maximum client-side playback starvation for streaming audio requests.
+max_playback_underrun_max_s
+    The largest of those per stream values, so one long stall that p99 hides still shows.
 ``c50`` / ``c100`` / ``c200``
     Percent of multi-chunk streams whose maximum playback underrun is at most
     50 / 100 / 200 ms. Single-chunk streams are reported as N/A.
@@ -73,7 +75,12 @@ import os
 
 import numpy as np
 
-from benchmarks.benchmarker.data import FinishReason, RequestResult
+from benchmarks.benchmarker.data import (
+    FinishReason,
+    MixtureWindow,
+    RequestClass,
+    RequestResult,
+)
 from benchmarks.metrics._format import (
     SPEED_LABEL_WIDTH,
     SPEED_LINE_WIDTH,
@@ -324,6 +331,9 @@ def print_speed_summary(
     print_speed_metric_line(
         lw, "Max underrun p99 (s):", metrics, "max_playback_underrun_p99_s"
     )
+    print_speed_metric_line(
+        lw, "Max underrun max (s):", metrics, "max_playback_underrun_max_s"
+    )
     print_speed_metric_line(lw, "C50 (%):", metrics, "c50")
     print_speed_metric_line(lw, "C100 (%):", metrics, "c100")
     print_speed_metric_line(lw, "C200 (%):", metrics, "c200")
@@ -426,12 +436,24 @@ def build_speed_results(
     outputs: list[RequestResult],
     metrics: dict,
     config: dict,
+    *,
+    summary_by_class: dict[RequestClass, dict[str, float | int | None]] | None = None,
+    mixture: MixtureWindow | None = None,
 ) -> dict:
-    return {
+    speed_results = {
         "summary": metrics,
         "config": config,
         "per_request": [_request_result_to_dict(output) for output in outputs],
     }
+    if summary_by_class is not None:
+        speed_results["summary_by_class"] = summary_by_class
+    else:
+        pass
+    if mixture is not None:
+        speed_results["mixture"] = mixture
+    else:
+        pass
+    return speed_results
 
 
 def _request_result_to_dict(output: RequestResult) -> dict:
@@ -472,4 +494,7 @@ def _request_result_to_dict(output: RequestResult) -> dict:
             if output.dispatch_lateness_s is not None
             else None
         ),
+        "request_class": output.request_class,
+        "sent_at_s": output.sent_at_s,
+        "finished_at_s": output.finished_at_s,
     }

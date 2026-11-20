@@ -16,7 +16,7 @@
             "default": true,
             "installed": true,
             "size_text": "2.5 GB on disk",
-            "used_by": "Used by Transcribe · Translate · Rewrite",
+            "used_by": "Used by Transcribe · Translate · Rewrite · Meetings",
             "memory_text": "Loaded · 2.3 GB in memory",
             "family_text": "Shared with AudioSmith",
             "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
@@ -32,6 +32,14 @@
                 "model_id": "asr.accurate",
                 "label": "Delete",
                 "accessibility_label": "Delete Qwen3-ASR 1.7B (8bit)…"
+              },
+              {
+                "kind": "assign",
+                "model_id": "asr.accurate",
+                "model_kind": "asr",
+                "label": "Apply to",
+                "accessibility_label": "Apply Qwen3-ASR 1.7B (8bit) to features",
+                "tooltip": "Choose the features that use this model"
               }
             ],
             "draft": {
@@ -419,6 +427,14 @@
               "label": "Hide",
               "accessibility_label": "Hide System dictation",
               "tooltip": "Hide it from the features' menus"
+            },
+            {
+              "kind": "assign",
+              "model_id": "asr.system",
+              "model_kind": "asr",
+              "label": "Apply to",
+              "accessibility_label": "Apply System dictation to features",
+              "tooltip": "Choose the features that use this model"
             }
           ]
         }

@@ -757,6 +757,10 @@ class CoordinatorSessions:
                     session.wake.clear()
                     await session.wake.wait()
             for owner in owners:
+                if session.is_closing:
+                    raise RuntimeError("session is closing")
+                else:
+                    pass
                 await self.session_operation(
                     session,
                     "control",
