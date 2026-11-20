@@ -21,12 +21,22 @@ import (
 
 // ---- shortcuts ----
 
-// hotkeyPhase is the session's phase for routing.
+// hotkeyPhase is the session's phase for routing. An answer streaming
+// into its card is Composing: the transcribe shortcut can start beside
+// it (wall 116); the other busy states wait.
 func (a *app) hotkeyPhase() hotkey.Phase {
+	if a.bgID != "" && a.bgSess.State.Live() && !a.sess.State.Live() {
+		return hotkey.Composing
+	}
 	switch a.sess.State {
 	case session.Recording:
 		return hotkey.Recording
-	case session.Reading, session.Recognizing, session.Composing, session.Delivering:
+	case session.Composing:
+		if a.answerBackgroundable() {
+			return hotkey.Composing
+		}
+		return hotkey.Busy
+	case session.Reading, session.Recognizing, session.Delivering:
 		return hotkey.Busy
 	}
 	return hotkey.Idle
@@ -62,6 +72,16 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
+	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgID != "" && a.bgSess.State.Live() {
+		// The backgrounded answer still streams (the session beside it
+		// ended): stop a partial answer, cancel one with no text yet.
+		if a.cardSnapshot().CanStop() {
+			a.stopLLM()
+		} else {
+			a.cancelCardSession()
+		}
+		return
+	}
 	if e.Binding == proto.HotkeyCancel && a.answer.open {
 		switch {
 		case !a.sess.State.Live() || a.sess.ID == a.answer.redo:
@@ -80,9 +100,13 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			return
 		}
 	}
-	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature())
+	phase := a.hotkeyPhase()
+	d := hotkey.Route(e, phase, a.sess.HoldBinding, a.strictFeature())
 	switch d.Action {
 	case hotkey.Start:
+		if phase == hotkey.Composing && d.Feature != hotkey.Transcribe {
+			return // only Transcribe starts beside a streaming answer (wall 116)
+		}
 		hold := ""
 		if d.Hold {
 			hold = e.Binding
@@ -171,7 +195,7 @@ func (a *app) syncHotkeys() {
 		a.hotkeysSent = ""
 		return
 	}
-	params := plan.Configure(a.sess.State.Live() || a.answer.open)
+	params := plan.Configure(a.sess.State.Live() || a.answer.open || a.bgID != "")
 	key := fmt.Sprintf("%+v", params)
 	if key == a.hotkeysSent {
 		return

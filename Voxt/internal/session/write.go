@@ -237,7 +237,7 @@ func (r *run) write(raw, selection string) {
 	case err != nil && r.stopped.Load():
 		// The user stopped it: the card keeps the answer so far, nothing
 		// goes over the selection or in unseen.
-		s := r.m.Current()
+		s := r.m.snapshot(r)
 		r.logf("info", "the answer was stopped after %v: the card keeps %s", llmTime.Round(time.Millisecond), r.logText(s.Draft))
 		o.card = deliver.ReasonCard
 		r.finish(Done, nil, s.Draft, o)
@@ -379,7 +379,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 func (r *run) endWriteFailed(p *Problem, card bool) {
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem, s.Timings.Total = p, total
 		s.Card = card && !r.req.Try

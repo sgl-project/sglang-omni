@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // overlayState owns the session overlay's native and current-frame state.
@@ -38,6 +39,30 @@ type overlayState struct {
 		lang        langMenuState
 		ui          sessionOverlayLocalUI
 	}
+	// pill is the session pill's own window, for while the answer card
+	// holds the overlay window (wall 116, session_pill_window.go).
+	pill struct {
+		win     *mygo.Window
+		shown   bool
+		visible bool
+		mode    overlayMode
+		w, h    int
+		frame   mygo.Rectangle
+		live    struct {
+			id string
+			w  int
+		}
+		textW       map[ovSized]ovMeasured
+		area        mygo.Rectangle
+		dragged     struct{ x, y int }
+		style       mygo.VibrancyStyle
+		passThrough bool
+		reveal      bool
+		fade        int
+		epoch       time.Time
+		projection  sessionOverlayProjection
+		layout      sessionOverlayLayout
+	}
 	laterHook   func(time.Duration, func())
 	measureHook func(ovSized) (float32, float32)
 	measure     func(ovSized) (ovMeasured, bool)
@@ -66,7 +91,10 @@ func (a *app) later(delay time.Duration, fn func()) {
 func (a *app) overlayModeNow() overlayMode {
 	snapshot := a.sess
 	live := snapshot.State.Live() && !snapshot.Try
-	card := a.answer.open && (!live || a.cardSessionLive())
+	// A Transcribe leaves the card on screen (wall 116): the card keeps
+	// the overlay window, the session's pill gets its own (pillModeNow).
+	haveCard := a.answer.open || a.bgID != ""
+	card := haveCard && (!live || a.cardSessionLive() || a.bgID != "" || snapshot.Kind == store.KindTranscribe)
 	switch {
 	case a.notice != nil && a.notice.over:
 		return ovNotice
@@ -88,10 +116,33 @@ func (a *app) overlayModeNow() overlayMode {
 	return ovHidden
 }
 
+// pillModeNow is what the session pill's own window shows (wall 116):
+// a Transcribe session's pill or a notice while the card holds the
+// overlay window. The card's own session (its recording, its streaming
+// answer, whatever its kind) already shows in the card, never here.
+func (a *app) pillModeNow(main overlayMode) overlayMode {
+	snapshot := a.sess
+	if live := snapshot.State.Live() && !snapshot.Try; live && main != ovRecording && main != ovWorking && snapshot.Kind == store.KindTranscribe {
+		switch {
+		case snapshot.State == session.Delivering:
+			return ovHidden
+		case snapshot.State == session.Recording:
+			return ovRecording
+		default:
+			return ovWorking
+		}
+	}
+	if main == ovAnswer && a.notice != nil && !a.notice.over {
+		return ovNotice
+	}
+	return ovHidden
+}
+
 func (a *app) overlaySync() {
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
 	mode := a.overlayModeNow()
+	defer a.pillOverlaySync(mode) // the session pill's own window (wall 116)
 	was := a.ov.shown
 	if mode == ovHidden {
 		a.ov.mode, a.ov.shown = mode, false
@@ -291,6 +342,8 @@ func (a *app) overlayRestyle() {
 	a.ov.w, a.ov.h, a.ov.frame = width, height, frame
 	a.syncLangMenu()
 	a.syncPassThrough()
+	// The card moved: the pill window moves with it (overlaySync's).
+	defer a.pillOverlaySync(a.ov.mode)
 	if a.ov.win == nil {
 		return
 	}
@@ -303,7 +356,7 @@ func (a *app) overlayRestyle() {
 
 // invalidatePaletteOverlays redraws the overlay windows in a new palette.
 func (a *app) invalidatePaletteOverlays() {
-	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin} {
+	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin, a.pill.win} {
 		if window != nil {
 			window.Invalidate()
 		}
@@ -315,6 +368,7 @@ func (a *app) invalidatePaletteOverlays() {
 
 func (a *app) closeOverlay() {
 	a.closeLangWindow()
+	a.closePillOverlay()
 	if a.ov.win != nil {
 		a.ov.win.Destroy()
 		a.ov.win = nil
