@@ -54,6 +54,8 @@ Multimodal preprocessing (tokenization, image/video/audio feature extraction) ru
 
 Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 
+On CUDA, the image and audio encoders run packed attention on FA3 on Hopper (SM90) and on Triton elsewhere, except that the image encoder runs on FA4 on SM100 and SM120 Blackwell GPUs when the FA4 kernels import; a float32 encoder keeps Transformers' attention. Set `--image_encoder.factory.mm_attention_backend` or `--audio_encoder.factory.mm_attention_backend` to `triton_attn`, `fa3` or `fa4` to choose the kernel per stage; `fa3` is rejected on Blackwell.
+
 For MMSU-style audio-input / text-output benchmarks with short requests, use the fused text-path config so the full text path stays inside one worker process:
 
 ```bash

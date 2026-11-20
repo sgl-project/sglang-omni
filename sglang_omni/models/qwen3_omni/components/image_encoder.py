@@ -14,6 +14,9 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 )
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+from sglang_omni.models.qwen3_omni.components.packed_attention import (
+    PackedAttentionBackend,
+)
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
     Qwen3OmniMoeVisionEncoderCompat,
 )
@@ -130,6 +133,7 @@ def build_visual(
     thinker_cfg: Qwen3OmniMoeThinkerConfig,
     torch_dtype: torch.dtype,
     device: str,
+    mm_attention_backend: PackedAttentionBackend | None,
 ) -> nn.Module:
     # note (yzxiao): Stage imports must not initialize the platform layer.
     from sglang_omni.models.qwen3_omni.components.vision_encoder import (
@@ -141,6 +145,7 @@ def build_visual(
         device=device,
         dtype=torch_dtype,
         native_visual_class=VISUAL_CLASS,
+        mm_attention_backend=mm_attention_backend,
     )
     visual = load_module(
         visual,
@@ -169,6 +174,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         *,
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
+        mm_attention_backend: PackedAttentionBackend | None,
     ) -> None:
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
@@ -180,6 +186,7 @@ class Qwen3OmniImageEncoder(nn.Module):
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
             device=device,
+            mm_attention_backend=mm_attention_backend,
         )
         self.spatial_merge_size = int(vision_cfg.spatial_merge_size)
         self.out_hidden_size = int(vision_cfg.out_hidden_size)

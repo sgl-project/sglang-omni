@@ -5,6 +5,9 @@ from typing import Literal
 
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
+from sglang_omni.models.qwen3_omni.components.packed_attention import (
+    PackedAttentionBackend,
+)
 from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
 from sglang_omni.models.qwen3_omni.merge import build_thinker_inputs
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
@@ -105,11 +108,15 @@ def create_encoder_scheduler(
     gpu_id: int | None = None,
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
+    mm_attention_backend: PackedAttentionBackend | None = None,
 ) -> SessionScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     if stage_name == "image_encoder":
         model = Qwen3OmniImageEncoder(
-            model_path=model_path, device=resolved_device, dtype=dtype
+            model_path=model_path,
+            device=resolved_device,
+            dtype=dtype,
+            mm_attention_backend=mm_attention_backend,
         )
     else:
         model = Qwen3OmniAudioEncoder(
@@ -117,6 +124,7 @@ def create_encoder_scheduler(
             device=resolved_device,
             dtype=dtype,
             enable_layer_cuda_graph=enable_layer_cuda_graph,
+            mm_attention_backend=mm_attention_backend,
         )
     # note (db-ol): The audio encoder is not thread safe, so overlapping units could return another session's embeddings.
     return SessionScheduler(

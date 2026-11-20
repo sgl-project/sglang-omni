@@ -235,7 +235,7 @@ def test_image_encoder_preserves_outputs_with_platform_rotary(
         Mock(return_value=SimpleNamespace(vision_config=vision_encoder.config)),
     )
     model = image_encoder.Qwen3OmniImageEncoder(
-        str(tmp_path), device="cpu", dtype="bf16"
+        str(tmp_path), device="cpu", dtype="bf16", mm_attention_backend=None
     )
     image_encoder.optimize_patch_embed(vision_encoder)
     image_grid = torch.tensor([[1, 4, 4], [1, 4, 6]], dtype=torch.long, device="cpu")
@@ -385,7 +385,7 @@ def test_cuda_image_encoder_matches_the_fp32_transformers_encoder(
         Mock(return_value=SimpleNamespace(vision_config=vision_encoder.config)),
     )
     model = image_encoder.Qwen3OmniImageEncoder(
-        str(tmp_path), device="cuda", dtype=dtype
+        str(tmp_path), device="cuda", dtype=dtype, mm_attention_backend=None
     )
     reference = copy.deepcopy(vision_encoder).to("cuda", torch.float32)
     grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long)

@@ -526,8 +526,9 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
             device,
             dtype,
             enable_layer_cuda_graph: bool | None = None,
+            mm_attention_backend,
         ):
-            del model_path, dtype
+            del model_path, dtype, mm_attention_backend
             built["device"] = device
             built["enable_layer_cuda_graph"] = enable_layer_cuda_graph
 
