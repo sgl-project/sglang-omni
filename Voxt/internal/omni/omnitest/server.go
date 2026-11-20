@@ -133,7 +133,7 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 			audio = base64.StdEncoding.EncodeToString(b[min(44, len(b)):])
 		}
 	}
-	record(o, Record{Event: "final", Fields: fields, Samples: samples, Audio: audio})
+	record(o, Record{Event: "final", Host: r.Host, Fields: fields, Samples: samples, Audio: audio})
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
@@ -151,6 +151,10 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		os.Exit(3)
 	}
 	for end := time.Now().Add(o.Delay); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if r.Context().Err() != nil {
+			record(o, Record{Event: "final-cancelled", Samples: samples})
+			return
+		}
 		_, _ = io.WriteString(w, ":\n\n")
 		flush()
 	}
@@ -167,8 +171,22 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	if o.Echo && fields["prompt"] != "" {
 		text += strings.Join(strings.Split(fields["prompt"], "\n"), "，") + "。"
 	}
-	done, _ := json.Marshal(map[string]any{"type": "transcript.text.done", "text": text,
-		"generation_metadata": map[string]any{"generated_token_count": 10, "language": language, "finish_reason": "stop"}})
+	finish := "stop"
+	if o.TokenLimit {
+		finish = "length"
+	}
+	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
+	if o.WindowTexts != nil {
+		metadata["window_texts"] = o.WindowTexts
+	}
+	body := map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata}
+	if o.Segments {
+		body["segments"] = []map[string]any{
+			{"start": 0.5, "end": 1.5, "speaker": "S01", "text": "first"},
+			{"start": 1.5, "end": 2.5, "speaker": "S02", "text": "second"},
+		}
+	}
+	done, _ := json.Marshal(body)
 	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", done)
 	flush()
 }
@@ -194,7 +212,7 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 	}
 	samples, next, language, prompt := 0, 1600, "", ""
 	defer func() {
-		record(o, Record{Event: "live", Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
+		record(o, Record{Event: "live", Host: r.Host, Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
 	}()
 	for {
 		_, b, err := c.Read(ctx)
@@ -270,7 +288,7 @@ func timestamps(o Opts, w http.ResponseWriter, r *http.Request) {
 	for k, v := range r.MultipartForm.Value {
 		fields[k] = v[0]
 	}
-	record(o, Record{Event: "vad-timestamps", Fields: fields, Samples: len(pcm) / 2})
+	record(o, Record{Event: "vad-timestamps", Host: r.Host, Fields: fields, Samples: len(pcm) / 2})
 	type ts struct {
 		Start int `json:"start"`
 		End   int `json:"end"`
@@ -300,7 +318,7 @@ func vadStream(o Opts, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	total := 0
-	defer func() { record(o, Record{Event: "vad-stream", Samples: total}) }()
+	defer func() { record(o, Record{Event: "vad-stream", Host: r.Host, Samples: total}) }()
 	for {
 		_, b, err := c.Read(ctx)
 		if err != nil {

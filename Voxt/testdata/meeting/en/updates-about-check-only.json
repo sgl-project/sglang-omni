@@ -1,0 +1,17 @@
+{
+  "name": "updates-about-check-only",
+  "kind": "updates-settings",
+  "updates_settings": {
+    "available": true,
+    "known": true,
+    "enabled": true,
+    "check_only": true,
+    "bundle_updated": false,
+    "auto_check": true,
+    "auto_install": false,
+    "beta": false,
+    "check_description": "Last checked 2 hours ago.",
+    "automatic_description": "Once a day. A card says when a new version is out.",
+    "beta_note": "Releases only."
+  }
+}

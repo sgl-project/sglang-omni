@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/draft_backoff.h"
+#include "common/draft_backoff.h"
 
 #include <cassert>
 
-using qwen3_asr::DraftBackoff;
+using omni_common::DraftBackoff;
 
 void RecordWindow(DraftBackoff &backoff, int token_count, double seconds) {
   for (int i = 0; i < 4; ++i) {

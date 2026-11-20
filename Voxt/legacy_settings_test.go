@@ -369,9 +369,7 @@ func TestLegacyAPIFormat(t *testing.T) {
 // the next start, once: turned back on, the Dock stays (#3788). Who
 // imported since read it then, and may have changed the switch since.
 func TestLegacyDockAtStart(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
-		t.Skip("no plutil: the previous Voxt's preferences are read on macOS only")
-	}
+	fakeLegacyPlutil(t, map[string]string{"showInDock": "false"}) // runs where there is no plutil
 	home := t.TempDir()
 	lib := filepath.Join(home, "Library", "Containers", legacyBundleID, "Data", "Library")
 	voxtDir := filepath.Join(lib, "Application Support", "Voxt")

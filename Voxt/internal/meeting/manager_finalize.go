@@ -46,6 +46,13 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 }
 
 func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
+	// The final pass holds what it uses; the recording hold would keep MTD's predecessor alive.
+	m.mu.Lock()
+	if m.releaseModels != nil {
+		m.releaseModels()
+		m.releaseModels = nil
+	}
+	m.mu.Unlock()
 	err := FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(mt.ID))
 	m.mu.Lock()
 	defer m.mu.Unlock()

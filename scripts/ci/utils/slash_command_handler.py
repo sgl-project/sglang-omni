@@ -8,6 +8,7 @@ import time
 import github
 from github import Auth, Github
 from resolve_ci_labels import (
+    ASR_STAGE_LABEL,
     CI_STAGES,
     RUN_LINT_ONLY_LABEL,
     resolve_ci_plan,
@@ -77,15 +78,21 @@ def handle_tag_run_ci(
         "lint": frozenset({RUN_LINT_ONLY_LABEL}),
     }
     for stage in CI_STAGES:
-        labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
+        if stage.label == ASR_STAGE_LABEL:
+            labels_by_target["asr"] = frozenset({ASR_STAGE_LABEL})
+        else:
+            labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
         for label, preset in stage.preset_by_model_label.items():
-            if stage.name == "asr":
+            if stage.label == ASR_STAGE_LABEL:
                 target = f"{preset}-asr"
             elif stage.name == "mps":
                 target = f"mps-{preset}"
             else:
                 target = preset
-            labels_by_target[target] = frozenset({stage.label, label})
+            if stage.is_selected_by_model_label:
+                labels_by_target[target] = frozenset({label})
+            else:
+                labels_by_target[target] = frozenset({stage.label, label})
     unknown_targets = requested_targets - labels_by_target.keys()
     if unknown_targets:
         pull_request.create_issue_comment(

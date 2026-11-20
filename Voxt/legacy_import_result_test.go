@@ -88,7 +88,7 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 		want                   []string
 		absent                 []string
 	}{
-		{"setup only", codexSetup, "", []string{"Codex setup: sign in to ChatGPT (Codex) on the Language models page"}, []string{"used by", "not available"}},
+		{"setup only", codexSetup, "", []string{"Codex setup: sign in to ChatGPT (Codex) in Settings → Language models"}, []string{"used by", "not available"}},
 		{"all features", codexSetup, `{"transcription":{"llmEnabled":true,"llmSelectionID":"remote-llm:codex"},"translation":{"modelSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
 			[]string{"Codex (used by Transcribe, Translate, Rewrite): sign in to ChatGPT (Codex) or choose another language model"}, []string{"Codex setup", "not available"}},
 		{"Transcribe had clean-up off", codexSetup, `{"transcription":{"llmEnabled":false,"llmSelectionID":"remote-llm:codex"},"rewrite":{"llmSelectionID":"remote-llm:codex"}}`,
@@ -135,6 +135,23 @@ func TestLegacyHTTPGatewayDocs(t *testing.T) {
 		text := string(doc)
 		if !strings.Contains(text, check.want) || strings.Contains(text, check.old) {
 			t.Errorf("%s does not describe the HTTP gateway behavior", check.file)
+		}
+	}
+	// Only the Address tip in the set-up dialog mentions plain HTTP; no
+	// document may claim the Language models page or the import result
+	// warns about it (remote_dialog_view_state.go draws the tip).
+	for file, claim := range map[string]string{
+		"docs/voxt-migration.md": "the Language models page warns that HTTP sends",
+		"docs/behavior.md":       "页面给出警告",
+		"docs/manual-test.md":    "语言模型页说明 HTTP",
+		"CHANGELOG.md":           "Voxt warns that HTTP sends",
+	} {
+		doc, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(doc), claim) {
+			t.Errorf("%s claims a plain-HTTP warning that the app does not show", file)
 		}
 	}
 }

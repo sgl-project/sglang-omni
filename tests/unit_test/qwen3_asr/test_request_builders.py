@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
 )
 from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcessor
 from sglang_omni.models.qwen3_asr.languages import resolve_language
+from sglang_omni.models.qwen3_asr.mrope_fast_path import all_degenerate
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
     make_qwen3_asr_scheduler_adapters,
@@ -171,6 +172,7 @@ def test_speculative_verify_positions_support_partial_batches(
         multimodal_inputs=[request.multimodal_inputs for request in requests],
         spec_info=SimpleNamespace(positions=positions),
     )
+    assert all_degenerate(batch.multimodal_inputs)
 
     forward_batch.compute_spec_mrope_positions(SimpleNamespace(device="cpu"), batch)
 

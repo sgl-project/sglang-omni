@@ -56,7 +56,7 @@ To run it on Ascend NPU, follow the [MiniMax-Music3 Ascend NPU guide](../other_p
 The standalone `music3_server` runs entirely in C++ under
 `sglang_omni_mlx/native/`; it uses the same HTTP request fields as the examples
 below. Download the pinned converted checkpoint, then build with the native
-runtime's existing MLX 0.32.3 toolchain:
+runtime's pinned MLX toolchain:
 
 ```bash
 python sglang_omni_mlx/native/ci/provision_models.py "$MUSIC3_DATA" \

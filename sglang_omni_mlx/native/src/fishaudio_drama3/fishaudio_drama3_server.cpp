@@ -31,14 +31,14 @@
 #include <string>
 #include <vector>
 
+#include "common/asr_service.h"
 #include "common/audio.h"
 #include "common/reference_audio.h"
+#include "common/speech_service.h"
 #include "common/text.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "fishaudio_drama3/fishaudio_drama3_text.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/speech_service.h"
 
 namespace {
 
