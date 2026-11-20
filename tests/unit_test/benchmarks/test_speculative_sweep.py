@@ -804,11 +804,12 @@ def test_omni_sweep_preserves_scoring_denominator_and_missing_first_output(
         assert "--stream" in command
         payload = {
             "summary": {"total_samples": 4, "correct": 1},
+            "config": {"wall_clock_s": 7.3},
             speed_field: {
                 "total_requests": 4,
                 "completed_requests": 2,
                 "failed_requests": 2,
-                "throughput_qps": 1.0,
+                "throughput_qps": 0.274,
                 "latency_p95_s": 0.2,
                 "text_ttft_p95_s": first_output,
             },
@@ -825,6 +826,7 @@ def test_omni_sweep_preserves_scoring_denominator_and_missing_first_output(
     assert len(loads) == 1
     assert loads[0].total_requests == 8
     assert loads[0].failed_requests == 4
+    assert loads[0].throughput_requests_per_s == pytest.approx(2 / 7.3)
     assert loads[0].accuracy == {"Accuracy": 0.25}
     assert bool(loads[0].incomplete_reasons) is (first_output is None)
 

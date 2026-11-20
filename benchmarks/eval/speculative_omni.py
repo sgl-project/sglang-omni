@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, FiniteFloat
 
 from benchmarks.eval.speculative_workloads import (
     HOST,
@@ -28,13 +28,17 @@ class OmniSpeed(BaseModel):
     total_requests: int
     completed_requests: int
     failed_requests: int
-    throughput_qps: float | None = None
     latency_p95_s: float | None = None
     text_ttft_p95_s: float | None = None
 
 
+class OmniTiming(BaseModel):
+    wall_clock_s: FiniteFloat
+
+
 class OmniResults(BaseModel):
     summary: OmniAccuracy
+    config: OmniTiming
     speed: OmniSpeed | None = None
     speed_metrics: OmniSpeed | None = None
 
@@ -50,6 +54,7 @@ def measure_omni(
     loads: list[LoadMeasurement] = []
     for concurrency in settings.concurrencies:
         speeds: list[OmniSpeed] = []
+        throughputs_requests_per_s: list[float] = []
         accuracies: list[float] = []
         memory_peaks: list[float] = []
         for repeat in range(1, settings.repeats + 1):
@@ -117,6 +122,13 @@ def measure_omni(
                 )
             else:
                 speeds.append(speed)
+            # note (daii-0818): the client rounds QPS for display, so use the raw elapsed time for the sweep.
+            if result.config.wall_clock_s > 0:
+                throughputs_requests_per_s.append(
+                    speed.completed_requests / result.config.wall_clock_s
+                )
+            else:
+                pass
             if result.summary.total_samples > 0:
                 accuracies.append(result.summary.correct / result.summary.total_samples)
             else:
@@ -127,13 +139,7 @@ def measure_omni(
                 concurrency=concurrency,
                 total_requests=sum(speed.total_requests for speed in speeds),
                 failed_requests=sum(speed.failed_requests for speed in speeds),
-                throughput_requests_per_s=mean_or_none(
-                    [
-                        speed.throughput_qps
-                        for speed in speeds
-                        if speed.throughput_qps is not None
-                    ]
-                ),
+                throughput_requests_per_s=mean_or_none(throughputs_requests_per_s),
                 latency_p95_s=mean_or_none(
                     [
                         speed.latency_p95_s
@@ -151,6 +157,11 @@ def measure_omni(
                 accuracy={"Accuracy": accuracy} if accuracy is not None else {},
                 gpu_memory_peak_mib=max(memory_peaks, default=None),
                 incomplete_reasons=(["No scored samples"] if accuracy is None else [])
+                + (
+                    ["Missing positive measurement duration"]
+                    if len(throughputs_requests_per_s) != len(speeds)
+                    else []
+                )
                 + (
                     ["Missing streamed first-output latency"]
                     if any(speed.text_ttft_p95_s is None for speed in speeds)

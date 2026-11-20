@@ -216,6 +216,7 @@ async def run(
                 "warmup": runner.config.effective_warmup,
                 "max_concurrency": args.max_concurrency,
                 "request_rate": args.request_rate,
+                "wall_clock_s": runner.wall_clock_s,
                 **fingerprint_fields(args.fingerprint, base_url),
             },
             args.output_dir,

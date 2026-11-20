@@ -15,7 +15,6 @@ stages:
     factory:
       max_seq_len: 8192
     engine:
-      enable_mixed_chunk: false
       speculative_algorithm: DFLASH
       speculative_draft_model_path: yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8
       speculative_draft_model_revision: 47029d797b43f6fb8fba8948784ad221a55aafd6
