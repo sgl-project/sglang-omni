@@ -104,8 +104,10 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
 		return ovHidden
-	case live && snapshot.State == session.Recording && snapshot.ID == a.box.session:
-		return ovHidden // the Rewrite card with the input box shows the recording
+	case live && a.box.open && snapshot.ID == a.boxSessionID():
+		// The Rewrite card shows its own session until the answer takes
+		// its place: no pill beside or after it (wall 122).
+		return ovHidden
 	case live && snapshot.State == session.Recording:
 		return ovRecording
 	case live:
@@ -140,6 +142,9 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
+	if a.box.open {
+		defer a.boxSync() // the Rewrite card draws the answer card's state
+	}
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
 	mode := a.overlayModeNow()
@@ -171,6 +176,15 @@ func (a *app) overlaySync() {
 	defer a.syncLangMenu()
 	if !a.overlayNative() {
 		a.syncPassThrough()
+		return
+	}
+	if a.boxHoldsCard(mode) {
+		// Rewrite's card draws its answer itself: one window from the
+		// shortcut to the last follow-up (wall 122).
+		a.ov.shown = false
+		if was {
+			a.overlayFadeOut()
+		}
 		return
 	}
 	if a.ov.win == nil {

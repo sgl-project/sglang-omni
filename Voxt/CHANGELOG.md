@@ -7,12 +7,30 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Transcribe clean-up per app group** (#3893): choose Use default, On or Off in App enhancement. Keep clean-up off globally and enable it for messaging apps, or disable it for terminals while keeping it on elsewhere. Off skips the language model. Existing groups keep using the global setting.
+- **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
+
+### Changed
+
+- **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
+
+### Fixed
+
+- **Rewrite is one card from the shortcut to the last follow-up** (#4375): the Rewrite card no longer hands over to a preview at the screen's edge and then to a separate answer card. It stays while your speech is recognised and the language model works, and says what it is doing; the answer is written in that same card, above the text box, with Insert and Copy in its header. The text box stays at the foot of the card: type there and press Enter to follow up (no recording needed), or press the Rewrite shortcut to say it, and the conversation scrolls above. The card keeps one height and follows Rewrite's card size for its width (Fill included), with the size button in its corner. Typed text alone is now enough: nothing has to be said. With Rewrite's card switched off, the card closes once the result is inserted. Sending again after a failure keeps the card too.
 
 ### 中文
 
 #### 新增
 
 - **按 App 分组设置转录整理**（#3893）：在应用增强中选择“使用默认值”“已开启”或“已关闭”。可以全局关闭整理，只为聊天 App 开启，也可以全局开启、为终端关闭。关闭时跳过语言模型。已有分组继续使用全局设置。
+- **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
+
+#### 变更
+
+- **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
+
+#### 修复
+
+- **改写从按下快捷键到最后一次追问只有一张卡片**（#4375）：改写卡片不再先换成屏幕边缘的预览条、再换成另一张结果卡片。识别语音和语言模型处理时它一直留在屏幕上，并说明正在做什么；结果直接写在这张卡片里、输入框的上方，标题栏有“插入”和“复制”。输入框一直在卡片底部：在里面打字按 Enter 就是追问（不用录音），也可以按改写快捷键说出来，对话在上方滚动。卡片高度固定，宽度跟随改写的卡片大小（包括“充满”），角上有切换大小的按钮。只打字不说话也可以发送。关掉改写的“显示卡片”时，结果插入后卡片关闭。发送失败后再次发送，卡片同样留着。
 
 ## [2.1.2] - 2026-11-19
 

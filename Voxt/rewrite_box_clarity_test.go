@@ -12,7 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-const rewriteBoxTipText = "Speak what to do. Type, paste or drop images to add material. Enter sends."
+const rewriteBoxTipText = "Speak or type what to do. Paste or drop images to go with it."
 
 func TestRewriteBoxSubtitle(t *testing.T) {
 	for _, test := range []struct {
@@ -51,17 +51,17 @@ func TestRewriteBoxFooterAndPlaceholder(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
 	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording})
-	if got := a.boxViewState().EditorPlaceholder; got != "Add text (optional)" {
+	if got := a.boxViewState().EditorPlaceholder; got != "Or type here" {
 		t.Errorf("placeholder %q", got)
 	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	for _, want := range []string{"Enter", "send", "Esc", "close", "paste or drop up to 4 images"} {
+	for _, want := range []string{"Enter", "send", "Esc", "close"} {
 		if !hasExact(tt, want) {
 			t.Errorf("%q is missing from %q", want, firstTexts(tt))
 		}
 	}
-	for _, unwanted := range []string{"Type or paste more text, or drop images", "Say the instruction, then Enter sends"} {
+	for _, unwanted := range []string{"Type or paste more text, or drop images", "Say the instruction, then Enter sends", "paste or drop up to 4 images"} {
 		if has(tt, unwanted) {
 			t.Errorf("old hint %q remains in %q", unwanted, firstTexts(tt))
 		}
@@ -117,7 +117,7 @@ func TestRewriteBoxSyncsAnswerVibrancy(t *testing.T) {
 	previous := newBoxNativeWindow
 	newBoxNativeWindow = func(mygo.WindowOptions) boxDropWindow { return native }
 	defer func() { newBoxNativeWindow = previous }()
-	a.box = rewriteBox{open: true, shown: true}
+	a.box = rewriteBox{open: true, shown: true, winShown: true} // already placed: no screen to ask in a test
 	a.boxSync()
 	want := mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
 		Radius: float64(faceRadius(a.prefs.Overlay, ovAnswer, boxWinH)), Dark: true}
