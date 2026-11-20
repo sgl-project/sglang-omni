@@ -1523,7 +1523,7 @@ def register_generate(app: FastAPI) -> None:
     interleaved = app.state.interleaved_output
 
     @app.post("/generate")
-    async def generate(req: RolloutGenerateRequest) -> Response:
+    async def generate(req: RolloutGenerateRequest, http_request: Request) -> Response:
         client: Client = app.state.client
 
         provided = [
@@ -1574,10 +1574,13 @@ def register_generate(app: FastAPI) -> None:
                 )
             else:
                 pass
-            result = await client.completion(
-                gen_req,
+            result = await complete_unless_disconnected(
+                http_request,
+                client,
+                client.completion(
+                    gen_req, request_id=request_id, audio_format=audio_format
+                ),
                 request_id=request_id,
-                audio_format=audio_format,
             )
         except ClientError as exc:
             raise HTTPException(
