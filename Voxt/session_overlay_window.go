@@ -24,20 +24,22 @@ type overlayState struct {
 			id string
 			w  int
 		}
-		textW       map[ovSized]ovMeasured
-		area        mygo.Rectangle
-		dragged     struct{ x, y int }
-		style       mygo.VibrancyStyle
-		passThrough bool
-		reveal      bool
-		fade        int
-		epoch       time.Time
-		native      bool
-		stream      streamReveal
-		projection  sessionOverlayProjection
-		layout      sessionOverlayLayout
-		lang        langMenuState
-		ui          sessionOverlayLocalUI
+		textW          map[ovSized]ovMeasured
+		area           mygo.Rectangle
+		dragged        struct{ x, y int }
+		cardDragged    struct{ x, y int }
+		cardDraggedSet bool
+		style          mygo.VibrancyStyle
+		passThrough    bool
+		reveal         bool
+		fade           int
+		epoch          time.Time
+		native         bool
+		stream         streamReveal
+		projection     sessionOverlayProjection
+		layout         sessionOverlayLayout
+		lang           langMenuState
+		ui             sessionOverlayLocalUI
 	}
 	// pill is the session pill's own window, for while the answer card
 	// holds the overlay window (wall 116, session_pill_window.go).
@@ -138,6 +140,20 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 	return ovHidden
 }
 
+// sessionOverlayWindowOptions leaves StateKey empty because the pill and
+// card share this window; restored bounds would move the next mode.
+func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
+	opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
+	opts.Vibrancy = mygo.VibrancyHUD
+	opts.X, opts.Y = frame.X, frame.Y
+	return opts
+}
+
+func (a *app) saveCardDrag() {
+	a.ov.cardDragged = a.ov.dragged
+	a.ov.cardDraggedSet = true
+}
+
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
 	a.paceDraft()
@@ -145,6 +161,14 @@ func (a *app) overlaySync() {
 	mode := a.overlayModeNow()
 	defer a.pillOverlaySync(mode) // the session pill's own window (wall 116)
 	was := a.ov.shown
+	if mode == ovAnswer && a.ov.mode != ovAnswer && a.ov.cardDraggedSet {
+		a.ov.dragged = a.ov.cardDragged
+	} else if mode != ovAnswer && a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
+	if (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && (mode == ovHidden || mode == ovNotice) && !a.ov.cardDraggedSet {
+		a.saveCardDrag()
+	}
 	if mode == ovHidden {
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
@@ -188,11 +212,14 @@ func (a *app) overlaySync() {
 			a.postSessionOverlayMeasurements,
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
 		)
-		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
-		opts.Vibrancy = mygo.VibrancyHUD
+		opts := sessionOverlayWindowOptions(frame, hudContent(content))
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
 		a.ov.passThrough = false
+		a.overlayDraggedAt(a.ov.win.ContentBounds())
+		frame = a.overlayFrame(width, height)
+		a.ov.frame = frame
+		moved = true
 	}
 	a.syncPassThrough()
 	if !was {
@@ -260,7 +287,18 @@ func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 	} else {
 		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
 	}
+	if a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
 	a.syncLangMenu()
+}
+
+func (a *app) overlayDraggedAt(bounds mygo.Rectangle) {
+	x, y := layout.Place(a.ov.area, a.prefs.Overlay, bounds.Width, bounds.Height)
+	a.ov.dragged.x, a.ov.dragged.y = bounds.X-x, bounds.Y-y
+	if a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
 }
 
 func (a *app) syncPassThrough() {

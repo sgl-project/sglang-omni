@@ -4,6 +4,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reopened answer cards keep their moved position**: closing and reopening a card, including from Reopen card or after a retry, now restores its previous position instead of centering it. The position also survives recording and a failed automatic insertion that falls back to a card; the chosen card width still follows the feature setting, and the height still follows the answer.
+
+### 中文
+
+#### 修复
+
+- **重新打开的答案卡片保留拖动后的位置**：关闭再打开卡片，包括从「重新打开卡片」恢复或重试后，现在会回到之前的位置，不再回到屏幕中央。录音和自动插入失败后回落到卡片时，也会保留这个位置；卡片宽度仍按各功能的设置，高度仍随回答内容变化。
+
 ## [2.1.2] - 2026-11-19
 
 ### Added

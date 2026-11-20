@@ -235,6 +235,65 @@ func TestLiveLinesFromStart(t *testing.T) {
 	}
 }
 
+// The first answer inherits the recording overlay's drag when no earlier
+// card has a position of its own.
+func TestFirstCardKeepsLiveDrag(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		notice bool
+	}{
+		{name: "direct hidden"},
+		{name: "notice then hidden", notice: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.showNotice(sessionNotice{text: "Nothing to paste yet."})
+			a.closeNotice()
+			a.sess = session.Snapshot{ID: "s1", State: session.Recording}
+			a.overlaySync()
+			a.ov.dragged.x, a.ov.dragged.y = -200, -100
+			if test.notice {
+				a.sess = session.Snapshot{}
+				a.showNotice(sessionNotice{text: "Recording finished."})
+				a.closeNotice()
+			} else {
+				a.sess = session.Snapshot{ID: "s1", State: session.Delivering}
+				a.overlaySync()
+				a.sess = session.Snapshot{}
+			}
+			a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+			a.overlaySync()
+			anchored := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+			if frame := a.ov.frame; frame.X != anchored.X-200 || frame.Y != anchored.Y-100 {
+				t.Errorf("the first card lost the recording drag: %+v, anchored %+v", frame, anchored)
+			}
+		})
+	}
+}
+
+// A later recording has its own drag; it does not replace the position
+// already saved for the user's card.
+func TestLaterRecordingKeepsSavedCardDrag(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
+	a.answer = answerCard{}
+	a.sess = session.Snapshot{ID: "recording", State: session.Recording}
+	a.overlaySync()
+	a.ov.dragged.x, a.ov.dragged.y = -50, -40
+	a.sess = session.Snapshot{ID: "recording", State: session.Delivering}
+	a.overlaySync()
+	a.sess = session.Snapshot{}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	if a.ov.frame != moved {
+		t.Errorf("the later recording replaced the card's drag: %+v, want %+v", a.ov.frame, moved)
+	}
+}
+
 // TestLiveLinesScroll: live text in lines longer than the face takes the
 // wheel: the overlay does not let the pointer through, the wheel scrolls
 // up to what came before and new words leave it there; back at the end,
