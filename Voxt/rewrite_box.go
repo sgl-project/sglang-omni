@@ -432,21 +432,44 @@ func (a *app) boxRemoveAutoImage() {
 	a.boxSync()
 }
 
+// boxClipboardImages are the clipboard's picture formats the helper reads
+// (clipboard.image: PNG, JPEG, HEIC, TIFF, WebP; MyGo lists TIFF as PNG).
+var boxClipboardImages = []transfer.Format{transfer.PNG, "image/jpeg", "image/heic", "image/webp"}
+
+// boxImageFileExtensions are the copied files the helper turns into a
+// picture (an image type ImageIO decodes).
+var boxImageFileExtensions = []string{".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff", ".gif", ".webp", ".bmp"}
+
+// boxCopiedImageFile says whether the clipboard's first copied file is a
+// picture: the helper reads only that one.
+func boxCopiedImageFile(svc uiServices) bool {
+	paths, err := svc.ReadClipboardData(transfer.FileList).Files()
+	return err == nil && len(paths) > 0 && slices.Contains(boxImageFileExtensions, strings.ToLower(filepath.Ext(paths[0])))
+}
+
 // boxPaste is ⌘V in the box: a picture on the clipboard goes into the
-// box (text it also holds wins, as with the copied-image setting); an
-// image file copied in Finder comes through the helper (HEIC too); text
-// pastes as ever. It reports whether the key was taken.
+// box. An image file copied in Finder is the picture although Finder
+// also puts its name there as text (the helper reads the file, HEIC
+// too); any other text wins, as with the copied-image setting (a copied
+// spreadsheet range or styled text brings a picture of itself along).
+// Text pastes as ever. It reports whether the key was taken.
 func (a *app) boxPaste(svc uiServices) bool {
 	formats := svc.ClipboardFormats()
 	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
 	switch {
-	case has(transfer.Text):
+	case has(transfer.FileList):
+		if !boxCopiedImageFile(svc) {
+			return false // another file: its name pastes
+		}
+	case has(transfer.Text), !slices.ContainsFunc(boxClipboardImages, has):
 		return false
-	case (has(transfer.PNG) || has(transfer.FileList)) && len(a.box.images)+a.boxPending >= boxMaxImages:
+	}
+	switch {
+	case len(a.box.images)+a.boxPending >= boxMaxImages:
 		a.box.limit = true
 		a.boxSync()
 		return true
-	case has(transfer.PNG), has(transfer.FileList):
+	default:
 		gen := a.boxGen
 		seq := a.boxReserve()
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
@@ -461,7 +484,6 @@ func (a *app) boxPaste(svc uiServices) bool {
 		})
 		return true
 	}
-	return false
 }
 
 // boxDrop takes picture files dropped on the box.

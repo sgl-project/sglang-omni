@@ -68,3 +68,4 @@ Privacy and where data goes	L	TestLearnNeverLogsTheEdit	none
 Drag the Rewrite card	L	TestRewriteCardDrags	That the card's face drags the window (DragWindow) is seen on a Mac only: the headless tester does not move windows
 Cover the Rewrite card with other windows; the shortcut brings it back	L	TestRewriteCardIsNotAlwaysOnTop	The window level over another active app is seen on a Mac only
 Cover an answer card with other windows; a new answer comes in front	L	TestCardLevel	The window level over another active app is seen on a Mac only, and overlaySync sets it on a native window only
+Paste a copied picture into the Rewrite card	L	TestRewriteBoxPastesCopiedPictures	Each app's real clipboard types (Finder, browsers, chat apps) and the helper's decoding are seen on a Mac only
