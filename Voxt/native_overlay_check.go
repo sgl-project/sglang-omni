@@ -220,7 +220,7 @@ func (a *app) overlayCheck(dir string) {
 			// card, grown to the work area) and the language menu over it, 20 below the face's bottom edge
 			// (or above its top).
 			largest := layout.CardSizes[len(layout.CardSizes)-1]
-			wide := layout.Frame(area, a.prefs.Overlay, max(layout.NoticeW2, largest.W), area.Height-int(math.Round(a.prefs.Overlay.Margin))+langMenuHeight()+ovLangGap)
+			wide := layout.Frame(area, a.prefs.Overlay, max(layout.NoticeW2, largest.Width(area, a.prefs.Overlay.Margin)), area.Height-int(math.Round(a.prefs.Overlay.Margin))+langMenuHeight()+ovLangGap)
 			bw, bh := wide.Width+60, wide.Height+40
 			region = mygo.Rectangle{X: wide.X - 30, Y: wide.Y + wide.Height - layout.Pad + 20 - bh, Width: bw, Height: bh}
 			opts := floatingWindowOptions("VoxtNew overlay check", bw, bh, ovCheckBackdropContent(bd.dark))

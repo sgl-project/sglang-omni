@@ -203,9 +203,9 @@ func meetingOverlaySizeButton(c *ui.Context, step int) (next int, clicked bool) 
 	}
 	button := ui.ButtonBase(c).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
 		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
-	alpha := float32(0.42)
+	alpha := float32(0.6)
 	if button.Hovered() {
-		alpha = 0.92
+		alpha = 0.95
 	}
 	return next, button.Children(func() {
 		ui.Icon(c, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))

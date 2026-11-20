@@ -26,7 +26,7 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
-		cardBody(context, state.SessionID, card, bodyHeight, actions, local, onMeasured)
+		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)
 		if card.Message != "" {
 			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(card.Message).Children(func() {
@@ -54,9 +54,9 @@ func sizeStepButton(context *ui.Context, step int) bool {
 	}
 	button := ui.ButtonBase(context).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
 		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
-	alpha := float32(0.42)
+	alpha := float32(0.6)
 	if button.Hovered() {
-		alpha = 0.92
+		alpha = 0.95
 	}
 	return button.Children(func() {
 		ui.Icon(context, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
@@ -246,10 +246,10 @@ func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phas
 	})
 }
 
-func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
 		block := sessionCardBlockAt(card, 0)
-		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight)
+		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight, width)
 		if actions.overlayTranscriptResult(context.Key("ov-transcript"), request) {
 			return
 		}
@@ -275,18 +275,18 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(scroll).Children(func() {
 		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
 			for index := 0; index < sessionCardBlockCount(card); index++ {
-				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, actions, local, onMeasured)
+				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, width, actions, local, onMeasured)
 			}
 		})
 	})
 }
 
-func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
-	text, _, _ := sessionCardBlockText(card, block)
+func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+	text, _, _ := sessionCardBlockText(block, width)
 	gap := sessionCardBlockGap(block, index)
 	switch {
 	case block.Kind == sessionCardBubble:
-		cardBubbleView(context, sessionID, card, block, index, gap, actions, local, onMeasured)
+		cardBubbleView(context, sessionID, card, block, index, gap, width, actions, local, onMeasured)
 	case block.Markdown:
 		cardMarkdown(context, local.Overlay, text, ovCardText, block.Live, onMeasured).Margin(gap, 0, 0, 0)
 	case block.Kind == sessionCardProblem:
@@ -313,8 +313,8 @@ func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewS
 // RewriteConversationBubble): the user's input fits its text on the right,
 // up to 340 wide in the small card; an answer takes that width and shows
 // Copy under the pointer.
-func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
-	text, title, quote := sessionCardBlockText(card, block)
+func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+	text, title, quote := sessionCardBlockText(block, width)
 	justify := ui.Start
 	background, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
 	titleAlpha, textAlpha := float32(0.64), float32(0.92)
@@ -347,7 +347,7 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 				ui.Text(context, block.Title).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleAlpha)).SingleLine().Ellipsis("…").MaxWidth(text.wrap)
 			}
 			textColor := ui.RGBA(255, 255, 255, textAlpha)
-			request := newSessionOverlayPreviewRequest(context, sessionID, card, block, index, textColor, 0)
+			request := newSessionOverlayPreviewRequest(context, sessionID, card, block, index, textColor, 0, width)
 			switch {
 			case !block.User && actions.overlayTranscriptResult(context.Key("preview"), request):
 			case block.Markdown:
