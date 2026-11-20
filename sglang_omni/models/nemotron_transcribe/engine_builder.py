@@ -16,15 +16,22 @@ from sglang.kernels.ops.mamba.triton_ops import (
 )
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
+from torch import nn
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.models.nemotron_transcribe.config import (
     DEFAULT_MAX_RUNNING_REQUESTS,
     EncoderCompileMode,
+    PromptLayout,
 )
 from sglang_omni.models.nemotron_transcribe.encoder_service import (
     NemotronTranscribePreLMEncoderService,
     build_cache_namespace,
+)
+from sglang_omni.models.nemotron_transcribe.fp8_linear import (
+    count_fp8_linears,
+    dequantize_fp8_linears,
+    fp8_gemm_supported,
 )
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     MODEL_ARCH_OVERRIDE,
@@ -92,6 +99,9 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         compile_perception: bool,
         perception_cuda_graphs: bool,
         perception_compile_mode: EncoderCompileMode,
+        perception_fp8: bool,
+        prompt_layout: PromptLayout = "audio_first",
+        loop_guard: bool = True,
     ) -> None:
         if perception_cuda_graphs and not compile_perception:
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
@@ -114,6 +124,9 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.compile_perception = compile_perception
         self.perception_cuda_graphs = perception_cuda_graphs
         self.perception_compile_mode = perception_compile_mode
+        self.perception_fp8 = bool(perception_fp8)
+        self.prompt_layout: PromptLayout = prompt_layout
+        self.loop_guard = bool(loop_guard)
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
@@ -152,6 +165,13 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
 
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        if self.loop_guard:
+            # SGLang runs per-request logit processors only behind this flag.
+            overrides["enable_custom_logit_processor"] = True
+        else:
+            pass
+
     def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
             raise ValueError(
@@ -173,6 +193,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         """The builder interface invokes this after decoder graph capture."""
         model.encoder_max_batch_size = self.encoder_max_batch_size
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
+        self.select_fp8_perception(model.perception)
         if self.compile_perception:
             device = next(model.perception.parameters()).device
             model.perception.to(device=device)
@@ -188,6 +209,29 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         else:
             pass
 
+    def select_fp8_perception(self, perception: nn.Module) -> None:
+        """Keep FP8 encoder GEMMs where enabled and supported, else fold them to BF16."""
+        fp8_linears = count_fp8_linears(perception)
+        if not fp8_linears:
+            return
+        else:
+            pass
+        device = next(perception.parameters()).device
+        if self.perception_fp8 and fp8_gemm_supported(device):
+            logger.info(
+                "Nemotron Transcribe encoder runs %d linears with FP8 GEMMs",
+                fp8_linears,
+            )
+        else:
+            dequantize_fp8_linears(perception)
+            logger.info(
+                "Nemotron Transcribe encoder dequantized %d FP8 linears "
+                "(perception_fp8=%s, device=%s)",
+                fp8_linears,
+                self.perception_fp8,
+                device,
+            )
+
     def setup_runtime_resources(
         self,
         model: NemotronTranscribeForConditionalGeneration,
@@ -195,6 +239,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
     ) -> None:
         """Start perception encode after decoder graphs and encoder compile."""
         del server_args
+        model.attach_ctc_head(self.checkpoint_dir)
         if not self.enable_pre_lm_encoder:
             return
         else:
@@ -233,6 +278,9 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         return make_scheduler_adapters(
             tokenizer=self.tokenizer,
             max_new_tokens=self.max_new_tokens,
+            context_length=self.context_length,
+            prompt_layout=self.prompt_layout,
+            loop_guard=self.loop_guard,
             audio_token_estimator=self.hf_config.audio_token_estimator,
             audio_token_id=self.hf_config.audio_token_id,
             eos_token_id=self.hf_config.eos_token_id,
@@ -240,6 +288,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             vocab_size=self.hf_config.vocab_size,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
+            ctc_scorer=model.ctc_column_scores,
         )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[NemotronTranscribeRequestData]:

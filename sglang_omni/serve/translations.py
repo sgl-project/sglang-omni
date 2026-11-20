@@ -88,17 +88,25 @@ def register_translations(app: FastAPI) -> None:
         except HTTPException as exc:
             return http_exception_response(exc, param="response_format")
         segment_timestamps = response_format in speech_to_text.SEGMENT_RESPONSE_FORMATS
+        adapter = speech_to_text.resolve_speech_to_text_adapter(
+            getattr(app.state, "architectures", None)
+        )
         # Note (Akazaakane): Reject unsupported subtitle requests before audio
         # decode and GPU dispatch, matching the transcription endpoint.
-        if (
-            segment_timestamps
-            and not speech_to_text.resolve_speech_to_text_adapter(
-                getattr(app.state, "architectures", None)
-            ).supports_segment_timestamps
-        ):
+        if segment_timestamps and not adapter.supports_segment_timestamps:
             return invalid_request(
                 f"response_format {response_format!r} requires a "
                 "segment-timestamp capability",
+                param="response_format",
+            )
+        else:
+            pass
+        # Subtitles built from word alignment cannot time a translation: its
+        # words are not the words spoken in the audio.
+        if segment_timestamps and adapter.supports_word_timestamps:
+            return invalid_request(
+                f"response_format {response_format!r} is not available for "
+                "translations of this model; use json, verbose_json, or text",
                 param="response_format",
             )
         else:
@@ -118,7 +126,7 @@ def register_translations(app: FastAPI) -> None:
         )
 
         language = form.language
-        if language is None:
+        if language is None and adapter.detects_spoken_language:
             language = await speech_to_text.detect_speech_language(
                 client,
                 audio_bytes=audio_bytes,
@@ -139,6 +147,7 @@ def register_translations(app: FastAPI) -> None:
             prompt=form.prompt,
             temperature=form.temperature,
             max_new_tokens=form.max_new_tokens,
+            seed=form.seed,
             stream=form.stream,
             task="translate",
             segment_timestamps=segment_timestamps,

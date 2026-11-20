@@ -10,14 +10,25 @@ import torch
 from transformers import BatchEncoding
 
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.nemotron_transcribe.config import (
+    DECODER_CONTEXT_TOKENS,
+    DEFAULT_MAX_NEW_TOKENS,
+    MAX_AUDIO_SECONDS,
+)
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     AUDIO_TOKEN_ID,
     EOS_TOKEN_ID,
 )
+from sglang_omni.models.nemotron_transcribe.loop_guard import (
+    NemotronTranscribeLoopGuard,
+)
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     DEFAULT_PROMPT,
+    FORCED_TOKEN_BIAS,
+    is_silent,
     make_scheduler_adapters,
     make_stream_output_builder,
+    transcript_token_budget,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import DeferredAdmission
@@ -53,11 +64,23 @@ class FakeTokenizer:
         clean_up_tokenization_spaces: bool,
     ) -> str:
         assert not skip_special_tokens and not clean_up_tokenization_spaces
-        vocabulary = {7: "Hello", 8: " world", EOS_TOKEN_ID: "<eos>"}
+        vocabulary = {
+            0: "<unk>",
+            7: "Hello",
+            8: " world",
+            EOS_TOKEN_ID: "<eos>",
+            12: "<think>",
+            13: "</think>",
+        }
         return "".join(vocabulary[token_id] for token_id in token_ids)
 
 
 def load_test_audio(source: object, **decode_options: object) -> np.ndarray:
+    # A quiet tone at -40 dBFS: above the silence threshold.
+    return np.full(16000, 0.01, dtype=np.float32)
+
+
+def load_silent_audio(source: object, **decode_options: object) -> np.ndarray:
     return np.zeros(16000, dtype=np.float32)
 
 
@@ -94,6 +117,114 @@ def test_audio_placeholders_and_offsets_match_encoded_duration() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("parameters", "instruction"),
+    [
+        ({"task": "translate"}, "Translate the audio into English."),
+        (
+            {"task": "translate", "language": "de-DE"},
+            "Translate the German audio into English.",
+        ),
+        ({"task": "translate", "prompt": "Translate into French."}, None),
+    ],
+)
+def test_translation_asks_for_english_and_names_a_known_source(
+    parameters: dict[str, object], instruction: str | None
+) -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
+    build_request(make_payload(parameters))
+    expected = instruction or str(parameters["prompt"])
+    assert tokenizer.messages == [{"role": "user", "content": f"<|audio|>\n{expected}"}]
+
+
+def test_loop_guard_rides_on_each_request_when_enabled() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32, loop_guard=True
+    )
+    request = build_request(make_payload())
+    assert request.req.custom_logit_processor == NemotronTranscribeLoopGuard.to_str()
+    custom_params = request.req.sampling_params.custom_params
+    assert custom_params["eos_token_id"] == EOS_TOKEN_ID
+    # SGLang hands the processor its request, whose output_ids it inspects.
+    assert custom_params["__req__"].rid == request.req.rid
+
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload())
+    assert request.req.custom_logit_processor is None
+    assert request.req.sampling_params.custom_params is None
+
+
+def test_instruction_first_layout_puts_the_audio_after_the_instruction() -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=tokenizer, max_new_tokens=32, prompt_layout="instruction_first"
+    )
+    build_request(make_payload({"language": "en"}))
+    assert tokenizer.messages == [
+        {
+            "role": "user",
+            "content": f"{DEFAULT_PROMPT} The speech is in English. <|audio|>",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("language", "name"),
+    [
+        ("en", "English"),
+        ("en-US", "English"),
+        ("de_DE", "German"),
+        ("zh-Hans-CN", "Chinese"),
+    ],
+)
+def test_a_known_language_is_named_in_the_default_instruction(
+    language: str, name: str
+) -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
+    build_request(make_payload({"language": language}))
+    assert tokenizer.messages == [
+        {
+            "role": "user",
+            "content": f"<|audio|>\n{DEFAULT_PROMPT} The speech is in {name}.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [{"language": "xx"}, {"language": "en us"}, {"language": "en", "prompt": "Hi."}],
+)
+def test_unknown_languages_and_client_prompts_get_no_language_hint(
+    parameters: dict[str, object],
+) -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
+    build_request(make_payload(parameters))
+    content = tokenizer.messages[-1]["content"]
+    assert "The speech is in" not in content
+
+
+def test_non_negative_seed_reaches_the_decoder_sampler() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload({"seed": 7, "temperature": 0.4}))
+    assert request.req.sampling_params.sampling_seed == 7
+
+
+def test_negative_seed_is_rejected() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    with pytest.raises(ValueError, match="non-negative") as raised:
+        build_request(make_payload({"seed": -1}))
+    assert generation_error_status_code(raised.value) == 400
+
+
 def test_request_overrides_prompt_and_generation_budget() -> None:
     tokenizer = FakeTokenizer()
     build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=32)
@@ -112,6 +243,41 @@ def test_request_overrides_prompt_and_generation_budget() -> None:
         {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "<|audio|>\nTranscribe exactly."},
     ]
+
+
+def test_response_budget_follows_the_audio_duration() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=1000
+    )
+    request = build_request(make_payload())
+    # One second of audio: 6 tokens plus the 24-token floor.
+    assert request.max_new_tokens == 30
+    assert request.req.sampling_params.max_new_tokens == 30
+
+
+def test_response_budget_stays_within_the_ceiling_and_the_context() -> None:
+    tokenizer = FakeTokenizer()
+    build_request, _ = make_scheduler_adapters(tokenizer=tokenizer, max_new_tokens=20)
+    request = build_request(make_payload())
+    assert request.max_new_tokens == 20
+
+    prompt_tokens = len(request.prompt_token_ids or [])
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=1000,
+        context_length=prompt_tokens + 5,
+    )
+    assert build_request(make_payload()).max_new_tokens == 5
+
+
+def test_default_ceiling_covers_one_hour_beside_its_audio_tokens() -> None:
+    budget = transcript_token_budget(
+        MAX_AUDIO_SECONDS,
+        ceiling=DEFAULT_MAX_NEW_TOKENS,
+        prompt_tokens=45_000 + 100,
+        context_length=DECODER_CONTEXT_TOKENS,
+    )
+    assert budget == DEFAULT_MAX_NEW_TOKENS
 
 
 @pytest.mark.parametrize("token_ids", [[101, 102], [AUDIO_TOKEN_ID, AUDIO_TOKEN_ID]])
@@ -162,6 +328,37 @@ def test_result_strips_eos_and_preserves_usage() -> None:
     assert result.data["finish_reason"] == "length"
     assert result.data["usage"]["completion_tokens"] == 2
     assert result.data["usage"]["prompt_tokens"] == 15
+
+
+def test_result_drops_reasoning_markers_and_unknown_runs() -> None:
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload())
+    request.output_ids = [12, 13, 7, 0, 0, 8, EOS_TOKEN_ID]
+    assert adapt_result(request).data["text"] == "Hello world"
+
+
+def test_silent_audio_is_forced_to_an_empty_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "load_audio", load_silent_audio)
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload({"max_new_tokens": 64}))
+    sampling = request.req.sampling_params
+    assert request.max_new_tokens == 1
+    assert sampling.max_new_tokens == 1
+    assert sampling.logit_bias == {str(EOS_TOKEN_ID): FORCED_TOKEN_BIAS}
+    request.output_ids = [EOS_TOKEN_ID]
+    assert adapt_result(request).data["text"] == ""
+
+
+def test_quiet_speech_level_audio_is_not_silence() -> None:
+    assert not is_silent(np.full(16000, 0.01, dtype=np.float32))
+    assert is_silent(np.full(16000, 1e-5, dtype=np.float32))
+    assert is_silent(np.zeros(0, dtype=np.float32))
 
 
 def test_streamed_text_matches_final_response() -> None:
@@ -272,3 +469,54 @@ def test_cache_miss_waits_in_the_builder_when_the_pool_has_room() -> None:
     request = build_request(make_payload())
     assert encoder.waited is True
     assert request.req.multimodal_inputs.mm_items[0].feature is None
+
+
+def test_word_timestamps_skip_the_embedding_cache() -> None:
+    encoder = RecordingEncoder(torch.ones((13, 4)))
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=32,
+        audio_encoder_service=encoder,
+        should_wait_for_encode=lambda: True,
+    )
+    request = build_request(make_payload({"word_timestamps": True}))
+    audio = request.req.multimodal_inputs.mm_items[0]
+    assert audio.model_specific_data["word_timestamps"] is True
+    assert encoder.lookup is None
+    assert audio.feature is None
+    assert encoder.waited is True
+
+
+def test_word_timestamps_are_refused_for_translation() -> None:
+    build_request, _ = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    with pytest.raises(ValueError, match="only for transcriptions"):
+        build_request(make_payload({"word_timestamps": True, "task": "translate"}))
+
+
+def test_failed_alignment_is_reported_on_the_result() -> None:
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload({"word_timestamps": True, "language": "en"}))
+    request.output_ids = [7, 8]
+    audio = request.req.multimodal_inputs.mm_items[0]
+    audio.model_specific_data["timestamp_evidence"] = {
+        "failure_reason": "ctc_evidence_unavailable"
+    }
+    result = adapt_result(request)
+    assert result.data["transcription"]["words"] == []
+    assert result.data["transcription"]["word_timestamp_alignment"] == {
+        "status": "unavailable",
+        "failure_reason": "ctc_evidence_unavailable",
+    }
+
+
+def test_plain_transcription_has_no_timestamp_payload() -> None:
+    build_request, adapt_result = make_scheduler_adapters(
+        tokenizer=FakeTokenizer(), max_new_tokens=32
+    )
+    request = build_request(make_payload())
+    request.output_ids = [7, 8]
+    assert "transcription" not in adapt_result(request).data

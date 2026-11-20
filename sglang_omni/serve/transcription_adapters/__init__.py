@@ -11,6 +11,7 @@ from __future__ import annotations
 from sglang_omni.serve.transcription_adapters import (  # noqa: F401
     minicpm_o,
     moss_transcribe_diarize,
+    nemotron,
     whisper,
     whisper_asr,
 )

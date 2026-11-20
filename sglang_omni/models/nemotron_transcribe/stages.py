@@ -5,7 +5,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sglang_omni.models.nemotron_transcribe.config import EncoderCompileMode
+from sglang_omni.models.nemotron_transcribe.config import (
+    EncoderCompileMode,
+    PromptLayout,
+)
 from sglang_omni.models.nemotron_transcribe.engine_builder import (
     NemotronTranscribeEngineBuilder,
 )
@@ -35,6 +38,9 @@ def create_nemotron_transcribe_executor(
     compile_perception: bool,
     perception_cuda_graphs: bool,
     perception_compile_mode: EncoderCompileMode,
+    perception_fp8: bool,
+    prompt_layout: PromptLayout,
+    loop_guard: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     mem_fraction_static: float | None = None,
@@ -58,6 +64,9 @@ def create_nemotron_transcribe_executor(
         compile_perception=compile_perception,
         perception_cuda_graphs=perception_cuda_graphs,
         perception_compile_mode=perception_compile_mode,
+        perception_fp8=perception_fp8,
+        prompt_layout=prompt_layout,
+        loop_guard=loop_guard,
     ).build(
         model_path,
         device=device,
