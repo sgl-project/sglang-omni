@@ -27,6 +27,9 @@ func TestStableBehaviorTestsRunBeforeVersionRewrite(t *testing.T) {
 	if !strings.Contains(behavior, "TMPDIR: ${{ runner.temp }}") {
 		t.Error("stable behavior tests must run with a short TMPDIR: the runner's leaves the socket tests' paths a few bytes under macOS's limit")
 	}
+	if !strings.Contains(behavior, "github.event_name == 'pull_request'") {
+		t.Error("release pull requests must run the behavior tests before their first unsigned build")
+	}
 }
 
 // TestDownloadLinks: every Voxt 2 download link in the docs downloads the
