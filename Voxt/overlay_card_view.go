@@ -100,11 +100,11 @@ func sizeStepButton(context *ui.Context, step int) bool {
 
 func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actions sessionOverlayActions, local sessionOverlayLocal, animation sessionOverlayAnimation) {
 	icon := icons.VoxtAnswer
-	if card.Conversation {
+	if card.Conversation || card.Recording {
 		icon = icons.VoxtTranscribe
 	}
 	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
-	if card.Conversation {
+	if card.Conversation || card.Recording {
 		cardWave(context, card.Levels[:], card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
 	} else {
@@ -114,6 +114,8 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		if card.Busy {
 			busy := i18n.T("Translating…")
 			switch {
+			case card.Speech && !card.Writing:
+				busy = card.WorkingText
 			case card.Writing && card.Kind == "transcribe":
 				busy = i18n.T("Cleaning up…")
 			case card.Writing && card.Kind == "rewrite":
@@ -137,7 +139,11 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 			actions.skipLLM()
 		}
 	case card.CanStop:
-		if cardCapsule(context.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
+		tip := i18n.T("Stop recording")
+		if card.Conversation {
+			tip = i18n.T("Stop recording the follow-up")
+		}
+		if cardCapsule(context.Key("ov-card-stop"), i18n.T("Done"), tip) {
 			actions.stopSession()
 		}
 	case card.CanFollowUp:
@@ -288,7 +294,7 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 	if cardInputOriginal(context, card, local, bodyHeight) {
 		return
 	}
-	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
+	if !card.Conversation && !card.Failed && !card.Speech && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
 		block := sessionCardBlockAt(card, 0)
 		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight, width)
 		if actions.overlayTranscriptResult(context.Key("ov-transcript"), request) {

@@ -374,7 +374,7 @@ func TestSessionStreamingCard(t *testing.T) {
 	}, &fakeLocal{ASRP: fakeStreamer{final: "你好，VoxtNew"}})
 	partial := false
 	a.pump("the end", func() bool {
-		partial = partial || a.sess.State == session.Recording && a.sess.Partial == "hello" && a.ov.mode == ovRecording
+		partial = partial || a.sess.State == session.Recording && a.sess.Partial == "hello" && a.ov.mode == ovAnswer && a.cardNow().text == "hello"
 		return a.sess.State.Ended()
 	})
 	if !partial {

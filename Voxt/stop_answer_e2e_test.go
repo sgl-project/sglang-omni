@@ -96,7 +96,7 @@ func TestTranscribeCardStreams(t *testing.T) {
 				set(s)
 				s.Features.Transcribe.Enhance, s.Features.Transcribe.ShowCard = true, true
 			}, keys)
-			a.pump("the clean-up in the card", func() bool { return a.sess.State == session.Composing && a.ov.mode == ovAnswer })
+			a.pump("the clean-up in the card", func() bool { return a.sess.State == session.Composing && a.sess.Draft != "" && a.ov.mode == ovAnswer })
 			if v := a.cardNow(); !v.writing || v.kind != store.KindTranscribe || v.canStopAnswer || !v.canUseTranscript || !strings.HasPrefix(a.sess.Draft, v.text) {
 				t.Fatalf("the writing card %+v", v)
 			}

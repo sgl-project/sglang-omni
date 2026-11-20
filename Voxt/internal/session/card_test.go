@@ -5,7 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -108,6 +110,11 @@ func TestShowCard(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// Snapshots publish asynchronously: wait for the first.
+				first := h.rec.waitFor(t, "the first snapshot", func(Snapshot) bool { return true })
+				if want := on && tc.kind != store.KindRewrite; first.Card != want {
+					t.Fatalf("first snapshot card %v, want %v", first.Card, want)
+				}
 				if tc.kind != store.KindTranslate || tc.sel == "" {
 					h.speak(id, 5)
 				}
@@ -128,4 +135,45 @@ func TestShowCard(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestCardFirstEndsWithoutCard: a card-enabled session that fails or is
+// cancelled has no result for the card, so it ends with Card off. The
+// overlay then shows the failure with Retry (the recording was kept), and
+// History does not say the result was shown in the card.
+func TestCardFirstEndsWithoutCard(t *testing.T) {
+	cardOn := func(c *Config, s *settings.Settings) { s.Features.Transcribe.ShowCard = true }
+	t.Run("the speech model fails", func(t *testing.T) {
+		h := newHarness(t, &fakeFile{err: &asr.Error{Kind: asr.KindServer, Detail: "500"}}, &fakeLLM{}, cardOn)
+		id := h.start()
+		if first := h.rec.waitFor(t, "the first snapshot", func(Snapshot) bool { return true }); !first.Card {
+			t.Fatal("the card does not show from the start")
+		}
+		h.speak(id, 5)
+		end := h.rec.wait(t)
+		if end.State != Failed || end.Problem == nil || end.Problem.Code != ProblemASR || !end.Recording || end.Card {
+			t.Fatalf("end %s card %v recording %v problem %+v", end.State, end.Card, end.Recording, end.Problem)
+		}
+		if es := h.hist.all(); len(es) != 1 || es[0].Delivery != "" {
+			t.Fatalf("entries %+v", es)
+		}
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		h := newHarness(t, &fakeFile{text: "hello"}, &fakeLLM{}, cardOn)
+		h.audio.notifyAt, h.audio.notified = 5, make(chan struct{})
+		id := h.start()
+		select {
+		case <-h.audio.notified:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d frames recorded", h.audio.recorded())
+		}
+		h.m.Cancel(id)
+		end := h.rec.wait(t)
+		if end.State != Cancelled || end.Card {
+			t.Fatalf("end %s card %v", end.State, end.Card)
+		}
+		if es := h.hist.all(); len(es) != 1 || es[0].Delivery != "" {
+			t.Fatalf("entries %+v", es)
+		}
+	})
 }

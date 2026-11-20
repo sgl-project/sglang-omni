@@ -115,7 +115,7 @@ func (a *app) sessionOverlayPreviewHeights(state *sessionOverlayViewState) map[s
 	}
 	var heights map[string]int
 	for index := 0; index < sessionCardBlockCount(card); index++ {
-		if !card.Conversation && (card.Failed || index > 0) {
+		if !card.Conversation && (card.Failed || card.Speech || index > 0) {
 			continue
 		}
 		block := sessionCardBlockAt(card, index)
