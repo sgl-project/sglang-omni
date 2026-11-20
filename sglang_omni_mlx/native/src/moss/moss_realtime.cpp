@@ -131,15 +131,16 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
   timing.audio_sample_count = static_cast<int>(decode->samples.size());
   timing.append_ms = omni_common::MillisecondsSinceEpoch(append_started);
   timing.decision_ms = omni_common::MillisecondsSinceEpoch(decision_started);
-  timing.submit_ms = omni_common::MillisecondsSinceEpoch(
-      std::chrono::steady_clock::now());
+  timing.submit_ms =
+      omni_common::MillisecondsSinceEpoch(std::chrono::steady_clock::now());
   omni_server::Transcription job = DecodeJob(*decode, std::move(options));
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
   worker_.Submit(
       std::move(job), cancel_,
-      [weak_self, decode = std::move(*decode), timing](
-          std::optional<TranscriptionResult> result, std::exception_ptr error) mutable {
+      [weak_self, decode = std::move(*decode),
+       timing](std::optional<TranscriptionResult> result,
+               std::exception_ptr error) mutable {
         const std::shared_ptr<MossRealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
