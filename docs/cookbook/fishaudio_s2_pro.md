@@ -1,16 +1,16 @@
 # Fish Audio S2-Pro
 
-[Fish Audio S2-Pro](https://huggingface.co/fishaudio/s2-pro) is a text-to-speech model that generates **44.1 kHz** speech through the OpenAI-compatible `/v1/audio/speech` API. It accepts text alone or clones a voice from a reference clip and its transcript, and it can stream audio while generation is still running.
+[Fish Audio S2-Pro](https://huggingface.co/fishaudio/s2-pro) is a text-to-speech model that generates **44.1 kHz** speech through the OpenAI-compatible `/v1/audio/speech` API. It accepts text alone or a reference clip for voice cloning, and can stream audio during generation.
 
 ## Prerequisites
 
-Install `sglang-omni` by following the [CUDA installation guide](../get_started/installation.md). S2-Pro needs the Descript DAC extra, which is not in the base package. From a repository checkout:
+Follow the [CUDA source installation guide](../get_started/installation.md#from-source) to prepare the environment and clone the repository. From the repository root, include the Fish Audio extra in the editable install to get the Descript DAC codec. Run the server commands below from the same directory so they can find `examples/configs/s2pro_tts.yaml`.
 
 ```bash
 uv pip install --prerelease=allow -e ".[fishaudio]"
 ```
 
-If the wheel is already installed, use `uv pip install --prerelease=allow "sglang-omni[fishaudio]"` instead. Then download the checkpoint:
+To download the checkpoint before starting the server, run:
 
 ```bash
 hf download fishaudio/s2-pro
@@ -36,41 +36,6 @@ curl -fS http://localhost:8000/health
 
 Continue when this returns HTTP 200 with `"status": "healthy"`. During startup it may return HTTP 503 or refuse the connection; check the server logs and retry once initialization finishes.
 
-For stage placement, see [TTS Process Topology](../basic_usage/tts_process_topology.md).
-
-### Reference encoding placement
-
-Reference audio encoding runs on GPU 0 in the preprocessing process by default, using the checkpoint's FP32 codec. Tokenization and audio loading remain on CPU. The preprocessing process has a 6 GiB PyTorch allocator limit. That value is a memory budget, not a reference-duration limit or a reservation of every GPU allocation. Long references can exceed it and fail encoding.
-
-Set `--preprocessing.total_reserve_bytes 8GiB` to increase the budget, and leave enough GPU memory for the autoregressive engine and vocoder. To encode references on CPU instead, clear both the GPU placement and its budget:
-
-```bash
-sgl-omni serve \
-  --model-path fishaudio/s2-pro \
-  --config examples/configs/s2pro_tts.yaml \
-  --preprocessing.gpu null \
-  --preprocessing.total_reserve_bytes null \
-  --port 8000
-```
-
-<a id="async-decode"></a>
-
-### Async decode
-
-On CUDA, enable one-step async decode to overlap CPU result collection with the next GPU decode step:
-
-```bash
-sgl-omni serve \
-  --model-path fishaudio/s2-pro \
-  --config examples/configs/s2pro_tts.yaml \
-  --tts_engine.factory.enable_async_decode true \
-  --port 8000
-```
-
-This is opt-in. A decode batch enters the lookahead path only after its request rows stabilize; prefill and batch changes use synchronous decoding. One decode step may already be in flight when the host observes a request completion, so the effective CUDA Graph batch size can shrink one step later than in synchronous decoding. Different batch sizes can produce different floating-point results and generated codes, even with the same seed.
-
-<a id="synthesize-speech"></a>
-
 ## Synthesize speech
 
 No reference audio is required. Send text to the running server:
@@ -90,7 +55,7 @@ The response is a complete WAV file containing 44.1 kHz mono speech. Open `outpu
 
 ## Voice cloning
 
-Add `references` to clone a voice. Include the clip's transcript in `text`. The clip below is from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini).
+Add `references` to clone a voice. The CUDA server accepts a reference clip with or without the optional transcript in `text`. The clip below is from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini).
 
 ```bash
 curl -fS -X POST http://localhost:8000/v1/audio/speech \
@@ -107,7 +72,7 @@ curl -fS -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-`ref_audio` and `ref_text` are shorthand for the first reference. Reference quality strongly affects cloned voice quality. For reference formats and server-visible local paths or remote URLs, see [Voice Cloning](../basic_usage/tts.md#voice-cloning) and [media access rules](../basic_usage/tts.md#start-a-tts-server). S2-Pro also accepts [uploaded voices](../basic_usage/tts.md#uploaded-voices) reused by name.
+For one clip, you can use `ref_audio` and optional `ref_text`. If you also send `references`, the CUDA server appends the `ref_audio` clip after those entries. Reference quality strongly affects cloned voice quality. For reference formats and server-visible local paths or remote URLs, see [Voice Cloning](../basic_usage/tts.md#voice-cloning) and [media access rules](../basic_usage/tts.md#start-a-tts-server). S2-Pro also accepts [uploaded voices](../basic_usage/tts.md#uploaded-voices) reused by name.
 
 ## Streaming
 
@@ -132,7 +97,38 @@ Add these fields to the JSON request as needed. Shared speech fields are documen
 | `repetition_penalty` | `1.1` | Semantic-history repetition penalty. |
 | `seed` | unset | Integer sampling seed. Omitted requests stay unseeded. A fixed seed does not guarantee byte-identical audio across batch sizes, especially with [async decode](#async-decode). |
 
-<a id="known-limitations"></a>
+## CUDA tuning
+
+For stage placement, see [TTS Process Topology](../basic_usage/tts_process_topology.md).
+
+### Reference encoding placement
+
+Reference audio encoding runs on GPU 0 in the preprocessing process by default, using the checkpoint's FP32 codec. Tokenization and audio loading remain on CPU. The preprocessing process has a 6 GiB PyTorch allocator limit. That value is a memory budget, not a reference-duration limit or a reservation of every GPU allocation. Long references can exceed it and fail encoding.
+
+Set `--preprocessing.total_reserve_bytes 8GiB` to increase the budget, and leave enough GPU memory for the autoregressive engine and vocoder. To encode references on CPU instead, clear both the GPU placement and its budget:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --preprocessing.gpu null \
+  --preprocessing.total_reserve_bytes null \
+  --port 8000
+```
+
+### Async decode
+
+On CUDA, enable one-step async decode to overlap CPU result collection with the next GPU decode step:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --tts_engine.factory.enable_async_decode true \
+  --port 8000
+```
+
+This is opt-in. A decode batch enters the lookahead path only after its request rows stabilize; prefill and batch changes use synchronous decoding. One decode step may already be in flight when the host observes a request completion, so the effective CUDA Graph batch size can shrink one step later than in synchronous decoding. Different batch sizes can produce different floating-point results and generated codes, even with the same seed.
 
 ## Known limitations
 
