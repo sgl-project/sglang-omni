@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from queue import Queue
@@ -92,6 +91,8 @@ def test_offload_rejects_incompatible_source_process_policy(
 @pytest.mark.parametrize(
     ("configured_preload", "inherited_preload", "expected_preload"),
     [
+        (None, "libprofile.so", "{allocator}:libprofile.so"),
+        ("", "libprofile.so", "{allocator}:libprofile.so"),
         ("libtrace.so", "", "{allocator}:libtrace.so"),
         ("libtrace.so", "libprofile.so", "{allocator}:libtrace.so:libprofile.so"),
         ("libtrace.so", "{allocator}", "libtrace.so:{allocator}"),
@@ -106,7 +107,7 @@ def test_offload_rejects_incompatible_source_process_policy(
 def test_offload_preserves_configured_and_inherited_preload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    configured_preload: str,
+    configured_preload: str | None,
     inherited_preload: str,
     expected_preload: str,
 ) -> None:
@@ -116,7 +117,7 @@ def test_offload_preserves_configured_and_inherited_preload(
     allocator = tmp_path / "torch_memory_saver_hook_mode_preload_cu13.abi3.so"
     allocator.touch()
     monkeypatch.setattr(
-        "sglang_omni.models.llada2_uni.config.find_spec",
+        "sglang_omni.scheduling.stage_residency.find_spec",
         Mock(
             return_value=ModuleSpec(
                 "torch_memory_saver",
@@ -130,15 +131,21 @@ def test_offload_preserves_configured_and_inherited_preload(
     )
     monkeypatch.setattr(torch.version, "cuda", "13.0")
     monkeypatch.setenv("LD_PRELOAD", inherited_preload.format(allocator=allocator))
-    environment = {"LD_PRELOAD": configured_preload.format(allocator=allocator)}
+    environment = {"OMP_NUM_THREADS": "2"}
+    if configured_preload is not None:
+        environment["LD_PRELOAD"] = configured_preload.format(allocator=allocator)
+    else:
+        pass
+    original_environment = dict(environment)
     configuration = LLaDA2UniOmniPipelineConfig(
         model_path="unused", env_defaults=environment
     ).with_serial_offload(frozenset({"thinker", "decoder", "vae"}))
-
     resolved = configuration.resolved_env_defaults()
+    assert configuration.env_defaults == original_environment
 
     assert resolved["LD_PRELOAD"] == expected_preload.format(allocator=allocator)
-    assert configuration.env_defaults == environment
+    assert resolved["OMP_NUM_THREADS"] == "2"
+    assert environment == original_environment
 
 
 @pytest.mark.parametrize("setting", ["process", "gpu", "backend", "partial"])
@@ -174,9 +181,8 @@ def test_interleaved_rejects_offload() -> None:
         LLaDA2UniInterleavedPipelineConfig(**configuration)
 
 
-@pytest.mark.parametrize("compute_fails", [False, True])
-def test_residency_lock_covers_transfers_and_compute(
-    monkeypatch: pytest.MonkeyPatch, compute_fails: bool
+def test_compute_failure_releases_residency_for_next_request(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Transfers and compute must stay exclusive, including cleanup after an error."""
     device = torch.device("cpu")
@@ -191,18 +197,11 @@ def test_residency_lock_covers_transfers_and_compute(
 
     tracked_transfer = Mock(side_effect=transfer)
     monkeypatch.setattr(module, "to", tracked_transfer)
-    with (
-        pytest.raises(ValueError, match="compute failed")
-        if compute_fails
-        else nullcontext()
-    ):
+    with pytest.raises(ValueError, match="compute failed"):
         with coordinator.use_module(module, "decoder"):
             assert coordinator.lock.locked()
             torch.testing.assert_close(module(torch.ones(1, 2)), expected)
-            if compute_fails:
-                raise ValueError("compute failed")
-            else:
-                pass
+            raise ValueError("compute failed")
     assert tracked_transfer.call_args_list == [call(device), call("cpu")]
     assert not coordinator.lock.locked()
     with coordinator.use_module(module, "next"):

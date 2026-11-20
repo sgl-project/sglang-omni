@@ -45,16 +45,20 @@ def offload_environment(environment: dict[str, str]) -> dict[str, str]:
         raise RuntimeError(f"Offload requires one allocator library matching {pattern}")
     else:
         pass
-    preload = environment.get("LD_PRELOAD", os.environ.get("LD_PRELOAD", ""))
+    preload = ":".join(
+        value
+        for value in (
+            environment.get("LD_PRELOAD", ""),
+            os.environ.get("LD_PRELOAD", ""),
+        )
+        if value
+    )
     library_path = str(libraries[0])
     if "torch_memory_saver" not in preload:
-        environment = dict(environment)
-        environment["LD_PRELOAD"] = (
-            f"{library_path}:{preload}" if preload else library_path
-        )
+        preload = f"{library_path}:{preload}" if preload else library_path
     else:
         pass
-    return environment
+    return {**environment, "LD_PRELOAD": preload}
 
 
 def gpu_memory_note(device: torch.device) -> str:

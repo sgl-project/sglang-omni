@@ -3,13 +3,9 @@
 
 from __future__ import annotations
 
-import os
 from importlib.metadata import version
-from importlib.util import find_spec
-from pathlib import Path
 from typing import ClassVar, Literal
 
-import torch
 import typer
 from pydantic import Field, model_validator
 
@@ -27,6 +23,7 @@ from sglang_omni.pipeline.umm import (
     STREAM_DONE_FN_PATH,
     UMMPipelineConfig,
 )
+from sglang_omni.scheduling.stage_residency import offload_environment
 
 _PKG = "sglang_omni.models.llada2_uni"
 
@@ -169,43 +166,11 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
             return environment
         else:
             pass
-        package = find_spec("torch_memory_saver")
-        if package is None or package.origin is None or torch.version.cuda is None:
-            raise RuntimeError(
-                "LLaDA2-Uni offload requires CUDA and torch_memory_saver==0.0.10"
-            )
-        elif version("torch_memory_saver") != "0.0.10":
+        environment = offload_environment(environment)
+        if version("torch_memory_saver") != "0.0.10":
             raise RuntimeError("LLaDA2-Uni offload requires torch_memory_saver==0.0.10")
         else:
-            pass
-        package_directory = Path(package.origin).parent
-        cuda_major = torch.version.cuda.split(".")[0]
-        pattern = f"torch_memory_saver_hook_mode_preload_cu{cuda_major}.*.so"
-        libraries = [
-            library
-            for directory in (package_directory, package_directory.parent)
-            for library in directory.glob(pattern)
-        ]
-        if len(libraries) != 1:
-            raise RuntimeError(
-                f"LLaDA2-Uni offload requires exactly one allocator library matching {pattern}"
-            )
-        else:
-            pass
-        preload = ":".join(
-            value
-            for value in (
-                environment.get("LD_PRELOAD", ""),
-                os.environ.get("LD_PRELOAD", ""),
-            )
-            if value
-        )
-        if "torch_memory_saver" not in preload:
-            preload = f"{libraries[0]}:{preload}" if preload else str(libraries[0])
-        else:
-            pass
-        environment["LD_PRELOAD"] = preload
-        return environment
+            return environment
 
     def with_serial_offload(
         self, components: frozenset[str]
