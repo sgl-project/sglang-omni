@@ -270,6 +270,7 @@ class FactoryArgs(BaseModel):
     enable_async_decode: bool | None = None
     enable_plain_fallback: bool | None = None
     async_decode_min_batch_size: int | None = Field(default=None, ge=1)
+    prefill_drain_below_batch_size: int | None = Field(default=None, ge=0)
     prefill_coalesce_requests: int | None = Field(default=None, ge=0)
     prefill_coalesce_wait_ms: float | None = Field(default=None, gt=0)
     prefill_coalesce_when_idle: bool | None = None

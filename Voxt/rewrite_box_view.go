@@ -6,6 +6,7 @@ package main
 // instruction, and a line for an error.
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -34,6 +35,8 @@ type rewriteBoxLocalUI struct {
 	editorEnd     int
 	editorActive  bool
 	inputScroll   ui.ScrollState
+	turnScroll    ui.ScrollState
+	turnsKey      string
 	textScroll    ui.ScrollState
 	previewScroll ui.ScrollState
 }
@@ -86,7 +89,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 		if local.addOpen {
 			local.addOpen = false
 		} else {
-			actions.close()
+			actions.escape()
 		}
 	}
 	root.Children(func() {
@@ -107,6 +110,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 						actions.send()
 					}
 				}
+				if card := state.Card; card != nil && !card.Failed && card.CanCopy {
+					cardInsertCopy(context, card, actions.card)
+				}
 				if cardIconButton(context.Key("box-close"), i18n.T("Close"), "", icons.Close, true) {
 					actions.close()
 				}
@@ -121,9 +127,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					ui.Text(context, state.Subtitle).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").Tooltip(state.Subtitle)
 				})
 			}
-			if state.ShowTip {
+			if state.ShowTip && len(state.Thumbnails) == 0 { // a picture needs the room
 				ui.Row(context.Key("box-tip")).Shrink(0).Padding(6, 8, 6, 8).Gap(8).Radius(6).Background(ui.RGBA(255, 255, 255, 0.06)).AlignItems(ui.Center).Children(func() {
-					ui.Text(context, i18n.T("Speak what to do. Type, paste or drop images to add material. Enter sends.")).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0)
+					ui.Text(context, i18n.T("Speak or type what to do. Paste or drop images to go with it.")).FontSize(12).TextColor(ovText2).Grow(1).MinWidth(0)
 					if cardCapsule(context.Key("box-got-it"), i18n.T("Got it"), "") {
 						actions.dismissTip()
 					}
@@ -134,7 +140,19 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 				return
 			}
 
-			ui.Scroll(context.Key("box-input-scroll")).Grow(1).MinHeight(0).MinWidth(0).TrackScroll(&local.inputScroll).Children(func() {
+			// The answer and the turns before it, as the answer card draws
+			// them: the card is the same one from the shortcut on (wall 122).
+			if state.Card != nil {
+				boxConversation(context, state, actions, local)
+			}
+
+			// The text box stays at the card's foot: the list above it takes
+			// the room left, empty before the first answer.
+			inputs := ui.Scroll(context.Key("box-input-scroll")).MinHeight(0).MinWidth(0).TrackScroll(&local.inputScroll)
+			if !state.Conversation {
+				inputs.Grow(1)
+			}
+			inputs.Children(func() {
 				ui.Column(context).MinWidth(0).Gap(8).Children(func() {
 					// The text selected when the shortcut fired: the input, as the
 					// model gets it first.
@@ -196,6 +214,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 				})
 			}
 
+			if sizeStepButton(context.Key("box-size"), state.SizeStep) {
+				actions.cycleSize()
+			}
 			ui.Row(context.Key("box-footer")).Shrink(0).Gap(5).AlignItems(ui.Center).Children(func() {
 				add := dropButton(context.Key("box-add"), icons.Add, i18n.T("Add"))
 				if add.Clicked() {
@@ -227,8 +248,6 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 				ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
 				keycap(context, "Esc")
 				ui.Text(context, i18n.T("close")).FontSize(11).TextColor(ovText2).SingleLine()
-				ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
-				ui.Text(context, i18n.T("paste or drop up to 4 images")).FontSize(11).TextColor(ovText2).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 			})
 		})
 	})
@@ -289,7 +308,9 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 		Placeholder(state.EditorPlaceholder).
 		Lines(1, 4).FontSize(layout.CardTextSize).TextColor(ovCardText)
 	if index == -1 {
-		textArea.Lines(3, 8).Grow(1)
+		// The same panel as the selected text above it: a field to type
+		// in, not a loose line of grey text.
+		textArea.Lines(2, 6).Padding(6, 8, 6, 8).Radius(6).Background(ui.RGBA(255, 255, 255, 0.06))
 	}
 	changed := func() {
 		if index == -1 {
@@ -364,8 +385,9 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 	changed()
 }
 
-// boxThumbView is one picture's thumbnail, source and pixel size, with
-// a full-size preview on click and a remove button over the corner.
+// boxThumbView is one picture's thumbnail, with a full-size preview
+// (which names its source and pixel size) on click and a remove
+// button over the corner.
 func boxThumbView(context *ui.Context, bitmap *ui.Bitmap, info boxImageInfo, remove func(), preview func()) {
 	label := i18n.T("Remove this image")
 	ui.Column(context).Width(boxThumb + 12).Shrink(0).Gap(3).Children(func() {
@@ -390,7 +412,23 @@ func boxThumbView(context *ui.Context, bitmap *ui.Bitmap, info boxImageInfo, rem
 				}
 			}
 		})
-		ui.Text(context, info.Source).FontSize(10).TextColor(ovText2).SingleLine().Ellipsis("…").Shrink(0)
-		ui.Text(context, i18n.T("%d × %d", info.Width, info.Height)).FontSize(10).TextColor(ovText2).SingleLine().Shrink(0)
+	})
+}
+
+// boxConversation draws the answer card's blocks (the conversation, the
+// answer being written) in the Rewrite card, scrolling under its fixed
+// height.
+func boxConversation(context *ui.Context, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) {
+	card, count := state.Card, sessionCardBlockCount(state.Card)
+	if key := card.ID + "/" + strconv.Itoa(count); key != local.turnsKey || card.Writing && local.turnScroll.Y >= local.turnScroll.MaxY-2 {
+		local.turnsKey, local.turnScroll.Y = key, math.MaxFloat32 // the newest turn is in view
+	}
+	overlayLocal := actions.cardLocal()
+	ui.Scroll(context.Key("box-turns")).Grow(1).MinHeight(0).MinWidth(0).TrackScroll(&local.turnScroll).Children(func() {
+		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
+			for index := range count {
+				cardBlockView(context.Key(index), state.CardSessionID, card, sessionCardBlockAt(card, index), index, state.CardWidth, actions.card, overlayLocal, actions.cardMeasured)
+			}
+		})
 	})
 }
