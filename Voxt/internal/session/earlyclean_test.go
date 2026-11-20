@@ -153,7 +153,7 @@ func TestEarlyCleanWhileRecording(t *testing.T) {
 	}
 	for i, req := range reqs {
 		m := req.Messages
-		if len(m) != 4 || m[3].Content != compose.UserMessage(f.segs[i]) {
+		if len(m) != 2 || m[1].Content != compose.UserMessage(f.segs[i]) { // system and the segment: Transcribe sends no example (#4244)
 			t.Errorf("request %d cleaned %q, want segment %d", i+1, m[len(m)-1].Content, i+1)
 		}
 	}

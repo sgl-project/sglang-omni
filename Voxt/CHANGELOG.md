@@ -19,15 +19,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Paused toasts no longer wake Voxt while it is in the background**: a toast's fade-out now starts only after its paused display lifetime resumes and ends. Plain toasts and toasts with an action stay visible in the background and expire after you return.
 - **Stop bounds early cleanup**: a matching final cancels queued early requests and skips the remaining parts of an unfinished job, then cleans that job with the uncovered tail after the active request finishes. The early-clean tests use channel-controlled request order instead of multi-second sleeps.
-
-### Fixed
-
 - **Rewrite cleanup uses earlier turns without exempting new control markup** (#4085): literal thinking markup in earlier turns stays intact, while new reasoning blocks and control tokens are still removed. An orphan close surrounded by newlines is removed with its reasoning; inline literal closes keep the surrounding answer.
 - **Literal thinking markers keep the surrounding answer** (#4085): a `<channel|>` mention before punctuation and an unmatched `</think>` mention between words no longer discard the text around them in streamed, final, or structured answers.
 - **Answers no longer show a model's raw tool-call or thinking control markup** (#4085): Transcribe, Translate and Rewrite remove those control blocks from the answer as it streams and before it is shown or inserted, while ordinary angle-bracket text stays unchanged. An unmatched thinking-close marker no longer discards the answer that follows it, and a literal control-token mention inside a sentence stays intact.
-
-### Fixed
-
 - **Transcribe no longer sends a built-in example for the language model to copy** (#4228): a short dictation could look like an instruction to rewrite the example, so the model returned the built-in weekly-report text instead of your words. Cleanup rules now go in the system prompt without an example conversation, in both the built-in and custom prompt paths. Spoken Translate keeps its translated example.
 
 ### 中文
@@ -47,15 +41,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **暂停的提示不再让后台的 Voxt 反复唤醒**：提示只会在暂停的显示计时恢复并结束后淡出。普通提示和带按钮的提示在后台保留，回到前台后继续计时并消失。
 - **停止时的提前整理有明确上限**：最终文本匹配时，排队的提前请求会取消，未完成的整段不再请求剩余部分；当前请求收尾后，再把这一整段和未覆盖的尾段一起整理。提前整理测试改用 channel 控制请求顺序，不再依赖数秒真实等待。
-
-#### 修复
-
 - **改写清理参考先前轮次，但仍去除新的控制标记**（#4085）：先前轮次里字面提到的思考标记原样保留，新的推理块和控制标记仍会去掉。被换行包围的未配对结束标记连同推理一起去掉，同行内联的字面标记仍保留周围回答。
 - **字面提到的思考标记不再误删周围回答**（#4085）：`<channel|>` 后面紧跟标点，或 `</think>` 未配对地出现在句子中时，流式、最终和结构化回答都会保留周围文字。
 - **回答不再显示语言模型原始的内部工具调用或思考控制标记**（#4085）：转录、翻译和改写在流式输出时及显示、插入前移除这些控制块，普通尖括号文本保持不变。未配对的思考结束标记不再误删后面的正式回答，句子中字面提到的控制标记也原样保留。
-
-#### 修复
-
 - **转录不再发送可能被语言模型复制的内置示例**（#4228）：短听写以前可能被当成改写示例的指令，导致模型返回内置周报文本而不是你说的话。现在，清理规则直接写在系统提示词里，内置提示词和自定义提示词都不再附带示例对话；语音翻译仍保留翻译示例。
 
 ## [2.1.1] - 2026-11-17
