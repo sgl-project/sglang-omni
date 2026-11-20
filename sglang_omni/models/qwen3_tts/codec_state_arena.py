@@ -148,13 +148,15 @@ class Qwen3TTSCodecStateArena:
                 self._num_slots - len(self.free) - len(self.retired)
             )  # noqa: leading-underscore
 
-    def acquire(self, *, should_count_exhaustion: bool = True) -> int | None:
-        """Take a zeroed slot, or None when the arena is full.
+    def acquire(
+        self, *, keep_free: int = 0, should_count_exhaustion: bool = True
+    ) -> int | None:
+        """Take a zeroed slot while more than keep_free slots are free, or None.
 
         A caller that waits and asks again passes should_count_exhaustion=False, so only a miss that sends a stream to another path counts.
         """
         with self.lock:
-            if not self.free:
+            if len(self.free) <= keep_free:
                 if should_count_exhaustion:
                     self._exhausted_count += 1  # noqa: leading-underscore
                 else:

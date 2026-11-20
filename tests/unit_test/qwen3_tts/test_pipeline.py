@@ -4102,6 +4102,40 @@ def test_qwen3_tts_whole_request_waits_for_the_slot_a_stream_holds(
     assert arena.exhausted_count == 0
 
 
+def test_qwen3_tts_whole_request_waiting_for_a_slot_takes_the_next_one_before_a_later_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stream that started while a whole request waited for a slot took each slot that freed, so the whole request waited as long as streams kept arriving."""
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    scheduler.followup_worker = scheduler.initial_worker
+    arena = scheduler.codec_arena
+    for _ in range(arena.num_slots - 1):
+        arena.acquire()
+    codes = torch.arange(1, 65).view(-1, 1).repeat(1, 2)
+    first = admit_reference_stream(scheduler, "first", codes, ref_code_len=0)
+    scheduler.initial_queue.put(("first", first))
+    scheduler.run_initial_pass()
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
+    )
+    scheduler.run_initial_pass()
+    scheduler.release_codec_slot(first)
+    later = admit_reference_stream(scheduler, "later", codes, ref_code_len=0)
+    scheduler.initial_queue.put(("later", later))
+
+    scheduler.run_initial_pass()
+
+    assert later.codec_slot is None
+    assert later.incremental_codec_fallback is True
+    assert not scheduler.whole_requests
+    messages = []
+    while not scheduler.outbox.empty():
+        messages.append(scheduler.outbox.get_nowait())
+    results = [message for message in messages if message.request_id == "whole"]
+    assert [message.type for message in results] == ["result"]
+    assert chunk_samples(results[0].data) == expected_whole_samples(scheduler, 4)
+
+
 def test_qwen3_tts_whole_request_after_a_failed_capture_keeps_the_batch_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4321,7 +4355,7 @@ def test_qwen3_tts_whole_request_waiting_for_a_stream_slot_blocks_between_plans(
 
     assert timeouts == [QWEN3_TTS_WHOLE_REQUEST_SLOT_POLL_S]
     assert runner.calls == []
-    assert scheduler.is_whole_request_waiting_for_slot
+    assert scheduler.slot_waiting_whole_request_count == 1
 
 
 def test_qwen3_tts_initial_worker_waiting_for_a_slot_stops_on_the_sentinel(
@@ -4337,7 +4371,7 @@ def test_qwen3_tts_initial_worker_waiting_for_a_slot_stops_on_the_sentinel(
     scheduler.run_initial_pass()
     scheduler.initial_queue.put(None)
 
-    assert scheduler.is_whole_request_waiting_for_slot
+    assert scheduler.slot_waiting_whole_request_count == 1
     assert scheduler.run_initial_pass() is False
 
 

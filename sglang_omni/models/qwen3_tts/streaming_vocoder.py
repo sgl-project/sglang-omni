@@ -1082,7 +1082,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         # note (ratish): whole requests belong to the initial worker alone. An abort only marks
         # the request, and the worker drops it at the next replay.
         self.whole_requests: deque[Qwen3TTSWholeRequest] = deque()
-        self.is_whole_request_waiting_for_slot = False
+        self.slot_waiting_whole_request_count = 0
         self.followup_queue: queue.PriorityQueue[
             tuple[float, int, str, Qwen3TTSStreamState | None]
         ] = queue.PriorityQueue()
@@ -1896,13 +1896,14 @@ class Qwen3TTSStreamingVocoderScheduler(
         arena = self.codec_arena
         assert arena is not None
         if state.codec_slot is None:
-            slot = arena.acquire()
+            # note (ratish): a whole request that found every slot held takes the next one before any later stream, as a waiting queue admits its oldest request first.
+            kept_slots = self.slot_waiting_whole_request_count
+            slot = arena.acquire(keep_free=kept_slots)
             if slot is None:
                 state.incremental_codec_fallback = True
                 self.codec_fallback_count += 1
                 logger.warning(
-                    "Qwen3-TTS incremental Codec state arena is full (%d slots); this request uses the left-context decoder",
-                    arena.num_slots,
+                    f"Qwen3-TTS incremental Codec state arena has no slot for this request ({arena.num_slots} slots, {kept_slots} kept for waiting non-streaming requests); this request uses the left-context decoder"
                 )
                 return None
             else:
@@ -3015,13 +3016,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         """
         if not self.whole_requests:
             batch = self.wait_for_first_chunks()
-        elif self.is_whole_request_waiting_for_slot:
-            # note (ratish): no replay is due while every whole request waits for a slot held elsewhere, so the worker waits at most one poll for a first chunk before it plans again.
+        elif self.slot_waiting_whole_request_count == len(self.whole_requests):
+            # note (ratish): no replay is due while every whole request found every slot held, so the worker waits at most one poll for a first chunk before it plans again.
             batch = self.wait_for_first_chunks(
                 timeout=QWEN3_TTS_WHOLE_REQUEST_SLOT_POLL_S
             )
         else:
-            # note (ratish): a whole request that holds or can take a slot means a replay is due, so the worker does not wait.
+            # note (ratish): a whole request that holds a slot or has not asked for one means a replay is due, so the worker does not wait.
             batch = []
         if batch is None:
             return False
@@ -3073,7 +3074,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             for request in self.whole_requests:
                 self.fail_whole_request(request, error)
             self.whole_requests.clear()
-            self.is_whole_request_waiting_for_slot = False
+            self.slot_waiting_whole_request_count = 0
             return None
         else:
             pass
@@ -3081,6 +3082,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         widths = window_runner.fresh_frames
         replay: WholeRequestReplay | None = None
         waiting: deque[Qwen3TTSWholeRequest] = deque()
+        slot_waiting_count = 0
         for request in self.whole_requests:
             if self.is_aborted(request.request_id):
                 self.release_whole_request_slot(request)
@@ -3119,6 +3121,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     )
                     if request.slot is None:
                         waiting.append(request)
+                        slot_waiting_count += 1
                         continue
                     elif request.next_frame:
                         self.codec_arena.start_slot(request.slot, request.next_frame)
@@ -3137,8 +3140,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             replay.requests.append(request)
             replay.frames.append(frames)
         self.whole_requests = waiting
-        # note (ratish): a request holding a slot always joins an empty replay, so no replay with requests left means each of them found every slot held.
-        self.is_whole_request_waiting_for_slot = replay is None and bool(waiting)
+        self.slot_waiting_whole_request_count = slot_waiting_count
         return replay
 
     def release_whole_request_slot(self, request: Qwen3TTSWholeRequest) -> None:

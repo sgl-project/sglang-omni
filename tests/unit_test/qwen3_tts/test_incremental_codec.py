@@ -1147,6 +1147,16 @@ def test_codec_state_arena_counts_only_misses_that_do_not_wait() -> None:
     assert arena.exhausted_count == 1
 
 
+def test_codec_state_arena_keeps_free_slots_for_waiting_callers() -> None:
+    _, arena = make_arena(Decoder(), slots=2)
+
+    assert arena.acquire(keep_free=2) is None
+    assert arena.acquire(keep_free=1) is not None
+    assert arena.acquire(keep_free=1) is None
+    assert arena.acquire() is not None
+    assert arena.exhausted_count == 2
+
+
 class UnrecordableEvent:
     def record(self, stream: object) -> None:
         raise RuntimeError("CUDA error: event record failed")
