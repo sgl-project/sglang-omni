@@ -1,315 +1,180 @@
 package main
 
-// The Dictionary page (/dictionary): the user's terms,
-// kept by hand in 0.1. Each term has the spelling it must have, aliases
-// (what speech recognition tends to hear instead), a note and a switch.
-// Terms go to the speech model as hints (dict.Hints) and to the
-// language model as a glossary (compose.Glossary); the switches at the
-// top say where. Search, add, edit, delete, and import or export CSV and
-// plain text (internal/dict). The Personal dictionary view, Markdown notes
-// for the language model: dictionary_notes.go.
-//
-// The page keeps the terms of its search in memory, read in the
-// background when it shows and after each change; sessions read the
-// store themselves, so a change applies to the next one. Suggested terms:
-// dictionary_suggest.go; the history scan: dictionary_scan.go.
+// The Dictionary page (/dictionary): profiles, terms, personal Markdown,
+// suggestions, and the history scan. Controllers own storage, settings,
+// files, and models.
 
 import (
-	"context"
-	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// dictionaryState is the Dictionary page's view state.
-type dictionaryState struct {
-	dv              dictView
-	book            *learn.Book
-	suggestions     []learn.Suggestion // the sidebar's count and the page's section
-	suggestionReads int                // numbers the reads: only the last one lands
-	scanner         *learn.Scanner
-	// selPress is the transcribe shortcut whose selection is being read
-	// (dictionary_selection.go).
-	selPress *selectionPress
-}
-
-type dictView struct {
-	query string
-	find  finder // Return steps through the matches (find_marks.go)
-	// list holds the terms read for listFor (the search); "\x00" before
-	// the first read. seq numbers the reads: only the last one lands.
-	list    []store.Term
-	listFor string
-	read    bool
-	seq     int
-	loading bool
-	err     string
-	total   int // terms in the dictionary (the last read without a search)
-	listUI  ui.ListState
-	// guideOpen: the usage guide is unfolded.
-	guideOpen bool
-	// The term dialog.
-	editOpen bool
-	edit     termEdit
-	editWas  termEdit // the form as opened: a stray click or Escape keeps a changed one open
-	// importing: an import runs.
-	importing bool
-	// allSuggestions: the section shows every suggestion, not the first five.
+type dictionaryLocalUI struct {
+	query          string
+	find           finder
+	listUI         ui.ListState
+	guideOpen      bool
+	editOpen       bool
+	edit           termEdit
+	editWas        termEdit
 	allSuggestions bool
-	// scan is the history scan's dialog (dictionary_scan.go).
-	scan scanState
-	// tab is the view: the terms or the personal dictionary
-	// (dictionary_notes.go), whose editor is notes and whose example is
-	// of notesFeatures[notesFeature].
-	tab          int
-	notes        speechContextState
-	notesFeature int
-	// notesQuery and notesFind are the view's search (find_marks.go).
-	notesQuery string
-	notesFind  finder
-	// all are the terms of the last read without a search, for the
-	// example's glossary.
-	all []store.Term
-	// example is the personal dictionary's example, as last built.
-	example notesExampleCache
+	tab            int
+	notes          speechContextState
+	notesQuery     string
+	notesFind      finder
+	scanOpen       bool
+	profileEdit    dictionaryProfileEdit
+	// profileDeleteOpen asks whether to delete profileDeleteID.
+	profileDeleteOpen bool
+	profileDeleteID   string
 }
 
-// termEdit is the term dialog's fields: a new term when id is "".
 type termEdit struct {
-	id              string
-	term, aliases   string
-	note            string
-	enabled         bool
-	err             string
-	saving          bool
-	createdAt       time.Time
-	original, title string
-	suggestion      string // the key of the suggestion the dialog accepts, if any
+	id            string
+	term, aliases string
+	note          string
+	enabled       bool
+	err           string
+	saving        bool
+	createdAt     time.Time
+	original      string
+	suggestion    string
+	profile       string // the profile the term was opened in: a switch must not retarget Save/Delete
 }
 
-// Test seams: the file dialogs of Import and Export.
-var (
-	chooseImportFile = func(a *app, then func(string)) {
-		go func() {
-			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import terms"),
-				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV, text or Voxt 1.x export)"), Extensions: []string{"csv", "txt", "json"}}}})
-			if err != nil || len(files) == 0 {
-				return
-			}
-			a.post(func() { then(files[0]) })
-		}()
-	}
-	chooseExportFile = func(a *app, title, name string, then func(string)) {
-		go func() {
-			dst, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: title, DefaultPath: name,
-				Filters: []mygo.FileFilter{{Name: strings.ToUpper(filepath.Ext(name)[1:]), Extensions: []string{filepath.Ext(name)[1:]}}}})
-			if err != nil || dst == "" {
-				return
-			}
-			a.post(func() { then(dst) })
-		}()
-	}
-)
-
-// dictShown runs when the router goes to the page (pageShown).
-func (a *app) dictShown() { a.loadDict() }
-
-// loadDict reads the terms of the search in the background.
-func (a *app) loadDict() {
-	d := &a.dv
-	d.seq++
-	d.loading = true
-	seq, q := d.seq, strings.TrimSpace(d.query)
-	repo := a.lib.store.Dictionary()
-	a.async(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		list, err := repo.List(ctx, q)
-		a.post(func() {
-			d := &a.dv
-			if seq != d.seq {
-				return
-			}
-			d.loading, d.read, d.listFor = false, true, q
-			if err != nil {
-				d.err = err.Error()
-				return
-			}
-			d.list, d.err = list, ""
-			if q == "" {
-				d.total, d.all = len(list), list
-			}
-		})
-	})
-}
-
-func (a *app) dictionaryPage(c *ui.Context) {
+func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionaryActions, local *dictionaryLocalUI) {
 	t := c.Theme()
-	d := &a.dv
-	if !d.read && !d.loading {
-		a.loadDict()
-	}
-	scanModel, canScan := a.scanModel()
 	widePageHeader(c, i18n.T("Dictionary"), func() {
-		if d.total > 0 {
-			caption(c, i18n.N(d.total, "%d term", "%d terms", d.total)).SingleLine()
+		if state.CountLabel != "" {
+			caption(c, state.CountLabel).SingleLine()
 		}
-		on := &a.prefs.Dictionary.Enabled
-		state := i18n.T("Off")
-		if *on {
-			state = i18n.T("On")
+		on := state.Enabled
+		status := i18n.T("Off")
+		if on {
+			status = i18n.T("On")
 		}
-		caption(c, state).SingleLine()
-		if ui.Switch(c.Key("dict-on"), on).Label(i18n.T("Use the dictionary")).Tooltip(i18n.T("Use the dictionary")).Changed() {
-			v := *on
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Enabled = v })
+		caption(c, status).SingleLine()
+		if ui.Switch(c.Key("dict-on"), &on).Label(i18n.T("Use the dictionary")).Tooltip(i18n.T("Use the dictionary")).Changed() {
+			actions.setDictionaryEnabled(on)
 		}
-		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!canScan).Clicked() {
-			a.openScan(scanModel)
+		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!state.CanScan).Clicked() {
+			actions.openDictionaryScan()
 		}
-		moreMenu(c.Key("dict-more"), "", func(m *ui.Menu) {
-			if m.Item(i18n.T("Import…")).Chosen() {
-				a.importTerms()
+		moreMenu(c.Key("dict-more"), "", func(menu *ui.Menu) {
+			if menu.Item(i18n.T("Import…")).Chosen() {
+				actions.importTerms()
 			}
-			if legacyLibrary() != "" && m.Item(i18n.T("Import from Voxt 1.x…")).Chosen() {
-				a.importLegacy()
+			if state.LegacyImport && menu.Item(i18n.T("Import from Voxt 1.x…")).Chosen() {
+				actions.importLegacy()
 			}
-			if m.Item(i18n.T("Export as CSV…")).Chosen() {
-				a.exportTerms(dict.CSV)
+			if menu.Item(i18n.T("Export as CSV…")).Chosen() {
+				actions.exportTerms("csv")
 			}
-			if m.Item(i18n.T("Export as text…")).Chosen() {
-				a.exportTerms(dict.Text)
+			if menu.Item(i18n.T("Export as text…")).Chosen() {
+				actions.exportTerms("txt")
 			}
 		})
 		if primaryIconButton(c.Key("dict-add"), icons.Add, i18n.T("Add term")).Clicked() {
-			a.openTerm(store.Term{Enabled: true})
+			actions.openDictionaryTerm("")
 		}
 	})
 	pageBody(c).Children(func() {
 		ui.Row(c).Padding(px(t, sp1), px(t, sp6), 0).Shrink(0).Children(func() {
-			segmentedFit(c.Key("dict-tab"), &d.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
+			segmentedFit(c.Key("dict-tab"), &local.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
 		})
-		if d.tab == dictNotesTab {
-			a.notesView(c)
+		if local.tab == dictNotesTab {
+			dictionaryNotesView(c, &state.Notes, actions, local)
 			return
 		}
-		list := d.list
-		hits := findHits(d.listFor, len(list), func(i int) []string { return termTexts(list[i]) })
-		if d.find.advance(hits[len(list)]) {
-			row, _ := rowOf(hits, d.find.cur)
-			d.listUI.ScrollIntoView(row)
+		hits := findHits(state.ListFor, len(state.Terms), func(index int) []string { return termTexts(state.Terms[index]) })
+		if local.find.advance(hits[len(state.Terms)]) {
+			row, _ := rowOf(hits, local.find.cur)
+			local.listUI.ScrollIntoView(row)
 		}
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			dictionaryProfileBar(c, state, actions, local)
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				if d.find.field(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
-					a.loadDict()
+				if local.find.field(c, "dict-search", &local.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
+					actions.searchDictionary(local.query)
 				}
-				d.find.count(c, d.listFor, hits[len(list)])
-				a.dictSwitches(c)
+				local.find.count(c, state.ListFor, hits[len(state.Terms)])
+				dictSwitches(c, state, actions)
 			})
-			if !canScan {
+			if !state.CanScan {
 				ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
 					caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
 					if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
-						a.navigate("/transcribe")
+						actions.openDictionaryTranscribe()
 					}
 				})
 			}
-			a.dictGuide(c)
-			if !a.prefs.Dictionary.Enabled {
+			dictGuide(c, state, local)
+			if !state.Enabled {
 				notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off, so its terms are not used."), "", nil, nil)
 			}
-			if d.err != "" {
-				notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), d.err, func() {
+			if state.Error != "" {
+				notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), state.Error, func() {
 					if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
-						a.loadDict()
+						actions.loadDict()
 					}
 				}, nil)
 			}
 		})
-		a.suggestionsSection(c)
-		cur, curAt := rowOf(hits, d.find.cur)
+		suggestionsSection(c, state, actions, local)
+		current, currentAt := rowOf(hits, local.find.cur)
 		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 			switch {
-			case !d.read:
-			case len(list) == 0:
-				a.dictEmpty(c)
+			case !state.Read:
+			case len(state.Terms) == 0:
+				dictEmpty(c, state, actions)
 			default:
-				ui.List(c.Key("dict-list"), &d.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
-					ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
+				ui.List(c.Key("dict-list"), &local.listUI, len(state.Terms)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
+					ItemKey(func(index int) any { return state.Terms[index].ID }).Rows(func(row ui.ListRow) {
 					at := -1
-					if r.Index == cur {
-						at = curAt
+					if row.Index == current {
+						at = currentAt
 					}
-					a.termRow(c, list[r.Index], at)
+					termRow(c, state.Terms[row.Index], state.ListFor, at, actions)
 				})
 			}
 		})
 	})
-	a.termDialog(c)
-	a.scanDialog(c)
+	termDialog(c, actions, local)
+	scanDialog(c, &state.Scan, actions, local)
+	dictionaryProfileDialogs(c, state, actions, local)
 }
 
-// dictSwitches say where the terms go.
-func (a *app) dictSwitches(c *ui.Context) {
+func dictSwitches(c *ui.Context, state *dictionaryViewState, actions dictionaryActions) {
 	t := c.Theme()
-	off := !a.prefs.Dictionary.Enabled
+	off := !state.Enabled
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
-		hints := &a.prefs.Dictionary.ASRHints
-		if ui.Checkbox(c.Key("dict-hints"), hints, i18n.T("Speech hints")).Disabled(off).
+		hints := state.ASRHints
+		if ui.Checkbox(c.Key("dict-hints"), &hints, i18n.T("Speech hints")).Disabled(off).
 			Tooltip(i18n.T("Terms go to the speech model as words to expect.")).Changed() {
-			v := *hints
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.ASRHints = v })
+			actions.setDictionaryASRHints(hints)
 		}
-		gl := &a.prefs.Dictionary.Glossary
-		if ui.Checkbox(c.Key("dict-glossary"), gl, i18n.T("Glossary for the language model")).Disabled(off).
+		glossary := state.Glossary
+		if ui.Checkbox(c.Key("dict-glossary"), &glossary, i18n.T("Glossary for the language model")).Disabled(off).
 			Tooltip(i18n.T("The language model writes terms as spelled here.")).Changed() {
-			v := *gl
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = v })
+			actions.setDictionaryGlossary(glossary)
 		}
-		learnOn := &a.prefs.Dictionary.Learn
-		if ui.Checkbox(c.Key("dict-learn"), learnOn, i18n.T("Learn from my corrections")).Disabled(off).
-			Tooltip(i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds)).Changed() {
-			v := *learnOn
-			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = v })
+		learnOn := state.Learn
+		if ui.Checkbox(c.Key("dict-learn"), &learnOn, i18n.T("Learn from my corrections")).Disabled(off).
+			Tooltip(i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", state.LearnWatchSeconds)).Changed() {
+			actions.setDictionaryLearn(learnOn)
 		}
 	})
 }
 
-// dictGuide says where a term applies, folded under the switches
-// (docs/behavior.md 5.16, 7.9, 7.9a).
-func (a *app) dictGuide(c *ui.Context) {
-	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
-		caption(c, i18n.T("Each enabled term is used in three places:"))
-		caption(c, i18n.T("Speech recognition: with Speech hints on, terms go to the speech model as words to expect. Aliases are not sent."))
-		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
-		caption(c, i18n.T("Aliases: misspellings Voxt replaces with the term, even without a language model."))
-		caption(c, i18n.T("Rules a term cannot hold, such as when a spelling applies, go in the Personal dictionary: Markdown notes for the language model only, with an example of the prompt."))
-	})
-}
-
-// dictEmpty is the list's empty state.
-func (a *app) dictEmpty(c *ui.Context) {
-	d := &a.dv
-	if q := strings.TrimSpace(d.listFor); q != "" {
-		emptyState(c, icons.Magnifer, i18n.T("No term matches “%s”", q), "", func() {
+func dictEmpty(c *ui.Context, state *dictionaryViewState, actions dictionaryActions) {
+	if query := strings.TrimSpace(state.ListFor); query != "" {
+		emptyState(c, icons.Magnifer, i18n.T("No term matches “%s”", query), "", func() {
 			if ghostButton(c.Key("dict-clear-search"), i18n.T("Clear search")).Clicked() {
-				d.query = ""
-				a.loadDict()
+				actions.searchDictionary("")
 			}
 		})
 		return
@@ -317,280 +182,104 @@ func (a *app) dictEmpty(c *ui.Context) {
 	emptyState(c, dictionaryIcon, i18n.T("Names and terms you use"),
 		i18n.T("Add the names and jargon you say, spelled as they should be written."), func() {
 			if ghostIconButton(c.Key("dict-empty-add"), icons.Add, i18n.T("Add term")).Clicked() {
-				a.openTerm(store.Term{Enabled: true})
+				actions.openDictionaryTerm("")
 			}
 			if ghostIconButton(c.Key("dict-empty-import"), icons.Import, i18n.T("Import…")).Label(i18n.T("Import terms")).Clicked() {
-				a.importTerms()
+				actions.importTerms()
 			}
 		})
 }
 
-// termTexts are the texts a term's row shows, where the search marks
-// its matches: the term, its aliases and its note.
-func termTexts(term store.Term) []string {
-	return []string{term.Term, strings.Join(term.Aliases, i18n.T(", ")), term.Note}
+func termTexts(term dictionaryTermViewState) []string {
+	return []string{term.Term, term.AliasesText, term.Note}
 }
 
-// termRow is a term in the list: its switch, the term, its aliases and
-// note, Edit and Delete, the search's matches marked; at is the current
-// match's index within the row (-1 for none).
-func (a *app) termRow(c *ui.Context, term store.Term, at int) {
+func termRow(c *ui.Context, term dictionaryTermViewState, query string, at int, actions dictionaryActions) {
 	t := c.Theme()
-	k := tok(t)
-	q := a.dv.listFor
+	colors := tok(t)
 	texts := termTexts(term)
-	nTerm, nAliases := len(findFolded(texts[0], q)), len(findFolded(texts[1], q))
+	termMatches, aliasMatches := len(findFolded(texts[0], query)), len(findFolded(texts[1], query))
 	row := ui.Row(c.Key("term-"+term.ID)).Padding(px(t, 6), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Gap(px(t, sp2)).AlignItems(ui.Center)
 	if row.Hovered() {
-		row.Background(k.Hover)
+		row.Background(colors.Hover)
 	}
 	row.Children(func() {
-		on := term.Enabled // derived: committed in OnChange
+		on := term.Enabled
 		ui.Switch(c.Key("on"), &on).Label(i18n.T("Use %s", term.Term)).OnChange(func() {
-			tm := term
-			tm.Enabled = on
-			a.saveTerm(tm, false)
+			actions.setDictionaryTermEnabled(term.ID, on)
 		})
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				tx := markedText(c, term.Term, q, curIn(at, 0)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+				text := markedText(c, term.Term, query, curIn(at, 0)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 				if !term.Enabled {
-					tx.TextColor(k.Text3)
+					text.TextColor(colors.Text3)
 				}
-				if len(term.Aliases) > 0 {
+				if term.AliasesText != "" {
 					heard := i18n.T("heard as %s", texts[1])
 					before, after, _ := strings.Cut(i18n.T("heard as %s", "\x00"), "\x00")
-					spans := append([]ui.Span{{Text: before}}, markSpans(k.Danger, ui.Span{}, texts[1], q, curIn(at, nTerm))...)
+					spans := append([]ui.Span{{Text: before}}, markSpans(colors.Danger, ui.Span{}, texts[1], query, curIn(at, termMatches))...)
 					ui.RichText(c, append(spans, ui.Span{Text: after})...).Label(heard).Tooltip(heard).
-						FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+						FontSize(px(t, fsCaption)).TextColor(colors.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				}
 			})
 			if term.Note != "" {
-				markedText(c, term.Note, q, curIn(at, nTerm+nAliases)).Tooltip(term.Note).
-					FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
+				markedText(c, term.Note, query, curIn(at, termMatches+aliasMatches)).Tooltip(term.Note).
+					FontSize(px(t, fsCaption)).TextColor(colors.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 			}
 		})
 		if iconButton(c.Key("edit"), icons.Pen2, i18n.T("Edit %s", term.Term)).Clicked() {
-			a.openTerm(term)
+			actions.openDictionaryTerm(term.ID)
 		}
 		if iconButton(c.Key("delete"), icons.TrashBinMinimalistic, i18n.T("Delete %s", term.Term)).Clicked() {
-			a.deleteTerm(term)
+			actions.deleteDictionaryTerm(term.ID, term.Term, "")
 		}
 	})
 }
 
-// openTerm opens the term dialog on term (a new one without an id).
-func (a *app) openTerm(term store.Term) {
-	d := &a.dv
-	d.editOpen = true
-	d.edit = termEdit{id: term.ID, term: term.Term, aliases: strings.Join(term.Aliases, ", "), note: term.Note,
-		enabled: term.Enabled, createdAt: term.CreatedAt, original: term.Term}
-	d.editWas = d.edit
-}
-
-func (a *app) termDialog(c *ui.Context) {
+func termDialog(c *ui.Context, actions dictionaryActions, local *dictionaryLocalUI) {
 	t := c.Theme()
-	d := &a.dv
-	if !d.editOpen {
+	if !local.editOpen {
 		return
 	}
-	e := &d.edit
+	edit := &local.edit
 	title := i18n.T("Add term")
-	if e.id != "" {
+	if edit.id != "" {
 		title = i18n.T("Edit term")
 	}
-	if dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
+	if dialogFrame(c, "term-dlg", &local.editOpen, title, "", 460, func() {
 		fieldInfo(c, i18n.T("Term"), i18n.T("As it should be written: Voxt, Kubernetes, 豆包."), func() {
-			in := ui.TextInput(c.Key("term-term"), &e.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
-			if in.Changed() {
-				e.err = ""
+			input := ui.TextInput(c.Key("term-term"), &edit.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
+			if input.Changed() {
+				edit.err = ""
 			}
-			if in.Submitted() {
-				a.submitTerm()
+			if input.Submitted() {
+				actions.submitTerm()
 			}
 		})
 		fieldInfo(c, i18n.T("Aliases"), i18n.T("Wrong spellings to replace, separated by commas: Vox T, 沃克斯特."), func() {
-			ui.TextInput(c.Key("term-aliases"), &e.aliases).Label(i18n.T("Aliases of the term")).Placeholder(i18n.T("Vox T, 沃克斯特"))
+			ui.TextInput(c.Key("term-aliases"), &edit.aliases).Label(i18n.T("Aliases of the term")).Placeholder(i18n.T("Vox T, 沃克斯特"))
 		})
 		fieldInfo(c, i18n.T("Note"), i18n.T("Only for you, never sent."), func() {
-			ui.TextArea(c.Key("term-note"), &e.note).Label(i18n.T("Note on the term")).MinHeight(px(t, 56))
+			ui.TextArea(c.Key("term-note"), &edit.note).Label(i18n.T("Note on the term")).MinHeight(px(t, 56))
 		})
-		ui.Checkbox(c.Key("term-enabled"), &e.enabled, i18n.T("Use this term"))
-		if e.err != "" {
-			warnLine(c, e.err)
+		ui.Checkbox(c.Key("term-enabled"), &edit.enabled, i18n.T("Use this term"))
+		if edit.err != "" {
+			warnLine(c, edit.err)
 		}
 	}, func() {
-		if e.id != "" && ghostButton(c.Key("term-delete"), i18n.T("Delete")).Clicked() {
-			d.editOpen = false
-			a.deleteTerm(store.Term{ID: e.id, Term: e.original})
+		if edit.id != "" && ghostButton(c.Key("term-delete"), i18n.T("Delete")).Clicked() {
+			local.editOpen = false
+			actions.deleteDictionaryTerm(edit.id, edit.original, edit.profile)
 		}
 		ui.Spacer(c)
 		if ui.Button(c.Key("term-cancel"), i18n.T("Cancel")).Clicked() {
-			d.editOpen = false
+			local.editOpen = false
 		}
-		if primaryButton(c.Key("term-save"), i18n.T("Save")).Disabled(e.saving).Clicked() {
-			a.submitTerm()
+		if primaryButton(c.Key("term-save"), i18n.T("Save")).Disabled(edit.saving).Clicked() {
+			actions.submitTerm()
 		}
-	}).Dismissed() && d.edit != d.editWas {
-		d.editOpen = true // a stray click or Escape: keep what was typed
+	}).Dismissed() && local.edit != local.editWas {
+		local.editOpen = true
 	}
-}
-
-// submitTerm checks and saves the dialog's term.
-func (a *app) submitTerm() {
-	e := &a.dv.edit
-	term := dict.Clean(store.Term{ID: e.id, Term: e.term, Aliases: dict.SplitAliases(e.aliases), Note: e.note, Enabled: e.enabled, CreatedAt: e.createdAt})
-	if err := dict.Check(term); err != nil {
-		e.err = uitext.TermErrorText(err)
-		return
-	}
-	e.saving = true
-	if e.suggestion != "" {
-		a.acceptSuggestion(e.suggestion, term, true)
-		return
-	}
-	a.saveTerm(term, true)
-}
-
-// saveTerm writes a term (a new id for a new one); fromDialog closes the
-// dialog when it worked, or shows why not.
-func (a *app) saveTerm(term store.Term, fromDialog bool) {
-	if term.ID == "" {
-		term.ID = core.NewID(time.Now())
-	}
-	if term.CreatedAt.IsZero() {
-		term.CreatedAt = time.Now()
-	}
-	term.UpdatedAt = time.Now()
-	repo := a.lib.store.Dictionary()
-	a.async(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		err := repo.Put(ctx, term)
-		a.post(func() {
-			if fromDialog {
-				a.dv.edit.saving = false
-				if err != nil {
-					a.dv.edit.err = uitext.TermErrorText(err)
-					return
-				}
-				a.dv.editOpen = false
-			} else if err != nil {
-				a.toast(uitext.TermErrorText(err))
-			}
-			a.loadDict()
-		})
-	})
-}
-
-// deleteTerm deletes a term.
-func (a *app) deleteTerm(term store.Term) {
-	repo := a.lib.store.Dictionary()
-	a.async(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		err := repo.Delete(ctx, term.ID)
-		a.post(func() {
-			if err != nil && !errors.Is(err, core.ErrNotFound) {
-				a.toast(i18n.T("Could not delete the term: %v", err))
-				return
-			}
-			a.toast(i18n.T("Deleted “%s”", term.Term))
-			a.loadDict()
-		})
-	})
-}
-
-// importTerms reads a CSV or text file and merges its terms in.
-func (a *app) importTerms() {
-	if a.dv.importing {
-		return
-	}
-	chooseImportFile(a, func(path string) { a.importFile(path) })
-}
-
-// importFile merges the terms of the file at path into the dictionary.
-func (a *app) importFile(path string) {
-	a.dv.importing = true
-	repo := a.lib.store.Dictionary()
-	a.async(func() {
-		msg := func() string {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return i18n.T("Could not import: %v", err)
-			}
-			var terms []store.Term
-			var skipped int
-			if strings.EqualFold(filepath.Ext(path), ".json") {
-				terms, skipped, err = parseLegacyExport(data) // legacy_import.go
-			} else {
-				terms, skipped, err = dict.Import(data, dict.FormatOf(path))
-			}
-			if err != nil {
-				return i18n.T("Could not import %s: it is not a CSV or text list of terms, or a Voxt 1.x dictionary export.", filepath.Base(path))
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			added, updated, err := mergeImported(ctx, repo, terms)
-			if err != nil {
-				return i18n.T("Could not import: %v", err)
-			}
-			if skipped > 0 {
-				return i18n.T("Imported: %d new, %d updated, %d rows skipped.", added, updated, skipped)
-			}
-			return i18n.T("Imported: %d new, %d updated.", added, updated)
-		}()
-		a.post(func() {
-			a.dv.importing = false
-			a.toast(msg)
-			a.loadDict()
-		})
-	})
-}
-
-// mergeImported merges imported terms into the dictionary: a file import
-// and the previous Voxt's import share it.
-func mergeImported(ctx context.Context, repo store.Dictionary, terms []store.Term) (added, updated int, err error) {
-	have, err := repo.List(ctx, "")
-	if err != nil {
-		return 0, 0, err
-	}
-	put, added, updated := dict.Merge(have, terms)
-	now := time.Now()
-	for i, tm := range put {
-		if tm.ID == "" {
-			tm.ID, tm.CreatedAt = core.NewID(now), now.Add(time.Duration(i))
-		}
-		tm.UpdatedAt = now
-		if err := repo.Put(ctx, tm); err != nil {
-			return 0, 0, err
-		}
-	}
-	return added, updated, nil
-}
-
-// exportTerms writes every term to a file the user picks.
-func (a *app) exportTerms(format string) {
-	name := "voxtnew-dictionary." + format
-	chooseExportFile(a, i18n.T("Export terms"), name, func(dst string) { a.exportFile(dst, format) })
-}
-
-func (a *app) exportFile(dst, format string) {
-	repo := a.lib.store.Dictionary()
-	a.async(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		terms, err := repo.List(ctx, "")
-		if err == nil {
-			err = os.WriteFile(dst, dict.Export(terms, format), 0o644)
-		}
-		a.post(func() {
-			if err != nil {
-				a.toast(i18n.T("Could not export: %v", err))
-				return
-			}
-			a.toast(i18n.N(len(terms), "Exported %d term to %s", "Exported %d terms to %s", len(terms), filepath.Base(dst)))
-		})
-	})
 }

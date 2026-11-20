@@ -1,0 +1,12 @@
+# Measured MyGo raster noise. Each entry is an exact SET/FILE.png path.
+# Regenerate from Voxt/: SNAP_NOISE_TMP="$PWD/../.hmz-evidence/w0/snapshot-noise" scripts/w0-snapshot-noise.sh
+# The command takes the union from five pairs; only equal dimensions, equal alpha and RGB deltas <= 1 qualify.
+min/overlay-composing-dark-zh-Hans.png
+min/overlay-composing-light-zh-Hans.png
+min/overlay-composing-skip-dark-zh-Hans.png
+min/overlay-composing-skip-light-zh-Hans.png
+min/overlay-composing-think-dark-zh-Hans.png
+min/overlay-composing-think-light-zh-Hans.png
+min/overlay-live-short-light-zh-Hans.png
+min/overlay-live-short-zh-light-zh-Hans.png
+min/overlay-live-text-light-zh-Hans.png

@@ -39,7 +39,7 @@ MTP uses additional GPU memory. Speedup depends on the workload and output lengt
 Usage notes:
 
 - To disable MTP in a config that enables it, add `--thinker.engine.disable_speculative_decoding true`.
-- MTP uses synchronous decoding (`--thinker.factory.enable_async_decode false`, the default).
+- MTP decodes synchronously by default. Add `--thinker.factory.enable_async_decode true` to overlap each verify round with the host work of the previous one. `--thinker.factory.async_decode_min_batch_size N` keeps batches of fewer than N requests synchronous. On 4×H20 at TP4, overlap raised MTP transcription throughput by 5–6% at 16 and 32 running requests and made no measurable difference at 8 or fewer, so leave it off at low load.
 - Keep `speculative_eagle_topk=1` and `repetition_penalty=1`. Prefix caching and chunked prefill are unavailable for this model.
 
 For MTP acceptance statistics, set `return_spec_tokens_details=true` on chat or transcription requests and read `sglext.spec_tokens_details` in the JSON response.
@@ -149,7 +149,7 @@ The chat response keeps the generated answer. Set `modalities` to `["text", "aud
 
 ## Apple Silicon: native MLX
 
-The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's MLX 0.32.3 toolchain, without Python, PyTorch or CUDA.
+The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's pinned MLX toolchain, without Python, PyTorch or CUDA.
 
 ```bash
 python sglang_omni_mlx/native/ci/provision_models.py "$MING3_AUDIO_DATA" \

@@ -1,10 +1,63 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
+
+// TestTransparentSidebarFade covers the solid band left at the bottom of
+// either navigation layout when the window background is transparent.
+func TestTransparentSidebarFade(t *testing.T) {
+	for _, rail := range []bool{false, true} {
+		for _, dark := range []bool{false, true} {
+			t.Run(fmt.Sprintf("rail=%t/dark=%t", rail, dark), func(t *testing.T) {
+				a, _, tt := newTestApp(t)
+				tt.SetSize(windowWidth, windowMinHeight)
+				tt.SetDark(dark)
+				a.updateSettings(func(s *settings.Settings) {
+					s.Appearance.Theme = settings.ThemeTransparent
+					s.Appearance.WindowTransparency = settings.MaxWindowTransparency
+					s.Appearance.Rail, s.Appearance.RailChosen = rail, true
+				})
+				frames(tt)
+				img := tt.Image()
+				x, y := 4, img.Bounds().Dy()-1
+				if !rail {
+					bounds, ok := tt.Find("Sections")
+					if !ok {
+						t.Fatal("sidebar is missing")
+					}
+					x, y = int(bounds.X)+1, int(bounds.Y+bounds.H)-1
+				}
+				background := paletteTokens(a.prefs.Appearance.Palette, dark).Sidebar.
+					Alpha(1 - float32(settings.MaxWindowTransparency)/100)
+				// The fade and its backing must both let the backdrop through.
+				remaining := 255 - int(background.A)
+				limit := uint8(255 - remaining*remaining/255)
+				if got := img.RGBAAt(x, y).A; got > limit+1 {
+					t.Fatalf("sidebar fade alpha %d exceeds transparent layers' alpha %d", got, limit)
+				}
+			})
+		}
+	}
+}
+
+func TestShellBuildersUseExplicitTranslator(t *testing.T) {
+	previous := i18n.SetLocale("en")
+	defer i18n.SetLocale(previous)
+	translator := i18n.NewTranslator("zh-Hans")
+	nav := buildNavViewState(translator, navViewStateInput{Current: "/home"})
+	if nav.Settings.Title != translator.T("Settings") {
+		t.Errorf("settings title %q, want %q", nav.Settings.Title, translator.T("Settings"))
+	}
+	logs := buildLogsViewState(translator, nil, "", "", false)
+	if logs.Source != translator.T("All sources") {
+		t.Errorf("log source %q, want %q", logs.Source, translator.T("All sources"))
+	}
+}
 
 func TestAutoRail(t *testing.T) {
 	a, _, tt := newTestApp(t)

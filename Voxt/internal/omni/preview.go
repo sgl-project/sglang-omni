@@ -1,6 +1,7 @@
 package omni
 
 import (
+	"context"
 	"slices"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -12,14 +13,14 @@ import (
 // pieces'. The requests take turns with the pieces' on the one server, so
 // a slow model previews less often. A request that fails stops the
 // preview; the Final still runs at Finish.
-func (s *live) previewBatch() {
+func (s *live) previewBatch(ctx context.Context) {
 	t := s.a.spec.ASR
 	step := samplesOf(t.DecodeInterval) * 2
 	shown := 0 // the audio's bytes at the last preview
 	for {
 		select {
 		case <-s.tick:
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		}
 		s.mu.Lock()
@@ -42,16 +43,16 @@ func (s *live) previewBatch() {
 		tail := audio[done:]
 		req := finalRequest{pcm: padPiece(tail, t), language: language, context: s.bias.context,
 			maxTokens: t.tokenBudget(asr.Duration(tail, sampleRate)), layout: t.AudioLayout, preview: true}
-		r, err := transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
+		r, err := transcribe(ctx, s.l, req, s.a.rt.cfg.StallTimeout)
 		if err != nil {
-			if s.ctx.Err() == nil {
+			if ctx.Err() == nil {
 				s.a.rt.logf("warning", "%s: live preview stopped: %v", s.a.spec.ID, err)
 			}
 			return
 		}
 		s.mu.Lock()
 		if !s.finished {
-			if text, ok := s.asm.apply(0, 0, joinParts(append(texts, r.text)), false); ok {
+			if text, ok := s.asm.apply(0, 0, joinParts(append(texts, s.a.plainText(r.text))), false); ok {
 				s.previewed = shown
 				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 			}
