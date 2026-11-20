@@ -74,6 +74,13 @@ SileroVAD::SileroVAD(const std::filesystem::path &model_directory)
         "final_conv.bias"}) {
     checkpoint_.Weight(name);
   }
+  // Prime every Metal kernel the feed uses with a throwaway stream: a
+  // fresh process otherwise compiles them on the first real feed, which
+  // lands on the user's first dictation. The warmup state and its
+  // probabilities are discarded, so later streams are unaffected.
+  StreamState warmup;
+  const std::vector<float> quiet(8 * kChunkSamples, 0.0f);
+  Feed(quiet.data(), 8, warmup);
 }
 
 std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
