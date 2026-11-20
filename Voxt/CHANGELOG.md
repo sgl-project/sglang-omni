@@ -32,13 +32,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Rewrite previews and fallback state stay consistent**: long single-line pastes use bounded blocks, a scanned-PDF skip notice no longer hides a model failure, redo follows the model that actually answered, and local model URLs bypass custom or environment proxies.
 - **Rewrite keeps the text editor and image-limit message visible with several previews**: earlier pasted blocks and images scroll while the trailing editor and image-limit message stay in view. Immediate consecutive pastes keep their order and caret.
 - **Rewrite previews stay removable and accurate**: selections of three lines or fewer have a remove button too. A window screenshot captured after recording stays in the box for removal or confirmation before the request. Redo drops an automatic image that was not resent, and reopening a card restores its text input chips.
-
-### Fixed
-
 - **Language models can use an HTTP gateway**: API-key services now accept HTTP addresses on other hosts, including a private-network gateway. HTTP sends the key and text without encryption, which the Address tip in the service's set-up dialog says; ChatGPT sign-in still requires HTTPS for remote addresses.
-
-### Fixed
-
 - **Transcribe works while a Rewrite answer streams, and the card stays put**: pressing the Transcribe shortcut while a Rewrite or Translate answer was still streaming into its card did nothing, and a transcription after it finished closed the card and reopened it at the screen's center when done. The answer now keeps streaming into the unmoved card, the recording window shows beside it in its own window, and the card is never closed or recreated by a transcription. The answer's Stop and the cancel shortcut still work on it while it finishes.
 - **Background answers no longer block or get lost**: after the foreground session ends, other features and Try cannot start over a streaming answer, and old cards wait until it finishes. Close and Escape cancel a request even before its first token. Background history writes no longer stall foreground recording, Start, Stop, Cancel or snapshot delivery.
 
@@ -72,13 +66,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **改写预览和备用模型状态保持一致**：长单行粘贴也使用有界折叠块，扫描版 PDF 的跳页提示不再遮住模型失败，重做会跟随实际回答的模型，本机模型地址始终绕过自定义或环境代理。
 - **多个预览块不再遮住改写输入框和图片数量提示**：较早的粘贴块和图片可以滚动，末尾的文字输入框和图片数量提示保持可见；连续快速粘贴仍保持顺序和光标位置。
 - **改写预览可以移除，并与实际发送一致**：三行以内的选中文本也有删除按钮。空框结束录音后截取的窗口图片先留在输入框里，移除或再次确认后才发送请求。重做时没有重发的自动图片会从标签里去掉，从历史重新打开卡片会恢复文字标签。
-
-#### 修复
-
 - **语言模型可使用 HTTP 网关**：使用 API Key 的服务现在可以连接其他主机上的 HTTP 地址，包括局域网网关。HTTP 会明文传输密钥和文本，服务设置对话框里“地址”旁的提示写了这一点；ChatGPT 登录仍要求远程地址使用 HTTPS。
-
-#### 修复
-
 - **改写的回答还在写时也能转录，卡片不再被关掉**：改写或翻译的回答还在流进卡片时按转录快捷键以前没有反应，回答写完后再转录又会把卡片关掉、转录完在屏幕中央重新打开。现在回答在原地不动的卡片里继续写完，录音浮窗显示在它旁边自己的窗口里，转录不再关闭或重建卡片；回答写完前，它的“停止”和取消快捷键照旧可用。
 - **后台回答不再阻塞或丢失**：前台会话结束后，其他功能和“试一试”不能抢在后台回答完成前启动，旧卡片会等回答完成再恢复。即使首个 token 还没到，关闭和 Esc 也能取消请求。后台写历史不再卡住前台录音、开始、停止、取消和快照发布。
 
