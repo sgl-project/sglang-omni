@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"encoding/json"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -80,10 +81,13 @@ func structuralControlSuffix(s string) bool {
 			continue
 		}
 		after := s[index+len(token):]
+		if trailingControlToken(token) && strings.TrimSpace(after) == "" {
+			continue
+		}
 		if !structuralControlToken(token, after) {
 			continue
 		}
-		if !strings.HasPrefix(token, "<|tool") || bracketedToolPayload(after) {
+		if !strings.HasPrefix(token, "<|tool") || toolPayload(after) {
 			return true
 		}
 		if fields := strings.Fields(after); len(fields) > 0 && strings.Contains(fields[0], "_") {
@@ -123,35 +127,10 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 		return false
 	}
 	if structuralControlToken(token, rest) {
-		if !strings.HasPrefix(token, "<|tool") {
+		if !strings.HasPrefix(token, "<|tool") || toolPayload(rest) {
 			return false
 		}
-		if bracketedToolPayload(rest) {
-			return false
-		}
-		fields := strings.Fields(rest)
-		if len(fields) > 0 && strings.Contains(fields[0], "_") {
-			return false
-		}
-		if strings.ContainsAny(rest, "{[") {
-			return false
-		}
-		literalCue := false
-		if len(fields) > 0 {
-			firstField := strings.ToLower(strings.TrimRightFunc(fields[0], unicode.IsPunct))
-			literalCue = strings.Contains(firstField, "标记")
-			switch firstField {
-			case "token", "tag", "marker":
-				literalCue = true
-			}
-		}
-		before, _ := utf8.DecodeLastRuneInString(s[:start])
-		after, _ := utf8.DecodeRuneInString(rest)
-		beforeProse := start > 0 && (unicode.Is(unicode.Han, before) || unicode.IsSpace(before))
-		afterProse := unicode.Is(unicode.Han, after) || unicode.IsSpace(after) || unicode.IsPunct(after)
-		// Only explicit marker prose gets the input exemption; tool payloads still go.
-		if literalCue && beforeProse && afterProse &&
-			(preservedControlToken(token, input) || previousControlToken(token, previous)) {
+		if literalToolMarker(s, start, token, input, previous) {
 			return true
 		}
 	}
@@ -177,17 +156,64 @@ func turnEndLeak(after string) bool {
 	return unicode.IsUpper(first) || unicode.Is(unicode.Han, first)
 }
 
-func bracketedToolPayload(rest string) bool {
+func toolPayload(rest string) bool {
 	index := strings.IndexAny(rest, "{[")
 	if index < 0 {
 		return false
+	}
+	if rest[index] == '{' {
+		return true
+	}
+	end := strings.IndexByte(rest[index+1:], ']')
+	candidate := ""
+	if end >= 0 {
+		candidate = rest[index : index+end+2]
+		if json.Valid([]byte(candidate)) || strings.ContainsAny(candidate, "\"{") {
+			return true
+		}
 	}
 	before := strings.TrimSpace(rest[:index])
 	if before == "" {
 		return true
 	}
 	last, _ := utf8.DecodeLastRuneInString(before)
-	return !strings.ContainsRune(".!?。！？", last)
+	if strings.ContainsRune(".!?。！？", last) {
+		return false
+	}
+	// A closed, non-JSON bracket such as [docs] is prose; an unclosed one may be a payload.
+	return end < 0
+}
+
+func controlMarkerCue(field string) bool {
+	field = strings.ToLower(strings.TrimFunc(field, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r) || r == '`'
+	}))
+	switch field {
+	case "token", "tokens", "tag", "tags", "marker", "markers":
+		return true
+	default:
+		return strings.Contains(field, "标记") || strings.Contains(field, "标签")
+	}
+}
+
+func literalToolMarker(s string, start int, token, input string, previous []string) bool {
+	if !preservedControlToken(token, input) && !previousControlToken(token, previous) {
+		return false
+	}
+	rest := s[start+len(token):]
+	fields := strings.Fields(rest)
+	if len(fields) > 0 && strings.Contains(fields[0], "_") {
+		return false
+	}
+	beforeFields := strings.Fields(s[:start])
+	afterCue := len(fields) > 0 && controlMarkerCue(fields[0])
+	beforeCue := len(beforeFields) > 0 && controlMarkerCue(beforeFields[len(beforeFields)-1])
+	before, _ := utf8.DecodeLastRuneInString(s[:start])
+	after, _ := utf8.DecodeRuneInString(rest)
+	beforeProse := start > 0 && (unicode.Is(unicode.Han, before) || unicode.IsSpace(before) || unicode.IsPunct(before))
+	afterProse := unicode.Is(unicode.Han, after) || unicode.IsSpace(after) || unicode.IsPunct(after)
+	// Keep the explicit prose scope: plain arguments must remain tool payloads.
+	return (beforeCue || afterCue) && beforeProse && afterProse
 }
 
 func exactThinkingPair(pair string, input string, previous []string) bool {
