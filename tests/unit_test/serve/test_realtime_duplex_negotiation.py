@@ -220,6 +220,33 @@ def test_invalid_sampling_is_rejected(field: str, value: JsonValue) -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("threshold", 1.5),
+        ("threshold", -0.1),
+        ("prefix_padding_ms", -1),
+        ("silence_duration_ms", -1),
+    ],
+)
+def test_invalid_turn_detection_is_rejected(field: str, value: JsonValue) -> None:
+    with pytest.raises(ProtocolError) as exc_info:
+        build_negotiation().negotiate(
+            {},
+            "CREATED",
+            {
+                "audio": {
+                    "input": {"turn_detection": {"type": "server_vad", field: value}}
+                }
+            },
+        )
+
+    assert (exc_info.value.code, exc_info.value.param) == (
+        "invalid_request",
+        f"session.audio.input.turn_detection.{field}",
+    )
+
+
+@pytest.mark.parametrize(
     "patch",
     [
         {"instructions": "be verbose"},
