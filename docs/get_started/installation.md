@@ -105,15 +105,11 @@ git clone git@github.com:sgl-project/sglang-omni.git
 cd sglang-omni
 ```
 
+**Prepare the environment** inside the checkout, as in [pip / uv](#pip-uv).
+
 **Install in editable mode.**
 
 ```bash
-pip install --upgrade pip
-pip install uv
-
-uv venv .venv -p 3.12
-source .venv/bin/activate
-
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
 
