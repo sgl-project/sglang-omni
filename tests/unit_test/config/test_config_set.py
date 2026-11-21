@@ -19,7 +19,10 @@ prefix implied. What these tests pin down:
 
 from __future__ import annotations
 
+import textwrap
+
 import pytest
+import yaml
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import (
@@ -35,6 +38,7 @@ from sglang_omni.config.path import ConfigPathError
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import (
+    DuplicateKeyRefusingLoader,
     patches_from_dotted_cli,
     patches_from_model_path_flag,
     patches_from_shared_block,
@@ -178,6 +182,83 @@ class TestStagesMapping:
             patches_from_stages_mapping(
                 {"thinker": 4}, type(pipeline_config), ["thinker"]
             )
+
+
+class TestConfigFileKeys:
+    """A merge key shares a block inside one file; a key written twice is still refused."""
+
+    @staticmethod
+    def load(text: str) -> object:
+        return yaml.load(textwrap.dedent(text), Loader=DuplicateKeyRefusingLoader)
+
+    def test_keys_written_beside_a_merge_override_the_merged_ones(self):
+        data = self.load(
+            """
+            stages:
+              thinker:
+                engine: &engine
+                  mem_fraction_static: 0.6
+                  disable_radix_cache: true
+              talker:
+                engine:
+                  <<: *engine
+                  mem_fraction_static: 0.3
+            """
+        )
+        assert data["stages"]["thinker"]["engine"]["mem_fraction_static"] == 0.6
+        assert data["stages"]["talker"]["engine"] == {
+            "mem_fraction_static": 0.3,
+            "disable_radix_cache": True,
+        }
+
+    def test_a_merged_anchor_may_itself_override_a_merge(self):
+        data = self.load(
+            """
+            base: &base
+              tp_size: 1
+              gpu: 0
+            defaults:
+              wide: &wide
+                <<: *base
+                tp_size: 2
+            thinker:
+              <<: *wide
+              gpu: 1
+            """
+        )
+        assert data["defaults"]["wide"] == {"tp_size": 2, "gpu": 0}
+        assert data["thinker"] == {"tp_size": 2, "gpu": 1}
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            """
+            model_path: a
+            model_path: b
+            """,
+            """
+            base: &base {tp_size: 1}
+            thinker:
+              <<: *base
+              gpu: 0
+              gpu: 1
+            """,
+            """
+            base: &base {tp_size: 1}
+            defaults:
+              wide: &wide
+                <<: *base
+                gpu: 0
+                gpu: 1
+            thinker:
+              <<: *wide
+            """,
+        ],
+        ids=["plain", "beside_a_merge", "inside_a_merged_anchor"],
+    )
+    def test_a_key_written_twice_is_refused(self, text):
+        with pytest.raises(yaml.constructor.ConstructorError, match="duplicate"):
+            self.load(text)
 
 
 class TestStageDefaults:
