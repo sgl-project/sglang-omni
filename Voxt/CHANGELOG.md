@@ -8,7 +8,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
 - **An activity calendar on Home** (#4360): under Today, the days you used Voxt over about the last five months, shaded in your accent color by how many results each had, lighting up from left to right. Beside it: the characters Voxt has written for you, how many characters a minute you speak, and your days in a row. Hover a day for its date and count; the arrows go back further. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts (results, characters and speech time, no text) are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
-- **Snippets** (#NNNN): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, without the language model; say it inside a dictation and it is replaced after the clean-up, so the model never changes it. Triggers match ignoring case, spaces and punctuation. Transcribe only for now.
+- **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, without the language model; say it inside a dictation and it is replaced after the clean-up, so the model never changes it. Triggers match ignoring case, spaces and punctuation. Transcribe only for now.
 
 ### Changed
 
@@ -29,7 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
 - **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近约五个月使用 Voxt 的情况，用主题色深浅表示当天结果多少，打开时从左到右依次亮起。旁边是 Voxt 一共为你写了多少字、你每分钟说多少字，以及连续使用的天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数、字数和说话时长（不含文字）和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
-- **片段**（#NNNN）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点。目前只用于转录。
+- **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点。目前只用于转录。
 
 #### 变更
 
