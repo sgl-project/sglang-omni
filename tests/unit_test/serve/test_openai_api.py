@@ -3210,12 +3210,16 @@ def test_streamed_audio_beyond_the_native_limit_is_rejected() -> None:
     assert transcription_client.requests == []
 
 
-def test_streamed_audio_beyond_total_limit_requests_shorter_file() -> None:
-    transcription_client = ChunkRecordingTranscriptionClient()
+@pytest.mark.parametrize("max_native_clip_s", [1.5, 2.0, 3.0])
+def test_streamed_audio_beyond_total_limit_requests_shorter_file(
+    max_native_clip_s: float,
+) -> None:
+    """Over-limit streams were accepted or told to retry with stream=false."""
+    transcription_client = SuccessfulTranscriptionClient()
     client = chunking_test_client(
         transcription_client,
         max_total_audio_s=2.0,
-        max_native_clip_s=2.0,
+        max_native_clip_s=max_native_clip_s,
     )
 
     response = client.post(
