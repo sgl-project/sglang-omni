@@ -139,5 +139,7 @@
   "Format": "格式",
   "Could not export the text: %v": "无法导出文字：%v",
   "Exported %d entry to %s": "已导出 %d 条到 %s",
-  "Exported %d entries to %s": "已导出 %d 条到 %s"
+  "Exported %d entries to %s": "已导出 %d 条到 %s",
+  "Resize entry details": "调整记录详情宽度",
+  "Drag to widen. Double-click to reset.": "拖动加宽，双击恢复默认。"
 }
