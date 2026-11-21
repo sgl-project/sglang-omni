@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 
 import click
 import typer
 import yaml
+from pydantic import ValidationError
 from typer.core import TyperCommand
 
 from sglang_omni.config import PipelineConfig
@@ -19,7 +19,12 @@ from sglang_omni.config.patch import (
     Specificity,
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
-from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.config.sources import (
+    dump_user_config,
+    patches_from_dotted_cli,
+    patches_from_model_path_flag,
+)
+from sglang_omni.hardware_profiles import launches_checkpoint, select_hardware_profile
 from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
 from sglang_omni.platforms import current_platform
@@ -342,15 +347,11 @@ def default_draft_engine_writes(
         return {}
     else:
         pass
-    model_path_parts = Path(pipeline_config.model_path).parts
     default_drafts = {
         draft.stage: draft
         for draft in DRAFT_REGISTRY
         if draft.is_default_on
-        and (
-            draft.model_path == pipeline_config.model_path.partition("@")[0]
-            or "models--" + draft.model_path.replace("/", "--") in model_path_parts
-        )
+        and launches_checkpoint(pipeline_config.model_path, draft.model_path)
     }
     writes: dict[str, object] = {}
     for stage in pipeline_config.stages:
@@ -378,6 +379,30 @@ def apply_default_draft_engine_overrides(
     return apply_engine_writes(
         pipeline_config, default_draft_engine_writes(pipeline_config)
     )
+
+
+def apply_hardware_profile_defaults(
+    pipeline_config: PipelineConfig, user_paths: set[str]
+) -> PipelineConfig:
+    """Apply the measured replica profile for the local GPU, if one matches."""
+    profile = select_hardware_profile(pipeline_config, user_paths)
+    if profile is None:
+        return pipeline_config
+    else:
+        pass
+    try:
+        applied = apply_engine_writes(pipeline_config, profile.writes)
+    except ValidationError as exc:
+        logger.warning(
+            "Not applying hardware profile %s: it conflicts with the command line: %s",
+            profile.path.name,
+            exc,
+        )
+        return pipeline_config
+    else:
+        pass
+    logger.info("Applying hardware profile %s", profile.path.name)
+    return applied
 
 
 def apply_engine_writes(
@@ -695,6 +720,16 @@ def serve(
         raise typer.BadParameter(str(exc)) from exc
     if colocate:
         validate_colocate_config(merged_config)
+    else:
+        pass
+    if not config:
+        user_paths = {
+            patch.key
+            for patch in patches_from_dotted_cli(
+                extra_args, config_manager.config
+            ).merge(flag_patches)
+        }
+        merged_config = apply_hardware_profile_defaults(merged_config, user_paths)
     else:
         pass
     merged_config = apply_stage_offload_cli_overrides(

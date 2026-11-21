@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Qwen3-ASR 1.7B, 2 replicas on one 24 GB RTX 4090 D under native MPS: the most audio within a p99 request latency of 0.5, 1 and 3 s, measured with sglang-omni a385eac6 (see docs/basic_usage/mps_dp.md).
+# Uses the default DFlash draft (wilsonzheng0327/Qwen3-ASR-1.7B-dflash at d62bd405), as measured.
+
+config_cls: Qwen3ASRPipelineConfig
+model_path: Qwen/Qwen3-ASR-1.7B
+stages:
+  asr:
+    gpu: 0
+    gpu_memory_fraction: 0.2799
+    process: asr
+    engine:
+      mem_fraction_static: 0.8008
+      max_running_requests: 16
+      max_queued_requests: 16
+      cuda_graph_max_bs: 32
+      max_total_tokens: 16384
+processes:
+  asr:
+    num_replicas: 2
+    replica_devices: [0, 0]
