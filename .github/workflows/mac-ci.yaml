@@ -173,8 +173,9 @@ jobs:
         run: |
           ccache --zero-stats > /dev/null
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe moss_preview_timing_test
           "$RUNNER_TEMP/runtime-build/cmake/audio_chunk_test"
+          "$RUNNER_TEMP/runtime-build/cmake/moss_preview_timing_test"
           ccache --show-stats
 
       - name: Set up the test Python

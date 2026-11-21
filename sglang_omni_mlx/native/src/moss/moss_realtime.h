@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -45,8 +46,9 @@ private:
   Decode TakeFinalWindow(int sample_count);
   MossOptions DecodeOptions(const Decode &decode) const;
   // The worker's job for decode.
-  omni_server::Transcription DecodeJob(const Decode &decode,
-                                       MossOptions options) const;
+  omni_server::Transcription DecodeJob(
+      const Decode &decode, MossOptions options,
+      std::shared_ptr<omni_common::MossPreviewTiming> timing = nullptr) const;
   // Note (Dayuxiaoshui): a final window is committed before its event is sent,
   // so a client that has seen every window has seen everything committed.
   void Publish(const Decode &decode,

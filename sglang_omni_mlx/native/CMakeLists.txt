@@ -471,6 +471,15 @@ target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+# The realtime session is compiled here against tests/doubles, whose
+# moss_transcriber.h loads no checkpoint; libmoss_asr's own objects are unused.
+add_executable(moss_preview_timing_test EXCLUDE_FROM_ALL tests/moss_preview_timing_test.cpp src/moss/moss_realtime.cpp)
+target_include_directories(moss_preview_timing_test PRIVATE tests/doubles)
+target_link_libraries(moss_preview_timing_test PRIVATE common)
+target_compile_options(moss_preview_timing_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_preview_timing_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # Compares NEXTN with plain decoding on a small checkpoint
 # (tests/test_ming3_mtp.py); built only on request and never installed.
 add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)
