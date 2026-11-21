@@ -40,6 +40,8 @@ __all__ = [
     "warn_replica_device_overrides",
     "BindingPolicy",
     "RoundRobinBindingPolicy",
+    "LeastInFlightBindingPolicy",
+    "ReplicaRequestCounter",
     "assign_replica_bindings",
 ]
 
@@ -314,6 +316,33 @@ class RoundRobinBindingPolicy:
             index = self.counters.get(process_name, 0)
             self.counters[process_name] = index + 1
         return index % num_replicas
+
+
+class ReplicaRequestCounter(Protocol):
+    """Counts the in-flight requests on each replica of one Process."""
+
+    def __call__(self, process_name: str, num_replicas: int) -> list[int]: ...
+
+
+class LeastInFlightBindingPolicy:
+    """Per-process selection of the replica with the fewest in-flight requests; ties rotate.
+
+    Runs on the coordinator's event loop, which also owns the requests it counts.
+    """
+
+    def __init__(self, count_in_flight: ReplicaRequestCounter) -> None:
+        self.count_in_flight = count_in_flight
+        self.bind_counts: dict[str, int] = {}
+
+    def bind(self, process_name: str, num_replicas: int, request_id: str) -> int:
+        """request_id is part of the BindingPolicy protocol; the choice does not use it."""
+        in_flight_counts = self.count_in_flight(process_name, num_replicas)
+        bind_count = self.bind_counts.get(process_name, 0)
+        self.bind_counts[process_name] = bind_count + 1
+        return min(
+            ((bind_count + offset) % num_replicas for offset in range(num_replicas)),
+            key=lambda replica_index: in_flight_counts[replica_index],
+        )
 
 
 def assign_replica_bindings(

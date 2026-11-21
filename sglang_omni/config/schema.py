@@ -751,6 +751,9 @@ class SessionNodeConfig(BaseModel):
     )
 
 
+ReplicaBinding = Literal["round_robin", "least_in_flight"]
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -798,6 +801,7 @@ class PipelineConfig(BaseModel):
     env_defaults: dict[str, str] = Field(default_factory=dict)
     mps: Literal["off", "on", "auto"] = "off"
     weight_share: Literal["off", "on"] = "off"
+    replica_binding: ReplicaBinding = "round_robin"
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)

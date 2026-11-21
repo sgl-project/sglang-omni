@@ -12,9 +12,13 @@ from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config import PipelineConfig, ProcessConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.pipeline.replicas import ReplicaTopology, expand_replica_stages
+from sglang_omni.pipeline.replicas import (
+    ReplicaTopology,
+    RoundRobinBindingPolicy,
+    expand_replica_stages,
+)
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
-from sglang_omni.proto.messages import AbortMessage
+from sglang_omni.proto.messages import AbortMessage, SubmitMessage
 from sglang_omni.proto.request import RequestState
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 from tests.unit_test.pipeline.helpers import stage
@@ -1378,6 +1382,410 @@ def test_coordinator_submits_to_the_bound_entry_replica() -> None:
         ]
 
     asyncio.run(run())
+
+
+def least_in_flight_coordinator(
+    control_plane: RecordingCoordinatorControlPlane,
+) -> Coordinator:
+    logical_plan, replica_topology = linear_replica_runtime(tail=2)
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="normalize",
+        replica_topology=replica_topology,
+        logical_process_plan=logical_plan,
+        replica_binding="least_in_flight",
+    )
+    coordinator.control_plane = control_plane
+    coordinator.register_stage("normalize", "inproc://normalize")
+    return coordinator
+
+
+def tail_bindings(control_plane: RecordingCoordinatorControlPlane) -> list[int]:
+    return [
+        message.replica_bindings["decode"] for _, _, message in control_plane.submitted
+    ]
+
+
+def test_least_in_flight_counts_explicitly_bound_requests() -> None:
+    async def run() -> None:
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        explicit_bindings = {"decode": 0, "postprocess": 0}
+
+        # A session's input operation is an ordinary admission-counted request with explicit bindings.
+        await coordinator.submit_request(
+            "session-input", "hello", replica_bindings=explicit_bindings
+        )
+        await coordinator.submit_request(
+            "explicit", "hello", replica_bindings=explicit_bindings
+        )
+        # A session's read bypasses admission and holds no slot.
+        await coordinator.submit_request(
+            "session-read",
+            "hello",
+            replica_bindings=explicit_bindings,
+            should_bypass_admission=True,
+        )
+        await coordinator.submit_request("auto-0", "hello")
+        await coordinator.submit_request("auto-1", "hello")
+        await coordinator.submit_request("auto-2", "hello")
+
+        assert tail_bindings(control_plane) == [0, 0, 0, 1, 1, 0]
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [3, 2]
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_releases_a_completed_stream_before_its_reader_finishes() -> (
+    None
+):
+    async def run() -> None:
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
+        await coordinator.submit_request("streamed", "hello", stream_queue=queue)
+        await coordinator.submit_request("other", "hello")
+        await coordinator.handle_completion(
+            CompleteMessage(
+                request_id="streamed", from_stage="postprocess", success=True, result={}
+            )
+        )
+
+        # Nobody has read the queue yet; the computation owner is done, so the slot is free.
+        assert not queue.empty()
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [0, 1]
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_releases_a_request_whose_submit_send_failed() -> None:
+    class FailingSendControlPlane(RecordingCoordinatorControlPlane):
+        async def submit_to_stage(
+            self, stage: str, endpoint: str, msg: SubmitMessage
+        ) -> None:
+            if msg.request_id == "failed":
+                raise TypeError("cannot serialize request")
+            else:
+                await super().submit_to_stage(stage, endpoint, msg)
+
+    async def run() -> None:
+        control_plane = FailingSendControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        with pytest.raises(TypeError):
+            await coordinator.submit_request("failed", "hello")
+        await coordinator.submit_request("next", "hello")
+
+        assert control_plane.aborts == []
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [0, 1]
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_keeps_counting_a_request_whose_abort_was_not_delivered() -> (
+    None
+):
+    class FailingAbortControlPlane(RecordingCoordinatorControlPlane):
+        async def broadcast_abort(self, msg: AbortMessage) -> None:
+            raise RuntimeError("abort transport unavailable")
+
+    async def run() -> None:
+        control_plane = FailingAbortControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        await coordinator.submit_request("held", "hello")
+        with pytest.raises(RuntimeError):
+            await coordinator.abort("held")
+        await coordinator.submit_request("other", "hello")
+        await coordinator.handle_completion(
+            CompleteMessage(
+                request_id="other", from_stage="postprocess", success=True, result={}
+            )
+        )
+
+        # The stage may still run it, so its replica stays loaded: the next request goes to replica 1, where the round-robin position would have sent it to 0.
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [1, 0]
+        await coordinator.submit_request("next", "hello")
+        assert tail_bindings(control_plane) == [0, 1, 1]
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_keeps_equal_size_processes_paired() -> None:
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime(front=2, tail=2)
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+            replica_binding="least_in_flight",
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("normalize@r0", "inproc://n0")
+        coordinator.register_stage("normalize@r1", "inproc://n1")
+
+        for request_id in ("a", "b", "c"):
+            await coordinator.submit_request(request_id, "hello")
+        await coordinator.handle_completion(
+            CompleteMessage(
+                request_id="b", from_stage="postprocess", success=True, result={}
+            )
+        )
+        await coordinator.submit_request("d", "hello")
+        await coordinator.submit_request("e", "hello")
+
+        bindings = [
+            message.replica_bindings for _, _, message in control_plane.submitted
+        ]
+        # "e" goes to replica 1, where round robin would send it to 0, on both Processes.
+        assert [binding["normalize"] for binding in bindings] == [0, 1, 0, 1, 1]
+        assert all(
+            binding["normalize"] == binding["decode"] == binding["postprocess"]
+            for binding in bindings
+        )
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_leaves_no_load_for_an_unregistered_entry_stage() -> None:
+    async def run() -> None:
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        # Binding precedes entry validation; a rejected submit must not leave load behind.
+        with pytest.raises(ValueError, match="not registered"):
+            await coordinator.submit_request(
+                "bad-entry", "hello", target_stage="missing"
+            )
+        await coordinator.submit_request("next", "hello")
+
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [0, 1]
+
+    asyncio.run(run())
+
+
+INCONSISTENT_CALLER_BINDINGS = [
+    pytest.param({"decode": 2, "postprocess": 2}, id="out_of_range"),
+    pytest.param({"postprocess": 2}, id="bound_stage_out_of_range"),
+    pytest.param({"decode": 0, "postprocess": 1}, id="split_process"),
+    pytest.param({"decode": "0", "postprocess": "0"}, id="non_integer"),
+    pytest.param({"decode": 0, "postprocess": 0.0}, id="integer_and_float"),
+    pytest.param({"decode": True, "postprocess": True}, id="boolean"),
+    pytest.param({"decode": -1, "postprocess": -1}, id="negative"),
+]
+
+
+@pytest.mark.parametrize("bindings", INCONSISTENT_CALLER_BINDINGS)
+def test_least_in_flight_rejects_caller_bindings_that_split_a_process_or_miss_its_replicas(
+    bindings: dict[str, int | str | float | bool],
+) -> None:
+    """Under least_in_flight a caller's bindings must put a bound replicated Process on one of its replicas."""
+
+    async def run() -> None:
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        with pytest.raises(ValueError, match="must put the stages of process 'tail'"):
+            await coordinator.submit_request("bad", "hello", replica_bindings=bindings)
+        assert not coordinator.request_id_is_reserved("bad")
+        await coordinator.submit_request("next", "hello")
+
+        assert [message.request_id for _, _, message in control_plane.submitted] == [
+            "next"
+        ]
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [1, 0]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "binding_policy",
+    [None, RoundRobinBindingPolicy()],
+    ids=["default_round_robin", "custom_policy"],
+)
+@pytest.mark.parametrize("bindings", INCONSISTENT_CALLER_BINDINGS)
+def test_round_robin_and_custom_policies_admit_caller_bindings_as_before(
+    binding_policy: RoundRobinBindingPolicy | None,
+    bindings: dict[str, int | str | float | bool],
+) -> None:
+    """Without least_in_flight a caller's bindings are sent on unchecked, as before; only a stage that resolves a bad replica fails."""
+
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime(tail=2)
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+            binding_policy=binding_policy,
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("normalize", "inproc://normalize")
+        await coordinator.submit_request("caller", "hello", replica_bindings=bindings)
+
+        assert [
+            (stage, message.request_id, message.replica_bindings)
+            for stage, _, message in control_plane.submitted
+        ] == [("normalize", "caller", bindings)]
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_admits_caller_bindings_that_leave_an_unreached_process_unbound() -> (
+    None
+):
+    """A request routed past a replicated Process may leave it unbound and is not counted on it."""
+
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime(front=2, tail=2)
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+            replica_binding="least_in_flight",
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("decode@r0", "inproc://decode")
+        await coordinator.submit_request(
+            "resume",
+            "hello",
+            target_stage="decode@r0",
+            terminal_stages={"postprocess"},
+            replica_bindings={"decode": 0, "postprocess": 0},
+        )
+
+        assert [
+            (stage, message.request_id) for stage, _, message in control_plane.submitted
+        ] == [("decode@r0", "resume")]
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [1, 0]
+        assert coordinator.count_in_flight_by_replica("front", 2) == [0, 0]
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_keeps_choosing_new_sessions_round_robin() -> None:
+    """A new Session under least_in_flight takes the next round-robin replica, not the least loaded one."""
+
+    async def run() -> None:
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        for stage_name in (
+            "decode@r0",
+            "decode@r1",
+            "postprocess@r0",
+            "postprocess@r1",
+        ):
+            coordinator.register_stage(stage_name, f"inproc://{stage_name}")
+        await coordinator.submit_request("request", "hello")
+        bindings, owners = coordinator.resolve_route_owners(
+            ["normalize", "decode", "postprocess"], "session", False
+        )
+
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [1, 0]
+        assert bindings == {"decode": 0, "postprocess": 0}
+        assert owners == ("normalize", "decode@r0", "postprocess@r0")
+
+    asyncio.run(run())
+
+
+def test_round_robin_requests_and_new_sessions_share_one_rotation() -> None:
+    """Under the default binding a request and a new Session advance the same round-robin position, as before."""
+
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime(tail=2)
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        for stage_name in (
+            "normalize",
+            "decode@r0",
+            "decode@r1",
+            "postprocess@r0",
+            "postprocess@r1",
+        ):
+            coordinator.register_stage(stage_name, f"inproc://{stage_name}")
+        await coordinator.submit_request("request", "hello")
+        bindings, owners = coordinator.resolve_route_owners(
+            ["normalize", "decode", "postprocess"], "session", False
+        )
+
+        assert bindings == {"decode": 1, "postprocess": 1}
+        assert owners == ("normalize", "decode@r1", "postprocess@r1")
+
+    asyncio.run(run())
+
+
+def test_least_in_flight_releases_a_cancelled_send_once_its_abort_is_delivered() -> (
+    None
+):
+    class BlockingSendControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_started = asyncio.Event()
+
+        async def submit_to_stage(
+            self, stage: str, endpoint: str, msg: SubmitMessage
+        ) -> None:
+            if msg.request_id == "cancelled":
+                self.send_started.set()
+                await asyncio.Event().wait()
+            else:
+                await super().submit_to_stage(stage, endpoint, msg)
+
+    async def run() -> None:
+        control_plane = BlockingSendControlPlane()
+        coordinator = least_in_flight_coordinator(control_plane)
+        task = asyncio.create_task(coordinator.submit("cancelled", "hello"))
+        await control_plane.send_started.wait()
+        # The send may already be queued at the stage, so it still counts.
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [1, 0]
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert [message.request_id for message in control_plane.aborts] == ["cancelled"]
+        assert coordinator.count_in_flight_by_replica("tail", 2) == [0, 0]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("binding_policy", "replica_binding", "message"),
+    [
+        (
+            RoundRobinBindingPolicy(),
+            "least_in_flight",
+            "conflicts with an explicit binding_policy",
+        ),
+        (None, "fewest", "unknown replica_binding"),
+    ],
+    ids=["least_in_flight_with_custom_policy", "unknown_value"],
+)
+def test_coordinator_rejects_an_invalid_replica_binding(
+    binding_policy: RoundRobinBindingPolicy | None, replica_binding: str, message: str
+) -> None:
+    logical_plan, replica_topology = linear_replica_runtime(tail=2)
+
+    with pytest.raises(ValueError, match=message):
+        Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+            binding_policy=binding_policy,
+            replica_binding=replica_binding,
+        )
 
 
 def test_coordinator_without_replicas_sends_no_bindings() -> None:

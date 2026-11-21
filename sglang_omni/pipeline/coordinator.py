@@ -11,10 +11,12 @@ from dataclasses import dataclass, field, replace
 from typing import AsyncIterator, TypedDict
 
 from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
+from sglang_omni.config.schema import ReplicaBinding
 from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.pipeline.replicas import (
     BindingPolicy,
+    LeastInFlightBindingPolicy,
     ReplicaTopology,
     RoundRobinBindingPolicy,
     assign_replica_bindings,
@@ -145,6 +147,7 @@ class Coordinator(SessionGraphRunner):
         session_route: Callable[[], list[str]] | None = None,
         session_graph: SessionGraph | None = None,
         max_output_lead_ms: float = DEFAULT_MAX_OUTPUT_LEAD_MS,
+        replica_binding: ReplicaBinding = "round_robin",
     ) -> None:
         """Initialize coordinator.
 
@@ -169,6 +172,7 @@ class Coordinator(SessionGraphRunner):
             max_output_lead_ms: How far ahead of real time, counted from
                 the release of a reply's first audio, a Session delivers the
                 reply's audio.
+            replica_binding: Replica choice for a new request when no binding_policy is given. least_in_flight picks the replica with the fewest admission-counted requests this coordinator still tracks; a new Session's replicas stay round robin.
         """
         super().__init__(max_output_lead_ms)
         if session_route is not None and session_graph is not None:
@@ -190,7 +194,28 @@ class Coordinator(SessionGraphRunner):
         self.logical_process_plan = logical_process_plan or LogicalProcessPlan(
             processes=(), stage_to_process={}
         )
-        self.binding_policy = binding_policy or RoundRobinBindingPolicy()
+        if binding_policy is not None and replica_binding != "round_robin":
+            raise ValueError(
+                f"replica_binding={replica_binding!r} conflicts with an explicit "
+                "binding_policy"
+            )
+        elif binding_policy is not None:
+            self.binding_policy = binding_policy
+            self.session_binding_policy = binding_policy
+            self.should_count_replica_load = False
+        elif replica_binding == "least_in_flight":
+            self.binding_policy = LeastInFlightBindingPolicy(
+                self.count_in_flight_by_replica
+            )
+            # note (Xuanfei): a Session outlives its requests, so its replica choice cannot follow request counts.
+            self.session_binding_policy = RoundRobinBindingPolicy()
+            self.should_count_replica_load = True
+        elif replica_binding == "round_robin":
+            self.binding_policy = RoundRobinBindingPolicy()
+            self.session_binding_policy = self.binding_policy
+            self.should_count_replica_load = False
+        else:
+            raise ValueError(f"unknown replica_binding {replica_binding!r}")
         if max_in_flight is None:
             self.max_in_flight = None
         else:
@@ -557,6 +582,22 @@ class Coordinator(SessionGraphRunner):
             else:
                 pass
 
+    def count_in_flight_by_replica(
+        self, process_name: str, num_replicas: int
+    ) -> list[int]:
+        """Admission-counted requests in self.requests per replica of one Process.
+
+        A request leaves self.requests when its computation completes, its abort is delivered after a failure or cancel, or its submit send fails. Only least_in_flight records the replicas counted here; a request whose bindings leave this Process unbound is not counted on it.
+        """
+        in_flight_counts = [0] * num_replicas
+        for request_info in self.requests.values():
+            replica_index = request_info.replica_by_process.get(process_name)
+            if request_info.counts_toward_admission and replica_index is not None:
+                in_flight_counts[replica_index] += 1
+            else:
+                pass
+        return in_flight_counts
+
     async def submit_request(
         self,
         request_id: str,
@@ -614,6 +655,33 @@ class Coordinator(SessionGraphRunner):
         else:
             pass
         bindings = replica_bindings or {}
+        replica_by_process: dict[str, int] = {}
+        if self.should_count_replica_load:
+            # note (Xuanfei): only least_in_flight counts requests per replica, so only it records each request's replica per Process and needs a caller's bindings to name one replica a Process has.
+            for process in self.logical_process_plan.processes:
+                replica_indexes = [
+                    bindings[stage_name]
+                    for stage_name in process.stage_names
+                    if stage_name in bindings
+                ]
+                if not process.is_replicated or not replica_indexes:
+                    # note (Xuanfei): a caller's bindings may leave a Process unbound, as for a route that skips it.
+                    pass
+                elif (
+                    not all(
+                        type(index) is int and 0 <= index < process.num_replicas
+                        for index in replica_indexes
+                    )
+                    or len(set(replica_indexes)) > 1
+                ):
+                    raise ValueError(
+                        f"Replica bindings {bindings} must put the stages of process "
+                        f"{process.name!r} on one of its {process.num_replicas} replica(s)"
+                    )
+                else:
+                    replica_by_process[process.name] = replica_indexes[0]
+        else:
+            pass
         entry_instance = target_stage or (
             self.replica_topology.resolve(self.entry_stage, bindings[self.entry_stage])
             if self.replica_topology.is_replicated(self.entry_stage)
@@ -636,6 +704,7 @@ class Coordinator(SessionGraphRunner):
                 else terminal_stages
             ),
             counts_toward_admission=not should_bypass_admission,
+            replica_by_process=replica_by_process,
         )
 
         # Create future for completion

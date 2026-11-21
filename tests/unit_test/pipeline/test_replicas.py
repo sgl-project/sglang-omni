@@ -12,6 +12,7 @@ from sglang_omni.config.schema import (
 )
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.replicas import (
+    LeastInFlightBindingPolicy,
     ReplicaTopology,
     RoundRobinBindingPolicy,
     assign_replica_bindings,
@@ -351,6 +352,29 @@ class TestBinding:
         picks = [policy.bind("tail", 2, f"req{i}") for i in range(4)]
         assert picks == [0, 1, 0, 1]
         assert policy.bind("thinker", 3, "reqx") == 0
+
+    def test_least_in_flight_picks_the_least_loaded_replica_and_rotates_ties(
+        self,
+    ) -> None:
+        in_flight_counts = {"tail": [0, 0, 0]}
+        policy = LeastInFlightBindingPolicy(
+            lambda process_name, num_replicas: in_flight_counts[process_name]
+        )
+        assert [policy.bind("tail", 3, f"req{i}") for i in range(3)] == [0, 1, 2]
+        in_flight_counts["tail"] = [2, 0, 1]
+        assert policy.bind("tail", 3, "req3") == 1
+        in_flight_counts["tail"] = [1, 1, 1]
+        assert policy.bind("tail", 3, "req4") == 1
+        # The rotation is now at 2, which is busier: of the tied replicas 0 and 1, the first one after it wins.
+        in_flight_counts["tail"] = [0, 0, 1]
+        assert policy.bind("tail", 3, "req5") == 0
+
+    def test_least_in_flight_rotates_each_process_independently(self) -> None:
+        policy = LeastInFlightBindingPolicy(
+            lambda process_name, num_replicas: [0] * num_replicas
+        )
+        assert [policy.bind("tail", 2, f"t{i}") for i in range(3)] == [0, 1, 0]
+        assert policy.bind("thinker", 2, "h0") == 0
 
     def test_one_choice_projects_onto_every_member_stage(self):
         plan = self.plan(tail=ProcessConfig(num_replicas=2))

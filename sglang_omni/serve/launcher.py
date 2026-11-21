@@ -761,6 +761,7 @@ async def run_server(
                 # note (ratish): admission binds each replicated process round robin,
                 # so one request per replica of the most replicated process warms
                 # every replica.
+                # note (Xuanfei): least_in_flight sees no tracked request between these sequential warmup requests, so its ties rotate the same way.
                 num_replicas = max(
                     process.num_replicas
                     for process in mp_runner.prep.logical_process_plan.processes

@@ -788,7 +788,14 @@ class MultiProcessPipelineRunner:
                 ),
                 session_graph=session_graph,
                 max_output_lead_ms=self.config.max_output_lead_ms,
+                replica_binding=self.config.replica_binding,
             )
+            if prep.logical_process_plan.has_replicas():
+                logger.info(
+                    f"Coordinator replica binding: {self.config.replica_binding}"
+                )
+            else:
+                pass
             logger.info(
                 f"Coordinator stream backlog cap: "
                 f"max_total_backlog_bytes={stream_delivery.max_total_backlog_bytes}"

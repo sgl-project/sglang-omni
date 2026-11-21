@@ -829,6 +829,28 @@ class TestVariant:
         launch_server.assert_not_called()
 
 
+@pytest.mark.parametrize("binding_in_file", [False, True])
+def test_replica_binding_reaches_the_config_from_file_or_cli(
+    runner: CliRunner,
+    tmp_path: Path,
+    base_config: PipelineConfig,
+    binding_in_file: bool,
+) -> None:
+    config_fields = {"config_cls": base_config.config_cls, "model_path": "dummy"}
+    if binding_in_file:
+        config_fields["replica_binding"] = "least_in_flight"
+        flags = []
+    else:
+        flags = ["--replica-binding", "least_in_flight"]
+    path = tmp_path / "binding.yaml"
+    path.write_text(yaml.safe_dump(config_fields))
+
+    result = runner.invoke(config_app, ["resolve", "--config", str(path), *flags])
+
+    assert result.exit_code == 0, output_of(result)
+    assert yaml.safe_load(result.stdout)["replica_binding"] == "least_in_flight"
+
+
 @pytest.mark.parametrize("gpu_in_file", [False, True])
 def test_replica_devices_accept_stage_gpu_from_file_or_cli(
     runner, tmp_path, base_config, stage, gpu_in_file

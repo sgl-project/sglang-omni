@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -13,13 +14,19 @@ from sglang_omni.config import (
     ProcessConfig,
     StageConfig,
 )
+from sglang_omni.config.schema import ReplicaBinding
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+from sglang_omni.pipeline.replicas import (
+    LeastInFlightBindingPolicy,
+    RoundRobinBindingPolicy,
+)
 from tests.unit_test.fixtures.pipeline_fakes import fake_factory_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("replica_binding", ["round_robin", "least_in_flight"])
 async def test_replicated_multistage_process_dispatch_stream_and_shutdown(
-    tmp_path,
+    tmp_path: Path, replica_binding: ReplicaBinding
 ) -> None:
     config = PipelineConfig(
         model_path="model",
@@ -44,12 +51,19 @@ async def test_replicated_multistage_process_dispatch_stream_and_shutdown(
         ],
         processes={"pair": ProcessConfig(num_replicas=2)},
         endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        replica_binding=replica_binding,
     )
     runner = MultiProcessPipelineRunner(config)
 
     await runner.start(timeout=30.0)
     processes = [process for group in runner.groups for process in group.processes]
+    expected_policy = (
+        LeastInFlightBindingPolicy
+        if replica_binding == "least_in_flight"
+        else RoundRobinBindingPolicy
+    )
     try:
+        assert isinstance(runner.coordinator.binding_policy, expected_policy)
         results = [
             await asyncio.wait_for(
                 runner.coordinator.submit(f"req-{replica_id}", "hello"),

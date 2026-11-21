@@ -234,6 +234,7 @@ as the static superset because runtime prep derives stream receivers from it.
 | `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process. |
 | `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
 | `mps` | `off`, `on`, or `auto` | `off` | Native CUDA MPS policy for eligible same-GPU worker processes. |
+| `replica_binding` | `round_robin` or `least_in_flight` | `round_robin` | Which replica of each replicated Process a new request goes to ([Process Topology](../basic_usage/process_topology.md)). |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. |
 | `placement` | `PlacementConfig` | defaults | Placement planning limits, e.g. `max_total_gpu_memory_fraction_per_gpu`. |
 | `stream_delivery` | `StreamDeliveryConfig` | 1 GiB | `max_total_backlog_bytes`: undelivered stream bytes the coordinator may hold for all readers together; over it, the longest-idle streams fail. `none` turns it off. |

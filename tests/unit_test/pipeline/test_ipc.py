@@ -410,6 +410,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             session_route=None,
             session_graph=None,
             max_output_lead_ms=None,
+            replica_binding="round_robin",
         ) -> None:
             del (
                 abort_endpoint,
@@ -422,6 +423,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
                 session_route,
                 session_graph,
                 max_output_lead_ms,
+                replica_binding,
             )
             self.max_total_backlog_bytes = max_total_backlog_bytes
             self.control_plane = SimpleNamespace(
