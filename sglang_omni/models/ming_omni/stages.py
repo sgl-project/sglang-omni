@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal, TypedDict, overload
 
 import torch
 
+from sglang_omni.models.ming_omni.components.voice_presets import load_voice_presets
 from sglang_omni.models.ming_omni.io import (
     MingOmniPipelineState,
     StreamState,
@@ -441,9 +443,11 @@ def create_talker_executor(
 
     device = str(resolve_concrete_device(device, gpu_id))
     local_path = resolve_model_path(model_path)
+    talker_dir = talker_model_path or str(Path(local_path) / "talker")
     executor = MingTalkerExecutor(
         model_path=local_path,
-        talker_model_path=talker_model_path,
+        voice_presets=load_voice_presets(talker_dir, voice),
+        talker_model_path=talker_dir,
         device=device,
         voice=voice,
     )
@@ -491,6 +495,7 @@ def create_streaming_talker_executor(
         model_path=local_path,
         device=device,
         voice=voice,
+        voice_presets=load_voice_presets(str(Path(local_path) / "talker"), voice),
     )
 
 

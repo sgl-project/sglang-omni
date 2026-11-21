@@ -15,7 +15,6 @@ The talker is a self-contained TTS system that:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -23,6 +22,7 @@ from pathlib import Path
 
 import torch
 
+from sglang_omni.models.ming_omni.components.voice_presets import VoicePreset
 from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 from sglang_omni.proto import StagePayload
 
@@ -42,6 +42,8 @@ class MingTalkerExecutor:
     def __init__(
         self,
         model_path: str,
+        *,
+        voice_presets: dict[str, VoicePreset],
         talker_model_path: str | None = None,
         device: str = "cuda",
         voice: str = DEFAULT_VOICE,
@@ -50,6 +52,7 @@ class MingTalkerExecutor:
         self.talker_model_path = talker_model_path or str(Path(model_path) / "talker")
         self.device = device
         self.voice = voice
+        self.voice_presets = voice_presets
         self.results: asyncio.Queue[StagePayload] = asyncio.Queue()
         self.aborted: set[str] = set()
 
@@ -93,25 +96,7 @@ class MingTalkerExecutor:
         self.talker.set_tokenizer(tokenizer)
 
         # 5. Load voice presets
-        voice_json_path = os.path.join(
-            self.talker_model_path, "data", "voice_name.json"
-        )
-        if os.path.exists(voice_json_path):
-            with open(voice_json_path, "r") as f:
-                voice_dict = json.load(f)
-            self.validate_voice_presets(
-                voice_dict, voice_json_path, self.talker_model_path
-            )
-            self.talker.set_voice_presets(voice_dict)
-        elif self.voice is not None:
-            raise FileNotFoundError(
-                f"[TALKER] voice_name.json not found at {voice_json_path}; "
-                f"default voice {self.voice!r} cannot be resolved"
-            )
-        else:
-            logger.info(
-                "[TALKER] no voice_name.json at %s; presets disabled", voice_json_path
-            )
+        self.talker.set_voice_presets(self.voice_presets)
 
         # 6. Load speaker embedding extractor (optional)
         campplus_path = os.path.join(self.talker_model_path, "campplus.onnx")
@@ -289,41 +274,6 @@ class MingTalkerExecutor:
                 "usage": build_talker_usage(payload),
             },
         )
-
-    def validate_voice_presets(
-        self, voice_dict: dict, manifest_path: str, talker_dir: str
-    ) -> None:
-        """Resolve relative prompt-wav paths and validate the manifest.
-
-        Mutates ``voice_dict`` in place so each entry's ``prompt_wav_path``
-        becomes an absolute path on disk.
-        """
-        if self.voice is not None and self.voice not in voice_dict:
-            raise ValueError(
-                f"[TALKER] default voice {self.voice!r} not found in "
-                f"{manifest_path}; available presets: "
-                f"{sorted(voice_dict.keys())}"
-            )
-        else:
-            pass
-        for name, entry in voice_dict.items():
-            rel_path = entry.get("prompt_wav_path")
-            if rel_path is None:
-                raise ValueError(
-                    f"[TALKER] voice preset {name!r} in {manifest_path} is "
-                    f"missing prompt_wav_path"
-                )
-            else:
-                pass
-            resolved = os.path.join(talker_dir, rel_path)
-            if not os.path.isfile(resolved):
-                raise FileNotFoundError(
-                    f"[TALKER] voice preset {name!r} references missing "
-                    f"prompt wav {resolved}"
-                )
-            else:
-                pass
-            entry["prompt_wav_path"] = resolved
 
     def extract_text(self, payload: StagePayload) -> str:
         """Extract generated text from the thinker output in the payload."""

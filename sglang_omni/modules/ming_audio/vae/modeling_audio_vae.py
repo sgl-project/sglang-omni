@@ -5,8 +5,6 @@ from diffusers.models.autoencoders.autoencoder_oobleck import (
 )
 from transformers import PreTrainedModel
 
-from sglang_omni.platforms import current_platform
-
 from .configuration_audio_vae import AudioVAEconfig
 from .vae_modules import Decoder, Encoder
 
@@ -16,15 +14,9 @@ class AudioVAE(PreTrainedModel):
 
     def __init__(self, config: AudioVAEconfig):
         super().__init__(config)
-        encoder_args = config.enc_kwargs["backbone"]
-        decoder_args = config.dec_kwargs["backbone"]
-        if current_platform.is_npu() or current_platform.is_xpu():
-            # Transformers' NPU FA2 ignores sliding windows, corrupting long
-            # reference audio. SDPA preserves the VAE's attention masks.
-            encoder_args = {**encoder_args, "_attn_implementation": "sdpa"}
-            decoder_args = {**decoder_args, "_attn_implementation": "sdpa"}
-        else:
-            pass
+        # Checkpoint configs request flash_attention_2, which is not a dependency and breaks NPU sliding windows; SDPA matches its accuracy and is faster on H100.
+        encoder_args = {**config.enc_kwargs["backbone"], "_attn_implementation": "sdpa"}
+        decoder_args = {**config.dec_kwargs["backbone"], "_attn_implementation": "sdpa"}
         self.encoder = Encoder(
             encoder_args=encoder_args,
             input_dim=config.enc_kwargs["input_dim"],

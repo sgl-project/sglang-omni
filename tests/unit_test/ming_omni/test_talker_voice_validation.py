@@ -12,10 +12,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sglang_omni.models.ming_omni.components.streaming_talker import (
-    MingStreamingTalkerScheduler,
+from sglang_omni.models.ming_omni.components.voice_presets import load_voice_presets
+from sglang_omni.models.ming_omni.stages import (
+    create_streaming_talker_executor,
+    create_talker_executor,
 )
-from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
 from sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker import MingOmniTalker
 
 
@@ -35,150 +36,102 @@ def write_voice_manifest(
     return manifest
 
 
-def test_executor_validate_resolves_paths_when_default_voice_present(tmp_path: Path):
-    talker_dir = tmp_path / "talker"
-    wav_rel = "spks/DB30.wav"
-    manifest = write_voice_manifest(
-        talker_dir,
-        {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
-        {wav_rel: b"\x00" * 16},
-    )
-    voice_dict = {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}}
-    executor = MingTalkerExecutor(
-        model_path=str(tmp_path / "model"),
-        talker_model_path=str(talker_dir),
-        voice="DB30",
-    )
-    executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
-    assert voice_dict["DB30"]["prompt_wav_path"] == str(talker_dir / wav_rel)
-
-
-def test_executor_validate_raises_when_default_voice_missing(tmp_path: Path):
-    talker_dir = tmp_path / "talker"
-    wav_rel = "spks/OTHER.wav"
-    manifest = write_voice_manifest(
-        talker_dir,
-        {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
-        {wav_rel: b"\x00" * 16},
-    )
-    voice_dict = {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}}
-    executor = MingTalkerExecutor(
-        model_path=str(tmp_path / "model"),
-        talker_model_path=str(talker_dir),
-        voice="DB30",
-    )
-    with pytest.raises(ValueError, match="default voice 'DB30' not found"):
-        executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
-
-
-def test_executor_validate_raises_when_wav_missing(tmp_path: Path):
-    talker_dir = tmp_path / "talker"
-    wav_rel = "spks/DB30.wav"
-    manifest = write_voice_manifest(
-        talker_dir,
-        {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
-        wav_files=None,
-    )
-    voice_dict = {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}}
-    executor = MingTalkerExecutor(
-        model_path=str(tmp_path / "model"),
-        talker_model_path=str(talker_dir),
-        voice="DB30",
-    )
-    with pytest.raises(FileNotFoundError, match="missing prompt wav"):
-        executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
-
-
-def test_executor_validate_raises_value_error_not_key_error_on_bad_manifest(
+def test_load_voice_presets_resolves_checkpoint_paths_against_talker_dir(
     tmp_path: Path,
 ):
-    """Manifest entry without prompt_wav_path must surface a clear ValueError,
-    not a bare KeyError from dict[...] access."""
     talker_dir = tmp_path / "talker"
-    manifest = write_voice_manifest(
-        talker_dir,
-        {"DB30": {"prompt_text": "x"}},  # missing prompt_wav_path key
-    )
-    voice_dict = {"DB30": {"prompt_text": "x"}}
-    executor = MingTalkerExecutor(
-        model_path=str(tmp_path / "model"),
-        talker_model_path=str(talker_dir),
-        voice="DB30",
-    )
-    with pytest.raises(ValueError, match="missing prompt_wav_path"):
-        executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
-
-
-def test_executor_validate_allows_voice_none_with_unrelated_presets(tmp_path: Path):
-    talker_dir = tmp_path / "talker"
-    wav_rel = "spks/OTHER.wav"
-    manifest = write_voice_manifest(
-        talker_dir,
-        {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
-        {wav_rel: b"\x00" * 16},
-    )
-    voice_dict = {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}}
-    executor = MingTalkerExecutor(
-        model_path=str(tmp_path / "model"),
-        talker_model_path=str(talker_dir),
-        voice=None,
-    )
-    executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
-
-
-def test_scheduler_validate_raises_when_default_voice_missing(tmp_path: Path):
-    talker_dir = tmp_path / "talker"
-    wav_rel = "spks/OTHER.wav"
-    manifest = write_voice_manifest(
-        talker_dir,
-        {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
-        {wav_rel: b"\x00" * 16},
-    )
-    voice_dict = {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}}
-    scheduler = MingStreamingTalkerScheduler(
-        model_path=str(tmp_path / "model"),
-        voice="DB30",
-        talker=object(),
-        sample_rate=44100,
-    )
-    with pytest.raises(ValueError, match="default voice 'DB30' not found"):
-        scheduler.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
-
-
-def test_scheduler_validate_raises_when_wav_missing(tmp_path: Path):
-    talker_dir = tmp_path / "talker"
-    wav_rel = "spks/DB30.wav"
-    manifest = write_voice_manifest(
+    wav_rel = "data/spks/prompt.wav"
+    write_voice_manifest(
         talker_dir,
         {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
-        wav_files=None,
+        {wav_rel: b"\x00" * 16},
     )
-    voice_dict = {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}}
-    scheduler = MingStreamingTalkerScheduler(
-        model_path=str(tmp_path / "model"),
-        voice="DB30",
-        talker=object(),
-        sample_rate=44100,
+    presets = load_voice_presets(str(talker_dir), "DB30")
+    assert presets == {
+        "DB30": {"prompt_text": "x", "prompt_wav_path": str(talker_dir / wav_rel)}
+    }
+
+
+def test_load_voice_presets_falls_back_to_bundled_db30_without_manifest(
+    tmp_path: Path,
+):
+    """The published checkpoint ships no talker/data/voice_name.json; DB30 must still resolve."""
+    presets = load_voice_presets(str(tmp_path / "talker"), "DB30")
+    wav_path = Path(presets["DB30"]["prompt_wav_path"])
+    assert wav_path.is_file()
+    assert wav_path.read_bytes()[:4] == b"RIFF"
+    assert presets["DB30"]["prompt_text"]
+
+
+def test_load_voice_presets_allows_voice_none_with_unrelated_presets(tmp_path: Path):
+    talker_dir = tmp_path / "talker"
+    wav_rel = "spks/OTHER.wav"
+    write_voice_manifest(
+        talker_dir,
+        {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
+        {wav_rel: b"\x00" * 16},
+    )
+    assert set(load_voice_presets(str(talker_dir), None)) == {"OTHER"}
+
+
+@pytest.mark.parametrize(
+    ("manifest", "wav_files", "default_voice", "error", "message"),
+    [
+        (
+            {"OTHER": {"prompt_text": "x", "prompt_wav_path": "spks/OTHER.wav"}},
+            {"spks/OTHER.wav": b"\x00" * 16},
+            "DB30",
+            ValueError,
+            "Default voice 'DB30' not found",
+        ),
+        (
+            {"DB30": {"prompt_text": "x", "prompt_wav_path": "spks/DB30.wav"}},
+            None,
+            "DB30",
+            FileNotFoundError,
+            "missing prompt wav",
+        ),
+        ({"DB30": {"prompt_text": "x"}}, None, "DB30", ValueError, "prompt_wav_path"),
+        (
+            {"DB30": {"prompt_wav_path": "spks/DB30.wav"}},
+            {"spks/DB30.wav": b"\x00" * 16},
+            "DB30",
+            ValueError,
+            "prompt_text",
+        ),
+        (None, None, "lingguang", ValueError, "Default voice 'lingguang' not found"),
+    ],
+)
+def test_load_voice_presets_rejects_unusable_manifest(
+    tmp_path: Path,
+    manifest: dict | None,
+    wav_files: dict | None,
+    default_voice: str,
+    error: type[Exception],
+    message: str,
+):
+    talker_dir = tmp_path / "talker"
+    if manifest is not None:
+        write_voice_manifest(talker_dir, manifest, wav_files)
+    else:
+        pass
+    with pytest.raises(error, match=message):
+        load_voice_presets(str(talker_dir), default_voice)
+
+
+@pytest.mark.parametrize(
+    "factory", [create_talker_executor, create_streaming_talker_executor]
+)
+def test_talker_factories_reject_bad_voice_setup_at_construction(
+    tmp_path: Path, factory
+):
+    """A bad voice setup used to surface only on the first speech request, after /health was green."""
+    write_voice_manifest(
+        tmp_path / "talker",
+        {"DB30": {"prompt_text": "x", "prompt_wav_path": "spks/DB30.wav"}},
     )
     with pytest.raises(FileNotFoundError, match="missing prompt wav"):
-        scheduler.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
-
-
-def test_scheduler_validate_raises_value_error_on_bad_manifest(tmp_path: Path):
-    talker_dir = tmp_path / "talker"
-    manifest = write_voice_manifest(
-        talker_dir,
-        {"DB30": {"prompt_text": "x"}},  # missing prompt_wav_path key
-    )
-    voice_dict = {"DB30": {"prompt_text": "x"}}
-    scheduler = MingStreamingTalkerScheduler(
-        model_path=str(tmp_path / "model"),
-        voice="DB30",
-        talker=object(),
-        sample_rate=44100,
-    )
-    with pytest.raises(ValueError, match="missing prompt_wav_path"):
-        scheduler.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+        factory(str(tmp_path), device="cpu", voice="DB30")
 
 
 def bare_talker(voice_json_dict: dict | None = None) -> MingOmniTalker:
