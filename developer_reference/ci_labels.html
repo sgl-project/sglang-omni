@@ -738,7 +738,7 @@
 </tr>
 <tr class="row-odd"><td><p>Omni CI: ASR</p></td>
 <td><p>H100</p></td>
-<td><p>Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3</p></td>
+<td><p>Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on ARK-ASR-3B, Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-asr-ci</span></code> for both jobs, or an ASR model label for the job that tests that model</p></td>
 </tr>
 <tr class="row-even"><td><p>Omni CI: TTS</p></td>
@@ -890,17 +890,22 @@
 <td><p><code class="docutils literal notranslate"><span class="pre">OpenMOSS-Team/MOSS-Transcribe-Diarize</span></code></p></td>
 <td><p>Its only model</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-fun-asr-nano-2512</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-ark-asr-3b</span></code></p></td>
+<td><p>SeedTTS ASR</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">AutoArk-AI/ARK-ASR-3B</span></code> with DFlash</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-fun-asr-nano-2512</span></code></p></td>
 <td><p>SeedTTS ASR</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">FunAudioLLM/Fun-ASR-Nano-2512-hf</span></code></p></td>
 <td><p>Yes</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-qwen3-asr-1.7b</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-qwen3-asr-1.7b</span></code></p></td>
 <td><p>SeedTTS ASR</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-ASR-1.7B</span></code></p></td>
 <td><p>Yes</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-whisper-large-v3</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-whisper-large-v3</span></code></p></td>
 <td><p>SeedTTS ASR</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">openai/whisper-large-v3</span></code></p></td>
 <td><p>Yes</p></td>
@@ -1227,7 +1232,7 @@
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unit-test</span></code>, <code class="docutils literal notranslate"><span class="pre">asr</span></code>, <code class="docutils literal notranslate"><span class="pre">tts</span></code>, <code class="docutils literal notranslate"><span class="pre">mps</span></code>, <code class="docutils literal notranslate"><span class="pre">omni</span></code>, <code class="docutils literal notranslate"><span class="pre">full-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">turn-based</span></code>, <code class="docutils literal notranslate"><span class="pre">cascaded</span></code>, <code class="docutils literal notranslate"><span class="pre">intel-cpu</span></code>, <code class="docutils literal notranslate"><span class="pre">intel-xpu</span></code>, <code class="docutils literal notranslate"><span class="pre">mac</span></code></p></td>
 <td><p>That stage’s label</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">moss-td-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">fun-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">whisper-asr</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">moss-td-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">ark-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">fun-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">whisper-asr</span></code></p></td>
 <td><p>That ASR model’s label</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">higgs</span></code>, <code class="docutils literal notranslate"><span class="pre">moss</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-tts</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-tts-custom-voice</span></code>, <code class="docutils literal notranslate"><span class="pre">cosyvoice3</span></code></p></td>
