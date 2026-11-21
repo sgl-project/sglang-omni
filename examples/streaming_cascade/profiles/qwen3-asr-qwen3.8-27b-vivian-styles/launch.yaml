@@ -78,6 +78,7 @@ session_nodes:
         audio_path: examples/streaming_cascade/voices/vivian_calm.wav
         text: Let's take a slow, deep breath together. There is no rush, and everything is going to be fine.
     language: auto
+    sentence_pause_ms: 200
   aligner:
     kind: alignment
     method: forced
