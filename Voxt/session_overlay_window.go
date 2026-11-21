@@ -33,6 +33,7 @@ type overlayState struct {
 		fade        int
 		epoch       time.Time
 		native      bool
+		level       cardLevel // the answer card's window is not on top
 		stream      streamReveal
 		projection  sessionOverlayProjection
 		layout      sessionOverlayLayout
@@ -227,6 +228,7 @@ func (a *app) overlaySync() {
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
 	}
+	a.ov.level.sync(a.ov.win, mode == ovAnswer, a.answer.id)
 }
 
 func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
@@ -388,6 +390,7 @@ func (a *app) closeOverlay() {
 	if a.ov.win != nil {
 		a.ov.win.Destroy()
 		a.ov.win = nil
+		a.ov.level = cardLevel{} // a new window starts above the others
 	}
 	a.overlayTranscript = transcriptPreview{}
 	a.bubbleTranscripts = nil

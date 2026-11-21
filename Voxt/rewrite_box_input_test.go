@@ -15,15 +15,33 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
 )
 
+// fakeBoxDropWindow is the native panel newBoxWindow makes: its drop and
+// move handlers, its level and how often it was raised.
 type fakeBoxDropWindow struct {
 	fakeBoxWindow
 	onDrop func(*mygo.FileDropEvent)
+	onMove func()
+	onTop  bool
+	raised int
 }
 
 func (f *fakeBoxDropWindow) OnFileDrop(fn func(*mygo.FileDropEvent)) func() {
 	f.onDrop = fn
 	return func() { f.onDrop = nil }
 }
+
+func (f *fakeBoxDropWindow) OnMove(fn func()) func() {
+	f.onMove = fn
+	return func() { f.onMove = nil }
+}
+
+func (f *fakeBoxDropWindow) SetAlwaysOnTop(on bool) { f.onTop = on }
+
+func (f *fakeBoxDropWindow) ShowInactive() { f.raised++ }
+
+func (f *fakeBoxWindow) ContentBounds() mygo.Rectangle { return f.bounds }
+
+func (f *fakeBoxWindow) ShowInactive() {}
 
 func TestRewriteBoxWindowAcceptsFileDrops(t *testing.T) {
 	native := &fakeBoxDropWindow{}
@@ -191,5 +209,57 @@ func TestRewriteBoxClipboardImageFailureShowsError(t *testing.T) {
 	frames(tt)
 	if a.box.err == "" || !has(tt, "This image could not be read.") {
 		t.Fatalf("clipboard failure is silent: box error %q, texts %q", a.box.err, firstTexts(tt))
+	}
+}
+
+// TestRewriteBoxPastesCopiedPictures: ⌘V puts a picture in the card from
+// every clipboard the helper reads, not only a PNG. An image file copied
+// in Finder is the picture although Finder puts its name there as text
+// (it pasted the name), and a clipboard holding only a JPEG is a picture
+// too (it pasted nothing). Another copied file pastes its name, and a
+// spreadsheet range's text wins over the picture of itself it brings.
+func TestRewriteBoxPastesCopiedPictures(t *testing.T) {
+	finder := func(name string) transfer.Data {
+		return transfer.New(transfer.NewItem(
+			transfer.Bytes(transfer.FileList, []byte("file:///Users/me/Desktop/"+name)),
+			transfer.Bytes(transfer.Text, []byte(name)),
+			transfer.Bytes(transfer.PNG, boxPNG(t)), // the file's icon
+		))
+	}
+	for _, c := range []struct {
+		name      string
+		clipboard transfer.Data
+		image     bool
+		text      string
+	}{
+		{"an image file copied in Finder", finder("photo.png"), true, ""},
+		{"a HEIC file copied in Finder", finder("IMG_0042.HEIC"), true, ""},
+		{"a JPEG alone", transfer.New(transfer.NewItem(transfer.Bytes("image/jpeg", boxJPEG(t)))), true, ""},
+		{"another file copied in Finder", finder("notes.pdf"), false, "notes.pdf"},
+		{"a spreadsheet range", transfer.New(transfer.NewItem(
+			transfer.Bytes(transfer.Text, []byte("Q3 revenue")),
+			transfer.Bytes(transfer.PNG, boxPNG(t)),
+		)), false, "Q3 revenue"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a, fs, _ := newTestApp(t)
+			asked := 0
+			fs.handlers[proto.MethodClipboardImage] = func(json.RawMessage) (any, error) {
+				asked++
+				return proto.ClipboardImageResult{JPEG: boxJPEG(t)}, nil
+			}
+			a.box = rewriteBox{open: true, shown: true, focusText: true}
+			tt := hudTester(a.boxView, boxWinW, boxWinH)
+			frames(tt)
+			tt.SetClipboardData(c.clipboard)
+			tt.Command("paste")
+			frames(tt)
+			if got := len(a.box.images) == 1 && asked == 1; got != c.image {
+				t.Errorf("%d images, the helper asked %d times; want a picture %v", len(a.box.images), asked, c.image)
+			}
+			if got := a.boxTextContent(); got != c.text {
+				t.Errorf("the card's text %q, want %q", got, c.text)
+			}
+		})
 	}
 }

@@ -122,6 +122,7 @@ func (a *app) boxActions() rewriteBoxActions {
 			a.boxShare.store(a.boxTextContent(), a.box.images)
 		},
 		focused: func() { a.box.focusText = false },
+		moved:   func() { a.post(a.boxDragged) },
 	}
 }
 
@@ -166,10 +167,14 @@ func (a *app) boxSync() {
 		a.box.frame = frame
 		a.box.win.SetContentBounds(frame)
 	}
-	if !a.box.winShown {
+	if !a.box.winShown || a.box.raise {
+		// Not a floating window: it comes in front of the windows over it
+		// when it opens and each time the Rewrite shortcut asks in it,
+		// while the app the user was in stays active.
+		a.box.win.ShowInactive()
 		a.box.win.Show()
 		a.box.win.Focus()
-		a.box.winShown = true
+		a.box.winShown, a.box.raise = true, false
 	}
 }
 
@@ -221,10 +226,41 @@ const (
 )
 
 // boxFrame is where the box's window sits: where Rewrite's answer card
-// opens, as wide as its card size, so the answer takes the box's place
-// without a move or a resize (wall 122).
+// opens, as wide as its card size, moved by as much as the user dragged
+// it and kept on the screen, as the answer card is (overlayFrame).
 func (a *app) boxFrame() mygo.Rectangle {
-	return layout.Frame(a.box.area, a.prefs.Overlay, a.boxFaceW(), boxFaceH)
+	frame, area := layout.Frame(a.box.area, a.prefs.Overlay, a.boxFaceW(), boxFaceH), a.box.area
+	frame.X = min(max(frame.X+a.box.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
+	frame.Y = min(max(frame.Y+a.box.dragged.y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
+	return frame
+}
+
+// boxDragged keeps where the user dragged the card to (its face drags
+// the window). Main thread.
+func (a *app) boxDragged() {
+	if a.box.win != nil && a.box.winShown {
+		a.boxDraggedTo(a.box.win.ContentBounds())
+	}
+}
+
+// boxDraggedTo keeps the card's window at bounds, on the display it was
+// dragged to: a change of card size or a follow-up leaves it there.
+func (a *app) boxDraggedTo(bounds mygo.Rectangle) {
+	if bounds.X == a.box.frame.X && bounds.Y == a.box.frame.Y {
+		return // boxSync's own move
+	}
+	area := ovTestArea
+	if a.overlayNative() {
+		area = mygo.Screen.DisplayMatching(bounds).WorkArea
+	}
+	display := area != a.box.area
+	a.box.area = area
+	anchor := layout.Frame(area, a.prefs.Overlay, a.boxFaceW(), boxFaceH)
+	a.box.dragged.x, a.box.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
+	a.box.frame.X, a.box.frame.Y = bounds.X, bounds.Y
+	if display {
+		a.boxSync() // the Fill size is as wide as this display
+	}
 }
 
 // boxFaceW is the card's width: Rewrite's card size.

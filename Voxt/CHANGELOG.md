@@ -4,15 +4,35 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
+
+### Changed
+
+- **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
+
 ### Fixed
 
 - **Rewrite is one card from the shortcut to the last follow-up** (#4375): the Rewrite card no longer hands over to a preview at the screen's edge and then to a separate answer card. It stays while your speech is recognised and the language model works, and says what it is doing; the answer is written in that same card, above the text box, with Insert and Copy in its header. The text box stays at the foot of the card: type there and press Enter to follow up (no recording needed), or press the Rewrite shortcut to say it, and the conversation scrolls above. The card keeps one height and follows Rewrite's card size for its width (Fill included), with the size button in its corner. Typed text alone is now enough: nothing has to be said. With Rewrite's card switched off, the card closes once the result is inserted. Sending again after a failure keeps the card too.
+- **Cards can be dragged and covered by other windows; only previews stay on top**: since Rewrite became one card (#4375), its card could not be moved, and like every answer card it floated above all apps' windows. Drag the Rewrite card by its margins or its header, as the answer card; it keeps its place when its size changes and through follow-ups, stays on the screen, and opens at its usual place next time. Answer cards and the Rewrite card no longer stay on top: another app's window can cover them. A card comes in front when it opens and with each new answer, and the Rewrite shortcut brings the Rewrite card back. The recording pill and its live text, and the meeting's live window, are previews and still stay on top.
+- **Pictures copied from more places paste into the Rewrite card**: an image file copied in Finder pasted its file name, because Finder also puts the name on the clipboard as text; it now pastes the picture (HEIC too), while another copied file still pastes its name. A clipboard holding only a JPEG, HEIC or WebP picture pasted nothing; it now pastes the picture. Text copied with a picture of itself, such as a spreadsheet range, still pastes as text.
 
 ### 中文
+
+#### 新增
+
+- **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
+
+#### 变更
+
+- **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 
 #### 修复
 
 - **改写从按下快捷键到最后一次追问只有一张卡片**（#4375）：改写卡片不再先换成屏幕边缘的预览条、再换成另一张结果卡片。识别语音和语言模型处理时它一直留在屏幕上，并说明正在做什么；结果直接写在这张卡片里、输入框的上方，标题栏有“插入”和“复制”。输入框一直在卡片底部：在里面打字按 Enter 就是追问（不用录音），也可以按改写快捷键说出来，对话在上方滚动。卡片高度固定，宽度跟随改写的卡片大小（包括“充满”），角上有切换大小的按钮。只打字不说话也可以发送。关掉改写的“显示卡片”时，结果插入后卡片关闭。发送失败后再次发送，卡片同样留着。
+- **卡片可以拖动，也能被别的窗口盖住；只有预览置顶**：改写变成一张卡片（#4375）之后，改写卡片拖不动，而且和所有答案卡片一样浮在所有 App 的窗口之上。现在和答案卡片一样，按住改写卡片的空白处或标题栏就能拖动；换卡片大小和追问时留在拖到的位置，并始终留在屏幕内，下次打开回到原来的位置。答案卡片和改写卡片不再置顶：别的 App 的窗口可以盖住它们。卡片出现时和每次有新答案时回到最前，再按改写快捷键，改写卡片也会回到最前。录音时的浮窗胶囊和实时文字、会议浮窗是预览，仍然置顶。
+- **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
 
 ## [2.1.2] - 2026-11-19
 
