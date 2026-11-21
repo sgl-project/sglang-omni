@@ -35,6 +35,7 @@ report	fix	symptom	level	check
 #4022	#4023	Meetings are missing from release builds	L	TestMeetingsInReleaseBuild
 #4024	#4025	Translate does not switch back to the main language for languages that share a script	L	TestTranslateBack
 #4086	#4088	Transcribe inserts commentary outside <output> tags along with the tagged cleaned text	L	TestOnlyTheCleanedText
+#4085	#4425	A dictated literal tool-call marker removes the rest of the cleaned sentence	L	TestAnswerCleanupPreservesLiteralControlMarkup
 #4120	#4129	Dictation hangs on Starting the microphone after a microphone is added in Settings	L	testSecondSilentEngineGoesToTheDefaultInputThirdEnds
 #4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
 #4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
