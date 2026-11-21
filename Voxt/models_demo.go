@@ -10,6 +10,15 @@ func (host *meetingDemoHost) modelsViewState() *modelsViewState {
 	state := *host.current().state.Models
 	updateModelsNetworkFormViewState(i18n.CurrentTranslator(), &state.Network, host.modelsUI.netForm)
 	state.Network.Open = host.modelsUI.netOpen
+	if state.Assignment != nil {
+		assignment := *state.Assignment
+		assignment.Checked = host.modelsUI.assign.selected
+		assignment.CanApply = false
+		for index, row := range assignment.Rows {
+			assignment.CanApply = assignment.CanApply || assignment.Checked[index] && !row.Disabled
+		}
+		state.Assignment = &assignment
+	}
 	return &state
 }
 
@@ -64,4 +73,16 @@ func (host *meetingDemoHost) autosaveSpeechContext(changed, focused bool) {
 		state.dirty = false
 		host.record("autosaveSpeechContext %t %t", changed, focused)
 	}
+}
+
+func (host *meetingDemoHost) openModelAssignment(kind, id string) {
+	host.modelsUI.assign.open = true
+	host.modelsUI.assign.kind = remoteKind(kind)
+	host.modelsUI.assign.id = id
+	host.record("openModelAssignment %s %s", kind, id)
+}
+
+func (host *meetingDemoHost) applyModelAssignment() {
+	host.modelsUI.assign.open = false
+	host.record("applyModelAssignment")
 }

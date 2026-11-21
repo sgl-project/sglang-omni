@@ -283,7 +283,12 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             return self.torch_mps_model_runner
         else:
             pass
-        return super().make_model_runner(model_worker, output_proc)
+        model_runner = super().make_model_runner(model_worker, output_proc)
+        # note (wilsonzheng0327): the shared verify penalty is validated on CUDA only, where Fun-ASR's draft runs; realtime requests with a prefix set repetition_penalty.
+        model_runner.speculative_repetition_penalty_owner = (
+            "verify_logits" if current_platform.is_cuda() else None
+        )
+        return model_runner
 
     def setup_model(
         self,

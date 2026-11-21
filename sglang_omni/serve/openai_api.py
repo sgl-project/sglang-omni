@@ -30,6 +30,7 @@ from contextlib import aclosing, suppress
 from dataclasses import asdict, replace
 from enum import Enum
 from typing import AsyncGenerator, AsyncIterator, Literal
+from urllib.parse import quote
 
 import anyio
 from fastapi import (
@@ -232,6 +233,7 @@ def create_app(
     speaker_embedding_size: int | None = None,
     speech_reference_text_required: bool = False,
     speech_reference_text_excludes_instructions: bool = False,
+    speech_request_validator_cls: type[SpeechRequestValidator] | None = None,
     additional_speech_languages: frozenset[str] = frozenset(),
     max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
     supported_speech_fields: frozenset[str] | None = None,
@@ -273,6 +275,7 @@ def create_app(
             a transcript.
         speech_reference_text_excludes_instructions: Whether a reference
             transcript and style instructions are mutually exclusive.
+        speech_request_validator_cls: Model-specific speech validation and encoding policy.
         additional_speech_languages: Pipeline-specific accepted languages.
         max_speech_input_chars: Maximum accepted input characters, or ``None``
             to defer length validation to model-specific context checks.
@@ -338,7 +341,7 @@ def create_app(
         max_entries=MAX_SPEECH_STREAM_OUTCOMES
     )
     app.state.enable_speech_sse_named_events = enable_speech_sse_named_events
-    app.state.speech_service = SpeechRequestValidator(
+    app.state.speech_service = (speech_request_validator_cls or SpeechRequestValidator)(
         default_model=app.state.model_name,
         custom_voice_config=custom_voice_config,
         requires_uploaded_voice_for_named_voice=(
@@ -1946,7 +1949,7 @@ def register_speech(app: FastAPI) -> None:
                     client=client,
                     gen_req=gen_req,
                     request_id=request_id,
-                    speed=req.speed,
+                    speed=speech_service.resolve_encode_speed(req),
                     speech_stream_outcomes=app.state.speech_stream_outcomes,
                     stream_format=req.stream_format,
                     response_format="wav" if req.response_format == "wav" else "pcm",
@@ -1971,7 +1974,7 @@ def register_speech(app: FastAPI) -> None:
                 gen_req=gen_req,
                 request_id=request_id,
                 response_format=req.response_format,
-                speed=req.speed,
+                speed=speech_service.resolve_encode_speed(req),
             )
         except ClientError as exc:
             return speech_generation_failure_response(request_id, exc)
@@ -1989,6 +1992,10 @@ def register_speech(app: FastAPI) -> None:
             # travels in the same X- header channel as usage.
             "X-Finish-Reason": result.finish_reason,
         }
+        if result.text:
+            headers["X-Gen-Text"] = quote(result.text)
+        else:
+            pass
         if result.usage is not None:
             headers.update(
                 {

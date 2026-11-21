@@ -255,6 +255,12 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		if state.Delete.Shared != nil {
 			host.modelsUI.modelShared = &sharedDelete{id: state.Delete.Shared.ID, forAll: state.Delete.Shared.ForAll}
 		}
+		if state.Assignment != nil {
+			host.modelsUI.assign = modelAssignmentLocalUI{
+				open: state.Assignment.Open, kind: remoteKind(state.Assignment.Kind), id: state.Assignment.ID,
+				selected: state.Assignment.Checked,
+			}
+		}
 	}
 	host.resetShellDemo(fixture)
 	host.keyRow = keyRow{}
@@ -397,6 +403,9 @@ func (host *meetingDemoHost) openHistoryFeature(feature string) {
 	host.record("openHistoryFeature %s", feature)
 }
 func (host *meetingDemoHost) openHistoryPrivacy() { host.record("openHistoryPrivacy") }
+func (host *meetingDemoHost) saveHistoryDetailWidth(width float64) {
+	host.record("saveHistoryDetailWidth %g", width)
+}
 func (host *meetingDemoHost) openHistorySettingsDialog() {
 	host.historySettingsUI.open = true
 	host.record("openHistorySettingsDialog")

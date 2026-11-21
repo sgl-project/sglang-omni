@@ -3468,6 +3468,7 @@ def test_request_timeout_fails_only_the_expired_request(
     monkeypatch: pytest.MonkeyPatch, timeout_env: str, placement: str, tp_size: int
 ) -> None:
     """The entry rank fails an expired request once, and every rank drops it."""
+    monkeypatch.setattr(time, "perf_counter", lambda: 120.0)
     install_tp_broadcast(monkeypatch)
     ranks = [tp_rank_scheduler(rank, tp_size, placement) for rank in range(tp_size)]
 
@@ -4353,6 +4354,7 @@ def spec_overlap_scheduler(monkeypatch: pytest.MonkeyPatch) -> OmniScheduler:
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_overlap = True
     scheduler.async_decode_min_batch_size = 1
+    scheduler.prefill_drain_below_batch_size = 1
     scheduler.running_batch = SimpleNamespace(reqs=[])
     scheduler.running = True
     scheduler._engine_paused = (
@@ -4493,6 +4495,7 @@ def test_spec_overlap_runs_decode_batches_below_the_minimum_synchronously(
     selected_batches = iter([*batches, None])
     scheduler = spec_overlap_scheduler
     scheduler.async_decode_min_batch_size = min_batch_size
+    scheduler.prefill_drain_below_batch_size = min_batch_size
 
     def select() -> SimpleNamespace | None:
         # note (Haoling Pu): native batch selection drops finished requests from the running batch every step.
@@ -4532,6 +4535,70 @@ def test_spec_overlap_runs_decode_batches_below_the_minimum_synchronously(
     scheduler.resolve_pending_async()
 
     assert " ".join(events) == expected
+    assert not scheduler.result_queue
+
+
+@pytest.mark.parametrize(
+    "min_batch_size, prefill_drain_below_batch_size, expected_events",
+    [
+        (1, 2, "S0 L0 C0 S1 L1 S2 L2 C1 C2"),
+        (3, 0, "S0 L0 S1 L1 C0 C1 S2 L2 C2"),
+    ],
+    ids=["drain-without-synchronous-decode", "synchronous-decode-without-drain"],
+)
+def test_spec_overlap_sets_the_prefill_drain_apart_from_the_decode_minimum(
+    spec_overlap_scheduler: OmniScheduler,
+    min_batch_size: int,
+    prefill_drain_below_batch_size: int,
+    expected_events: str,
+) -> None:
+    """S selects batch N, L launches it and C consumes its result; batch 0 is a prefill, batches 1 and 2 are decodes.
+
+    The drain alone consumes the prefill before batch 1 is selected and still overlaps both decodes. The decode minimum alone consumes the prefill after the next launch and each decode right after its own launch. Before this change, either setting turned on both.
+    """
+    events: list[str] = []
+    request = SimpleNamespace(inflight_middle_chunks=0, omni_data="A")
+    request.finished = lambda: False
+    batches = []
+    for index, forward_mode in enumerate(
+        [ForwardMode.EXTEND, ForwardMode.DECODE, ForwardMode.DECODE]
+    ):
+        batch = SimpleNamespace(
+            index=index,
+            reqs=[request],
+            forward_mode=forward_mode,
+            spec_algorithm=SpeculativeAlgorithm.DFLASH,
+            grammar_needs_sync=lambda: False,
+        )
+        batch.copy = lambda batch=batch: batch
+        batches.append(batch)
+    selected_batches = iter([*batches, None])
+    scheduler = spec_overlap_scheduler
+    scheduler.async_decode_min_batch_size = min_batch_size
+    scheduler.prefill_drain_below_batch_size = prefill_drain_below_batch_size
+
+    def select() -> SimpleNamespace | None:
+        batch = next(selected_batches)
+        if batch is None:
+            pass
+        else:
+            events.append(f"S{batch.index}")
+            if batch.forward_mode == ForwardMode.DECODE:
+                scheduler.running_batch = batch
+            else:
+                pass
+        return batch
+
+    def launch(batch: SimpleNamespace) -> int:
+        events.append(f"L{batch.index}")
+        return batch.index
+
+    scheduler.get_next_batch_to_run = select
+    scheduler.run_batch = launch
+    scheduler.process_batch_result = lambda batch, result: events.append(f"C{result}")
+    scheduler.event_loop_spec_overlap()
+
+    assert " ".join(events) == expected_events
     assert not scheduler.result_queue
 
 

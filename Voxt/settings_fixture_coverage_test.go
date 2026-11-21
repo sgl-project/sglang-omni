@@ -386,6 +386,13 @@ func checkSettingsMeetingAndPromptFixtures(t *testing.T, locale string, fixtures
 	if normal.ASRDisabled || normal.NoLLM || normal.LLMSelected != "Fixture Language Two" {
 		t.Errorf("%s: meeting normal fixture has ASR disabled=%t, no LLM=%t and LLM %q", locale, normal.ASRDisabled, normal.NoLLM, normal.LLMSelected)
 	}
+	if !normal.CorrectionStyleResetDisabled {
+		t.Errorf("%s: the default correction style should disable Reset", locale)
+	}
+	customCorrection := requireSettingsFixture(t, locale, fixtures, "meeting-settings-custom-style").MeetingSettings
+	if customCorrection.CorrectionStyleResetDisabled || customCorrection.CorrectionStyle == "" {
+		t.Errorf("%s: the custom correction style should enable Reset", locale)
+	}
 	noModels := requireSettingsFixture(t, locale, fixtures, "meeting-settings-no-models").MeetingSettings
 	if !noModels.ASRDisabled || !noModels.NoLLM {
 		t.Errorf("%s: meeting no-models fixture has ASR disabled=%t and no LLM=%t", locale, noModels.ASRDisabled, noModels.NoLLM)

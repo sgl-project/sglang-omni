@@ -315,8 +315,8 @@ func TestDictionaryNotes(t *testing.T) {
 	if !has(tt, "Add to the language model prompt") || has(tt, "Search dictionary") {
 		t.Fatalf("not the notes view: %q", firstTexts(tt))
 	}
-	if has(tt, "How it is used") || has(tt, "Example for") || !has(tt, "Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives.") {
-		t.Errorf("the view still has its own example: %q", firstTexts(tt))
+	if has(tt, "How it is used") || has(tt, "Example for") || has(tt, "whole request") {
+		t.Errorf("the view still has its own example or pointer to one: %q", firstTexts(tt))
 	}
 	notes := reporterNotes(t)
 	click(t, tt, "Personal dictionary in Markdown")

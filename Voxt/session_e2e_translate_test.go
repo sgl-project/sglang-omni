@@ -61,6 +61,49 @@ func TestTranslateSelectionEndToEnd(t *testing.T) {
 	}
 }
 
+// TestTranslateUnchangedAnswer: a Chinese-to-English request that gets the
+// Chinese source back twice fails instead of replacing the selection with it.
+func TestTranslateUnchangedAnswer(t *testing.T) {
+	const source = "我们周五发布"
+	chat := &fakeChat{text: source}
+	set, keys, _ := fileSetup(t, "unused", chat)
+	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", source)+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Translate.Target = "en"
+	}, keys)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.State != session.Failed || a.sess.Result != "" || a.sess.Inserted || a.sess.Problem == nil || a.sess.Problem.Code != session.ProblemLLM || !a.answer.open {
+		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
+	}
+	if pasted := a.pasted(); len(pasted) != 0 {
+		t.Errorf("pasted %+v", pasted)
+	}
+	reqs := chat.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	for i, req := range reqs {
+		msgs := chatMessages(req)
+		if !strings.Contains(msgs[0][1], "into English") || msgs[1][1] != "<input>\n"+source+"\n</input>" || i == 1 && !strings.Contains(msgs[0][1], "Strict:") {
+			t.Errorf("request %d: %q", i+1, msgs)
+		}
+	}
+	if entries := a.history(); len(entries) != 1 || entries[0].Status != store.StatusFailed || entries[0].SourceText != source {
+		t.Errorf("history %+v", entries)
+	}
+	card := a.cachedCard()
+	if len(card.Blocks) == 0 || card.Blocks[0].Text != "The language model did not translate the text. Try again." {
+		t.Errorf("failure text %+v", card.Blocks)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	a.applyLocale()
+	card = a.cachedCard()
+	if len(card.Blocks) == 0 || card.Blocks[0].Text != "语言模型没有翻译这段文字，请重试。" {
+		t.Errorf("zh-Hans failure text %+v", card.Blocks)
+	}
+}
+
 // TestTranslateCopySelection: Accessibility shows no selection, ⌘C is
 // allowed in Slack: the selection comes through the clipboard.
 func TestTranslateCopySelection(t *testing.T) {
@@ -145,7 +188,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if msgs := chatMessages(chat.requests()[1]); !strings.Contains(msgs[0][1], "翻译成日语") || msgs[1][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("second request %q", msgs)
 	}
-	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" {
+	if es := a.history(); len(es) != 2 || es[0].TargetLang != "ja" || es[0].Delivery != "card" || es[0].Kind != store.KindTranslate || es[1].Kind != store.KindTranslate {
 		t.Errorf("history %+v", es)
 	}
 	// A language that fails: the card stays as it was, and says so.

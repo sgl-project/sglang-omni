@@ -53,7 +53,7 @@
       "stage": "ended",
       "model_name": "Fixture model",
       "body": "找到 0 条建议",
-      "warning": "远程模型的地址不能用，请用 https://，或者指向本机的 http://。",
+      "warning": "远程模型的地址不能用。请使用 http:// 或 https://，且不要在地址中填写用户名或密码。",
       "error_code": "llm.config",
       "can_start": false,
       "stop_disabled": false

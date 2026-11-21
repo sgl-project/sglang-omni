@@ -9,7 +9,7 @@ import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, Literal, overload
 
 import torch
 from transformers import PreTrainedTokenizerBase
@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 else:
     pass
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_CONTEXT_LENGTH = 2048
 
@@ -459,13 +461,33 @@ def create_reference_encode_executor(
     max_concurrency: int = 8,
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
+    npu_conv_allow_hf32: bool | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
+    is_npu_device = concrete_device.type == "npu"
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass
-    codec = load_dots_audio_codec(model_path, device=str(concrete_device))
+    if npu_conv_allow_hf32 is not None and not isinstance(npu_conv_allow_hf32, bool):
+        raise ValueError("npu_conv_allow_hf32 must be a boolean or None")
+    elif npu_conv_allow_hf32 is None:
+        pass
+    elif not is_npu_device:
+        raise ValueError("npu_conv_allow_hf32 requires an NPU reference worker")
+    else:
+        device_module = torch.get_device_module(concrete_device)
+        device_module.conv.allow_hf32 = npu_conv_allow_hf32
+        logger.info(
+            f"dots.tts reference convolution allow_hf32="
+            f"{npu_conv_allow_hf32} (device={concrete_device})"
+        )
+    if is_npu_device:
+        codec = load_dots_audio_codec(
+            model_path, device=str(concrete_device), decoder_dtype=torch.float32
+        )
+    else:
+        codec = load_dots_audio_codec(model_path, device=str(concrete_device))
     encoder = DotsReferenceEncoder(
         codec,
         model_id=str(model_path),
@@ -521,13 +543,30 @@ def create_vocoder_executor(
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
+    npu_decoder_precision: Literal["float32", "float16"] = "float32",
 ) -> DotsTTSStreamingVocoder:
     concrete_device = resolve_concrete_device(device, gpu_id)
+    is_npu_device = concrete_device.type == "npu"
     if concrete_device.type == "cpu":
         raise RuntimeError("dots.tts requires an accelerator")
     else:
         pass
-    codec = load_dots_audio_codec(model_path, device=str(concrete_device))
+    if npu_decoder_precision not in {"float32", "float16"}:
+        raise ValueError(f"Unsupported NPU decoder precision: {npu_decoder_precision}")
+    elif npu_decoder_precision == "float16" and not is_npu_device:
+        raise ValueError("NPU decoder precision requires an NPU vocoder worker")
+    else:
+        pass
+    decoder_dtype = (
+        {"float32": torch.float32, "float16": torch.float16}[npu_decoder_precision]
+        if is_npu_device
+        else None
+    )
+    codec = load_dots_audio_codec(
+        model_path,
+        device=str(concrete_device),
+        decoder_dtype=decoder_dtype,
+    )
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,
@@ -545,7 +584,7 @@ def create_vocoder_executor(
         if vocoder.cuda_graph_count
         else "eager step"
     )
-    logging.getLogger(__name__).info(
+    logger.info(
         f"dots.tts vocoder backend: slot-pooled streaming, {backend} "
         f"(optimize={optimize}, merge_steps={vocoder.merge_steps}, "
         f"stream_slots={vocoder.stream_slots}, batch_size={max_batch_size}, "

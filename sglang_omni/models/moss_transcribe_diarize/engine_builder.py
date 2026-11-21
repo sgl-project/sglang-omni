@@ -84,11 +84,12 @@ class MossTranscribeDiarizeEngineBuilder(
         enable_async_decode: bool | None,
         enable_plain_fallback: bool,
         async_decode_min_batch_size: int,
+        prefill_drain_below_batch_size: int | None,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         encoder_chunk_buckets: list[int],
         encoder_torch_compile: bool,
         encoder_max_batch_size: int,
@@ -108,6 +109,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.enable_async_decode = enable_async_decode
         self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.prefill_drain_below_batch_size = prefill_drain_below_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
@@ -237,7 +239,7 @@ class MossTranscribeDiarizeEngineBuilder(
         else:
             # note (wilsonzheng0327): hosts without a draft never load its kernels.
             from sglang_omni.speculative.dflash_draft import (
-                ReducedVocabularyDFlashWorker,
+                draft_worker_class,
                 materialize_draft_checkpoint,
             )
 
@@ -248,7 +250,9 @@ class MossTranscribeDiarizeEngineBuilder(
             )
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
-            self.speculative_worker_class = ReducedVocabularyDFlashWorker
+            self.speculative_worker_class = draft_worker_class(
+                self.draft_checkpoint.name
+            )
             # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
             if self.enable_async_decode is None:
                 self.enable_async_decode = False
@@ -353,6 +357,7 @@ class MossTranscribeDiarizeEngineBuilder(
             "enable_async_decode": self.enable_async_decode,
             "enable_plain_fallback": self.enable_plain_fallback,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            "prefill_drain_below_batch_size": self.prefill_drain_below_batch_size,
             # The scheduler otherwise idles on every prefill's sampled-token
             # copy while the next decode could already launch.
             # note (wilsonzheng0327): the speculative overlap loop never takes the async prefill path, so it stays a no-draft setting.
@@ -367,8 +372,11 @@ class MossTranscribeDiarizeEngineBuilder(
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (Zhenning Guo): with a draft this defaults to off, because each drafted decode round is 2-3x longer, so a prefill held during decode delays the first output, with or without overlap.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.speculative_worker_class is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
