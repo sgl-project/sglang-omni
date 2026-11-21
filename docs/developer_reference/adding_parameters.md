@@ -195,7 +195,7 @@ YAML top level). Model-specific pipeline classes may add their own fields the
 same way (see `MossTTSLocalPipelineConfig`'s cache and cuda-graph fields).
 Cross-stage invariants for one model belong in that pipeline class's
 `model_post_init` — e.g. Ming-Omni refusing a talker GPU that collides with
-the thinker's TP range.
+the thinker's TP range unless `allow_talker_on_thinker_gpus` is set.
 
 ## Values users do not set
 

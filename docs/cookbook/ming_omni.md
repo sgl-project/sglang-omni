@@ -61,7 +61,7 @@ Use the selector below to generate the exact launch command for your configurati
 <div id="sgl-ming-server-gen-mount"></div>
 ```
 
-`--text-only` selects the thinker-only pipeline (no talker, no audio). Omit it for the speech pipeline, which adds a dedicated `--talker.gpu`. The talker GPU must not overlap the thinker TP placement (the only placement Ming validates), so the generator always keeps it separate. The vision encoder defaults to GPU 0 alongside the thinker, so its TP ranks may either share the thinker GPUs (**With thinker**, the default) or take dedicated GPUs.
+`--text-only` selects the thinker-only pipeline (no talker, no audio). Omit it for the speech pipeline, which adds a dedicated `--talker.gpu`. The generator always keeps the talker GPU separate from the thinker TP placement, and Ming rejects an overlap unless you opt in with `--allow_talker_on_thinker_gpus true` (see [Sharing a thinker GPU with the talker](#sharing-a-thinker-gpu-with-the-talker)). The vision encoder defaults to GPU 0 alongside the thinker, so its TP ranks may either share the thinker GPUs (**With thinker**, the default) or take dedicated GPUs.
 
 The **Hardware** toggle sets `--mem-fraction-static`:
 
@@ -99,7 +99,37 @@ The streaming pipeline is for audio chunks. The text-only `stream=true` path cur
 
 ### Placement and Memory Notes
 
-Use `--thinker.tp_size` to set thinker tensor parallelism and `--thinker.gpu` to choose the logical GPU ids as a JSON list. `--thinker.engine.cpu_offload_gb`, `--thinker.engine.quantization`, and the broadcast `--mem-fraction-static` are forwarded to the thinker server. Use `--talker.gpu` only for the speech pipeline, and keep it separate from the thinker GPUs. Use `--image_encoder.tp_size` / `--image_encoder.gpu` for image-encoder tensor parallelism. The selector above wires all of these placements consistently.
+Use `--thinker.tp_size` to set thinker tensor parallelism and `--thinker.gpu` to choose the logical GPU ids as a JSON list. `--thinker.engine.cpu_offload_gb`, `--thinker.engine.quantization`, and the broadcast `--mem-fraction-static` are forwarded to the thinker server. Use `--talker.gpu` only for the speech pipeline, and keep it separate from the thinker GPUs unless you opt in to sharing as described below. Use `--image_encoder.tp_size` / `--image_encoder.gpu` for image-encoder tensor parallelism. The selector above wires all of these placements consistently.
+
+### Sharing a thinker GPU with the talker
+
+The talker needs only about 5 GiB steady and 8 GiB peak, so on H200 it fits beside a thinker TP rank and Ming-flash-omni-2.0 serves speech on 2 GPUs instead of 3. Sharing is opt-in: add `--allow_talker_on_thinker_gpus true` and point `--talker.gpu` at a thinker GPU. Prefer the last thinker rank, because GPU 0 also holds the audio and image encoders.
+
+```bash
+sgl-omni serve \
+  --model-path inclusionAI/Ming-flash-omni-2.0 \
+  --model-name ming-omni \
+  --thinker.tp_size 2 \
+  --thinker.gpu "[0, 1]" \
+  --talker.gpu 1 \
+  --allow_talker_on_thinker_gpus true \
+  --thinker.engine.cpu_offload_gb 0 \
+  --mem-fraction-static 0.9 \
+  --port 8000
+```
+
+The talker loads after the thinker sizes its KV cache, so the KV pool is unchanged and `--mem-fraction-static` does not need lowering. The cost is compute contention. Measured on H200 with sglang-omni ad39fc4, comparing a TP=2 thinker on GPUs 0 and 1 with the talker on GPU 1 against the talker on a dedicated third GPU, using text prompts and the non-streaming speech pipeline:
+
+| Workload | Dedicated talker GPU | Shared with thinker rank 1 |
+|---|---|---|
+| KV tokens | 824,943 | 824,943 |
+| GPU 1 peak memory | 124.6 GiB | 131.4 GiB of 140.4 |
+| Speech, 1 request at a time | 0.83 s | 0.70 s |
+| Speech, 4 concurrent | 1.15 s p50, 3.02 req/s | 1.48 s p50, 2.64 req/s |
+| Five-sentence story, 4 concurrent | 5.51 s p50, 0.66 req/s | 7.64 s p50, 0.52 req/s |
+| Speech, 8 concurrent | 2.28 s p50, 3.28 req/s | 3.05 s p50, 2.62 req/s |
+
+Latency at one request at a time does not change, and throughput per GPU rises 18–31%, but at 4–8 concurrent requests p50 latency rises about 30–40% and total throughput falls 10–21%. Whisper transcripts of the shared-GPU audio matched the generated text exactly. Keep a dedicated talker GPU for latency-sensitive serving; share when GPUs are the constraint.
 
 ## Input and Output Examples
 

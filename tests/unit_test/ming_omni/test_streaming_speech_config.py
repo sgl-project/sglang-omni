@@ -5,10 +5,14 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.models.ming_omni.config import MingOmniStreamingSpeechPipelineConfig
+from sglang_omni.models.ming_omni.config import (
+    MingOmniSpeechPipelineConfig,
+    MingOmniStreamingSpeechPipelineConfig,
+)
 from sglang_omni.models.ming_omni.pipeline.next_stage import (
     DECODE_STAGE,
     SEGMENTER_STAGE,
+    TALKER_STAGE,
     TALKER_STREAM_STAGE,
     THINKER_STAGE,
 )
@@ -67,6 +71,32 @@ def test_streaming_speech_rejects_talker_gpu_in_thinker_tp_range():
     data = config_data_with_thinker_tp(talker_gpu=1)
     with pytest.raises(ValueError, match="collides with thinker TP range"):
         MingOmniStreamingSpeechPipelineConfig(**data)
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "talker_stage_name"),
+    [
+        (MingOmniSpeechPipelineConfig, TALKER_STAGE),
+        (MingOmniStreamingSpeechPipelineConfig, TALKER_STREAM_STAGE),
+    ],
+)
+def test_opt_in_places_talker_on_a_thinker_tp_gpu(config_cls, talker_stage_name):
+    """Sharing a thinker GPU must stay possible on request: it runs 3 GPUs as 2."""
+    data = config_cls(model_path="dummy").model_dump()
+    for stage in data["stages"]:
+        if stage["name"] == THINKER_STAGE:
+            stage["gpu"] = [0, 1]
+            stage["tp_size"] = 2
+        elif stage["name"] == talker_stage_name:
+            stage["gpu"] = 1
+        else:
+            pass
+    data["allow_talker_on_thinker_gpus"] = True
+
+    config = config_cls(**data)
+
+    assert config.gpu_placement[talker_stage_name] == 1
+    assert config.gpu_placement[THINKER_STAGE] == [0, 1]
 
 
 def test_variants_dict_exposes_streaming_variant():
