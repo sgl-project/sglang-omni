@@ -4,8 +4,8 @@
 SGLang owns quantization end-to-end: it parses `quantization_config`,
 constructs quantized layers, and executes post-load hooks. This module only
 provides the Qwen3-Omni-specific compatibility SGLang cannot infer by itself:
-stage-local AutoRound config normalization and FP8 scale preprocessing for
-custom weight loaders.
+stage-local AutoRound and compressed-tensors config normalization, and FP8
+scale preprocessing for custom weight loaders.
 """
 
 from __future__ import annotations
@@ -192,7 +192,7 @@ def needs_quant_config_normalization(
 ) -> bool:
     """True when the checkpoint's method uses stage-local per-block quant names."""
     method = quant_method_name(quant_dict)
-    return method == "auto-round"
+    return method in ("auto-round", "compressed-tensors")
 
 
 def strip_stage_prefix(pattern: str, plain_prefix: str, escaped_prefix: str) -> str:
@@ -275,6 +275,22 @@ def normalize_block_name_to_quantize(
     return True
 
 
+def normalize_ignore_list(quant_config: dict[str, object], stage_prefix: str) -> bool:
+    """Strip stage_prefix from the plain names in a compressed-tensors ignore list.
+
+    A stage sees its modules without the checkpoint's prefix; re: entries are left as written.
+    """
+    ignored = quant_config.get("ignore") or []
+    normalized = [entry.removeprefix(stage_prefix) for entry in ignored]
+    if normalized == ignored:
+        return False
+    else:
+        pass
+
+    quant_config["ignore"] = normalized
+    return True
+
+
 def load_writable_quant_config(
     hf_config: PretrainedConfig,
 ) -> tuple[object, str, dict[str, object], bool] | None:
@@ -347,7 +363,8 @@ def normalize_quant_config(model_config: ModelConfig) -> None:
 
     blocks_changed = normalize_block_name_to_quantize(quant_config, stage_prefix)
     extra_changed = normalize_extra_config_keys(quant_config, stage_prefix)
-    if not (blocks_changed or extra_changed):
+    ignore_changed = normalize_ignore_list(quant_config, stage_prefix)
+    if not (blocks_changed or extra_changed or ignore_changed):
         return
     else:
         pass

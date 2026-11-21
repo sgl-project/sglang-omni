@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from sglang_omni.model_runner import model_worker
+
 
 def make_model_config(
     architecture: str, quantization_config: object
@@ -32,6 +34,17 @@ class TestApplyOmniQuantizationAdapters:
 
         # Stage prefix must be stripped for SGLang's AutoRoundConfig matching.
         assert quant_config["block_name_to_quantize"] == "model.layers"
+
+    def test_compressed_tensors_triggers_ignore_normalization(self) -> None:
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "ignore": ["talker.model.layers.0.self_attn.q_proj"],
+        }
+        model_config = make_model_config("Qwen3OmniTalker", quant_config)
+
+        model_worker.apply_omni_quantization_adapters(model_config)
+
+        assert quant_config["ignore"] == ["model.layers.0.self_attn.q_proj"]
 
     def test_fp8_does_not_normalize_block_names(self) -> None:
         from sglang_omni.model_runner import model_worker

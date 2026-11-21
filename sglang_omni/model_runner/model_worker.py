@@ -665,8 +665,8 @@ def apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
 
     SGLang owns detection, config parsing, layer construction, and post-load
     hooks. The only Omni-specific step needed here is stage-local checkpoint
-    name normalization for methods whose per-block quant names are matched
-    against runtime module names, currently AutoRound.
+    name normalization for methods whose config names modules by checkpoint
+    path, currently AutoRound and compressed-tensors.
     """
     quant_dict = resolve_quant_config(model_config.hf_config)
     if quant_dict is None:
