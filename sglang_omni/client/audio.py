@@ -34,6 +34,7 @@ FORMAT_MIME_TYPES: dict[str, str] = {
 # Default sample rate for generated audio
 DEFAULT_SAMPLE_RATE = 24000
 MAX_AUDIO_OUTPUT_SAMPLE_RATE = 192000
+OPUS_PLAYBACK_SAMPLE_RATE = 48000
 FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ = 65535
 FLAC_HIGH_SAMPLE_RATE_STEP_HZ = 10
 
@@ -108,8 +109,8 @@ def audio_output_sample_rate_error(
         return f"sample_rate must be at least {MIN_AUDIO_OUTPUT_SAMPLE_RATE}"
     elif output_sample_rate > MAX_AUDIO_OUTPUT_SAMPLE_RATE:
         return f"sample_rate must be at most {MAX_AUDIO_OUTPUT_SAMPLE_RATE}"
-    elif response_format == "opus" and output_sample_rate != 48000:
-        return "sample_rate must be 48000 for Opus output"
+    elif response_format == "opus" and output_sample_rate != OPUS_PLAYBACK_SAMPLE_RATE:
+        return f"sample_rate must be {OPUS_PLAYBACK_SAMPLE_RATE} for Opus output"
     elif (
         response_format == "flac"
         and output_sample_rate > FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ
@@ -505,7 +506,9 @@ def encode_audio(
             key=lambda supported_sample_rate: abs(supported_sample_rate - sample_rate),
         )
         encoder_audio = resample_linear(arr, sample_rate, encoder_sample_rate)
-        encoded_sample_rate = 48000 if fmt == "opus" else encoder_sample_rate
+        encoded_sample_rate = (
+            OPUS_PLAYBACK_SAMPLE_RATE if fmt == "opus" else encoder_sample_rate
+        )
         try:
             encoded_bytes = encode_with_pyav(
                 encoder_audio,
