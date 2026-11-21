@@ -68,17 +68,19 @@ func waitEarly(t *testing.T, model *fakeLLM, n int) {
 }
 
 type earlyOrderedLLM struct {
-	mu      sync.Mutex
-	calls   int
-	started [4]chan struct{}
-	release [4]chan struct{}
-	reqs    []llm.Request
+	mu       sync.Mutex
+	calls    int
+	started  [4]chan struct{}
+	finished [4]chan struct{}
+	release  [4]chan struct{}
+	reqs     []llm.Request
 }
 
 func newEarlyOrderedLLM() *earlyOrderedLLM {
 	model := &earlyOrderedLLM{}
 	for i := range model.started {
 		model.started[i] = make(chan struct{})
+		model.finished[i] = make(chan struct{})
 		model.release[i] = make(chan struct{})
 	}
 	return model
@@ -94,6 +96,7 @@ func (m *earlyOrderedLLM) Chat(ctx context.Context, req llm.Request) (llm.Respon
 		return llm.Response{Text: "extra"}, nil
 	}
 	close(m.started[call-1])
+	defer close(m.finished[call-1])
 	select {
 	case <-m.release[call-1]:
 		return llm.Response{Text: []string{"整理一。", "整理二。", "整理三。", "整理四。"}[call-1]}, nil
@@ -113,6 +116,15 @@ func (m *earlyOrderedLLM) waitStarted(t *testing.T, call int) {
 	case <-m.started[call]:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("request %d did not start", call+1)
+	}
+}
+
+func (m *earlyOrderedLLM) waitFinished(t *testing.T, call int) {
+	t.Helper()
+	select {
+	case <-m.finished[call]:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("request %d did not finish", call+1)
 	}
 }
 
@@ -471,6 +483,39 @@ func TestEarlyCleanMatchingFinalSkipAndRethink(t *testing.T) {
 				t.Errorf("skip end %+v, want the raw transcript", end)
 			}
 			if tc.name == "rethink" && (end.Result != "fallback" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
+				t.Errorf("rethink end %+v", end)
+			}
+		})
+	}
+}
+
+func TestEarlyCleanDrainSkipAndRethink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(*Manager, string)
+	}{
+		{name: "skip", act: func(m *Manager, id string) { m.SkipLLM(id) }},
+		{name: "rethink", act: func(m *Manager, id string) { m.Rethink(id, &llm.Thinking{Mode: llm.ThinkOff}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newEarlyOrderedLLM()
+			h := newHarness(t, &fakeStreamer{final: "one tail", pieces: []string{"one"}}, model, nil)
+			h.m.cfg.LLMTimeout = 10 * time.Second
+			id := h.start()
+			model.waitStarted(t, 0)
+			h.speak(id, 3)
+			h.rec.waitFor(t, "early cleanup draining", func(s Snapshot) bool { return s.State == Composing && s.CanSkip })
+			tc.act(h.m, id)
+			model.waitFinished(t, 0)
+			if tc.name == "rethink" {
+				model.waitStarted(t, 2)
+				model.finish(t, 2)
+			}
+			end := h.rec.wait(t)
+			if tc.name == "skip" && end.Result != "one tail" {
+				t.Errorf("skip end %+v, want the raw transcript", end)
+			}
+			if tc.name == "rethink" && (end.Result != "整理三。" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
 				t.Errorf("rethink end %+v", end)
 			}
 		})

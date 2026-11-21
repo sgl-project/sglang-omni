@@ -247,7 +247,7 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	e.mu.Unlock()
 	e.cond.Broadcast()
 	if fallback || done < jobs-1 {
-		e.cancel() // abandon queued work; an active last request may still finish
+		e.cancel() // abandon queued work and abort any in-flight request
 	}
 	<-e.workerDone
 	e.mu.Lock()
