@@ -7219,31 +7219,30 @@ def test_qwen3_tts_bootstrap_suppression_credits_only_emitted_audio(
     ) / float(scheduler.sample_rate)
 
 
-def test_qwen3_tts_bootstrap_suppression_skips_at_high_concurrency() -> None:
-    scheduler = Qwen3TTSStreamingVocoderScheduler(
-        FakeQwen3TTSSpeechTokenizer(),
-        device="cpu",
-        suppress_bootstrap_max_streams=2,
+def test_qwen3_tts_bootstrap_suppression_trims_the_first_chunk_at_any_stream_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past 24 live streams an eligible stream kept its silent opening frame, so its audible start depended on server load."""
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    plain = scheduler.create_stream_state("probe").initial_chunk_frames
+    for index in range(64):
+        scheduler.stream_states[str(index)] = scheduler.create_stream_state(str(index))
+    state = scheduler.create_stream_state("request")
+    scheduler.stream_states["request"] = state
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
     )
-    metadata = {"num_quantizers": 2, "bootstrap_silence_suppression": True}
+    state.code_chunks.append(torch.tensor([[0, 0], [10, 1], [20, 2]], dtype=torch.long))
+    state.total_frames = 3
 
-    under = scheduler.create_stream_state("a")
-    scheduler.stream_states["a"] = under
-    scheduler.latch_stream_contract("a", under, metadata, origin="metadata")
-    assert under.suppress_bootstrap is True
+    first = scheduler.decode_delta("request", state, is_final=False)
 
-    # A third live stream puts the vocoder past the gate, so the extra
-    # first-chunk frame is not spent and the silence is left in place.
-    for rid in ("b", "c"):
-        scheduler.stream_states[rid] = scheduler.create_stream_state(rid)
-    over = scheduler.create_stream_state("d")
-    scheduler.stream_states["d"] = over
-    scheduler.latch_stream_contract("d", over, metadata, origin="metadata")
-    assert over.suppress_bootstrap is False
-    assert (
-        over.initial_chunk_frames
-        == scheduler.create_stream_state("probe").initial_chunk_frames
-    )
+    assert state.initial_chunk_frames == plain + 1
+    assert first is not None
+    assert first.tolist() == [10.0] * 4 + [20.0] * 4
 
 
 def test_qwen3_tts_bootstrap_suppression_trims_one_silent_frame_once() -> None:

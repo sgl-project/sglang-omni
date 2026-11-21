@@ -690,7 +690,6 @@ class Qwen3TTSStreamingVocoderScheduler(
         incremental_codec_cuda_graph_window_frames: Sequence[int] | None = None,
         incremental_codec_cuda_graph_min_free_gb: float = 3.0,
         suppress_bootstrap_silence: bool = True,
-        suppress_bootstrap_max_streams: int = 24,
         has_reference_prefixed_first_chunks: bool = False,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
@@ -863,7 +862,6 @@ class Qwen3TTSStreamingVocoderScheduler(
         worker_count = 1 if self.deterministic_inference else int(followup_worker_count)
         self.enable_stateful_codec_decoder = bool(enable_stateful_codec_decoder)
         self.suppress_bootstrap_silence = bool(suppress_bootstrap_silence)
-        self.suppress_bootstrap_max_streams = int(suppress_bootstrap_max_streams)
         self.incremental_decoder = (
             Qwen3TTSIncrementalDecoder(
                 self.decoder, pointwise_conv=incremental_pointwise_conv
@@ -1603,10 +1601,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         if metadata.get("bootstrap_silence_suppression"):
-            state.suppress_bootstrap = (
-                self.suppress_bootstrap_silence
-                and len(self.stream_states) <= self.suppress_bootstrap_max_streams
-            )
+            state.suppress_bootstrap = self.suppress_bootstrap_silence
             if state.suppress_bootstrap:
                 bumped = min(state.initial_chunk_frames + 1, self.stream_stride)
                 if (
