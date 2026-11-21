@@ -81,6 +81,9 @@ PYAV_ENCODE_CONFIGS = {
     },
 }
 
+# note (ratish): Keep the lowest AAC rate available when bounding requested speech rates.
+MIN_AUDIO_OUTPUT_SAMPLE_RATE = min(PYAV_ENCODE_CONFIGS["aac"]["valid_rates"])
+
 
 @dataclass(kw_only=True)
 class EncodedAudio:
@@ -97,12 +100,12 @@ def audio_output_sample_rate_error(
     """Explain why an encoder cannot honor the requested output rate."""
     if output_sample_rate is None:
         return None
-    elif (
-        isinstance(output_sample_rate, bool)
-        or not isinstance(output_sample_rate, int)
-        or output_sample_rate <= 0
+    elif isinstance(output_sample_rate, bool) or not isinstance(
+        output_sample_rate, int
     ):
-        return "sample_rate must be a positive integer"
+        return "sample_rate must be an integer"
+    elif output_sample_rate < MIN_AUDIO_OUTPUT_SAMPLE_RATE:
+        return f"sample_rate must be at least {MIN_AUDIO_OUTPUT_SAMPLE_RATE}"
     elif output_sample_rate > MAX_AUDIO_OUTPUT_SAMPLE_RATE:
         return f"sample_rate must be at most {MAX_AUDIO_OUTPUT_SAMPLE_RATE}"
     elif response_format == "opus" and output_sample_rate != 48000:
@@ -468,6 +471,10 @@ def encode_audio(
     if output_sample_rate is not None and output_sample_rate != sample_rate:
         arr = soxr.resample(arr.T, sample_rate, output_sample_rate).T
         sample_rate = output_sample_rate
+    else:
+        pass
+    if output_sample_rate is not None and arr.size == 0:
+        raise ValueError("No audio samples remain at the requested output sample rate")
     else:
         pass
 

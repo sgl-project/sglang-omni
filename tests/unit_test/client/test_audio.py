@@ -301,7 +301,7 @@ def test_encode_audio_honors_custom_output_sample_rate(
 
 @pytest.mark.parametrize(
     ("response_format", "output_sample_rate"),
-    [("wav", 0), ("wav", True), ("wav", 192001), ("mp3", 12345), ("opus", 24000)],
+    [("wav", 7349), ("wav", True), ("wav", 192001), ("mp3", 12345), ("opus", 24000)],
 )
 def test_encode_audio_rejects_invalid_output_sample_rate(
     response_format: str, output_sample_rate: int | bool
@@ -312,6 +312,14 @@ def test_encode_audio_rejects_invalid_output_sample_rate(
             np.zeros(2400, dtype=np.float32),
             response_format=response_format,
             output_sample_rate=output_sample_rate,
+        )
+
+
+def test_output_resampling_rejects_empty_result() -> None:
+    """A source sample shorter than half an output period must not produce a header-only WAV."""
+    with pytest.raises(ValueError, match="No audio samples remain"):
+        encode_audio(
+            np.ones(1, dtype=np.float32), sample_rate=24000, output_sample_rate=7350
         )
 
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasChoices,
@@ -19,9 +19,19 @@ from pydantic import (
     model_validator,
 )
 
-from sglang_omni.client.audio import MAX_AUDIO_OUTPUT_SAMPLE_RATE
+from sglang_omni.client.audio import (
+    MAX_AUDIO_OUTPUT_SAMPLE_RATE,
+    MIN_AUDIO_OUTPUT_SAMPLE_RATE,
+)
 from sglang_omni.client.types import UsageInfo
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
+
+SpeechOutputSampleRate = Annotated[
+    int,
+    Field(
+        ge=MIN_AUDIO_OUTPUT_SAMPLE_RATE, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
+    ),
+]
 
 
 class UsageResponse(BaseModel):
@@ -473,9 +483,7 @@ class CreateSpeechRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
-    sample_rate: int | None = Field(
-        default=None, gt=0, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
-    )
+    sample_rate: SpeechOutputSampleRate | None = None
     speed: float = 1.0
     stream: bool = False
     stream_format: Literal["audio", "sse"] = "audio"
@@ -566,9 +574,7 @@ class CreateSpeechBatchRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
-    sample_rate: int | None = Field(
-        default=None, gt=0, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
-    )
+    sample_rate: SpeechOutputSampleRate | None = None
     speed: float = 1.0
     stream: bool = False
     task_type: str | None = None
@@ -651,9 +657,7 @@ class SpeechStreamSessionConfig(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "pcm"
-    sample_rate: int | None = Field(
-        default=None, gt=0, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
-    )
+    sample_rate: SpeechOutputSampleRate | None = None
     speed: float = 1.0
     stream_audio: bool = False
     split_granularity: str = "sentence"

@@ -5168,8 +5168,8 @@ def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None
         (44100, "buffered", "wav", 24001),
         (44100, "audio", "pcm", 24001),
         (44100, "sse", "wav", 24001),
-        (8000, "audio", "pcm", 24),
-        (8000, "sse", "wav", 24),
+        (7350, "audio", "pcm", 24),
+        (7350, "sse", "wav", 24),
     ],
 )
 def test_speech_output_sample_rate_matches_buffered_and_streamed_audio(
@@ -5217,7 +5217,7 @@ def test_speech_output_sample_rate_matches_buffered_and_streamed_audio(
 
 @pytest.mark.parametrize(
     ("response_format", "sample_rate"),
-    [("wav", 0), ("wav", "16000"), ("wav", True), ("wav", 192001), ("flac", 65536)],
+    [("wav", 1), ("wav", "16000"), ("wav", True), ("wav", 192001), ("flac", 65536)],
 )
 def test_speech_rejects_invalid_output_sample_rate_before_generation(
     response_format: Literal["wav", "flac"],

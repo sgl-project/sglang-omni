@@ -1351,17 +1351,25 @@ def test_output_sample_rate_stays_in_serving_layer() -> None:
     "request_type",
     [CreateSpeechRequest, CreateSpeechBatchRequest, SpeechStreamSessionConfig],
 )
+@pytest.mark.parametrize(
+    ("supported_sample_rate", "unsupported_sample_rate"),
+    [(7350, 7349), (192000, 192001)],
+)
 def test_output_sample_rate_limit(
     request_type: type[
         CreateSpeechRequest | CreateSpeechBatchRequest | SpeechStreamSessionConfig
     ],
+    supported_sample_rate: int,
+    unsupported_sample_rate: int,
 ) -> None:
-    """Oversized output rates must be rejected before they can allocate resampled audio."""
+    """Every request schema must reject rates outside the speech encoding range."""
     payload = {"input": "Hello.", "items": [{"input": "Hello."}]}
-    request = request_type.model_validate({**payload, "sample_rate": 192000})
-    assert request.sample_rate == 192000
+    request = request_type.model_validate(
+        {**payload, "sample_rate": supported_sample_rate}
+    )
+    assert request.sample_rate == supported_sample_rate
     with pytest.raises(ValidationError) as error:
-        request_type.model_validate({**payload, "sample_rate": 192001})
+        request_type.model_validate({**payload, "sample_rate": unsupported_sample_rate})
     assert error.value.errors()[0]["loc"] == ("sample_rate",)
 
 
