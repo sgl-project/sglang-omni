@@ -101,16 +101,24 @@ public:
   // Text already shown minus its last tokens, cut back to whole characters.
   RetainedText RetainedPrefix(const std::string &text,
                               int rollback_token_count) const;
-  // With reuse, a realtime refresh: the audio windows reuse holds are not
-  // encoded or prefilled again, and reuse then holds this refresh's for the
-  // next.
+  // Audio past 120 s is cut at quiet points and each piece decoded on its
+  // own, as a single long prompt can loop on its first sentence. With reuse, a
+  // realtime refresh: the audio windows reuse holds are not encoded or
+  // prefilled again, and reuse then holds this refresh's for the next.
   omni_common::TranscriptionResult Transcribe(
       const std::vector<float> &samples, const TranscriptionOptions &options,
       const std::atomic<bool> &cancel, RefreshReuse *reuse = nullptr) const;
+  // Whether Transcribe cuts the request into pieces: it is past 120 s and
+  // continues no text already shown.
+  static bool ChunksAudio(size_t sample_count,
+                          const TranscriptionOptions &options);
   // Whether the request can decode together with others: the batched loop
-  // has neither the draft nor the repetition penalty.
-  bool CanBatch(const TranscriptionOptions &options) const {
-    return !draft_.has_value() && options.repetition_penalty == 1.0f;
+  // has neither the draft, the repetition penalty nor the cutting of long
+  // audio.
+  bool CanBatch(const TranscriptionOptions &options,
+                size_t sample_count) const {
+    return !draft_.has_value() && options.repetition_penalty == 1.0f &&
+           !ChunksAudio(sample_count, options);
   }
   // Transcribes several requests, decoding them together. Greedy output
   // matches Transcribe's. on_finished gets each request's index and outcome as
@@ -120,6 +128,10 @@ public:
                        const BatchFinished &on_finished) const;
 
 private:
+  omni_common::TranscriptionResult
+  TranscribeWindow(const std::vector<float> &samples,
+                   const TranscriptionOptions &options,
+                   const std::atomic<bool> &cancel, RefreshReuse *reuse) const;
   struct Prompt {
     mlx::core::array embeddings;
     int max_new_tokens;
