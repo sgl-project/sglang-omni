@@ -4,6 +4,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -11,6 +13,7 @@
 #include <vector>
 
 #include "common/transcription.h"
+#include "common/worker.h"
 
 namespace qwen3_asr {
 
@@ -112,8 +115,21 @@ NormalizeLanguage(const std::string &language) {
   return language;
 }
 
+struct BatchRequest {
+  const std::vector<float> *samples;
+  const TranscriptionOptions *options;
+  const std::atomic<bool> *cancel;
+};
+
+struct BatchOutcome {
+  std::optional<omni_common::TranscriptionResult> result;
+  std::exception_ptr error;
+};
+
 class Qwen3ASRTranscriber {
 public:
+  using BatchFinished = std::function<void(size_t, BatchOutcome)>;
+
   RetainedText RetainedPrefix(const std::string &, int) const { return {}; }
 
   omni_common::TranscriptionResult Transcribe(const std::vector<float> &,
@@ -124,6 +140,16 @@ public:
     result.text = "ok";
     result.finish_reason = omni_common::FinishReason::kStop;
     return result;
+  }
+
+  void TranscribeBatch(const std::vector<BatchRequest> &requests,
+                       const BatchFinished &on_finished) const {
+    for (size_t i = 0; i < requests.size(); ++i) {
+      on_finished(
+          i, BatchOutcome{Transcribe(*requests[i].samples, *requests[i].options,
+                                     *requests[i].cancel),
+                          std::exception_ptr{}});
+    }
   }
 };
 

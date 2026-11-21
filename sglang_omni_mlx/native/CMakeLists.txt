@@ -102,6 +102,7 @@ add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
+  src/qwen3_asr/batch.cpp
   src/qwen3_asr/realtime.cpp)
 target_link_libraries(qwen3_asr PUBLIC common)
 target_compile_options(qwen3_asr PRIVATE -Wall -Wextra)
@@ -473,7 +474,8 @@ set_target_properties(audio_chunk_test PROPERTIES
 
 # The real realtime session uses a checkpoint-free transcriber double here.
 add_executable(qwen_realtime_timing_test EXCLUDE_FROM_ALL
-  tests/qwen_realtime_timing_test.cpp src/qwen3_asr/realtime.cpp)
+  tests/qwen_realtime_timing_test.cpp src/qwen3_asr/batch.cpp
+  src/qwen3_asr/realtime.cpp)
 target_include_directories(qwen_realtime_timing_test PRIVATE tests/doubles)
 target_link_libraries(qwen_realtime_timing_test PRIVATE common)
 target_compile_options(qwen_realtime_timing_test PRIVATE -Wall -Wextra)

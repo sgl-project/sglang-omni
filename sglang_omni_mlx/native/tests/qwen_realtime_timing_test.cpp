@@ -206,11 +206,59 @@ int main() {
     return 1;
   }
 
+  const auto make_http_timing = [] {
+    auto timing = std::make_shared<qwen3_asr::RealtimeDecodeTiming>();
+    timing->session_id = qwen3_asr::NextRealtimeProfileSessionId();
+    timing->decode_index = 1;
+    timing->kind = "http_final";
+    timing->audio_sample_count = 1600;
+    timing->end_sample = 1600;
+    timing->submitted_at_ms = qwen3_asr::NowRealtimeMilliseconds();
+    return timing;
+  };
+  omni_server::TranscriptionWorker batch_worker([] {}, [] {}, 2);
+  qwen3_asr::BatchableTranscription batch_job_a{&http_transcriber,
+                                                std::vector<float>(1600, 0.1f),
+                                                {},
+                                                make_http_timing()};
+  qwen3_asr::BatchableTranscription batch_job_b{&http_transcriber,
+                                                std::vector<float>(1600, 0.1f),
+                                                {},
+                                                make_http_timing()};
+  std::atomic<int> batch_completed{0};
+  std::ostringstream batch_captured;
+  const auto batch_old = std::cerr.rdbuf(batch_captured.rdbuf());
+  const auto complete_batch =
+      [&](std::optional<omni_common::TranscriptionResult>, std::exception_ptr) {
+        batch_completed.fetch_add(1, std::memory_order_release);
+      };
+  batch_worker.Submit(batch_job_a, omni_server::NewCancelFlag(),
+                      complete_batch);
+  batch_worker.Submit(batch_job_b, omni_server::NewCancelFlag(),
+                      complete_batch);
+  const bool batch_done = WaitFor(batch_completed, 2);
+  std::cerr.rdbuf(batch_old);
+  const auto batch_events = Timings(batch_captured.str());
+  if (!Check(batch_done, "batch completed") ||
+      !Check(batch_events.size() == 2, "two batch Final timings")) {
+    return 1;
+  }
+  for (const auto &event : batch_events) {
+    if (!Check(event["kind"] == "http_final", "batch Final kind") ||
+        !Check(event["succeeded"], "batch Final succeeded") ||
+        !Check(event["submitted_at_ms"] <= event["started_at_ms"],
+               "batch Final queue order") ||
+        !Check(event["started_at_ms"] <= event["finished_at_ms"],
+               "batch Final decode order")) {
+      return 1;
+    }
+  }
+
   const SessionOutput unprofiled = RunSession(false);
   if (!Check(unprofiled.previews == 1, "unprofiled preview completed") ||
       !Check(Timings(unprofiled.log).empty(), "profiling is off by default")) {
     return 1;
   }
-  std::puts("ok: preview, realtime and HTTP Final timings, opt-in only");
+  std::puts("ok: preview, realtime, direct and batch HTTP Final timings");
   return 0;
 }
