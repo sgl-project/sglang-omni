@@ -362,6 +362,7 @@ function sessionListeners() {
       }
       playbackNode.port.postMessage({ type: "push", samples, responseId }, [samples.buffer]);
     },
+    playback: (control) => playbackNode?.port.postMessage(control),
     response: ({ open, id, status }) => {
       if (open) mutedResponse = false;
       awaitingAudio = open;

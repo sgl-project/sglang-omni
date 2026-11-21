@@ -502,6 +502,26 @@ def evaluate_trace(
                     event.response_id in response_states,
                     f"{event_type}: unknown response",
                 )
+            elif turn_based and event_type in (
+                "sglang.output_audio.paused",
+                "sglang.output_audio.resumed",
+            ):
+                response_state = response_states.get(event.response_id)
+                check(response_state is not None, f"{event_type}: unknown response")
+                if response_state is not None:
+                    check(
+                        response_state.terminal is None,
+                        f"{event_type}: output after response terminal",
+                    )
+                    is_pause = event_type == "sglang.output_audio.paused"
+                    check(
+                        response_state.is_paused != is_pause,
+                        f"{event_type}: response "
+                        f"{'already' if is_pause else 'not'} paused",
+                    )
+                    response_state.is_paused = is_pause
+                else:
+                    pass
             elif event_type.startswith("response."):
                 close_requests = counts["send", "session.close"]
                 check(

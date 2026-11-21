@@ -5,6 +5,7 @@ import asyncio
 import base64
 import io
 import json
+import math
 import re
 import threading
 import time
@@ -22,6 +23,11 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.audio.segmentation import UtteranceSegmenter
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.models.streaming_cascade.addressee import (
+    QUESTION,
+    AddresseeJudge,
+    addressee_messages,
+)
 from sglang_omni.models.streaming_cascade.alignment import AlignmentConfig
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -46,7 +52,11 @@ from sglang_omni.models.streaming_cascade.dialog import (
     DialogConfig,
     heard_prefix,
 )
-from sglang_omni.models.streaming_cascade.generators import ChatChoice, ChatDelta
+from sglang_omni.models.streaming_cascade.generators import (
+    ChatChoice,
+    ChatDelta,
+    OpenAIChatGeneratorConfig,
+)
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
 from sglang_omni.models.streaming_cascade.running_transcript import (
@@ -1164,6 +1174,259 @@ async def test_a_dialog_without_audio_answers_the_next_utterance_after_a_cancell
         ("system", dialog.config.system_prompt),
         ("user", "question next"),
     ]
+
+
+NOT_ADDRESSED = {
+    QUESTION.other[0]: math.log(0.9),
+    QUESTION.addressed[0]: math.log(0.05),
+    f" {QUESTION.other[0]}": math.log(0.05),
+}
+ADDRESSED = {QUESTION.addressed[0]: math.log(0.9), QUESTION.other[0]: math.log(0.1)}
+
+
+def judge_response(logprobs: dict[str, float]) -> httpx.Response:
+    """A chat completion of one token whose top log-probs are logprobs."""
+    top = [{"token": token, "logprob": value} for token, value in logprobs.items()]
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": top[0]["token"]},
+                    "logprobs": {"content": [{**top[0], "top_logprobs": top}]},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+    )
+
+
+def pausing_dialog(answer: object) -> tuple[Dialog, list[dict]]:
+    """A dialog that pauses on overlap, its judge's service answering with answer (a response, or an exception to raise), and the requests the service received."""
+    dialog = build({"kind": "dialog", "on_overlap": "pause"})
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if isinstance(answer, Exception):
+            raise answer
+        else:
+            return answer
+
+    chat = OpenAIChatGeneratorConfig(
+        **HTTP_SERVICE, extra_body={"chat_template_kwargs": {"enable_thinking": True}}
+    )
+    dialog.judge = AddresseeJudge(chat, 2.0)
+    dialog.judge.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return dialog, requests
+
+
+async def settle() -> None:
+    await asyncio.sleep(0.05)
+
+
+def overlap(*heard: object) -> list[object]:
+    return [
+        transcript_chunk("question", True),
+        text_chunk("Hello world.", 1),
+        control_chunk(SPEECH_STARTED),
+        control_chunk(SPEECH_STOPPED),
+        *heard,
+        settle,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_speech_over_a_paused_reply_that_was_not_addressed_resumes_it():
+    dialog, requests = pausing_dialog(judge_response(NOT_ADDRESSED))
+    outputs = await drain(
+        dialog,
+        [*overlap(transcript_chunk("mm-hmm", True)), control_chunk(TURN_DONE, turn=1)],
+    )
+    assert [control_type(o) for o in outputs] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+        "reply.paused",
+        "reply.resumed",
+    ]
+    assert history(dialog)[1:] == [("user", "question"), ("assistant", "Hello world.")]
+    [request] = requests
+    assert (
+        request["max_tokens"],
+        request["temperature"],
+        request["stream"],
+        request["logprobs"],
+        request["top_logprobs"],
+        request["chat_template_kwargs"],
+    ) == (1, 0, False, True, 20, {"enable_thinking": False})
+    assert request["messages"] == [
+        {"role": "system", "content": QUESTION.text},
+        {
+            "role": "user",
+            "content": 'User: question\nAssistant (speaking): Hello world.\nHeard while speaking: "mm-hmm"',
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_speech_over_a_paused_reply_that_was_addressed_ends_it_and_is_answered_next():
+    dialog, requests = pausing_dialog(judge_response(ADDRESSED))
+    outputs = await drain(
+        dialog,
+        [
+            *overlap(transcript_chunk("no, stop", True)),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0),
+        ],
+    )
+    assert [(control_type(o), o.turn) for o in outputs] == [
+        (TURN_QUEUED, 1),
+        (TURN_STARTED, 1),
+        (None, 1),
+        ("reply.paused", 1),
+        (INTERRUPT, 1),
+        (TURN_INTERRUPTED, 1),
+        (TURN_QUEUED, 2),
+        (TURN_STARTED, 2),
+        (None, 2),
+    ]
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question no, stop"),
+    ]
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_overlap_while_paused_is_judged_with_the_first():
+    dialog, requests = pausing_dialog(judge_response(NOT_ADDRESSED))
+    outputs = await drain(
+        dialog,
+        overlap(
+            transcript_chunk("a", True),
+            control_chunk(SPEECH_STARTED),
+            settle,
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("b", True),
+        ),
+    )
+    assert [control_type(o) for o in outputs][3:] == ["reply.paused", "reply.resumed"]
+    assert [
+        request["messages"][1]["content"].splitlines()[-1] for request in requests
+    ] == [
+        'Heard while speaking: "a"',
+        'Heard while speaking: "a b"',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_transcript_over_a_paused_reply_resumes_it_without_asking():
+    dialog, requests = pausing_dialog(judge_response(ADDRESSED))
+    outputs = await drain(dialog, overlap(transcript_chunk("", True)))
+    assert [control_type(o) for o in outputs][3:] == ["reply.paused", "reply.resumed"]
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ReadTimeout("slow"),
+        httpx.Response(500),
+        httpx.Response(200, json={"choices": []}),
+    ],
+)
+async def test_a_judge_without_an_answer_ends_the_paused_reply(failure):
+    dialog, requests = pausing_dialog(failure)
+    outputs = await drain(dialog, overlap(transcript_chunk("hm", True)))
+    assert [(control_type(o), o.turn) for o in outputs][3:] == [
+        ("reply.paused", 1),
+        (INTERRUPT, 1),
+        (TURN_INTERRUPTED, 1),
+        (TURN_QUEUED, 2),
+    ]
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_client_cancel_while_paused_answers_the_speech_heard():
+    dialog, requests = pausing_dialog(judge_response(NOT_ADDRESSED))
+    outputs = await drain(
+        dialog,
+        overlap(
+            transcript_chunk("wait", True),
+            lambda: dialog.control(control_chunk(INTERRUPT)),
+        ),
+    )
+    assert [(control_type(o), o.turn) for o in outputs][3:] == [
+        ("reply.paused", 1),
+        (INTERRUPT, 1),
+        (TURN_INTERRUPTED, 1),
+        (TURN_QUEUED, 2),
+    ]
+    assert dialog.waiting[0][1] == "wait" and not dialog.floor.is_paused
+
+
+@pytest.mark.asyncio
+async def test_a_reply_opening_over_speech_pauses_until_that_speech_is_judged():
+    dialog, requests = pausing_dialog(judge_response(NOT_ADDRESSED))
+    outputs = await drain(
+        dialog,
+        [
+            control_chunk(SPEECH_STARTED, t_ms=0),
+            control_chunk(SPEECH_STOPPED, t_ms=1000),
+            control_chunk(SPEECH_STARTED, t_ms=1800),
+            transcript_chunk("question", True),
+            text_chunk("Hello world.", 1),
+            control_chunk(SPEECH_STOPPED, t_ms=4000),
+            transcript_chunk("hm", True),
+            settle,
+        ],
+    )
+    assert [control_type(o) for o in outputs] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+        "reply.paused",
+        "reply.resumed",
+    ]
+    assert requests[0]["messages"][1]["content"].endswith('Heard while speaking: "hm"')
+
+
+def test_addressee_messages_show_the_recent_history_the_reply_and_the_speech():
+    history_messages = [
+        ChatMessage(role="system", content="Be terse."),
+        ChatMessage(role="user", content="old"),
+        ChatMessage(role="assistant", content="older reply"),
+        ChatMessage(role="user", content="one"),
+        ChatMessage(role="assistant", content="two"),
+        ChatMessage(role="user", content="three"),
+    ]
+    assert addressee_messages(history_messages, "Four five.", ["six", "seven"]) == [
+        ChatMessage(role="system", content=QUESTION.text),
+        ChatMessage(
+            role="user",
+            content='Assistant: older reply\nUser: one\nAssistant: two\nUser: three\nAssistant (speaking): Four five.\nHeard while speaking: "six seven"',
+        ),
+    ]
+
+
+def test_a_dialog_pausing_on_overlap_needs_the_delivered_audio_of_a_cancelled_reply():
+    text_only = yaml.safe_load(TEXT_ONLY_STOPPABLE)
+    text_only["nodes"][1]["on_overlap"] = "pause"
+    with pytest.raises(
+        ValueError, match="pauses on overlap and waits for reply.delivered"
+    ):
+        ComponentGraphConfig.model_validate(text_only)
+    settings = declared(
+        nodes={
+            "dialog": {
+                **yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]["dialog"],
+                "on_overlap": "pause",
+            }
+        }
+    ).component_graph()
+    assert settings.chat_reader("dialog").model == settings.node("llm").component.model
 
 
 def dialog_stage(identity):

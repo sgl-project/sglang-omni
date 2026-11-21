@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The dialog kind: the conversation history and the turns."""
 
+import asyncio
 import json
 import logging
 import math
@@ -12,6 +13,16 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
+from sglang_omni.audio.floor import (
+    Ask,
+    Cancel,
+    Floor,
+    FloorAct,
+    OverlapPolicy,
+    Pause,
+    Resume,
+)
+from sglang_omni.models.streaming_cascade.addressee import AddresseeJudge
 from sglang_omni.models.streaming_cascade.base import (
     AssistantToolCall,
     ChatMessage,
@@ -28,7 +39,9 @@ from sglang_omni.proto.streams import (
     MAX_HISTORY_CHARS,
     REPLY_DELIVERED,
     REPLY_HEARD,
+    REPLY_PAUSED,
     REPLY_PROGRESS,
+    REPLY_RESUMED,
     REPLY_TRUNCATED,
     SPEECH_ERROR,
     SPEECH_STARTED,
@@ -260,6 +273,9 @@ class DialogConfig(ComponentConfig):
     system_prompt: str = "You are a helpful voice assistant. Answer concisely."
     max_history_chars: int = Field(default=MAX_HISTORY_CHARS, gt=0)
     max_text_chars: int = Field(default=16000, gt=0)
+    on_overlap: OverlapPolicy = "interrupt"
+    respond_margin: float = 0.0
+    decision_timeout_s: float = Field(default=2.0, gt=0)
     speech_tool: str | None = None
     max_inferences_per_utterance: int = Field(default=4, gt=0)
 
@@ -301,6 +317,10 @@ class Dialog(StreamComponent):
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
     ends as soon as it begins.
+
+    With on_overlap set to pause, the dialog holds the reply until the chat
+    service judges whether the overlapping speech was addressed to it.
+    A side conversation resumes the same reply and its pending speech call.
 
     With a speech_tool, the model speaks by calling it: the dialog hands the
     one call it accepts to the synthesizer, the Session speaks one at a time
@@ -360,13 +380,24 @@ class Dialog(StreamComponent):
         self.delivered_ms: float | None = math.inf
         self.heard_ms: float | None = None
         self.language: str | None = None
-        # note (luojiaxuan): From a speech.started to the speech.stopped or commit that ends the utterance; the node that reports speech also stops it at the end of the input.
-        self.is_user_speaking = False
         # note (luojiaxuan): Whether the graph reports the audio it delivered of a reply this dialog interrupts; a graph without audio does not.
         self.awaits_delivery = True
+        self.floor: Floor[tuple[str, str | None]] = Floor(
+            config.on_overlap, config.respond_margin
+        )
+        self.judge: AddresseeJudge | None = None
+        self.judging: asyncio.Task[None] | None = None
 
     def place(self, settings: "ComponentGraphConfig", name: str) -> None:
         self.awaits_delivery = bool(settings.delivery_reporters(name))
+        if self.config.on_overlap == "pause":
+            chat = settings.chat_reader(name)
+            if self.judge is None:
+                self.judge = AddresseeJudge(chat, self.config.decision_timeout_s)
+            else:
+                self.judge.chat = chat
+        else:
+            pass
 
     def adopt(self, previous: StreamComponent) -> None:
         if isinstance(previous, Dialog):
@@ -395,13 +426,32 @@ class Dialog(StreamComponent):
             self.delivered_ms = previous.delivered_ms
             self.heard_ms = previous.heard_ms
             self.language = previous.language
-            self.is_user_speaking = previous.is_user_speaking
+            self.floor = previous.floor
+            self.floor.policy = self.config.on_overlap
+            self.floor.respond_margin = self.config.respond_margin
+        else:
+            pass
+
+    def can_replace(self) -> bool:
+        return not self.floor.is_paused and (
+            self.judging is None or self.judging.done()
+        )
+
+    async def close(self) -> None:
+        if self.judging is not None:
+            self.judging.cancel()
+            await asyncio.gather(self.judging, return_exceptions=True)
+        else:
+            pass
+        if self.judge is not None:
+            await self.judge.close()
         else:
             pass
 
     def state_bytes(self) -> int:
         chars = sum(message_chars(message) for message in self.messages)
         chars += sum(len(text) for _, text, _ in self.waiting)
+        chars += sum(len(text) for text, _ in self.floor.held())
         chars += sum(len(part) for part in self.reply or ())
         return chars * 4
 
@@ -438,15 +488,8 @@ class Dialog(StreamComponent):
     def handle(self, chunk: TimedChunk) -> None:
         assert self.emit is not None
         if chunk.format == TRANSCRIPT_FORMAT and chunk.payload["is_final"]:
-            self.turns += 1
-            self.waiting.append(
-                (
-                    self.turns,
-                    str(chunk.payload["text"]).strip(),
-                    chunk_language(chunk),
-                )
-            )
-            self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
+            text = str(chunk.payload["text"]).strip()
+            self.act(self.floor.heard((text, chunk_language(chunk)), is_empty=not text))
         elif chunk.format == TEXT_DELTA and self.is_reply(chunk):
             style = chunk_style(chunk)
             if style is not None and (
@@ -485,13 +528,13 @@ class Dialog(StreamComponent):
                 )
                 self.end_reply(len(self.messages) - 1, reply, self.reply_style_starts)
         elif control_type(chunk) == SPEECH_STARTED:
-            self.is_user_speaking = True
-            if self.reply is not None:
-                self.interrupt_reply()
-            else:
-                pass
-        elif control_type(chunk) in (SPEECH_STOPPED, COMMIT):
-            self.is_user_speaking = False
+            self.act(self.floor.speech_started())
+        elif control_type(chunk) == SPEECH_STOPPED:
+            self.act(self.floor.speech_stopped())
+        elif control_type(chunk) == COMMIT and self.floor.is_user_speaking:
+            self.act(self.floor.speech_stopped())
+        elif control_type(chunk) == COMMIT:
+            self.floor.empty_utterance()
         elif (
             control_type(chunk) == REPLY_DELIVERED
             and self.truncatable is not None
@@ -526,6 +569,7 @@ class Dialog(StreamComponent):
         self.delivered_ms = math.inf
         self.heard_ms = None
         self.reply = None
+        self.act(self.floor.reply_ended(self.reply_turn))
 
     def speech_call_error(self, call: ToolCall, is_busy: bool) -> str | None:
         """Why the call cannot be spoken; None when it can."""
@@ -726,6 +770,7 @@ class Dialog(StreamComponent):
             )
             self.progress = []
             self.reply = None
+            self.act(self.floor.reply_ended(self.reply_turn))
             self.should_follow_up = True
 
     def end_inference(self, is_truncated: bool) -> None:
@@ -754,6 +799,7 @@ class Dialog(StreamComponent):
         """The prompt led to no speech: a turn the client was told about ends empty, and the history shows the unanswered utterance as interrupt_reply does."""
         assert self.emit is not None
         self.reply = None
+        self.act(self.floor.reply_ended(self.reply_turn))
         if self.messages[-1].role == "user":
             self.messages.append(ChatMessage(role="assistant"))
         else:
@@ -826,6 +872,75 @@ class Dialog(StreamComponent):
         else:
             pass
 
+        self.act(self.floor.reply_ended(turn))
+
+    def act(self, acts: list[FloorAct]) -> None:
+        assert self.emit is not None
+        for step in acts:
+            if isinstance(step, Pause):
+                self.emit(control_chunk(REPLY_PAUSED, turn=step.turn))
+            elif isinstance(step, Resume):
+                self.emit(control_chunk(REPLY_RESUMED, turn=step.turn))
+            elif isinstance(step, Cancel):
+                if self.reply is not None and step.turn == self.reply_turn:
+                    self.interrupt_reply()
+                else:
+                    pass
+            elif isinstance(step, Ask):
+                self.ask(step)
+            else:
+                self.queue_utterance(step.heard)
+
+    def queue_utterance(self, heard: tuple[tuple[str, str | None], ...]) -> None:
+        """Number and queue the utterance the floor hands on, the texts heard over one paused reply joined as one."""
+        assert self.emit is not None
+        text = " ".join(text for text, _ in heard if text)
+        language = next(
+            (language for _, language in reversed(heard) if language is not None),
+            None,
+        )
+        self.turns += 1
+        self.waiting.append((self.turns, text, language))
+        self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
+
+    def ask(self, ask: Ask[tuple[str, str | None]]) -> None:
+        if self.judging is not None:
+            self.judging.cancel()
+        else:
+            pass
+        self.judging = asyncio.create_task(self.judge_ask(ask))
+
+    async def judge_ask(self, ask: Ask[tuple[str, str | None]]) -> None:
+        heard = [text for text, _ in ask.heard if text]
+        reply = self.speech.text if self.speech else "".join(self.reply or ())
+        history = (
+            self.messages[: self.speech.entry_index - 1]
+            if self.speech
+            else self.messages
+        )
+        started_at = asyncio.get_running_loop().time()
+        if self.judge is None:
+            verdict = None
+        else:
+            try:
+                verdict = await asyncio.wait_for(
+                    self.judge.margin(history, reply, heard),
+                    self.config.decision_timeout_s,
+                )
+            except TimeoutError:
+                verdict = None
+            except Exception:
+                logger.exception("addressee judge of turn %d failed", ask.turn)
+                verdict = None
+        logger.info(
+            "speech over paused turn %d judged %s in %.0f ms",
+            ask.turn,
+            verdict,
+            (asyncio.get_running_loop().time() - started_at) * 1000,
+        )
+        self.act(self.floor.decided(ask.id, verdict))
+        self.respond_to_waiting()
+
     def respond_to_waiting(self) -> None:
         assert self.emit is not None
         # note (luojiaxuan): The next prompt shows the interrupted reply's cut, which has no bound until the graph reports the audio it delivered or a truncate arrives.
@@ -840,17 +955,21 @@ class Dialog(StreamComponent):
         ):
             for output in self.respond(*self.waiting.popleft()):
                 self.emit(output)
-            if self.reply is not None and self.is_user_speaking:
-                self.interrupt_reply()
+            if self.reply is not None:
+                self.act(self.floor.reply_started(self.reply_turn))
             else:
                 pass
         if (
             self.should_follow_up
             and self.reply is None
             and not self.waiting
-            and not self.is_user_speaking
+            and not self.floor.is_user_speaking
         ):
             self.follow_up()
+            if self.reply is not None:
+                self.act(self.floor.reply_started(self.reply_turn))
+            else:
+                pass
         else:
             pass
 

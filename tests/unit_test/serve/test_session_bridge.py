@@ -302,6 +302,34 @@ async def test_reply_progress_maps_to_the_open_response_of_its_turn():
 
 
 @pytest.mark.asyncio
+async def test_reply_paused_and_resumed_map_to_the_open_response_of_their_turn():
+    """A dialog's pause and resume reach the client as events of the response it is playing; those of another turn, or after the response ended, reach nothing."""
+    h = Harness()
+    await h.open()
+    h.client.control("reply.paused", turn=2)
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "One, two."}, turn=3)
+    h.client.control("reply.paused", turn=3)
+    h.client.control("reply.resumed", turn=2)
+    h.client.control("reply.resumed", turn=3)
+    h.client.control(TURN_DONE, turn=3)
+    h.client.control("reply.paused", turn=3)
+    await settle()
+    assert [
+        event.message for event in h.published if isinstance(event, TurnFailure)
+    ] == []
+    assert [
+        (type(event).__name__, event.response_id, event.item_id)
+        for event in h.published
+        if type(event).__name__ in ("OutputAudioPaused", "OutputAudioResumed")
+    ] == [
+        ("OutputAudioPaused", "resp_0", "item_0"),
+        ("OutputAudioResumed", "resp_0", "item_0"),
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_reply_heard_maps_to_the_ended_response_of_its_turn():
     h = Harness()
     await h.open()

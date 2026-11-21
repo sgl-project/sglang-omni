@@ -240,6 +240,7 @@ class ComponentGraphConfig(BaseModel):
         self.check_turn_roles()
         self.check_progress()
         self.check_delivery()
+        self.check_overlap()
         return self
 
     def check_names(self) -> None:
@@ -452,6 +453,38 @@ class ComponentGraphConfig(BaseModel):
                 )
             else:
                 pass
+
+    def check_overlap(self) -> None:
+        """A dialog that pauses on overlap asks the chat service reading its messages about the speech, and cancels a reply only where the graph reports the audio it delivered."""
+        for node in self.nodes:
+            if (
+                isinstance(node.component, DialogConfig)
+                and node.component.on_overlap == "pause"
+            ):
+                self.chat_reader(node.name)
+                if not self.delivery_reporters(node.name):
+                    raise ValueError(
+                        f"node {node.name!r} pauses on overlap and waits for {REPLY_DELIVERED}: a node that publishes audio must take its {INTERRUPT} on a control edge, and {node.name!r} must read that node's {SESSION_CONTROL}"
+                    )
+                else:
+                    pass
+            else:
+                pass
+
+    def chat_reader(self, name: str) -> OpenAIChatGeneratorConfig:
+        """The chat service node reading the messages of node name, which judges the speech heard over a paused reply."""
+        readers = [
+            other.component
+            for other in self.nodes
+            if isinstance(other.component, OpenAIChatGeneratorConfig)
+            and MESSAGES in other.edges().get(name, frozenset())
+        ]
+        if not readers:
+            raise ValueError(
+                f"node {name!r} pauses on overlap and needs an openai_chat node reading its messages"
+            )
+        else:
+            return readers[0]
 
     def interrupt_takers(self, name: str) -> list[NodeSettings]:
         """The nodes that take node `name`'s interrupt on a control edge."""

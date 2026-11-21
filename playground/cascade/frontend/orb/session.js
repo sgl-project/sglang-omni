@@ -318,6 +318,12 @@ export class DuplexSession {
         if (this.replies.size > MAX_REPLIES_KEPT) this.replies.delete(this.replies.keys().next().value);
         this.emit("response", { open: true, id: this.responseId });
         break;
+      case "sglang.output_audio.paused":
+      case "sglang.output_audio.resumed":
+        if (this.responseOpen && this.responseId === event.response_id) {
+          this.emit("playback", { type: event.type === "sglang.output_audio.paused" ? "pause" : "resume", responseId: event.response_id });
+        }
+        break;
       case "response.output_audio.delta": {
         const bytes = base64ToBytes(event.delta || "");
         const unitId = extension.unit_id || "unknown";

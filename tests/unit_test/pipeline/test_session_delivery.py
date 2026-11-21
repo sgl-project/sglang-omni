@@ -162,6 +162,38 @@ def test_an_interruption_drops_what_its_turn_still_holds(pacer):
     assert not pacer.items and not pacer.unsent
 
 
+def test_a_paused_turn_releases_nothing_until_resumed_and_its_clock_skips_the_pause(
+    pacer,
+):
+    offer_reply(pacer, 10)
+    pacer.unsent.extend(pacer.release(100.0))
+    assert labels(pacer.unsent) == ["turn.started", "pcm16"]
+    pacer.pause(1, 100.5)
+    assert labels(pacer.unsent) == ["turn.started"]
+    assert pacer.release(104.5) == []
+    pacer.offer(output(0, 0, {"text": "hi"}, "text_delta", modality="text"), 20)
+    assert labels(pacer.release(104.5)) == ["text_delta"]
+    pacer.resume(1, 104.5)
+    resumed = pacer.release(104.5)
+    assert set(labels(resumed)) == {"pcm16"}
+    assert resumed[0][0].t_start_ms == 0
+    assert resumed[-1][0].t_start_ms + resumed[-1][0].duration_ms == 750
+    assert pacer.release(104.5) == []
+    assert labels(pacer.items)[-1] == "turn.done"
+
+
+def test_an_interrupt_after_a_pause_reports_the_audio_played_before_it(pacer):
+    offer_reply(pacer, 10)
+    for item, _ in pacer.release(100.0):
+        pacer.sent(item)
+    assert pacer.delivered_ms(1) == 250
+    pacer.pause(1, 100.1)
+    assert pacer.delivered_ms(1) == pytest.approx(100)
+    assert pacer.delivered_ms(2) == 0
+    pacer.purge(1)
+    assert pacer.delivered_ms(1) == pytest.approx(100)
+
+
 def test_an_input_confirmation_passes_the_held_audio_and_the_input_end_releases_it(
     pacer,
 ):

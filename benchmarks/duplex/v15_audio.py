@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,8 @@ TRANSCRIPT_DELTAS = (
 AUDIO_DELTA = "response.output_audio.delta"
 LEGACY_TRANSCRIPT_DELTAS = ("response.text.delta",)
 LEGACY_AUDIO_DELTA = "response.audio.delta"
+OUTPUT_AUDIO_PAUSED = "sglang.output_audio.paused"
+OUTPUT_AUDIO_RESUMED = "sglang.output_audio.resumed"
 # note (luojiaxuan): The facade clears the output buffer whenever it interrupts a
 # response; a client that asked for interruption also stops at speech_started.
 LEGACY_BARGE_IN_CUT = (
@@ -54,6 +57,15 @@ PACING_TOLERANCE_S = PACKET_MS / 1000
 INPUT_TIMING_CAVEAT = (
     "client send clock only; network, server receipt and acoustic onset are unmeasured"
 )
+
+
+@dataclass(kw_only=True)
+class Hold:
+    """Audio of a paused turn-based reply scheduled from hold_sample on, unplayed."""
+
+    response_id: JsonValue
+    hold_sample: int
+    pcm: bytearray
 
 
 def write_json(path: Path, value: JsonValue) -> None:
@@ -162,6 +174,45 @@ def reconstruct_output(
     appends = []
     input_end_s = 0.0
     interrupts_on_speech = None
+    hold: Hold | None = None
+    pauses = []
+
+    def place(pcm: bytes | bytearray, receipt_sample: int) -> int:
+        playout_start = max(len(playout) // 2, receipt_sample)
+        playout.extend(bytes(2 * (playout_start - len(playout) // 2)))
+        playout.extend(pcm)
+        return playout_start
+
+    def end_hold(line_number: int, resume_s: float | None) -> None:
+        """Play the held audio from max(cursor, resume receipt), or drop it as a
+        cut at the pause receipt when the reply never resumes."""
+        nonlocal hold
+        if resume_s is None:
+            resume_sample = None
+            if hold.pcm:
+                cuts.append(
+                    {
+                        "trace_line": line_number,
+                        "type": OUTPUT_AUDIO_PAUSED,
+                        "receipt_s": pauses[-1]["receipt_s"],
+                        "cut_sample": hold.hold_sample,
+                        "dropped_samples": len(hold.pcm) // 2,
+                    }
+                )
+            else:
+                pass
+        else:
+            resume_sample = place(hold.pcm, round(resume_s * output_sample_rate))
+            for chunk in chunks:
+                if (
+                    chunk["response_id"] == hold.response_id
+                    and chunk["playout_start_sample"] >= hold.hold_sample
+                ):
+                    chunk["playout_start_sample"] += resume_sample - hold.hold_sample
+                else:
+                    pass
+        pauses[-1].update(held_samples=len(hold.pcm) // 2, resume_sample=resume_sample)
+        hold = None
 
     def cut_playout(line_number: int, event_type: str, elapsed_s: float) -> None:
         cut_sample = round(elapsed_s * output_sample_rate)
@@ -234,6 +285,67 @@ def reconstruct_output(
             and (event.get("response") or {}).get("status") == "cancelled"
         ):
             cut_playout(line_number, event_type, elapsed_s)
+            if hold is not None and event["response"].get("id") == hold.response_id:
+                end_hold(line_number, resume_s=None)
+            else:
+                pass
+        elif (
+            protocol == "turn_based"
+            and event_type == OUTPUT_AUDIO_PAUSED
+            and hold is None
+        ):
+            hold_sample = round(elapsed_s * output_sample_rate)
+            split = next(
+                (
+                    index
+                    for index, chunk in enumerate(chunks)
+                    if chunk["response_id"] == event.get("response_id")
+                    and 0
+                    < hold_sample - chunk["playout_start_sample"]
+                    < chunk["samples"]
+                ),
+                None,
+            )
+            if split is not None:
+                chunk = chunks[split]
+                head = hold_sample - chunk["playout_start_sample"]
+                chunks.insert(
+                    split + 1,
+                    {
+                        **chunk,
+                        "samples": chunk["samples"] - head,
+                        "media_start_sample": chunk["media_start_sample"] + head,
+                        "playout_start_sample": hold_sample,
+                    },
+                )
+                chunk["samples"] = head
+            else:
+                pass
+            hold = Hold(
+                response_id=event.get("response_id"),
+                hold_sample=hold_sample,
+                pcm=playout[2 * hold_sample :],
+            )
+            del playout[2 * hold_sample :]
+            pauses.append(
+                {
+                    "trace_line": line_number,
+                    "response_id": hold.response_id,
+                    "receipt_s": elapsed_s,
+                    "hold_sample": hold_sample,
+                }
+            )
+        elif hold is not None and (
+            (
+                event_type == OUTPUT_AUDIO_RESUMED
+                and event.get("response_id") == hold.response_id
+            )
+            or (
+                event_type == "response.done"
+                and (event.get("response") or {}).get("id") == hold.response_id
+            )
+        ):
+            end_hold(line_number, resume_s=elapsed_s)
         elif event_type in transcript_deltas:
             transcript_events.append(
                 {
@@ -256,10 +368,14 @@ def reconstruct_output(
             else:
                 pass
             receive_sample = round(elapsed_s * output_sample_rate)
-            playout_start = max(len(playout) // 2, receive_sample)
+            if hold is not None and event.get("response_id") == hold.response_id:
+                playout_start = hold.hold_sample + len(hold.pcm) // 2
+                hold.pcm.extend(pcm)
+            else:
+                playout_start = place(pcm, receive_sample)
             chunks.append(
                 {
-                    "index": len(chunks),
+                    "index": chunks[-1]["index"] + 1 if chunks else 0,
                     "trace_line": line_number,
                     "response_id": event.get("response_id"),
                     "receipt_s": elapsed_s,
@@ -269,11 +385,14 @@ def reconstruct_output(
                     "playout_start_sample": playout_start,
                 }
             )
-            playout.extend(bytes(2 * (playout_start - len(playout) // 2)))
-            playout.extend(pcm)
             media.extend(pcm)
         else:
             pass
+    if hold is not None:
+        after_last_line = records[-1][0] + 1
+        end_hold(after_last_line, resume_s=None)
+    else:
+        pass
     if origin_s is not None and not media and profile_contract.continuous_output:
         errors.append("no model output audio")
     else:
@@ -373,6 +492,7 @@ def reconstruct_output(
             "input_timing": {**input_timing, "appends": appends},
             "chunks": chunks,
             **({"cuts": cuts} if protocol in BARGE_IN_CUTS else {}),
+            **({"pauses": pauses} if pauses else {}),
         },
     )
     return summary

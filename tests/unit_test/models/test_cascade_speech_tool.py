@@ -4,12 +4,14 @@
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import numpy as np
 import pytest
 import yaml
 
+from sglang_omni.models.streaming_cascade.addressee import AddresseeJudge
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
     control_chunk,
@@ -31,11 +33,14 @@ from sglang_omni.proto.streams import (
     MESSAGES,
     PCM_F32,
     REPLY_DELIVERED,
+    REPLY_PAUSED,
     REPLY_PROGRESS,
+    REPLY_RESUMED,
     REPLY_TRUNCATED,
     SESSION_CONTROL,
     SPEECH_ERROR,
     SPEECH_STARTED,
+    SPEECH_STOPPED,
     SPOKEN_TEXT_END,
     TEXT_DELTA,
     TOOL_CALL,
@@ -1199,3 +1204,59 @@ async def test_pieces_of_a_speech_that_arrive_after_its_interrupt_are_dropped():
     assert sentences == ["Three."]
     done = [output.turn for output in outputs if control_type(output) == TURN_DONE]
     assert done == [2]
+
+
+@pytest.mark.asyncio
+async def test_side_speech_resumes_the_same_tool_call():
+    dialog = speech_dialog(on_overlap="pause", respond_margin=0.34)
+    judge = AsyncMock(spec=AddresseeJudge)
+    judge.margin.return_value = -1.0
+    dialog.judge = judge
+
+    async def finish_verdict():
+        speech = dialog.speech
+        await dialog.judging
+        assert dialog.speech is speech
+
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            speech_call(),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("aside", True),
+            finish_verdict,
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert [
+        (control_type(o), o.turn)
+        for o in outputs
+        if control_type(o) in (REPLY_PAUSED, REPLY_RESUMED)
+    ] == [
+        (REPLY_PAUSED, 1),
+        (REPLY_RESUMED, 1),
+    ]
+    history, speaking, heard = judge.margin.await_args.args
+    assert [(m.role, m.content) for m in history if m.role != "system"] == [
+        ("user", "question")
+    ]
+    assert (speaking, heard) == (SPEECH, ["aside"])
+    assert answers(dialog.messages) == {"call_1": COMPLETED}
+
+
+@pytest.mark.asyncio
+async def test_session_update_reuses_the_overlap_judge_for_the_new_chat_settings():
+    dialog = speech_dialog(on_overlap="pause")
+    try:
+        dialog.place(speech_profile().component_graph(), "dialog")
+        judge = dialog.judge
+        assert judge is not None
+        updated = speech_profile(llm={"model": "replacement"}).component_graph()
+        dialog.place(updated, "dialog")
+        assert dialog.judge is judge
+        assert judge.request_body([])["model"] == "replacement"
+    finally:
+        await dialog.close()
+    assert judge.client.is_closed

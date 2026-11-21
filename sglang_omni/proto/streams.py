@@ -65,6 +65,9 @@ REPLY_PROGRESS = "reply.progress"
 REPLY_DELIVERED = "reply.delivered"
 # {"text_end": int}; after the client's truncate, the history keeps the cut reply's first text_end characters, sent again whenever the cut moves
 REPLY_HEARD = "reply.heard"
+REPLY_PAUSED = "reply.paused"
+REPLY_RESUMED = "reply.resumed"
+FLOOR_CONTROLS = frozenset({REPLY_PAUSED, REPLY_RESUMED})
 # {"language"?: str}; the synthesizer starts the audio of the reply's next sentence, spoken in language when it tags one
 REPLY_SENTENCE = "reply.sentence"
 # Controls between nodes; a graph delivers them to readers and control edges, never to the client.
