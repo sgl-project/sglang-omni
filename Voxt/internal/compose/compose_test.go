@@ -151,7 +151,7 @@ func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	custom := base.System + "\nUse British spelling."
+	custom := strings.Replace(base.System, "so never output it", "do not reproduce it", 1) + "\nUse British spelling."
 	edited, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: custom, Text: "x"})
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
 		t.Errorf("edited built-in prompt changed or duplicated cleanup:\n%s", edited.System)
 	}
 	// note (luojiaxuan): and the example, which closes the built-in prompt.
-	if n := strings.Count(edited.System, "Example (it only illustrates"); n != 1 {
+	if n := strings.Count(edited.System, "Can you send the weekly report to Anna before 5?"); n != 1 {
 		t.Errorf("the example appears %d times:\n%s", n, edited.System)
 	}
 }

@@ -50,7 +50,8 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 		// note (luojiaxuan): a prompt edited from the built-in one already
 		// ends with the example.
 		example := render("example-transcribe", nil)
-		if !strings.Contains(full, strings.SplitN(example, "\n", 2)[0]) {
+		intro, body, _ := strings.Cut(example, "\n")
+		if !strings.Contains(full, intro) && !strings.Contains(full, body) {
 			add("example", example)
 		}
 	}
