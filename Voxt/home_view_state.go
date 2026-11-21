@@ -50,6 +50,8 @@ type homeViewState struct {
 	TryRecording bool                     `json:"try_recording"`
 	Today        homeTodayViewState       `json:"today"`
 	Recent       []homeRecentViewState    `json:"recent"`
+	// Outfit is what the mascot wears today (mascotOutfitOn), "" none.
+	Outfit string `json:"outfit,omitempty"`
 }
 
 type homeViewStateInput struct {
@@ -82,6 +84,7 @@ func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) h
 		ShowTry: input.ShowTry, TryRecording: input.TryRecording,
 		Today:  buildHomeTodayViewState(translator, input.Today, input.Features),
 		Recent: make([]homeRecentViewState, len(input.Recent)),
+		Outfit: mascotOutfitOn(input.Now),
 	}
 	for index, entry := range input.Recent {
 		state.Recent[index] = homeRecentViewState{
