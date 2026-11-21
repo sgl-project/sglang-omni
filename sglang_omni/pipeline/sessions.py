@@ -877,7 +877,13 @@ class CoordinatorSessions:
     async def finish_session_operation(
         self, session: Session, operation: SessionOperationKind, request_id: str
     ) -> None:
-        """Await the operation's completion within the operation timeout; a close and a read have none."""
+        """Await the operation's completion within the operation timeout; a close and a read have none.
+
+        An input still in flight when the session starts closing may reach an
+        owner after that owner closed the session, and that owner answers it with
+        an error. The input was already dropped, so it does not fail a session
+        that is already ending.
+        """
 
         async def run() -> None:
             await self.completion_futures[request_id]
@@ -892,9 +898,14 @@ class CoordinatorSessions:
             self.fail_session(session, error)
             raise error from exc
         except Exception as exc:
-            # Note (Junnan Li): Fail the session here, not in the pump: the abort below yields, and a pump that wakes to the fenced session exits without seeing this failure.
-            self.fail_session(session, exc)
-            raise
+            if operation in ("append", "fragment") and session.is_closing:
+                logger.debug(
+                    f"session {session.session_identity.id} {operation} reached a closed owner: {exc!r}"
+                )
+            else:
+                # Note (Junnan Li): Fail the session here, not in the pump: the abort below yields, and a pump that wakes to the fenced session exits without seeing this failure.
+                self.fail_session(session, exc)
+                raise
         except BaseException as exc:
             logger.warning(
                 "session %s %s failed: %r", session.session_identity.id, operation, exc
