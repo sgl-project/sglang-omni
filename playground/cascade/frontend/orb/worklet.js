@@ -59,6 +59,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     this.fadeLength = Math.max(1, Math.round(sampleRate * 0.01));
     // Samples played of the response now playing, reported about ten times a second.
     this.playingId = null;
+    this.pausedId = null;
     this.playingSamples = 0;
     this.reportEvery = Math.round(sampleRate / 10);
     this.sinceReport = 0;
@@ -68,10 +69,16 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         data.samples.responseId = data.responseId;
         this.queue.push(data.samples);
         this.queuedSamples += data.samples.length;
+      } else if (data.type === "pause") {
+        this.pausedId = data.responseId;
+      } else if (data.type === "resume") {
+        if (this.pausedId === data.responseId) this.pausedId = null;
       } else if (data.type === "flush") {
+        if (this.pausedId === data.responseId) this.pausedId = null;
         // The reply has ended: play what is left even if it is shorter than the buffer target.
         if (this.queuedSamples > 0) this.started = true;
       } else if (data.type === "cancel") {
+        if (this.pausedId === data.responseId) this.pausedId = null;
         this.cancel(data.responseId);
       } else if (data.type === "clear") {
         if (this.queuedSamples > 0) this.report(true);
@@ -84,6 +91,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
   }
 
   drop() {
+    this.pausedId = null;
     this.queue = [];
     this.headOffset = 0;
     this.queuedSamples = 0;
@@ -135,7 +143,7 @@ class PlaybackProcessor extends AudioWorkletProcessor {
       if (this.fadeRemaining > 0) {
         value = this.lastSample * (this.fadeRemaining / this.fadeLength);
         this.fadeRemaining -= 1;
-      } else if (this.started) {
+      } else if (this.started && (this.pausedId === null || this.queue[0]?.responseId !== this.pausedId)) {
         const next = this.takeSample();
         if (next === null) {
           this.started = false;

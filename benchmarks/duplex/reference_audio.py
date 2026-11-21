@@ -24,7 +24,12 @@ from benchmarks.duplex.reference_capture import (
     parse_pcm16_trace,
 )
 from benchmarks.duplex.run_artifacts import file_sha256
-from benchmarks.duplex.v15_audio import PACING_TOLERANCE_S
+from benchmarks.duplex.v15_audio import (
+    OUTPUT_AUDIO_PAUSED,
+    OUTPUT_AUDIO_RESUMED,
+    PACING_TOLERANCE_S,
+    Hold,
+)
 
 POLICY_VERSION = 2
 POLICY = "derived-analysis-v2-bounded-input-jitter"
@@ -200,6 +205,7 @@ def analyze_variant(
     created_responses, response_terminals = set(), {}
     closed_count, close_times_s = 0, []
     accepted_receipts = {}
+    hold: Hold | None = None
 
     def at(time_s: float) -> float | None:
         return None if first_append_s is None else time_s - first_append_s
@@ -221,6 +227,25 @@ def analyze_variant(
             barge_in_cuts += 1
         else:
             pass
+
+    def place(pcm16: NDArray[np.int16], receipt_sample: int) -> int:
+        nonlocal cursor
+        start = max(cursor, receipt_sample)
+        stop = min(start + len(pcm16), len(playout))
+        if stop > start:
+            playout[start:stop] = pcm16[: stop - start]
+        else:
+            pass
+        cursor = start + len(pcm16)
+        return start
+
+    def end_hold(resume_s: float | None) -> None:
+        nonlocal hold, barge_in_cuts
+        if resume_s is None:
+            barge_in_cuts += int(bool(hold.pcm))
+        else:
+            place(np.frombuffer(hold.pcm, "<i2"), round(at(resume_s) * out_rate))
+        hold = None
 
     with trace_path.open(encoding="utf-8") as handle:
         for capture in parse_pcm16_trace(
@@ -381,6 +406,33 @@ def analyze_variant(
                     cut_playout(time_s)
                 else:
                     pass
+                if hold is not None and response_id(event) == hold.response_id:
+                    end_hold(None if status == "cancelled" else time_s)
+                else:
+                    pass
+            elif (
+                trace_format is TraceFormat.TURN_BASED_PCM16
+                and kind == OUTPUT_AUDIO_PAUSED
+                and playout is not None
+                and hold is None
+            ):
+                hold_sample = round(at(time_s) * out_rate)
+                held = np.zeros(max(0, cursor - hold_sample), "<i2")
+                in_window = playout[hold_sample : min(cursor, len(playout))]
+                held[: len(in_window)] = in_window
+                in_window[:] = 0
+                cursor = min(cursor, hold_sample)
+                hold = Hold(
+                    response_id=response_id(event),
+                    hold_sample=hold_sample,
+                    pcm=bytearray(held.tobytes()),
+                )
+            elif (
+                hold is not None
+                and kind == OUTPUT_AUDIO_RESUMED
+                and response_id(event) == hold.response_id
+            ):
+                end_hold(time_s)
             elif kind in (
                 "input_audio_buffer.committed",
                 "sglang.input_audio.drained",
@@ -438,20 +490,23 @@ def analyze_variant(
                 else:
                     pass
                 pcm16 = np.frombuffer(data, "<i2")
-                start = max(cursor, round(at(time_s) * rate))
-                stop = min(start + len(pcm16), len(playout))
-                if stop > start:
-                    playout[start:stop] = pcm16[: stop - start]
+                if hold is not None and response_id(event) == hold.response_id:
+                    hold.pcm.extend(data)
                 else:
-                    pass
-                cursor = start + len(pcm16)
+                    start = place(pcm16, round(at(time_s) * rate))
+                    first_audio_s = (
+                        start / rate if first_audio_s is None else first_audio_s
+                    )
                 chunks["in_window"] += 1
                 chunks["in_window_samples"] += len(pcm16)
-                first_audio_s = start / rate if first_audio_s is None else first_audio_s
                 last_audio_s = at(time_s)
             else:
                 pass
 
+    if hold is not None:
+        end_hold(None)
+    else:
+        pass
     if first_append_s is None:
         reasons.append("no input append sent")
     elif appends < expected_appends:

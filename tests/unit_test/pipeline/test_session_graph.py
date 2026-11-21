@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import random
 from dataclasses import replace
+from itertools import groupby
 from multiprocessing.queues import Queue
 
 import pytest
@@ -39,6 +40,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    control_type,
 )
 from sglang_omni.scheduling.session import (
     ChunkEmitter,
@@ -1146,6 +1148,113 @@ async def test_an_interrupt_drops_the_turn_output_the_client_has_not_taken():
         ("speaker", {"type": REPLY_DELIVERED, "audio_ms": 100}),
     ]
     assert graph.output_bytes == 0
+    await outputs.aclose()
+
+
+def speaker_control(kind: str, turn: int) -> OutputChunk:
+    return replace(
+        speaker_audio(turn, 0),
+        modality="control",
+        duration_ms=0,
+        payload={"type": kind},
+        format="session",
+    )
+
+
+def dialog_control(kind: str, turn: int) -> OutputChunk:
+    return replace(
+        reply_output("session", {"type": kind}, turn),
+        session_identity=SessionIdentity("graph:dialog", 1),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_paused_reply_sends_the_client_nothing_until_it_resumes():
+    """The client hears the reply's audio, the pause, nothing of the turn while paused, the resume, then the rest and its turn.done."""
+    runner = NodeOutputsRunner([])
+    graph = paced_speaker_runtime(runner)
+
+    async def route(name: str, node_outputs: list[OutputChunk]) -> None:
+        runner.node_outputs = node_outputs
+        await runner.route_graph_outputs(graph, name)
+
+    delivery = asyncio.create_task(runner.deliver_paced_outputs(graph, "speaker"))
+    outputs = runner.graph_outputs(graph)
+    await route(
+        "speaker",
+        [
+            speaker_control("turn.started", 1),
+            speaker_audio(1, 0),
+            speaker_audio(1, 100),
+        ],
+    )
+    taken = await collect(outputs, 2)
+    await route("dialog", [dialog_control("reply.paused", 1)])
+    taken += await collect(outputs, 1)
+    await route(
+        "speaker",
+        [speaker_audio(1, 200), speaker_audio(1, 300), speaker_control("turn.done", 1)],
+    )
+    await asyncio.sleep(0.3)
+    leaked = await collect(outputs, graph.outputs.qsize())
+    assert [control_type(output) or output.format for output in leaked] == []
+    await route("dialog", [dialog_control("reply.resumed", 1)])
+    while not taken or control_type(taken[-1]) != "turn.done":
+        taken += await collect(outputs, 1)
+    delivery.cancel()
+    await asyncio.gather(delivery, return_exceptions=True)
+    kinds = [control_type(output) or output.format for output in taken]
+    assert [kind for kind, _ in groupby(kinds)] == [
+        "turn.started",
+        "pcm16",
+        "reply.paused",
+        "reply.resumed",
+        "pcm16",
+        "turn.done",
+    ]
+    assert (
+        sum(output.duration_ms for output in taken if output.format == "pcm16") == 400
+    )
+    await outputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_of_a_paused_reply_reports_only_the_audio_played_before_the_pause():
+    runner = NodeOutputsRunner([])
+    graph = paced_speaker_runtime(runner)
+    pacer = graph.pacers["speaker"]
+
+    async def route(name: str, node_outputs: list[OutputChunk]) -> None:
+        runner.node_outputs = node_outputs
+        await runner.route_graph_outputs(graph, name)
+
+    delivery = asyncio.create_task(runner.deliver_paced_outputs(graph, "speaker"))
+    outputs = runner.graph_outputs(graph)
+    await route(
+        "speaker",
+        [
+            speaker_control("turn.started", 1),
+            speaker_audio(1, 0),
+            speaker_audio(1, 100),
+        ],
+    )
+    await collect(outputs, 2)
+    await route("dialog", [dialog_control("reply.paused", 1)])
+    await collect(outputs, 1)
+    await route("speaker", [speaker_audio(1, 200), speaker_control("turn.done", 1)])
+    interrupt = TimedChunk("control", 0, 0, 0, {"type": "interrupt"}, "session", turn=1)
+    await runner.control_graph(graph, interrupt, None, False)
+    delivery.cancel()
+    await asyncio.gather(delivery, return_exceptions=True)
+    [delivered] = [
+        chunk
+        for _, chunk, _ in graph.inboxes["listener"].queued
+        if control_type(chunk) == REPLY_DELIVERED
+    ]
+    assert delivered.turn == 1 and delivered.payload["audio_ms"] < 200
+    assert delivered.payload["audio_ms"] == pytest.approx(
+        (pacer.paused[1] - pacer.reply_started_at) * 1000
+    )
     await outputs.aclose()
 
 

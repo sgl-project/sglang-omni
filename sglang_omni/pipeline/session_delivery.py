@@ -78,6 +78,39 @@ class DeliveryPacer:
         # note (luojiaxuan): Where the released audio of released_turn ends on its reply's timeline; its turn.done leaves once the client has played that far.
         self.released_turn: int | None = None
         self.released_end_ms = 0.0
+        self.paused: tuple[int, float] | None = None
+
+    def is_paused(self, output: OutputChunk) -> bool:
+        return (
+            self.paused is not None
+            and output.turn == self.paused[0]
+            and (
+                (output.kind == "data" and output.format in AUDIO_FORMATS)
+                or control_type(output) == TURN_DONE
+            )
+        )
+
+    def pause(self, turn: int, now: float) -> None:
+        """Hold the turn's audio and turn.done from now on, including what was released but not yet handed to the client; idempotent for the turn."""
+        if self.paused is not None and self.paused[0] == turn:
+            return
+        else:
+            self.paused = (turn, now)
+        held = [item for item in self.unsent if self.is_paused(item[0])]
+        self.unsent = deque(item for item in self.unsent if not self.is_paused(item[0]))
+        self.items = deque([*held, *self.items])
+        self.wake.set()
+
+    def resume(self, turn: int, now: float) -> None:
+        """Let the paused turn go on; its reply clock skips the paused time, so pacing and its held turn.done continue as if no time passed."""
+        if self.paused is None or self.paused[0] != turn:
+            return
+        elif self.clock_turn == turn:
+            self.reply_started_at += now - self.paused[1]
+        else:
+            pass
+        self.paused = None
+        self.wake.set()
 
     def offer(self, output: OutputChunk, size: int) -> int:
         """Queue an output; returns the budgeted bytes a turn.interrupted dropped from its turn."""
@@ -121,9 +154,13 @@ class DeliveryPacer:
             pass
 
     def delivered_ms(self, turn: int) -> float:
-        """The audio of the turn handed to the client, from the reply's first sample."""
-        if turn == self.sent_turn:
-            return self.sent_ms
+        """The audio of the turn the client could have played, from the reply's first sample: what the connection took, and for a paused turn no more than what played before the pause."""
+        sent_ms = self.sent_ms if turn == self.sent_turn else 0.0
+        if self.paused is None or self.paused[0] != turn:
+            return sent_ms
+        elif self.clock_turn == turn:
+            played_ms = (self.paused[1] - self.reply_started_at) * 1000
+            return min(sent_ms, max(played_ms, 0.0))
         else:
             return 0.0
 
@@ -146,7 +183,9 @@ class DeliveryPacer:
         held: deque[Budgeted] = deque()
         for output, size in self.items:
             is_reply_audio = output.kind == "data" and output.format in AUDIO_FORMATS
-            if held and (is_reply_audio or control_type(output) == TURN_DONE):
+            if self.is_paused(output):
+                held.append((output, size))
+            elif held and (is_reply_audio or control_type(output) == TURN_DONE):
                 held.append((output, size))
             elif is_reply_audio and not self.is_input_ended:
                 if output.turn != self.clock_turn:
@@ -213,7 +252,11 @@ class DeliveryPacer:
 
     async def wait(self) -> None:
         loop = asyncio.get_running_loop()
-        if self.items and not self.wake.is_set():
+        if (
+            self.items
+            and not self.wake.is_set()
+            and not self.is_paused(self.items[0][0])
+        ):
             output, _ = self.items[0]
             if control_type(output) == TURN_DONE:
                 due_ms = self.released_end_ms + self.lead_ms

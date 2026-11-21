@@ -22,6 +22,8 @@ from sglang_omni.serve.realtime.control import ImageAccepted, UnitCompleted
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import (
     InputTranscription,
+    OutputAudioPaused,
+    OutputAudioResumed,
     ResponseHeard,
     ResponseProgress,
     SpeechStarted,
@@ -187,6 +189,19 @@ def test_speech_and_transcription_events_project_to_openai_names():
         "item_id": "item_user_0",
         "content_index": 0,
         "transcript": "hi there",
+    }
+
+
+def test_output_audio_pause_and_resume_project_to_response_events():
+    assert project_output(OutputAudioPaused("resp_0", "item_0")) == {
+        "type": "sglang.output_audio.paused",
+        "response_id": "resp_0",
+        "item_id": "item_0",
+    }
+    assert project_output(OutputAudioResumed("resp_0", "item_0")) == {
+        "type": "sglang.output_audio.resumed",
+        "response_id": "resp_0",
+        "item_id": "item_0",
     }
 
 

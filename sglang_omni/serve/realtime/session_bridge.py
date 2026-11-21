@@ -31,7 +31,9 @@ from sglang_omni.proto.streams import (
     PCM16,
     PCM_F32,
     REPLY_HEARD,
+    REPLY_PAUSED,
     REPLY_PROGRESS,
+    REPLY_RESUMED,
     REPLY_TRUNCATED,
     SESSION_CONTROL,
     SPEECH_ERROR,
@@ -56,6 +58,8 @@ from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
     InputTranscription,
+    OutputAudioPaused,
+    OutputAudioResumed,
     OutputEvent,
     ResponseFinished,
     ResponseHeard,
@@ -197,6 +201,8 @@ class SessionBridge(InteractionAdapter):
             CONFIGURED: self.on_configured,
             REPLY_PROGRESS: self.on_progress,
             REPLY_HEARD: self.on_heard,
+            REPLY_PAUSED: self.on_paused,
+            REPLY_RESUMED: self.on_resumed,
         }
         self.session_identity: SessionIdentity | None = None
         self.output_sink: OutputSink | None = None
@@ -467,6 +473,18 @@ class SessionBridge(InteractionAdapter):
                     output.payload["audio_ms"],
                 )
             ]
+        else:
+            return []
+
+    def on_paused(self, output: OutputChunk) -> list[OutputEvent]:
+        if self.response_id is not None and output.turn == self.response_turn:
+            return [OutputAudioPaused(self.response_id, self.response_item_id)]
+        else:
+            return []
+
+    def on_resumed(self, output: OutputChunk) -> list[OutputEvent]:
+        if self.response_id is not None and output.turn == self.response_turn:
+            return [OutputAudioResumed(self.response_id, self.response_item_id)]
         else:
             return []
 

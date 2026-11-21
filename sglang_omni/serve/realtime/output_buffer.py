@@ -10,6 +10,8 @@ from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
     InputTranscription,
+    OutputAudioPaused,
+    OutputAudioResumed,
     OutputEvent,
     ResponseEvent,
     ResponseFinished,
@@ -108,7 +110,16 @@ class OutputBuffer:
             response_state.output_modalities if response_state is not None else None
         ) or output_modalities
         if (
-            isinstance(event, (AudioDelta, ResponseProgress, AudioFinished))
+            isinstance(
+                event,
+                (
+                    AudioDelta,
+                    ResponseProgress,
+                    AudioFinished,
+                    OutputAudioPaused,
+                    OutputAudioResumed,
+                ),
+            )
             and "audio" not in modalities
         ):
             return
@@ -126,6 +137,8 @@ class OutputBuffer:
                 AudioDelta,
                 ResponseProgress,
                 AudioFinished,
+                OutputAudioPaused,
+                OutputAudioResumed,
                 ResponseFinished,
             ),
         ):

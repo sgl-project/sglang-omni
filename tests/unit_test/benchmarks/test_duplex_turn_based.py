@@ -20,9 +20,11 @@ import pytest
 import soundfile
 import websockets
 from pydantic import JsonValue
+from scipy.signal import resample_poly
 from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.client import TurnDetection, run_session
+from benchmarks.duplex.listening_replies import variant_replies
 from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.profiles import PROFILES, DuplexProfile
 from benchmarks.duplex.reference_capture import TraceFormat
@@ -778,6 +780,78 @@ def test_progress_reports_must_name_a_created_response(event_type: str) -> None:
     assert unknown["violations"] == [f"{event_type}: unknown response"]
 
 
+PAUSED = "sglang.output_audio.paused"
+RESUMED = "sglang.output_audio.resumed"
+
+
+def with_output_audio_events(
+    anchor: str, events: list[tuple[str, str]]
+) -> list[dict[str, JsonValue]]:
+    """The turn-based trace with (type, response_id) events right after the first
+    received anchor."""
+    trace = turn_based_trace()
+    position = next(
+        index
+        for index, record in enumerate(trace)
+        if record["direction"] == "receive" and record["event"]["type"] == anchor
+    )
+    inserted = [
+        {
+            **trace[position],
+            "event": {
+                "type": event_type,
+                "event_id": f"evt_hold_{index}",
+                "response_id": response_id,
+                "item_id": f"item_{response_id}",
+            },
+        }
+        for index, (event_type, response_id) in enumerate(events)
+    ]
+    return [*trace[: position + 1], *inserted, *trace[position + 1 :]]
+
+
+@pytest.mark.parametrize(
+    ("anchor", "events", "violations"),
+    [
+        (
+            "response.output_audio.delta",
+            [(PAUSED, "resp_0"), (RESUMED, "resp_0")],
+            [],
+        ),
+        ("response.output_audio.delta", [(PAUSED, "resp_0")], []),
+        (
+            "response.output_audio.delta",
+            [(RESUMED, "resp_0")],
+            [f"{RESUMED}: response not paused"],
+        ),
+        (
+            "response.output_audio.delta",
+            [(PAUSED, "resp_0"), (PAUSED, "resp_0")],
+            [f"{PAUSED}: response already paused"],
+        ),
+        (
+            "response.output_audio.delta",
+            [(PAUSED, "resp_missing")],
+            [f"{PAUSED}: unknown response"],
+        ),
+        (
+            "response.done",
+            [(PAUSED, "resp_0")],
+            [f"{PAUSED}: output after response terminal"],
+        ),
+    ],
+)
+def test_output_audio_pauses_pair_up_on_a_live_response(
+    anchor: str, events: list[tuple[str, str]], violations: list[str]
+) -> None:
+    """A turn-based server may pause a live reply's audio, then resume or cancel
+    it; the oracle failed every such trace as an unsupported server event."""
+    result = evaluate_trace(
+        with_output_audio_events(anchor, events), profile=TURN_BASED
+    )
+    assert result["violations"] == violations
+
+
 def granted_with(name: str, value: JsonValue) -> Callable[[list], None]:
     def mutate(trace: list[dict[str, JsonValue]]) -> None:
         session = find_event(trace, "session.updated")["session"]
@@ -1131,6 +1205,134 @@ def test_reconstruction_cuts_playout_at_a_cancelled_response(
     assert transcript["text"] == {"response.output_audio_transcript.delta": "hi"}
 
 
+def paused_reply_records(
+    endings: list[tuple[float, str]]
+) -> list[dict[str, JsonValue]]:
+    """resp_0 plays 0.2 s from 0.5 s, is paused at 0.6 s and sends 0.1 s more
+    while paused; each ending is (time_s, resumed or a response.done status)."""
+    records = [
+        {
+            "direction": "send",
+            "time_s": 10.0 + index * 0.08,
+            "event": {
+                "type": "input_audio_buffer.append",
+                "audio": encode(bytes(2 * PACKET_SAMPLES)),
+                "sglang": {"seq": index, "t_start_ms": index * 80},
+            },
+        }
+        for index in range(FIXTURE_PACKETS)
+    ]
+
+    def receive(time_s: float, kind: str, **fields: JsonValue) -> None:
+        records.append(
+            {
+                "direction": "receive",
+                "time_s": time_s,
+                "event": {"type": kind, **fields},
+            }
+        )
+
+    audio = {"response_id": "resp_0", "item_id": "item_resp_0"}
+    receive(
+        10.5, "response.output_audio.delta", **audio, delta=encode(samples(4800, 1))
+    )
+    receive(10.6, PAUSED, **audio)
+    receive(
+        10.65, "response.output_audio.delta", **audio, delta=encode(samples(2400, 2))
+    )
+    for time_s, ending in endings:
+        if ending == RESUMED:
+            receive(time_s, RESUMED, **audio)
+        else:
+            output = [{"content": [{"type": "output_audio", "transcript": "hi there"}]}]
+            receive(
+                time_s,
+                "response.done",
+                response={"id": "resp_0", "status": ending, "output": output},
+            )
+    records.sort(key=lambda record: record["time_s"])
+    return records
+
+
+DROPPED_AT_PAUSE = {
+    "trace_line": 12,
+    "type": PAUSED,
+    "receipt_s": pytest.approx(0.6),
+    "cut_sample": 14400,
+    "dropped_samples": 4800,
+}
+
+
+@pytest.mark.parametrize(
+    ("endings", "resume_sample", "playout_samples", "cuts", "heard"),
+    [
+        (
+            [(10.8, RESUMED), (10.9, "completed")],
+            19200,
+            24000,
+            [],
+            samples(4800, 1) + samples(2400, 2),
+        ),
+        ([(10.8, "completed")], 19200, 24000, [], samples(4800, 1) + samples(2400, 2)),
+        (
+            [(10.8, RESUMED), (10.85, "cancelled")],
+            19200,
+            20400,
+            [
+                {
+                    "trace_line": 13,
+                    "type": "response.done",
+                    "receipt_s": pytest.approx(0.85),
+                    "cut_sample": 20400,
+                    "dropped_samples": 3600,
+                }
+            ],
+            samples(3600, 1),
+        ),
+        ([(10.8, "cancelled")], None, 14400, [DROPPED_AT_PAUSE], samples(2400, 1)),
+        ([], None, 14400, [DROPPED_AT_PAUSE], samples(2400, 1)),
+    ],
+    ids=["resumed", "completed", "resumed-then-cancelled", "cancelled", "trace-end"],
+)
+def test_reconstruction_holds_a_paused_reply_until_it_resumes(
+    tmp_path: Path,
+    endings: list[tuple[float, str]],
+    resume_sample: int | None,
+    playout_samples: int,
+    cuts: list[dict[str, JsonValue]],
+    heard: bytes,
+) -> None:
+    """A paused reply went on playing in the simulated playout: the pause left
+    no silence, and a cancel while paused cut it at the cancel, not the pause."""
+    write_trace(tmp_path / "continuous.jsonl", paused_reply_records(endings))
+
+    summary = reconstruct_output(tmp_path, profile=TURN_BASED)
+
+    assert summary["errors"] == []
+    played, _ = soundfile.read(str(tmp_path / "output-playout.wav"), dtype="int16")
+    assert len(played) == playout_samples
+    assert not played[:12000].any() and (played[12000:14400] == 1).all()
+    if resume_sample is not None:
+        assert not played[14400:19200].any()
+        assert (played[19200:21600] == 1).all() and (played[21600:] == 2).all()
+    else:
+        pass
+    playout = json.loads((tmp_path / "playout.json").read_text())
+    assert playout["pauses"] == [
+        {
+            "trace_line": 10,
+            "response_id": "resp_0",
+            "receipt_s": pytest.approx(0.6),
+            "hold_sample": 14400,
+            "held_samples": 4800,
+            "resume_sample": resume_sample,
+        }
+    ]
+    assert playout["cuts"] == cuts
+    (reply,) = variant_replies(tmp_path)
+    assert reply["samples"].tobytes() == heard
+
+
 def make_turn_based_run(
     root: Path,
     input_pcm: bytes,
@@ -1139,6 +1341,7 @@ def make_turn_based_run(
     verdicts: dict[str, str] | None = None,
     done_at_s: float | None = None,
     done_status: str = "cancelled",
+    receive_events: tuple[tuple[float, dict[str, JsonValue]], ...] = (),
 ) -> Path:
     """A paired capture whose traces speak the turn-based protocol at 24 kHz."""
     run = root / "run"
@@ -1215,6 +1418,8 @@ def make_turn_based_run(
         )
     else:
         pass
+    for at_s, event in receive_events:
+        rows.append((1000 + at_s, "receive", event))
     rows.sort(key=lambda row: row[0])
     trace_text = "".join(
         json.dumps({"direction": direction, "time_s": time_s, "event": event}) + "\n"
@@ -1304,6 +1509,57 @@ def test_export_cuts_the_window_at_a_cancelled_response(
         assert not audio[3300:].any()
     else:
         assert audio[3300:6300].min() > 900
+
+
+@pytest.mark.parametrize("is_resumed", [True, False], ids=["resumed", "cancelled"])
+def test_export_silences_a_paused_reply_until_it_resumes(
+    tmp_path: Path, is_resumed: bool
+) -> None:
+    """The scored output.wav went on with a paused reply where the listener heard
+    silence, and kept a reply cancelled while paused up to the cancel."""
+    pause = (0.2, {"type": PAUSED, "response_id": "resp_0"})
+    delta = (
+        0.22,
+        {
+            "type": "response.output_audio.delta",
+            "response_id": "resp_0",
+            "delta": encode(samples(round(0.05 * OUTPUT_RATE), 2000)),
+        },
+    )
+    resume = (0.25, {"type": RESUMED, "response_id": "resp_0"})
+    run = make_turn_based_run(
+        tmp_path,
+        samples(8000, 0),
+        done_at_s=None if is_resumed else 0.25,
+        receive_events=(pause, delta, resume) if is_resumed else (pause, delta),
+    )
+
+    result = export_runs(
+        [run],
+        tmp_path / "export",
+        "turn-based",
+        trace_format=TraceFormat.TURN_BASED_PCM16.value,
+    )
+
+    overlap = result["samples"][0]["variants"]["overlap"]
+    assert overlap["eligible"] is True
+    audio, _ = soundfile.read(
+        tmp_path / "export/user_interruption/1/output.wav", dtype="int16"
+    )
+    assert audio[1700:3100].min() > 900
+    if is_resumed:
+        assert not audio[3300:3900].any()
+        assert 900 < audio[4100:7100].min() and audio[4100:7100].max() < 1100
+        assert audio[7300:7900].min() > 1900
+    else:
+        assert not audio[3300:].any()
+    assert overlap["output"]["barge_in_cuts"] == int(not is_resumed)
+    variant_dir = run / "samples/user_interruption/1/overlap"
+    reconstruct_output(variant_dir, profile=TURN_BASED)
+    played, _ = soundfile.read(variant_dir / "output-playout.wav", dtype="int16")
+    timeline = np.zeros(12000)
+    timeline[: len(played)] = played[:12000]
+    assert np.array_equal(audio, np.round(resample_poly(timeline, 2, 3)))
 
 
 def test_export_refuses_a_trace_format_that_contradicts_the_profile(

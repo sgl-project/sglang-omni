@@ -38,9 +38,11 @@ from sglang_omni.proto.streams import (
     AUDIO,
     AUDIO_FORMATS,
     CONTROL,
+    FLOOR_CONTROLS,
     INTERRUPT,
     NODE_CONTROLS,
     REPLY_DELIVERED,
+    REPLY_PAUSED,
     REPORT_CONTROLS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -617,6 +619,13 @@ class SessionGraphRunner(CoordinatorSessions):
                 for turn in graph.interrupted_turns.get(name, ())
             ):
                 continue
+            elif control_type(chunk) in FLOOR_CONTROLS:
+                now = asyncio.get_running_loop().time()
+                for node_pacer in graph.pacers.values():
+                    if control_type(chunk) == REPLY_PAUSED:
+                        node_pacer.pause(chunk.turn, now)
+                    else:
+                        node_pacer.resume(chunk.turn, now)
             else:
                 pass
             is_published = self.is_client_output(graph, name, chunk)

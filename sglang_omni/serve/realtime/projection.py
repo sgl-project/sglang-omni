@@ -22,6 +22,8 @@ from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
     InputTranscription,
+    OutputAudioPaused,
+    OutputAudioResumed,
     OutputEvent,
     ResponseFinished,
     ResponseHeard,
@@ -216,6 +218,16 @@ def project_output(
             content_index=0,
             text_end=event.text_end,
             audio_ms=event.audio_ms,
+        )
+    elif isinstance(event, (OutputAudioPaused, OutputAudioResumed)):
+        return dict(
+            type=(
+                "sglang.output_audio.paused"
+                if isinstance(event, OutputAudioPaused)
+                else "sglang.output_audio.resumed"
+            ),
+            response_id=event.response_id,
+            item_id=event.item_id,
         )
     elif isinstance(event, ResponseHeard):
         return dict(

@@ -140,3 +140,36 @@ test("the page sends only output_modalities while the panel is empty and the cho
     sglang: { sampling: { temperature: 0.2, max_new_tokens_per_unit: 128 } },
   });
 });
+
+test("overlap events hold queued playback and resume at the next unheard sample", () => {
+  let Playback;
+  const source = readFileSync(new URL("./worklet.js", import.meta.url), "utf8");
+  vm.runInNewContext(source, {
+    sampleRate: 100,
+    AudioWorkletProcessor: class { constructor() { this.port = { postMessage() {} }; } },
+    registerProcessor(name, processor) { if (name === "playback-processor") Playback = processor; },
+  });
+  const player = new Playback({ processorOptions: { initialSamples: 1 } });
+  const send = (data) => player.port.onmessage({ data });
+  const session = new DuplexSession({ transport() {}, now: () => 0, listeners: { playback: send } });
+  function render(count) {
+    const output = new Float32Array(count);
+    player.process([], [[output]]);
+    return [...output];
+  }
+  session.handle({ type: "response.created", response: { id: "r" } });
+  send({ type: "push", responseId: "r", samples: Float32Array.of(0.25, 0.5) });
+  assert.deepEqual(render(1), [0.25]);
+  session.handle({ type: "sglang.output_audio.paused", response_id: "r" });
+  send({ type: "push", responseId: "r", samples: Float32Array.of(0.75, 1) });
+  session.handle({ type: "sglang.output_audio.resumed", response_id: "previous" });
+  assert.deepEqual(render(4), [0, 0, 0, 0]);
+  assert.equal(player.playingSamples, 1);
+  session.handle({ type: "sglang.output_audio.resumed", response_id: "r" });
+  assert.deepEqual(render(2), [0.5, 0.75]);
+  session.handle({ type: "sglang.output_audio.paused", response_id: "r" });
+  assert.deepEqual(render(1), [0]);
+  send({ type: "cancel", responseId: "r" });
+  send({ type: "push", responseId: "next", samples: Float32Array.of(0.125) });
+  assert.deepEqual(render(2), [0, 0.125]);
+});

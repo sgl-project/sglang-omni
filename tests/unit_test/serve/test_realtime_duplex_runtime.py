@@ -36,6 +36,8 @@ from sglang_omni.serve.realtime.manager import (
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    OutputAudioPaused,
+    OutputAudioResumed,
     OutputEvent,
     ResponseFinished,
     ResponseProgress,
@@ -645,6 +647,36 @@ def test_output_budget_counts_outbound_events_only() -> None:
         buffer.enqueue(completed)
     assert buffer.queued_bytes == 3 * ENVELOPE_BYTES
     assert [buffer.dequeue() for _ in range(4)] == [completed] * 3 + [None]
+
+
+def test_pause_and_resume_events_follow_the_audio_of_their_response() -> None:
+    """A pause or resume leaves for a response whose audio the client plays, and is dropped for a text-only response or an ended one; one for an unknown response or another item is the producer's error, as for an audio delta."""
+    buffer = OutputBuffer(RuntimeLimits())
+    audio = AudioDelta("resp_0", "item_0", bytes(UNIT_BYTES))
+    paused = OutputAudioPaused("resp_0", "item_0")
+    resumed = OutputAudioResumed("resp_0", "item_0")
+    finished = ResponseFinished("resp_0", "item_0", "", True, "completed", "stop")
+    for event in (ResponseStarted("resp_0"), audio, paused, resumed):
+        buffer.emit(event, None, ("text", "audio"))
+    with pytest.raises(RuntimeError, match="response output precedes creation"):
+        buffer.emit(OutputAudioPaused("resp_9", "item_9"), None, ("text", "audio"))
+    with pytest.raises(RuntimeError, match="only one message item"):
+        buffer.emit(OutputAudioPaused("resp_0", "item_x"), None, ("text", "audio"))
+    buffer.emit(ResponseStarted("resp_1"), None, ("text",))
+    buffer.emit(OutputAudioPaused("resp_1", "item_1"), None, ("text",))
+    buffer.emit(finished, None, ("text", "audio"))
+    buffer.emit(OutputAudioResumed("resp_0", "item_0"), None, ("text", "audio"))
+    drained_events: list[OutputEvent] = []
+    while (envelope := buffer.dequeue()) is not None:
+        drained_events.append(envelope.event)
+    assert drained_events == [
+        ResponseStarted("resp_0"),
+        audio,
+        paused,
+        resumed,
+        ResponseStarted("resp_1"),
+        finished,
+    ]
 
 
 def test_a_cancelled_response_drops_only_its_queued_audio() -> None:

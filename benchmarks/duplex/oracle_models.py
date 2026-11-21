@@ -118,3 +118,4 @@ class ResponseState:
     audio_done: bool = False
     audio_seen: bool = False
     item_id: str | None = None
+    is_paused: bool = False

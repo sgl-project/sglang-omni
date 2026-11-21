@@ -57,6 +57,20 @@ class AudioFinished(ResponseEvent):
 
 
 @dataclass(frozen=True)
+class OutputAudioPaused(ResponseEvent):
+    """The server holds the response's audio while the user speaks over it; the client stops playing where it is and keeps what it has."""
+
+    item_id: str
+
+
+@dataclass(frozen=True)
+class OutputAudioResumed(ResponseEvent):
+    """The paused response plays on from where it stopped."""
+
+    item_id: str
+
+
+@dataclass(frozen=True)
 class ResponseFinished(ResponseEvent):
     item_id: str
     text: str
