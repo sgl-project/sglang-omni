@@ -534,8 +534,12 @@ func TestPrivacyGoesOnline(t *testing.T) {
 func TestPermissionsMeetingSystemAudio(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	// Everything else allowed, so the row's Ask is the only one.
-	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
-		return proto.PermissionsResult{Microphone: proto.PermGranted, Accessibility: true, SpeechRecognition: proto.PermGranted}, nil
+	allowed := proto.PermissionsResult{Microphone: proto.PermGranted, Accessibility: true, SpeechRecognition: proto.PermGranted}
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) { return allowed, nil }
+	request := fs.handlers[proto.MethodPermissionsRequest]
+	fs.handlers[proto.MethodPermissionsRequest] = func(raw json.RawMessage) (any, error) {
+		_, err := request(raw)
+		return allowed, err
 	}
 	a.navigate("/settings/permissions")
 	frames(tt)
@@ -553,6 +557,15 @@ func TestPermissionsMeetingSystemAudio(t *testing.T) {
 	click(t, tt, "Ask")
 	if !slices.Equal(fs.asked, []string{proto.PermissionSystemAudio}) {
 		t.Errorf("asked %v", fs.asked)
+	}
+	// Once asked, the row says so instead of offering Ask again (#4364).
+	frames(tt)
+	if unknown, asked, ask := has(tt, "Unknown"), has(tt, "Asked: check System Settings"), hasExact(tt, "Ask"); unknown || !asked || ask {
+		t.Errorf("after asking: Unknown shown %v, Asked shown %v, Ask shown %v", unknown, asked, ask)
+	}
+	a.ob.step = obPermissions // the setup guide's row says the same
+	if p := a.onboardingViewStateForTranslator(i18n.CurrentTranslator()).Permissions; p == nil || p.SystemAudio.CanAsk || p.SystemAudio.Text != "Asked: check System Settings" {
+		t.Errorf("setup guide after asking: %+v", p)
 	}
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})
 	f := a.permSys.(*permission.Fake)
