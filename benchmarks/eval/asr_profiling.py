@@ -31,22 +31,11 @@ _NO_PROXIES = {"http": None, "https": None}
 _PROFILE_TIMEOUT_S = 30
 
 
-def start_request_profile(
-    base_url: str,
-    run_id: str,
-    event_dir: str,
-    *,
-    event_buffer_capacity: int | None = None,
-) -> dict:
+def start_request_profile(base_url: str, run_id: str, event_dir: str) -> dict:
     """Start request-level (JSONL) event profiling on one serve process."""
-    payload: dict[str, str | int] = {"run_id": run_id, "event_dir": event_dir}
-    if event_buffer_capacity is not None:
-        payload["event_buffer_capacity"] = event_buffer_capacity
-    else:
-        pass
     response = requests.post(
         f"{base_url.rstrip('/')}/start_request_profile",
-        json=payload,
+        json={"run_id": run_id, "event_dir": event_dir},
         timeout=_PROFILE_TIMEOUT_S,
         headers=admin_auth_headers(),
         proxies=_NO_PROXIES,
@@ -90,16 +79,13 @@ async def run_profiled_pass(
     profile_urls: Sequence[str],
     run_pass: Callable[[], Awaitable[dict[str, Any]]],
     log_prefix: str,
-    event_buffer_capacity: int | None = None,
     error_stream: TextIO | None = None,
 ) -> dict[str, Any] | None:
     """Run one pass inside a scoped request-profiling lifecycle."""
     started: list[str] = []
     try:
         for url in profile_urls:
-            start_request_profile(
-                url, run_id, event_dir, event_buffer_capacity=event_buffer_capacity
-            )
+            start_request_profile(url, run_id, event_dir)
             started.append(url)
     except requests.RequestException as exc:
         for url in started:

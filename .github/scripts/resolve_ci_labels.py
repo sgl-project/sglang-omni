@@ -65,12 +65,11 @@ CI_STAGES: tuple[CiStage, ...] = (
         workflow=OMNI_CI_WORKFLOW,
         runs_pr_test=True,
         preset_by_model_label={
-            "run-ark-asr-3b": "ark",
             "run-fun-asr-nano-2512": "fun",
             "run-qwen3-asr-1.7b": "qwen3",
             "run-whisper-large-v3": "whisper",
         },
-        random_presets=("ark", "fun", "qwen3", "whisper"),
+        random_presets=("fun", "qwen3", "whisper"),
         is_selected_by_model_label=True,
     ),
     CiStage(
