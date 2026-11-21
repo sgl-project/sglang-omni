@@ -390,7 +390,7 @@ The metrics move for their own defects. On 24 MiniCPM-o replies, removing the mi
 
 ### Setup
 
-You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter). `ENGINE` picks the strategy and defaults to `minicpmo` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`); for Qwen3-Omni or the cascade, export it first, so that setup, the preflight and the runs below all use it:
+You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. The two CANDOR subsets of v1.0 come only from the gated [`betterup/candor-full-duplex-bench`](https://huggingface.co/datasets/betterup/candor-full-duplex-bench): accept its license on that page and export `HF_TOKEN` for the same account before `setup`. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter). `ENGINE` picks the strategy and defaults to `minicpmo` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`); for Qwen3-Omni or the cascade, export it first, so that setup, the preflight and the runs below all use it:
 
 ```bash
 export ENGINE=minicpmo   # or qwen3-omni, cascade; these two also need CUDA_VISIBLE_DEVICES with two GPUs
@@ -402,7 +402,7 @@ python -m benchmarks.duplex.fdb setup
 | Path | Content |
 |---|---|
 | `Full-Duplex-Bench/` | Official scoring code at the pinned revision `3e799c4`; file hashes are checked |
-| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets from the official Google Drive; `dataset/v1.0.revision` and `dataset/v1.5.revision` hold the archive hashes |
+| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets: the CANDOR subsets from `betterup/candor-full-duplex-bench`, every other subset from [`zhaochenyang20/full-duplex-bench`](https://huggingface.co/datasets/zhaochenyang20/full-duplex-bench), which holds byte-identical copies of the official Google Drive archives. `dataset/v1.0.revision` and `dataset/v1.5.revision` hash the archives and the CANDOR revision |
 | `scoring-venv/` | Python 3.12 with NeMo, torch, Silero VAD and torchcodec for ASR, timing and the official evaluators. torchcodec loads FFmpeg, and `setup` checks that it can |
 | `models/parakeet-tdt-0.6b-v2/` | ASR checkpoint, SHA-256 checked |
 | `models/MiniCPM-o-4_5/` | Model under test at revision `503e754`, with `ENGINE=minicpmo`. To reuse an existing copy, symlink it here or set `MODEL_PATH`. The other engines' models go to the Hugging Face cache |
@@ -742,6 +742,7 @@ python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime
 | `model_mismatch` with `JUDGE=gpt` | The endpoint answered with a model other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
 | `No module named 'onnx'` (or `einops`) in `model-server-gpu<N>.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
 | `setup` stops with `torchcodec cannot load its FFmpeg libraries` | Install the FFmpeg shared libraries (version 4 to 8) and rerun `setup` |
+| `ERROR: betterup/candor-full-duplex-bench is gated` | Accept the CANDOR license on that dataset's Hugging Face page, export `HF_TOKEN` for the same account and rerun `setup` |
 
 ### Scoring CLI reference
 
