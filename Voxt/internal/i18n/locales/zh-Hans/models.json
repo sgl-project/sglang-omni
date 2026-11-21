@@ -78,7 +78,6 @@
   "Hide %s": "隐藏 %s",
   "Hide it from the features' menus": "不在功能页的模型菜单里列出",
   "Speech context": "识别上下文",
-  "Tell the speech model who is speaking and about what.": "告诉语音识别模型谁在说话、在说什么。",
   "For example: I work on LLM serving and speak Chinese with English technical terms.": "例如：我从事大模型推理服务，说中文，夹杂英文技术词。",
   "Proxy user name": "代理用户名",
   "User name (optional)": "用户名（可选）",

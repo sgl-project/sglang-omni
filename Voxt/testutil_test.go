@@ -330,6 +330,18 @@ func frames(tt *ui.Tester) {
 	}
 }
 
+func hoverTitle(t *testing.T, tt *ui.Tester, title string) {
+	t.Helper()
+	r, ok := tt.Find(title)
+	if !ok {
+		t.Fatalf("no title %q: %q", title, firstTexts(tt))
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	frames(tt)
+	tt.Advance(time.Second)
+	frames(tt)
+}
+
 // click clicks a label and runs the frames after it.
 func click(t *testing.T, tt *ui.Tester, label string) {
 	t.Helper()

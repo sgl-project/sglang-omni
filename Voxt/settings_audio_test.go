@@ -19,9 +19,8 @@ import (
 // pointer to rest on it, and Escape puts it away. Before, it showed only
 // on hover and a click did nothing.
 func TestInfoTipClick(t *testing.T) {
-	a, _, tt := newTestApp(t)
-	a.navigate("/settings/audio")
-	const tip = "Voxt uses the first connected microphone in the list, or the system default."
+	const tip = "A little more help for this control."
+	tt := ui.NewTester(func(c *ui.Context) { infoTip(c, tip) }, windowWidth, windowHeight)
 	shown := func() int { // the ⓘ's own label counts once
 		frames(tt)
 		n := 0

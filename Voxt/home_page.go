@@ -50,8 +50,8 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 
 // ---- The slogan ----
 
-// homeSlogan is the line under Home's title: what VoxtNew does, then how
-// to start it (Transcribe's shortcut in a key cap, or a link to add one).
+// homeSlogan is the line under Home's title: how to start Voxt
+// (Transcribe's shortcut in a key cap, or a link to add one).
 func homeSlogan(c *ui.Context, state homeSloganViewState, actions homeActions) {
 	t := c.Theme()
 	k := tok(t)
@@ -61,8 +61,6 @@ func homeSlogan(c *ui.Context, state homeSloganViewState, actions homeActions) {
 		}
 	}
 	ui.Row(c.Key("home-slogan")).Wrap().GapX(px(t, 6)).GapY(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-		text(i18n.T("Speak anywhere and Voxt types at your cursor"), k.Text)
-		text("·", k.Text3)
 		if state.Keys == "" {
 			l := ui.ButtonBase(c.Key("home-slogan-add")).Label(state.Before)
 			l.Children(func() {

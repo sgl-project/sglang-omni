@@ -110,6 +110,5 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 		if secondaryIconButton(c.Key("perm-recheck"), icons.Refresh, i18n.T("Check again")).Label(i18n.T("Check again")).Clicked() {
 			actions.recheckPermissions()
 		}
-		infoTip(c.Key("perm-note"), i18n.T("After changing a permission, you may need to reopen Voxt."))
 	})
 }

@@ -79,7 +79,6 @@ func releaseDialog(c *ui.Context, state releaseViewState, actions releaseActions
 			if state.Notes != "" {
 				markdown.View(c, state.Notes, &local.relMD)
 			}
-			caption(c, i18n.T("Download gets it from GitHub. With Homebrew, run brew upgrade --cask voxt instead."))
 		}
 	}, func() {
 		ui.Spacer(c)

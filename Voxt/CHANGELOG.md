@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Setting help stays on row titles** (#3856): hover a setting or section title for its help instead of a separate info icon; redundant page subtitles and explanatory captions are gone, while errors, permission notices and other functional status stay.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 
 ### Fixed
@@ -27,6 +28,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **设置说明移到行标题上**（#3856）：把指针停在设置或分区标题上即可查看说明，不再单独显示信息图标；多余的页面副标题和解释文字已移除，错误、权限提示和其他功能状态仍然保留。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 
 #### 修复

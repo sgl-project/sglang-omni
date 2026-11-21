@@ -45,10 +45,7 @@ func appEnhancementDetail(c *ui.Context, state *appEnhancementGroupDetail, actio
 			})
 		})
 		ui.Row(c).Wrap().GapX(px(theme, sp4)).GapY(px(theme, sp1)).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(px(theme, 6)).AlignItems(ui.Center).Children(func() {
-				caption(c, i18n.T("Applies to"))
-				infoTip(c, i18n.T("Translate is off by default, since a scene's tone rarely suits a translation."))
-			})
+			caption(c, i18n.T("Applies to"))
 			for _, feature := range state.Features {
 				on := feature.Checked
 				ui.Checkbox(c.Key("ae-f-"+feature.ID), &on, feature.Label).Label(i18n.T("Use the group for %s", feature.Label)).OnChange(func() {
@@ -186,8 +183,6 @@ func appEnhancementAutoKeyEditor(c *ui.Context, state *appEnhancementGroupDetail
 		}
 		if local.keyErr != "" {
 			warnLine(c, local.keyErr)
-		} else {
-			caption(c, i18n.T("Type the keys and press Return: Command+Return, Control+Return, Tab."))
 		}
 	}
 }

@@ -26,7 +26,6 @@ func llmDebugView(c *ui.Context, state *llmDebugViewState, actions llmDebugActio
 	})
 	ui.Scroll(c.Key("llmdbg-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
-			caption(c, i18n.T("Try a prompt on your own text. Nothing is saved until you click Use this prompt."))
 			if !state.Ready {
 				caption(c, i18n.T("Set up a language model first."))
 				if ui.Button(c.Key("llmdbg-setup"), i18n.T("Open Language models")).AlignSelf(ui.Start).Clicked() {

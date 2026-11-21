@@ -210,10 +210,7 @@ func featureCustomKeys(c *ui.Context, local *keyRow, label string, state *featur
 	case local.edited:
 		caption(c, i18n.T("Press Return to use %s.", state.KeysText))
 		return
-	default:
-		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
-	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
 }
 
 func featureKeyRecorder(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, helperRecords bool, actions featureActions, save func(string)) {
@@ -292,12 +289,6 @@ func featureKeyRecorder(c *ui.Context, local *keyRow, label string, state *featu
 			caption(c, i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last."))
 		} else {
 			caption(c, i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last."))
-		}
-	default:
-		if helperRecords {
-			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
-		} else {
-			caption(c, i18n.T("Click the field and press the keys, such as ⌥Space. To use fn, a left or right modifier or a mouse button, allow Accessibility in Permissions."))
 		}
 	}
 	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {

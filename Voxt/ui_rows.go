@@ -1,16 +1,16 @@
 package main
 
 // The rows and titles every settings section and settings-like page builds
-// from (shell_settings.go): a setting's row with its ⓘ, a row with a note
-// under it, and section titles (with a tip, with an add button).
+// from (shell_settings.go): a setting's row with help on its title, a row
+// with a note under it, and section titles (with a tip, with an add button).
 
 import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
-// settingRow is a setting: its name, a ⓘ telling what it does (desc, ""
-// for none) and its control on the right (formRow in ui_layout.go).
+// settingRow is a setting: its name tells what it does as a tooltip
+// (desc, "" for none) and its control sits on the right.
 func settingRow(c *ui.Context, key, title, desc string, control func()) {
 	if !settingsSearchShows(title, desc) {
 		return
@@ -26,12 +26,10 @@ func settingRowUnder(c *ui.Context, key, title, desc string, control func()) {
 	}
 	t := c.Theme()
 	ui.Column(c.Key(key)).Gap(px(t, 6)).MinHeight(px(t, 32)).Children(func() {
-		ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-			settingsName(c, title).MinWidth(0)
-			if desc != "" {
-				infoTip(c, desc)
-			}
-		})
+		name := settingsName(c, title).MinWidth(0)
+		if desc != "" {
+			name.Focusable().Tooltip(desc)
+		}
 		ui.Row(c).Wrap().Gap(px(t, sp2)).AlignItems(ui.Center).Children(control)
 	})
 }
@@ -42,8 +40,8 @@ func settingRowNote(c *ui.Context, key, title, note string, control func()) {
 	settingRowNoteTip(c, key, title, "", note, control)
 }
 
-// settingRowNoteTip is settingRowNote with a ⓘ beside the name telling
-// what the setting does (tip, "" for none).
+// settingRowNoteTip is settingRowNote with help on the name (tip, ""
+// for none).
 func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func()) {
 	if !settingsSearchShows(title, tip, note) {
 		return
@@ -51,13 +49,9 @@ func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func
 	t := c.Theme()
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).Basis(px(t, 200)).MinWidth(px(t, 140)).Gap(px(t, 2)).Children(func() {
-			if tip == "" {
-				settingsName(c, title)
-			} else {
-				ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-					settingsName(c, title).MinWidth(0)
-					infoTip(c, tip)
-				})
+			name := settingsName(c, title).MinWidth(0)
+			if tip != "" {
+				name.Focusable().Tooltip(tip)
 			}
 			if note != "" {
 				caption(c, note).Selectable()
@@ -81,32 +75,32 @@ func sectionTitleText(c *ui.Context, title string) ui.Element {
 	return settingsName(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text2)
 }
 
-// sectionTitleTip is sectionTitle with a ⓘ beside it: the margin goes on
-// the row, so the title and the ⓘ share one centre line.
+// sectionTitleTip is sectionTitle that tells tip as a tooltip.
 func sectionTitleTip(c *ui.Context, title, tip string) {
 	t := c.Theme()
-	ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-		sectionTitleText(c, title)
-		infoTip(c, tip)
-	})
+	name := sectionTitleText(c, title)
+	if tip != "" {
+		name.Focusable().Tooltip(tip)
+	}
+	name.Margin(px(t, sp2), 0, 0, 0)
 }
 
 // sectionTitleAdd is sectionTitleTip with a small Add button on the
 // right of its row, for a card of items below it (shortcuts, apps), so
-// the card holds only its items (tip "" for no ⓘ). It reports a click.
+// the card holds only its items (tip "" for none). It reports a click.
 //
 // The row is as wide as the card. As the title starts on the card's left
 // edge, the button's label ends on its right edge: the button's right
 // padding and hairline hang past it (its hover face shows in the page's
-// margin). Its height past the ⓘ's 18 hangs out above and below, so the
-// row stands as tall as sectionTitleTip's and the title does not move.
+// margin). Its extra height hangs out above and below, so the title does
+// not move.
 func sectionTitleAdd(c *ui.Context, key, title, tip, add string) bool {
 	t := c.Theme()
 	clicked := false
 	ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-		sectionTitleText(c, title).SingleLine().Shrink(0)
+		st := sectionTitleText(c, title).SingleLine().Shrink(0)
 		if tip != "" {
-			infoTip(c, tip).Shrink(0)
+			st.Focusable().Tooltip(tip)
 		}
 		ui.Spacer(c)
 		b := quietButton(c.Key(key), icons.Add, add).Margin(px(t, -3.5), -titleAddHang(t), px(t, -3.5), 0)

@@ -287,7 +287,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return enhancement.Apps.Title
 		}
 		if enhancement.Browsers != nil {
-			return i18n.T("Voxt reads the current tab's address when you press a shortcut.")
+			return i18n.T("Bundle ID")
 		}
 		if enhancement.Delete != nil {
 			return enhancement.Delete.Title

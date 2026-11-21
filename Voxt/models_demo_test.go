@@ -132,11 +132,11 @@ func TestModelsDemoActionControls(t *testing.T) {
 				switch {
 				case step.text != "":
 					if step.label == "Speech context" {
-						caption, ok := tester.Find("Tell the speech model who is speaking and about what.")
+						heading, ok := tester.Find("Speech context")
 						if !ok {
-							t.Fatal("no Speech context caption")
+							t.Fatal("no Speech context heading")
 						}
-						tester.ClickAt(caption.X+10, caption.Y+caption.H+30)
+						tester.ClickAt(heading.X+10, heading.Y+heading.H+30)
 					} else {
 						err = tester.Click(step.label)
 					}
