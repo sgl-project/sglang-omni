@@ -192,6 +192,16 @@ func latencyHub(t *testing.T) (hub string, ids []string) {
 	return hub, ids
 }
 
+func latencyMainLanguage() string {
+	if os.Getenv("VOXTNEW_LATENCY_LANG_UNSET") == "1" {
+		return ""
+	}
+	if lang := os.Getenv("VOXTNEW_LATENCY_LANG"); lang != "" {
+		return lang
+	}
+	return "zh"
+}
+
 func TestMacE2EFirstLatency(t *testing.T) {
 	if os.Getenv("VOXTNEW_LATENCY") != "1" || runtime.GOOS != "darwin" {
 		t.Skip("set VOXTNEW_LATENCY=1 on a Mac (scripts/mac-latency.sh)")
@@ -231,11 +241,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
 				s.Features.Transcribe.Enhance = false
 				s.Features.Transcribe.ASR = ids[0]
-				if lang := os.Getenv("VOXTNEW_LATENCY_LANG"); lang != "" {
-					s.General.MainLanguage = lang
-				} else {
-					s.General.MainLanguage = "zh"
-				}
+				s.General.MainLanguage = latencyMainLanguage()
 			}, realLocal{hub: hub})
 			a.pumpFor(30*time.Second, func() bool {
 				_, ok := a.featureModel(local.ASR, "transcribe")
@@ -245,10 +251,12 @@ func TestMacE2EFirstLatency(t *testing.T) {
 			a.pumpFor(settle, func() bool { return false })
 			got["cold"] = append(got["cold"], latencySession(t, a, lg, opened, appReady, "cold", ids[0], round))
 			got["warm"] = append(got["warm"], latencySession(t, a, lg, time.Now(), time.Time{}, "warm", ids[0], round))
-			changed := time.Now()
-			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", ids[1]) })
-			a.pumpFor(settle, func() bool { return false })
-			got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, time.Time{}, "switch", ids[1], round))
+			if os.Getenv("VOXTNEW_LATENCY_SKIP_SWITCH") != "1" {
+				changed := time.Now()
+				a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", ids[1]) })
+				a.pumpFor(settle, func() bool { return false })
+				got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, time.Time{}, "switch", ids[1], round))
+			}
 		})
 	}
 	for _, name := range []string{"cold", "warm", "switch"} {
@@ -402,6 +410,22 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 	}
 	if err := fh.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLatencyMainLanguage(t *testing.T) {
+	t.Setenv("VOXTNEW_LATENCY_LANG_UNSET", "1")
+	t.Setenv("VOXTNEW_LATENCY_LANG", "en")
+	if got := latencyMainLanguage(); got != "" {
+		t.Fatalf("explicit unset produced language %q, want empty", got)
+	}
+	t.Setenv("VOXTNEW_LATENCY_LANG_UNSET", "0")
+	if got := latencyMainLanguage(); got != "en" {
+		t.Fatalf("explicit language = %q, want en", got)
+	}
+	t.Setenv("VOXTNEW_LATENCY_LANG", "")
+	if got := latencyMainLanguage(); got != "zh" {
+		t.Fatalf("default language = %q, want zh", got)
 	}
 }
 

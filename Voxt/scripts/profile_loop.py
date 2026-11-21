@@ -157,6 +157,23 @@ def pgrep_contenders(excluded_pids: set[int] | None = None) -> list[str]:
     return contending_processes(result.stdout, excluded_pids)
 
 
+def process_rss_bytes(name: str) -> int | None:
+    """The largest RSS across a server's processes, or null when ps is unavailable."""
+    try:
+        pids = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True, timeout=5).stdout.split()
+    except OSError:
+        return None
+    largest = 0
+    for pid in pids:
+        try:
+            result = subprocess.run(["ps", "-o", "rss=", "-p", pid], capture_output=True, text=True, timeout=5)
+        except OSError:
+            continue
+        if result.returncode == 0 and result.stdout.strip().isdigit():
+            largest = max(largest, int(result.stdout.strip()) * 1024)
+    return largest or None
+
+
 def median(values: list[float]) -> float:
     if len(values) != 3:
         raise ValueError("median requires exactly three valid runs")
@@ -280,6 +297,7 @@ def short_open_attempt_kept(
         and [str(row.get("scenario")) for row in rows]
         == (scenarios or SHORT_OPEN_SCENARIOS)
         and latency_rows_valid(rows)
+        and len(distinct_text_hashes(rows)) == 1
     )
 
 

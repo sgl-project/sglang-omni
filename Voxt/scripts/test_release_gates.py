@@ -8,9 +8,11 @@ text hashes the kept decision was written against.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import profile_loop as loop  # noqa: E402
@@ -100,6 +102,12 @@ class ShortOpenGateTests(unittest.TestCase):
             )
         )
 
+    def test_attempt_rejects_cold_warm_hash_change(self):
+        rows = self.observation()["rows"]
+        rows[1]["text_sha256"] = "c" * 64
+        self.assertEqual(len(loop.distinct_text_hashes(rows)), 2)
+        self.assertFalse(loop.short_open_attempt_kept(0, [], "normal", rows))
+
     def test_group_complete_requires_every_kept(self):
         observations = [self.observation() for _ in range(2)]
         observations.append(self.observation(kept=False))
@@ -115,6 +123,29 @@ class ShortOpenGateTests(unittest.TestCase):
         bad = self.observation()
         bad["rows"][1]["text_sha256"] = ""
         self.assertFalse(loop.short_open_group_complete([bad, self.observation()]))
+
+
+class EnvironmentProbeTests(unittest.TestCase):
+    def test_ps_eperm_degrades_rss_to_null_and_preserves_host_environment(self):
+        def output(arguments, **kwargs):
+            if arguments[0] == "ps":
+                raise OSError(1, "Operation not permitted")
+            if arguments[:2] == ["/usr/bin/pmset", "-g"]:
+                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout="Now drawing from 'AC Power'\n" if arguments[2] == "batt" else "No thermal warning\n", stderr="")
+            if arguments[:2] == ["/usr/sbin/ioreg", "-c"]:
+                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout='"HIDIdleTime" = 300000000000\n', stderr="")
+            if arguments[:2] == ["/usr/bin/pgrep", "-fl"]:
+                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout="", stderr="")
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout="123\n", stderr="")
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            self.assertIsNone(loop.process_rss_bytes("qwen3_asr_server"))
+            environment = loop.host_environment()
+        self.assertEqual(environment["power_source"], "AC Power")
+        self.assertEqual(environment["idle_seconds"], 300)
+        self.assertEqual(environment["contenders"], [])
 
 
 if __name__ == "__main__":
