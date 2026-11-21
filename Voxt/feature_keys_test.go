@@ -39,7 +39,9 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
 		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
 	}
-	click(t, tt, "Type the keys instead")
+	tt.Key(0, ui.KeyTab)
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	click(t, tt, "Custom keys of shortcut 2")
 	for range len("RightShift") {
 		tt.Key(0, ui.KeyBackspace)
@@ -80,21 +82,18 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 }
 
-// TestTranscribeMouseButton: Custom… says that mouse buttons work too, also
-// when it refuses Mouse1 (the left button); a typed side button is saved,
-// shows by its name in the try card, and goes to the helper as its button
-// number.
+// TestTranscribeMouseButton: Custom… refuses Mouse1 (the left button); a
+// typed side button is saved, shows by its name in the try card, and goes
+// to the helper as its button number.
 func TestTranscribeMouseButton(t *testing.T) {
-	const hint = "Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."
 	a, tt := trTester(t)
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
 	click(t, tt, "Custom…")
-	click(t, tt, "Type the keys instead")
-	if !has(tt, hint) {
-		t.Errorf("no mouse hint in %q", tt.Texts())
-	}
+	tt.Key(0, ui.KeyTab)
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	click(t, tt, "Custom keys of shortcut 1")
 	for range len(settings.DefaultTranscribe) {
 		tt.Key(0, ui.KeyBackspace)
@@ -105,8 +104,8 @@ func TestTranscribeMouseButton(t *testing.T) {
 	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
 		t.Fatalf("Mouse1 saved %+v", hs)
 	}
-	if !has(tt, "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.") || !has(tt, hint) {
-		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
+	if !has(tt, "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.") {
+		t.Errorf("Mouse1: no unknown-key warning in %q", tt.Texts())
 	}
 	for range len("mouse1") {
 		tt.Key(0, ui.KeyBackspace)

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
@@ -104,6 +105,34 @@ func TestShortcutsSettings(t *testing.T) {
 	}
 }
 
+func TestFormRowTitleTooltip(t *testing.T) {
+	oldFind := settingsFind
+	t.Cleanup(func() { settingsFind = oldFind })
+	settingsFind.query, settingsFind.n, settingsFind.cur, settingsFind.reveal = "", 0, 0, false
+	const title = "Strict shortcuts"
+	const help = "Only the shortcut that started this recording stops it."
+	newTester := func() *ui.Tester {
+		return ui.NewTester(func(c *ui.Context) {
+			formRow(c, "test-row", title, help, func() {})
+		}, windowWidth, windowHeight)
+	}
+	tt := newTester()
+	if _, ok := tt.Find(help); ok {
+		t.Fatal("the help has a separate control instead of the row title")
+	}
+	hoverTitle(t, tt, title)
+	if !hasExact(tt, help) {
+		t.Fatalf("the title does not show its help: %q", firstTexts(tt))
+	}
+	tt = newTester()
+	tt.Key(0, ui.KeyTab)
+	tt.Advance(time.Second)
+	frames(tt)
+	if !hasExact(tt, help) {
+		t.Fatalf("the title does not show its help from the keyboard: %q", firstTexts(tt))
+	}
+}
+
 // TestStrictShortcutsSetting: Settings → Shortcuts has the Strict
 // shortcuts switch, off by default, with its line in English and Chinese;
 // it shows without scrolling at the default and the smallest window size
@@ -112,8 +141,12 @@ func TestStrictShortcutsSetting(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/shortcuts")
 	const about = "While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops."
-	if !has(tt, "Strict shortcuts") || !has(tt, about) || a.settings.Get().Features.StrictShortcuts {
+	if !has(tt, "Strict shortcuts") || a.settings.Get().Features.StrictShortcuts {
 		t.Fatalf("section: %q", firstTexts(tt))
+	}
+	hoverTitle(t, tt, "Strict shortcuts")
+	if !hasExact(tt, about) {
+		t.Fatalf("title help: %q", firstTexts(tt))
 	}
 	inView := func(what, title string) {
 		t.Helper()
@@ -142,8 +175,12 @@ func TestStrictShortcutsSetting(t *testing.T) {
 	a.settingsForm.search = ""
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	frames(tt)
-	if !has(tt, "快捷键严格模式") || !has(tt, "录音时，只有开始录音的那个快捷键能停止它。关闭时，任何功能的快捷键都能停止录音。") {
-		t.Errorf("zh-Hans: %q", firstTexts(tt))
+	if !has(tt, "快捷键严格模式") {
+		t.Errorf("zh-Hans title: %q", firstTexts(tt))
+	}
+	hoverTitle(t, tt, "快捷键严格模式")
+	if !hasExact(tt, "录音时，只有开始录音的那个快捷键能停止它。关闭时，任何功能的快捷键都能停止录音。") {
+		t.Errorf("zh-Hans help: %q", firstTexts(tt))
 	}
 	inView("zh-Hans", "快捷键严格模式")
 	a.applyShortcutPreset(settings.PresetFn) // its warnings go under the preset, above the switch

@@ -43,7 +43,7 @@ func TestKeepLoadedRow(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 4800) // the section under every card
 	a.navigate(modelsPath)
-	scrollSettingsToText(tt, "Tell the speech model who is speaking and about what.")
+	scrollSettingsToText(tt, "Advanced")
 	if !hasExact(tt, "Advanced") || has(tt, "Keep models loaded") {
 		t.Fatalf("the section is not folded: %q", tt.Texts())
 	}

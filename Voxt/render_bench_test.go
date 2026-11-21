@@ -108,7 +108,7 @@ func BenchmarkW0Pages(b *testing.B) {
 	b.Run("llm-debug", func(b *testing.B) {
 		a, _, tt := newRenderBenchmarkApp(b)
 		a.navigate(llmDebugPath)
-		benchmarkRenderFrames(b, tt, "Try a prompt on your own text")
+		benchmarkRenderFrames(b, tt, "Open Language models")
 	})
 	b.Run("onboarding", func(b *testing.B) {
 		a, _, tt := newRenderBenchmarkApp(b)

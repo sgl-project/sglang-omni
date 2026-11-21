@@ -264,7 +264,7 @@ func keyRecorderDemoExpectedText(recorder *keyRecorderViewState) string {
 	case recorder.Typing && recorder.Edited:
 		return i18n.T("Press Return to use %s.", recorder.Typed.FormattedKeys)
 	case recorder.Typing:
-		return i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.")
+		return i18n.T("Press the keys instead")
 	case recorder.Focused && recorder.HelperRecordsKeys:
 		return i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last.")
 	case recorder.Focused:

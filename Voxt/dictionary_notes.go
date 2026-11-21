@@ -30,7 +30,6 @@ func dictionaryNotesView(c *ui.Context, state *dictionaryNotesViewState, actions
 	t := c.Theme()
 	ui.Scroll(c.Key("dict-notes-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(px(t, sp2), px(t, sp6), px(t, sp6)).Gap(px(t, sp2)).Children(func() {
-			caption(c, i18n.T("Write your names, terms and numbers once, in Markdown: for example a table of the standard spelling, what speech recognition writes instead, and when it applies. Transcribe, Translate and Rewrite add it to the language model's prompt. Speech recognition does not get it."))
 			off := !state.Enabled
 			formRow(c, "dict-notes-on-row", i18n.T("Add to the language model prompt"), "", func() {
 				on := !state.NotesOff

@@ -32,7 +32,6 @@
   "No term matches “%s”": "没有与“%s”匹配的词条",
   "Note": "备注",
   "Note on the term": "词条备注",
-  "Write your names, terms and numbers once, in Markdown: for example a table of the standard spelling, what speech recognition writes instead, and when it applies. Transcribe, Translate and Rewrite add it to the language model's prompt. Speech recognition does not get it.": "用 Markdown 把名字、术语和数字的写法写一次，例如一张表：标准写法、语音识别会写成什么、什么情况下适用。转录、翻译和改写会把它加到语言模型的提示词里，语音识别不会收到。",
   "Search terms": "搜索词条",
   "Search dictionary": "搜索词典",
   "Search personal dictionary": "搜索个人词典",

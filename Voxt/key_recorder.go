@@ -88,11 +88,7 @@ func customKeys(c *ui.Context, r *keyRow, label string, save func(keys string), 
 	case r.edited:
 		caption(c, i18n.T("Press Return to use %s.", state.FormattedKeys))
 		return
-	default:
-		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
-	// Also under an error: Mouse1 is refused, mouse buttons are not.
-	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
 }
 
 // keyRecorder takes the keys as they are pressed and saves them at once.
@@ -175,12 +171,6 @@ func keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys string),
 			caption(c, i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last."))
 		} else {
 			caption(c, i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last."))
-		}
-	default:
-		if state.HelperRecordsKeys {
-			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
-		} else {
-			caption(c, i18n.T("Click the field and press the keys, such as ⌥Space. To use fn, a left or right modifier or a mouse button, allow Accessibility in Permissions."))
 		}
 	}
 	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {

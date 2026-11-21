@@ -456,7 +456,7 @@ func appEnhanceShots(a *app, fs *fakeSupervisor, tt *ui.Tester, save func(string
 
 // TestAppEnhancementHeader: the Browsers button is an icon in the page's
 // header, right of New group, on its centre line and inside the window,
-// at the default and the smallest size; the scene prompt's help is a ⓘ.
+// at the default and the smallest size; the scene prompt's title has help.
 func TestAppEnhancementHeader(t *testing.T) {
 	for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
 		for _, lang := range []string{"en", "zh-Hans"} {
@@ -482,9 +482,13 @@ func TestAppEnhancementHeader(t *testing.T) {
 			if br.Y > float32(titleBarHeight) {
 				t.Errorf("%v %s: Browsers %+v below the header", size, lang, br)
 			}
-			tip, ok := tt.Find(i18n.T("Added on top of each feature's own rules."))
-			if !ok || tip.W > 20 || tip.H > 20 {
-				t.Errorf("%v %s: the scene prompt's help %+v %v, not a ⓘ", size, lang, tip, ok)
+			help := i18n.T("Added on top of each feature's own rules.")
+			if _, ok := tt.Find(help); ok {
+				t.Errorf("%v %s: the scene prompt's help has a separate control", size, lang)
+			}
+			hoverTitle(t, tt, i18n.T("Group prompt"))
+			if !hasExact(tt, help) {
+				t.Errorf("%v %s: the scene prompt's title has no help", size, lang)
 			}
 			click(t, tt, i18n.T("Browsers"))
 			if !a.aeUI.browsersOpen {

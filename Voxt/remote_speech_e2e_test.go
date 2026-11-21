@@ -260,6 +260,7 @@ func TestRemoteSpeechPage(t *testing.T) {
 	scrollToText(tt, "OpenAI Transcribe")
 	click(t, tt, "OpenAI Transcribe")
 	frames(tt)
+	hoverTitle(t, tt, "API key")
 	if !has(tt, keyless) {
 		t.Errorf("OpenAI Transcribe's key hint: %q", tt.Texts())
 	}
@@ -269,6 +270,7 @@ func TestRemoteSpeechPage(t *testing.T) {
 	scrollToText(tt, "Doubao (Volcengine)")
 	click(t, tt, "Doubao (Volcengine)")
 	frames(tt)
+	hoverTitle(t, tt, "API key")
 	if has(tt, keyless) || !has(tt, "Saved in this Mac's Keychain.") {
 		t.Errorf("Doubao's key hint: %q", tt.Texts())
 	}

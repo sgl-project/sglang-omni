@@ -26,7 +26,6 @@ type settingsShortcutsLocalUI struct {
 func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions settingsShortcutsActions, local *settingsShortcutsLocalUI) {
 	t := c.Theme()
 	k := tok(t)
-	caption(c, i18n.T("Click a shortcut to change it on its feature's page."))
 	if !state.AccessibilityInstalled {
 		notice(c, "sc-no-tap", noticeWarn,
 			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),

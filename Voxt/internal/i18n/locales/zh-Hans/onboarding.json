@@ -65,5 +65,6 @@
   "Download and continue (%s)": "下载并继续（%s）",
   "Choose another model…": "选择其他模型…",
   "Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.": "Voxt 用这台 Mac 上的模型识别语音，用你设置的语言模型整理、翻译和改写。下面这个模型最适合起步，“设置 → 语音识别模型”里还有其他模型。",
-  "Set one up in Settings → Language models, then come back and try again. You can also skip this step.": "在“设置 → 语言模型”里设置一个，设置好后回来再试。也可以跳过这一步。"
+  "Set one up in Settings → Language models, then come back and try again. You can also skip this step.": "在“设置 → 语言模型”里设置一个，设置好后回来再试。也可以跳过这一步。",
+  "After changing a permission, you may need to reopen Voxt.": "更改权限后，可能需要重新打开 Voxt。"
 }

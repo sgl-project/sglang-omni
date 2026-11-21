@@ -30,7 +30,7 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 		{name: "master switch", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Use App enhancement"), want: []string{"setAppEnhancementEnabled false"}},
 		{name: "new group", fixture: "en/appenhance-normal", steps: appEnhancementSteps("New group"), want: []string{"addAppEnhancementGroup"}},
 		{name: "empty new group", fixture: "en/appenhance-empty", steps: appEnhancementSteps("New group"), want: []string{"addAppEnhancementGroup"}},
-		{name: "open browsers", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Browsers"), want: []string{"openAppEnhancementBrowsers"}, wantText: "Voxt reads the current tab's address when you press a shortcut."},
+		{name: "open browsers", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Browsers"), want: []string{"openAppEnhancementBrowsers"}, wantText: "Bundle ID"},
 		{name: "group enabled", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Group enabled"), want: []string{"setAppEnhancementGroupEnabled g-chat false"}},
 		{name: "transcribe feature", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Use the group for Transcribe"), want: []string{"setAppEnhancementGroupFeature g-chat transcribe false"}},
 		{name: "translate feature", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Use the group for Translate"), want: []string{"setAppEnhancementGroupFeature g-chat translate true"}},
@@ -90,7 +90,7 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 				t.Fatal("Done did not close Add apps")
 			}
 		}},
-		{name: "browsers done", fixture: "en/appenhance-browsers-normal", steps: appEnhancementSteps("Done"), rejectText: "Voxt reads the current tab's address when you press a shortcut.", check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "browsers done", fixture: "en/appenhance-browsers-normal", steps: appEnhancementSteps("Done"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.appEnhancementUI.browsersOpen {
 				t.Fatal("Done did not close Browsers")
 			}
