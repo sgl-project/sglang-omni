@@ -64,7 +64,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 20, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 21, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -796,7 +796,7 @@ text; it does not change the final transcript.</p>
 </div>
 <ul class="simple">
 <li><p><strong>Accuracy.</strong> The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.</p></li>
-<li><p><strong>Sampling.</strong> <code class="docutils literal notranslate"><span class="pre">temperature</span></code> works. Requests with <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> are rejected, because the draft worker applies penalties once per verify block.</p></li>
+<li><p><strong>Sampling.</strong> <code class="docutils literal notranslate"><span class="pre">temperature</span></code> and <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> work. Verify applies the penalty exactly to every token it checks, so realtime transcription, which sets it once a session carries a transcript prefix, also serves with the draft.</p></li>
 <li><p><strong>Latency.</strong> Streaming time to first text is 5% higher at concurrency 1 (13.7 against 13.0 ms median), lower at 4, and about 20% higher at 16. At 64 the median is 70% higher and p95 about the same.</p></li>
 <li><p><strong>Compilation.</strong> Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1. Without a draft it stays on, since it speeds up concurrency 1 by about 17%. A server with the draft therefore starts in about 30 s, against about 3 minutes without it.</p></li>
 <li><p><strong>Cost.</strong> The draft’s KV takes about 15% of the pool, and async decode is off.</p></li>
@@ -1129,7 +1129,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 20, 2026.
+  Last updated on Nov 21, 2026.
   <br/>
 </p>
   </div>
