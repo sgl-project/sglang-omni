@@ -102,6 +102,7 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 		{"thinking tags", "Explain <think> and </think> literally", "Keep <think>this</think> whole"},
 		{"dictated tool call token", "Use the <|tool_call|> token carefully.", "Use the <|tool_call|> token carefully."},
 		{"Chinese tool call token", "解释 <|tool_call|> 这个标记。", "解释 <|tool_call|> 这个标记。"},
+		{"Chinese tool call token without spaces", "解释<|tool_call|>这个标记。", "解释<|tool_call|>这个标记。"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Clean(tc.text, tc.input); got != tc.text {
@@ -446,6 +447,19 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 				t.Errorf("PartialOutput(%q) = %q, want Visible", tc.text, got)
 			}
 		})
+	}
+	for _, tc := range []struct{ text, want string }{
+		{"Visible <|tool_call|> search images now", "Visible"},
+		{"Visible <|tool_call|> token carefully. {\"name\":\"view_image\"}", "Visible"},
+		{"Use the <|tool_call|> token carefully. {\"name\":\"view_image\"}", "Use the"},
+	} {
+		assertAnswerCleanupWithPrevious(t, tc.text, "explain <|tool_call|>", tc.want)
+		if got := CleanOutput(tc.text, "explain <|tool_call|>"); got != tc.want {
+			t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+		if got := PartialOutput(tc.text, "explain <|tool_call|>"); got != tc.want && got != tc.want+" " {
+			t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
+		}
 	}
 }
 

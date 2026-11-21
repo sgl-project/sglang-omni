@@ -133,9 +133,22 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 		if len(fields) > 0 && strings.Contains(fields[0], "_") {
 			return false
 		}
-		// An input's tool marker is literal in a prose sentence, not before a payload.
-		if inlineLiteral(s, start, token) && (preservedControlToken(token, input) || previousControlToken(token, previous)) &&
-			(len(fields) > 1 || strings.ContainsFunc(rest, func(r rune) bool { return unicode.Is(unicode.Han, r) })) {
+		if strings.ContainsAny(rest, "{[") {
+			return false
+		}
+		literalCue := strings.Contains(rest, "标记")
+		if len(fields) > 0 {
+			switch strings.ToLower(fields[0]) {
+			case "token", "tag", "marker":
+				literalCue = true
+			}
+		}
+		before, _ := utf8.DecodeLastRuneInString(s[:start])
+		after, _ := utf8.DecodeRuneInString(rest)
+		hanInline := unicode.Is(unicode.Han, before) && unicode.Is(unicode.Han, after)
+		// Only explicit marker prose gets the input exemption; tool payloads still go.
+		if literalCue && (inlineLiteral(s, start, token) || hanInline) &&
+			(preservedControlToken(token, input) || previousControlToken(token, previous)) {
 			return true
 		}
 	}
