@@ -612,6 +612,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt">Prompt</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#response-formats">Response formats</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream transcription</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
 </ul>
             </nav>
         </div>
@@ -755,6 +756,16 @@ data: [DONE]
 </div>
 <p>The first stable text is emitted immediately; later updates use a 50 ms interval (<code class="docutils literal notranslate"><span class="pre">--thinker.factory.stream_emit_interval_seconds</span></code>). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event’s <code class="docutils literal notranslate"><span class="pre">text</span></code>. When <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> is reached, <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> includes <code class="docutils literal notranslate"><span class="pre">&quot;finish_reason&quot;:&quot;length&quot;</span></code> and the partial transcript.</p>
 </section>
+<section id="mtp-decoding">
+<h2>MTP decoding<a class="headerlink" href="#mtp-decoding" title="Link to this heading">#</a></h2>
+<p>Enable MTP with the <a class="reference external" href="https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-mtp">fine-tuned prediction weights</a>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-asr-tiny<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>NEXTN<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_draft_model_path<span class="w"> </span>wirybeaver/Ming-3.0-asr-tiny-mtp
+</pre></div>
+</div>
+<p>Omit <code class="docutils literal notranslate"><span class="pre">--thinker.engine.speculative_draft_model_path</span></code> to use the official MTP bundled with the target checkpoint. Ming ASR MTP requires <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk=1</span></code> and <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1.0</span></code>. You can omit both settings: NEXTN sets the former at startup, and transcription requests use the latter by default.</p>
+</section>
 </section>
 
 
@@ -811,6 +822,7 @@ data: [DONE]
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt">Prompt</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#response-formats">Response formats</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream transcription</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
 </ul>
   </nav></div>
 
