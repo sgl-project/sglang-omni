@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from types import ModuleType
+from typing import Literal
 
 from transformers import AutoConfig, GenerationConfig
 
@@ -110,6 +111,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     early_request_builds: bool | None = None,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: Mapping[str, object] | None = None,
+    total_gpu_memory_fraction: float | None = None,
+    pd_role: Literal["prefill", "decode"] | None = None,
 ):
     from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
         MossTranscribeDiarizeEngineBuilder,
@@ -150,6 +153,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         request_build_max_pending=request_build_max_pending,
         early_request_builds=early_request_builds,
         stream_emit_interval_s=stream_emit_interval_s,
+        pd_role=pd_role,
     )
     try:
         return builder.build(
@@ -158,6 +162,7 @@ def create_sglang_moss_transcribe_diarize_executor(
             gpu_id=gpu_id,
             dtype=dtype,
             server_args_overrides=server_args_overrides,
+            total_gpu_memory_fraction=total_gpu_memory_fraction if pd_role else None,
         )
     finally:
         if builder.draft_checkpoint is not None:
