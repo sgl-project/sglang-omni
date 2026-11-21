@@ -419,6 +419,11 @@ async def test_reader_failure_reports_turn_failure_and_fails_the_next_unit():
             "context_exhausted",
             False,
         ),
+        (
+            RuntimeError("session_capacity_exhausted: session KV capacity exhausted"),
+            "session_capacity_exhausted",
+            False,
+        ),
     ],
 )
 async def test_reader_failure_reaches_the_client_with_its_own_code(
