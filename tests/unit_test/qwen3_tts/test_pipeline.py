@@ -12088,7 +12088,6 @@ def assert_whole_requests_decode_on_reserved_rows_beside_a_stream(
         ).to_dict()
         return IncomingMessage(name, "new_request", payload)
 
-    scheduler.activate_decode_worker(scheduler.decode_stream)
     scheduler.initial_worker = threading.current_thread()
     scheduler.followup_worker = scheduler.initial_worker
     stream_codes = torch.randint(
@@ -12096,20 +12095,25 @@ def assert_whole_requests_decode_on_reserved_rows_beside_a_stream(
         (64, scheduler.decoder.config.num_quantizers),
         generator=generator,
     )
-    stream = admit_reference_stream(scheduler, "stream", stream_codes, ref_code_len=0)
-    scheduler.initial_queue.put(("stream", stream))
-    scheduler.run_non_streaming_batch(
-        [message(name) for name in lengths], asyncio.new_event_loop()
-    )
     stream_slots: set[int | None] = set()
     has_waited_for_a_whole_row = False
-    while not scheduler.initial_queue.empty() or scheduler.whole_requests:
-        scheduler.run_initial_pass()
-        stream_slots.add(stream.codec_slot)
-        whole_slots = {request.slot for request in scheduler.whole_requests}
-        assert whole_slots <= {None, *scheduler.codec_arena.reserved_slots}
-        has_waited_for_a_whole_row = has_waited_for_a_whole_row or None in whole_slots
-    scheduler.abort("stream")
+    with torch.cuda.stream(scheduler.decode_stream):
+        stream = admit_reference_stream(
+            scheduler, "stream", stream_codes, ref_code_len=0
+        )
+        scheduler.initial_queue.put(("stream", stream))
+        scheduler.run_non_streaming_batch(
+            [message(name) for name in lengths], asyncio.new_event_loop()
+        )
+        while not scheduler.initial_queue.empty() or scheduler.whole_requests:
+            scheduler.run_initial_pass()
+            stream_slots.add(stream.codec_slot)
+            whole_slots = {request.slot for request in scheduler.whole_requests}
+            assert whole_slots <= {None, *scheduler.codec_arena.reserved_slots}
+            has_waited_for_a_whole_row = (
+                has_waited_for_a_whole_row or None in whole_slots
+            )
+        scheduler.abort("stream")
     results: dict[str, OutgoingMessage] = {}
     while not scheduler.outbox.empty():
         result = scheduler.outbox.get_nowait()
