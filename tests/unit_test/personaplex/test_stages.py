@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from sglang_omni.admission import REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.sources import patches_from_stages_mapping
@@ -193,6 +194,81 @@ def test_engine_context_length_reaches_the_builder(monkeypatch):
     )
     assert built["context_length"] == 4096 and built["overrides"] is None
     assert built["depformer_cuda_graph_batch_sizes"] == [1, 4]
+
+
+@pytest.mark.parametrize(
+    "options,expected_context_length",
+    [
+        ([], 65536),
+        (["--lm.engine.context_length", "8192"], 8192),
+        (["--lm.engine.context_length", "131072"], 131072),
+        (["--lm.factory.context_length", "8192"], 8192),
+        (["--lm.factory.context_length", "131072"], 131072),
+        (
+            [
+                "--lm.factory.context_length",
+                "131072",
+                "--lm.engine.context_length",
+                "8192",
+            ],
+            8192,
+        ),
+        (
+            [
+                "--lm.engine.context_length",
+                "65536",
+                "--lm.factory.context_length",
+                "131072",
+            ],
+            65536,
+        ),
+        (["--lm.engine.context_length", "none"], 65536),
+    ],
+    ids=[
+        "default",
+        "engine-short",
+        "engine-long",
+        "factory-short",
+        "factory-long",
+        "engine-precedence",
+        "explicit-engine-default",
+        "cleared-engine",
+    ],
+)
+def test_session_context_reaches_the_engine_and_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    options: list[str],
+    expected_context_length: int,
+) -> None:
+    """The session context must reach both engine allocation and unit admission."""
+    manager = ConfigManager(PersonaPlexSessionPipelineConfig(model_path=str(tmp_path)))
+    config = manager.merge_config(manager.parse_extra_args(options))
+    built: list[stages.PersonaPlexSessionEngineBuilder] = []
+
+    def capture_build(
+        builder: stages.PersonaPlexSessionEngineBuilder,
+        model_path: str,
+        *,
+        device: str | None,
+        gpu_id: int | None,
+        dtype: str,
+        server_args_overrides: dict[str, object],
+    ) -> None:
+        built.append(builder)
+        context_override = server_args_overrides.get("context_length")
+        if context_override is not None:
+            assert context_override == expected_context_length
+
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    monkeypatch.setattr(stages.PersonaPlexSessionEngineBuilder, "build", capture_build)
+    stages.create_session_lm_executor(
+        **resolve_stage_factory_args(config.stage_named("lm"), config)
+    )
+    builder = built[0]
+    assert builder.context_length == expected_context_length
+    adapter = builder.extra_scheduler_kwargs()["session_adapter"]
+    assert adapter.context_length == expected_context_length
 
 
 def test_realtime_engine_decodes_synchronously(monkeypatch, tmp_path):

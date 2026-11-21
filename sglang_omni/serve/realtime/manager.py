@@ -46,7 +46,7 @@ def runtime_limits_for_pipeline(
     pipeline_config: PipelineConfig | None,
     runtime_limits: RuntimeLimits | None = None,
 ) -> RuntimeLimits:
-    """Apply pipeline timeouts without changing other runtime limits."""
+    """Apply pipeline timeouts and an optional realtime character budget."""
     resolved_limits = RuntimeLimits() if runtime_limits is None else runtime_limits
     if pipeline_config is None:
         return resolved_limits
@@ -55,6 +55,11 @@ def runtime_limits_for_pipeline(
             resolved_limits,
             session_update_timeout_s=pipeline_config.realtime_session_update_timeout_s,
             idle_timeout_s=pipeline_config.realtime_idle_timeout_s,
+            max_history_chars=(
+                pipeline_config.realtime_max_history_chars
+                if pipeline_config.realtime_max_history_chars is not None
+                else resolved_limits.max_history_chars
+            ),
         )
 
 

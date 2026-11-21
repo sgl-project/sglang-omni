@@ -60,7 +60,7 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 ## Native Full-Duplex Ability
 
-PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
+PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex). Sessions use a 65,536-position context by default, a logical budget of about 87 minutes minus the prompt; `--lm.engine.context_length` changes this finite limit. Long calls require sufficient physical KV capacity or CUDA window KV with `page_size=1`, and remain subject to the realtime transcript budget (`max_history_chars`). The offline pipeline keeps its 8,192-position default.
 
 ## Request parameters
 
@@ -121,7 +121,7 @@ These results cover offline requests, not full-duplex sessions. FP8 KV was teste
 - Decode feedback stays on device. On CUDA, `--lm.factory.enable_async_decode true` launches the next decode before collecting the previous result and can add 16–21% throughput with identical audio; synchronous decode remains the default. Other platforms, requests needing host token history for sampling, and requests returning log probabilities use the synchronous path. When any request reaches its caller-frame budget, the whole batch uses synchronous decode for that step.
 - On CUDA, Mimi decode graphs cover every batch size up to `min(max_batch_size, num_decode_slots)` and every chunk width up to `max_graph_frames` (the widest ramp entry unless set; `0` turns the graphs off), 8 × 4 = 32 graphs at LM concurrency 16; other shapes and platforms decode eagerly with the same states.
 - On CUDA, streaming Mimi decode uses a dedicated stream. The stage accepts CPU codes only; transfers and decode-slot reset/replay stay on that stream, so waveform collection does not drain queued LM forwards. Other devices retain their normal execution context.
-- On a CUDA platform with resolved `device=cuda` and `page_size=1`, window KV releases expired positions for reuse. Steady decode holds about 3.1k positions (1.5 GiB of BF16 KV) per long request with the default eviction interval; prefill and retract replay can temporarily hold more. CPU stages, other platforms and other page sizes use the full KV pool. Context and request-length limits remain unchanged, and returning slots does not shrink the preallocated pool. Set `--lm.engine.disable_hybrid_swa_memory true` to use the full pool explicitly.
+- On a CUDA platform with resolved `device=cuda` and `page_size=1`, window KV releases expired positions for reuse. Steady decode holds about 3.1k positions (1.5 GiB of BF16 KV) per long request with the default eviction interval; prefill and retract replay can temporarily hold more. CPU stages, other platforms and other page sizes use the full KV pool. Returning slots does not shrink the preallocated pool, and logical request length still has a finite context limit: 65,536 positions for sessions and 8,192 for offline requests by default. Set `--lm.engine.disable_hybrid_swa_memory true` to use the full pool explicitly.
 
 ### Ascend NPU
 
