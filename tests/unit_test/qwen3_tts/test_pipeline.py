@@ -8583,19 +8583,27 @@ def test_qwen3_tts_another_process_reads_complete_final_codes() -> None:
     assert reader.exitcode == 0
 
 
-def test_qwen3_tts_result_adapter_preserves_length_finish_reason() -> None:
-    """A length-capped generation must be distinguishable from natural EOS."""
+def test_qwen3_tts_result_adapter_preserves_length_finish_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A capped request must return codec frames and report the budget stop to operators."""
     payload = make_payload(inputs="target")
-    data = Qwen3TTSSGLangRequestData(
+    request_data = Qwen3TTSSGLangRequestData(
         req=SimpleNamespace(output_ids=[]),
         output_codes=[torch.tensor([1, 2])],
         stage_payload=payload,
         finish_reason="length",
     )
 
-    result = apply_sglang_qwen3_tts_result(payload, data)
+    with caplog.at_level(logging.INFO, logger=qwen3_request_builders.__name__):
+        result = apply_sglang_qwen3_tts_result(payload, request_data)
 
     assert result.data["finish_reason"] == "length"
+    torch.testing.assert_close(result.data["audio_codes"], torch.tensor([[1, 2]]))
+    assert caplog.messages == [
+        f"qwen3_tts_codec_budget_exhausted request_id={payload.request_id} "
+        "finish_reason=length completion_frames=1"
+    ]
 
 
 def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
