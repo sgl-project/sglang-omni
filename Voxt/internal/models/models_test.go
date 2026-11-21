@@ -69,14 +69,14 @@ func TestCatalog(t *testing.T) {
 			t.Errorf("%s: a draft is never the default and names no other model", m.ID)
 		}
 	}
-	owners := map[string]int{} // a draft belongs to one speech model
+	owners := map[string]int{} // a draft belongs to at least one speech model
 	for _, m := range Catalog() {
 		if m.Draft != "" {
 			owners[m.Draft]++
 		}
 	}
 	for _, m := range Catalog() {
-		if m.Kind == Draft && owners[m.ID] != 1 {
+		if m.Kind == Draft && owners[m.ID] < 1 {
 			t.Errorf("%s is the draft of %d speech models", m.ID, owners[m.ID])
 		}
 	}

@@ -264,7 +264,7 @@ And their own fields:
 |---|---|---|---|---|
 | `models.keepLoaded` | string | `""` | `""` (Automatic), `5m`, `15m`, `30m`, `1h`, `quit` | Speech models → Keep models loaded |
 | `models.hidden` | array of strings | `[]` | speech model ids | Speech models → Hide |
-| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed | Speech models → Faster transcription |
+| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed, except the 6bit (its draft came with the 8bit's download, so it stays off until switched on) | Speech models → Faster transcription |
 | `models.llmWait` | string | `""` | `""` (Automatic), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works | Language models → Wait for the language model |
 | `models.llmSwitch` | bool | `false` | | Language models → Switch models when one fails |
 | `providers.llm` | array of providers | `[]` | one entry per language model service | Language models (one card per service set up) |

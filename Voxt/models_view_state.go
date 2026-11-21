@@ -408,7 +408,7 @@ func buildModelDraftViewState(translator *i18n.Translator, input modelsViewState
 	draft, _ := models.Lookup(parent.Draft)
 	on, set := input.Settings.Models.Faster[parent.ID]
 	if !set {
-		on = status.Installed
+		on = settings.FasterDefault(status.Installed, parent.DraftOptIn)
 	}
 	state := &modelDraftViewState{
 		ModelID: draft.ID, ParentID: parent.ID, Installed: status.Installed, NeedsDownload: on && !status.Installed && !status.Downloading,

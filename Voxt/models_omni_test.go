@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
@@ -206,6 +207,106 @@ func TestOmniDraft(t *testing.T) {
 	a.unloadOmni(models.ASRFastDraft)
 	if len(a.omniASR) != 0 {
 		t.Errorf("%d providers after the draft's unload", len(a.omniASR))
+	}
+}
+
+func TestOmniSharedDraftOldProviderDoesNotUseDeletedDraft(t *testing.T) {
+	log := fakeOmni(t, omnitest.Opts{})
+	a := newSessionApp(t, "", func(*settings.Settings) {}, realLocal{installed: []string{models.ASRAccurate, models.ASRAccurateDraft, models.VADSilero}})
+	provider, err := a.openOmniASR(context.Background(), models.ASRAccurate, a.models.Dir(models.ASRAccurate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := a.models.Dir(models.ASRAccurateDraft)
+	if _, err := a.localLib.Delete(context.Background(), models.ASRAccurateDraft, fammodels.ThisApp); err != nil {
+		t.Fatal(err)
+	}
+	transcriber, ok := provider.(asr.FileTranscriber)
+	if !ok {
+		t.Fatal("provider does not transcribe files")
+	}
+	result, err := transcriber.Transcribe(context.Background(), asr.FileRequest{Audio: make([]byte, asr.SampleRate), Format: "pcm", SampleRate: asr.SampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text == "" {
+		t.Fatal("no transcript after the draft was deleted")
+	}
+	for _, record := range omnitest.Of(omnitest.Records(log), "launch") {
+		if slices.Contains(record.Args, draft) {
+			t.Errorf("a later launch used the deleted draft: %v", record.Args)
+		}
+	}
+}
+
+// TestOmniSharedDraftUnload: the 1.7B draft serves both 1.7B quants,
+// the 6bit's only once its switch is on (the download said yes for the
+// 8bit, not for it); deleting the draft unloads both speech models,
+// which then start and run without it.
+func TestOmniSharedDraftUnload(t *testing.T) {
+	log := fakeOmni(t, omnitest.Opts{})
+	events := omniEvents(t)
+	a := newSessionApp(t, "", func(*settings.Settings) {}, realLocal{installed: []string{models.ASRAccurate, models.ASRQwen6bit, models.ASRAccurateDraft, models.VADSilero}})
+	draft := a.models.Dir(models.ASRAccurateDraft)
+	if draft == "" {
+		t.Fatal("no shared draft")
+	}
+	if a.omniDraft(models.ASRAccurate) != draft {
+		t.Errorf("the 8bit keeps the old default: omniDraft %q", a.omniDraft(models.ASRAccurate))
+	}
+	if a.omniDraft(models.ASRQwen6bit) != "" {
+		t.Errorf("the shared draft turned the 6bit on without its switch: omniDraft %q", a.omniDraft(models.ASRQwen6bit))
+	}
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Models.Faster = map[string]bool{models.ASRQwen6bit: true}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if a.omniDraft(models.ASRQwen6bit) != draft {
+		t.Fatalf("switched on: omniDraft %q", a.omniDraft(models.ASRQwen6bit))
+	}
+	launches := func() []omnitest.Record { return omnitest.Of(omnitest.Records(log), "launch") }
+	// One speech server at a time (the runtime retires a sibling's): open
+	// one, wait for its launch, then the other.
+	for i, id := range []string{models.ASRAccurate, models.ASRQwen6bit} {
+		if _, err := a.openOmniASR(context.Background(), id, a.models.Dir(id)); err != nil {
+			t.Fatal(err)
+		}
+		a.pump("the server", func() bool { return len(launches()) == i+2 }) // the VAD's is the first
+	}
+	for _, l := range launches()[1:] {
+		if !slices.Contains(l.Args, "--draft-model-path") {
+			t.Fatalf("the shared draft not in the launch: %v", l.Args)
+		}
+	}
+	if _, err := a.localLib.Delete(context.Background(), models.ASRAccurateDraft, fammodels.ThisApp); err != nil {
+		t.Fatal(err)
+	}
+	waitUnloaded(t, events, models.ASRQwen6bit) // the server current at the delete
+	// Both servers' processes exited (the 8bit's when the 6bit's launch
+	// retired it).
+	a.pump("both servers stopped", func() bool { return len(omnitest.Of(omnitest.Records(log), "shutdown")) == 2 })
+	if len(a.omniASR) != 0 {
+		t.Fatalf("%d providers after the draft's delete", len(a.omniASR))
+	}
+	// Without the draft both models start and run as before: no draft in
+	// the launch.
+	before := len(launches())
+	for i, id := range []string{models.ASRAccurate, models.ASRQwen6bit} {
+		if _, err := a.openOmniASR(context.Background(), id, a.models.Dir(id)); err != nil {
+			t.Fatalf("reopen %s: %v", id, err)
+		}
+		a.pump("the server again", func() bool { return len(launches()) == before+i+1 })
+	}
+	for _, l := range launches()[before:] {
+		if slices.Contains(l.Args, "--draft-model-path") {
+			t.Errorf("a relaunch with the deleted draft: %v", l.Args)
+		}
+	}
+	for _, id := range []string{models.ASRAccurate, models.ASRQwen6bit} {
+		if a.omniDraft(id) != "" {
+			t.Errorf("%s: a draft without its files", id)
+		}
 	}
 }
 

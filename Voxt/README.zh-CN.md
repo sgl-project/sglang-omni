@@ -114,7 +114,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **更多本地模型**：MOSS-Transcribe-Diarize（中文和英语，实时显示文字）、Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
 - **Qwen3-ASR** 支持 30 种语言和 22 种中文方言，并且会用到你的词典；其他可下载的模型不用词典。
-- **转录加速**可在 Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)、MOSS-Transcribe-Diarize 和 Whisper Large v3 的卡片上开启。打开开关后，Qwen3-ASR 和 MOSS 可下载 DFlash 草稿模型（分别为 726 MB、262 MB 和 262 MB），Whisper 可下载 Distil 草稿模型（1.5 GB）。关闭开关后恢复普通解码，草稿模型留在本地。
+- **转录加速**可在 Qwen3-ASR 1.7B (8bit 和 6bit)、Qwen3-ASR 0.6B (4bit)、MOSS-Transcribe-Diarize 和 Whisper Large v3 的卡片上开启。打开开关后，Qwen3-ASR 可下载 DFlash 草稿模型（726 MB，1.7B 的 8bit 和 6bit 共用，下载一次即可；0.6B 为 262 MB），MOSS 为 262 MB，Whisper 可下载 Distil 草稿模型（1.5 GB）。关闭开关后恢复普通解码，草稿模型留在本地。
 - **云端语音 API**，如果你更想用：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼、阶跃星辰、小米 MiMo 和 Google Gemini。
 
 ### 语言模型

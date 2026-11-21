@@ -69,7 +69,7 @@ func TestModelsPageMatchesCatalogue(t *testing.T) {
 		if !ok || draft.Kind != models.Draft {
 			t.Errorf("%s names the draft %s, which is not a draft of the catalogue", model.ID, model.Draft)
 		}
-		if other := parents[model.Draft]; other != "" {
+		if other := parents[model.Draft]; other != "" && !model.DraftOptIn {
 			t.Errorf("%s and %s name the same draft %s", other, model.ID, model.Draft)
 		}
 		parents[model.Draft] = model.ID

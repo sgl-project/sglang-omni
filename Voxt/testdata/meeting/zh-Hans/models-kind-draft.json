@@ -4,16 +4,16 @@
   "models": {
     "asr": [
       {
-        "key": "model-asr.accurate",
+        "key": "model-asr.qwen3-6bit",
         "rows": [
           {
-            "id": "asr.accurate",
+            "id": "asr.qwen3-6bit",
             "kind": "asr",
-            "name": "Qwen3-ASR 1.7B (8bit)",
-            "default": true,
+            "name": "Qwen3-ASR 1.7B (6bit)",
+            "default": false,
             "installed": true,
-            "size_text": "占用 2.5 GB",
-            "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
+            "size_text": "占用 2.0 GB",
+            "about": "Qwen3-ASR 1.7B，比 8bit 版本占用更少内存，准确度相差无几。边说边出文字。",
             "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
             "tags": [
               "本地",
@@ -24,35 +24,35 @@
             "actions": [
               {
                 "kind": "hide",
-                "model_id": "asr.accurate",
+                "model_id": "asr.qwen3-6bit",
                 "label": "隐藏",
-                "accessibility_label": "隐藏 Qwen3-ASR 1.7B (8bit)",
+                "accessibility_label": "隐藏 Qwen3-ASR 1.7B (6bit)",
                 "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "delete",
-                "model_id": "asr.accurate",
+                "model_id": "asr.qwen3-6bit",
                 "label": "删除",
-                "accessibility_label": "删除 Qwen3-ASR 1.7B (8bit)…"
+                "accessibility_label": "删除 Qwen3-ASR 1.7B (6bit)…"
               },
               {
                 "kind": "assign",
-                "model_id": "asr.accurate",
+                "model_id": "asr.qwen3-6bit",
                 "model_kind": "asr",
                 "label": "应用到",
-                "accessibility_label": "将 Qwen3-ASR 1.7B (8bit) 应用到功能",
+                "accessibility_label": "将 Qwen3-ASR 1.7B (6bit) 应用到功能",
                 "tooltip": "选择使用此模型的功能"
               }
             ],
             "draft": {
               "model_id": "asr.accurate.draft",
-              "parent_id": "asr.accurate",
+              "parent_id": "asr.qwen3-6bit",
               "help": "使用推测解码：一个小的草稿模型（725.7 MB）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
               "installed": false,
               "needs_download": false,
               "size_text": "占用 725.7 MB",
               "on": false,
-              "switch_label": "Qwen3-ASR 1.7B (8bit) 的转录加速",
+              "switch_label": "Qwen3-ASR 1.7B (6bit) 的转录加速",
               "actions": [
                 {
                   "kind": "use",

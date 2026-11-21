@@ -119,7 +119,25 @@
                 "label": "下载",
                 "accessibility_label": "下载 Qwen3-ASR 1.7B (6bit)"
               }
-            ]
+            ],
+            "draft": {
+              "model_id": "asr.accurate.draft",
+              "parent_id": "asr.qwen3-6bit",
+              "help": "使用推测解码：一个小的草稿模型（725.7 MB）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
+              "installed": true,
+              "needs_download": false,
+              "size_text": "占用 725.7 MB",
+              "on": false,
+              "switch_label": "Qwen3-ASR 1.7B (6bit) 的转录加速",
+              "actions": [
+                {
+                  "kind": "delete",
+                  "model_id": "asr.accurate.draft",
+                  "label": "删除",
+                  "accessibility_label": "删除 Qwen3-ASR 1.7B DFlash draft…"
+                }
+              ]
+            }
           }
         ]
       },
