@@ -117,6 +117,27 @@ source .venv/bin/activate
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
 
+### MOSS-Speech codec dependencies
+
+From the source checkout with your virtual environment activated, install the MOSS-Speech extra and prepare the external codec sources. The extra installs Python dependencies; the codec also requires the MOSS-Speech and Matcha-TTS source trees because MOSS-Speech does not provide an installable Python package. These revisions match MOSS-Speech-Codec revision `eeec733e4e1dea7da444d332d8e1621ef257414c`.
+
+```bash
+uv pip install --prerelease=allow -e '.[moss-speech]'
+
+moss_speech_sources="${VIRTUAL_ENV:?Activate your virtual environment first}/src/moss-speech-codec"
+mkdir -p "$moss_speech_sources"
+git clone https://github.com/OpenMOSS/MOSS-Speech.git "$moss_speech_sources/MOSS-Speech"
+git -C "$moss_speech_sources/MOSS-Speech" checkout 1ea408a10d07b9fdc7a27bce19d1211b62067784
+git clone https://github.com/shivammehta25/Matcha-TTS.git "$moss_speech_sources/Matcha-TTS"
+git -C "$moss_speech_sources/Matcha-TTS" checkout bd4d90d93214b37f7a159cf205ae85762c2c10aa
+
+export PYTHONPATH="$moss_speech_sources:$moss_speech_sources/MOSS-Speech:$moss_speech_sources/Matcha-TTS${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+Start `sgl-omni serve` from this shell so its workers inherit `PYTHONPATH`. When starting from a new shell or service, set `moss_speech_sources` and `PYTHONPATH` again. All three source paths are required: the codec configuration imports `Matcha-TTS.matcha`, while its Python modules import `matcha` and `cosyvoice`.
+
+Follow the [MOSS-Speech cookbook](../cookbook/moss_speech.md) to download both checkpoints, launch the three stages, and send a text or spoken question.
+
 ## Next steps
 
 [Start the Qwen3-ASR server, send a request, and check the transcript](quickstart.md#install-and-start).

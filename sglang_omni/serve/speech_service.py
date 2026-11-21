@@ -1068,6 +1068,12 @@ class SpeechRequestValidator:
             return
         else:
             pass
+        if not supported_fields:
+            raise bad_request(
+                "This model does not support speech synthesis. Use /v1/chat/completions."
+            )
+        else:
+            pass
         field_names = accepted_field_names(protocol)
         reference_field_names = accepted_field_names(SpeechReference)
         for key, value in payload.items():
@@ -1138,7 +1144,7 @@ class SpeechRequestValidator:
         return reference.model_copy(update=updates)
 
     def load_media_reference_descriptor(
-        self, value: str, *, param: str
+        self, value: str, *, param: str, inline_local_file: bool = False
     ) -> dict[str, str]:
         url = urlparse(value)
         if url.scheme and url.scheme not in {"http", "https", "data", "file"}:
@@ -1148,7 +1154,17 @@ class SpeechRequestValidator:
             )
         else:
             pass
-        media_io = SpeechReferenceMediaIO(param)
+        media_io = SpeechReferenceMediaIO(param, inline_local_file=inline_local_file)
+        if (
+            inline_local_file
+            and url.scheme in ("", "file")
+            and self.reference_connector.allowed_local_media_path is None
+        ):
+            raise bad_request(
+                "Local chat audio requires --allowed-local-media-path", param=param
+            )
+        else:
+            pass
         try:
             if url.scheme:
                 return self.reference_connector.load_resource(
@@ -1285,8 +1301,9 @@ def build_speech_prompt(
 class SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
     """Return backend reference descriptors after connector policy checks."""
 
-    def __init__(self, param: str) -> None:
+    def __init__(self, param: str, *, inline_local_file: bool = False) -> None:
         self.param = param
+        self.inline_local_file = inline_local_file
 
     def load_bytes(self, data: bytes) -> dict[str, str]:
         return {
@@ -1322,7 +1339,13 @@ class SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
         else:
             pass
         validate_reference_size(filepath.stat().st_size, param=self.param)
-        return {"audio_path": str(filepath)}
+        if self.inline_local_file:
+            with filepath.open("rb") as stream:
+                encoded = stream.read(MAX_REFERENCE_AUDIO_BYTES + 1)
+            validate_reference_size(len(encoded), param=self.param)
+            return self.load_bytes(encoded)
+        else:
+            return {"audio_path": str(filepath)}
 
 
 def reference_dict_from_media_reference(value: str) -> dict[str, str]:
