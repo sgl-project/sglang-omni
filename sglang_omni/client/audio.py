@@ -33,10 +33,13 @@ FORMAT_MIME_TYPES: dict[str, str] = {
 
 # Default sample rate for generated audio
 DEFAULT_SAMPLE_RATE = 24000
+# note (ratish): The speech rate floor preserves the lowest supported AAC rate.
+MIN_AUDIO_OUTPUT_SAMPLE_RATE = 7350
 MAX_AUDIO_OUTPUT_SAMPLE_RATE = 192000
 OPUS_PLAYBACK_SAMPLE_RATE = 48000
-FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ = 65535
-FLAC_HIGH_SAMPLE_RATE_STEP_HZ = 10
+# note (ratish): FLAC's streamable subset uses 10 Hz units above the 16-bit Hz field's limit.
+FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ = (1 << 16) - 1
+FLAC_SCALED_SAMPLE_RATE_UNIT_HZ = 10
 
 
 # Configurations for PyAV encoding
@@ -82,9 +85,6 @@ PYAV_ENCODE_CONFIGS = {
     },
 }
 
-# note (ratish): Keep the lowest AAC rate available when bounding requested speech rates.
-MIN_AUDIO_OUTPUT_SAMPLE_RATE = min(PYAV_ENCODE_CONFIGS["aac"]["valid_rates"])
-
 
 @dataclass(kw_only=True)
 class EncodedAudio:
@@ -114,11 +114,11 @@ def audio_output_sample_rate_error(
     elif (
         response_format == "flac"
         and output_sample_rate > FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ
-        and output_sample_rate % FLAC_HIGH_SAMPLE_RATE_STEP_HZ != 0
+        and output_sample_rate % FLAC_SCALED_SAMPLE_RATE_UNIT_HZ != 0
     ):
         return (
             f"sample_rate for FLAC above {FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ} Hz "
-            f"must be divisible by {FLAC_HIGH_SAMPLE_RATE_STEP_HZ}"
+            f"must be divisible by {FLAC_SCALED_SAMPLE_RATE_UNIT_HZ}"
         )
     elif (
         response_format in PYAV_ENCODE_CONFIGS
