@@ -1052,12 +1052,10 @@ def register_chat_completions(app: FastAPI) -> None:
 
         gen_req = build_chat_generate_request(req)
 
-        # Determine audio format from request
-        audio_format = "wav"
-        if req.audio and isinstance(req.audio, dict):
-            audio_format = req.audio.get("format", "wav")
-        else:
-            pass
+        requested_audio_format = req.audio.get("format", "wav") if req.audio else "wav"
+        audio_format = (
+            "pcm" if requested_audio_format == "pcm16" else requested_audio_format
+        )
 
         if req.stream:
             return _ClosableStreamingResponse(
