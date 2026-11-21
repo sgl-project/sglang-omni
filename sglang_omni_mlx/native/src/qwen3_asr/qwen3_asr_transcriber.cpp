@@ -2,10 +2,14 @@
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <map>
+#include <mutex>
 #include <utility>
 
 #include "common/audio.h"
@@ -27,6 +31,39 @@ using omni_common::GenerationCancelled;
 using omni_common::IsTokenLoop;
 using omni_common::IsUnicodeSpace;
 using omni_common::TranscriptionResult;
+
+nlohmann::ordered_json
+RealtimeDecodeTimingJson(const RealtimeDecodeTiming &timing) {
+  return {{"event", "qwen_realtime_timing"},
+          {"session_id", timing.session_id},
+          {"segment_id", timing.segment_id},
+          {"decode_index", timing.decode_index},
+          {"kind", timing.kind},
+          {"audio_sample_count", timing.audio_sample_count},
+          {"end_sample", timing.end_sample},
+          {"submitted_at_ms", timing.submitted_at_ms},
+          {"started_at_ms", timing.started_at_ms},
+          {"finished_at_ms", timing.finished_at_ms},
+          {"succeeded", timing.succeeded}};
+}
+
+int64_t NowRealtimeMilliseconds() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+uint64_t NextRealtimeProfileSessionId() {
+  static std::atomic<uint64_t> next_id{0};
+  return next_id.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+void LogRealtimeDecodeTiming(const RealtimeDecodeTiming &timing) {
+  static std::mutex log_mutex;
+  const std::string line = RealtimeDecodeTimingJson(timing).dump();
+  std::lock_guard<std::mutex> lock(log_mutex);
+  std::cerr << line << "\n";
+}
 
 namespace mx = mlx::core;
 

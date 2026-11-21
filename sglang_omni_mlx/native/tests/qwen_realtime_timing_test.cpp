@@ -178,11 +178,39 @@ int main() {
     }
   }
 
+  const auto http_timing = std::make_shared<qwen3_asr::RealtimeDecodeTiming>();
+  http_timing->session_id = qwen3_asr::NextRealtimeProfileSessionId();
+  http_timing->decode_index = 1;
+  http_timing->kind = "http_final";
+  http_timing->audio_sample_count = 1600;
+  http_timing->end_sample = 1600;
+  http_timing->submitted_at_ms = qwen3_asr::NowRealtimeMilliseconds();
+  qwen3_asr::Qwen3ASRTranscriber http_transcriber;
+  qwen3_asr::BatchableTranscription http_job{
+      &http_transcriber, std::vector<float>(1600, 0.1f), {}, http_timing};
+  std::ostringstream http_captured;
+  const auto http_old = std::cerr.rdbuf(http_captured.rdbuf());
+  const std::atomic<bool> cancel{false};
+  http_job(cancel);
+  std::cerr.rdbuf(http_old);
+  const auto http_events = Timings(http_captured.str());
+  if (!Check(http_events.size() == 1, "HTTP Final timing") ||
+      !Check(http_events[0]["kind"] == "http_final", "HTTP Final kind") ||
+      !Check(http_events[0]["succeeded"], "HTTP Final succeeded") ||
+      !Check(http_events[0]["submitted_at_ms"] <=
+                 http_events[0]["started_at_ms"],
+             "HTTP Final queue order") ||
+      !Check(http_events[0]["started_at_ms"] <=
+                 http_events[0]["finished_at_ms"],
+             "HTTP Final decode order")) {
+    return 1;
+  }
+
   const SessionOutput unprofiled = RunSession(false);
   if (!Check(unprofiled.previews == 1, "unprofiled preview completed") ||
       !Check(Timings(unprofiled.log).empty(), "profiling is off by default")) {
     return 1;
   }
-  std::puts("ok: preview and final timings, opt-in only, content-free schema");
+  std::puts("ok: preview, realtime and HTTP Final timings, opt-in only");
   return 0;
 }

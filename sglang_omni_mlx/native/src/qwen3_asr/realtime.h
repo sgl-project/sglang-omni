@@ -29,22 +29,6 @@ struct RealtimeSettings {
   bool profile = false;
 };
 
-struct RealtimeDecodeTiming {
-  uint64_t session_id = 0;
-  int segment_id = 0;
-  int decode_index = 0;
-  std::string kind;
-  int audio_sample_count = 0;
-  long end_sample = 0;
-  int64_t submitted_at_ms = 0;
-  int64_t started_at_ms = 0;
-  int64_t finished_at_ms = 0;
-  bool succeeded = false;
-};
-
-nlohmann::ordered_json
-RealtimeDecodeTimingJson(const RealtimeDecodeTiming &timing);
-
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds);

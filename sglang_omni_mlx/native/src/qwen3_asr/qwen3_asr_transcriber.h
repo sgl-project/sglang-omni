@@ -179,6 +179,52 @@ private:
   omni_common::DraftPolicy draft_policy_;
 };
 
+struct RealtimeDecodeTiming {
+  uint64_t session_id = 0;
+  int segment_id = 0;
+  int decode_index = 0;
+  std::string kind;
+  int audio_sample_count = 0;
+  long end_sample = 0;
+  int64_t submitted_at_ms = 0;
+  int64_t started_at_ms = 0;
+  int64_t finished_at_ms = 0;
+  bool succeeded = false;
+};
+
+nlohmann::ordered_json
+RealtimeDecodeTimingJson(const RealtimeDecodeTiming &timing);
+int64_t NowRealtimeMilliseconds();
+uint64_t NextRealtimeProfileSessionId();
+void LogRealtimeDecodeTiming(const RealtimeDecodeTiming &timing);
+
+template <typename Callback>
+omni_common::TranscriptionResult
+RunRealtimeDecodeTiming(std::shared_ptr<RealtimeDecodeTiming> timing,
+                        Callback &&callback) {
+  if (timing) {
+    timing->started_at_ms = NowRealtimeMilliseconds();
+  } else {
+  }
+  try {
+    omni_common::TranscriptionResult result = callback();
+    if (timing) {
+      timing->finished_at_ms = NowRealtimeMilliseconds();
+      timing->succeeded = true;
+      LogRealtimeDecodeTiming(*timing);
+    } else {
+    }
+    return result;
+  } catch (...) {
+    if (timing) {
+      timing->finished_at_ms = NowRealtimeMilliseconds();
+      LogRealtimeDecodeTiming(*timing);
+    } else {
+    }
+    throw;
+  }
+}
+
 // One request the worker may decode together with others. Called alone it
 // transcribes serially; BatchableTranscriptionRunner finds it through
 // std::function::target<BatchableTranscription>().
@@ -186,10 +232,13 @@ struct BatchableTranscription {
   const Qwen3ASRTranscriber *transcriber;
   std::vector<float> samples;
   TranscriptionOptions options;
+  std::shared_ptr<RealtimeDecodeTiming> timing;
 
   omni_common::TranscriptionResult
   operator()(const std::atomic<bool> &cancel) const {
-    return transcriber->Transcribe(samples, options, cancel);
+    return RunRealtimeDecodeTiming(timing, [&] {
+      return transcriber->Transcribe(samples, options, cancel);
+    });
   }
 };
 

@@ -23,40 +23,7 @@ using omni_common::TranscriptionResult;
 using omni_server::Transcription;
 using omni_server::TranscriptionWorker;
 
-nlohmann::ordered_json
-RealtimeDecodeTimingJson(const RealtimeDecodeTiming &timing) {
-  return {{"event", "qwen_realtime_timing"},
-          {"session_id", timing.session_id},
-          {"segment_id", timing.segment_id},
-          {"decode_index", timing.decode_index},
-          {"kind", timing.kind},
-          {"audio_sample_count", timing.audio_sample_count},
-          {"end_sample", timing.end_sample},
-          {"submitted_at_ms", timing.submitted_at_ms},
-          {"started_at_ms", timing.started_at_ms},
-          {"finished_at_ms", timing.finished_at_ms},
-          {"succeeded", timing.succeeded}};
-}
-
 namespace {
-
-int64_t NowMilliseconds() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
-uint64_t NextProfileSessionId() {
-  static std::atomic<uint64_t> next_id{0};
-  return next_id.fetch_add(1, std::memory_order_relaxed) + 1;
-}
-
-void LogDecodeTiming(const RealtimeDecodeTiming &timing) {
-  static std::mutex log_mutex;
-  const std::string line = RealtimeDecodeTimingJson(timing).dump();
-  std::lock_guard<std::mutex> lock(log_mutex);
-  std::cerr << line << "\n";
-}
 
 // Note (Jiaxin Deng): after two full re-decodes a refresh continues from the
 // shown text minus its last tokens, which may still change.
@@ -120,7 +87,8 @@ RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
                                  RealtimeSettings settings, Sender sender)
     : RealtimeConnection(std::move(sender)), worker_(worker),
       transcriber_(transcriber), settings_(settings),
-      profile_session_id_(settings.profile ? NextProfileSessionId() : 0) {}
+      profile_session_id_(settings.profile ? NextRealtimeProfileSessionId()
+                                           : 0) {}
 
 bool RealtimeSession::Handle(const nlohmann::json &message) {
   const nlohmann::json type = message.value("type", nlohmann::json());
@@ -270,7 +238,7 @@ RealtimeSession::NewDecodeTiming(const Segment &segment, std::string kind,
   timing->kind = std::move(kind);
   timing->audio_sample_count = audio_sample_count;
   timing->end_sample = end_sample;
-  timing->submitted_at_ms = NowMilliseconds();
+  timing->submitted_at_ms = NowRealtimeMilliseconds();
   return timing;
 }
 
@@ -282,28 +250,9 @@ RealtimeSession::Decode(std::vector<float> samples,
   return [&transcriber = transcriber_, samples = std::move(samples),
           options = std::move(options), reuse = std::move(reuse),
           timing](const std::atomic<bool> &cancel) {
-    if (timing) {
-      timing->started_at_ms = NowMilliseconds();
-    } else {
-    }
-    try {
-      TranscriptionResult result =
-          transcriber.Transcribe(samples, options, cancel, reuse.get());
-      if (timing) {
-        timing->finished_at_ms = NowMilliseconds();
-        timing->succeeded = true;
-        LogDecodeTiming(*timing);
-      } else {
-      }
-      return result;
-    } catch (...) {
-      if (timing) {
-        timing->finished_at_ms = NowMilliseconds();
-        LogDecodeTiming(*timing);
-      } else {
-      }
-      throw;
-    }
+    return RunRealtimeDecodeTiming(timing, [&] {
+      return transcriber.Transcribe(samples, options, cancel, reuse.get());
+    });
   };
 }
 

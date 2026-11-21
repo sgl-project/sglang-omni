@@ -18,6 +18,22 @@ namespace {
 using qwen3_asr::AudioLayout;
 using qwen3_asr::TranscriptionOptions;
 
+std::shared_ptr<qwen3_asr::RealtimeDecodeTiming>
+NewHTTPDecodeTiming(const qwen3_asr::RealtimeSettings &settings,
+                    int audio_sample_count) {
+  if (!settings.profile) {
+    return nullptr;
+  }
+  auto timing = std::make_shared<qwen3_asr::RealtimeDecodeTiming>();
+  timing->session_id = qwen3_asr::NextRealtimeProfileSessionId();
+  timing->decode_index = 1;
+  timing->kind = "http_final";
+  timing->audio_sample_count = audio_sample_count;
+  timing->end_sample = audio_sample_count;
+  timing->submitted_at_ms = qwen3_asr::NowRealtimeMilliseconds();
+  return timing;
+}
+
 class Qwen3ASRModel : public asr_service::ServedModel {
 public:
   Qwen3ASRModel(const std::filesystem::path &model_directory,
@@ -71,13 +87,18 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
+    auto timing =
+        NewHTTPDecodeTiming(realtime_, static_cast<int>(samples.size()));
     if (transcriber_.CanBatch(options)) {
       return qwen3_asr::BatchableTranscription{
-          &transcriber_, std::move(samples), std::move(options)};
+          &transcriber_, std::move(samples), std::move(options),
+          std::move(timing)};
     } else {
-      return [this, samples = std::move(samples),
-              options = std::move(options)](const std::atomic<bool> &cancel) {
-        return transcriber_.Transcribe(samples, options, cancel);
+      return [this, samples = std::move(samples), options = std::move(options),
+              timing](const std::atomic<bool> &cancel) {
+        return qwen3_asr::RunRealtimeDecodeTiming(timing, [&] {
+          return transcriber_.Transcribe(samples, options, cancel);
+        });
       };
     }
   }
