@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
+#include "common/audio.h"
 #include "common/transcription.h"
+#include "moss/moss_realtime.h"
 
 bool Check(bool condition, const char *expression) {
   if (condition) {
@@ -11,6 +18,80 @@ bool Check(bool condition, const char *expression) {
   }
   std::fprintf(stderr, "check failed: %s\n", expression);
   return false;
+}
+
+// Records every allocation's size while armed, so the test can tell whether an
+// append allocated a preview timing object without reading the session's
+// private state.
+std::atomic<bool> g_record_allocs{false};
+std::atomic<size_t> g_alloc_count{0};
+constexpr size_t kMaxRecordedAllocs = 8192;
+size_t g_alloc_sizes[kMaxRecordedAllocs];
+
+void RecordAlloc(std::size_t size) {
+  if (!g_record_allocs.load(std::memory_order_relaxed)) {
+    return;
+  }
+  const size_t slot = g_alloc_count.fetch_add(1, std::memory_order_relaxed);
+  if (slot < kMaxRecordedAllocs) {
+    g_alloc_sizes[slot] = size;
+  }
+}
+
+void *operator new(std::size_t size) {
+  RecordAlloc(size);
+  void *pointer = std::malloc(size == 0 ? 1 : size);
+  if (pointer == nullptr) {
+    throw std::bad_alloc();
+  }
+  return pointer;
+}
+
+void *operator new[](std::size_t size) { return operator new(size); }
+void operator delete(void *pointer) noexcept { std::free(pointer); }
+void operator delete[](void *pointer) noexcept { std::free(pointer); }
+void operator delete(void *pointer, std::size_t) noexcept {
+  std::free(pointer);
+}
+void operator delete[](void *pointer, std::size_t) noexcept {
+  std::free(pointer);
+}
+
+struct AllocWatch {
+  AllocWatch() {
+    g_alloc_count.store(0, std::memory_order_relaxed);
+    g_record_allocs.store(true, std::memory_order_relaxed);
+  }
+  ~AllocWatch() { g_record_allocs.store(false, std::memory_order_relaxed); }
+};
+
+size_t RecordedAllocCountOfSize(std::size_t size) {
+  const size_t count = std::min(g_alloc_count.load(std::memory_order_relaxed),
+                                kMaxRecordedAllocs);
+  size_t matches = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (g_alloc_sizes[i] == size) {
+      ++matches;
+    }
+  }
+  return matches;
+}
+
+// Silent PCM16 audio as the base64 an append event carries.
+std::string ZeroAudioBase64(int sample_count) {
+  const size_t byte_count = static_cast<size_t>(sample_count) * 2;
+  std::string encoded;
+  encoded.reserve((byte_count + 2) / 3 * 4);
+  const size_t whole_triples = byte_count / 3 * 3;
+  for (size_t i = 0; i < whole_triples; i += 3) {
+    encoded += "AAAA";
+  }
+  if (byte_count - whole_triples == 1) {
+    encoded += "AA==";
+  } else if (byte_count - whole_triples == 2) {
+    encoded += "AAA=";
+  }
+  return encoded;
 }
 
 int main() {
@@ -74,6 +155,68 @@ int main() {
     if (!Check(!json.contains(key), key.c_str())) {
       return 1;
     }
+  }
+
+  // Regression: the timing object belongs to a decode, so an append that
+  // produces none must not allocate one.
+  omni_server::TranscriptionWorker worker([] {}, [] {}, 1);
+  moss::MossTranscriber transcriber("", "", 0);
+  std::vector<std::string> events;
+  const auto session = std::make_shared<moss::MossRealtimeSession>(
+      worker, transcriber, [&events](const std::string &event) {
+        events.push_back(event);
+        return true;
+      });
+
+  std::size_t timing_alloc_size = 0;
+  {
+    AllocWatch watch;
+    const auto probe = std::make_shared<omni_common::MossPreviewTiming>();
+    (void)probe;
+    if (!Check(g_alloc_count.load(std::memory_order_relaxed) == 1,
+               "timing allocation is observable")) {
+      return 1;
+    }
+    timing_alloc_size = g_alloc_sizes[0];
+  }
+
+  // 30 samples stay below the 1.25 s preview minimum, so nothing decodes.
+  const nlohmann::json short_append = {{"type", "input_audio_buffer.append"},
+                                       {"audio", ZeroAudioBase64(30)}};
+  {
+    AllocWatch watch;
+    session->Handle(short_append);
+    if (!Check(RecordedAllocCountOfSize(timing_alloc_size) == 0,
+               "append without a decode allocates no timing")) {
+      return 1;
+    }
+  }
+
+  // 1.5 s more brings the pending audio past the preview minimum, so this
+  // append decodes and allocates the timing; the double's gate holds that
+  // decode in flight, so the identical append right after decodes nothing and
+  // shows the incidental allocations of the same work. Their counts of the
+  // timing block's size must differ by exactly one.
+  const nlohmann::json longer_append = {
+      {"type", "input_audio_buffer.append"},
+      {"audio", ZeroAudioBase64(omni_common::kSampleRate * 3 / 2)}};
+  size_t decode_allocs = 0;
+  size_t held_allocs = 0;
+  moss::g_transcribe_gate.store(false, std::memory_order_release);
+  {
+    AllocWatch watch;
+    session->Handle(longer_append);
+    decode_allocs = RecordedAllocCountOfSize(timing_alloc_size);
+  }
+  {
+    AllocWatch watch;
+    session->Handle(longer_append);
+    held_allocs = RecordedAllocCountOfSize(timing_alloc_size);
+  }
+  moss::g_transcribe_gate.store(true, std::memory_order_release);
+  if (!Check(decode_allocs == held_allocs + 1,
+             "append with a decode allocates the timing exactly once")) {
+    return 1;
   }
   return 0;
 }
