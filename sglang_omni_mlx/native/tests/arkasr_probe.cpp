@@ -36,8 +36,8 @@ std::vector<float> Noise() {
   uint32_t state = 1;
   for (float &sample : samples) {
     state = state * 1664525 + 1013904223;
-    sample = static_cast<float>((state >> 8) & 0xFFFF) / 65535.0f * 0.02f -
-             0.01f;
+    sample =
+        static_cast<float>((state >> 8) & 0xFFFF) / 65535.0f * 0.02f - 0.01f;
   }
   return samples;
 }
@@ -64,13 +64,13 @@ int main(int argc, char **argv) {
   const omni_common::TranscriptionResult limited = run(loop, 2);
   const omni_common::TranscriptionResult defaulted = run(loop, std::nullopt);
   const omni_common::TranscriptionResult zero = run(loop, 0);
-  ok &= Require(limited.generated_token_count == 2 &&
-                    limited.finish_reason ==
-                        omni_common::FinishReason::kLength &&
-                    limited.window_texts.size() == 1,
-                "an explicit budget must cover the whole request, not each "
-                "window (a 75 s request with 2 tokens must decode one window "
-                "of 2 tokens, not three)");
+  ok &=
+      Require(limited.generated_token_count == 2 &&
+                  limited.finish_reason == omni_common::FinishReason::kLength &&
+                  limited.window_texts.size() == 1,
+              "an explicit budget must cover the whole request, not each "
+              "window (a 75 s request with 2 tokens must decode one window "
+              "of 2 tokens, not three)");
   ok &= Require(defaulted.generated_token_count == 3 * 256 &&
                     defaulted.window_texts.size() == 1,
                 "an unset budget must be one budget for the whole request "
@@ -84,20 +84,19 @@ int main(int argc, char **argv) {
   const omni_common::TranscriptionResult joined = run(stop, std::nullopt);
   const omni_common::TranscriptionResult capped = run(stop, 5);
   ok &= Require(joined.generated_token_count == 3 * 2 &&
-                    joined.finish_reason ==
-                        omni_common::FinishReason::kStop &&
+                    joined.finish_reason == omni_common::FinishReason::kStop &&
                     joined.window_texts.size() == 3 &&
                     joined.text == "\xc3\xa9x \xc3\xa9x \xc3\xa9x",
                 "window texts must join with a space between two spaced "
                 "scripts (the shared JoinTranscriptParts), not the byte rule "
                 "that glued a non-ASCII ending to the next window");
-  ok &= Require(capped.generated_token_count == 5 &&
-                    capped.finish_reason ==
-                        omni_common::FinishReason::kLength &&
-                    capped.window_texts.size() == 3,
-                "an explicit budget must be spent across windows in order, "
-                "not renewed per window (5 tokens over three 2-token windows "
-                "must stop the third at 1)");
+  ok &=
+      Require(capped.generated_token_count == 5 &&
+                  capped.finish_reason == omni_common::FinishReason::kLength &&
+                  capped.window_texts.size() == 3,
+              "an explicit budget must be spent across windows in order, "
+              "not renewed per window (5 tokens over three 2-token windows "
+              "must stop the third at 1)");
 
   const nlohmann::json rows = {
       {{"checkpoint", "loop"},
