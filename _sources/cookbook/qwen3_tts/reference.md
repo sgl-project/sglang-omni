@@ -124,6 +124,8 @@ By default the [first-audio chunk ramp](tuning.md#first-audio-chunk-ramp) starts
 
 Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or `X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length` response still contains decodable audio, but the utterance may be incomplete. Models that do not report how generation ended send `X-Finish-Reason: unknown`. Batch responses expose the same value as each item's `finish_reason`.
 
+When the talker reaches its generation limit, it emits an INFO log named `qwen3_tts_codec_budget_exhausted` with the request ID and generated codec frame count. Use this event to monitor budget stops across speech transports.
+
 ## Dependency troubleshooting
 
 Keep `--no-deps` on both Python package installation commands in the [prerequisites](../qwen3_tts.md#prerequisites).

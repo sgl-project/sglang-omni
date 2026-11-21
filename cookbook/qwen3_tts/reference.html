@@ -826,6 +826,7 @@
 <section id="finish-reasons">
 <h2>Finish reasons<a class="headerlink" href="#finish-reasons" title="Link to this heading">#</a></h2>
 <p>Non-streaming responses include <code class="docutils literal notranslate"><span class="pre">X-Finish-Reason:</span> <span class="pre">stop</span></code> after codec EOS or <code class="docutils literal notranslate"><span class="pre">X-Finish-Reason:</span> <span class="pre">length</span></code> when generation reaches <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>. A <code class="docutils literal notranslate"><span class="pre">length</span></code> response still contains decodable audio, but the utterance may be incomplete. Models that do not report how generation ended send <code class="docutils literal notranslate"><span class="pre">X-Finish-Reason:</span> <span class="pre">unknown</span></code>. Batch responses expose the same value as each item’s <code class="docutils literal notranslate"><span class="pre">finish_reason</span></code>.</p>
+<p>When the talker reaches its generation limit, it emits an INFO log named <code class="docutils literal notranslate"><span class="pre">qwen3_tts_codec_budget_exhausted</span></code> with the request ID and generated codec frame count. Use this event to monitor budget stops across speech transports.</p>
 </section>
 <section id="dependency-troubleshooting">
 <h2>Dependency troubleshooting<a class="headerlink" href="#dependency-troubleshooting" title="Link to this heading">#</a></h2>
