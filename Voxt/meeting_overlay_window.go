@@ -69,7 +69,7 @@ func (a *app) syncMeetingOverlay() {
 				return meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay), palette: a.prefs.Appearance.Palette}
 			},
 		)
-		opts := floatingWindowOptions("Voxt meeting", width, height, content)
+		opts := cardWindowOptions("Voxt meeting", width, height, content)
 		opts.Vibrancy = mygo.VibrancyHUD
 		opts.StateKey = "meeting-overlay"
 		a.meetOvWin = mygo.NewWindow(opts)

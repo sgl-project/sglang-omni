@@ -78,7 +78,7 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 			if state.Mode == ovRecording {
 				waveform(c, pill.Levels[:], pill.Heard, look)
 				if look.time {
-					ui.Box(c).Size(layout.TimeW, layout.RowH).Shrink(0).Center().Children(func() {
+					ui.Box(c).Height(layout.RowH).Shrink(0).Center().Children(func() {
 						ui.Text(c, pill.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
 					})
 				}

@@ -53,7 +53,8 @@ permissions:
 jobs:
   appcast:
     name: Voxt appcast
-    if: github.event_name == 'workflow_dispatch'
+    # A Voxt Beta run by hand calls this workflow as workflow_dispatch too; only a run of Voxt Appcast itself offers a release to Voxt 1.x.
+    if: github.event_name == 'workflow_dispatch' && github.workflow == 'Voxt Appcast'
     runs-on: macos-15
     timeout-minutes: 30
     environment: voxt-release
@@ -167,9 +168,9 @@ jobs:
           release_notes_by_locale="$(Voxt/scripts/release-appcast.sh notes-by-locale <<< "$body")"
 
           prepare="$(jq '{action: "prepareUpload"} + del(.sparkleVersion)' <<< "$ENTRY" \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)"
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::prepareUpload was refused: $prepare"; exit 1; }
           zip_upload="$(jq -r '.data.uploads.zip.url // empty' <<< "$prepare")"
           dmg_upload="$(jq -r '.data.uploads.dmg.url // empty' <<< "$prepare")"
           if [[ -z "$zip_upload" || -z "$dmg_upload" ]]; then
@@ -189,9 +190,9 @@ jobs:
             '. + {sha256: $sha256, size: $size, edSignature: $edSignature,
               releaseNotes: $notes.en, releaseNotesByLocale: $notes,
               releaseURL: $releaseURL, publishedAt: $publishedAt}' <<< "$ENTRY" \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)"
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::update was refused: $reply"; exit 1; }
           echo "$reply"
 
           # Sparkle skips an entry that needs arm64 on an Intel Mac. Only the
@@ -207,7 +208,7 @@ jobs:
 
           jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
             '{channel: $channel, version: $version, mode: "replace-latest"}' \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/appcast" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/appcast" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "Content-Type: application/json" --data-binary @-
           echo
 
@@ -287,23 +288,38 @@ jobs:
               and all([.url] + [.deltas[]?.url][]; startswith($base))' update-darwin-arm64.json > /dev/null
 
       - name: Publish the Voxt 2 manifest
+        id: publish
         env:
           VOXT_UPDATE_API_BASE: ${{ secrets.VOXT_UPDATE_API_BASE }}
           VOXT_RELEASE_API_KEY: ${{ secrets.VOXT_RELEASE_API_KEY }}
         run: |
           set -euo pipefail
           api="${VOXT_UPDATE_API_BASE%/}"
+          # Without --fail, curl still retries 408, 429 and 5xx but returns a 4xx at once.
           retry=(--retry 6 --retry-all-errors --retry-delay 10 --retry-max-time 180)
-          reply="$(jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
+          reply_path="$RUNNER_TEMP/voxt2/reply"
+          status="$(jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
             --slurpfile manifest "$RUNNER_TEMP/voxt2/update-darwin-arm64.json" \
             '{channel: $channel, version: $version, mode: "replace-latest", manifest: $manifest[0]}' \
-            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/voxt2/update" \
+            | curl --silent --show-error "${retry[@]}" -o "$reply_path" -w '%{http_code}' -X POST "$api/api/pkg/voxt2/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::voxt2 update was refused: $reply"; exit 1; }
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::The update service did not answer the voxt2 update"; exit 1; }
+          reply="$(cat "$reply_path")"
+          # The update service answers a route it does not serve yet with its website's 404 page, not JSON.
+          if [[ "$status" == 404 ]] && ! jq -e 'type == "object"' <<< "$reply" > /dev/null 2>&1; then
+            echo "::warning::The update service has no POST /api/pkg/voxt2/update yet, so Voxt 2's $CHANNEL feed does not offer $VERSION (Voxt/docs/release.md §0)"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "$reply"
-          jq -e '.ok == true' <<< "$reply" > /dev/null
+          if [[ "$status" != 2?? ]] || ! jq -e '.ok == true' <<< "$reply" > /dev/null; then
+            echo "::error::voxt2 update was refused (HTTP $status)"
+            exit 1
+          fi
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
       - name: Check the Voxt 2 feed
+        if: steps.publish.outputs.published == 'true'
         run: |
           set -euo pipefail
           feed="$(Voxt/scripts/release-appcast.sh feed-url "$CHANNEL")"

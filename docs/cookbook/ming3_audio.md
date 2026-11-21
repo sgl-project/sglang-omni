@@ -39,7 +39,7 @@ MTP uses additional GPU memory. Speedup depends on the workload and output lengt
 Usage notes:
 
 - To disable MTP in a config that enables it, add `--thinker.engine.disable_speculative_decoding true`.
-- MTP uses synchronous decoding (`--thinker.factory.enable_async_decode false`, the default).
+- MTP decodes synchronously by default. Add `--thinker.factory.enable_async_decode true` to overlap each verify round with the host work of the previous one. `--thinker.factory.async_decode_min_batch_size N` keeps batches of fewer than N requests synchronous. On 4×H20 at TP4, overlap raised MTP transcription throughput by 5–6% at 16 and 32 running requests and made no measurable difference at 8 or fewer, so leave it off at low load.
 - Keep `speculative_eagle_topk=1` and `repetition_penalty=1`. Prefix caching and chunked prefill are unavailable for this model.
 
 For MTP acceptance statistics, set `return_spec_tokens_details=true` on chat or transcription requests and read `sglext.spec_tokens_details` in the JSON response.

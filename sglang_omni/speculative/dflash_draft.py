@@ -3,6 +3,8 @@
 
 SGLang's draft borrows the target head. A speculators checkpoint trains over a subset of
 the target vocabulary instead, so proposals go through its head and its token mapping.
+A speculators DFlash2 checkpoint keeps the full vocabulary and borrows the target head,
+so it loads as SGLang's own DFlash2 draft and runs under SGLang's worker.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from torch import nn
 from transformers import Qwen3Config
 
 DRAFT_ARCHITECTURE = "ReducedVocabularyDFlashDraftModel"
+SELECTOR_DRAFT_ARCHITECTURE = "DFlash2DraftModel"
 
 
 def materialize_draft_checkpoint(
@@ -31,9 +34,10 @@ def materialize_draft_checkpoint(
     *,
     allow_non_causal: bool = False,
 ) -> TemporaryDirectory[str]:
-    """Write a loadable copy of a speculators-format DFlash draft.
+    """Write a loadable copy of a speculators-format DFlash or DFlash2 draft.
 
-    The copy has a flat qwen3 config that names the reduced-vocabulary draft class and
+    The copy has a flat qwen3 config that names the draft class (the reduced-vocabulary
+    one, or SGLang's DFlash2 draft with its convolutions and candidate selector) and
     links the original weights. Non-causal windows require the caller's opt-in.
     The caller releases it once the engine has loaded.
     """
@@ -44,8 +48,11 @@ def materialize_draft_checkpoint(
     )
     with open(os.path.join(source_dir, "config.json")) as config_file:
         source_config = json.load(config_file)
-    if source_config.get("speculators_model_type") != "dflash":
-        raise ValueError(f"{draft_model_path} is not a speculators DFlash checkpoint")
+    model_type = source_config.get("speculators_model_type")
+    if model_type not in ("dflash", "dflash2"):
+        raise ValueError(
+            f"{draft_model_path} is not a speculators DFlash or DFlash2 checkpoint"
+        )
     elif source_config.get("sample_from_anchor", False):
         raise ValueError(f"{draft_model_path} samples from the anchor token")
     elif source_config["sliding_window_non_causal"] and not allow_non_causal:
@@ -75,6 +82,19 @@ def materialize_draft_checkpoint(
         draft_config["is_causal"] = False
     else:
         pass
+    if model_type == "dflash2":
+        # The selector draft proposes through the target head over the full vocabulary.
+        draft_config["architectures"] = [SELECTOR_DRAFT_ARCHITECTURE]
+        draft_config.pop("draft_vocab_size")
+        for key in (
+            "conv_kernel_size",
+            "conv_group_size",
+            "selector_rank",
+            "selector_top_k",
+        ):
+            draft_config["dflash_config"][key] = source_config[key]
+    else:
+        pass
     draft_checkpoint = TemporaryDirectory(prefix="dflash-draft-")
     with open(os.path.join(draft_checkpoint.name, "config.json"), "w") as config_file:
         json.dump(draft_config, config_file, indent=2)
@@ -87,6 +107,16 @@ def materialize_draft_checkpoint(
         else:
             pass
     return draft_checkpoint
+
+
+def draft_worker_class(draft_checkpoint_dir: str) -> type[DFlashWorkerV2]:
+    """SGLang's worker for a selector draft, else the reduced-vocabulary worker."""
+    with open(os.path.join(draft_checkpoint_dir, "config.json")) as config_file:
+        architectures = json.load(config_file)["architectures"]
+    if architectures == [SELECTOR_DRAFT_ARCHITECTURE]:
+        return DFlashWorkerV2
+    else:
+        return ReducedVocabularyDFlashWorker
 
 
 class ReducedVocabularyDFlashDraftModel(DFlashDraftModel):

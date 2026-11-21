@@ -1,0 +1,39 @@
+# time.Sleep calls in test files today (TestSleepsInTests), a count per file.
+# Review keeps the ratchet: never raise a count or add a line. The test compares
+# final counts only, so it cannot prove that a PR left its allowance unchanged.
+# A file with none leaves the list.
+eval_asr_test.go 1
+eval_longasr_test.go 1
+internal/actnow/runtime_test.go 1
+internal/asr/aliyun/aliyun_test.go 1
+internal/asr/openai/openai_test.go 1
+internal/codexauth/codexauth_test.go 4
+internal/dictation/dictation_test.go 1
+internal/helper/supervisor_test.go 1
+internal/historyapi/server_test.go 3
+internal/llm/llm_test.go 1
+internal/meeting/finalize_test.go 1
+internal/meeting/manager_more_test.go 1
+internal/meeting/manager_test.go 3
+internal/meeting/repeat_store_test.go 1
+internal/meeting/track_test.go 2
+internal/models/accept_test.go 2
+internal/models/manager_test.go 3
+internal/models/real_test.go 2
+internal/omni/draft_test.go 1
+internal/omni/runtime_test.go 1
+internal/outmute/process_test.go 1
+internal/session/fakes_test.go 2
+internal/session/llmwait_test.go 1
+internal/session/session_test.go 2
+internal/session/stop_test.go 1
+internal/session/write_test.go 2
+local_fakes_test.go 1
+mac_e2e_test.go 3
+models_omni_test.go 1
+mute_e2e_test.go 2
+overlay_flows_test.go 1
+remote_chatgpt_test.go 1
+rewrite_followup_e2e_test.go 1
+session_e2e_pill_think_test.go 1
+snapshot_env_test.go 1

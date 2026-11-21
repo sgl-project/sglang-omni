@@ -585,10 +585,10 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             capture_hidden_mode=CaptureHiddenMode.NULL,
             return_hidden_states_before_norm=False,
         )
-        self.draft_runner.forward(draft_batch)
         result = self.target_worker.forward_batch_generation(
             batch, capture_hidden_mode=CaptureHiddenMode.NULL
         )
+        self.draft_runner.forward(draft_batch)
         # note (wilsonzheng0327): the sampled token has no KV yet, so the committed
         # length is the prompt's.
         result.new_seq_lens = batch.seq_lens

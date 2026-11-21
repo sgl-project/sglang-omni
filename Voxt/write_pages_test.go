@@ -93,6 +93,9 @@ func TestRewritePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Rewrite.Cleanup {
 		t.Error("clean-up not saved")
 	}
+	if has(tt, "Input box") {
+		t.Error("the input box switch is back: the box is the only Rewrite")
+	}
 	if has(tt, "Long answers in the card") {
 		t.Error("0.1.0's card length setting is back")
 	}
@@ -147,7 +150,7 @@ func TestOverlayWriting(t *testing.T) {
 	}
 	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"AI answer", "Try again", "shorter", "a long text"} {
+	for _, s := range []string{"Rewrite", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {
 			t.Errorf("failure card: no %q in %q", s, firstTexts(tt))
 		}
