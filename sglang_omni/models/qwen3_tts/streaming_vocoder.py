@@ -1142,7 +1142,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         arena = arena_type(
             self.incremental_decoder,
             num_slots=num_slots,
-            # note (ratish): a whole request keeps its row from its first replay to its last and counts in the same in-flight cap as a stream, so as many rows let none wait for one; only the initial worker takes and returns them, so a whole request never waits for a stream's row.
+            # note (ratish): a whole request keeps its row from its first replay to its last and counts in the in-flight cap with the streams, so the default count, the cap, lets none wait for a row; only the initial worker takes and returns these rows, so a whole request never waits for a stream's row.
             reserved_slots=num_slots if self.decodes_whole_requests else 0,
             device=self.device,
             dtype=dtype,
