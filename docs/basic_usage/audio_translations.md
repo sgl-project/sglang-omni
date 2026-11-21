@@ -33,13 +33,10 @@ sgl-omni serve \
 curl -X POST http://localhost:8000/v1/audio/translations \
   -F model=openai/whisper-large-v3 \
   -F file=@tests/data/query_to_cars.wav \
-  -F language=fr \
   -F response_format=json
 ```
 
-`language` is an optional source-language hint and a SGLang-Omni extension;
-OpenAI's official audio translations schema does not define it, and the
-translation target is English in both APIs.
+Whisper detects the source language when `language` is omitted. This optional source-language hint is an SGLang-Omni extension to OpenAI's translations schema. Both APIs translate to English.
 
 ## Model Support
 
@@ -64,9 +61,7 @@ See each model's cookbook for its transcription workflow.
 | `text` | Raw translated text with `text/plain` content type |
 | `srt`, `vtt` | Whisper subtitles with model-derived segment timestamps |
 
-`verbose_json` returns a single segment spanning the audio duration, matching
-`/v1/audio/transcriptions`. Subtitle formats require a model adapter with real
-segment timestamps; unsupported models return HTTP 400 before inference.
+For a Whisper clip with translated text, `verbose_json` returns a segment spanning the clip. Subtitle formats require a model adapter with real segment timestamps. An unsupported model returns HTTP 400 before inference.
 
 Streaming is available with `stream=true` for `json` and `text`, using the same
 SSE lifecycle as transcriptions: `transcript.text.delta` events, one

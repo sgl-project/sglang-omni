@@ -1,18 +1,102 @@
 # Whisper ASR
 
-Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. This path remains experimental in the current SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior before production deployment.
+Whisper ASR checkpoints serve the OpenAI-compatible `/v1/audio/transcriptions`
+endpoint, and multilingual checkpoints also translate source speech to English
+through `/v1/audio/translations`. This path remains experimental in the current
+SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior
+before production deployment. Shared request formats, SSE streaming, and the
+Python client are covered in [ASR Model Usage](../basic_usage/asr.md); this page
+keeps Whisper's launch recipe, tuning knobs, and limits.
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md) or [Installation - Ascend NPU](../get_started/installation_npu.md), then download a Whisper checkpoint:
+Install `sglang-omni` by following [Installation](../get_started/installation.md) or [Installation - Ascend NPU](../other_platforms/installation_npu.md), then download a Whisper checkpoint:
 
 ```bash
 hf download openai/whisper-large-v3
 ```
 
+Use a multilingual, non-turbo checkpoint when you need the translate task:
+`*.en` checkpoints have no translate task, and `whisper-large-v3-turbo` was
+distilled without it.
+
+## Server Configuration
+
+Whisper ASR runs a single ASR stage on one GPU/Ascend NPU.
+
+```bash
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --port 8000
+```
+
+The first startup can take several minutes while the graphs are captured. Check
+readiness in another terminal:
+
+```bash
+curl -fS http://localhost:8000/health
+```
+
+Continue when this returns HTTP 200. For Intel XPU installation and launch, see
+the [Whisper XPU recipe](../other_platforms/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
+
+## Transcribe Audio
+
+Send a first request to the running server:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=openai/whisper-large-v3 \
+  -F file=@tests/data/query_to_cars.wav \
+  -F response_format=json
+```
+
+The Python client and the SSE delta stream follow the same shape as every other
+ASR pipeline; see [ASR Model Usage](../basic_usage/asr.md). Streaming accepts
+the `json` and `text` formats only, and a stream request runs as one engine
+request, so `stream=true` is bounded by the 30-second mel window.
+
+## Translate Audio
+
+Multilingual, non-turbo Whisper checkpoints translate speech to English through `/v1/audio/translations`. Omit `language` to detect the source language.
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/translations \
+  -F model=openai/whisper-large-v3 \
+  -F file=@tests/data/query_to_cars.wav \
+  -F response_format=json
+```
+
+For this endpoint, `language` is an optional source-language hint and a
+**SGLang-Omni extension**. OpenAI's official audio translations request schema
+does not include `language`; the translation target is English in both APIs.
+See the [audio translation support matrix](../basic_usage/audio_translations.md)
+for response formats and other ASR models.
+
+## Request Parameters
+
+The table lists only Whisper-specific behavior. For the shared fields `file`, `model`, `response_format`, `temperature`, and `stream`, see [ASR Model Usage](../basic_usage/asr.md#request-parameters).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
+| `prompt` | string | unset | Optional text used as Whisper prev-context conditioning. Only the last 223 prompt tokens are kept (224 prev-context tokens including `<\|startofprev\|>`); the prompt must not contain Whisper special tokens |
+| `response_format` | string | `json` | Use `srt` or `vtt` for a single, non-streamed clip with model-derived timestamps. Streaming accepts `json` and `text` |
+
+The serving route selects the internal `task` from the endpoint (`transcribe`
+or `translate`); it is not a public form field. The route uses the ASR stage
+default unless the pipeline is configured another way. For smoke tests, keep
+the request minimal and use `response_format=json`.
+
+Both endpoints return HTTP 400 for streaming subtitles. Transcription also returns HTTP 400 for `srt` or `vtt` when the server splits a long upload. Use `verbose_json` for segment times based on those chunk boundaries.
+
+Prompt, task prefix, and output share Whisper's 448-token decoder context, so
+the prompt keeps fewer prev-context tokens when `max_new_tokens` is large;
+`max_new_tokens` is likewise clamped to that context.
+
 ## Ascend NPU
 
-Follow [NPU Installation](../get_started/installation_npu.md) and use the SGLang/CANN runtime specified in [pyproject_npu.toml](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml). Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:
+Follow [NPU Installation](../other_platforms/installation_npu.md) and use the SGLang/CANN runtime specified in [pyproject_npu.toml](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml). Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0
@@ -25,18 +109,6 @@ Pipeline startup defaults to `mem_fraction_static=0.50` on NPU and `0.85` elsewh
 NPU decode graphs are disabled by default so Whisper can use the existing attention backend with ordinary decode. Prefill graph and compilation settings are preserved. Explicit graph overrides retain their precedence, but re-enabling NPU decode graphs is outside the validated scope. Ordinary decode can reduce throughput.
 
 The encoder uses NPU SDPA; the encoder CUDA Graph and optional dense-prefill optimizations described below apply to CUDA only.
-
-## Server Configuration
-
-Whisper ASR runs a single ASR stage on one GPU/Ascend NPU.
-
-```bash
-sgl-omni serve \
-  --model-path openai/whisper-large-v3 \
-  --port 8000
-```
-
-For Intel XPU installation and launch, see the [Whisper XPU recipe](../other_platforms/installation_xpu.md#whisper-asr-speech-to-text-single-xpu).
 
 ## Encoder CUDA Graph
 
@@ -145,8 +217,6 @@ A request with a positive `temperature` samples under the draft: each draft toke
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
 
-Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
-
 On one H200 with the default 64 running requests, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft. Fresh audio misses the encoder cache on every request; repeated audio is the warmup's clips again, so every request reuses its cached encoder output:
 
 | Audio | Concurrency | No draft req/s | Draft req/s | Throughput gain | No draft p95 latency (s) | Draft p95 latency (s) |
@@ -170,123 +240,48 @@ Corpus WER was 0.0365 in every run and no request failed. The draft accepted 7.0
 
 Chinese transcripts are shorter, so the gain is smaller: on 500 SeedTTS ZH clips with 16 running requests, 14% to 18% at concurrency 1 and none at 16. The draft was trained on transcription in these four languages only and has not been measured on translation or on other languages.
 
-## Transcribe Audio
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/transcriptions \
-  -F model=openai/whisper-large-v3 \
-  -F file=@tests/data/query_to_cars.wav \
-  -F response_format=json
-```
-
-```python
-import requests
-
-with open("tests/data/query_to_cars.wav", "rb") as f:
-    resp = requests.post(
-        "http://localhost:8000/v1/audio/transcriptions",
-        data={
-            "model": "openai/whisper-large-v3",
-            "response_format": "json",
-        },
-        files={"file": ("query_to_cars.wav", f, "audio/wav")},
-        timeout=300,
-    )
-
-resp.raise_for_status()
-print(resp.json()["text"])
-```
-
-## Translate Audio
-
-Whisper multilingual checkpoints can translate source speech to English via
-`/v1/audio/translations`. Use a multilingual, non-turbo checkpoint: `*.en`
-checkpoints have no translate task, and `whisper-large-v3-turbo` was distilled
-without it.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/translations \
-  -F model=openai/whisper-large-v3 \
-  -F file=@tests/data/query_to_cars.wav \
-  -F language=fr \
-  -F response_format=json
-```
-
-For this endpoint, `language` is an optional source-language hint and a
-**SGLang-Omni extension**. OpenAI's official audio translations request schema
-does not include `language`; the translation target is English in both APIs.
-See the [audio translation support matrix](../basic_usage/audio_translations.md)
-for response formats and other ASR models.
-
-## Request Parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `file` | file | required | Audio file uploaded as multipart form data |
-| `model` | string | server default | Model identifier |
-| `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
-| `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
-| `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
-| `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding. A negative value returns HTTP 422 |
-
-The serving route selects the internal `task` from the endpoint (`transcribe`
-or `translate`); it is not a public form field. The route uses the ASR stage
-default unless the pipeline is configured another way. For smoke tests, keep
-the request minimal and use `response_format=json`.
-
-For both transcription and translation, `srt` and `vtt` request Whisper's
-model-derived segment timestamps. Non-streaming subtitle requests are
-supported; `stream=true` with either subtitle format returns HTTP 400.
-
 ## Long Audio
 
-Whisper reads at most 30 seconds of audio in one request: the feature extractor works on a fixed 30-second mel window and drops everything past it.
-In SGLang-Omni, we transcribe longer uploads in chunks by splitting the audio at the quietest point near each 30-second boundary,
-running each chunk as its own engine request, and joining the transcripts back in order. By default, chunks decode independently and the caller's
-`prompt` is sent to each chunk. Setting `condition_on_previous_text` to `true` makes chunks decode sequentially: the caller prompt conditions the
-first chunk, then each chunk uses the immediately preceding chunk's decoded text as its prompt. If an enabled chunk contains a sustained repeated
-character cycle, it is retried once without previous context; the first result is discarded, and the retry result conditions the next chunk.
-The detector checks periods of 8–128 normalized letter, number, or combining-mark characters repeated at least three times. It does not
-depend on whitespace-delimited words, so it also covers languages without reliable word boundaries. A single Latin-script word repeated three
-times is excluded to preserve literal repetition. The three-copy threshold caught the observed pathological loops while producing zero retries
-on the submitted TED-LIUM evaluation; it remains a conservative recovery heuristic rather than a transcription guarantee.
-
-This opt-in is not identical to OpenAI Whisper's `condition_on_previous_text=True`: OpenAI Whisper carries decoded token history across internal
-windows and can reset that history during fallback, while SGLang-Omni currently passes the previous server chunk's decoded text. The current
-TED-LIUM evaluation did not show an accuracy or throughput advantage from enabling this implementation, so it remains disabled by default.
-Changing the default or implementing token-level parity should be evaluated in a separate PR.
-
-The behavior follows two kinds of values.
-
-The scheduling policy is yours to tune, with dotted flags or the matching
-YAML keys:
+Whisper accepts up to 30 seconds of audio per engine request. For longer non-streaming uploads, `/v1/audio/transcriptions` splits the recording at quiet points, runs one engine request per chunk, and joins the transcripts in order. `/v1/audio/translations` processes one clip per request. See [ASR Model Usage](../basic_usage/asr.md#long-audio) for the shared splitting and admission rules. Whisper uses the following defaults.
 
 | Name | Default | Meaning |
 |---|---|---|
-| `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR you can only lower it: 30s is the hard edge of the model's mel window. |
-| `--audio_chunking.max_concurrent_chunks` | `8` | Per-request concurrency cap used while chunks are independent. When previous-text conditioning is enabled, one request's Whisper chunks decode in order while chunks from different requests can still batch together. |
-| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob's job. |
-| `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done. |
+| `--audio_chunking.max_audio_clip_s` | `30` | Longest clip sent to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR you can only lower it: 30 s is the hard edge of the model's mel window |
+| `--audio_chunking.max_concurrent_chunks` | `8` | Per-request concurrency cap while chunks are independent. With previous-text conditioning, one request's chunks decode in order while chunks from different requests can still batch together |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it |
+| `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated |
 
-The last knob is the aggregate guard: decoded waveforms held at once are at
-most `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4`
-bytes (decoding itself has transient peaks above that), and long audio holds
-at most
-`max_concurrent_long_audio_requests × max_concurrent_chunks` engine slots at
-once. The default keeps that product at half of
-`--asr.engine.max_running_requests`; an explicit value whose product reaches
-`max_running_requests` logs a warning at startup, since short requests would
-then queue behind long audio whenever it is saturated.
-
-The model properties are ClassVars on `WhisperASRPipelineConfig`; no
-configuration path reaches them:
+These model properties are ClassVars on the pipeline config and cannot be changed through configuration. `WhisperASRPipelineConfig` sets the first three and inherits the `PipelineConfig` default of `false` for `condition_on_previous_text`.
 
 | Name | Value | Meaning |
 |---|---|---|
-| `allow_audio_chunking` | `true` | Whisper transcribes an isolated chunk correctly, so chunking is on. |
-| `max_native_clip_s` | `30` | The mel-window edge. Streaming cannot chunk, so `stream=true` takes audio up to 30s and gets HTTP 400 above that. |
-| `min_tail_s` | `1` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it, which keeps Whisper from hallucinating on very short clips. |
-| `condition_on_previous_text` | `false` | Whether Whisper serializes chunks and conditions each chunk on the preceding decoded text. Disabled chunks remain independent and can use the per-request concurrency cap. |
+| `allow_audio_chunking` | `true` | Whisper transcribes an isolated chunk correctly, so chunking is on |
+| `max_native_clip_s` | `30` | The mel-window edge. Streaming cannot chunk, so `stream=true` takes audio up to 30 s and gets HTTP 400 above that |
+| `min_tail_s` | `1` | When the chunk size allows it, the splitter moves the preceding cut earlier to leave at least one second for the final chunk |
+| `condition_on_previous_text` | `false` (inherited default, not overridden by Whisper) | Whether one request's chunks decode sequentially, each conditioned on the preceding chunk's decoded text. While disabled, chunks stay independent and can use the per-request concurrency cap |
+
+By default chunks decode independently and the caller's `prompt` is sent to
+each chunk. Enabling `condition_on_previous_text` makes the caller prompt
+condition the first chunk, then each chunk use the immediately preceding
+chunk's decoded text as its prompt. This requires overriding the ClassVar in code
+because there is no YAML or CLI switch. If an enabled chunk contains a sustained
+repeated-character cycle, it is retried once without previous context; the
+first result is discarded, and the retry result conditions the next chunk. The
+detector checks periods of 8–128 normalized letter, number, or combining-mark
+characters repeated at least three times, so it also covers languages without
+reliable word boundaries, while a single Latin-script word repeated three times
+stays literal. The three-copy threshold caught the observed pathological loops
+with zero retries on the submitted TED-LIUM evaluation; it remains a
+conservative recovery heuristic rather than a transcription guarantee.
+
+This opt-in is not identical to OpenAI Whisper's
+`condition_on_previous_text=True`: OpenAI Whisper carries decoded token history
+across internal windows and can reset that history during fallback, while
+SGLang-Omni currently passes the previous server chunk's decoded text. The
+TED-LIUM evaluation did not show an accuracy or throughput advantage from
+enabling this implementation, so it remains disabled by default. Changing the
+default or implementing token-level parity should be evaluated in a separate
+PR.
 
 ## Benchmarking
 
@@ -384,8 +379,7 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 
 - Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
   operational behavior before production deployment.
-- `verbose_json` returns a single segment spanning the audio duration; `srt`
-  and `vtt` are not supported and return HTTP 400.
+- For a single clip with text, `verbose_json` returns a segment spanning the clip. For a chunked transcription it returns one segment per non-empty chunk, timed to the chunk boundaries. For model-derived subtitles, use a single clip and request `srt` or `vtt` with streaming off.
 - Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA
   Graph. Validate the selected buckets before production use.
 - Audio encoding runs before LM admission by default
@@ -405,12 +399,3 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 - Chunked prefill stays disabled because the Whisper encoder prefix must be
   admitted atomically. Requests that exceed the current prefill budget wait
   for the next batch instead of splitting the encoder prefix.
-- First startup can take several minutes.
-- The endpoint accepts one uploaded file per request.
-- Audio is resampled to 16 kHz before transcription.
-- `prompt` conditions decoding via Whisper prev-context tokens. Only the last
-  223 prompt tokens are kept (224 prev-context tokens including
-  `<|startofprev|>`) — fewer when `max_new_tokens` is large, since prompt,
-  task prefix, and output share Whisper's 448-token decoder context.
-  `max_new_tokens` is likewise clamped to that context. The prompt must not
-  contain Whisper special tokens.
