@@ -96,7 +96,13 @@ class BenchmarkRunner:
             )
             self.wall_clock_s = time.perf_counter() - t0
             # note (Yucheng Hu): only the final collection drain is outside the timed window.
-            await asyncio.gather(*follow_up_tasks)
+            try:
+                await asyncio.gather(*follow_up_tasks)
+            except BaseException:
+                for task in follow_up_tasks:
+                    task.cancel()
+                await asyncio.gather(*follow_up_tasks, return_exceptions=True)
+                raise
         return results
 
     async def _warmup(
@@ -124,7 +130,14 @@ class BenchmarkRunner:
         # such as the MOSS-TTS reference-audio cache, for requests that are
         # about to be timed. Repeat one sample to get the concurrency shape
         # without widening that bias as concurrency grows.
-        results = await asyncio.gather(*(_limited(samples[0]) for _ in range(count)))
+        tasks = [asyncio.create_task(_limited(samples[0])) for _ in range(count)]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for i, result in enumerate(results):
             status = "ok" if result.is_success else result.error
             logger.info("  warmup %d/%d: %s", i + 1, count, status)
@@ -181,15 +194,40 @@ class BenchmarkRunner:
             pbar.update(1)
             return result
 
-        try:
-            tasks: list[asyncio.Task] = []
-            for sample, offset in zip(samples, planned_offsets):
-                planned_at = dispatch_start + float(offset)
-                if open_loop:
-                    await asyncio.sleep(max(0.0, planned_at - loop.time()))
-                tasks.append(asyncio.create_task(_limited(sample, planned_at)))
+        tasks: list[asyncio.Task[RequestResult]] = []
+        completed_requests: asyncio.Queue[asyncio.Task[RequestResult] | None] = (
+            asyncio.Queue()
+        )
 
+        async def schedule_arrivals() -> None:
+            try:
+                for sample, offset in zip(samples, planned_offsets):
+                    planned_at = dispatch_start + float(offset)
+                    if open_loop:
+                        await asyncio.sleep(max(0.0, planned_at - loop.time()))
+                    else:
+                        pass
+                    request_task = asyncio.create_task(_limited(sample, planned_at))
+                    tasks.append(request_task)
+                    request_task.add_done_callback(completed_requests.put_nowait)
+            finally:
+                completed_requests.put_nowait(None)
+
+        arrival_task = asyncio.create_task(schedule_arrivals())
+        try:
+            while (completed_request := await completed_requests.get()) is not None:
+                completed_request.result()
+            await arrival_task
             results: list[RequestResult] = list(await asyncio.gather(*tasks))
+        except BaseException:
+            arrival_task.cancel()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(arrival_task, *tasks, return_exceptions=True)
+            for task in follow_up_tasks:
+                task.cancel()
+            await asyncio.gather(*follow_up_tasks, return_exceptions=True)
+            raise
         finally:
             pbar.close()
         return results, follow_up_tasks
@@ -234,13 +272,20 @@ async def run_fixed_duration(
     connector = aiohttp.TCPConnector(limit=0)
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         if should_warm_up:
-            warmup_results = await asyncio.gather(
-                *(
+            warmup_tasks = [
+                asyncio.create_task(
                     group.send_fn(session, samples[group.first_sample_index])
-                    for group in groups
-                    for _ in range(group.clients)
                 )
-            )
+                for group in groups
+                for _ in range(group.clients)
+            ]
+            try:
+                warmup_results = await asyncio.gather(*warmup_tasks)
+            except BaseException:
+                for task in warmup_tasks:
+                    task.cancel()
+                await asyncio.gather(*warmup_tasks, return_exceptions=True)
+                raise
             errors = [
                 result.error for result in warmup_results if not result.is_success
             ]
@@ -285,8 +330,20 @@ async def run_fixed_duration(
             f"Running {sum(group.clients for group in groups)} closed loop clients "
             f"for {settle_s} s settle and a {duration_s} s window"
         )
-        await asyncio.gather(
-            *(run_client(group) for group in groups for _ in range(group.clients))
-        )
-        await asyncio.gather(*follow_up_tasks)
+        client_tasks = [
+            asyncio.create_task(run_client(group))
+            for group in groups
+            for _ in range(group.clients)
+        ]
+        try:
+            await asyncio.gather(*client_tasks)
+            await asyncio.gather(*follow_up_tasks)
+        except BaseException:
+            for task in client_tasks:
+                task.cancel()
+            await asyncio.gather(*client_tasks, return_exceptions=True)
+            for task in follow_up_tasks:
+                task.cancel()
+            await asyncio.gather(*follow_up_tasks, return_exceptions=True)
+            raise
     return FixedDurationRun(results=results, issued_samples=issued_samples)

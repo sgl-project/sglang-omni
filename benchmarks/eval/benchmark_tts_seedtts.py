@@ -139,6 +139,7 @@ from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     QWEN3_ASR_MODEL_PATH,
 )
+from benchmarks.tasks.audio_artifacts import TtsAudioArtifacts
 from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     build_base_url,
@@ -245,6 +246,7 @@ class TtsSeedttsBenchmarkConfig:
     no_ref_text: bool = False
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
+    audio_artifact_max_bytes: int = 1024**3
     max_samples: int | None = None
     # Note (Yueying Li): skip this many samples before taking max_samples — lets N concurrent
     # clients replay DISJOINT dataset shards (offset i*max_samples) so shared
@@ -354,6 +356,7 @@ def _build_results_config(
         "ref_format": config.ref_format,
         "no_ref_text": config.no_ref_text,
         "response_format": config.response_format,
+        "audio_artifact_max_bytes": config.audio_artifact_max_bytes,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -487,9 +490,13 @@ async def run_tts_seedtts_benchmark(
         pass
     logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
 
-    save_audio_dir = None
+    audio_artifacts = None
     if save_audio:
         save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
+        audio_artifacts = TtsAudioArtifacts(
+            output_directory=Path(save_audio_dir),
+            maximum_bytes=config.audio_artifact_max_bytes,
+        )
         os.makedirs(save_audio_dir, exist_ok=True)
     else:
         os.makedirs(config.output_dir, exist_ok=True)
@@ -505,7 +512,7 @@ async def run_tts_seedtts_benchmark(
         voice=config.voice,
         task_type=config.task_type,
         instructions=config.instructions,
-        save_audio_dir=save_audio_dir,
+        audio_artifacts=audio_artifacts,
     )
     if config.subtalker_dosample_ratio is None:
         send_fn = make_tts_send_fn(
@@ -537,16 +544,32 @@ async def run_tts_seedtts_benchmark(
                 outputs = await runner.run(samples, send_fn, after_send=collect)
         else:
             outputs = await runner.run(samples, send_fn)
+    except BaseException:
+        if audio_artifacts is not None:
+            audio_artifacts.clear()
+        else:
+            pass
+        raise
     finally:
         resources = monitor.stop() if monitor is not None else None
         if memory_monitor is not None:
             save_json_results(memory_monitor.stop(), config.output_dir, "memory.json")
         else:
             pass
+    if audio_artifacts is not None:
+        try:
+            audio_artifacts.flush()
+        finally:
+            audio_artifacts.clear()
+    else:
+        pass
     warn_if_tail_percentile_is_thin(len(outputs))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
     metrics["wall_clock_s"] = runner.wall_clock_s
+    metrics["audio_artifact_peak_bytes"] = (
+        audio_artifacts.peak_bytes if audio_artifacts is not None else 0
+    )
     if resources is None:
         pass
     elif resources["available"]:
@@ -607,11 +630,15 @@ async def run_tts_mixture_benchmark(
     else:
         pass
 
+    audio_artifacts = None
     if save_audio:
         save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
+        audio_artifacts = TtsAudioArtifacts(
+            output_directory=Path(save_audio_dir),
+            maximum_bytes=config.audio_artifact_max_bytes,
+        )
         os.makedirs(save_audio_dir, exist_ok=True)
     else:
-        save_audio_dir = None
         os.makedirs(config.output_dir, exist_ok=True)
     generation_kwargs = _build_generation_kwargs(config)
     common_send_kwargs = dict(
@@ -622,7 +649,7 @@ async def run_tts_mixture_benchmark(
         voice=config.voice,
         task_type=config.task_type,
         instructions=config.instructions,
-        save_audio_dir=save_audio_dir,
+        audio_artifacts=audio_artifacts,
     )
     send_fns: dict[RequestClass, SendFn] = {
         "non_streaming": make_tts_send_fn(
@@ -669,8 +696,21 @@ async def run_tts_mixture_benchmark(
                 timeout_s=RunConfig().timeout_s,
                 after_send=after_send,
             )
+    except BaseException:
+        if audio_artifacts is not None:
+            audio_artifacts.clear()
+        else:
+            pass
+        raise
     finally:
         resources = monitor.stop() if monitor is not None else None
+    if audio_artifacts is not None:
+        try:
+            audio_artifacts.flush()
+        finally:
+            audio_artifacts.clear()
+    else:
+        pass
 
     summaries = compute_mixture_summaries(
         run.results,
@@ -682,6 +722,9 @@ async def run_tts_mixture_benchmark(
     for class_summary in summaries["summary_by_class"].values():
         warn_if_tail_percentile_is_thin(class_summary["total_requests"])
     metrics = summaries["summary"]
+    metrics["audio_artifact_peak_bytes"] = (
+        audio_artifacts.peak_bytes if audio_artifacts is not None else 0
+    )
     if resources is None:
         pass
     elif resources["available"]:
@@ -789,6 +832,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         no_ref_text=args.no_ref_text,
         response_format=response_format,
         output_dir=args.output_dir,
+        audio_artifact_max_bytes=args.audio_artifact_max_bytes,
         max_samples=args.max_samples,
         sample_offset=args.sample_offset,
         max_new_tokens=args.max_new_tokens,
@@ -1431,6 +1475,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Optional model-specific first codec chunk size. With Higgs TTS "
             "this controls only the first streaming vocoder chunk."
         ),
+    )
+    parser.add_argument(
+        "--audio-artifact-max-bytes",
+        type=int,
+        default=TtsSeedttsBenchmarkConfig.audio_artifact_max_bytes,
+        help="Maximum retained audio payload bytes (default: 1 GiB). WAVs are "
+        "written after generation timing; exceeding the limit aborts the run.",
     )
     parser.add_argument(
         "--save-audio",
