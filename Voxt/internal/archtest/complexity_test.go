@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -262,6 +263,8 @@ func TestCognitiveComplexity(t *testing.T) {
 		{"&& then ||", "func f(a, b, c bool) bool { return a && b || c }", 2},
 		{"parentheses start a run", "func f(a, b, c bool) bool { return a && (b && c) }", 2},
 		{"switch with cases", "func f(x int) { switch x { case 1: g(); case 2: h() } }", 1},
+		{"nested type switch", "func f(x any) { for { switch x.(type) { case int: g() } } }", 3},
+		{"nested select", "func f(c chan int) { for { select { case <-c: g() } } }", 3},
 		{"closure nests", "func f(x int) { g := func() { if x > 0 { h() } }; g() }", 2},
 		{"labelled continue", "func f(xs []int) { outer: for range xs { for range xs { continue outer } } }", 4},
 		{"recursion", "func f(n int) int { if n == 0 { return 0 }; return f(n - 1) }", 2},
@@ -278,6 +281,14 @@ func TestCognitiveComplexity(t *testing.T) {
 				t.Fatalf("got %d, want %d (%v)", got, test.want, scores)
 			}
 		})
+	}
+}
+
+func TestComplexityKeys(t *testing.T) {
+	source := "package p\nfunc f() {}\nfunc (s *t) m() {}\nfunc (l list[T]) m() {}\nfunc (m *pairs[K, V]) m() {}\n"
+	got := slices.Sorted(maps.Keys(funcComplexities(t, "fixture.go", []byte(source))))
+	if want := []string{"f", "list.m", "pairs.m", "t.m"}; !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 
