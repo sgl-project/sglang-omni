@@ -273,6 +273,8 @@ It then re-runs all jobs of the newest completed run of each selected workflow o
 
 `/tag-run-ci-label` accepts the same short targets but only updates labels; it also requires at least one target. Labels added by the bot do not start workflows; push a commit or use a tag-and-rerun command to start them. `/rerun-failed-ci` retries failed jobs without changing labels or stopping active runs. PR authors can use it on their own PRs.
 
+When a pull request changes a model directory and a stage would not test that model, a bot comments with the `/tag-and-rerun-ci` targets that select it. The comment covers the stages a model label selects and the Full-Duplex-Bench job of MiniCPM-o, Qwen3-Omni and the streaming cascade. It is rewritten as labels and commits change, and it adds no label.
+
 ## Gate messages
 
 | Message | Meaning |

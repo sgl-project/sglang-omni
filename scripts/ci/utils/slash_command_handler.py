@@ -8,16 +8,13 @@ import time
 import github
 from github import Auth, Github
 from resolve_ci_labels import (
-    ASR_STAGE_LABEL,
-    CI_STAGES,
-    RUN_LINT_ONLY_LABEL,
-    TTS_STAGE_LABEL,
+    build_labels_by_target,
+    labels_after_tagging,
     resolve_ci_plan,
     select_workflows,
 )
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
-SHORT_TARGET_BY_SHARED_STAGE_LABEL = {ASR_STAGE_LABEL: "asr", TTS_STAGE_LABEL: "tts"}
 
 
 def get_env_var(name):
@@ -76,26 +73,7 @@ def handle_tag_run_ci(
     else:
         pass
 
-    labels_by_target: dict[str, frozenset[str]] = {
-        "lint": frozenset({RUN_LINT_ONLY_LABEL}),
-    }
-    for stage in CI_STAGES:
-        if stage.label in SHORT_TARGET_BY_SHARED_STAGE_LABEL:
-            stage_target = SHORT_TARGET_BY_SHARED_STAGE_LABEL[stage.label]
-        else:
-            stage_target = stage.name.replace("_", "-")
-        labels_by_target[stage_target] = frozenset({stage.label})
-        for label, preset in stage.preset_by_model_label.items():
-            if stage.label == ASR_STAGE_LABEL:
-                target = f"{preset}-asr"
-            elif stage.name == "mps":
-                target = f"mps-{preset}"
-            else:
-                target = preset
-            if stage.is_selected_by_model_label:
-                labels_by_target[target] = frozenset({label})
-            else:
-                labels_by_target[target] = frozenset({stage.label, label})
+    labels_by_target = build_labels_by_target()
     unknown_targets = requested_targets - labels_by_target.keys()
     if unknown_targets:
         pull_request.create_issue_comment(
@@ -109,14 +87,7 @@ def handle_tag_run_ci(
         label for target in requested_targets for label in labels_by_target[target]
     )
     current_labels = frozenset(label.name for label in pull_request.get_labels())
-    removed_labels: set[str] = set()
-    for stage in CI_STAGES:
-        model_labels = stage.preset_by_model_label.keys()
-        if requested_labels & model_labels:
-            removed_labels.update((current_labels & model_labels) - requested_labels)
-        else:
-            pass
-    final_labels = (current_labels - removed_labels) | requested_labels
+    final_labels = labels_after_tagging(current_labels, requested_labels)
     try:
         resolve_ci_plan(final_labels, seed=str(pull_request.number))
     except ValueError as error:
@@ -124,7 +95,7 @@ def handle_tag_run_ci(
         comment.create_reaction("confused")
         return False
 
-    for label in sorted(removed_labels):
+    for label in sorted(current_labels - final_labels):
         pull_request.remove_from_labels(label)
     pull_request.add_to_labels(*sorted(requested_labels))
 
