@@ -3,6 +3,8 @@
 import asyncio
 from collections.abc import Iterable
 
+from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
+
 # Note (Junnan Li): A second cancellation interrupts the reader's shielded cleanup wait;
 # native release remains coordinator-owned.
 CANCELLATION_ROUNDS = 2
@@ -32,5 +34,20 @@ async def cancel_local_tasks(
         pass
     if unfinished_tasks:
         raise RuntimeError("local realtime task did not acknowledge cancellation")
+    else:
+        pass
+
+
+async def close_websocket(websocket: WebSocket) -> None:
+    """Close the socket unless either side has already ended it."""
+    if (
+        websocket.client_state == WebSocketState.CONNECTED
+        and websocket.application_state == WebSocketState.CONNECTED
+    ):
+        try:
+            await websocket.close()
+        except WebSocketDisconnect:
+            # note (Qing Guo): A client that vanishes during the close leaves nothing to close.
+            pass
     else:
         pass
