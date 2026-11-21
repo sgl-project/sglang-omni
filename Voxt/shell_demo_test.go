@@ -61,6 +61,7 @@ func TestShellDemoActionControls(t *testing.T) {
 			}
 			tester := newMeetingDemoTester(t, host)
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				if step.menu {
 					if err := tester.ChooseMenuItem(step.label); err != nil {
 						t.Fatalf("%s: %v (texts %q)", step.label, err, tester.Texts())

@@ -198,7 +198,7 @@ func TestModelDeleteShared(t *testing.T) {
 	drain()
 	frames(tt)
 	if !has(tt, `Remove "Qwen3-ASR 0.6B (4bit)" from Voxt?`) ||
-		!has(tt, "AudioSmith also uses this model, so its files (712.8 MB) stay on this Mac.") {
+		!has(tt, "AudioSmith also uses this model, so its files (712.8 MB) "+platformText("stay on this Mac.")) {
 		t.Fatalf("no family dialog: %q", tt.Texts())
 	}
 	click(t, tt, "Remove from Voxt")
@@ -250,7 +250,7 @@ func TestModelDeleteCancelShared(t *testing.T) {
 		t.Fatalf("no Shared with: %q", tt.Texts())
 	}
 	clickControl(t, tt, "Delete Hy-MT2 1.8B (Q4_K_M)…")
-	if !has(tt, "AudioSmith and Dicta also use this model, so its files (1.1 GB) stay on this Mac.") {
+	if !has(tt, "AudioSmith and Dicta also use this model, so its files (1.1 GB) "+platformText("stay on this Mac.")) {
 		t.Fatalf("dialog: %q", tt.Texts())
 	}
 	click(t, tt, "Cancel")

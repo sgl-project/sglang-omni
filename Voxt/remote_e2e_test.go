@@ -184,7 +184,7 @@ func TestRemotePage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
 	frames(tt)
-	if !has(tt, "On this Mac") || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
+	if !has(tt, platformText("On this Mac")) || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
 		t.Errorf("no where labels: %q", tt.Texts())
 	}
 	scrollSettingsToText(tt, "DeepSeek")

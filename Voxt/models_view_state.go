@@ -457,7 +457,7 @@ func buildModelsDeleteViewState(translator *i18n.Translator, input modelsViewSta
 		state.Shared = &modelSharedDeleteViewState{
 			ID: shared.id, Name: name, ForAll: shared.forAll,
 			RemovePrompt: translator.T("Remove \"%s\" from Voxt?", name),
-			RemoveDetail: translator.N(len(shared.apps), "%s also uses this model, so its files (%s) stay on this Mac.", "%s also use this model, so its files (%s) stay on this Mac.", apps, size),
+			RemoveDetail: i18n.PlatformNFor(translator, len(shared.apps), "%s also uses this model, so its files (%s) stay on this Mac.", "%s also use this model, so its files (%s) stay on this Mac.", "%s also uses this model, so its files (%s) stay on this PC.", "%s also use this model, so its files (%s) stay on this PC.", apps, size),
 			AllPrompt:    translator.T("Delete \"%s\" for all apps?", name), AllDetail: translator.T("%s will need to download it again (%s).", apps, size),
 		}
 	}
@@ -479,7 +479,7 @@ func updateModelsNetworkFormViewState(translator *i18n.Translator, state *models
 	state.ProxyCaption = ""
 	switch form.proxyMode {
 	case proxyAuto:
-		state.ProxyCaption = translator.T("The proxy in this Mac's network settings, or one set by an environment variable.")
+		state.ProxyCaption = i18n.PlatformFor(translator, "The proxy in this Mac's network settings, or one set by an environment variable.", "The proxy in this PC's network settings, or one set by an environment variable.")
 	case proxyNone:
 		state.ProxyCaption = translator.T("Downloads connect to the server directly.")
 	}

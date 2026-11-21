@@ -67,7 +67,7 @@ func buildHomeReadinessList(translator *i18n.Translator, features settings.Featu
 		out = append(out, homeReadinessViewState{Key: "home-access", Title: translator.T("Accessibility"), OK: true, Text: translator.T("Allowed")})
 	default:
 		out = append(out, homeReadinessViewState{Key: "home-access", Title: translator.T("Accessibility"), Kind: "warn",
-			Text:   translator.T("Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work."),
+			Text:   translator.T("Without Accessibility access, results are copied for you to paste, and shortcuts such as %s do not work.", uitext.HotkeyTextFor(translator, "RightOption")),
 			Action: translator.T("Open Permissions"), Fix: homeFixPermissions})
 	}
 	out = append(out, buildHomeShortcutReadiness(translator, features, input.HotkeysInstalled))

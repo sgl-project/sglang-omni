@@ -52,7 +52,11 @@ func TestHotkeyTextExplicitLocale(t *testing.T) {
 	previous := i18n.Locale()
 	i18n.SetLocale("en")
 	t.Cleanup(func() { i18n.SetLocale(previous) })
-	if got, want := HotkeyTextFor(i18n.NewTranslator("zh-Hans"), "Control+Delete"), "⌃删除"; got != want {
+	want := "⌃删除"
+	if runtime.GOOS == "windows" {
+		want = "Ctrl 删除"
+	}
+	if got := HotkeyTextFor(i18n.NewTranslator("zh-Hans"), "Control+Delete"); got != want {
 		t.Fatalf("HotkeyTextFor = %q, want %q", got, want)
 	}
 }
@@ -100,8 +104,12 @@ func TestShortcutTextExplicitLocale(t *testing.T) {
 	i18n.SetLocale("en")
 	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
 	translator := i18n.NewTranslator("zh-Hans")
-	if got := HotkeyTextFor(translator, "RightOption+Space"); got != "右 ⌥ 空格" {
-		t.Errorf("HotkeyTextFor = %q", got)
+	want := "右 ⌥ 空格"
+	if runtime.GOOS == "windows" {
+		want = "右 Alt 空格"
+	}
+	if got := HotkeyTextFor(translator, "RightOption+Space"); got != want {
+		t.Errorf("HotkeyTextFor = %q, want %q", got, want)
 	}
 	if got := keyGlyphFor(translator, "Space"); got != "空格" {
 		t.Errorf("keyGlyphFor = %q", got)

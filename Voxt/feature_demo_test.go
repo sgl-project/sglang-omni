@@ -92,6 +92,7 @@ func TestFeatureDemoActionControls(t *testing.T) {
 			}
 			tester := newMeetingDemoTester(t, host)
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				var err error
 				switch {
 				case step.command == "replace":

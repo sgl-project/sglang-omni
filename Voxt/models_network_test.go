@@ -47,7 +47,7 @@ func TestNetworkDialog(t *testing.T) {
 	if a.shownPath() != modelsPath || !a.netOpen || !has(tt, "How model downloads reach Hugging Face") {
 		t.Fatalf("deep link: page %q open %v %q", a.shownPath(), a.netOpen, tt.Texts())
 	}
-	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in this Mac's network settings, or one set by an environment variable.") {
+	if !has(tt, "Applies to all apps that use this model library") || !has(tt, platformText("The proxy in this Mac's network settings, or one set by an environment variable.")) {
 		t.Fatalf("defaults: %q", tt.Texts())
 	}
 

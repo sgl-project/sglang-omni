@@ -188,7 +188,7 @@ func buildRemoteCardsViewState(translator *i18n.Translator, input remoteCardsSta
 		state.Groups = append(state.Groups, remoteServiceGroupState{Key: "remote-mine", Title: translator.T("Set up"), Cards: mine})
 	}
 	if len(here) > 0 {
-		state.Groups = append(state.Groups, remoteServiceGroupState{Key: "remote-here", Title: translator.T("On this Mac"), Caption: translator.T("Free, and the text stays on this Mac."), Cards: here})
+		state.Groups = append(state.Groups, remoteServiceGroupState{Key: "remote-here", Title: i18n.PlatformFor(translator, "On this Mac", "On this PC"), Caption: i18n.PlatformFor(translator, "Free, and the text stays on this Mac.", "Free, and the text stays on this PC."), Cards: here})
 	}
 	if len(online) > 0 {
 		state.Groups = append(state.Groups, remoteServiceGroupState{Key: "remote-online", Title: translator.T("Online services"), Cards: online})
@@ -289,14 +289,14 @@ func buildRemoteTestViewState(translator *i18n.Translator, test providerTest) re
 	return state
 }
 
-// whereTextFor is a service's label: on this Mac (a loopback server) or remote.
+// whereTextFor is a service's label: on this Mac or PC (a loopback server) or remote.
 func whereTextFor(translator *i18n.Translator, sv service, p settings.Provider) string {
 	endpoint := strings.TrimSpace(p.Endpoint)
 	if endpoint == "" {
 		endpoint = sv.endpoint
 	}
 	if onThisMac(endpoint) {
-		return translator.T("On this Mac")
+		return i18n.PlatformFor(translator, "On this Mac", "On this PC")
 	}
 	return translator.T("Remote")
 }
