@@ -1005,7 +1005,7 @@ def test_dspark_draft_reserves_its_verify_windows_in_the_kv_pool_cap(
     materialized_draft: str,
 ) -> None:
     builder, overrides = dspark_overrides(
-        speculative_draft_model_path="yuekai/cosyvoice3_llm_dspark"
+        speculative_draft_model_path="wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark"
     )
 
     assert overrides["speculative_algorithm"] == "DSPARK"

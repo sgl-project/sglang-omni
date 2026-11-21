@@ -118,6 +118,15 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
         stage="tts_engine",
         algorithm="DSPARK",
+        draft_model_path="wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark",
+        draft_model_revision="695fbc9d88a99389cbe70a26b81c5fc404dcc83a",
+        license="apache-2.0",
+    ),
+    # note (wilsonzheng0327): configs written before the Apache-2.0 draft name only this path, so it keeps the revision they were measured on.
+    PinnedDraft(
+        model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        stage="tts_engine",
+        algorithm="DSPARK",
         draft_model_path="yuekai/cosyvoice3_llm_dspark",
         draft_model_revision="0b1b28dbb751bac3b74eea5dcc11e0570c91563b",
         license=None,
