@@ -60,6 +60,9 @@ from sglang_omni.models.qwen3_tts import engine_builder as qwen3_engine_builder
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts import streaming_vocoder as qwen3_streaming_vocoder
+from sglang_omni.models.qwen3_tts.compat import (
+    apply_qwen_tts_transformers_compatibility_patches,
+)
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 from sglang_omni.models.qwen3_tts.incremental_codec import (
@@ -138,6 +141,9 @@ from sglang_omni.vendor.sglang.layers import RMSNorm
 from tests.unit_test.fakes import FakeExecutionBridge
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 from tests.unit_test.pipeline.helpers import make_stage
+from tests.unit_test.qwen3_tts.test_incremental_codec import (
+    Decoder as SmallCodecDecoder,
+)
 
 
 def placeholder_prompt_constants(
@@ -12055,29 +12061,10 @@ def test_real_base_padded_decoder_graph_matches_padded_eager(
     assert torch.equal(actual, expected)
 
 
-@pytest.mark.benchmark
-@pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
-    monkeypatch: pytest.MonkeyPatch,
+def assert_whole_requests_decode_on_reserved_rows_beside_a_stream(
+    scheduler: Qwen3TTSStreamingVocoderScheduler,
 ) -> None:
-    checkpoint = os.environ.get("QWEN3_TTS_BASE_1_7B_PATH")
-    if checkpoint is None:
-        pytest.skip("Set QWEN3_TTS_BASE_1_7B_PATH to run the real checkpoint gate")
-    else:
-        pass
-    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    scheduler = qwen3_stages.create_vocoder_executor(
-        checkpoint,
-        device="cuda",
-        gpu_id=0,
-        dtype="float32",
-        codec_state_slots=2,
-        followup_worker_count=1,
-        incremental_codec_compile=False,
-        max_in_flight=2,
-        shares_engine_speech_tokenizer=False,
-    )
+    """Three whole requests share the two reserved rows of a two-slot vocoder while a live stream keeps a stream row, and each matches one stateful decode."""
     assert scheduler.decodes_whole_requests
     assert scheduler.max_batch_wait_s == 0.0
     assert not scheduler.full_decode_graphs.graphs
@@ -12144,7 +12131,7 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
         assert data["audio_waveform_shape"] == [generated * scheduler.samples_per_frame]
         with torch.inference_mode():
             expected = Qwen3TTSIncrementalDecoder(scheduler.decoder).decode(
-                codes[name].T.unsqueeze(0).to("cuda:0"),
+                codes[name].T.unsqueeze(0).to(scheduler.device),
                 Qwen3TTSIncrementalCodecState(),
             )
         expected = expected.flatten()[reference * scheduler.samples_per_frame :].cpu()
@@ -12155,6 +12142,92 @@ def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
         assert torch.linalg.vector_norm(
             actual - expected
         ) < 1e-4 * torch.linalg.vector_norm(expected)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qwen3_tts_whole_requests_decode_on_reserved_rows_beside_a_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apply_qwen_tts_transformers_compatibility_patches()
+    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderConfig,
+    )
+    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderTransformerModel,
+    )
+
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    torch.manual_seed(31)
+    decoder = SmallCodecDecoder(block_channels=(16, 8))
+    decoder.pre_transformer = Qwen3TTSTokenizerV2DecoderTransformerModel(
+        Qwen3TTSTokenizerV2DecoderConfig(
+            hidden_size=512,
+            latent_dim=2,
+            num_attention_heads=16,
+            num_key_value_heads=16,
+            head_dim=64,
+            intermediate_size=1024,
+            num_hidden_layers=2,
+        )
+    )
+    decoder = decoder.to("cuda:0").eval()
+    decoder.config = SimpleNamespace(codebook_size=16, num_quantizers=2)
+    tokenizer = SimpleNamespace(
+        model=SimpleNamespace(
+            decoder=decoder, config=SimpleNamespace(decoder_config=decoder.config)
+        ),
+        get_output_sample_rate=lambda: 24000,
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "load_qwen3_tts_tokenizer", lambda *args, **kwargs: tokenizer
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "load_qwen3_tts_checkpoint_config",
+        lambda model_path: {"tts_model_type": "base"},
+    )
+    scheduler = qwen3_stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        gpu_id=0,
+        dtype="float32",
+        fused_snake_activation=False,
+        codec_state_slots=2,
+        followup_worker_count=1,
+        incremental_codec_compile=False,
+        max_in_flight=2,
+        shares_engine_speech_tokenizer=False,
+    )
+
+    assert_whole_requests_decode_on_reserved_rows_beside_a_stream(scheduler)
+
+
+@pytest.mark.benchmark
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_real_base_whole_requests_on_reserved_slots_match_one_stateful_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = os.environ.get("QWEN3_TTS_BASE_1_7B_PATH")
+    if checkpoint is None:
+        pytest.skip("Set QWEN3_TTS_BASE_1_7B_PATH to run the real checkpoint gate")
+    else:
+        pass
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    scheduler = qwen3_stages.create_vocoder_executor(
+        checkpoint,
+        device="cuda",
+        gpu_id=0,
+        dtype="float32",
+        codec_state_slots=2,
+        followup_worker_count=1,
+        incremental_codec_compile=False,
+        max_in_flight=2,
+        shares_engine_speech_tokenizer=False,
+    )
+
+    assert_whole_requests_decode_on_reserved_rows_beside_a_stream(scheduler)
 
 
 @pytest.mark.parametrize("frame_lengths", [(1,), (3, 7), (8, 6), (4, 8, 5)])
