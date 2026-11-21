@@ -16,7 +16,8 @@ import (
 func (s *live) previewBatch(ctx context.Context) {
 	t := s.a.spec.ASR
 	step := samplesOf(t.DecodeInterval) * 2
-	shown := 0 // the audio's bytes at the last preview
+	shown := 0     // the audio's bytes at the last preview
+	lastText := "" // the last text shown: an update is a change from it
 	for {
 		select {
 		case <-s.tick:
@@ -52,7 +53,15 @@ func (s *live) previewBatch(ctx context.Context) {
 		}
 		s.mu.Lock()
 		if !s.finished {
-			if text, ok := s.asm.apply(0, 0, joinParts(append(texts, s.a.plainText(r.text))), false); ok {
+			text, ok := s.asm.apply(0, 0, joinParts(append(texts, s.a.plainText(r.text))), false)
+			changed := ok && text != lastText
+			if changed {
+				lastText = text
+			}
+			if s.probe != nil {
+				s.probe.MarkLastPreview(changed)
+			}
+			if ok {
 				s.previewed = shown
 				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 			}

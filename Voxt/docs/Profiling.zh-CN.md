@@ -197,7 +197,7 @@ VOXTNEW_OMNI_RUNTIME=/ABS/omni VOXTNEW_OMNI_MODELS='asr.moss=/ABS/moss;asr.accur
 go test -count=1 -run '^TestMacE2EFirstLatency$' -v -timeout 30m .
 ```
 
-JSON 分别记录 `app_ready_ms`（app 打开到模型/helper ready）、`first_partial_ms`、`stop_to_final_ms`（观察到 ASR 的最终文本）、`stop_to_insert_ms`（fake helper 收到实际 paste 调用）和 `stop_to_done_ms`（整个会话完成），另含 ASR/VAD cold 标记、模型加载、实时更新间隔、文本和 SHA-256。三个终点不得互相替代。测试在 paste 没有出现时失败，不会把 Done 当成插入。需要独立 cold 进程时，分别启动三个进程并各设 `VOXTNEW_LATENCY_ROUNDS=1`、`VOXTNEW_LATENCY_ATTEMPT=1/2/3`，这样 cold 和 warm 各得到三个不同样本，JSON 的 `round` 和 `attempt` 也不会重复。A/B 实验另用 `VOXTNEW_LATENCY_ARM` 写入 `arm`；`min_preview_samples` 来自 native 实际预览事件，不是 runner 回显的配置。`decode_events` 记录会话内每个 Final 请求的计时（`kind` 为 preview/piece/final、`submitted_ms`/`finished_ms` 和它前面排队的同会话请求数 `inflight`，不含文本），用来区分「请求在服务器上排队」和「请求自己解码慢」；没有探针事件的会话写 `decode_events_unavailable_reason`，不写空列表。这里的插入覆盖 app 的真实投递逻辑，但终点仍是 fake helper，不是屏幕上的真实光标；真实 GUI 插入必须另行验收。
+JSON 分别记录 `app_ready_ms`（app 打开到模型/helper ready）、`first_partial_ms`、`stop_to_final_ms`（观察到 ASR 的最终文本）、`stop_to_insert_ms`（fake helper 收到实际 paste 调用）和 `stop_to_done_ms`（整个会话完成），另含 ASR/VAD cold 标记、模型加载、实时更新间隔、文本和 SHA-256。三个终点不得互相替代。测试在 paste 没有出现时失败，不会把 Done 当成插入。需要独立 cold 进程时，分别启动三个进程并各设 `VOXTNEW_LATENCY_ROUNDS=1`、`VOXTNEW_LATENCY_ATTEMPT=1/2/3`，这样 cold 和 warm 各得到三个不同样本，JSON 的 `round` 和 `attempt` 也不会重复。A/B 实验另用 `VOXTNEW_LATENCY_ARM` 写入 `arm`；`min_preview_samples` 来自 native 实际预览事件，不是 runner 回显的配置。`decode_events` 记录会话内每个 Final 请求的计时（`kind` 为 preview/piece/final、`submitted_ms`/`finished_ms`、它前面排队的同会话请求数 `inflight`，以及 preview 的 `changed`——这次预览是否有可见的新文字，不含文本本身），用来区分「请求在服务器上排队」和「请求自己解码慢」；没有探针事件的会话写 `decode_events_unavailable_reason`，不写空列表。这里的插入覆盖 app 的真实投递逻辑，但终点仍是 fake helper，不是屏幕上的真实光标；真实 GUI 插入必须另行验收。
 
 ## 8. 听写/会议 overlap 调度实验
 

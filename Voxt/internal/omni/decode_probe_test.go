@@ -102,6 +102,56 @@ func TestDecodeProbeCountsTheQueue(t *testing.T) {
 	f.rt.Close()
 }
 
+// A preview that shows new text is marked changed; one over audio the
+// model says nothing new about (here: the same text every time) is not,
+// so pauses show as runs of false.
+func TestDecodeProbeMarksUnchangedPreviews(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "same"}, withProbeOn(t, "whisper_server"))
+	a := f.asr(t, ASRWhisperTurbo)
+	st, err := a.Open(t.Context(), asr.StreamRequest{SampleRate: sampleRate, Lang: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for chunks := 1; chunks <= 4; chunks++ {
+		sendAll(t, st, tone(1200*time.Millisecond, 0.3))
+		eventually(t, "the preview reached the server", func() bool {
+			return len(f.records("final")) >= chunks
+		})
+	}
+	select {
+	case <-st.Events():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no preview before Finish")
+	}
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, st)
+	var flags []bool
+	for _, ev := range st.(*live).probe.Events() {
+		if ev.Kind != "preview" {
+			continue
+		}
+		if ev.Changed == nil {
+			continue // in flight at Finish: never evaluated by the assembler
+		}
+		flags = append(flags, *ev.Changed)
+	}
+	if len(flags) < 2 {
+		t.Fatalf("want several previews, got %+v", flags)
+	}
+	if !flags[0] {
+		t.Errorf("the first preview shows text: %+v", flags)
+	}
+	for _, changed := range flags[1:] {
+		if changed {
+			t.Errorf("the same text again is not a visible update: %+v", flags)
+		}
+	}
+	f.rt.Close()
+}
+
 func TestDecodeKindNames(t *testing.T) {
 	if (finalRequest{preview: true}).decodeKind() != "preview" {
 		t.Error("a provisional request is the preview")

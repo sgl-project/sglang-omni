@@ -14,6 +14,9 @@ type decodeEvent struct {
 	SubmittedMS int64  `json:"submitted_ms"`
 	FinishedMS  int64  `json:"finished_ms"`
 	Inflight    int    `json:"inflight"`
+	// Changed, for a preview, is whether it produced a visible text
+	// update (nil for other kinds): pauses show as runs of false.
+	Changed *bool `json:"changed,omitempty"`
 }
 
 // decodeProbe collects a live session's request timings. Measurement
@@ -42,6 +45,19 @@ func decodeProbeOf(ctx context.Context) *decodeProbe {
 func (p *decodeProbe) record(ev decodeEvent) {
 	p.mu.Lock()
 	p.events = append(p.events, ev)
+	p.mu.Unlock()
+}
+
+// MarkLastPreview sets whether the newest preview request produced a
+// visible update; the caller learns that only after the assembler ran.
+func (p *decodeProbe) MarkLastPreview(changed bool) {
+	p.mu.Lock()
+	for i := len(p.events) - 1; i >= 0; i-- {
+		if p.events[i].Kind == "preview" {
+			p.events[i].Changed = &changed
+			break
+		}
+	}
 	p.mu.Unlock()
 }
 
