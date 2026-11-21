@@ -47,6 +47,12 @@ func (f *importDiarizeFake) Diarize(context.Context, asr.FileRequest) (asr.Resul
 	}}, nil
 }
 
+type importTimeoutDiarizeFake struct{ importDiarizeFake }
+
+func (f *importTimeoutDiarizeFake) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
+	return asr.Result{}, context.DeadlineExceeded
+}
+
 // Import recording… turns a file into a meeting: MTD labels its speakers,
 // the correction and the summary each ask the language model once, and
 // the meeting keeps the file's name, date and duration.
@@ -282,5 +288,33 @@ func TestMeetingImportBoundsTotalWait(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the decoder did not start")
+	}
+}
+
+// A timeout after the meeting exists is an interruption, not a fresh failure
+// toast: the reloaded list offers Continue processing with the audio kept.
+func TestMeetingImportTimeoutKeepsInterruptedMeeting(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importTimeoutDiarizeFake{}}
+	a.prefs.General.MainLanguage = "en"
+	saved := decodeRecording
+	t.Cleanup(func() { decodeRecording = saved })
+	decodeRecording = func(context.Context, string) ([]byte, error) {
+		pcm := make([]byte, 2*asr.SampleRate)
+		for i := 0; i < len(pcm); i += 2 {
+			pcm[i], pcm[i+1] = 0x10, 0x7f
+		}
+		return pcm, nil
+	}
+	a.importRecording("long.wav")
+	if len(a.toasts) != 0 {
+		t.Fatalf("an interrupted import showed a failure: %q", a.toasts)
+	}
+	meetings, err := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
+	if err != nil || len(meetings) != 1 {
+		t.Fatalf("meetings %+v, err %v", meetings, err)
+	}
+	if meetings[0].Status != store.MeetingInterrupted || meetings[0].Audio == "" {
+		t.Fatalf("status %s, audio %q", meetings[0].Status, meetings[0].Audio)
 	}
 }
