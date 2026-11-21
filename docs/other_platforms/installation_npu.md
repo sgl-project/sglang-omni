@@ -140,12 +140,6 @@ When selecting another device, update both `/dev/davinci0` and
 `ASCEND_RT_VISIBLE_DEVICES`. Pipeline device indices are relative to the
 visible devices (`gpu: 0` selects the first visible device).
 
-### How the A2 image is built
-
-A3 and 950 builds use the SGLang images pinned in `pyproject_npu.toml`. For A2, `bash scripts/npu/prepare_sglang_a2.sh <output-directory>` prepares the NPU Dockerfile from the matching SGLang release and adds the `910b` to `A2` mapping for MemFabric. The CI workflow builds that SGLang base with 910B CANN and kernel packages, then passes it to the same `docker/npu.Dockerfile` used for A3 and 950.
-
-When upgrading SGLang, update `sglang-version`, the A3 and 950 image digests, and `sglang-dockerfile-sha256` together in `pyproject_npu.toml`. Check that the Dockerfile's default kernel tag matches the SGLang release workflow and that `cann-image-910b` pins the corresponding ARM64-compatible CANN image. Other dependencies follow the SGLang release Dockerfile's defaults.
-
 <a id="option-b-manual-install"></a>
 
 ## Manual install
