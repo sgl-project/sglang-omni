@@ -92,6 +92,8 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_LATENCY` | `1` runs `TestMacE2EFirstLatency` on a Mac. | Unset: the test skips |
 | `VOXTNEW_LATENCY_ARM` | A/B arm label written to each latency JSON row, for profiling runs on a Mac. | Unset: no arm label |
 | `VOXTNEW_LATENCY_ATTEMPT` | Independent attempt label written to each latency JSON row, for profiling runs on a Mac. | Unset: attempt `1` |
+| `VOXTNEW_LATENCY_LANG` | Language hint used by the latency session. | Unset: `zh` |
+| `VOXTNEW_LATENCY_ALLOW_NO_PARTIAL` | `1` lets a session with no live partial finish and records its outcome instead of failing before Stop. | Unset: the latency test fails when no live partial arrives |
 | `VOXTNEW_LATENCY_OUT` | File where the latency test appends one JSON object per session. | Unset: no JSON output |
 | `VOXTNEW_MAIN_SHA` | Source commit recorded in latency JSON, for profiling runs on a Mac. | Unset: `unknown` |
 | `VOXTNEW_LATENCY_PCM` | Recording that the latency test plays. | Unset: the bundled speech sample |
