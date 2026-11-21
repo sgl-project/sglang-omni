@@ -24,7 +24,7 @@ func TestOnboardingFixtureCoverage(t *testing.T) {
 		for _, name := range []string{
 			"empty-closed", "step-welcome", "step-permissions", "step-transcribe", "step-translate", "step-rewrite", "step-more",
 			"models-loading", "models-normal", "models-error", "models-downloading", "models-reuse", "models-vad-only", "models-alternative",
-			"try-error", "try-language-model", "try-speech-wait", "try-blocked", "legacy-available", "legacy-imported", "legacy-error",
+			"try-error", "try-language-model", "try-speech-wait", "try-blocked", "try-highlights", "legacy-available", "legacy-imported", "legacy-error",
 		} {
 			if _, ok := fixtures[name]; !ok {
 				t.Errorf("%s: missing required onboarding fixture %s", locale, name)

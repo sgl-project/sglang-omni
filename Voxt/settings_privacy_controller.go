@@ -27,6 +27,10 @@ func (a *app) setSendClipboardImage(on bool) {
 	a.updateSettings(func(current *settings.Settings) { current.Privacy.SendClipboardImage = on })
 }
 
+func (a *app) setSendClipboardImageWithSelection(on bool) {
+	a.updateSettings(func(current *settings.Settings) { current.Privacy.SendClipboardImageWithSelection = on })
+}
+
 func (a *app) setKeepHistory(on bool) {
 	a.updateSettings(func(current *settings.Settings) {
 		current.Privacy.KeepHistory = on

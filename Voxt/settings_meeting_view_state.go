@@ -1,30 +1,36 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 type settingsMeetingViewState struct {
-	CaptureModeOptions     []settingsLanguageViewState `json:"capture_mode_options"`
-	CaptureModeSelected    string                      `json:"capture_mode_selected"`
-	HideFromSharing        bool                        `json:"hide_from_sharing"`
-	ASROptions             []settingsLanguageViewState `json:"asr_options"`
-	ASRSelected            string                      `json:"asr_selected"`
-	ASRDisabled            bool                        `json:"asr_disabled"`
-	SpokenLanguageOptions  []settingsLanguageViewState `json:"spoken_language_options"`
-	SpokenLanguageSelected string                      `json:"spoken_language_selected"`
-	LLMOptions             []settingsLanguageViewState `json:"llm_options"`
-	LLMSelected            string                      `json:"llm_selected"`
-	NoLLM                  bool                        `json:"no_llm"`
+	CaptureModeOptions           []settingsLanguageViewState `json:"capture_mode_options"`
+	CaptureModeSelected          string                      `json:"capture_mode_selected"`
+	HideFromSharing              bool                        `json:"hide_from_sharing"`
+	ASROptions                   []settingsLanguageViewState `json:"asr_options"`
+	ASRSelected                  string                      `json:"asr_selected"`
+	ASRDisabled                  bool                        `json:"asr_disabled"`
+	SpokenLanguageOptions        []settingsLanguageViewState `json:"spoken_language_options"`
+	SpokenLanguageSelected       string                      `json:"spoken_language_selected"`
+	LLMOptions                   []settingsLanguageViewState `json:"llm_options"`
+	LLMSelected                  string                      `json:"llm_selected"`
+	NoLLM                        bool                        `json:"no_llm"`
+	CorrectionStyle              string                      `json:"correction_style"`
+	CorrectionStyleResetDisabled bool                        `json:"correction_style_reset_disabled"`
 }
 
 type settingsMeetingStateInput struct {
-	Meeting  settings.Meeting
-	ReadyASR []local.Model
-	ShownASR []local.Model
-	ReadyLLM []local.Model
+	Meeting        settings.Meeting
+	ReadyASR       []local.Model
+	ShownASR       []local.Model
+	ReadyLLM       []local.Model
+	CorrectionText string
 }
 
 func buildSettingsMeetingViewState(translator *i18n.Translator, input settingsMeetingStateInput) settingsMeetingViewState {
@@ -34,9 +40,11 @@ func buildSettingsMeetingViewState(translator *i18n.Translator, input settingsMe
 			{Code: "subtitles", Label: translator.T("Subtitles (system audio only)")},
 			{Code: "recording", Label: translator.T("Recording (microphone only)")},
 		},
-		HideFromSharing: input.Meeting.HideFromSharing,
-		ASRDisabled:     len(input.ReadyASR) == 0,
-		NoLLM:           len(input.ReadyLLM) == 0,
+		HideFromSharing:              input.Meeting.HideFromSharing,
+		ASRDisabled:                  len(input.ReadyASR) == 0,
+		NoLLM:                        len(input.ReadyLLM) == 0,
+		CorrectionStyle:              input.CorrectionText,
+		CorrectionStyleResetDisabled: input.Meeting.CorrectionStyle == "" && strings.TrimSpace(input.CorrectionText) == strings.TrimSpace(meeting.DefaultCorrectionStyle),
 	}
 	state.CaptureModeSelected = state.CaptureModeOptions[0].Label
 	for _, option := range state.CaptureModeOptions {

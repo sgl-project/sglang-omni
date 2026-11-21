@@ -2,7 +2,8 @@ package main
 
 // Where a try runs (home_page.go): a shortcut pressed while VoxtNew is in
 // front starts a try on the page it shows, unless the user types in one of
-// its fields, and Home offers its Try area until the first result.
+// its fields. Home offers its Try area until the first result; after it,
+// a shortcut on Home is a session as in another app.
 
 import (
 	"os"
@@ -28,10 +29,10 @@ const (
 
 // tryPlace decides where a shortcut of kind, pressed with target in
 // front, runs: a try when target is VoxtNew and what shows has a Try
-// area for it (the setup guide's step, Home, the feature's page), and no
-// text field of the window has the focus: then a session types into that
-// field, as in another app (Voxt 1.x; FB10, a feature's rules being
-// edited).
+// area for it (the setup guide's step, Home while it offers one, the
+// feature's page), and no text field of the window has the focus: then a
+// session types into that field, as in another app (Voxt 1.x; FB10, a
+// feature's rules being edited).
 func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 	if target.PID == 0 || target.PID != os.Getpid() {
 		return placeNone
@@ -47,6 +48,9 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 	}
 	switch a.router.Path() {
 	case "/home":
+		if !a.homeShowsTry(a.homeTrySession()) {
+			return placeNone // no Try area to show a try's result in (#4199)
+		}
 		return placeHome
 	case "/" + string(kind):
 		return placeFeature

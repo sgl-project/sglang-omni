@@ -1,4 +1,6 @@
 {
+  "%d result": "%d 次",
+  "%d results": "%d 次",
   "%d step to go": "还差 %d 步",
   "%d steps to go": "还差 %d 步",
   "%s (once Accessibility is allowed)": "%s（允许辅助功能后可用）",
@@ -7,8 +9,13 @@
   "Ask now": "现在授权",
   "By feature": "按功能",
   "Double-press %s to start": "双击 %s 开始",
+  "Download the recommended model (%s)": "下载推荐模型（%s）",
+  "Earlier weeks": "更早",
   "History is off, so nothing is counted.": "历史已关闭，所以不做统计。",
   "Hold %s and speak": "按住 %s 说话",
+  "Later weeks": "更近",
+  "Less often": "较少",
+  "More often": "较多",
   "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.": "还没设置语言模型。翻译和改写需要它，转录会直接输入识别出的原文。",
   "No speech model is installed. Install one to transcribe, translate and rewrite by voice.": "还没安装语音识别模型。安装后才能用语音转录、翻译和改写。",
   "Open History": "打开历史页",
@@ -18,6 +25,7 @@
   "Speak anywhere and Voxt types at your cursor": "随处说，随处写",
   "Transcribe has no shortcut. Add one, or start it from the menu bar.": "转录还没有快捷键。添加一个，或者从菜单栏开始。",
   "Transcribe's shortcut %s: %s": "转录的快捷键 %s：%s",
+  "Using System dictation for now.": "现在用的是系统听写。",
   "Voxt does not have microphone access. Allow it in System Settings.": "Voxt 没有麦克风权限，请在系统设置里允许。",
   "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.": "没有辅助功能权限时，结果只会复制供你粘贴，右 ⌥ 这样的快捷键也不能用。",
   "character": "字",
@@ -25,6 +33,8 @@
   "macOS asks for the microphone the first time you record.": "第一次录音时 macOS 会请求麦克风权限。",
   "result": "次",
   "results": "次",
-  "Using System dictation for now.": "现在用的是系统听写。",
-  "Download the recommended model (%s)": "下载推荐模型（%s）"
+  "No activity": "没有活动",
+  "Activity": "活跃",
+  "characters a minute": "字/分钟",
+  "day streak": "天连续使用"
 }

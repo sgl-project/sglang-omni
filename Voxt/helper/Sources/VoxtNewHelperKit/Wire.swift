@@ -75,9 +75,6 @@ public enum Method {
         captureStarted, captureLevel, capturePCM, captureRestarted, hotkeyEvent, hotkeyState, appActivated,
         outputChanged, outputReleased, speechStarted, speechPartial, log,
     ]
-
-    /// Long-running, cancellable requests (job.cancel; notifications name them in "job").
-    public static func isJob(_ method: String) -> Bool { method == captureStart || method == captureSystem || method == speechRecognize }
 }
 
 public enum Code {

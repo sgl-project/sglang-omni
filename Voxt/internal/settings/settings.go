@@ -24,7 +24,7 @@ import (
 
 // Version is the schema version Defaults writes. Bump it when a field's
 // meaning changes, and migrate older documents in Migrate.
-const Version = 4
+const Version = 5
 
 // Settings is the whole document.
 type Settings struct {
@@ -86,10 +86,11 @@ type Appearance struct {
 	// user chose names and icons. SidebarWidth is its width in DIPs at
 	// 100 % (0 = the default); ClosedSections the sidebar sections the
 	// user closed.
-	Rail           bool     `json:"rail,omitempty"`
-	RailChosen     bool     `json:"railChosen,omitempty"`
-	SidebarWidth   float64  `json:"sidebarWidth,omitempty"`
-	ClosedSections []string `json:"closedSections,omitempty"`
+	Rail               bool     `json:"rail,omitempty"`
+	RailChosen         bool     `json:"railChosen,omitempty"`
+	SidebarWidth       float64  `json:"sidebarWidth,omitempty"`
+	HistoryDetailWidth float64  `json:"historyDetailWidth,omitempty"` // DIPs at 100 %, 0 = default
+	ClosedSections     []string `json:"closedSections,omitempty"`
 }
 
 // Privacy: what VoxtNew keeps on this Mac and what it logs.
@@ -114,6 +115,10 @@ type Privacy struct {
 	// Rewrite's text to the language model (session/window.go); off by
 	// default.
 	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
+	// SendClipboardImageWithSelection deliberately includes that picture
+	// with selected text too; off unless the user turns it on, in fresh
+	// installs and in documents migrated from before version 5 alike.
+	SendClipboardImageWithSelection bool `json:"sendClipboardImageWithSelection,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.
@@ -303,6 +308,10 @@ type Setup struct {
 	// result once, or the history had one: Home stops offering its Try
 	// area. It stays when the history is cleared.
 	Tried bool `json:"tried,omitempty"`
+	// RewriteBoxOpens counts successful input-box opens, capped at three;
+	// RewriteBoxTipDismissed independently hides the guidance for good.
+	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
+	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
 }
 
 // Updates: what the updater offers (Settings → About → Updates). With an
@@ -362,7 +371,7 @@ func Defaults() Settings {
 		Audio:      Audio{Sounds: true},
 		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
-			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
+			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true, ReturnFinishes: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
 			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
