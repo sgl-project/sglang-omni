@@ -38,6 +38,10 @@ class MpsControlError(MpsError):
     """Raised when a strict MPS control or process query fails."""
 
 
+class MpsRetryableControlError(MpsControlError):
+    """A transient read failure; mutating control commands must not be replayed."""
+
+
 class MpsDaemonNotStartedError(MpsControlError):
     """The control binary was not executed, so it cannot have created a daemon."""
 
@@ -56,14 +60,25 @@ class MpsClientRef:
     client_pid: int
 
 
+@dataclass(frozen=True)
+class MpsProcessIdentity:
+    pid: int
+    starttime: int
+
+
 @dataclass
 class MpsLease:
     """All authority and runtime-local evidence owned by one acquisition."""
 
-    daemon_pid: int
+    daemon_identity: MpsProcessIdentity
     owner_fd: int
     client_tokens: dict[str, str]
     attachment_verified: bool = False
+    server_identities: frozenset[MpsProcessIdentity] = field(default_factory=frozenset)
+
+    @property
+    def daemon_pid(self) -> int:
+        return self.daemon_identity.pid
 
 
 class MpsControlClient(Protocol):
@@ -71,7 +86,13 @@ class MpsControlClient(Protocol):
 
     def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None: ...
 
-    def read_daemon_identity(self, pipe_dir: Path) -> int: ...
+    def read_daemon_process_identity(self, pipe_dir: Path) -> MpsProcessIdentity: ...
+
+    def read_server_process_identity(
+        self,
+        pipe_dir: Path,
+        pid: int,
+    ) -> MpsProcessIdentity: ...
 
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]: ...
 
@@ -88,7 +109,7 @@ class MpsControlClient(Protocol):
 
 @dataclass
 class ExistingState:
-    daemon_pid: int | None = None
+    daemon_identity: MpsProcessIdentity | None = None
     owners: dict[int, bool] = field(default_factory=dict)
     owner_statuses: dict[int, str] = field(default_factory=dict)
     clients: set[MpsClientRef] | None = None
@@ -158,8 +179,11 @@ class MpsManager:
             startup_error = exc
         else:
             try:
+                daemon_identity = self.client.read_daemon_process_identity(
+                    self.paths.pipe_dir
+                )
                 lease = MpsLease(
-                    daemon_pid=self.client.read_daemon_identity(self.paths.pipe_dir),
+                    daemon_identity=daemon_identity,
                     owner_fd=owner_fd,
                     client_tokens=client_tokens,
                 )
@@ -174,10 +198,11 @@ class MpsManager:
             cleanup_error: MpsError | None = None
             if lease is None:
                 try:
+                    daemon_identity = self.client.read_daemon_process_identity(
+                        self.paths.pipe_dir
+                    )
                     lease = MpsLease(
-                        daemon_pid=self.client.read_daemon_identity(
-                            self.paths.pipe_dir
-                        ),
+                        daemon_identity=daemon_identity,
                         owner_fd=owner_fd,
                         client_tokens=client_tokens,
                     )
@@ -206,7 +231,7 @@ class MpsManager:
         state = self.inspect_existing_state()
         if (
             not state.errors
-            and state.daemon_pid is not None
+            and state.daemon_identity is not None
             and state.clients is not None
             and state.owners
             and all(state.owners.values())
@@ -215,12 +240,12 @@ class MpsManager:
             owner_fd = self.publish_owner()
             logger.info(
                 "Joining shared MPS daemon pid %d on %s (owners: %s)",
-                state.daemon_pid,
+                state.daemon_identity.pid,
                 self.gpu_uuid,
                 sorted(state.owners),
             )
             return MpsLease(
-                daemon_pid=state.daemon_pid,
+                daemon_identity=state.daemon_identity,
                 owner_fd=owner_fd,
                 client_tokens=client_tokens,
             )
@@ -294,7 +319,9 @@ class MpsManager:
     def inspect_existing_state(self) -> ExistingState:
         state = ExistingState()
         try:
-            state.daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            state.daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
         except MpsControlError as exc:
             state.errors.append(f"daemon identity: {exc}")
         try:
@@ -318,8 +345,8 @@ class MpsManager:
 
     def dirty_state_report(self, state: ExistingState) -> str:
         daemon = (
-            f"pid {state.daemon_pid} with verified native identity"
-            if state.daemon_pid is not None
+            f"pid {state.daemon_identity.pid} with verified native identity"
+            if state.daemon_identity is not None
             else "identity unverified"
         )
         owners = {
@@ -436,6 +463,8 @@ class MpsManager:
         """Gate startup on one current MPS client per managed process."""
 
         self.require_live_lease(lease)
+        lease.attachment_verified = False
+        lease.server_identities = frozenset()
         expected_by_token = {
             token: process_name for process_name, token in lease.client_tokens.items()
         }
@@ -453,16 +482,42 @@ class MpsManager:
                     expected_by_token[token]
                     for token in expected_by_token.keys() - observed_tokens
                 }
-                last_error = None
                 if not missing:
-                    lease.attachment_verified = True
-                    return attached
+                    server_pids = {ref.server_pid for ref in attached}
+                    try:
+                        server_identities = frozenset(
+                            self.client.read_server_process_identity(
+                                self.paths.pipe_dir,
+                                server_pid,
+                            )
+                            for server_pid in sorted(server_pids)
+                        )
+                    except MpsRetryableControlError as exc:
+                        last_error = exc
+                    except MpsControlError as exc:
+                        raise MpsError(
+                            "MPS startup verification could not prove server identity "
+                            f"(pipe dir {self.paths.pipe_dir}): {exc}. State dir "
+                            f"preserved for inspection: {self.paths.state_dir}"
+                        ) from exc
+                    else:
+                        lease.server_identities = server_identities
+                        lease.attachment_verified = True
+                        return attached
                 else:
-                    pass
-            except MpsControlError as exc:
+                    last_error = None
+            except MpsRetryableControlError as exc:
                 last_error = exc
             if time.monotonic() >= deadline:
                 detail = f"; last control error: {last_error}" if last_error else ""
+                if not missing and last_error is not None:
+                    raise MpsError(
+                        "MPS startup verification could not prove server identity "
+                        f"(pipe dir {self.paths.pipe_dir}): {last_error}. State dir "
+                        f"preserved for inspection: {self.paths.state_dir}"
+                    ) from last_error
+                else:
+                    pass
                 raise MpsError(
                     f"stage process(es) {sorted(missing)} never attached to the MPS "
                     f"server (pipe dir {self.paths.pipe_dir}){detail}. State dir "
@@ -491,33 +546,69 @@ class MpsManager:
             return set()
         else:
             pass
-        targets = {
-            client
-            for client in self.client.snapshot(self.paths.pipe_dir)
-            if self.client.client_token(client.client_pid) == token
-        }
-        for client in sorted(targets):
-            self.client.terminate_client(self.paths.pipe_dir, client)
-        return targets
+        deadline = time.monotonic() + self.stop_timeout
+        while True:
+            with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
+                self.require_live_lease(lease)
+                try:
+                    targets = {
+                        client
+                        for client in self.client.snapshot(self.paths.pipe_dir)
+                        if self.client.client_token(client.client_pid) == token
+                    }
+                except MpsRetryableControlError as error:
+                    read_error = error
+                else:
+                    # The ownership read and every termination share one GPU
+                    # transaction. Never replay a failed termination.
+                    for client in sorted(targets):
+                        self.client.terminate_client(self.paths.pipe_dir, client)
+                    return targets
+            self.wait_for_retry(
+                deadline,
+                f"MPS client ownership could not be inspected for {process_name!r}",
+                read_error,
+            )
 
     def probe(self, lease: MpsLease) -> str | None:
-        """Return the first failed health proof, or ``None`` when healthy."""
+        """Check verified MPS session identities without control commands."""
 
         self.require_live_lease(lease)
         try:
-            daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
         except MpsControlError as exc:
-            return f"daemon identity query failed: {exc}"
-        if daemon_pid != lease.daemon_pid:
+            return f"control identity unavailable: {exc}"
+        if daemon_identity != lease.daemon_identity:
+            expected = lease.daemon_identity
             return (
-                f"daemon identity changed from {lease.daemon_pid} " f"to {daemon_pid}"
+                "control identity changed: "
+                f"expected {expected.pid}/{expected.starttime}, "
+                f"got {daemon_identity.pid}/{daemon_identity.starttime}"
             )
         else:
             pass
-        try:
-            self.client.snapshot(self.paths.pipe_dir)
-        except MpsControlError as exc:
-            return f"client snapshot query failed: {exc}"
+        if not lease.server_identities:
+            return "server identity unavailable"
+        else:
+            pass
+        for expected in lease.server_identities:
+            try:
+                server_identity = self.client.read_server_process_identity(
+                    self.paths.pipe_dir,
+                    expected.pid,
+                )
+            except MpsControlError as exc:
+                return f"server identity unavailable for pid {expected.pid}: {exc}"
+            if server_identity != expected:
+                return (
+                    "server identity changed: "
+                    f"expected {expected.pid}/{expected.starttime}, "
+                    f"got {server_identity.pid}/{server_identity.starttime}"
+                )
+            else:
+                pass
         return None
 
     def release(
@@ -534,19 +625,41 @@ class MpsManager:
         """
 
         self.require_live_lease(lease)
+        deadline = time.monotonic() + self.drain_timeout
         try:
-            with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
-                try:
-                    self.release_locked(
-                        lease,
-                        clients_could_have_attached=clients_could_have_attached,
-                    )
-                except BaseException as exc:
-                    if lease.owner_fd >= 0:
-                        raise self.persist_dirty_locked(lease, exc) from exc
+            while True:
+                with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
+                    try:
+                        self.release_locked(
+                            lease,
+                            clients_could_have_attached=clients_could_have_attached,
+                        )
+                    except MpsRetryableControlError as exc:
+                        read_error = exc
+                        if time.monotonic() >= deadline:
+                            timeout_error = MpsError(
+                                f"MPS release timed out; last observation: {exc}"
+                            )
+                            raise self.persist_dirty_locked(
+                                lease, timeout_error
+                            ) from exc
+                        else:
+                            pass
+                    except BaseException as exc:
+                        if lease.owner_fd >= 0:
+                            raise self.persist_dirty_locked(lease, exc) from exc
+                        else:
+                            pass
+                        raise
                     else:
-                        pass
-                    raise
+                        return
+                try:
+                    self.wait_for_retry(deadline, "MPS release timed out", read_error)
+                except MpsError as exc:
+                    with state_root_lock(
+                        self.paths.state_root, f".lock-{self.gpu_uuid}"
+                    ):
+                        raise self.persist_dirty_locked(lease, exc) from exc
         except MpsDirtyStateError:
             raise
         except MpsError:
@@ -576,19 +689,17 @@ class MpsManager:
         *,
         clients_could_have_attached: bool = True,
     ) -> None:
-        if clients_could_have_attached:
-            self.wait_for_owned_clients_to_detach(lease)
-        else:
-            pass
-
+        self.require_live_lease(lease)
         try:
-            daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
             snapshot = self.client.snapshot(self.paths.pipe_dir)
         except MpsControlError:
             raise
-        if daemon_pid != lease.daemon_pid:
+        if daemon_identity != lease.daemon_identity:
             raise MpsError(
-                f"MPS daemon identity changed from {lease.daemon_pid} to {daemon_pid}; "
+                "MPS control identity changed during release; "
                 "owner lease and shared state preserved"
             )
         else:
@@ -600,7 +711,7 @@ class MpsManager:
                 lease,
             )
             if owned_clients or unknown_clients:
-                raise MpsError(
+                raise MpsRetryableControlError(
                     "MPS client ownership is not clean at shutdown: "
                     f"owned={sorted(owned_clients)}, "
                     f"unattributable={sorted(unknown_clients)}. State preserved: "
@@ -640,11 +751,7 @@ class MpsManager:
             pass
 
         if snapshot:
-            snapshot = self.wait_for_no_clients()
-        else:
-            pass
-        if snapshot:
-            raise MpsError(
+            raise MpsRetryableControlError(
                 f"MPS clients {sorted(snapshot)} remain while releasing the last "
                 f"owner; refusing to release its lease or quit daemon "
                 f"{lease.daemon_pid}. State preserved: {self.paths.state_dir}"
@@ -652,21 +759,38 @@ class MpsManager:
         else:
             pass
 
+        quit_error: MpsControlError | None = None
         try:
             self.client.quit_daemon(self.paths.pipe_dir)
-        except MpsControlError:
-            # The local control command may lose its response after the daemon
-            # has already exited. A dead, previously verified native PID is a
-            # sufficient commit point; a surviving daemon keeps the lease.
-            if self.client.daemon_process_alive(lease.daemon_pid):
-                raise
+        except MpsControlError as exc:
+            # The command may commit despite losing its response. Observe the
+            # old PID; never send quit twice.
+            quit_error = exc
+
+        stop_deadline = time.monotonic() + self.stop_timeout
+        while True:
+            try:
+                alive = self.client.daemon_process_alive(lease.daemon_pid)
+            except MpsRetryableControlError as exc:
+                read_error = exc
             else:
-                pass
-        else:
-            self.wait_for(
-                lambda: not self.client.daemon_process_alive(lease.daemon_pid),
-                self.stop_timeout,
+                if not alive:
+                    break
+                else:
+                    pass
+                if quit_error is not None:
+                    # An ambiguous quit may already have committed. Do not let
+                    # its retryable I/O classification replay the command.
+                    raise MpsControlError(
+                        f"MPS quit could not be confirmed: {quit_error}"
+                    ) from quit_error
+                else:
+                    pass
+                read_error = None
+            self.wait_for_retry(
+                stop_deadline,
                 "MPS daemon did not exit after quit",
+                read_error,
             )
         self.drop_owner(lease)
         shutil.rmtree(self.paths.state_dir)
@@ -685,11 +809,13 @@ class MpsManager:
         except BaseException as exc:
             status_error = exc
 
-        observed_daemon_pid: int | None = None
+        observed_daemon_identity: MpsProcessIdentity | None = None
         owned_clients: set[MpsClientRef] | None = None
         query_error: MpsControlError | None = None
         try:
-            observed_daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            observed_daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
             if clients is None:
                 clients = self.client.snapshot(self.paths.pipe_dir)
             else:
@@ -709,8 +835,8 @@ class MpsManager:
             else f"unconfirmed because the retained-status write failed: {status_error}"
         )
         observed = (
-            str(observed_daemon_pid)
-            if observed_daemon_pid is not None
+            str(observed_daemon_identity.pid)
+            if observed_daemon_identity is not None
             else f"unavailable ({query_error})"
         )
         snapshot = "unavailable" if clients is None else repr(sorted(clients))
@@ -742,39 +868,6 @@ class MpsManager:
             "Daemon identity and client snapshot are unavailable. "
             f"{self.cleanup_guidance(None, owned_clients=set())}"
         )
-
-    def wait_for_owned_clients_to_detach(self, lease: MpsLease) -> None:
-        deadline = time.monotonic() + self.drain_timeout
-        while True:
-            snapshot = self.client.snapshot(self.paths.pipe_dir)
-            owned_clients, _, unknown_clients = self.classify_clients(
-                snapshot,
-                lease,
-            )
-            if not owned_clients and not unknown_clients:
-                return
-            else:
-                pass
-            if time.monotonic() >= deadline:
-                raise MpsError(
-                    f"MPS clients prevent a proven clean release: owned="
-                    f"{sorted(owned_clients)}, "
-                    f"unattributable={sorted(unknown_clients)}. State dir "
-                    f"preserved for inspection: {self.paths.state_dir}"
-                )
-            else:
-                pass
-            time.sleep(self.poll_interval)
-
-    def wait_for_no_clients(self) -> set[MpsClientRef]:
-        deadline = time.monotonic() + self.drain_timeout
-        while True:
-            snapshot = self.client.snapshot(self.paths.pipe_dir)
-            if not snapshot or time.monotonic() >= deadline:
-                return snapshot
-            else:
-                pass
-            time.sleep(self.poll_interval)
 
     def classify_clients(
         self,
@@ -846,7 +939,7 @@ class MpsManager:
         while True:
             try:
                 return self.client.snapshot(self.paths.pipe_dir)
-            except MpsControlError as exc:
+            except MpsRetryableControlError as exc:
                 last_error = exc
             if time.monotonic() >= deadline:
                 detail = f": {last_error}" if last_error else ""
@@ -855,18 +948,15 @@ class MpsManager:
                 pass
             time.sleep(self.poll_interval)
 
-    def wait_for(self, predicate, timeout: float, message: str) -> None:
-        deadline = time.monotonic() + timeout
-        while True:
-            if predicate():
-                return
-            else:
-                pass
-            if time.monotonic() >= deadline:
-                raise MpsError(
-                    f"{message}. State dir preserved for inspection: "
-                    f"{self.paths.state_dir}"
-                )
-            else:
-                pass
-            time.sleep(self.poll_interval)
+    def wait_for_retry(
+        self,
+        deadline: float,
+        message: str,
+        error: MpsRetryableControlError | None,
+    ) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MpsError(f"{message}; last observation: {error}") from error
+        else:
+            pass
+        time.sleep(min(self.poll_interval, remaining))
