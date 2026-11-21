@@ -1,16 +1,33 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform, RMSNormKernel
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
 else:
     pass
+
+
+def validate_npu_graph_environment(model_name: str) -> None:
+    """Reject Host queue settings that would stall NPU graph streams."""
+    if (
+        os.environ.get("PER_STREAM_QUEUE") != "1"
+        or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"
+        or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
+    ):
+        raise ValueError(
+            f"{model_name} NPU graphs require PER_STREAM_QUEUE=1, "
+            "TASK_QUEUE_ENABLE unset or 1, and ASCEND_LAUNCH_BLOCKING unset or 0 "
+            "before starting the server"
+        )
+    else:
+        pass
 
 
 class NPUOmniPlatform(OmniPlatform):
@@ -29,8 +46,26 @@ class NPUOmniPlatform(OmniPlatform):
     def set_device(self, device: "torch.device") -> None:
         torch.npu.set_device(device)
 
+    @classmethod
+    def is_float64_supported(cls) -> bool:
+        return False
+
     def enable_code2wav_graph(self):
         return False
+
+    def get_rmsnorm(self) -> RMSNormKernel:
+        import torch_npu
+
+        def npu_rmsnorm(
+            hidden_states: torch.Tensor, weight: torch.Tensor, variance_epsilon: float
+        ) -> torch.Tensor:
+            return torch_npu.npu_rms_norm(hidden_states, weight, variance_epsilon)[0]
+
+        return npu_rmsnorm
+
+    def enable_mimi_decode_graph(self) -> bool:
+        """Capture PersonaPlex's Mimi streaming decode in NPU graphs."""
+        return True
 
     def enable_tts_predictor_graph(self) -> bool:
         return True

@@ -61,8 +61,10 @@ REPLY_PROGRESS = "reply.progress"
 REPLY_DELIVERED = "reply.delivered"
 # {"text_end": int}; after the client's truncate, the history keeps the cut reply's first text_end characters, sent again whenever the cut moves
 REPLY_HEARD = "reply.heard"
+# {"language"?: str}; the synthesizer starts the audio of the reply's next sentence, spoken in language when it tags one
+REPLY_SENTENCE = "reply.sentence"
 # Controls between nodes; a graph delivers them to readers and control edges, never to the client.
-NODE_CONTROLS = frozenset({REPLY_DELIVERED})
+NODE_CONTROLS = frozenset({REPLY_DELIVERED, REPLY_SENTENCE})
 # Reports a node makes on its own output; the client hears a report only from a node whose output no node reads as data, the end of the route that builds it.
 REPORT_CONTROLS = frozenset({REPLY_PROGRESS})
 
@@ -70,6 +72,11 @@ REPORT_CONTROLS = frozenset({REPLY_PROGRESS})
 def chunk_language(chunk: TimedChunk) -> str | None:
     """The language of the user's speech that a transcript, messages or text delta chunk carries; None while unknown."""
     return chunk.payload.get("language")
+
+
+def chunk_style(chunk: TimedChunk) -> str | None:
+    """The speaking style a text delta carries, named by the language model's last tag; None before any tag."""
+    return chunk.payload.get("style")
 
 
 def control_type(chunk: TimedChunk | OutputChunk) -> str | None:

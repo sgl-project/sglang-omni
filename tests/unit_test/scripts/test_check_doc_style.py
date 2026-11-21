@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise the documentation emoji checker with synthetic Markdown inputs."""
+"""Exercise documentation filename, emoji, and fence checks with synthetic inputs."""
 
 from __future__ import annotations
 
@@ -209,6 +209,40 @@ def test_check_source_reports_unclosed_fence_at_opening_line() -> None:
     ) == (3, "unclosed-fence", "unclosed code fence")
 
 
+@pytest.mark.parametrize(
+    "opening_fence, closing_fence",
+    [("```", "```"), ("~~~", "~~~"), ("   ``` \t", "   ```")],
+)
+def test_check_source_reports_empty_fence_info_at_opening_line(
+    opening_fence: str, closing_fence: str
+) -> None:
+    source = f"# Guide\n\n{opening_fence}\n😀 inside\n{closing_fence}\n"
+
+    violations = check_source(Path("guide.md"), source)
+
+    assert [
+        (violation.rule, violation.line_number, violation.detail)
+        for violation in violations
+    ] == [("fence-language", 3, "opening fence needs a non-empty info string")]
+
+
+@pytest.mark.parametrize(
+    "opening_fence, closing_fence",
+    [
+        ("```text", "```"),
+        ("~~~mermaid", "~~~"),
+        ("```{raw}", "```"),
+        ("   ````custom-format option=value", "   ````\t"),
+    ],
+)
+def test_check_source_accepts_any_nonempty_fence_info(
+    opening_fence: str, closing_fence: str
+) -> None:
+    source = f"{opening_fence}\n😀 inside\n{closing_fence}\n"
+
+    assert check_source(Path("guide.md"), source) == []
+
+
 def test_check_source_checks_inline_code_and_urls() -> None:
     source = (
         "Inline `😀` code.\nhttps://example.test/😀\n"
@@ -231,6 +265,9 @@ def test_check_docs_scans_all_markdown_files_recursively(tmp_path: Path) -> None
     (docs_root / "clean.md").write_text("# Clean\n", encoding="utf-8")
     nested_path = nested_root / "guide.md"
     nested_path.write_text("# Guide\n\nNested 😀.\n", encoding="utf-8")
+    (docs_root / "index.rst").write_text(
+        ".. toctree::\n\n   clean\n   nested/deeper/guide\n", encoding="utf-8"
+    )
     (docs_root / "ignored.txt").write_text("😀\n", encoding="utf-8")
 
     violations = check_docs(docs_root)
@@ -242,6 +279,94 @@ def test_check_docs_scans_all_markdown_files_recursively(tmp_path: Path) -> None
     assert violations[0].detail == "remove emoji sequence '😀'"
 
 
+def test_check_docs_ignores_appledouble_metadata(tmp_path: Path) -> None:
+    """Binary macOS sidecars must not cause UTF-8 decoding failures."""
+    (tmp_path / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    (tmp_path / "._guide.md").write_bytes(
+        bytes.fromhex("0005160700020000")
+        + bytes(16)
+        + bytes.fromhex("0001000000020000002600000001ff")
+    )
+
+    (tmp_path / "index.rst").write_text(".. toctree::\n\n   guide\n", encoding="utf-8")
+
+    assert check_docs(tmp_path) == []
+
+
+def test_check_docs_checks_markdown_with_sidecar_filename(tmp_path: Path) -> None:
+    """A sidecar-like filename alone must not bypass Markdown rules."""
+    path = tmp_path / "._guide.md"
+    path.write_text("# Guide\n\n😀\n", encoding="utf-8")
+
+    (tmp_path / "index.rst").write_text(
+        ".. toctree::\n\n   ._guide.md\n", encoding="utf-8"
+    )
+
+    assert [(violation.path, violation.rule) for violation in check_docs(tmp_path)] == [
+        (path, "filename-conventions"),
+        (path, "no-emoji"),
+    ]
+
+
+def test_check_docs_rejects_binary_content_with_normal_filename(tmp_path: Path) -> None:
+    """The metadata signature must not hide a corrupt ordinary document."""
+    (tmp_path / "guide.md").write_bytes(bytes.fromhex("0005160700020000ff"))
+
+    with pytest.raises(UnicodeDecodeError):
+        check_docs(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative_path, is_valid",
+    [
+        ("guide.md", True),
+        ("model_v2.md", True),
+        ("123.md", True),
+        ("README.md", True),
+        ("nested/guide.md", True),
+        ("Upper-Case 目录/model_v2.md", True),
+        ("Guide.md", False),
+        ("model-v2.md", False),
+        ("nested/README.md", False),
+        ("model v2.md", False),
+        ("指南.md", False),
+        ("model@v2.md", False),
+        ("model.v2.md", False),
+    ],
+)
+def test_check_docs_validates_only_markdown_basenames(
+    tmp_path: Path, relative_path: str, is_valid: bool
+) -> None:
+    docs_root = tmp_path / "docs"
+    path = docs_root / relative_path
+    path.parent.mkdir(parents=True)
+    source = "# Guide\n"
+    path.write_text(source, encoding="utf-8")
+    (docs_root / "index.rst").write_text(
+        f".. toctree::\n\n   {relative_path}\n", encoding="utf-8"
+    )
+
+    violations = check_docs(docs_root)
+
+    expected = (
+        []
+        if is_valid
+        else [
+            (
+                path,
+                1,
+                "filename-conventions",
+                r"Markdown basename must match [a-z0-9_]+\.md",
+            )
+        ]
+    )
+    assert [
+        (violation.path, violation.line_number, violation.rule, violation.detail)
+        for violation in violations
+    ] == expected
+    assert path.read_text(encoding="utf-8") == source
+
+
 def copy_script_fixture(tmp_path: Path, document_text: str) -> tuple[Path, Path]:
     """Create an isolated scripts/docs tree for CLI checks."""
     repository_root = tmp_path / "fixture"
@@ -251,6 +376,9 @@ def copy_script_fixture(tmp_path: Path, document_text: str) -> tuple[Path, Path]
     document_path.parent.mkdir(parents=True)
     shutil.copy2(SCRIPT, script_path)
     document_path.write_text(document_text, encoding="utf-8")
+    (repository_root / "docs" / "index.rst").write_text(
+        ".. toctree::\n\n   guide\n", encoding="utf-8"
+    )
     return repository_root, document_path
 
 
@@ -277,12 +405,18 @@ def test_cli_scans_the_copied_script_fixture(
     if expected_exit_code == 0:
         assert result.stderr == ""
     else:
-        expected_diagnostic = (
-            "unclosed-fence: unclosed code fence"
-            if "```" in document_text
-            else "no-emoji: remove emoji sequence '😀'"
-        )
-        assert result.stderr == f"docs/{document_path.name}:3: {expected_diagnostic}\n"
+        if "```" in document_text:
+            expected_stderr = (
+                f"docs/{document_path.name}:3: fence-language: "
+                "opening fence needs a non-empty info string\n"
+                f"docs/{document_path.name}:3: unclosed-fence: unclosed code fence\n"
+            )
+        else:
+            expected_stderr = (
+                f"docs/{document_path.name}:3: no-emoji: "
+                "remove emoji sequence '😀'\n"
+            )
+        assert result.stderr == expected_stderr
 
 
 def test_cli_rejects_arguments_with_exit_status_two(tmp_path: Path) -> None:

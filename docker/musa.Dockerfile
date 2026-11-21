@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
 # SGLang-Omni MUSA image. Build SGLang's MUSA image first:
-#   SGLang tag: v0.5.22
-#   docker build -f docker/musa.Dockerfile -t sglang:v0.5.22-musa520-s5000 <sglang-repo>
+#   SGLang tag: v0.5.23
+#   docker build -f docker/musa.Dockerfile -t sglang:v0.5.23-musa520-s5000 <sglang-repo>
 # Then build this image:
 #   docker build -f docker/musa.Dockerfile -t sglang-omni:main-musa520-s5000 .
 
-ARG SGLANG_MUSA_IMAGE=sglang:v0.5.22-musa520-s5000
+ARG SGLANG_MUSA_IMAGE=sglang:v0.5.23-musa520-s5000
 
 FROM ${SGLANG_MUSA_IMAGE} AS runtime
 
@@ -41,6 +41,7 @@ ARG PYPI_INDEX_URL=https://pypi.org/simple
 ARG FFMPEG_MUSA_REPO=https://github.com/MooreThreads/FFmpeg.git
 ARG FFMPEG_MUSA_REF=mt-7.0.2-public
 ARG TORCHCODEC_INSTALL_SPEC="torchcodec @ git+https://github.com/MooreThreads/torchcodec.git@release/0.5-musa-public"
+ARG LLAMA_CPP_PYTHON_VERSION=0.3.34
 
 RUN python3 -m pip install --upgrade pip "setuptools<82" wheel \
     && cp pyproject_musa.toml pyproject.toml \
@@ -75,6 +76,17 @@ RUN python3 -m pip install --upgrade pip "setuptools<82" wheel \
 # Install qwen-tts without dependencies because it pins Transformers 4.57.3
 # and accelerate 1.12.0, which would replace the inherited stack.
 RUN python3 -m pip install --no-cache-dir --no-deps qwen-tts==0.1.1
+
+# Package extras cannot pass the CMake options required to build the MUSA backend.
+RUN CMAKE_ARGS="-DGGML_MUSA=ON -DMUSA_ARCHITECTURES=31" \
+        python3 -m pip wheel --no-cache-dir --no-deps \
+            --no-binary llama-cpp-python \
+            "llama-cpp-python==${LLAMA_CPP_PYTHON_VERSION}" \
+            -w /tmp/llama-cpp-wheels \
+            --index-url "${PYPI_INDEX_URL}" \
+    && python3 -m pip install --no-cache-dir --no-deps \
+        "/tmp/llama-cpp-wheels/llama_cpp_python-${LLAMA_CPP_PYTHON_VERSION}-"*.whl \
+    && rm -rf /tmp/llama-cpp-wheels
 
 RUN python3 - <<'PY'
 import torch

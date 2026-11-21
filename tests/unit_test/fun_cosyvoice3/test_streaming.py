@@ -33,6 +33,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
 from tests.unit_test.fun_cosyvoice3.test_vocoder import FakeHiFT as _FakeHiFT
 
@@ -181,6 +182,16 @@ def model_runner() -> FunCosyVoice3ModelRunner:
     return runner
 
 
+SPEC_TOKENS_DETAILS: SpecTokensDetailsDict = {
+    "spec_accept_rate": 0.5,
+    "spec_accept_length": 2.0,
+    "spec_num_correct_drafts": 1,
+    "spec_num_proposed_drafts": 2,
+    "spec_verify_ct": 1,
+    "spec_correct_drafts_histogram": [0, 1],
+}
+
+
 def stream_payload(
     request_id: str = "req-stream",
     *,
@@ -199,6 +210,7 @@ def stream_payload(
         ),
         flow_embedding=torch.ones(1, 192),
         finish_reason="length",
+        spec_tokens_details=SPEC_TOKENS_DETAILS,
     )
     return StagePayload(
         request_id=request_id,
@@ -249,6 +261,7 @@ def test_streaming_vocoder_emits_causal_chunk_then_finalizes_remainder(
     assert messages[1].data.data["modality"] == "audio"
     assert messages[1].data.data["sample_rate"] == 24000
     assert messages[1].data.data["finish_reason"] == "length"
+    assert messages[1].data.data["spec_tokens_details"] == SPEC_TOKENS_DETAILS
     assert "req-stream" not in scheduler.stream_states
 
 
@@ -844,6 +857,125 @@ def test_stream_done_defers_the_final_to_a_step() -> None:
     assert [m.type for m in drain(scheduler)] == ["stream", "result"]
     assert "req-a" not in scheduler.stream_states
     assert not scheduler.has_ready_work()
+
+
+def whole_payload(request_id: str) -> StagePayload:
+    payload = stream_payload(request_id, codes=list(range(30)))
+    payload.request.params["stream"] = False
+    return payload
+
+
+# At 50 Hz the first hop's 49 samples play for 0.98 s; the horizon is the batch time plus 0.4 s.
+@pytest.mark.parametrize(
+    "is_stream_started, seconds_before_batch, seconds_in_batch, is_stream_answered",
+    [
+        (False, 0.0, 0.0, True),
+        (True, 0.0, 0.0, False),
+        (True, 0.7, 0.0, True),
+        (True, 0.0, 0.5, True),
+    ],
+)
+def test_non_streaming_decode_yields_to_a_stream_waiting_for_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    is_stream_started: bool,
+    seconds_before_batch: float,
+    seconds_in_batch: float,
+    is_stream_answered: bool,
+) -> None:
+    """Queued non-streaming requests kept the vocoder from every stream step, so streams under mixed load got no audio until that traffic stopped; a stream with audio buffered past the horizon may still wait."""
+    _, scheduler = make_scheduler(sample_rate=50)
+    clock = Clock()
+    scheduler.clock = clock
+    decode_payloads = scheduler.vocoder.decode_payloads
+
+    async def slow_decode_payloads(payloads: list[StagePayload]) -> list[StagePayload]:
+        clock.now += seconds_in_batch
+        return await decode_payloads(payloads)
+
+    monkeypatch.setattr(scheduler.vocoder, "decode_payloads", slow_decode_payloads)
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    if is_stream_started:
+        assert serve(scheduler) == 1
+        drain(scheduler)
+        scheduler.ingest_stream_item("req-a", item(list(range(28, 78))))
+    else:
+        pass
+    clock.now += seconds_before_batch
+
+    scheduler.handle_new_request_batch(
+        [IncomingMessage("whole", "new_request", whole_payload("whole"))]
+    )
+
+    assert [(m.request_id, m.type) for m in drain(scheduler)] == [
+        ("whole", "result")
+    ] + ([("req-a", "stream")] if is_stream_answered else [])
+    assert scheduler.has_ready_work() != is_stream_answered
+
+
+def test_a_step_in_flight_is_sent_before_a_non_streaming_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launched stream step's audio waited behind the next non-streaming batch."""
+    _, scheduler = make_scheduler()
+    log = pending_copies(scheduler, monkeypatch)
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    scheduler.run_ready_step()
+    assert drain(scheduler) == []
+
+    scheduler.handle_new_request_batch(
+        [IncomingMessage("whole", "new_request", whole_payload("whole"))]
+    )
+
+    assert [(m.request_id, m.type) for m in drain(scheduler)] == [
+        ("req-a", "stream"),
+        ("whole", "result"),
+    ]
+    assert log == ["launch 1", "read 1"]
+
+
+def test_a_chunk_queued_behind_a_non_streaming_batch_is_served_before_the_next() -> (
+    None
+):
+    """A chunk that made a stream ready while queued behind a batch waited for the next batch too."""
+    _, scheduler = make_scheduler()
+    scheduler.handle_streaming_new_request("req-s", stream_payload("req-s"))
+    scheduler.ingest_stream_item("req-s", item(list(range(27))))
+    scheduler.inbox.put(IncomingMessage("a", "new_request", whole_payload("a")))
+    scheduler.inbox.put(IncomingMessage("req-s", "stream_chunk", item([27])))
+    scheduler.inbox.put(IncomingMessage("b", "new_request", whole_payload("b")))
+
+    serve(scheduler)
+
+    assert [(m.request_id, m.type) for m in drain(scheduler)] == [
+        ("a", "result"),
+        ("req-s", "stream"),
+        ("b", "result"),
+    ]
+
+
+def test_a_yielded_step_serves_a_first_hop_before_a_buffered_final() -> None:
+    """A started stream with audio buffered led the yielded step and left a new stream without audio."""
+    _, scheduler = make_scheduler(sample_rate=50)
+    scheduler.clock = Clock()
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(28))))
+    assert serve(scheduler) == 1
+    drain(scheduler)
+    scheduler.handle_stream_done("req-a")
+    scheduler.handle_streaming_new_request("req-b", stream_payload("req-b"))
+    scheduler.ingest_stream_item("req-b", item(list(range(28))))
+
+    scheduler.handle_new_request_batch(
+        [IncomingMessage("whole", "new_request", whole_payload("whole"))]
+    )
+
+    assert [(m.request_id, m.type) for m in drain(scheduler)] == [
+        ("whole", "result"),
+        ("req-b", "stream"),
+    ]
+    assert "req-a" in scheduler.stream_states
 
 
 def test_finals_share_one_non_streaming_flow_batch() -> None:

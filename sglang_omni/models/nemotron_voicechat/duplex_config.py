@@ -78,6 +78,7 @@ class NemotronVoiceChatDuplexPipelineConfig(PipelineConfig):
     realtime_deployment_factory: ClassVar[str] = (
         "sglang_omni.models.nemotron_voicechat.realtime.deployment"
     )
+    is_realtime_only: ClassVar[bool] = True
     model_path: str
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "thinker": EngineStageConfig,

@@ -5,7 +5,7 @@ from array import array
 from typing import Literal
 
 import pytest
-from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 from tokenizers.pre_tokenizers import ByteLevel
 from transformers import WhisperTokenizer
@@ -148,3 +148,23 @@ def test_terminal_flush_keeps_native_replacement_text(
 def test_negative_stream_interval_is_rejected(tokenizer: WhisperTokenizer) -> None:
     with pytest.raises(ValueError, match="nonnegative"):
         ExactWhisperStreamOutputBuilder(tokenizer, interval_seconds=-1)
+
+
+def test_a_finished_speculative_round_streams_split_characters_whole(
+    tokenizer: WhisperTokenizer,
+) -> None:
+    """A draft's last round arrives token by token after the request finished; the stream must not end on its first byte token."""
+    builder = ExactWhisperStreamOutputBuilder(tokenizer, interval_seconds=0)
+    current = request_data()
+    assert current.req is not None
+    current.req.finished_reason = FINISH_LENGTH(length=6)
+    token_ids = tokenizer.encode("你好", add_special_tokens=False)
+
+    messages = [
+        message
+        for token_id in token_ids
+        for message in builder("request", current, RequestOutput("request", token_id))
+    ]
+    messages += builder.flush("request", current)
+
+    assert "".join(message.data["text"] for message in messages) == "你好"

@@ -27,10 +27,12 @@ from sglang_omni.client import (
 )
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
+    SglExt,
     TranscriptionResponse,
     TranscriptionTextDeltaEvent,
     TranscriptionTextDoneEvent,
     TranscriptionUsage,
+    build_sglext,
 )
 from sglang_omni.serve.streaming import (
     STREAM_DONE_SENTINEL,
@@ -63,6 +65,7 @@ class SpeechToTextForm:
     repetition_penalty: float | None
     max_new_tokens: int | None
     stream: bool
+    return_spec_tokens_details: bool
 
 
 async def parse_speech_to_text_form(
@@ -71,10 +74,11 @@ async def parse_speech_to_text_form(
     language: str | None = Form(default=None),
     prompt: str | None = Form(default=None),
     response_format: str = Form(default="json"),
-    temperature: float | None = Form(default=None),
+    temperature: float | None = Form(default=None, ge=0.0),
     repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
     stream: bool = Form(default=False),
+    return_spec_tokens_details: bool = Form(default=False),
 ) -> SpeechToTextForm:
     return SpeechToTextForm(
         file=file,
@@ -86,6 +90,7 @@ async def parse_speech_to_text_form(
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
         stream=stream,
+        return_spec_tokens_details=return_spec_tokens_details,
     )
 
 
@@ -367,17 +372,20 @@ def av_duration(audio_bytes: bytes) -> float:
             else {}
         )
         with av.open(io.BytesIO(audio_bytes), **open_kwargs) as container:
+            # note (suninnn): the container's duration also covers a longer video track.
+            audio_stream = next(iter(container.streams.audio), None)
+            if (
+                audio_stream is not None
+                and audio_stream.duration
+                and audio_stream.time_base
+            ):
+                return max(float(audio_stream.duration * audio_stream.time_base), 0.0)
+            else:
+                pass
             if container.duration:  # in av.time_base units (microseconds)
                 return max(container.duration / 1_000_000, 0.0)
             else:
                 pass
-            for audio_stream in container.streams.audio:
-                if audio_stream.duration and audio_stream.time_base:
-                    return max(
-                        float(audio_stream.duration * audio_stream.time_base), 0.0
-                    )
-                else:
-                    pass
     except (av.error.FFmpegError, ValueError):
         logger.debug("Could not probe audio duration", exc_info=True)
     return 0.0
@@ -389,9 +397,9 @@ def probe_audio_duration(audio_bytes: bytes) -> float:
     Metadata-only: reads container headers, never decodes. soundfile answers
     WAV/FLAC in microseconds of CPU and only serves formats whose header
     states the exact sample count; every other format (MP3, M4A, WebM, ...)
-    keeps the PyAV path, which wraps the same FFmpeg demuxers load_audio
-    decodes with, so their measurements are unchanged. 0.0 means unknown;
-    callers treat that as "duration not available".
+    goes to PyAV, which reads the first audio track (the one load_audio
+    decodes) and falls back to the container when the track states no
+    duration. 0.0 means unknown; callers treat that as "duration not available".
     """
     duration_s = soundfile_duration(audio_bytes)
     if duration_s > 0:
@@ -399,6 +407,22 @@ def probe_audio_duration(audio_bytes: bytes) -> float:
     else:
         pass
     return av_duration(audio_bytes)
+
+
+def reported_truncation(finish_reason: str | None) -> str | None:
+    """Expose a token-budget stop; a normal stop stays off the response."""
+    if finish_reason == "length":
+        return finish_reason
+    else:
+        return None
+
+
+def truncation_headers(finish_reason: str | None) -> dict[str, str]:
+    reported = reported_truncation(finish_reason)
+    if reported is None:
+        return {}
+    else:
+        return {"X-Finish-Reason": reported}
 
 
 def assemble_speech_to_text_response(
@@ -412,6 +436,8 @@ def assemble_speech_to_text_response(
     architectures: list[str] | None,
     duration_s: float | None = None,
     response_formats: Collection[str] = DEFAULT_RESPONSE_FORMATS,
+    finish_reason: str | None = None,
+    sglext: SglExt | None = None,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
@@ -422,8 +448,10 @@ def assemble_speech_to_text_response(
     )
     adapter = resolve_speech_to_text_adapter(architectures)
     raw_text = text
+    headers = truncation_headers(finish_reason)
+    visible_finish_reason = reported_truncation(finish_reason)
     if normalized_response_format == "text":
-        return PlainTextResponse(raw_text)
+        return PlainTextResponse(raw_text, headers=headers)
     else:
         pass
 
@@ -467,21 +495,30 @@ def assemble_speech_to_text_response(
             )
         response.task = task
         response.usage = usage
+        response.finish_reason = visible_finish_reason
+        response.sglext = sglext
         if normalized_response_format == "srt":
-            return PlainTextResponse(segments_to_srt(response.segments))
+            return PlainTextResponse(
+                segments_to_srt(response.segments), headers=headers
+            )
         else:
             pass
         if normalized_response_format == "vtt":
-            return PlainTextResponse(segments_to_vtt(response.segments))
+            return PlainTextResponse(
+                segments_to_vtt(response.segments), headers=headers
+            )
         else:
             pass
-        return JSONResponse(content=response.model_dump(exclude_none=True))
+        return JSONResponse(
+            content=response.model_dump(exclude_none=True), headers=headers
+        )
     else:
         pass
     return JSONResponse(
-        content=TranscriptionResponse(text=text, usage=usage).model_dump(
-            exclude_none=True
-        )
+        content=TranscriptionResponse(
+            text=text, usage=usage, finish_reason=visible_finish_reason, sglext=sglext
+        ).model_dump(exclude_none=True),
+        headers=headers,
     )
 
 
@@ -565,13 +602,24 @@ async def speech_to_text_stream(
     adapter: TranscriptionAdapter,
     duration_s: float,
     operation_name: str = "transcription",
+    return_spec_tokens_details: bool = False,
 ) -> AsyncIterator[str]:
     """Keep terminal event ordering stable for OpenAI-compatible clients."""
     final_text: str | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
     def _event_for(chunk: GenerateChunk) -> str | None:
-        nonlocal final_text
+        nonlocal final_text, finish_reason, sglext
+        chunk_sglext = build_sglext(
+            return_spec_tokens_details, chunk.spec_tokens_details
+        )
+        if chunk_sglext is not None:
+            sglext = chunk_sglext
+        else:
+            pass
         if chunk.finish_reason is not None:
+            finish_reason = chunk.finish_reason
             if isinstance(chunk.text, str) and chunk.text:
                 final_text = chunk.text
             else:
@@ -614,7 +662,12 @@ async def speech_to_text_stream(
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
-    done_event = TranscriptionTextDoneEvent(text=text, usage=usage)
+    done_event = TranscriptionTextDoneEvent(
+        text=text,
+        usage=usage,
+        finish_reason=reported_truncation(finish_reason),
+        sglext=sglext,
+    )
     yield f"data: {done_event.model_dump_json(exclude_none=True)}\n\n"
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
@@ -629,6 +682,7 @@ async def create_speech_to_text_streaming_response(
     architectures: list[str] | None,
     operation_name: str = "transcription",
     duration_s: float | None = None,
+    return_spec_tokens_details: bool = False,
 ) -> Response:
     """Delay headers until backend admission can still return an HTTP error."""
     adapter = resolve_speech_to_text_adapter(architectures)
@@ -666,6 +720,7 @@ async def create_speech_to_text_streaming_response(
             adapter=adapter,
             duration_s=duration_s,
             operation_name=operation_name,
+            return_spec_tokens_details=return_spec_tokens_details,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},

@@ -5,6 +5,7 @@ from array import array
 from dataclasses import dataclass, field
 
 import torch
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
@@ -18,8 +19,10 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     PerceptionStepPlan,
 )
 from sglang_omni.models.minicpm_o.native_config import (
+    MAX_DRAIN_UNITS,
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexSampling,
+    MiniCPMODuplexWindow,
 )
 from sglang_omni.models.minicpm_o.special_tokens import (
     MiniCPMOSpecialTokenIds,
@@ -44,6 +47,7 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
 )
+from sglang_omni.scheduling.sglang_backend.history_cut import HistoryCut
 from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.manager import (
@@ -76,9 +80,22 @@ def keep_through_unit_of(event: TimedChunk) -> int | None:
 
 
 class ThinkerAdapter(ARSessionAdapter):
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, vocab_size: int) -> None:
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        vocab_size: int,
+        *,
+        window: MiniCPMODuplexWindow,
+        rotary_embedding: RotaryEmbedding,
+    ) -> None:
+        assert (
+            rotary_embedding.is_neox_style
+            and rotary_embedding.rotary_dim == rotary_embedding.head_size
+        ), "the thinker window shifts keys with full-width neox RoPE"
         self.tokenizer: PreTrainedTokenizerBase = tokenizer
         self.vocab_size: int = vocab_size
+        self.window: MiniCPMODuplexWindow = window
+        self.rotary_embedding: RotaryEmbedding = rotary_embedding
         self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
         )
@@ -105,6 +122,7 @@ class ThinkerAdapter(ARSessionAdapter):
             state.is_listen_held = True
             # note (luojiaxuan): The detector hears no unit between holds, so each hold starts it afresh.
             state.speech_detector.reset()
+            state.drain_units_left = 0
             state.is_latest_reply_ended = True
             self.cut_reply(state, keep_through_unit_of(event))
         elif control_type(event) == TRUNCATE:
@@ -169,13 +187,24 @@ class ThinkerAdapter(ARSessionAdapter):
         state = self.states[session_identity]
         kept_token_count = state.kept_token_count
         state.kept_token_count = None
+        if kept_token_count is not None:
+            state.unit_starts = [
+                start for start in state.unit_starts if start < kept_token_count
+            ]
+        else:
+            pass
         return ARSessionPreparation(kept_token_count=kept_token_count)
 
     def finish_input(
         self, session_identity: SessionIdentity, payload: StagePayload
     ) -> StagePayload:
         payload.data = dict(
-            talker_conditions=[], text="", is_listen=True, end_of_turn=True
+            talker_conditions=[],
+            text="",
+            is_listen=True,
+            end_of_turn=True,
+            is_interrupted=self.states[session_identity].is_interrupt_pending,
+            hears_user=False,
         )
         return payload
 
@@ -189,20 +218,22 @@ class ThinkerAdapter(ARSessionAdapter):
         plan: PerceptionStepPlan = payload.data
         is_interrupted = state.is_interrupt_pending
         state.is_interrupt_pending = False
-        if state.is_listen_held:
+        if state.is_listen_held or state.drain_units_left > 0:
             pcm = (
                 chunk.payload["pcm"]
                 if isinstance(chunk.payload, dict)
                 else chunk.payload
             )
-            state.is_listen_held = all(
-                state.speech_detector.step(frame, in_speech=False) is None
+            hears_user = any(
+                state.speech_detector.step(frame, in_speech=False) is not None
                 for frame in state.speech_detector.score(
                     pcm, round(chunk.t_start_ms * SAMPLE_RATE / 1000)
                 )
             )
         else:
-            pass
+            hears_user = False
+        state.is_listen_held = state.is_listen_held and not hears_user
+        state.drain_units_left = 0 if hears_user else max(state.drain_units_left - 1, 0)
         prefix = (
             []
             if state.is_prefix_pending
@@ -265,11 +296,18 @@ class ThinkerAdapter(ARSessionAdapter):
             max_new_tokens=sampling.max_new_tokens_per_unit,
             stage_payload=payload,
             thinker_state=state,
+            # note (0xtoward): The last <unit> is the unit's own; a system prompt ahead of it may spell one.
+            unit_token_index=max(
+                index
+                for index, token_id in enumerate(token_ids)
+                if token_id == self.special.unit
+            ),
             unit_embedding_spans=spans,
             is_listen_forced=is_interrupted
             or state.is_listen_held
             or state.force_listen_counter < sampling.force_listen_count,
             is_interrupted=is_interrupted,
+            hears_user=hears_user,
             unit_index=chunk.seq,
             perception_token_ids=plan["token_ids"],
             perception_embedding_spans=perception_embedding_spans,
@@ -277,22 +315,74 @@ class ThinkerAdapter(ARSessionAdapter):
             generated_history_at_start=list(state.generated_history),
         )
 
+    def plan_history_cut(
+        self,
+        session_identity: SessionIdentity,
+        request_data: DuplexUnitRequestData,
+        history_length: int,
+        history_capacity: int,
+    ) -> HistoryCut | None:
+        """The checkpoint's StreamDecoder.enforce_window: past the high watermark, the oldest units go until the low one.
+
+        It also cuts early when the next unit would not fit in the context.
+        """
+        window = self.window
+        # note (0xtoward): The checkpoint checks its cache length after </unit>, which here comes with the next unit, so that length is the next <unit>'s position.
+        next_unit_start = history_length + request_data.unit_token_index
+        fitting_start = history_capacity + request_data.unit_token_index
+        if window.sliding_window_mode == "off" or (
+            next_unit_start <= window.basic_window_high_tokens
+            and next_unit_start <= fitting_start
+        ):
+            return None
+        else:
+            state = self.states[session_identity]
+            return state.drop_units(
+                range(len(state.unit_starts)),
+                next_unit_start,
+                min(window.basic_window_low_tokens, fitting_start),
+            )
+
+    def shift_key_positions(
+        self, keys: torch.Tensor, distances: torch.Tensor
+    ) -> torch.Tensor:
+        cosine, sine = (
+            self.rotary_embedding.cos_sin_cache[distances]
+            .to(torch.float32)
+            .unsqueeze(1)
+            .chunk(2, dim=-1)
+        )
+        first_half, second_half = keys.to(torch.float32).chunk(2, dim=-1)
+        return torch.cat(
+            (
+                first_half * cosine + second_half * sine,
+                second_half * cosine - first_half * sine,
+            ),
+            dim=-1,
+        ).to(keys.dtype)
+
     def result(
         self, session_identity: SessionIdentity, data: DuplexUnitRequestData
     ) -> StagePayload:
         state = self.states[session_identity]
         state.is_prefix_pending = False
+        state.unit_starts.append(data.session_history_length + data.unit_token_index)
         if data.is_interrupted:
             # note (ruoyu): Without the ended turn, the next sampled listen is rewritten into speech and the stopped reply resumes.
             state.is_turn_ended = True
         else:
             pass
         output_token_ids = [int(token_id) for token_id in data.output_ids]
-        is_turn_ending = (
-            data.is_interrupted
-            or self.special.turn_eos in output_token_ids
+        ends_own_turn = not data.is_interrupted and (
+            self.special.turn_eos in output_token_ids
             or any(ends_turn for _, _, ends_turn in data.talker_conditions)
         )
+        is_turn_ending = data.is_interrupted or ends_own_turn
+        if ends_own_turn:
+            state.drain_units_left = MAX_DRAIN_UNITS
+            state.speech_detector.reset()
+        else:
+            pass
         if data.generated_unit_ids and data.is_turn_ended_at_start:
             # note (ruoyu): A new reply begins here, so the reply before it can no longer be cut.
             state.reply_units = []
@@ -335,6 +425,8 @@ class ThinkerAdapter(ARSessionAdapter):
                 output_token_ids and output_token_ids[0] == self.special.listen
             ),
             end_of_turn=is_turn_ending,
+            is_interrupted=data.is_interrupted,
+            hears_user=data.hears_user,
         )
         return data.stage_payload
 

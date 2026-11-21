@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The thinker stage defaults to async decode; the dotted flag overrides it.
-
-Async decode is on by default; --thinker.factory.enable_async_decode false
-turns it off like any other scheduler setting.
-"""
+"""The dotted flag explicitly selects the thinker's decode scheduling mode."""
 from __future__ import annotations
 
 from sglang_omni.config.manager import ConfigManager

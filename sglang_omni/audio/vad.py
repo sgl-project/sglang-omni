@@ -26,6 +26,8 @@ class VADConfig:
     prefix_padding_ms: int = 300
     # Silence duration in milliseconds
     silence_duration_ms: int = 500
+    # Voices this many dB below the last utterance start no speech; None turns this off
+    background_margin_db: float | None = None
 
 
 class VADEvent:
@@ -192,6 +194,17 @@ class StreamingVAD:
         self.is_speech = False
         self.silence_run_samples = 0
         self.last_speech_offset = 0
+        self.run_start_offset: int | None = None
+        self.utterance_power = 0.0
+        self.utterance_frames = 0
+        self.reference_db: float | None = None
+
+    def is_background(self, power: float) -> bool:
+        margin = self.config.background_margin_db
+        if margin is None or self.reference_db is None:
+            return False
+        else:
+            return power_db(power) < self.reference_db - margin
 
     def process(self, pcm_bytes: bytes) -> list[Emit]:
         """Feed PCM16 LE mono @ 16 kHz; return any state transitions."""
@@ -208,27 +221,43 @@ class StreamingVAD:
             frame = np.frombuffer(frame_bytes, dtype="<i2").astype(np.float32) / 32768.0
 
             prob = self.infer(frame)
+            power = float(np.mean(np.square(frame)))
             self.samples_consumed += VAD_FRAME_SAMPLES
             speech = prob >= self.config.threshold
 
             if speech:
                 self.silence_run_samples = 0
                 self.last_speech_offset = self.samples_consumed
-                if not self.is_speech:
+                if self.run_start_offset is None:
+                    self.run_start_offset = self.samples_consumed - VAD_FRAME_SAMPLES
+                else:
+                    pass
+                if self.is_speech:
+                    pass
+                elif self.is_background(power):
+                    pass
+                else:
                     self.is_speech = True
+                    self.utterance_power = 0.0
+                    self.utterance_frames = 0
                     # OpenAI's contract: speech_started reports the start
                     # offset *minus* prefix_padding so the caller includes
                     # a leading prefix in the committed audio.
                     pad = self.config.prefix_padding_ms * VAD_SAMPLE_RATE // 1000
-                    started_at = max(0, self.samples_consumed - VAD_FRAME_SAMPLES - pad)
+                    # note (wenyao): An interruption can begin below the margin, so speech starts at the run's first frame, not at the frame that crossed it.
+                    started_at = max(0, self.run_start_offset - pad)
                     emits.append(
                         Emit(
                             event_type=VADEvent.SPEECH_STARTED, sample_offset=started_at
                         )
                     )
+                if self.is_speech:
+                    self.utterance_power += power
+                    self.utterance_frames += 1
                 else:
                     pass
             else:
+                self.run_start_offset = None
                 self.silence_run_samples += VAD_FRAME_SAMPLES
                 if self.is_speech:
                     silence_threshold = (
@@ -236,6 +265,9 @@ class StreamingVAD:
                     )
                     if self.silence_run_samples >= silence_threshold:
                         self.is_speech = False
+                        self.reference_db = power_db(
+                            self.utterance_power / self.utterance_frames
+                        )
                         emits.append(
                             Emit(
                                 event_type=VADEvent.SPEECH_STOPPED,
@@ -256,15 +288,21 @@ class StreamingVAD:
         return float(prob)
 
     def reset(self) -> None:
+        """Keeps the last utterance's level, which describes the speaker rather than the stream."""
         self.leftover_pcm.clear()
         self.samples_consumed = 0
         self.is_speech = False
         self.silence_run_samples = 0
         self.last_speech_offset = 0
+        self.run_start_offset = None
         if hasattr(self.vad_model, "reset_states"):
             self.vad_model.reset_states()  # type: ignore[union-attr]
         else:
             pass
+
+
+def power_db(power: float) -> float:
+    return 10 * float(np.log10(power + 1e-12))
 
 
 def offsets_to_ms(samples: int) -> int:

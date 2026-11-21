@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "common/audio.h"
+#include "common/generation.h"
 #include "nlohmann/json.hpp"
 #include "voxtral_tts/voxtral_tts_model.h"
 
@@ -89,7 +91,7 @@ int main(int argc, char **argv) {
     samples.insert(samples.end(), delta.begin(), delta.end());
   };
   const std::atomic<bool> cancel(false);
-  const qwen3_asr::FinishReason finish_reason =
+  const omni_common::FinishReason finish_reason =
       model.Generate(prompt_ids, voice, max_frames, cancel,
                      [&](const mlx::core::array &codes) {
                        const int32_t *values = codes.data<int32_t>();
@@ -103,8 +105,8 @@ int main(int argc, char **argv) {
       static_cast<double>(samples.size()) / model.codec().sample_rate();
 
   if (!output_path.empty()) {
-    std::ofstream(output_path, std::ios::binary) << voxtral_tts::WavBytes(
-        voxtral_tts::Pcm16Bytes(samples), model.codec().sample_rate());
+    std::ofstream(output_path, std::ios::binary) << omni_common::WavBytes(
+        omni_common::Pcm16Bytes(samples), model.codec().sample_rate());
   } else {
   }
   if (!codes_output_path.empty()) {
@@ -116,7 +118,7 @@ int main(int argc, char **argv) {
   const nlohmann::json line = {
       {"prompt_token_count", prompt_ids.size()},
       {"frame_count", frame_codes.size()},
-      {"finish_reason", qwen3_asr::FinishReasonName(finish_reason)},
+      {"finish_reason", omni_common::FinishReasonName(finish_reason)},
       {"seconds", seconds},
       {"first_audio_seconds", first_audio_seconds.value_or(seconds)},
       {"audio_seconds", audio_seconds},

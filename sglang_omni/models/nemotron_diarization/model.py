@@ -21,6 +21,7 @@ from torch import nn
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
 from sglang_omni.models.nemotron_diarization.speaker_cache import SpeakerCache
+from sglang_omni.utils.device import device_guard, supports_device_streams
 
 # note (Richard Wang): Use deterministic compiler reductions without changing other models.
 compiled_flex_attention = torch.compile(
@@ -152,7 +153,7 @@ class RotaryEmbedding(nn.Module):
         size = (batch, heads, frames, head_dim)
         stride = (frames * heads * head_dim, head_dim, heads * head_dim, 1)
         q_out, k_out = (q.new_empty_strided(size, stride) for _ in range(2))
-        with torch.cuda.device(q.device):
+        with device_guard(q.device):
             # note (Richard Wang): Fusion changes the FP32 reference rounding.
             rotary_kernel[(frames, heads, batch)](
                 q,
@@ -301,26 +302,41 @@ class TransformerEncoder(nn.Module):
 
 
 class SortformerModules(nn.Module):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        fc_d_model: int = 512,
+        tf_d_model: int = 192,
+        speakers: int = 8,
+        upsample: int = 8,
+    ) -> None:
         super().__init__()
+        self.tf_d_model = tf_d_model
+        self.speakers = speakers
+        self.upsample = upsample
         # note (Ryan Stewart): Unused legacy head that strict loading needs from the archive.
-        self.hidden_to_spks = nn.Linear(384, 8)
-        self.first_hidden_to_hidden = nn.Linear(192, 192)
-        self.single_hidden_to_spks = nn.Linear(192, 8)
-        self.encoder_proj = nn.Linear(512, 192)
-        self.subpixel_upsample = nn.Conv1d(192, 192 * 8, 3, padding=1)
-        self.learnable_sil_emb = nn.Parameter(torch.empty(512))
+        self.hidden_to_spks = nn.Linear(2 * tf_d_model, speakers)
+        self.first_hidden_to_hidden = nn.Linear(tf_d_model, tf_d_model)
+        self.single_hidden_to_spks = nn.Linear(tf_d_model, speakers)
+        self.encoder_proj = nn.Linear(fc_d_model, tf_d_model)
+        self.subpixel_upsample = nn.Conv1d(
+            tf_d_model, tf_d_model * upsample, 3, padding=1
+        )
+        self.learnable_sil_emb = nn.Parameter(torch.empty(fc_d_model))
 
-    def forward(self, embeddings: torch.Tensor, valid_length: int) -> torch.Tensor:
+    def forward(
+        self, embeddings: torch.Tensor, valid_length: int | torch.Tensor
+    ) -> torch.Tensor:
+        """valid_length is an int, or per-row lengths shaped (batch, 1)."""
         hidden = self.encoder_proj(embeddings)
         hidden = self.subpixel_upsample(hidden.transpose(1, 2)).transpose(1, 2)
-        hidden = hidden.reshape(1, -1, 192)
+        hidden = hidden.reshape(embeddings.shape[0], -1, self.tf_d_model)
         hidden = F.relu(self.first_hidden_to_hidden(F.relu(hidden)))
         probabilities = torch.sigmoid(self.single_hidden_to_spks(hidden))
         mask = (
             torch.arange(embeddings.shape[1], device=embeddings.device) < valid_length
         )
-        return probabilities * mask.repeat_interleave(8)[None, :, None]
+        return probabilities * mask.repeat_interleave(self.upsample, dim=-1)[..., None]
 
 
 class NemotronDiarizationModel(nn.Module):
@@ -350,9 +366,11 @@ class NemotronDiarizationModel(nn.Module):
         else:
             pass
         for start_frame in range(0, frame_count, chunk_size * 8):
-            if features.is_cuda:
+            if supports_device_streams(features.device):
                 # note (Richard Wang): The next window may run on another worker stream.
-                stream = torch.cuda.current_stream(features.device)
+                stream = torch.get_device_module(features.device).current_stream(
+                    features.device
+                )
                 for tensor in (features, state.cache, state.fifo, state.cache_preds):
                     tensor.record_stream(stream)
             else:

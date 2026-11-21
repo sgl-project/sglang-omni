@@ -9,6 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.fun_cosyvoice3 import packed_dit
 from sglang_omni.models.fun_cosyvoice3.causal_conv import (
     GROUP_CONV_KERNEL_CHANNELS,
     FusedConvPositionEmbedding,
@@ -28,6 +29,7 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     rotated,
     scatter_rows,
     solve_flow_euler_packed,
+    supports_ragged_attention,
 )
 from sglang_omni.models.fun_cosyvoice3.stages import solve_flow_euler
 
@@ -401,11 +403,9 @@ def test_rows_packed_beside_an_empty_and_a_trailing_row_are_unchanged(
 def test_the_ragged_read_matches_the_padded_read(
     chunk_size: int | None, max_frames_scale: int
 ) -> None:
-    from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
-
     device = torch.device("cuda")
-    if not _is_fa3_supported():
-        pytest.skip("FA3 is unavailable on this device")
+    if not supports_ragged_attention(device):
+        pytest.skip("Ragged attention is unavailable on this device")
     torch.manual_seed(2)
     heads = 2
     head_dim = 64
@@ -486,3 +486,23 @@ def test_the_fused_position_embedding_is_as_close_to_float64_as_the_module() -> 
     assert relative_error(fused_output, reference) <= relative_error(
         module_output, reference
     )
+
+
+@pytest.mark.parametrize(
+    ("major", "is_fa4_available", "expected"),
+    [(12, True, True), (12, False, False), (9, True, False)],
+)
+def test_fa4_runs_only_on_sm120_with_the_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    major: int,
+    is_fa4_available: bool,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (major, 0))
+    monkeypatch.setattr(
+        packed_dit, "is_flash_attention_v4_available", lambda: is_fa4_available
+    )
+    packed_dit.uses_fa4.cache_clear()
+    assert packed_dit.uses_fa4(torch.device("cuda")) is expected
+    packed_dit.uses_fa4.cache_clear()

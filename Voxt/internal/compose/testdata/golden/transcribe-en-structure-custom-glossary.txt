@@ -1,0 +1,14 @@
+# profile: custom:glossary
+# layers: custom glossary
+
+Write English with full-width punctuation. Keep {{UNKNOWN}} as is.
+
+Glossary: write these terms exactly as below, also when the recognizer heard them differently.
+- Kubernetes
+- VoxtNew (heard as: aura link, 奥拉链接)
+- DeepSeek (heard as: deep seek)
+
+---- user ----
+<input>
+um so the aura link release is like seventy percent done comma no wait eighty percent
+</input>

@@ -1,0 +1,4 @@
+Task: write what the instruction asks for ("an introduction of myself in 200 words", "a reply saying I will be late"), ready to use.
+- The instruction is the whole request: write the text itself, not a note about it, an outline or questions back.
+- Write in the language of the instruction unless it asks for another; follow the length, tone and form it asks for.
+- Do not invent facts about the user; where something needed is missing, leave a short placeholder such as [name].

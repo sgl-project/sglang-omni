@@ -90,13 +90,15 @@ def create_sglang_moss_transcribe_diarize_executor(
     torch_compile_max_bs: int = 4,
     # note (yichi): MOSS-TD overlaps host collect starting at batch size 1;
     # --asr.factory.enable_async_decode false remains the operator opt-out.
-    enable_async_decode: bool = True,
+    enable_async_decode: bool | None = None,
+    enable_plain_fallback: bool = False,
     async_decode_min_batch_size: int = 1,
+    prefill_drain_below_batch_size: int | None = None,
     prefill_coalesce_requests: int = 4,
     prefill_coalesce_wait_ms: float = 12.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
-    prefill_coalesce_after_builds_during_decode: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool | None = None,
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
@@ -117,7 +119,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         if encoder_chunk_buckets is not None
         else _DEFAULT_ENCODER_CHUNK_BUCKETS
     )
-    return MossTranscribeDiarizeEngineBuilder(
+    builder = MossTranscribeDiarizeEngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         context_length=context_length,
@@ -127,7 +129,9 @@ def create_sglang_moss_transcribe_diarize_executor(
         enable_torch_compile=enable_torch_compile,
         torch_compile_max_bs=torch_compile_max_bs,
         enable_async_decode=enable_async_decode,
+        enable_plain_fallback=enable_plain_fallback,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        prefill_drain_below_batch_size=prefill_drain_below_batch_size,
         encoder_chunk_buckets=buckets,
         encoder_torch_compile=encoder_torch_compile,
         encoder_max_batch_size=encoder_max_batch_size,
@@ -144,13 +148,20 @@ def create_sglang_moss_transcribe_diarize_executor(
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         stream_emit_interval_s=stream_emit_interval_s,
-    ).build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
     )
+    try:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+        )
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_moss_transcribe_diarize_executor(*args, **kwargs):

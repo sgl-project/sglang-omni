@@ -984,6 +984,7 @@ def apply_sglang_cosyvoice3_result(
     state.completion_tokens = len(data.output_codes)
     state.engine_time_s = time.perf_counter() - data.engine_start_s
     state.finish_reason = data.finish_reason or ""
+    state.spec_tokens_details = data.spec_tokens_details
     state.sample_rate = _SAMPLE_RATE
 
     return StagePayload(

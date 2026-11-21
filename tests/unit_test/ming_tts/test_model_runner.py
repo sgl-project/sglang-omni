@@ -27,7 +27,7 @@ def test_ming_tts_entry_tail_failure_is_published_before_reraise() -> None:
     )
     published = []
 
-    def fail_tail(*_):
+    def fail_tail(*_, is_prefill):
         raise RuntimeError("tail failed")
 
     runner.run_entry_tail_step = fail_tail
@@ -42,6 +42,7 @@ def test_ming_tts_entry_tail_failure_is_published_before_reraise() -> None:
             forward_batch=None,
             schedule_batch=SimpleNamespace(),
             requests=[SimpleNamespace(), SimpleNamespace()],
+            is_prefill=False,
         )
 
     assert len(published) == 1
@@ -73,12 +74,13 @@ def run_ming_tts_tail_step(
     runner = object.__new__(MingTTSModelRunner)
     runner.model = SimpleNamespace(
         decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4)),
+        compute_stop_prob=lambda hidden_states: torch.tensor([stop_prob]),
         run_tail_step=lambda inputs: SimpleNamespace(
             sampled=torch.tensor([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]),
             feedback_embeddings=torch.tensor([[1.0, 2.0, 3.0, 4.0]]),
-            stop_prob=torch.tensor([stop_prob]),
         ),
     )
+    runner.stop_prob_event = None
     request_state = MingTTSRequestState(latent_history=torch.zeros(1, 2, 3))
     runner.request_states = {"req-ming-tts": request_state}
     request = SimpleNamespace(
@@ -87,7 +89,7 @@ def run_ming_tts_tail_step(
             generation_steps=generation_steps,
             max_new_tokens=max_new_tokens,
             is_streaming=is_streaming,
-            pending_stream_patch=None,
+            pending_stream_patches=[],
             generated_latents=None,
             stop_step=None,
             audio_patch_token_id=7,
@@ -102,7 +104,10 @@ def run_ming_tts_tail_step(
         feedback_dtype=torch.float32,
     )
 
-    runner.run_entry_tail_step(torch.ones(1, 1, 4), [request], step_update)
+    host_token_ids = runner.run_entry_tail_step(
+        torch.ones(1, 1, 4), [request], step_update, is_prefill=False
+    )
+    assert host_token_ids.tolist() == step_update.next_token_ids.tolist()
 
     return request.data, request_state, step_update
 
@@ -115,10 +120,10 @@ def test_ming_tts_streaming_length_limit_marks_terminal_patch() -> None:
         is_streaming=True,
     )
 
-    assert data.pending_stream_patch is not None
-    assert data.pending_stream_patch.is_last is True
+    assert len(data.pending_stream_patches) == 1
+    assert data.pending_stream_patches[0].is_last is True
     assert torch.equal(
-        data.pending_stream_patch.latent,
+        data.pending_stream_patches[0].latent,
         torch.tensor([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]),
     )
     assert data.stop_step is None
@@ -136,8 +141,8 @@ def test_ming_tts_streaming_stop_head_marks_terminal_patch() -> None:
         is_streaming=True,
     )
 
-    assert data.pending_stream_patch is not None
-    assert data.pending_stream_patch.is_last is True
+    assert len(data.pending_stream_patches) == 1
+    assert data.pending_stream_patches[0].is_last is True
     assert data.stop_step == 4
     assert request_state.generated_latents == []
     assert data.generated_latents is None
@@ -152,8 +157,8 @@ def test_ming_tts_streaming_mid_generation_patch_is_not_terminal() -> None:
         is_streaming=True,
     )
 
-    assert data.pending_stream_patch is not None
-    assert data.pending_stream_patch.is_last is False
+    assert len(data.pending_stream_patches) == 1
+    assert data.pending_stream_patches[0].is_last is False
     assert len(request_state.feedback_embeddings) == 1
     assert torch.equal(
         request_state.latent_history,
@@ -172,8 +177,8 @@ def test_ming_tts_streaming_stop_head_is_gated_until_step_four() -> None:
         is_streaming=True,
     )
 
-    assert data.pending_stream_patch is not None
-    assert data.pending_stream_patch.is_last is False
+    assert len(data.pending_stream_patches) == 1
+    assert data.pending_stream_patches[0].is_last is False
     assert step_update.next_token_ids.tolist() == [7]
 
 
@@ -185,7 +190,7 @@ def test_ming_tts_non_streaming_step_buffers_latents_without_stream_patch() -> N
         is_streaming=False,
     )
 
-    assert data.pending_stream_patch is None
+    assert data.pending_stream_patches == []
     assert len(request_state.generated_latents) == 1
     assert data.stop_step == 4
     assert data.generated_latents.dtype == torch.float32
@@ -223,6 +228,51 @@ def test_prefill_forward_publishes_sglang_forward_context() -> None:
 
     assert seen == [attn_backend]
     assert result.logits_output == "logits"
+
+
+@pytest.mark.parametrize("is_cuda", [True, False])
+def test_ming_tts_prefill_hands_embeddings_to_the_graphed_forward(
+    monkeypatch, is_cuda: bool
+) -> None:
+    from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+
+    runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
+    embeds = torch.ones(1, 2)
+
+    def model(**kwargs):
+        return kwargs["input_embeds"]
+
+    model.decode_input_embedding = SimpleNamespace(
+        weight=torch.zeros((1, 2), dtype=torch.float32)
+    )
+    runner.model = model
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            attn_backend=SimpleNamespace(init_forward_metadata=lambda batch: None)
+        )
+    )
+    runner.build_prefill_input_embeds = lambda batch, requests: embeds
+    monkeypatch.setattr(
+        "sglang_omni.models.ming_tts.model_runner.current_platform",
+        SimpleNamespace(is_cuda=lambda: is_cuda),
+    )
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(1, dtype=torch.long),
+        positions=torch.tensor([0]),
+        mrope_positions=None,
+        replace_embeds=None,
+    )
+
+    result = runner.custom_prefill_forward(
+        forward_batch=forward_batch, schedule_batch=None, requests=[]
+    )
+
+    if is_cuda:
+        assert result is None
+        assert get_omni_prefill_inputs(forward_batch).input_embeds is embeds
+    else:
+        assert result.logits_output is embeds
+        assert get_omni_prefill_inputs(forward_batch) is None
 
 
 def test_ming_tts_prefill_replays_prompt_and_generated_feedback() -> None:

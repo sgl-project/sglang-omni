@@ -8,7 +8,7 @@ from typing import Literal
 
 import httpx
 import numpy as np
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from sglang_omni.models.streaming_cascade.base import (
     SPEECH_SAMPLE_RATE_HZ,
@@ -22,14 +22,17 @@ from sglang_omni.models.streaming_cascade.base import (
     iterate,
     replying,
     sentences,
+    with_language,
 )
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     TEXT_DELTA,
     TURN_DONE,
     chunk_language,
+    chunk_style,
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
@@ -39,10 +42,37 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 UNSPOKEN_SYMBOLS = re.compile(
     "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
 )
+# note (Haoling Pu): Qwen3-TTS Base cloning with a reference transcript opens each request with about 0.4 s of room tone, so with drop_quiet_start a request's audio starts this pre-roll before its first sample above SPEECH_ONSET_AMPLITUDE, a fraction of full scale.
+SPEECH_ONSET_AMPLITUDE = 0.01
+SPEECH_PREROLL_S = 0.05
+# note (Haoling Pu): Qwen3-TTS reads a heading, list or quote marker as a word, garbles a table row and can run on for 40 s or more after either, and reads a bare URL out symbol by symbol.
+LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
+TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
+TABLE_PIPE = re.compile(r"[ \t]*\|[ \t]*")
+BARE_URL = re.compile(
+    r"(?<![A-Za-z0-9])(?:https?://|www\.)(?:www\.)?([A-Za-z0-9.-]+)(?::[0-9]+)?(?:[/?#][!-{}~]*?)??(?=[.,!?;:)\]]*(?:[^!-~]|[|]|$))"
+)
 
 
 def has_chinese_characters(sentence: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in sentence)
+
+
+CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
+KANA = re.compile("[\u3040-\u30ff]")
+HANGUL = re.compile("[\uac00-\ud7af]")
+LATIN_WORD = re.compile(r"[A-Za-z]+")
+CJK_CHARACTER = re.compile("[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
+LATIN_VOWELS = re.compile("[aeiouy]+", re.IGNORECASE)
+
+
+class SpeechReference(BaseModel):
+    """A recording the speech service clones, with its transcript."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    audio_path: str
+    text: str
 
 
 class OpenAISpeechSynthesizerConfig(ComponentConfig):
@@ -50,10 +80,14 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
 
     `language` is the service's language tag: empty leaves it to the
     service, `auto` follows the language the recognizer heard from the
-    user, and any other name tags every sentence without Chinese characters.
-    Without a known user language `auto` tags by script like `English`.
-    A sentence tagged English, with no Chinese characters, reaches the
-    service with its numbers read out as words.
+    user except in a sentence whose script contradicts it and carries most of
+    it, which is tagged by its script, and any other name tags every sentence
+    without Chinese characters. Without a known user language `auto` tags by
+    script like `English`. A sentence tagged English reaches the service with
+    its numbers read out as words.
+    styles maps a style name to the recording a sentence of that style
+    clones, and a sentence of a style it lacks clones reference_audio_path;
+    the language model names a style with a tag such as [calm].
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -62,8 +96,10 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     voice: str = "default"
     reference_audio_path: str = ""
     reference_text: str = ""
+    styles: dict[str, SpeechReference] = Field(default_factory=dict)
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
+    drop_quiet_start: bool = False
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -145,7 +181,38 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
 
     def sentence_language(self, sentence: str) -> str:
         """The language tag of one sentence."""
-        if self.config.language == "auto" and self.session_language is not None:
+        if KANA.search(sentence):
+            script = "Japanese"
+        elif HANGUL.search(sentence):
+            script = "Korean"
+        elif has_chinese_characters(sentence):
+            script = "Chinese"
+        elif any(char.isascii() and char.isalpha() for char in sentence):
+            script = "English"
+        else:
+            script = ""
+        # note (Haoling Pu): a sentence whose script contradicts the session language and carries most of it, as in a reply the user asked for in another language, is tagged by its script; a CJK character is about one syllable, so it is weighed against the vowel groups of the Latin words.
+        latin_syllable_count = sum(
+            max(len(LATIN_VOWELS.findall(word)), 1)
+            for word in LATIN_WORD.findall(sentence)
+        )
+        is_mostly_cjk = len(CJK_CHARACTER.findall(sentence)) > latin_syllable_count
+        is_switched = self.session_language is not None and (
+            (
+                script in ("Japanese", "Korean")
+                and script != self.session_language
+                and is_mostly_cjk
+            )
+            or (
+                script == "Chinese"
+                and self.session_language not in CJK_LANGUAGES
+                and is_mostly_cjk
+            )
+            or (script == "English" and self.session_language in CJK_LANGUAGES)
+        )
+        if self.config.language == "auto" and is_switched:
+            return script
+        elif self.config.language == "auto" and self.session_language is not None:
             return self.session_language
         elif has_chinese_characters(sentence):
             # Note (Junnan Li): A sentence with CJK characters is spoken as Chinese whatever the configured language, so a reply in the user's language keeps the right tag.
@@ -155,19 +222,26 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
         else:
             return self.config.language
 
-    async def follow_language(
-        self, deltas: AsyncIterator[TimedChunk]
+    async def follow_deltas(
+        self,
+        deltas: AsyncIterator[TimedChunk],
+        delta_styles: list[tuple[int, str | None]],
     ) -> AsyncIterator[TimedChunk]:
-        """The reply's deltas, recording the user language they carry."""
+        """The reply's deltas, recording the user language they carry and, in delta_styles, the reply offset each delta starts at with its style."""
+        text_start = 0
         async for chunk in deltas:
             language = chunk_language(chunk)
             if language is not None:
                 self.session_language = language
             else:
                 pass
+            delta_styles.append((text_start, chunk_style(chunk)))
+            text_start += len(chunk.payload["text"])
             yield chunk
 
-    async def speak(self, sentence: str) -> AsyncIterator[np.ndarray]:
+    async def speak(
+        self, sentence: str, language: str | None, style: str | None
+    ) -> AsyncIterator[np.ndarray]:
         body: dict[str, object] = {
             "model": self.config.model,
             "voice": self.config.voice,
@@ -175,17 +249,18 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             "response_format": "pcm",
             "stream": True,
         }
-        if self.config.language:
-            language = self.sentence_language(sentence)
+        if language is not None:
             body["language"] = language
-            if language == "English" and not has_chinese_characters(sentence):
+            if language == "English":
                 # Note (ruoyu): A Base voice cloned from a Chinese reference read the digits of English sentences as Chinese numerals in 12 of 50 takes and the same numbers written as words in 0 of 50; the aligner reads the digits with the same words.
                 body["input"] = spoken_text(sentence, language)[0]
             else:
                 pass
         else:
             pass
-        if self.config.reference_audio_path:
+        if style in self.config.styles:
+            body["references"] = [self.config.styles[style].model_dump()]
+        elif self.config.reference_audio_path:
             body["references"] = [
                 {
                     "audio_path": self.config.reference_audio_path,
@@ -213,32 +288,63 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 )
             else:
                 pass
+            preroll_samples = round(SPEECH_PREROLL_S * self.sample_rate_hz)
             carry = b""
+            held_preroll = np.zeros(0, dtype="<f4")
+            is_playing = not self.config.drop_quiet_start
             async for data in response.aiter_bytes():
                 data = carry + data
                 usable = len(data) - len(data) % 2
                 carry = data[usable:]
-                if usable:
-                    yield np.frombuffer(data[:usable], dtype="<i2").astype(
-                        "<f4"
-                    ) / 32768
-                else:
+                samples = (
+                    np.frombuffer(data[:usable], dtype="<i2").astype("<f4") / 32768
+                )
+                if not usable:
                     pass
+                elif is_playing:
+                    yield samples
+                else:
+                    audio = np.concatenate([held_preroll, samples])
+                    loud_indices = np.flatnonzero(
+                        np.abs(audio) > SPEECH_ONSET_AMPLITUDE
+                    )
+                    if loud_indices.size:
+                        is_playing = True
+                        yield audio[max(0, int(loud_indices[0]) - preroll_samples) :]
+                    else:
+                        held_preroll = audio[-preroll_samples:]
 
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
     ) -> None:
         text_end = 0
         audio_ms = 0.0
+        delta_styles: list[tuple[int, str | None]] = []
         async for span in sentences(
-            self.follow_language(deltas), self.config.max_sentence_words
+            self.follow_deltas(deltas, delta_styles), self.config.max_sentence_words
         ):
-            sentence = " ".join(
-                UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span)).split()
+            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
+            text = TABLE_PIPE.sub(
+                ", ",
+                TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),
+            )
+            sentence = " ".join(text.split())
+            language = (
+                self.sentence_language(sentence) if self.config.language else None
+            )
+            emit(
+                control_chunk(REPLY_SENTENCE, turn=turn, **with_language({}, language))
             )
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
-                async for samples in self.speak(sentence):
+                # note (Haoling Pu): a span starts with the spacing after the sentence before it, which the model wrote before the tag of this one.
+                spoken_start = text_end + len(span) - len(span.lstrip())
+                style = next(
+                    delta_style
+                    for text_start, delta_style in reversed(delta_styles)
+                    if text_start <= spoken_start
+                )
+                async for samples in self.speak(sentence, language, style):
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
             else:

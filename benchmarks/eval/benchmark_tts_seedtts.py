@@ -75,6 +75,15 @@ Usage (CI):
         --model fishaudio/s2-pro \
         --output-dir results/s2pro_en \
         --lang en --port 8000
+
+4. Mixed load: 48 non streaming and 16 streaming closed loop clients at once for a 120 s window, then WER over every request in generated.json. See docs/developer_reference/tts_bench.md for sweeps.
+
+    python -m benchmarks.eval.benchmark_tts_seedtts \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
+        --model FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+        --mixture 48+16 \
+        --output-dir results/cosyvoice3_mixture \
+        --port 8000
 """
 
 from __future__ import annotations
@@ -85,6 +94,8 @@ import json
 import logging
 import math
 import os
+import re
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -97,21 +108,33 @@ from benchmarks.benchmarker.conditions import (
     collect_run_fingerprint,
     warn_if_tail_percentile_is_thin,
 )
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import RequestClass, RequestResult
 from benchmarks.benchmarker.fingerprint import BenchmarkFingerprint
 from benchmarks.benchmarker.runner import (
     BenchmarkRunner,
+    ClientGroup,
     RunConfig,
     SendFn,
     resolve_warmup,
+    run_fixed_duration,
 )
-from benchmarks.benchmarker.utils import managed_omni_server
+from benchmarks.benchmarker.utils import managed_omni_server, save_json_results
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.metrics.mixture import (
+    MixtureLoad,
+    MixtureRepeatResult,
+    aggregate_mixture_sweep,
+    compute_mixture_summaries,
+    mixture_failed_requests,
+    print_mixture_summary,
+)
 from benchmarks.metrics.performance import (
     build_speed_results,
     compute_speed_metrics,
+    load_tts_speed_results,
     print_speed_summary,
 )
+from benchmarks.runtime_metrics import ProcessTreeMemoryMonitor, ResourceMonitor
 from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
     QWEN3_ASR_MODEL_PATH,
@@ -120,6 +143,7 @@ from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     build_base_url,
     make_tts_send_fn,
+    preload_reference_audio,
     run_seedtts_similarity,
     run_seedtts_transcribe,
     run_seedtts_utmos,
@@ -136,6 +160,9 @@ DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "
 
 
 DEFAULT_MAX_NEW_TOKENS = 2048
+DEFAULT_MIXTURE_DURATION_S = 120.0
+DEFAULT_MIXTURE_SETTLE_S = 10.0
+MIXTURE_LOAD_PATTERN = re.compile(r"([0-9]+)\+([0-9]+)")
 
 
 @dataclass(frozen=True)
@@ -156,6 +183,9 @@ _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
         "seed": 1234,
     },
     forward_sglang_engine=False,
+    # note (Xuchen Wei): AuK sets its length with gen_seconds, and the native
+    # server rejects max_new_tokens.
+    max_new_tokens=None,
 )
 _MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
     **{
@@ -210,6 +240,8 @@ class TtsSeedttsBenchmarkConfig:
     instructions: str | None = None
     voice_clone: bool = True
     ref_format: str = "flat"
+    # Note (Xuchen Wei): native servers read ref_audio only as a data URI.
+    inline_ref_audio: bool = False
     no_ref_text: bool = False
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
@@ -235,6 +267,8 @@ class TtsSeedttsBenchmarkConfig:
     arrival_seed: int | None = None
     stream: bool = False
     collect_stream_outcomes: bool = True
+    # A macOS server PID whose process-tree footprint goes to memory.json.
+    server_process_id: int | None = None
     initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     max_running_requests: int = 64
@@ -253,6 +287,10 @@ class TtsSeedttsBenchmarkConfig:
     asr_model_path: str = QWEN3_ASR_MODEL_PATH
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     environment_fingerprint: BenchmarkFingerprint | None = None
+    measure_gpu_memory: bool = False
+    mixture: MixtureLoad | None = None
+    mixture_duration_s: float = DEFAULT_MIXTURE_DURATION_S
+    mixture_settle_s: float = DEFAULT_MIXTURE_SETTLE_S
 
 
 def resolve_max_new_tokens(config: TtsSeedttsBenchmarkConfig) -> int | None:
@@ -342,7 +380,23 @@ def _build_results_config(
         "cuda_graph_max_bs": config.cuda_graph_max_bs,
         "server_config": config.server_config,
         "quantization": config.quantization,
+        "mixture": None,
     }
+    if config.mixture is not None:
+        recorded["mixture"] = {
+            "non_streaming_clients": config.mixture.non_streaming_clients,
+            "streaming_clients": config.mixture.streaming_clients,
+            "settle_s": config.mixture_settle_s,
+            "duration_s": config.mixture_duration_s,
+        }
+        recorded["stream"] = None
+        recorded["collect_stream_outcomes"] = (
+            config.mixture.streaming_clients > 0 and config.collect_stream_outcomes
+        )
+        recorded["concurrency"] = config.mixture.total_clients
+        recorded["warmup"] = 0 if config.warmup == 0 else config.mixture.total_clients
+    else:
+        pass
     if config.environment_fingerprint is None:
         return recorded
     return {
@@ -411,10 +465,26 @@ async def run_tts_seedtts_benchmark(
 
     Saves audio by default so the transcribe phase can reuse it.
     """
+    if config.mixture is not None:
+        return await run_tts_mixture_benchmark(
+            config, samples=samples, save_audio=save_audio
+        )
+    else:
+        pass
     base_url = build_base_url(config)
     api_url = f"{base_url}/v1/audio/speech"
     if samples is None:
         samples = _load_benchmark_samples(config)
+    else:
+        pass
+    if config.inline_ref_audio and config.voice_clone:
+        reference_audio_by_path = preload_reference_audio(samples)
+        samples = [
+            replace(sample, ref_audio=reference_audio_by_path[sample.ref_audio])
+            for sample in samples
+        ]
+    else:
+        pass
     logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
 
     save_audio_dir = None
@@ -455,18 +525,187 @@ async def run_tts_seedtts_benchmark(
             arrival_seed=config.arrival_seed,
         )
     )
-    if config.stream and config.collect_stream_outcomes:
-        async with stream_outcome_collector(api_url) as collect:
-            outputs = await runner.run(samples, send_fn, after_send=collect)
-    else:
-        outputs = await runner.run(samples, send_fn)
+    monitor = ResourceMonitor().start() if config.measure_gpu_memory else None
+    memory_monitor = (
+        ProcessTreeMemoryMonitor(config.server_process_id).start()
+        if config.server_process_id is not None
+        else None
+    )
+    try:
+        if config.stream and config.collect_stream_outcomes:
+            async with stream_outcome_collector(api_url) as collect:
+                outputs = await runner.run(samples, send_fn, after_send=collect)
+        else:
+            outputs = await runner.run(samples, send_fn)
+    finally:
+        resources = monitor.stop() if monitor is not None else None
+        if memory_monitor is not None:
+            save_json_results(memory_monitor.stop(), config.output_dir, "memory.json")
+        else:
+            pass
     warn_if_tail_percentile_is_thin(len(outputs))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
+    metrics["wall_clock_s"] = runner.wall_clock_s
+    if resources is None:
+        pass
+    elif resources["available"]:
+        metrics["gpu_memory_peak_mib"] = resources["gpu_memory_used_mib"]["max"]
+    else:
+        metrics["gpu_memory_peak_mib"] = None
+        logger.warning(f"TTS GPU memory unavailable: {resources['error']}")
     results_config = _build_results_config(config, base_url=base_url)
     benchmark_results = build_speed_results(outputs, metrics, results_config)
     save_speed_results(outputs, metrics, results_config, config.output_dir)
     save_generated_audio_metadata(outputs, samples, config.output_dir)
+    return benchmark_results
+
+
+async def run_tts_mixture_benchmark(
+    config: TtsSeedttsBenchmarkConfig,
+    *,
+    samples: list[SampleInput] | None = None,
+    save_audio: bool = True,
+) -> dict:
+    """Run one NS+S load closed loop for a fixed window and save its speed results."""
+    unsupported_settings = [
+        name
+        for name, is_set in (
+            ("warmup other than 0", config.warmup not in (None, 0)),
+            ("stream", config.stream),
+            ("request_rate", config.request_rate != float("inf")),
+            ("arrival_seed", config.arrival_seed is not None),
+            ("subtalker_dosample_ratio", config.subtalker_dosample_ratio is not None),
+            ("inline_ref_audio", config.inline_ref_audio),
+            ("server_process_id", config.server_process_id is not None),
+        )
+        if is_set
+    ]
+    if unsupported_settings:
+        raise ValueError(
+            f"a mixture load does not support {', '.join(unsupported_settings)}"
+        )
+    else:
+        pass
+    load = config.mixture
+    base_url = build_base_url(config)
+    api_url = f"{base_url}/v1/audio/speech"
+    if samples is None:
+        samples = _load_benchmark_samples(config)
+    else:
+        pass
+    logger.info(f"Mixture {load.name} walks a pool of {len(samples)} samples")
+    if (
+        config.max_queued_requests is not None
+        and load.total_clients
+        > config.max_running_requests + config.max_queued_requests
+    ):
+        logger.warning(
+            f"{load.total_clients} clients exceed running plus queued requests, "
+            "so a rejected request stops its client and fails the run"
+        )
+    else:
+        pass
+
+    if save_audio:
+        save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
+        os.makedirs(save_audio_dir, exist_ok=True)
+    else:
+        save_audio_dir = None
+        os.makedirs(config.output_dir, exist_ok=True)
+    generation_kwargs = _build_generation_kwargs(config)
+    common_send_kwargs = dict(
+        initial_codec_chunk_frames=config.initial_codec_chunk_frames,
+        no_ref_audio=not config.voice_clone,
+        ref_format=config.ref_format,
+        no_ref_text=config.no_ref_text,
+        voice=config.voice,
+        task_type=config.task_type,
+        instructions=config.instructions,
+        save_audio_dir=save_audio_dir,
+    )
+    send_fns: dict[RequestClass, SendFn] = {
+        "non_streaming": make_tts_send_fn(
+            config.model,
+            api_url,
+            response_format=config.response_format,
+            **common_send_kwargs,
+            **generation_kwargs,
+        ),
+        "streaming": make_tts_send_fn(
+            config.model,
+            api_url,
+            stream=True,
+            **common_send_kwargs,
+            **generation_kwargs,
+        ),
+    }
+    first_sample_indexes: dict[RequestClass, int] = {
+        "non_streaming": 0,
+        "streaming": len(samples) // 2,
+    }
+    groups = [
+        ClientGroup(
+            request_class=request_class,
+            clients=clients,
+            send_fn=send_fns[request_class],
+            first_sample_index=first_sample_indexes[request_class],
+        )
+        for request_class, clients in load.clients_by_class.items()
+    ]
+    if load.streaming_clients > 0 and config.collect_stream_outcomes:
+        collector = stream_outcome_collector(api_url)
+    else:
+        collector = nullcontext(None)
+    monitor = ResourceMonitor().start() if config.measure_gpu_memory else None
+    try:
+        async with collector as after_send:
+            run = await run_fixed_duration(
+                groups,
+                samples,
+                settle_s=config.mixture_settle_s,
+                duration_s=config.mixture_duration_s,
+                should_warm_up=config.warmup != 0,
+                timeout_s=RunConfig().timeout_s,
+                after_send=after_send,
+            )
+    finally:
+        resources = monitor.stop() if monitor is not None else None
+
+    summaries = compute_mixture_summaries(
+        run.results,
+        load=load,
+        settle_s=config.mixture_settle_s,
+        duration_s=config.mixture_duration_s,
+        pool_size=len(samples),
+    )
+    for class_summary in summaries["summary_by_class"].values():
+        warn_if_tail_percentile_is_thin(class_summary["total_requests"])
+    metrics = summaries["summary"]
+    if resources is None:
+        pass
+    elif resources["available"]:
+        metrics["gpu_memory_peak_mib"] = resources["gpu_memory_used_mib"]["max"]
+    else:
+        metrics["gpu_memory_peak_mib"] = None
+        logger.warning(f"TTS GPU memory unavailable: {resources['error']}")
+    results_config = _build_results_config(config, base_url=base_url)
+    benchmark_results = build_speed_results(
+        run.results,
+        metrics,
+        results_config,
+        summary_by_class=summaries["summary_by_class"],
+        mixture=summaries["mixture"],
+    )
+    save_speed_results(
+        run.results,
+        metrics,
+        results_config,
+        config.output_dir,
+        summary_by_class=summaries["summary_by_class"],
+        mixture=summaries["mixture"],
+    )
+    save_generated_audio_metadata(run.results, run.issued_samples, config.output_dir)
     return benchmark_results
 
 
@@ -476,7 +715,8 @@ def run_tts_seedtts_transcribe(
     asr_router_port: int | None = None,
 ) -> dict:
     """Transcribe saved audio and compute WER + ASR speed metrics."""
-    generation_mode = "streaming-audio" if config.stream else "non-streaming"
+    speed_results = load_tts_speed_results(config.output_dir)
+    saved_config = {} if speed_results is None else speed_results["config"]
     wer_config = {
         "model": config.model,
         "tts_model": config.model,
@@ -503,7 +743,17 @@ def run_tts_seedtts_transcribe(
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
         "quantization": config.quantization,
+        "mixture": None,
     }
+    if saved_config.get("mixture") is not None:
+        # note (db-ol): --transcribe-only after a mixture run has no --mixture, so the saved speed results tell how the audio was generated.
+        generation_mode = "mixture"
+        for name in ("stream", "collect_stream_outcomes", "concurrency", "mixture"):
+            wer_config[name] = saved_config[name]
+    elif config.stream:
+        generation_mode = "streaming-audio"
+    else:
+        generation_mode = "non-streaming"
     return run_seedtts_transcribe(
         config,
         wer_config=wer_config,
@@ -515,6 +765,15 @@ def run_tts_seedtts_transcribe(
 def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
     voice_clone = not args.no_ref_audio
     response_format = "pcm" if args.stream else args.response_format
+    if args.mixture is not None and len(args.mixture) == 1:
+        mixture = args.mixture[0]
+        concurrency = mixture.total_clients
+    elif args.concurrency is None:
+        mixture = None
+        concurrency = DEFAULT_TTS_BENCHMARK_CONCURRENCY
+    else:
+        mixture = None
+        concurrency = args.concurrency
     return TtsSeedttsBenchmarkConfig(
         base_url=args.base_url,
         host=args.host,
@@ -526,6 +785,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        inline_ref_audio=args.inline_ref_audio,
         no_ref_text=args.no_ref_text,
         response_format=response_format,
         output_dir=args.output_dir,
@@ -540,12 +800,14 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         seed=args.seed,
         subtalker_dosample_ratio=args.subtalker_dosample_ratio,
         warmup=args.warmup,
-        concurrency=args.concurrency,
+        concurrency=concurrency,
         request_rate=args.request_rate,
         arrival_seed=args.arrival_seed,
         stream=args.stream,
         collect_stream_outcomes=args.collect_stream_outcomes,
+        server_process_id=args.server_process_id,
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
+        measure_gpu_memory=args.measure_gpu_memory,
         disable_tqdm=args.disable_tqdm,
         max_running_requests=args.max_running_requests,
         max_queued_requests=args.max_queued_requests,
@@ -558,6 +820,9 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         similarity_checkpoint=args.similarity_checkpoint,
         asr_model_path=args.asr_model_path,
         asr_concurrency=args.asr_concurrency,
+        mixture=mixture,
+        mixture_duration_s=args.mixture_duration_s,
+        mixture_settle_s=args.mixture_settle_s,
     )
 
 
@@ -592,6 +857,35 @@ def _parse_concurrencies(value: str) -> list[int]:
             raise argparse.ArgumentTypeError("concurrency must be > 0")
         values.append(parsed)
     return values
+
+
+def parse_mixture_loads(value: str) -> list[MixtureLoad]:
+    tokens = [token for token in value.replace(" ", "").split(",") if token]
+    if not tokens:
+        raise argparse.ArgumentTypeError(
+            "mixture loads must be a comma separated list with at least one load"
+        )
+    else:
+        pass
+    loads: list[MixtureLoad] = []
+    for token in tokens:
+        match = MIXTURE_LOAD_PATTERN.fullmatch(token)
+        if match is None:
+            raise argparse.ArgumentTypeError(
+                f"invalid mixture load {token!r}, expected NS+S such as 48+16"
+            )
+        else:
+            pass
+        load = MixtureLoad(
+            non_streaming_clients=int(match[1]), streaming_clients=int(match[2])
+        )
+        if load.total_clients == 0:
+            raise argparse.ArgumentTypeError("a mixture load needs at least one client")
+        elif load in loads:
+            raise argparse.ArgumentTypeError(f"duplicate mixture load {token!r}")
+        else:
+            loads.append(load)
+    return loads
 
 
 @dataclass(frozen=True)
@@ -749,6 +1043,94 @@ async def run_tts_concurrency_sweep(
     return payload
 
 
+def raise_if_mixture_failed(failed_requests_by_output_dir: dict[str, int]) -> None:
+    """Fail after the results are saved when a load had failed requests, since each one stopped its client."""
+    failed_points = [
+        f"{output_dir} ({failed_requests} failed)"
+        for output_dir, failed_requests in failed_requests_by_output_dir.items()
+        if failed_requests > 0
+    ]
+    if failed_points:
+        raise RuntimeError(
+            "these mixture loads had failed requests, and a failed request stops "
+            f"its client: {', '.join(failed_points)}. per_request in "
+            "speed_results.json has the errors"
+        )
+    else:
+        pass
+
+
+async def run_tts_mixture_sweep(
+    config: TtsSeedttsBenchmarkConfig,
+    loads: list[MixtureLoad],
+    *,
+    repeats: int,
+) -> dict:
+    """Run every mixture load in order on one server, each pass in its own directory."""
+    repeat_results_by_load: dict[MixtureLoad, list[MixtureRepeatResult]] = {}
+    for load in loads:
+        repeat_results: list[MixtureRepeatResult] = []
+        for repeat_index in range(1, repeats + 1):
+            if repeats == 1:
+                point_name = load.name
+            else:
+                point_name = f"{load.name}_r{repeat_index}"
+            point_output_dir = os.path.join(config.output_dir, point_name)
+            point = replace(
+                config,
+                mixture=load,
+                concurrency=load.total_clients,
+                output_dir=point_output_dir,
+            )
+            print(f"[load={load.name} repeat={repeat_index}/{repeats}] generate pass")
+            results = await run_tts_seedtts_benchmark(point)
+            print_mixture_summary(results, config.model)
+            repeat_results.append(
+                {
+                    "repeat": repeat_index,
+                    "output_dir": point_output_dir,
+                    "summary": results["summary"],
+                    "summary_by_class": results["summary_by_class"],
+                    "mixture": results["mixture"],
+                }
+            )
+        repeat_results_by_load[load] = repeat_results
+
+    leg_config = _build_results_config(config, base_url=build_base_url(config))
+    leg_config["mixture"] = {
+        "loads": [load.name for load in loads],
+        "settle_s": config.mixture_settle_s,
+        "duration_s": config.mixture_duration_s,
+    }
+    # note (db-ol): concurrency and the default warmup change with the load, so the leg records None and each point's speed_results.json has its own.
+    leg_config["stream"] = None
+    leg_config["concurrency"] = None
+    leg_config["warmup"] = 0 if config.warmup == 0 else None
+    leg_config["collect_stream_outcomes"] = config.collect_stream_outcomes and any(
+        load.streaming_clients > 0 for load in loads
+    )
+    payload = {
+        "config": leg_config,
+        "loads": [load.name for load in loads],
+        "repeats": repeats,
+        "rows": aggregate_mixture_sweep(repeat_results_by_load),
+    }
+    out_path = os.path.join(config.output_dir, "mixture_sweep.json")
+    os.makedirs(config.output_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    logger.info(f"Wrote mixture sweep to {out_path}")
+    raise_if_mixture_failed(
+        {
+            result["output_dir"]: mixture_failed_requests(result)
+            for repeat_results in repeat_results_by_load.values()
+            for result in repeat_results
+        }
+    )
+    return payload
+
+
 async def run_tts_sustained_overshoot(
     config: TtsSeedttsBenchmarkConfig,
 ) -> dict[str, Any]:
@@ -801,9 +1183,13 @@ async def run_tts_sustained_overshoot(
 
 async def benchmark(config: TtsSeedttsBenchmarkConfig) -> dict:
     results = await run_tts_seedtts_benchmark(config)
-    print_speed_summary(
-        results["summary"], config.model, concurrency=config.concurrency
-    )
+    if config.mixture is None:
+        print_speed_summary(
+            results["summary"], config.model, concurrency=config.concurrency
+        )
+    else:
+        print_mixture_summary(results, config.model)
+        raise_if_mixture_failed({config.output_dir: mixture_failed_requests(results)})
     return results
 
 
@@ -882,6 +1268,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--inline-ref-audio",
+        action="store_true",
+        help=(
+            "Send each reference WAV as a base64 data URI, encoded before timing "
+            "starts, for servers that do not read local paths."
+        ),
+    )
+    parser.add_argument(
+        "--server-pid",
+        type=int,
+        default=None,
+        dest="server_process_id",
+        help=(
+            "macOS only: sample this server's process-tree physical footprint "
+            "every 250 ms while generating, written to memory.json."
+        ),
+    )
+    parser.add_argument(
         "--response-format",
         type=str,
         default="wav",
@@ -946,7 +1350,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--max-concurrency",
         dest="concurrency",
         type=int,
-        default=DEFAULT_TTS_BENCHMARK_CONCURRENCY,
+        default=None,
         help="Maximum concurrent requests.",
     )
     parser.add_argument(
@@ -960,6 +1364,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Measured passes per concurrency. Requires --generate-only when above 1.",
+    )
+    parser.add_argument(
+        "--mixture",
+        type=parse_mixture_loads,
+        default=None,
+        help=(
+            "Comma separated NS+S loads such as 48+16,48+0,0+16. Each load runs "
+            "NS non streaming and S streaming closed loop clients at once for a "
+            "fixed window, in the given order on one server. More than one load "
+            "needs --generate-only."
+        ),
+    )
+    parser.add_argument(
+        "--mixture-duration-s",
+        type=float,
+        default=DEFAULT_MIXTURE_DURATION_S,
+        help="Measured window of each mixture load in seconds.",
+    )
+    parser.add_argument(
+        "--mixture-settle-s",
+        type=float,
+        default=DEFAULT_MIXTURE_SETTLE_S,
+        help="Unmeasured seconds from the client start to the window.",
     )
     add_fingerprint_argument(parser)
     parser.add_argument(
@@ -1011,6 +1438,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Legacy flag kept for backward compatibility. The unified "
         "benchmark always saves generated WAVs so the transcribe phase can "
         "reuse them; passing this flag is a no-op.",
+    )
+    parser.add_argument(
+        "--measure-gpu-memory",
+        action="store_true",
+        help="Sample memory used on the first visible local GPU during TTS generation.",
     )
     parser.add_argument("--disable-tqdm", action="store_true")
     parser.add_argument(
@@ -1188,6 +1620,63 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             "--use-existing-server currently requires --generate-only or "
             "--transcribe-only"
         )
+    if args.mixture_duration_s <= 0:
+        parser.error("--mixture-duration-s must be positive")
+    else:
+        pass
+    if args.mixture_settle_s < 0:
+        parser.error("--mixture-settle-s must be at least 0")
+    else:
+        pass
+    if args.mixture is not None and parser.get_default("concurrency") is not None:
+        parser.error(
+            "the model profile sets concurrency and warmup, so --mixture is not "
+            "supported for this model"
+        )
+    elif args.mixture is not None:
+        conflicting_flags = [
+            flag
+            for flag, is_given in (
+                ("--concurrencies", args.concurrencies is not None),
+                ("--concurrency/--max-concurrency", args.concurrency is not None),
+                ("--stream", args.stream),
+                ("--request-rate", args.request_rate != float("inf")),
+                ("--arrival-seed", args.arrival_seed is not None),
+                ("--sustained-overshoot", args.sustained_overshoot),
+                (
+                    "--subtalker-dosample-ratio",
+                    args.subtalker_dosample_ratio is not None,
+                ),
+                ("--warmup other than 0", args.warmup not in (None, 0)),
+                ("--inline-ref-audio", args.inline_ref_audio),
+                ("--server-pid", args.server_process_id is not None),
+                ("--transcribe-only", args.transcribe_only),
+                ("--similarity-only", args.similarity_only),
+                ("--utmos-only", args.utmos_only),
+            )
+            if is_given
+        ]
+        if conflicting_flags:
+            parser.error(
+                f"--mixture cannot be combined with {', '.join(conflicting_flags)}"
+            )
+        elif len(args.mixture) > 1 and not args.generate_only:
+            parser.error("--mixture with more than one load requires --generate-only")
+        elif (
+            args.max_queued_requests is not None
+            and args.warmup != 0
+            and max(load.total_clients for load in args.mixture)
+            > args.max_running_requests + args.max_queued_requests
+        ):
+            parser.error(
+                "--mixture above --max-running-requests plus --max-queued-requests "
+                "needs --warmup 0, because the warmup sends one request per client "
+                "at once and the server rejects the excess"
+            )
+        else:
+            pass
+    else:
+        pass
 
 
 def main() -> None:
@@ -1236,7 +1725,9 @@ def main() -> None:
         else:
             config.environment_fingerprint = None
         is_sweep = args.concurrencies is not None or args.repeats > 1
-        if is_sweep:
+        if args.mixture is not None and (len(args.mixture) > 1 or is_sweep):
+            await run_tts_mixture_sweep(config, args.mixture, repeats=args.repeats)
+        elif is_sweep:
             if args.concurrencies is None:
                 concurrencies = [config.concurrency]
             else:

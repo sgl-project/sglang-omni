@@ -271,8 +271,9 @@ class MingPreprocessor:
     - Placeholder token insertion for audio/image segments
     """
 
-    def __init__(self, model_path: str) -> None:
+    def __init__(self, model_path: str, *, video_decode_threads: int) -> None:
         self.model_path = model_path
+        self.video_decode_threads = video_decode_threads
         self.config = load_ming_config(model_path)
         self.tokenizer = load_ming_tokenizer(model_path)
         self.audio_config = self.config.audio_config
@@ -503,7 +504,13 @@ class MingPreprocessor:
         # --- Load images, videos and audio concurrently ---
         image_coro = ensure_image_list_async(raw_images) if raw_images else None
         video_coro = (
-            ensure_video_list_async(raw_videos, **video_kwargs) if raw_videos else None
+            ensure_video_list_async(
+                raw_videos,
+                **video_kwargs,
+                video_decode_threads=self.video_decode_threads,
+            )
+            if raw_videos
+            else None
         )
         # note (Richard Wang): check client audio paths against the server's
         # media policy before any read, so a refused path fails the request.

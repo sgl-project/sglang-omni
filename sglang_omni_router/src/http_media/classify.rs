@@ -53,7 +53,12 @@ pub(super) fn speech_with_hints(
         fields.stream.as_ref().and_then(|value| *value)
     };
     let stream = merge_stream(body_stream, route_stream)?;
-    if stream && format != SpeechResponseFormat::Pcm {
+    if stream
+        && !matches!(
+            format,
+            SpeechResponseFormat::Pcm | SpeechResponseFormat::Wav
+        )
+    {
         return Err(HttpFault::MalformedRequest);
     }
     let stream_mode = if stream {
@@ -1319,7 +1324,7 @@ stream_modes = ["non_streaming", "streaming"]
         );
         assert_eq!(
             speech_with_hints(
-                br#"{"model":"tts","input":"x","stream":true,"response_format":"wav"}"#,
+                br#"{"model":"tts","input":"x","stream":true,"response_format":"mp3"}"#,
                 None,
                 None,
                 &trust,
@@ -1356,6 +1361,9 @@ stream_modes = ["non_streaming", "streaming"]
                 .as_slice(),
             br#"{"model":"tts","input":"x","response_format":"pcm","stream":false,"stream_format":"sse"}"#
                 .as_slice(),
+            br#"{"model":"tts","input":"x","stream_format":"sse"}"#.as_slice(),
+            br#"{"model":"tts","input":"x","response_format":"wav","stream_format":"sse"}"#
+                .as_slice(),
         ] {
             assert_eq!(stream_mode(body, None), Ok(StreamMode::Streaming));
             assert_eq!(stream_mode(body, Some(true)), Ok(StreamMode::Streaming));
@@ -1366,7 +1374,7 @@ stream_modes = ["non_streaming", "streaming"]
         }
         assert_eq!(
             stream_mode(
-                br#"{"model":"tts","input":"x","response_format":"wav","stream_format":"sse"}"#,
+                br#"{"model":"tts","input":"x","response_format":"flac","stream_format":"sse"}"#,
                 None,
             ),
             Err(HttpFault::MalformedRequest)

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import sys
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -18,6 +19,7 @@ from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 
@@ -178,6 +180,19 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
     assert seen == [expected_index]
 
 
+def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_rotary_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = object()
+    rope_module = ModuleType("sgl_kernel.jit.rope")
+    rope_module.apply_rope_inplace = kernel
+    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", rope_module)
+    platform = XPUOmniPlatform()
+
+    assert platform.get_joint_rope_inplace_kernel(rotary_dimension=128) is kernel
+    assert platform.get_joint_rope_inplace_kernel() is kernel
+
+
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     platform = platforms.as_omni_platform(XpuSRTPlatform())
 
@@ -200,7 +215,6 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
         XpuDeviceGraphBackend,
     )
     from sglang_omni.platforms.musa import MUSAOmniPlatform
-    from sglang_omni.platforms.npu import NPUOmniPlatform
 
     expected = {
         CUDAOmniPlatform: CudaDeviceGraphBackend,
@@ -220,6 +234,13 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
             assert backend is None, platform_class.__name__
         else:
             assert isinstance(backend, backend_class), platform_class.__name__
+
+
+def test_npu_platform_opts_only_mimi_into_decode_graphs() -> None:
+    platform = NPUOmniPlatform()
+    assert platform.enable_mimi_decode_graph() is True
+    # #1721: the Higgs TTS codec keeps its eager NPU vocoder policy.
+    assert platform.enable_codec_decode_graph() is False
 
 
 def test_a_platform_declines_a_device_that_is_not_its_own() -> None:

@@ -85,7 +85,7 @@ Choose the example that matches the worker service:
 | Configuration | Worker service |
 | --- | --- |
 | `examples/omni.toml` | Multimodal chat with text or audio output |
-| `examples/tts.toml` | Speech synthesis, including PCM streaming |
+| `examples/tts.toml` | Speech synthesis, including WAV and PCM streaming |
 | `examples/asr.toml` | Transcription and speech-to-English translation |
 
 The examples define two workers at `127.0.0.1:8000` and
@@ -146,6 +146,8 @@ health path, session capacity, and one or more correlated service profiles.
 A profile row describes a combination the worker supports; the router never
 combines independent fields from different rows.
 
+Streaming `speech_http` profiles may advertise `pcm`, `wav`, or both. Other audio formats require a separate non-streaming profile. `speech_websocket` streaming profiles remain PCM-only.
+
 DNS worker authorities are resolved when an upstream connection is opened, so
 health probes and new data connections follow DNS changes. Worker membership
 remains static for the process lifetime.
@@ -160,8 +162,8 @@ limits, and timeouts from the expected workload and worker topology.
 | `GET` | `/live` | Process liveness |
 | `GET` | `/ready` | Readiness of every enabled service |
 | `POST` | `/v1/chat/completions` | Chat and multimodal generation |
-| `POST` | `/v1/audio/speech` | Encoded speech or streaming PCM |
-| `GET` | `/v1/audio/speech/{request_id}` | Terminal state of a finished PCM stream, on the worker named by `x-sglang-omni-route-worker` |
+| `POST` | `/v1/audio/speech` | Encoded speech or streaming WAV/PCM |
+| `GET` | `/v1/audio/speech/{request_id}` | Terminal state of a finished WAV/PCM stream, on the worker named by `x-sglang-omni-route-worker` |
 | `POST` | `/v1/audio/speech/batch` | Ordered, unsplit speech batch |
 | `POST` | `/v1/audio/transcriptions` | Multipart transcription |
 | `POST` | `/v1/audio/translations` | Multipart translation |
@@ -184,7 +186,7 @@ preserved; otherwise the router generates one. The same value is sent to the
 worker and returned to the client.
 
 Media responses carry `x-sglang-omni-worker`, the configured id of the worker
-that answered. A streaming PCM speech response also carries
+that answered. A streaming WAV or PCM speech response also carries
 `x-sglang-omni-speech-id`, a generated resource ID independent of `x-request-id`.
 After the stream ends, use that speech ID in `GET /v1/audio/speech/{request_id}`
 and echo the worker ID as `x-sglang-omni-route-worker`. The router pins the lookup

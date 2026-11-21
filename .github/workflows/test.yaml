@@ -15,9 +15,9 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after shared setup (first suite in the omni-ci
-# sequence: PR Test -> ASR -> TTS -> MPS -> Omni). Any stage label runs it.
-# run-lint-only does not.
+# Invoked by omni-ci.yaml after shared setup. The model suites start once it
+# finishes (see the DAG note in omni-ci.yaml). Any stage label except
+# run-mac-ci runs it. run-lint-only does not.
 # Restores omni only.
 
 jobs:
@@ -32,8 +32,10 @@ jobs:
             partition: 0
           - name: unit-test-b
             partition: 1
+          - name: unit-test-c
+            partition: 2
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -65,14 +67,14 @@ jobs:
             pytest tests/ -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition \
             --auto-partition-id "${{ matrix.partition }}" \
-            --auto-partition-size 2 \
+            --auto-partition-size 3 \
             --partition-model-file .github/unit_test_durations.json
 
   unit-test-accelerator:
     name: unit-test-accelerator
     runs-on: [self-hosted, h100]
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

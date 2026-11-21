@@ -9,7 +9,7 @@ CAPABILITIES = ModelCapabilities(
     supports_streaming_vocoder=True,
     supports_cuda_graph=True,
     supports_torch_compile=False,
-    supports_breakable_prefill_cuda_graph=False,
+    supports_breakable_prefill_cuda_graph=True,
     supports_full_prefill_cuda_graph=False,
 )
 

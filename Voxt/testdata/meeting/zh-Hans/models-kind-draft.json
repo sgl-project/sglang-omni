@@ -1,0 +1,130 @@
+{
+  "name": "models-kind-draft",
+  "kind": "models",
+  "models": {
+    "asr": [
+      {
+        "key": "model-asr.accurate",
+        "rows": [
+          {
+            "id": "asr.accurate",
+            "kind": "asr",
+            "name": "Qwen3-ASR 1.7B (8bit)",
+            "default": true,
+            "installed": true,
+            "size_text": "占用 2.5 GB",
+            "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。",
+            "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
+            "tags": [
+              "本地",
+              "准确",
+              "实时",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.accurate",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 Qwen3-ASR 1.7B (8bit)",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "delete",
+                "model_id": "asr.accurate",
+                "label": "删除",
+                "accessibility_label": "删除 Qwen3-ASR 1.7B (8bit)…"
+              },
+              {
+                "kind": "assign",
+                "model_id": "asr.accurate",
+                "model_kind": "asr",
+                "label": "应用到",
+                "accessibility_label": "将 Qwen3-ASR 1.7B (8bit) 应用到功能",
+                "tooltip": "选择使用此模型的功能"
+              }
+            ],
+            "draft": {
+              "model_id": "asr.accurate.draft",
+              "parent_id": "asr.accurate",
+              "help": "使用推测解码：一个小的草稿模型（725.7 MB）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
+              "installed": false,
+              "needs_download": false,
+              "size_text": "占用 725.7 MB",
+              "on": false,
+              "switch_label": "Qwen3-ASR 1.7B (8bit) 的转录加速",
+              "actions": [
+                {
+                  "kind": "use",
+                  "model_id": "asr.accurate.draft",
+                  "label": "使用",
+                  "accessibility_label": "使用 Qwen3-ASR 1.7B DFlash draft"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "llm": null,
+    "show_llm": false,
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "zh-Hans",
+      "value": "",
+      "selection": "自动",
+      "options": [
+        {
+          "label": "自动",
+          "value": ""
+        },
+        {
+          "label": "5 分钟",
+          "value": "5m"
+        },
+        {
+          "label": "15 分钟",
+          "value": "15m"
+        },
+        {
+          "label": "30 分钟",
+          "value": "30m"
+        },
+        {
+          "label": "1 小时",
+          "value": "1h"
+        },
+        {
+          "label": "直到退出 Voxt",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
+      "source": 0,
+      "source_labels": [
+        "自动",
+        "只用 Hugging Face",
+        "只用 hf-mirror.com"
+      ],
+      "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": ""
+  }
+}

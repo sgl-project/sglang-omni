@@ -1,57 +1,96 @@
-# Repository Guidelines
+# Working on VoxtNew
 
-## Project Shape
+VoxtNew is a macOS voice input app: Go + MyGo (native UI, no cgo) and a small Swift helper. Speech recognition and voice activity detection run on this Mac, on sglang-omni's native MLX servers (`sglang_omni_mlx/native`); the language models are remote services the user sets up (any OpenAI-compatible API, Ollama on this Mac included). Voxt runs no language model of its own: the local ones retired in 2.1, and their Swift process (`voxtnew-llm`) is gone. It started as a copy of Auralink, the same author's app on remote models (NOTICE). Read [docs/architecture.md](docs/architecture.md) first, then [docs/plan.md](docs/plan.md) for the milestones; [docs/behavior.md](docs/behavior.md) compares its behaviour with Voxt's.
 
-Voxt is a macOS menu bar voice input and translation app written in Swift with an Xcode project at `Voxt.xcodeproj`.
+Users see the app as **Voxt**: a user-visible text says Voxt, never VoxtNew, ActNow or actnow.dev (`TestNoOldNames`). Some inside names stay VoxtNew: the Swift packages, the processes, the bundle id, the data folders and `voxtnew://` (docs/architecture.md, Names).
 
-- Main app sources live under `Voxt/`.
-- Tests live under `VoxtTests/`, with shared helpers in `VoxtTests/TestSupport/`.
-- User-facing docs live under `docs/`.
-- Local build products, derived data, and scratch references live under `build/` and `tmp/`; avoid editing or reviewing generated files there.
-- The root `.codex/` directory is local workflow state and is gitignored.
+These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its coding style are for the Python tree; Voxt follows its own Go rules below.
 
-## Build And Test
+## Rules
 
-Use the shared `Voxt` scheme.
+- **Speech on this Mac by default, language models remote.** Speech is recognised on the Mac unless the user sets up a remote speech service for a feature in Settings → Speech models (`internal/asr`, `providers.NewASR`): the audio then goes only to that service, its key in the Keychain (`asr.<id>`). Text goes only to the language model the user set up in Settings → Language models (`internal/llm`'s OpenAI-compatible transport and presets, `internal/providers`), and only the recognised or selected text (and, when the user turns on Settings → Privacy → Send a screenshot, a screenshot of the window they speak into: `settings.Privacy.SendWindow`, the helper's `screen.window`; and, when they turn on Settings → Privacy → Send a copied image, the image on the clipboard with a Rewrite: `settings.Privacy.SendClipboardImage`, the helper's `clipboard.image`); its API key lives in the Keychain (`internal/secrets`), never in the settings, logs or git. The network is for update checks, Voxt's announcements (`internal/announce`: nothing of the user's goes with them), model downloads and those services. No account comes back (signing in to ChatGPT for the "ChatGPT (Codex)" language model is the user's own sign-in to a third-party service, for their own plan, not a Voxt account). The local language models are retired (`models.Model.Retired`: never offered, opened or downloaded). The speech models live in the ActNow family's model library (`$HUB`, the Hugging Face cache, shared with the family's other apps: `internal/models` on `actnowkit`), and downloads follow the family's shared network settings (proxy, Hub endpoints; "automatic" = the Mac's system proxy). VoxtNew is a member of the ActNow family (`internal/actnow`, the spec in the actnow repository `docs/family/actnow-family-spec.md`): never delete another app's models or claims. Models are behind `internal/local` (`local.Services`; `providers.Services` adds the remote language models): the session and the pages never talk to a runtime or a service directly.
+- **Every user-visible string goes through `i18n.T`** (or `N`, `X`) with a literal English message, and whoever adds one adds its zh-Hans translation to `internal/i18n/locales/zh-Hans/<area>.json`, the area of the file whose call uses the message (`common.json` for what more than one area or only shared code uses). A genuinely new area adds its prefix to `catalogAreas` in `internal/i18n/parity_test.go`, and `catalogAliases` when its root file prefix differs from the area name. `TestKeyParity` fails on a missing translation, an unused one, or format verbs that differ; `TestKeyPlacement` fails on one in the wrong file and names the right one. Product words in Chinese: 转录 (Transcribe), 翻译 (Translate), 改写 (Rewrite), 应用增强 (App enhancement), 词典 (Dictionary), 语音识别模型 (Speech models: never 语音模型, one character from 语言模型), 语言模型 (Language models), 辅助进程 (the helper), 转录稿 (a transcript), App (an app).
+- **The build pass does no I/O.** Allowlisted views read `app` fields, snapshots and memory-only getters (`local.Services.Installed` too); migrated views read their view state. Store, runtime and helper calls run from actions or wiring on goroutines (`a.async`, `helperCall`) and come back through `a.post`. `app` is main-thread only.
+- **Feature logic and views stay separate.** The feature side owns `internal/*`, wiring, view state construction and actions; the UI side owns view files, `ui_*.go`, layout and icons. In an unlisted view file, use only its view state, actions and local UI state, the UI kit, MyGo, `internal/icons`, `internal/i18n` and `internal/overlay/layout`: no domain imports, goroutines, I/O, `app` receivers or parameters, or direct calls into logic files. A new page in a migrated area comes with view state, actions and fixtures. `TestViewFiles` checks the file boundary; the area's golden and fixture-coverage tests check its view state and fixtures. Existing violations have one line per file in `internal/archtest/view-allowlist.txt`: migrate an area, remove its lines and lower `viewAllowlistSize` by the same number; never add a line or raise the size.
+- **Voxt and Auralink are sources.** Both are the same author's, Apache-2.0 for VoxtNew: port their code where it fits (Voxt's Omni runtime lifecycle, model request policies and prompts; Auralink's everything else), written our way (one session owner, a layered prompt composer, pure logic apart from platform code), and record a behaviour that differs from Voxt's in `docs/behavior.md` (Voxt / VoxtNew / why).
+- **Use AudioSmith's UI kit.** Build pages from `ui_kit.go` and the tokens in `ui_tokens.go` (one ink primary button per view, the accent for state only, Solar icons, `settingRow` with ⓘ help). New icons: add the name to `internal/icons/names.txt`, then `go generate ./internal/icons`.
+- **Pure domain logic in `internal/`, platform code behind narrow interfaces** (the helper, `permission`, the local runtimes), with fakes for tests: everything must be testable on Linux. A runtime's client is tested against a fake server on loopback.
+- **The helper protocol** changes in every place at once: `internal/helper/proto`, the Swift types (`helper/Sources/VoxtNewHelperKit/Wire*.swift`), `helper/Fixtures`, the fake helper (`internal/helper/helpertest`) and `docs/helper-protocol.md`. Go and Swift tests decode the same fixtures.
+- **The helper does, Go decides**: policy (when ⌘C may run, delays, keys after a paste, which device) goes in the params; the helper keeps no settings. The same holds for the speech models' runtime: Go supervises it and chooses the parameters.
+- **Files stay small**: at most 600 lines of code (aim for 400), 800 of tests; split by topic into `<area>_<part>.go`. `internal/archtest` checks the sizes (a ratchet over `allowlist.txt`) and the import layering (`imports.txt` lists every internal → internal import: add a line for a new one). Refactors that move code prove it with `declhash` and `scripts/snapshots.sh check` (docs/architecture.md, "Code structure rules").
+- **Licence**: VoxtNew is Apache-2.0, as the repository. Third-party code, data, models' runtimes or artwork need a licence compatible with it and an entry in `NOTICE`, with its licence text in `LICENSES/` (a new Go module: its licence file in `LICENSES/go/`). No per-file licence headers.
+- **The Mac (`mac-air`) is shared and short of disk** (about 32 GB free): build in `code/VoxtNew` (`scripts/mac.sh`), delete large build trees and models you downloaded for a test, and never touch `~/code/Auralink*`. The six catalogue models are in the real `$HUB` (`~/Library/Application Support/SGLang Omni/models` once VoxtNew 2.0.1 or later has started, hard links of those in `~/Library/Application Support/ActNow/models/hub`, which the user's AudioSmith and Dicta use; claimed as `dev.hehehai.voxtnew`) and the Omni runtime in `~/voxtnew-runtime/omni/` for every thread (its README says how to refresh it): use them instead of downloading or building again, never delete or move anything in the HF cache, and test deletions with a scratch `ACTNOW_FAMILY_DIR` + `HF_HUB_CACHE`. Do not sync (`scripts/mac.sh`) into a checkout while it builds, nor before pulling back files the Mac made (`--pull`): the sync deletes what the Linux side lacks.
+- Code comments and commit messages in English. Keep the MyGo lifetime rules (`.agents/skills/mygo-maintenance`).
 
-```bash
-xcodebuild -list -project Voxt.xcodeproj
-xcodebuild build -project Voxt.xcodeproj -scheme Voxt -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
-xcodebuild test -project Voxt.xcodeproj -scheme Voxt -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+## Quality rules
+
+For every change, by a person or an agent. A rule here comes with a number measured in this repository and names an automatic check when one exists. Otherwise, the PR's verification says how a reviewer checked it. Once a test or a CI step enforces a rule, the rule shrinks to the name of that check.
+
+Code:
+
+- **The app calls every function.** A test calls the function the app calls. Delete a wrapper that only its own test reaches and move that test to the real function; keep shared fakes and helpers. Compare `deadcode -tags=meetingdemo,updatecheck ./...` with `deadcode -test -tags=meetingdemo,updatecheck ./...` and review the functions only the first command lists.
+- **A removal is complete in one PR**: the callers, helpers, strings and translations, doc links and environment switches of what is removed go with it.
+- **An unchecked error is written down**: `_ = f()` with a one-line reason. On a path that moves or deletes the user's data, each error is handled or logged.
+- **Every `VOXTNEW_*` environment switch is documented** by the PR that adds it: what it does and who sets it (`docs/development.md`, or the doc of its area).
+- **The helper builds without compiler warnings.** Mac CI's Helper builds without warnings step fails on any `warning:` in the helper build log.
+
+Tests:
+
+- **A test fails when the behaviour it names breaks.** The PR of a fix names the test that fails with the fix reverted.
+- **Tests are tight**: a fake clock or an event instead of `time.Sleep`, the running test binary instead of the `go` tool, loopback instead of the network.
+- **A test restores the globals it sets** (`t.Cleanup`). New code takes the translator and the clock as parameters, as the `...For(translator, ...)` functions do.
+- **A test that fails with no change behind it is a bug**: open an issue with the log before the rerun, and fix or remove the test.
+- **A skipped test has a runner**: a test behind an environment switch says in the docs who runs it and when (nightly, before a release, by hand).
+- **A failure found on a real Mac becomes a test.** The PR that fixes it adds a check that fails with the fix reverted, at the first level that can show the failure: a test on every pull request (fake models, fake helper), then a Mac script (`scripts/mac-e2e.sh`), then a step in `docs/manual-test.md`. When only a Mac or a person can show it, the PR adds or updates the feature's row in `testdata/behaviours.tsv` and gives the reason in the gap column.
+- **A fix for a reported problem lists its check**: one row in `testdata/reports.tsv` with the issue, the pull request that made the fix (also when it landed inside a combined pull request), the symptom in one sentence, the level as in `testdata/behaviours.tsv`, and the check that shows the symptom with the fix reverted (`TestReports`). A check that fails with the fix reverted is the reproduction; a check that covers part of the report gets a row whose symptom names that part. A report without an issue gets one first; the reporter's name and chat text stay out of the repository. A report with no such check gets no row and is not closed as fixed.
+- **A real-Mac result names the commit and the features**: the comment that reports it gives the head it ran on and the `testdata/behaviours.tsv` features it exercised. A result on an older head does not count for the current one.
+- **A test that closes a gap sets the gap to `none`** in the same PR. The rows left are the hand checks of a release: `awk -F'\t' 'NR>1 && ($2!="L" || $4!="none")' testdata/behaviours.tsv`.
+- **One more fact about a flow is an assertion in the test that drives the flow.** Add a test only for a flow that no test drives.
+
+Pull requests:
+
+- **One PR, one change, named in the title.** Over about 600 changed lines (fixtures, goldens and vendored files apart), the body says why it cannot be split. A bundle lists the PRs it carries.
+- **Check the open PRs first.** `scripts/overlap.py` only screens them by file category; compare the changed file names or search by file before saying in the body that none touches the same code.
+- **Fill in the PR template, with what was not run.** Report only the checks that ran.
+- **Allowlist entries and numeric ceilings are different**: `view-allowlist.txt` loses lines and never gains one. In `allowlist.txt`, add a file or raise its numeric line ceiling only for a fix that cannot wait, and say why in the commit; lower the ceiling when the file shrinks. Other numeric allowances only go down.
+
+## Commands
+
+Run from `Voxt/`; Go 1.27.4 (`GOTOOLCHAIN=auto` fetches it).
+
+```sh
+scripts/check.sh                                             # the fast checks CI runs: gofmt, MyGo vet, archtest
+CGO_ENABLED=0 go test ./...                                  # all tests (Linux and Mac)
+go tool mygo vet .                                           # vet + MyGo's UI checks
+CGO_ENABLED=1 go test -race ./...                            # needs cgo
+VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .    # pages as PNG
+go test -run TestKeyParity ./internal/i18n                   # strings and zh-Hans
+scripts/mac.sh '<command>'                                   # run on the Mac (MAC_HOST, MAC_DIR=code/VoxtNew)
+scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'   # the Swift helper, then the app
+scripts/mac.sh 'scripts/build-omni.sh && go tool mygo build'     # the Omni runtime (speech models) into the app; --out DIR for VOXTNEW_OMNI_RUNTIME
+scripts/mac.sh 'scripts/release.sh --runtimes $HOME/voxtnew-runtime'   # the release build: helper, omni, mygo build, release-verify.sh (docs/release.md); VOXTNEW_SIGN_IDENTITY signs it (team 779M533DL5, as the other ActNow apps: scripts/release-identity.sh), over ssh through scripts/mac-gui.sh; official releases: a voxt-vX.Y.Z tag runs .github/workflows/voxt-release.yaml (team RY2TQTYSKQ, docs/release.md)
+MAC_DIR=code/VoxtNew-xyz scripts/mac.sh 'VOXTNEW_COEXIST_OK=1 scripts/mac-hotkey-coexist.sh'   # a built app's helper beside a running Auralink: synthetic keys, right ⌥ fires only VoxtNew
+MAC_DIR=code/VoxtNew-sign scripts/mac.sh scripts/mac-sign-e2e.sh  # the release's signing with a throwaway identity: every nested binary hardened and timestamped
+scripts/mac.sh 'cd helper && swift test'                     # the helper's tests (same fixtures as Go)
+MAC_DIR=code/VoxtNew-mt scripts/mac.sh scripts/mac-e2e.sh    # headless Mac tests: real helper, fake models, no window or key
+scripts/mac-latency.sh ACCURATE_DIR FAST_DIR [ROUNDS [SETTLE]]   # on the Mac: the first transcription's stages after a launch and a change of model, real speech models, fake helper (TestMacE2EFirstLatency)
+MAC_DIR=code/VoxtNew-logsel scripts/mac.sh scripts/mac-logs-shots.sh  # the logs' selection worked with the real pointer and captured (only while nobody uses the Mac; VOXTNEW_SHOTS_DRY=1: the window only)
+MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real speech models ($HUB, ~/voxtnew-runtime): Swift tests, omni, quick eval, app smoke
+scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni go test -run TestEval -v .'  # the eval (docs/eval.md)
+scripts/vendor-mygo.sh --check                               # third_party/mygo is MyGo + our patches
+scripts/release-preflight.sh 2.1.2                           # before a stable tag, read-only: versions, CHANGELOG section, download links, unnamed pull requests, certificate date
+scripts/snapshots.sh check                                   # every snapshot, pixel for pixel, against the merge base
+GOMAXPROCS=1 scripts/w0-snapshots.sh check                   # the same comparison, accepting the measured PNG noise in scripts/w0-snapshots-noisy.list (docs/architecture.md, Testing)
+VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .  # regenerate meeting, history, session, updates, home, onboarding, app enhancement, dictionary, remote, models, feature, settings and shell fixtures in English and Chinese
+VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDemoScreenshots$' .  # every meeting, history, session, updates, home, onboarding, app enhancement, dictionary, remote, models, feature, settings and shell fixture as PNG
+go test -count=1 -run '^Test(MeetingFixtureCoverage|HistoryFixtureCoverage|SessionFixtureCoverage|UpdatesFixtureCoverage|HomeFixtureCoverage|OnboardingFixtureCoverage|AppEnhancementFixtureCoverage|DictionaryFixtureCoverage|RemoteFixtureCoverage|ModelsFixtureCoverage|FeatureFixtureCoverage|SettingsFixtureCoverage|ShellFixtureCoverage)$' .  # required states and fixture files in both languages
+go test -count=1 -run '^TestBehaviours$' .  # testdata/behaviours.tsv: each user-facing feature and the test, script or page that checks it; add a row with a new feature
+go test -count=1 -run '^TestReports$' .     # testdata/reports.tsv: each reported problem and the check that fails with its fix reverted; add a row with the fix
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction|UpdatesDemoActionControls|HomeDemoActionControls|OnboardingDemo|AppEnhancementDemoActionControls|DictionaryDemoActionControls|RemoteDemoActionControls|ModelsDemo|FeatureDemoActionControls|SettingsDemoActionControls|ShellDemoActionControls)$' .  # fixture switching, production/JSON pixels and exact action records for the controls covered by the demo suites
+MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo  # fixture demo with hot reload, no helper or models
+GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo  # build the fixture demo without opening a window
+scripts/benchmarks.sh /tmp/voxt-bench-change && benchstat /tmp/voxt-bench-base/a.txt /tmp/voxt-bench-change/a.txt  # compare benchmarks; run the base first
+python3 scripts/overlap.py 3856 3965 3966                    # view/logic overlap of pull requests (read-only GitHub access)
+go run ./internal/tools/declhash . ./internal/...            # a hash per declaration: equal before and after a pure move
+go vet -tags updatecheck .                                   # the update-check build
 ```
-
-For focused test runs, prefer `-only-testing:VoxtTests/TestClassName` or `-only-testing:VoxtTests/TestClassName/testMethodName`.
-
-CI runs tests with explicit SwiftPM cache paths and `CODE_SIGNING_ALLOWED=NO`; mirror `.github/workflows/tests.yml` when reproducing CI package resolution issues.
-
-## Signing
-
-Shared signing defaults are in `Config/Signing.shared.xcconfig`.
-For local signing, copy `Config/Signing.local.xcconfig.example` to `Config/Signing.local.xcconfig`; the local file is gitignored. Do not commit personal signing settings.
-
-## Coding Conventions
-
-- Follow existing Swift style in nearby files.
-- Keep UI work consistent with the existing SwiftUI/AppKit split under `Voxt/Windows`, `Voxt/Settings`, and `Voxt/App`.
-- Split large files by responsibility, not arbitrary line counts. Preserve actor isolation and keep file-local helpers private when extracting code.
-- Treat unreferenced-symbol scans as candidates only: check protocol/selector callbacks, resource references, migrations, and tests before deletion.
-- Prefer existing managers, stores, and support types before adding new abstractions.
-- Keep tests deterministic by using `UserDefaults` suites and temporary directories from `VoxtTests/TestSupport` where applicable.
-- Do not modify audio fixtures in `VoxtTests/Fixtures/Audio/` unless the task explicitly requires fixture changes.
-
-## Dependencies
-
-Swift package dependencies are resolved through the Xcode project. Direct package references include mlx-swift-lm, mlx-swift, Tokenizers, HuggingFace, OmniModelArtifacts, llama.swift, GRDB, swift-log, Sparkle, PermissionFlow, and FaviconFinder. MLX Audio is retired; do not restore its products or package pin. The MLX Audio dependency policy is documented in `docs/MLXAudioDependency.md`.
-
-## Architecture And Documentation
-
-Local ASR/VAD/diarization use the existing Native HTTP/WebSocket subprocesses. Do not add XPC helpers or modify the shared `sglang_omni_mlx/native` package for Voxt integration; process/request/storage adaptation belongs to Voxt. Preserve the official Native implementation and synchronize only through normal official-main merges.
-
-- Documentation index: `docs/index.md`.
-- Current source map: `docs/Architecture.md`.
-- Refactoring baseline and deletion evidence: `docs/RefactoringAssessment.zh-CN.md`; staged implementation and pending validation: `docs/RefactoringProgress.zh-CN.md`.
-- Keep current behavior guides distinct from historical plans; do not present pending verification as completed.
-
-## Release Workflow
-
-Release automation is in `.github/workflows/release.yml`. Stable release tasks may also use the local `voxt-release` skill under `.codex/skills/voxt-release/`.
