@@ -152,6 +152,21 @@ SGLang selects the XPUGraph backend on XPU. The B60 validation uses
 `mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
 buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
 
+**Ascend NPU**
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
+  --mem-fraction-static 0.80
+```
+
+SGLang selects the NPU graph backend on Ascend, so decode, breakable prefill, and all eight encoder buckets are captured. The engine turns `torch.compile` off on NPU because the fused QKV RMSNorm+RoPE path queries the triton driver while dynamo traces the decoder, which aborts decode graph capture; eager decode keeps graph replay. The engine also exports `PER_STREAM_QUEUE=1` before the stage process starts, because the shared host task queue lets a decode-graph replay overlap the update that rebinds KV lengths and the scheduler deadlocks. Keep that value: an override has to be paired with `disable_cuda_graph: true` or `cuda_graph_max_bs: 1`, and startup rejects NPU decode graphs above one row combined with any other value.
+
+Supported software versions are listed in [Ascend NPU installation](../other_platforms/installation_npu.md).
+
 Before it reports ready, the server transcribes one second of audio, at most 8
 tokens. `/health` returns 503 with status `starting` until that request has
 finished, so the one-time kernel builds of the transcription path happen before
