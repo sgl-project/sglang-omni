@@ -42,6 +42,9 @@ class ExactDraftGraphSampler(DsparkDraftSampler):
             greedy_draft=False,
         )
         assert draft_model.confidence_head is None
+        assert (
+            self._megakernel_steps is None
+        )  # noqa: leading-underscore  # a megakernel step would skip the exact markov block
         self.step_logits = torch.empty(
             (max_batch_size, gamma, TOTAL_VOCAB_SIZE),
             dtype=torch.float32,
