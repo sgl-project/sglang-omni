@@ -16,6 +16,7 @@ import pytest
 
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_omni_seedtts as benchmark
+from benchmarks.tasks import tts as tts_tasks
 from benchmarks.tasks.tts import (
     ReferenceAudioField,
     TalkerSamplingParams,
@@ -52,6 +53,62 @@ def wav():
         handle.setparams((1, 2, 16000, 160, "NONE", "not compressed"))
         handle.writeframes(b"\x01\x00" * 160)
     return output.getvalue()
+
+
+@pytest.mark.parametrize("audio_field", ["audio", "content"])
+def test_chat_stream_audio_formats_decode_once(monkeypatch, audio_field):
+    """Complete WAV content deltas must produce audio without becoming text."""
+    wav_bytes = wav()
+    encoded_audio = base64.b64encode(wav_bytes).decode("ascii")
+    delta = (
+        {"audio": {"data": encoded_audio}}
+        if audio_field == "audio"
+        else {"content": encoded_audio}
+    )
+    decode = Mock(wraps=base64.b64decode)
+    monkeypatch.setattr(tts_tasks.base64, "b64decode", decode)
+    monkeypatch.setattr(tts_tasks.time, "perf_counter", lambda: 12.5)
+    pcm_chunks, chunk_times, text_times = [], [], []
+    audio_format = tts_tasks._collect_chat_streaming_audio(  # noqa: leading-underscore  # Exercise the existing stream parser directly.
+        "data: " + json.dumps({"choices": [{"delta": delta}]}),
+        pcm_chunks,
+        None,
+        {},
+        chunk_times,
+        text_times,
+    )
+    assert audio_format == (16000, 1, 2)
+    assert pcm_chunks == [b"\x01\x00" * 160]
+    assert chunk_times == [12.5]
+    assert text_times == []
+    decode.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Hello, world!",
+        "UklGR!invalid-base64",
+        base64.b64encode(b"ordinary non-WAV bytes").decode("ascii"),
+        base64.b64encode(b"RIFF\x00\x00\x00\x00not WAV").decode("ascii"),
+        base64.b64encode(b"RIFF\x04\x00\x00\x00WAVE").decode("ascii"),
+    ],
+)
+def test_chat_stream_non_audio_content_stays_text(monkeypatch, content):
+    """Text and invalid WAV candidates must not generate audio observations."""
+    monkeypatch.setattr(tts_tasks.time, "perf_counter", lambda: 12.5)
+    pcm_chunks, chunk_times, text_times = [], [], []
+    audio_format = tts_tasks._collect_chat_streaming_audio(  # noqa: leading-underscore  # Exercise the existing stream parser directly.
+        "data: " + json.dumps({"choices": [{"delta": {"content": content}}]}),
+        pcm_chunks,
+        None,
+        {},
+        chunk_times,
+        text_times,
+    )
+    assert audio_format is None
+    assert pcm_chunks == chunk_times == []
+    assert text_times == [12.5]
 
 
 @pytest.mark.asyncio
