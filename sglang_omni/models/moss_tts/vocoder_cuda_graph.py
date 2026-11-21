@@ -341,22 +341,29 @@ class MossVocoderCudaGraphRunner:
         else:
             pass
 
-        entry.static_codes.zero_()
         entry.static_codes[:, :actual_batch_size, :].copy_(codes, non_blocking=True)
-        entry.static_lengths.zero_()
         entry.static_lengths[:actual_batch_size].copy_(
             valid_rows.to(dtype=torch.long) * frame_size
         )
-        entry.static_state_slot_ids.copy_(entry.capture_state_slot_ids)
         entry.static_state_slot_ids[:actual_batch_size].copy_(
             state_slot_ids,
             non_blocking=True,
         )
-        entry.static_valid_rows.zero_()
         entry.static_valid_rows[:actual_batch_size].copy_(
             valid_rows,
             non_blocking=True,
         )
+        if actual_batch_size < batch_size:
+            # note (Minyi Tang): Padding rows keep the previous replay's values,
+            # including live state slot ids, so they must point back at scratch.
+            entry.static_codes[:, actual_batch_size:, :].zero_()
+            entry.static_lengths[actual_batch_size:].zero_()
+            entry.static_state_slot_ids[actual_batch_size:].copy_(
+                entry.capture_state_slot_ids[actual_batch_size:]
+            )
+            entry.static_valid_rows[actual_batch_size:].zero_()
+        else:
+            pass
         entry.graph.replay()
         return entry.static_audio, entry.static_audio_lengths
 
