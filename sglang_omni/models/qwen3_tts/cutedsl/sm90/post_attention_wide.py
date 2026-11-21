@@ -16,6 +16,7 @@ from sglang_omni.models.qwen3_tts.cutedsl.sm90.mma import swizzle
 from sglang_omni.models.qwen3_tts.cutedsl.sm90.post_attention import (
     PAYLOAD_EMPTY,
     wait_barrier,
+    wait_cluster_barrier,
 )
 
 
@@ -65,7 +66,7 @@ def scatter_partial(
             )
     else:
         pass
-    wait_barrier(ready.subview(phase), 0)
+    wait_cluster_barrier(ready.subview(phase), 0)
 
 
 @cute.jit

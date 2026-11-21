@@ -362,8 +362,13 @@ def pre_attention_kernel(
     else:
         pass
     if rank == 0:
-        while not p.mbarrier_try_wait_parity(bars.subview(1), 0):
+        # The partials arrive from the other CTAs (cluster-scope release), so
+        # acquire at cluster scope before reading them.
+        while not p.mbarrier_try_wait_parity(
+            bars.subview(1), 0, scope=p.MBarrierScope.CLUSTER, order=p.MemOrder.RELAXED
+        ):
             pass
+        p.fence_sync_restrict(p.MemOrder.ACQUIRE)
         for token in cutlass.range_constexpr(batch_tile // 16):
             row = warp + token * 16
             if cutlass.const_expr(is_predictor):
