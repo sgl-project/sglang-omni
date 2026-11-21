@@ -28,6 +28,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     get_omni_prefill_inputs,
 )
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioEncoder
+from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
 from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalColocatedPipelineConfig,
     MossTTSLocalPipelineConfig,
@@ -50,6 +51,7 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     set_moss_tts_local_preprocessing_context,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -833,6 +835,40 @@ def test_moss_local_engine_uses_text_backbone_context(
     )
 
 
+@pytest.mark.parametrize("frame_graph_batch_sizes", [None, [], [1, 2, 4]])
+def test_explicit_frame_graphs_do_not_require_backbone_graph_setup(
+    frame_graph_batch_sizes: list[int] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit local buckets must be consumed without backbone initialization."""
+    captured: list[list[int]] = []
+    default_buckets = [1, 2, 4, 8]
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.generation_batch_policy.get_decode_cuda_graph_bs",
+        lambda server_args: default_buckets,
+    )
+    model = types.SimpleNamespace(init_frame_decode_graphs=captured.append)
+    worker = types.SimpleNamespace(model_runner=types.SimpleNamespace(model=model))
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=1,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+        frame_graph_batch_sizes=frame_graph_batch_sizes,
+    )
+    builder.setup_model(
+        model_worker=worker,
+        checkpoint_dir="unused",
+        device="cpu",
+        gpu_id=0,
+        server_args=None,
+    )
+    builder.post_cuda_graph_setup(model, None)
+    assert captured == [
+        default_buckets if frame_graph_batch_sizes is None else frame_graph_batch_sizes
+    ]
+
+
 @pytest.mark.parametrize("disable_prefill", [False, True])
 def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
     builder = MossTtsLocalEngineBuilder(
@@ -1355,13 +1391,17 @@ def test_build_generation_kwargs_precedence():
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() or current_platform.is_npu()),
+    reason="requires CUDA or NPU",
+)
 def test_decode_frame_graphed_matches_branchless_eager():
     """The captured frame graph must reproduce the branchless eager decode."""
-    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
-
     torch.manual_seed(11)
-    device = torch.device("cuda")
+    device = torch.device(current_platform.device_type)
+    device_module = torch.get_device_module(device)
+    graph_backend = current_platform.get_device_graph_backend(device)
+    assert graph_backend is not None
     module = MossTTSLocalTransformer(
         hidden_size=64,
         num_heads=4,
@@ -1400,15 +1440,14 @@ def test_decode_frame_graphed_matches_branchless_eager():
     static_seeds = torch.zeros(batch, device=device, dtype=torch.long)
     static_base = torch.zeros(batch, device=device, dtype=torch.long)
 
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
+    stream = device_module.Stream(device=device)
+    stream.wait_stream(device_module.current_stream(device))
+    with device_module.stream(stream):
         for _ in range(2):
             frame(static_hidden, static_seeds, static_base)
-    torch.cuda.current_stream().wait_stream(stream)
-    torch.cuda.synchronize()
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
+    device_module.current_stream(device).wait_stream(stream)
+    device_module.synchronize(device)
+    with graph_backend.capture() as graph:
         graphed_codes = frame(static_hidden, static_seeds, static_base)
 
     hidden = torch.randn(batch, 64, device=device, dtype=torch.bfloat16)

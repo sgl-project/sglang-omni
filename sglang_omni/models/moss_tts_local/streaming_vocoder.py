@@ -25,7 +25,9 @@ from sglang_omni.models.moss_tts.codec_session import (
     CodecStreamSession,
 )
 from sglang_omni.models.moss_tts.vocoder import decode_codes_batch
+from sglang_omni.models.moss_tts.vocoder_cuda_graph import VocoderGraphCaptureError
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -489,16 +491,12 @@ class MossTTSLocalStreamingVocoderScheduler(
 
     def codec_on_cuda(self) -> bool:
         try:
-            return next(self.codec.parameters()).device.type == "cuda"
+            return next(self.codec.parameters()).device.type in {"cuda", "npu"}
         except StopIteration:
             return False
 
     def ensure_session_graphed(self) -> CodecStreamSession:
-        """Live session with CUDA graphs captured (at most once per session). Streaming paths
-        call this instead of _ensure_session so a lazily created session (factory warmup
-        skipped, e.g. non-CUDA codec) still gets its one capture attempt here, synchronously,
-        fail-safe to eager on low VRAM; a low-VRAM skip is remembered (no per-step re-probe).
-        """
+        """Live session with device graphs captured at most once, then eager on any miss."""
         with self.state_lock:
             session = self.ensure_session()
             if (
@@ -511,7 +509,13 @@ class MossTTSLocalStreamingVocoderScheduler(
                         self.vocoder_cuda_graph_capture_frames(),
                         min_free_gb=self.vocoder_cuda_graph_min_free_gb,
                     )
+                except VocoderGraphCaptureError:
+                    raise
                 except Exception:
+                    if current_platform.is_npu():
+                        raise
+                    else:
+                        pass
                     logger.exception(
                         "MOSS-Audio-Tokenizer vocoder CUDA-graph capture failed; "
                         "serving eager from this session"
@@ -521,9 +525,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             return session
 
     def warmup_now(self) -> None:
-        """Capture the codec-decode graphs at factory-build time: codec loaded, GPU quiescent, and
-        before the stage process is marked ready, so the serving loop never races a half-captured
-        graph. No-op without a CUDA codec; best-effort, degrades to eager."""
+        """Capture codec-decode graphs before readiness; unsupported devices stay eager."""
         if not self.vocoder_cuda_graph or not self.codec_on_cuda():
             return
         else:
@@ -531,12 +533,12 @@ class MossTTSLocalStreamingVocoderScheduler(
         session = self.ensure_session_graphed()
         if session.has_cuda_graph_runner():
             logger.info(
-                "MOSS-Audio-Tokenizer vocoder CUDA graphs captured at startup: T=%s",
+                "MOSS-Audio-Tokenizer vocoder device graphs captured at startup: T=%s",
                 session.captured_frames(),
             )
         else:
             logger.warning(
-                "MOSS-Audio-Tokenizer vocoder CUDA graphs did not seal at startup "
+                "MOSS-Audio-Tokenizer vocoder device graphs did not seal at startup "
                 "(low VRAM); eager vocoder"
             )
 
