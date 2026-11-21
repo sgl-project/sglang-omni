@@ -62,7 +62,7 @@ func (a *app) importForCommand(ctx context.Context, name string, data []byte, dr
 }
 
 // commandImported notes a command's import in the logs (the counts, not
-// the terms) and, when it saved terms, refreshes the page and says so.
+// the terms or errors), refreshes the page after a real run, and toasts a save.
 func (a *app) commandImported(res dictapi.Result, err error) {
 	what := "imported terms for the command line"
 	if res.DryRun {
@@ -71,12 +71,14 @@ func (a *app) commandImported(res dictapi.Result, err error) {
 	e := core.LogEntry{Time: time.Now(), Level: core.SeverityInfo, Source: dictionarySource,
 		Message: fmt.Sprintf("%s: %d new, %d updated, %d rows skipped", what, res.Added, res.Updated, res.Skipped)}
 	if err != nil {
-		e.Level, e.Message = core.SeverityWarning, what+": "+err.Error()
+		e.Level, e.Message = core.SeverityWarning, what+": failed"
 	}
 	a.logs.Append(e)
+	if !res.DryRun && (err != nil || res.Added+res.Updated > 0) {
+		a.loadDict()
+	}
 	if err != nil || res.DryRun || res.Added+res.Updated == 0 {
 		return
 	}
 	a.toast(importMessage(res))
-	a.loadDict()
 }

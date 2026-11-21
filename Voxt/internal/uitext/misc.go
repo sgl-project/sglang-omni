@@ -90,6 +90,8 @@ func LogSourceLabelFor(translator *i18n.Translator, s string) string {
 		return translator.T("App")
 	case helper.LogSource:
 		return translator.T("Helper")
+	case "dictionary":
+		return translator.T("Dictionary")
 	}
 	return s
 }

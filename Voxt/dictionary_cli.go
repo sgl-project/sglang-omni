@@ -26,10 +26,18 @@ FILE is CSV (term, aliases, note, enabled), text (.txt: a term per line,
 --dry-run says what the import would do and saves nothing.`
 
 func runDictionaryCLI(args []string) int {
-	return dictionaryCLI(args, os.Stdout, os.Stderr, filepath.Join(filepath.Dir(historySocketPath()), dictapi.SocketName))
+	return dictionaryCLI(args, os.Stdout, os.Stderr, filepath.Join(filepath.Dir(historySocketPath()), dictapi.SocketName), openDictionaryFile)
 }
 
-func dictionaryCLI(args []string, stdout, stderr io.Writer, socket string) int {
+func openDictionaryFile(path string) (io.ReadCloser, error) {
+	return os.Open(path)
+}
+
+func readDictionaryData(reader io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(reader, dictapi.MaxBytes+1))
+}
+
+func dictionaryCLI(args []string, stdout, stderr io.Writer, socket string, openFile func(string) (io.ReadCloser, error)) int {
 	if len(args) == 0 || args[0] != "import" {
 		fmt.Fprintln(stderr, dictionaryUsage)
 		return exitUsage
@@ -55,7 +63,18 @@ func dictionaryCLI(args []string, stdout, stderr io.Writer, socket string) int {
 		return exitUsage
 	}
 	in := files[0]
-	data, err := os.ReadFile(in)
+	file, err := openFile(in)
+	if err != nil {
+		fmt.Fprintf(stderr, "Cannot read %s: %v\n", in, err)
+		return exitUnreadable
+	}
+	data, readErr := readDictionaryData(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		err = readErr
+	} else {
+		err = closeErr
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "Cannot read %s: %v\n", in, err)
 		return exitUnreadable

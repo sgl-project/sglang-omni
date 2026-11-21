@@ -55,6 +55,8 @@ Audio settings	L	TestSessionMutesOutput	A changed microphone setting is checked 
 Audio settings	M	TestMacHelperMicrophoneSelection	none
 Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none
 Command-line transcription	L	TestTranscribeCLIFailures	none
+Command-line dictionary import	L	TestDictionaryCLIImports	none
+Command-line dictionary import	L	TestDictionaryCLIFailures	none
 In-app update	L	TestAppUpdated	The upgrade from 1.x has no automatic run
 In-app update	M	scripts/mac-update-e2e.sh	none
 First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionControls	none

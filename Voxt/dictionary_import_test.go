@@ -11,6 +11,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictapi"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
@@ -122,24 +123,289 @@ func TestImportDataConcurrent(t *testing.T) {
 	}
 }
 
+type importRaceStore struct {
+	libraryStore
+	dictionary store.Dictionary
+}
+
+func (s importRaceStore) Dictionary() store.Dictionary { return s.dictionary }
+
+type importRaceRepo struct {
+	store.Dictionary
+	mu                   sync.Mutex
+	metaMu               sync.Mutex
+	lockCount            int
+	firstPut             sync.Once
+	putStarted           chan struct{}
+	allowPut             chan struct{}
+	otherPut             chan struct{}
+	deleteStarted        chan struct{}
+	activateStarted      chan struct{}
+	deleteProfileStarted chan struct{}
+	deleteDone           chan struct{}
+	writeDone            chan struct{}
+	activateDone         chan struct{}
+	deleteProfileDone    chan struct{}
+	secondLock           chan struct{}
+}
+
+func (r *importRaceRepo) Lock() {
+	r.metaMu.Lock()
+	r.lockCount++
+	if r.lockCount == 2 {
+		close(r.secondLock)
+	}
+	r.metaMu.Unlock()
+	r.mu.Lock()
+}
+func (r *importRaceRepo) Unlock() { r.mu.Unlock() }
+func (r *importRaceRepo) Put(ctx context.Context, term store.Term) error {
+	first := false
+	r.firstPut.Do(func() {
+		first = true
+		close(r.putStarted)
+	})
+	if first {
+		<-r.allowPut
+	}
+	if !first {
+		close(r.otherPut)
+	}
+	err := r.Dictionary.Put(ctx, term)
+	if !first {
+		close(r.writeDone)
+	}
+	return err
+}
+
+func (r *importRaceRepo) Delete(ctx context.Context, id, profileID string) error {
+	close(r.deleteStarted)
+	err := r.Dictionary.Delete(ctx, id, profileID)
+	close(r.deleteDone)
+	return err
+}
+
+func (r *importRaceRepo) ActivateProfile(ctx context.Context, id string) error {
+	close(r.activateStarted)
+	err := r.Dictionary.ActivateProfile(ctx, id)
+	close(r.activateDone)
+	return err
+}
+
+func (r *importRaceRepo) DeleteProfile(ctx context.Context, id string) error {
+	close(r.deleteProfileStarted)
+	err := r.Dictionary.DeleteProfile(ctx, id)
+	close(r.deleteProfileDone)
+	return err
+}
+
+func importRace(t *testing.T) (*app, *importRaceRepo, store.Term) {
+	t.Helper()
+	a, _, _ := newTestApp(t)
+	term := store.Term{ID: "race", Term: "llm", Note: "kept", Enabled: true}
+	if err := a.lib.store.Dictionary().Put(context.Background(), term); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.lib.store.Dictionary().CreateProfile(context.Background(), store.DictionaryProfile{ID: "work", Name: "Work"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := &importRaceRepo{
+		Dictionary: a.lib.store.Dictionary(), putStarted: make(chan struct{}), allowPut: make(chan struct{}),
+		otherPut: make(chan struct{}), deleteStarted: make(chan struct{}), activateStarted: make(chan struct{}), deleteProfileStarted: make(chan struct{}),
+		deleteDone: make(chan struct{}), writeDone: make(chan struct{}), activateDone: make(chan struct{}), deleteProfileDone: make(chan struct{}), secondLock: make(chan struct{}),
+	}
+	a.lib.store = importRaceStore{libraryStore: a.lib.store, dictionary: repo}
+	return a, repo, term
+}
+
+func waitImportRace(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dictionary write did not finish")
+	}
+}
+
+func finishImportRace(t *testing.T, repo *importRaceRepo, importDone <-chan error, otherDone <-chan struct{}, otherLocked bool) {
+	t.Helper()
+	if otherLocked {
+		close(repo.allowPut)
+		waitImportRace(t, otherDone)
+	} else {
+		waitImportRace(t, otherDone)
+		close(repo.allowPut)
+	}
+	if err := <-importDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writerIsLocked(repo *importRaceRepo, started <-chan struct{}) bool {
+	select {
+	case <-repo.secondLock:
+		return true
+	case <-started:
+		return false
+	}
+}
+
+func TestImportDataDoesNotRecreateADeletedTerm(t *testing.T) {
+	a, repo, term := importRace(t)
+	importDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "race.csv", []byte("term,aliases\nllm,import alias\n"), false)
+		importDone <- err
+	}()
+	<-repo.putStarted
+	controllerDone := make(chan struct{})
+	go func() {
+		a.deleteTerm(term)
+		close(controllerDone)
+	}()
+	deleteLocked := writerIsLocked(repo, repo.deleteStarted)
+	finishImportRace(t, repo, importDone, repo.deleteDone, deleteLocked)
+	waitImportRace(t, controllerDone)
+	if _, ok := termsByName(t, repo)["llm"]; ok {
+		t.Fatal("the import recreated the term deleted while it was running")
+	}
+}
+
+func TestImportDataDoesNotOverwriteAPageEdit(t *testing.T) {
+	a, repo, term := importRace(t)
+	importDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "race.csv", []byte("term,aliases\nllm,import alias\n"), false)
+		importDone <- err
+	}()
+	<-repo.putStarted
+	term.Note = "edited by the user"
+	controllerDone := make(chan struct{})
+	go func() {
+		a.saveTerm(term, false)
+		close(controllerDone)
+	}()
+	saveLocked := writerIsLocked(repo, repo.otherPut)
+	finishImportRace(t, repo, importDone, repo.writeDone, saveLocked)
+	waitImportRace(t, controllerDone)
+	if got := termsByName(t, repo)["llm"].Note; got != "edited by the user" {
+		t.Fatalf("the import replaced the page edit with %q", got)
+	}
+}
+
+func TestImportDataDoesNotOverwriteAnAcceptedSuggestion(t *testing.T) {
+	a, repo, _ := importRace(t)
+	book := learn.NewBook(a.lib.store.Documents(), repo)
+	importDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "race.csv", []byte("term,aliases\nllm,import alias\n"), false)
+		importDone <- err
+	}()
+	<-repo.putStarted
+	acceptDone := make(chan error, 1)
+	go func() {
+		_, err := book.Accept(context.Background(), "suggestion", store.Term{Term: "llm", Aliases: []string{"accepted alias"}})
+		acceptDone <- err
+	}()
+	acceptLocked := writerIsLocked(repo, repo.otherPut)
+	finishImportRace(t, repo, importDone, repo.writeDone, acceptLocked)
+	if err := <-acceptDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := termsByName(t, repo)["llm"].Aliases; !slices.Contains(got, "accepted alias") {
+		t.Fatalf("the import dropped the accepted suggestion's aliases: %v", got)
+	}
+}
+
+func TestImportDataStaysInItsProfileWhenThePageSwitches(t *testing.T) {
+	a, repo, _ := importRace(t)
+	importDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "race.csv", []byte("term,aliases\nllm,import alias\n"), false)
+		importDone <- err
+	}()
+	<-repo.putStarted
+	controllerDone := make(chan struct{})
+	go func() {
+		a.switchDictionaryProfile("work")
+		close(controllerDone)
+	}()
+	switchLocked := writerIsLocked(repo, repo.activateStarted)
+	finishImportRace(t, repo, importDone, repo.activateDone, switchLocked)
+	waitImportRace(t, controllerDone)
+	if got := termsByName(t, repo); len(got) != 0 {
+		t.Fatalf("the import followed the profile switch: %v", got)
+	}
+	if err := repo.Dictionary.ActivateProfile(context.Background(), "default"); err != nil {
+		t.Fatal(err)
+	}
+	if got := termsByName(t, repo)["llm"].Aliases; !slices.Contains(got, "import alias") {
+		t.Fatalf("the default profile lost the import: %v", got)
+	}
+}
+
+func TestImportDataStaysInItsProfileWhenThePageDeletesIt(t *testing.T) {
+	a, repo, _ := importRace(t)
+	importDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "race.csv", []byte("term,aliases\nllm,import alias\n"), false)
+		importDone <- err
+	}()
+	<-repo.putStarted
+	controllerDone := make(chan struct{})
+	go func() {
+		a.deleteDictionaryProfile("default")
+		close(controllerDone)
+	}()
+	deleteLocked := writerIsLocked(repo, repo.deleteProfileStarted)
+	finishImportRace(t, repo, importDone, repo.deleteProfileDone, deleteLocked)
+	waitImportRace(t, controllerDone)
+	if got := termsByName(t, repo); len(got) != 0 {
+		t.Fatalf("the import wrote into the next active profile: %v", got)
+	}
+}
+
 func TestCommandImportedRefreshesOnlyWhenItSaved(t *testing.T) {
 	cases := []struct {
-		res   dictapi.Result
-		err   error
-		toast bool
+		res     dictapi.Result
+		err     error
+		toast   bool
+		refresh bool
 	}{
-		{dictapi.Result{Added: 1}, nil, true},
-		{dictapi.Result{Added: 1, DryRun: true}, nil, false},
-		{dictapi.Result{}, nil, false},
-		{dictapi.Result{}, errors.New("broken"), false},
+		{dictapi.Result{Added: 1}, nil, true, true},
+		{dictapi.Result{Added: 1, DryRun: true}, nil, false, false},
+		{dictapi.Result{}, nil, false, false},
+		{dictapi.Result{}, errors.New("broken"), false, true},
 	}
 	for _, c := range cases {
 		a, _, _ := newTestApp(t)
+		if err := a.lib.store.Dictionary().Put(context.Background(), store.Term{ID: "saved", Term: "Saved", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
 		a.toasts = nil
 		a.commandImported(c.res, c.err)
 		if got := len(a.toasts) > 0; got != c.toast {
 			t.Errorf("%+v %v: toast %v, want %v", c.res, c.err, got, c.toast)
 		}
+		if got := len(a.dv.list) == 1; got != c.refresh {
+			t.Errorf("%+v %v: refreshed %v, want %v", c.res, c.err, got, c.refresh)
+		}
+	}
+}
+
+func TestCommandImportedFailureDoesNotLogTheInput(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.commandImported(dictapi.Result{}, errors.New("private-file.csv: term PrivateSpelling"))
+	for _, entry := range a.logs.Tail(10, dictionarySource) {
+		if strings.Contains(entry.Message, "private-file") || strings.Contains(entry.Message, "PrivateSpelling") {
+			t.Fatalf("the log exposes the import error: %q", entry.Message)
+		}
+	}
+}
+
+func TestDictionaryLogSourceRegistered(t *testing.T) {
+	if !slices.Contains(logSources, dictionarySource) {
+		t.Fatalf("log sources %v do not include %q", logSources, dictionarySource)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 const logLines = 500
 
 // logSources are the filters of the logs view: "" every source.
-var logSources = []string{"", "app", helper.LogSource}
+var logSources = []string{"", "app", helper.LogSource, dictionarySource}
 
 // logsState is the logs' part of the app (main thread).
 type logsState struct {

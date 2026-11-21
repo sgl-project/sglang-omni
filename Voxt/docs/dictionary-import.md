@@ -36,4 +36,4 @@ When the import saves terms, Voxt refreshes the Dictionary page and shows the sa
 
 ## Privacy
 
-The command reads the file itself and sends its name and bytes to the running Voxt through a socket in `~/Library/Application Support/VoxtNew` that only your account can open (`dictionary.sock`, mode 0600, no network port), as `Voxt transcribe` does. Voxt reads none of your folders and answers only the counts. Its log notes the counts, not the terms. Files over 8 MB are refused.
+The command reads the file itself and sends its name and bytes to the running Voxt through a socket in `~/Library/Application Support/VoxtNew` that only your account can open (`dictionary.sock`, mode 0600, no network port), as `Voxt transcribe` does. Voxt reads none of your folders. A successful answer contains only the counts; a failed answer returns the file name and detailed error to the command so it can explain what went wrong. The app log contains only the counts and a generic failure, never the file name, terms, or detailed error. Files over 8 MB are refused.

@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
@@ -21,10 +20,13 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// importMu serializes merges: the page's import, the command's and the
-// previous Voxt's each read the terms then save them, and two at once
-// could add the same spelling twice.
-var importMu sync.Mutex
+// withDictionaryLock serializes a read-modify-write with every other
+// dictionary writer, so an import cannot overwrite a page edit or deletion.
+func withDictionaryLock(repo store.Dictionary, write func() error) error {
+	repo.Lock()
+	defer repo.Unlock()
+	return write()
+}
 
 // errImportFormat: the file is not one importTerms reads.
 var errImportFormat = errors.New("not a CSV or text list of terms, or a Voxt 1.x dictionary export")
@@ -100,8 +102,8 @@ func importData(ctx context.Context, repo store.Dictionary, name string, data []
 		res.Added, res.Updated, err = mergeImported(ctx, repo, terms)
 		return res, err
 	}
-	importMu.Lock()
-	defer importMu.Unlock()
+	repo.Lock()
+	defer repo.Unlock()
 	have, err := repo.List(ctx, "")
 	if err != nil {
 		return dictapi.Result{}, err
@@ -113,8 +115,8 @@ func importData(ctx context.Context, repo store.Dictionary, name string, data []
 // mergeImported merges imported terms into the dictionary: a file import
 // and the previous Voxt's import share it.
 func mergeImported(ctx context.Context, repo store.Dictionary, terms []store.Term) (added, updated int, err error) {
-	importMu.Lock()
-	defer importMu.Unlock()
+	repo.Lock()
+	defer repo.Unlock()
 	have, err := repo.List(ctx, "")
 	if err != nil {
 		return 0, 0, err

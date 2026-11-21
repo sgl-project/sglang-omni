@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func dictionaryServer(t *testing.T, imp func(ctx context.Context, name string, d
 
 func runDictionary(socket string, args ...string) (code int, stdout, stderr string) {
 	var o, e strings.Builder
-	code = dictionaryCLI(args, &o, &e, socket)
+	code = dictionaryCLI(args, &o, &e, socket, openDictionaryFile)
 	return code, o.String(), e.String()
 }
 
@@ -76,6 +77,42 @@ func TestDictionaryCLIImports(t *testing.T) {
 	code, out, _ = runDictionary(socket, "import", "--dry-run", file)
 	if code != exitOK || !strings.HasPrefix(out, "Would import: 2 new") {
 		t.Errorf("dry run: code %d out %q", code, out)
+	}
+}
+
+type dictionaryCountingReader struct {
+	remaining int64
+	read      int64
+}
+
+func (r *dictionaryCountingReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	r.remaining -= int64(len(p))
+	r.read += int64(len(p))
+	return len(p), nil
+}
+
+func (r *dictionaryCountingReader) Close() error { return nil }
+
+func TestReadDictionaryDataStopsAtLimit(t *testing.T) {
+	reader := &dictionaryCountingReader{remaining: 2 * dictapi.MaxBytes}
+	var stdout, stderr strings.Builder
+	code := dictionaryCLI([]string{"import", "terms.csv"}, &stdout, &stderr, "unused", func(string) (io.ReadCloser, error) {
+		return reader, nil
+	})
+	if code != exitInterrupted || !strings.Contains(stderr.String(), "larger than 8 MB") {
+		t.Fatalf("code %d, stderr %q, want the oversize-file error", code, stderr.String())
+	}
+	if reader.read != int64(dictapi.MaxBytes+1) {
+		t.Fatalf("read %d bytes, want only the oversize sentinel %d", reader.read, dictapi.MaxBytes+1)
 	}
 }
 

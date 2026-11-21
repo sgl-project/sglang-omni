@@ -52,6 +52,10 @@
       {
         "code": "helper",
         "label": "Helper"
+      },
+      {
+        "code": "dictionary",
+        "label": "Dictionary"
       }
     ],
     "source": "All sources",
