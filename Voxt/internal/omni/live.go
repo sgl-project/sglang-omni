@@ -37,6 +37,8 @@ type live struct {
 	conn   *websocket.Conn // nil: a model without a realtime API (the batch preview)
 	out    chan []byte     // messages for the socket's writer
 
+	cancelBatchPreview context.CancelFunc
+
 	// language and bias are the Final's: the model's language hint ("":
 	// it detects) and the context bias.
 	language string
@@ -45,8 +47,21 @@ type live struct {
 	mu        sync.Mutex
 	audio     []byte        // everything sent, for the Final
 	queued    int           // bytes of audio in out
-	previewed int           // bytes of audio written to the socket (the batch preview: in its last text)
+	previewed int           // bytes of audio the preview covers: written to the socket, or dropped by the cut (the batch preview: in its last text)
 	preview   bool          // the socket still takes audio
+	cut       *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
+	writeDone chan struct{} // closed when write returns (the queue is drained)
+	// idle, cap 1, gets a token whenever the writer empties the queue
+	// (a test waits on it and re-checks queued under s.mu).
+	idle chan struct{}
+	// lastRecv is when the server last said anything (s.mu): the
+	// wrap-up calls a quiet server unresponsive.
+	lastRecv time.Time
+	// finalOnly: finalPass owns s.out, including after a LiveResult
+	// fallback. Only then may the wrap-up close s.out.
+	finalOnly bool
+	// writeGate, set by a test only, holds the writer before each write.
+	writeGate <-chan struct{}
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
 	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
@@ -54,6 +69,9 @@ type live struct {
 	events    chan asr.Event
 	asm       assembler
 	once      sync.Once // release
+	// wrapUpOnce runs the preview's wrap-up once (live_wrapup.go): a
+	// failed Final and a Salvage asked while the Final runs share it.
+	wrapUpOnce sync.Once
 	// completed takes the server's whole text at transcription.completed
 	// (LiveResult, live_result.go); readDone closes when read returns.
 	completed chan string
@@ -111,13 +129,19 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn,
 		language: hint, bias: a.spec.ASR.contextBias(req.Hints, req.Prompt),
 		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
-		completed: make(chan string, 1), readDone: make(chan struct{})}
+		completed: make(chan string, 1), readDone: make(chan struct{}), writeDone: make(chan struct{}),
+		idle: make(chan struct{}, 1), lastRecv: time.Now()}
 	if conn != nil {
+		if a.spec.ASR.SpeechOnly && a.vad != nil {
+			s.cut = newPauseCut()
+		}
 		go s.write()
 		go s.read()
 	} else {
 		s.tick = make(chan struct{}, 1)
-		go s.previewBatch()
+		previewContext, cancelPreview := context.WithCancel(sctx)
+		s.cancelBatchPreview = cancelPreview
+		go s.previewBatch(previewContext)
 	}
 	// With LiveResult the socket's text is the result: no Final to shorten.
 	if a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil) {
@@ -203,6 +227,14 @@ func (s *live) Send(pcm []byte) error {
 	if !s.preview {
 		return nil
 	}
+	if s.cut != nil {
+		var dropped int
+		pcm, dropped = s.cut.push(pcm)
+		s.previewed += dropped
+		if len(pcm) == 0 {
+			return nil
+		}
+	}
 	if s.queued+len(pcm) > maxQueued {
 		s.stopPreview("the preview fell behind the microphone")
 		return nil
@@ -225,11 +257,19 @@ func (s *live) stopPreview(why string) {
 	}
 }
 
-// write sends the queued messages in order.
+// write sends the queued messages in order. A closed out is drained
+// first: a failed Final delivers the recording's tail before Salvage.
 func (s *live) write() {
+	defer close(s.writeDone)
 	for {
 		select {
-		case msg := <-s.out:
+		case msg, ok := <-s.out:
+			if !ok {
+				return
+			}
+			if s.writeGate != nil {
+				<-s.writeGate
+			}
 			n := audioBytes(msg)
 			if err := s.conn.Write(s.ctx, websocket.MessageText, msg); err != nil {
 				s.mu.Lock()
@@ -242,6 +282,12 @@ func (s *live) write() {
 			s.mu.Lock()
 			s.queued -= n
 			s.previewed += n
+			if s.queued == 0 {
+				select {
+				case s.idle <- struct{}{}:
+				default:
+				}
+			}
 			s.mu.Unlock()
 		case <-s.ctx.Done():
 			return
@@ -249,7 +295,8 @@ func (s *live) write() {
 	}
 }
 
-// audioBytes is the PCM an append message carries.
+// audioBytes is the PCM an append message carries. DecodedLen counts
+// the base64 padding as data, so it goes.
 func audioBytes(msg []byte) int {
 	var m struct {
 		Audio string `json:"audio"`
@@ -257,7 +304,11 @@ func audioBytes(msg []byte) int {
 	if json.Unmarshal(msg, &m) != nil {
 		return 0
 	}
-	return base64.StdEncoding.DecodedLen(len(m.Audio))
+	pad := 0
+	for i := len(m.Audio) - 1; i >= 0 && m.Audio[i] == '='; i-- {
+		pad++
+	}
+	return base64.StdEncoding.DecodedLen(len(m.Audio)) - pad
 }
 
 // read turns the socket's segments into partials, and passes the whole
@@ -274,13 +325,16 @@ func (s *live) read() {
 			s.mu.Unlock()
 			return
 		}
+		s.mu.Lock()
+		s.lastRecv = time.Now()
+		s.mu.Unlock()
 		switch ev.Type {
 		case "transcription.completed":
-			s.completed <- ev.Text
+			s.completed <- s.a.plainText(ev.Text)
 			return
 		case "transcription.segment":
 			s.mu.Lock()
-			text, ok := s.asm.apply(ev.Index, ev.Segment, ev.Text, ev.Final)
+			text, ok := s.asm.apply(ev.Index, ev.Segment, s.a.plainText(ev.Text), ev.Final)
 			if ok && !s.finished {
 				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 			}
@@ -308,22 +362,31 @@ func (s *live) Finish() error {
 	}
 	s.finished = true
 	pcm := s.audio
+	if s.cancelBatchPreview != nil {
+		s.cancelBatchPreview()
+	}
 	if s.req.LiveResult && s.preview {
 		s.mu.Unlock()
 		go s.finishLive(pcm)
 		return nil
 	}
 	s.preview = false
+	s.finalOnly = true
 	s.mu.Unlock()
 	go s.finalPass(pcm)
 	return nil
 }
 
 // finalPass recognises pcm, the whole recording, once more (what the
-// pieces left of it) and ends the stream with the result.
+// pieces left of it) and ends the stream with the result. The Final
+// starts at once: the wrap-up (draining the preview's queue and awaiting
+// the server's recognition of it) matters only when the stream's text is
+// the fallback, so it runs only for Salvage — the Final failed, or it is
+// still running when Salvage is asked — not on every Stop. The socket
+// stays open while the Final runs, so the tail's segments still arrive.
 func (s *live) finalPass(pcm []byte) {
 	if s.conn != nil {
-		s.conn.CloseNow()
+		defer s.conn.CloseNow()
 	}
 	start := time.Now()
 	language := s.language
@@ -361,6 +424,11 @@ func (s *live) finalPass(pcm []byte) {
 	if err != nil {
 		if s.ctx.Err() != nil {
 			err = asr.NetError(s.ctx, Provider, s.ctx.Err())
+		} else {
+			// Salvage weighs the preview: deliver the tail still queued
+			// for the socket and await its recognition first (bounded,
+			// so a stuck server cannot stall the error either).
+			s.wrapUpPreview()
 		}
 		s.end(asr.Event{Kind: asr.EventError, Err: err})
 		return
@@ -400,8 +468,17 @@ func (s *live) logFinal(pcm []byte, done, pieces int, busy, took time.Duration, 
 
 // Salvage is the best text the stream has when its Final failed or took
 // too long (asr.Salvager): the pieces' when they cover at least what the
-// preview heard, else the preview's; "" for none.
+// preview heard, else the preview's; "" for none. Asked after Finish, it
+// first wraps the preview up (once, outside s.mu, as a failed Final
+// does), so a Final still running when its time ran out does not lose
+// the tail either.
 func (s *live) Salvage() string {
+	s.mu.Lock()
+	finished := s.finished
+	s.mu.Unlock()
+	if finished {
+		s.wrapUpPreview()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	preview := s.asm.text()

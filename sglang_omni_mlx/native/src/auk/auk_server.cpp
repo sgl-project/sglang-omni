@@ -27,8 +27,9 @@
 
 #include "auk/auk_model.h"
 #include "auk/auk_request.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/speech_service.h"
+#include "common/asr_service.h"
+#include "common/generation.h"
+#include "common/speech_service.h"
 
 namespace {
 
@@ -48,7 +49,7 @@ public:
         model_(model_directory, text_encoder_directory, dtype) {}
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     SpeechServedModel::AddHandlers(context, worker);
     mg_set_request_handler(context, "/generate$", HandleGenerate, this);
   }
@@ -85,7 +86,7 @@ private:
                const speech_service::SpeechContext &context) {
       const auto check_cancelled = [&context] {
         if (context.cancel.load()) {
-          throw qwen3_asr::TranscriptionCancelled();
+          throw omni_common::GenerationCancelled();
         } else {
         }
         context.check_deadline();

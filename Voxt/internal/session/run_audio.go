@@ -10,6 +10,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dsp"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -19,13 +21,19 @@ func (r *run) streamer() (asr.Streamer, bool) {
 	return st, ok && r.svc.ASR.Caps().Stream
 }
 
-// hints are the dictionary's terms for the speech model (dict.Hints:
-// the enabled ones, the most recently changed first).
+// hints are the dictionary's terms for the speech model (SpeechHints).
 func (r *run) hints() []string {
-	if !r.settings.Dictionary.Enabled || !r.settings.Dictionary.ASRHints {
+	return SpeechHints(r.settings, r.terms)
+}
+
+// SpeechHints are the dictionary's terms for the speech model when the
+// settings send them (dict.Hints: the enabled ones, the most recently
+// changed first). Meetings use it too.
+func SpeechHints(s settings.Settings, terms []store.Term) []string {
+	if !s.Dictionary.Enabled || !s.Dictionary.ASRHints {
 		return nil
 	}
-	return dict.Hints(r.terms)
+	return dict.Hints(terms)
 }
 
 // speechContext is the free-text prompt for the speech model: the global
@@ -184,6 +192,8 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 					text := ev.Text
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
 					r.hearPartial(text)
+				case asr.EventPiece:
+					r.hearPiece(ev.Text)
 				case asr.EventFinal:
 					res := ev.Result
 					res.Text = ev.Text

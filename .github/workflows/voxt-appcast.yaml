@@ -12,10 +12,24 @@ name: Voxt Appcast
 # hardwareRequirements arm64: without it Voxt 1.x on an Intel Mac would get
 # a Voxt that does not open there.
 # Voxt/scripts/release-appcast.sh makes the entry, the notes and the cask.
+# A separate voxt2 job publishes the signed MyGo manifest of every stable or
+# beta GitHub release to Voxt 2's own feed; Voxt 1.x never reads those URLs.
 
 on:
-  # Not on a published release until the update service outputs
-  # sparkle:hardwareRequirements (Voxt/docs/release.md).
+  # Voxt 1.x stays manual until the service outputs sparkle:hardwareRequirements.
+  # A published release feeds only Voxt 2's separate MyGo manifests automatically.
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to offer, e.g. voxt-v2.1.1-beta.20261115.1"
+        required: true
+        type: string
+      channel:
+        description: "Voxt 2 manifest channel: beta or stable"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -39,6 +53,8 @@ permissions:
 jobs:
   appcast:
     name: Voxt appcast
+    # A Voxt Beta run by hand calls this workflow as workflow_dispatch too; only a run of Voxt Appcast itself offers a release to Voxt 1.x.
+    if: github.event_name == 'workflow_dispatch' && github.workflow == 'Voxt Appcast'
     runs-on: macos-15
     timeout-minutes: 30
     environment: voxt-release
@@ -143,7 +159,7 @@ jobs:
 
           # The update window shows the published release notes, as for Voxt 1.x.
           body="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body --jq .body)"
-          if [[ -z "${body//[[:space:]]/}" ]]; then
+          if [[ ! "$body" =~ [^[:space:]] ]]; then
             echo "::error::Write the notes of $TAG on its release page, then run Voxt Appcast for it"
             exit 1
           else
@@ -152,9 +168,9 @@ jobs:
           release_notes_by_locale="$(Voxt/scripts/release-appcast.sh notes-by-locale <<< "$body")"
 
           prepare="$(jq '{action: "prepareUpload"} + del(.sparkleVersion)' <<< "$ENTRY" \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)"
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::prepareUpload was refused: $prepare"; exit 1; }
           zip_upload="$(jq -r '.data.uploads.zip.url // empty' <<< "$prepare")"
           dmg_upload="$(jq -r '.data.uploads.dmg.url // empty' <<< "$prepare")"
           if [[ -z "$zip_upload" || -z "$dmg_upload" ]]; then
@@ -174,13 +190,13 @@ jobs:
             '. + {sha256: $sha256, size: $size, edSignature: $edSignature,
               releaseNotes: $notes.en, releaseNotesByLocale: $notes,
               releaseURL: $releaseURL, publishedAt: $publishedAt}' <<< "$ENTRY" \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)"
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::update was refused: $reply"; exit 1; }
           echo "$reply"
 
-          # Sparkle skips an entry that needs arm64 on an Intel Mac. Until the update service keeps the
-          # entry's hardwareRequirements (its reply, or the build's item in an appcast), stop here.
+          # Sparkle skips an entry that needs arm64 on an Intel Mac. Only the
+          # rendered appcast proves that Voxt 1.x will see the requirement.
           appcasts="$(curl --fail --silent --show-error "${retry[@]}" \
             https://voxt.actnow.dev/updates/beta/appcast.xml https://voxt.actnow.dev/updates/stable/appcast.xml)"
           if kept="$(Voxt/scripts/release-appcast.sh hardware-kept "$BUILD_NUMBER" "$reply" 2>&1 <<< "$appcasts")"; then
@@ -192,7 +208,7 @@ jobs:
 
           jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
             '{channel: $channel, version: $version, mode: "replace-latest"}' \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/appcast" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/appcast" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "Content-Type: application/json" --data-binary @-
           echo
 
@@ -212,6 +228,111 @@ jobs:
             fi
           done
           echo "::error::The $CHANNEL appcast's first item is not build $BUILD_NUMBER with sparkle:hardwareRequirements $HARDWARE: if only the requirement is missing, Voxt 1.x on an Intel Mac gets a version it cannot open"
+          exit 1
+
+  voxt2:
+    name: Voxt 2 update manifest
+    # Manual runs only until a real install, restart and rollback of the
+    # published update is verified end to end; publishing a release must
+    # not push an unverified update to production by itself.
+    if: github.event_name != 'release' && startsWith(github.event.release.tag_name || inputs.tag, 'voxt-v')
+    runs-on: macos-15
+    timeout-minutes: 15
+    environment: voxt-release
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      CHANNEL: ${{ github.event.release.prerelease && 'beta' || (inputs.channel || 'stable') }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve the Voxt 2 release
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^voxt-v([0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+(\.[0-9]+)?)?)$ ]]; then
+            echo "::error::The tag must be voxt-vX.Y.Z or voxt-vX.Y.Z-beta.N[.N], got $TAG"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          release="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft,isPrerelease)"
+          if [[ "$(jq -r .isDraft <<< "$release")" == "true" ]]; then
+            echo "::error::$TAG is still a draft"
+            exit 1
+          fi
+          if [[ "$(jq -r .isPrerelease <<< "$release")" == "true" && "$CHANNEL" != "beta" ]]; then
+            echo "::error::A prerelease belongs on Voxt 2's beta feed, not $CHANNEL"
+            exit 1
+          fi
+          if [[ "$CHANNEL" != "beta" && "$CHANNEL" != "stable" ]]; then
+            echo "::error::The Voxt 2 feed channel is beta or stable, got $CHANNEL"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Voxt 2 $version for the $CHANNEL update manifest"
+
+      - name: Download and check the update manifest
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/voxt2"
+          cd "$RUNNER_TEMP/voxt2"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" \
+            -p update-darwin-arm64.json -p update-darwin-arm64.json.sha256
+          shasum -a 256 -c update-darwin-arm64.json.sha256
+          asset_base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/"
+          jq -e --arg version "$VERSION" --arg repo "$GITHUB_REPOSITORY" --arg base "$asset_base" '
+            def assets: [.url] + [.deltas[]?.url] + [.previous[]?.url];
+            .version == $version and .url != "" and .signature != "" and .size > 0
+              and all(assets[]; startswith("https://github.com/" + $repo + "/releases/download/"))
+              and all([.url] + [.deltas[]?.url][]; startswith($base))' update-darwin-arm64.json > /dev/null
+
+      - name: Publish the Voxt 2 manifest
+        id: publish
+        env:
+          VOXT_UPDATE_API_BASE: ${{ secrets.VOXT_UPDATE_API_BASE }}
+          VOXT_RELEASE_API_KEY: ${{ secrets.VOXT_RELEASE_API_KEY }}
+        run: |
+          set -euo pipefail
+          api="${VOXT_UPDATE_API_BASE%/}"
+          # Without --fail, curl still retries 408, 429 and 5xx but returns a 4xx at once.
+          retry=(--retry 6 --retry-all-errors --retry-delay 10 --retry-max-time 180)
+          reply_path="$RUNNER_TEMP/voxt2/reply"
+          status="$(jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
+            --slurpfile manifest "$RUNNER_TEMP/voxt2/update-darwin-arm64.json" \
+            '{channel: $channel, version: $version, mode: "replace-latest", manifest: $manifest[0]}' \
+            | curl --silent --show-error "${retry[@]}" -o "$reply_path" -w '%{http_code}' -X POST "$api/api/pkg/voxt2/update" \
+              -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::The update service did not answer the voxt2 update"; exit 1; }
+          reply="$(cat "$reply_path")"
+          # The update service answers a route it does not serve yet with its website's 404 page, not JSON.
+          if [[ "$status" == 404 ]] && ! jq -e 'type == "object"' <<< "$reply" > /dev/null 2>&1; then
+            echo "::warning::The update service has no POST /api/pkg/voxt2/update yet, so Voxt 2's $CHANNEL feed does not offer $VERSION (Voxt/docs/release.md §0)"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$reply"
+          if [[ "$status" != 2?? ]] || ! jq -e '.ok == true' <<< "$reply" > /dev/null; then
+            echo "::error::voxt2 update was refused (HTTP $status)"
+            exit 1
+          fi
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check the Voxt 2 feed
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          feed="$(Voxt/scripts/release-appcast.sh feed-url "$CHANNEL")"
+          for _ in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error "$feed" -o "$RUNNER_TEMP/voxt2/published.json" \
+              && jq -e --slurpfile expected "$RUNNER_TEMP/voxt2/update-darwin-arm64.json" '. == $expected[0]' \
+                "$RUNNER_TEMP/voxt2/published.json" > /dev/null; then
+              echo "The $CHANNEL Voxt 2 feed offers $VERSION"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::The $CHANNEL Voxt 2 feed does not serve the signed manifest of $VERSION"
           exit 1
 
   homebrew:

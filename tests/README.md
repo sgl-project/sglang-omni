@@ -445,10 +445,10 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   `ASR_CI_MODEL` environment variable, then `fun`.
 - CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
   model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
-  GitHub CI runs the Omni stage with `run-omni-ci`. The
+  GitHub CI runs the Omni stage with `run-omni-ci`, or with one of the
   mutually exclusive `run-qwen3-omni-30b-a3b-instruct` and
-  `run-minicpm-o-4.5` labels select the model; without either, the stage
-  draws one at random. A manual dispatch takes the same labels through its
+  `run-minicpm-o-4.5` labels, which also select the model; with neither,
+  the stage draws one at random. A manual dispatch takes the same labels through its
   `ci_labels` input.
   Model selection does not imply calibrated performance or quality thresholds.
   MiniCPM uses two complete one-GPU workers behind the Rust router, with
@@ -688,7 +688,7 @@ that happened to contain an older version of the test.
   - talker behavior, including partial-prefix startup gate, the real
     `_build_talker_request_data` propagation contract (input_ids,
     tts_pad_embed, sampling_seed, fallback chunks, thinker_done), and the
-    `_rollback_decode_prep_after_skip` idempotency contract, projected prefill
+    per-row decode readiness (a row without its next text is excluded from the step with its KV and rejoins after it), projected prefill
     tensor storage/slicing, decode feedback/text FIFO consumption, and replay
     of generated-token input embeds after decode retract
   - `test_talker_codec_coalesce.py`: CPU frame-threshold, snapshot

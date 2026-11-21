@@ -1,258 +1,316 @@
 package main
 
-// The overlay's size (overlay.go): the face's width and height in each mode,
-// from its texts as the view measured them, or guessed until it did; the
-// work area it shows in.
+// Overlay text measurement keys and deferred view measurement. The session
+// owner stores posted measurements and computes the native face size.
 
 import (
 	"math"
 	"slices"
-	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// overlaySize is the face's size for mode, and whether its width is the
-// measured texts' (not guessed).
-func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
-	switch mode {
-	case ovAnswer:
-		return a.cardSize() // overlay_card.go
-	case ovNotice:
-		if a.notice == nil {
-			return layout.NoticeW, layout.PillH, true
-		}
-		tw, exact := a.ovTextWidth(noticeText(a.notice.text))
-		return layout.NoticeWidth(tw, a.notice.action != actionNone), layout.PillH, exact
-	case ovRecording, ovWorking:
-		scene, exact := float32(0), true
-		if name := uitext.SceneShort(a.sess); name != "" {
-			scene, exact = a.ovTextWidth(sceneText(name))
-		}
-		row, rowExact := recordingPillRow(a.sess, mode == ovRecording, mode == ovRecording && a.prefs.Overlay.ShowTime, scene, a.ovTextWidth)
-		exact = exact && rowExact
-		if canSkip(a.sess, mode) {
-			w, ok := a.ovTextWidth(skipText())
-			row += layout.Gap + 2*10 + int(math.Ceil(float64(w))) // cardCapsule's padding
-			exact = exact && ok
-		}
-		if a.pillThinks(mode) {
-			w, ok := a.ovTextWidth(pillThinkText(a.sess.Thinking))
-			row += layout.Gap + 2*10 + int(math.Ceil(float64(w)))
-			exact = exact && ok
-		}
-		text, hint := pillLine(a.pillSession())
-		if a.prefs.Overlay.LiveLines {
-			// Wide from the start, before any text: the face does not jump
-			// from the small pill at the first word (the user, 11-09).
-			if text == "" || hint {
-				return layout.LinesW, layout.LinesHeight(0), true
-			}
-			th, known := a.ovTextHeight(liveLinesKey(text))
-			return layout.LinesW, layout.LinesHeight(th), known
-		}
-		if text == "" {
-			return row + 2*layout.PillPadX, layout.PillH, exact
-		}
-		tw, known := a.ovTextWidth(liveTextKey(text))
-		w := layout.LiveWidth(row, tw)
-		if a.ov.live.id == a.sess.ID {
-			// Within a session the face only grows: a revised text, or the
-			// model's draft after the speech, does not make it jump back.
-			w = max(w, a.ov.live.w)
-		}
-		return w, layout.LiveH, exact && known
-	}
-	return layout.PillW, layout.PillH, true
-}
-
-// ovSized is a text the face's size depends on, as it draws: wrapped at
-// wrap DIPs (0: one line).
 type ovSized struct {
 	text   string
 	size   float32
 	weight int
 	wrap   float32
+	font   string
 }
 
-func (k ovSized) span() ui.Span {
-	return ui.Span{Text: k.text, Size: k.size, Weight: k.weight}
+func (key ovSized) span() ui.Span {
+	return ui.Span{Text: key.text, Size: key.size, Weight: key.weight, Font: key.font}
 }
 
-// ovMeasured is a text's size, measured.
 type ovMeasured struct{ w, h float32 }
 
 func liveTextKey(text string) ovSized {
-	return ovSized{text, layout.LiveSize, layout.LiveWeight, 0}
+	return ovSized{text, layout.LiveSize, layout.LiveWeight, 0, ""}
 }
 
-// liveLinesKey is the live text wrapped in lines (Overlay.LiveLines).
 func liveLinesKey(text string) ovSized {
-	return ovSized{text, layout.LiveSize, layout.LiveWeight, layout.LinesTextW}
+	return ovSized{text, layout.LiveSize, layout.LiveWeight, layout.LinesTextW, ""}
 }
 
-func sceneText(name string) ovSized { return ovSized{name, layout.SceneSize, 0, 0} }
+func sceneText(name string) ovSized { return ovSized{name, layout.SceneSize, 0, 0, ""} }
 
-func kindTitleText(k store.Kind) ovSized { return ovSized{uitext.KindTitle(k), 12, 500, 0} }
+func kindTitleText(title string) ovSized { return ovSized{title, 12, 500, 0, ""} }
 
-func recordingPillRow(s session.Snapshot, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
-	modeLabel := float32(0)
+func capsuleText(text string) ovSized { return ovSized{text, 11, 600, 0, ""} }
+
+func durationText(text string) ovSized { return ovSized{text: text, size: 12, font: "monospace"} }
+
+func recordingPillRow(pill *sessionPillViewState, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
+	row := layout.RowWidth(scene)
 	exact := true
-	if label && s.Waiting == session.WaitNone {
-		w, ok := measure(kindTitleText(s.Kind))
-		modeLabel = w + float32(layout.Gap)
+	if showTime {
+		width, ok := measure(durationText(pill.ElapsedText))
+		row += layout.Gap + int(math.Ceil(float64(width)))
 		exact = ok
 	}
-	return layout.RowWidth(showTime, scene) + int(math.Ceil(float64(modeLabel))), exact
-}
-
-// recordingPillFaceW is the face width of a recording pill without live text.
-func recordingPillFaceW(s session.Snapshot, showTime bool) int {
-	scene := float32(0)
-	if name := uitext.SceneShort(s); name != "" {
-		scene = float32(textWidth(name, float64(layout.SceneSize)))
+	modeLabel := float32(0)
+	if label && !pill.Starting {
+		width, ok := measure(kindTitleText(pill.Title))
+		modeLabel = width + float32(layout.Gap)
+		exact = exact && ok
 	}
-	row, _ := recordingPillRow(s, true, showTime, scene, func(k ovSized) (float32, bool) {
-		return float32(textWidth(k.text, float64(k.size))), true
-	})
-	return row + 2*layout.PillPadX
+	return row + int(math.Ceil(float64(modeLabel))), exact
 }
 
-func noticeText(text string) ovSized { return ovSized{text, layout.NoticeSize, 0, 0} }
+func noticeText(text string) ovSized { return ovSized{text, layout.NoticeSize, 0, 0, ""} }
 
-// ovTextWidth is how wide k draws: as measured, or guessed (false)
-// until the overlay's view measured it.
-func (a *app) ovTextWidth(k ovSized) (float32, bool) {
-	m, ok := a.ovText(k)
-	return m.w, ok
+type sessionOverlayLayoutStyle struct {
+	Position  string  `json:"position"`
+	Opacity   float64 `json:"opacity"`
+	Radius    float64 `json:"radius"`
+	Margin    float64 `json:"margin"`
+	ShowTime  bool    `json:"show_time"`
+	LiveLines bool    `json:"live_lines"`
 }
 
-// ovTextHeight is how high k draws, wrapped at k.wrap: as measured, or
-// guessed (false) until the overlay's view measured it.
-func (a *app) ovTextHeight(k ovSized) (float32, bool) {
-	m, ok := a.ovText(k)
-	return m.h, ok
+type sessionOverlayLayoutMemory struct {
+	LiveID       string
+	LiveWidth    int
+	StreamHeight float32
 }
 
-func (a *app) ovText(k ovSized) (ovMeasured, bool) {
-	if a.measureHook != nil {
-		w, h := a.measureHook(k)
-		return ovMeasured{w, h}, true
+type sessionOverlayLayoutInput struct {
+	Measure        func(ovSized) (ovMeasured, bool)
+	WorkArea       mygo.Rectangle
+	Overlay        sessionOverlayLayoutStyle
+	Memory         sessionOverlayLayoutMemory
+	Measured       map[ovSized]ovMeasured
+	PreviewHeights map[string]int
+	Reveal         bool
+}
+
+const streamGrowStep = 4 * 19
+
+// sessionOverlayLayoutFor computes the native face model without owning an app or a window.
+func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
+	model := sessionOverlayLayout{
+		Radius: float32(input.Overlay.Radius), Alpha: float32(min(max(input.Overlay.Opacity, 0.5), 1)),
+		ShowTime: input.Overlay.ShowTime, LiveLines: input.Overlay.LiveLines, Top: input.Overlay.Position == "top",
+		Reveal: input.Reveal, Measured: input.Measured, Exact: true,
+		LiveID: input.Memory.LiveID, LiveWidth: input.Memory.LiveWidth, StreamHeight: input.Memory.StreamHeight,
 	}
-	if m, ok := a.ov.textW[k]; ok {
-		return m, true
+	measureWidth := func(key ovSized) (float32, bool) {
+		measured, exact := input.Measure(key)
+		return measured.w, exact
 	}
-	w, h := guessText(k)
-	return ovMeasured{w, h}, false
-}
-
-// guessText guesses k's size: its width (textWidth), and its lines
-// (each paragraph's width over k.wrap) of 1.3 times its size.
-func guessText(k ovSized) (float32, float32) {
-	w := float32(textWidth(k.text, float64(k.size)))
-	line := float32(math.Ceil(float64(k.size) * 1.3))
-	if k.wrap <= 0 {
-		return w, line
+	measureHeight := func(key ovSized) (float32, bool) {
+		measured, exact := input.Measure(key)
+		return measured.h, exact
 	}
-	lines := 0
-	for _, p := range strings.Split(k.text, "\n") {
-		pw := float32(textWidth(p, float64(k.size)))
-		lines += max(1, int(math.Ceil(float64(pw/k.wrap))))
-	}
-	return min(w, k.wrap), float32(lines) * line
-}
-
-// overlayTexts are the texts the face's size depends on in its mode.
-func (a *app) overlayTexts() []ovSized {
-	var out []ovSized
-	switch a.ov.mode {
+	switch state.Mode {
+	case ovAnswer:
+		card := state.Card
+		if card == nil {
+			model.Width, model.Height = layout.CardSizes[0].W, layout.CardChrome
+			break
+		}
+		width := layout.CardSizes[card.SizeStep].Width(input.WorkArea, input.Overlay.Margin)
+		bodyMax := sessionOverlayCardBodyMax(card, input.WorkArea.Height, input.Overlay.Margin)
+		body, streamHeight, exact := sessionOverlayCardBodyHeight(state.SessionID, card, measureHeight, input.PreviewHeights, bodyMax, input.Memory.StreamHeight, width)
+		model.Width, model.Height, model.Exact, model.StreamHeight = width, layout.CardChrome+sessionCardAttachmentHeight(card)+body, exact, streamHeight
+		if card.Message != "" {
+			model.Height += layout.CardMsgGap + layout.CardMsgH
+		}
 	case ovNotice:
-		if a.notice != nil {
-			out = append(out, noticeText(a.notice.text))
+		model.Width, model.Height = layout.NoticeW, layout.PillH
+		if notice := state.Notice; notice != nil {
+			textWidth, exact := measureWidth(noticeText(notice.Text))
+			model.Width, model.Exact = layout.NoticeWidth(textWidth, notice.Action != actionNone), exact
 		}
 	case ovRecording, ovWorking:
-		if name := uitext.SceneShort(a.sess); name != "" {
-			out = append(out, sceneText(name))
+		pill := &state.Pill
+		scene := float32(0)
+		if pill.SceneText != "" {
+			scene, model.Exact = measureWidth(sceneText(pill.SceneText))
 		}
-		if a.ov.mode == ovRecording && a.sess.Waiting == session.WaitNone {
-			out = append(out, kindTitleText(a.sess.Kind))
+		row, rowExact := recordingPillRow(pill, state.Mode == ovRecording, state.Mode == ovRecording && input.Overlay.ShowTime, scene, measureWidth)
+		model.Exact = model.Exact && rowExact
+		if pill.CanSkip {
+			width, exact := measureWidth(capsuleText(pill.SkipLabel))
+			row += layout.Gap + 2*10 + int(math.Ceil(float64(width)))
+			model.Exact = model.Exact && exact
 		}
-		if canSkip(a.sess, a.ov.mode) {
-			out = append(out, skipText())
+		if pill.CanThink {
+			width, exact := measureWidth(capsuleText(pill.ThinkingLabel))
+			row += layout.Gap + 2*10 + int(math.Ceil(float64(width)))
+			model.Exact = model.Exact && exact
 		}
-		if a.pillThinks(a.ov.mode) {
-			out = append(out, pillThinkText(a.sess.Thinking))
+		text, hint := pill.LiveText, pill.LiveHint
+		if input.Overlay.LiveLines {
+			model.Width = layout.LinesW
+			if text == "" || hint {
+				model.Height, model.Exact = layout.LinesHeight(0), true
+				break
+			}
+			textHeight, exact := measureHeight(liveLinesKey(text))
+			model.Height, model.Exact = layout.LinesHeight(textHeight), exact
+			break
 		}
-		if text, hint := pillLine(a.pillSession()); text != "" && a.prefs.Overlay.LiveLines && !hint {
-			out = append(out, liveLinesKey(text))
-		} else if text != "" {
-			out = append(out, liveTextKey(text))
+		model.Height = layout.PillH
+		if text == "" {
+			model.Width = row + 2*layout.PillPadX
+			break
+		}
+		model.Height = layout.LiveH
+		textWidth, exact := measureWidth(liveTextKey(text))
+		model.Width = layout.LiveWidth(row, textWidth)
+		if model.LiveID == state.SessionID {
+			model.Width = max(model.Width, model.LiveWidth)
+		}
+		model.Exact = model.Exact && exact
+	default:
+		model.Width, model.Height = layout.PillW, layout.PillH
+	}
+	if model.Height == layout.LiveH && state.Mode != ovAnswer {
+		if model.LiveID != state.SessionID {
+			model.LiveID, model.LiveWidth = state.SessionID, 0
+		}
+		if model.Exact {
+			model.LiveWidth = max(model.LiveWidth, model.Width)
+		}
+	} else if model.LiveID != state.SessionID {
+		model.LiveID, model.LiveWidth = "", 0
+	}
+	if state.Mode != ovAnswer {
+		model.Radius = min(model.Radius, float32(model.Height)/2)
+	}
+	return model
+}
+
+func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBlock, measureHeight func(ovSized) (float32, bool), previewHeight, width int) (float32, bool) {
+	text, title, quote := sessionCardBlockText(block, width)
+	height, exact := measureHeight(text)
+	if previewHeight > 0 {
+		height, exact = float32(previewHeight), true
+	}
+	if block.Kind == sessionCardProblem {
+		height = max(height, layout.ProblemIcon)
+	}
+	if block.Kind == sessionCardBubble {
+		height += 2 * layout.BubblePadY
+		if title.text != "" {
+			titleHeight, ok := measureHeight(title)
+			height, exact = height+titleHeight+layout.BubbleTitleGap, exact && ok
+		}
+		if quote.text != "" {
+			quoteHeight, ok := measureHeight(quote)
+			height, exact = height+quoteGap+quoteHeight, exact && ok
+			if block.Cut {
+				height += quoteGap + quoteToggleH
+			}
+		}
+	}
+	return height, exact
+}
+
+func sessionCardAttachmentHeight(card *sessionCardViewState) int {
+	if card != nil && (card.Attachment != "" || card.ThumbnailCount > 0 || card.InputCount > 0) {
+		return layout.CardAttachH
+	}
+	return 0
+}
+
+func sessionOverlayCardBodyMax(card *sessionCardViewState, workAreaHeight int, margin float64) int {
+	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome - sessionCardAttachmentHeight(card)
+	if card != nil && card.Message != "" {
+		room -= layout.CardMsgGap + layout.CardMsgH
+	}
+	limit := max(room, layout.CardBodyMax)
+	if card != nil {
+		limit = max(limit-sessionCardAttachmentHeight(card), 0)
+	}
+	return limit
+}
+
+func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, measureHeight func(ovSized) (float32, bool), previewHeights map[string]int, bodyMax int, previousStreamHeight float32, width int) (int, float32, bool) {
+	var height float32
+	exact := true
+	streamHeight := previousStreamHeight
+	for index := 0; index < sessionCardBlockCount(card); index++ {
+		block := sessionCardBlockAt(card, index)
+		blockIndex := index
+		if !card.Conversation {
+			blockIndex = -1
+		}
+		previewHeight := previewHeights[sessionCardPreviewKey(sessionID, card, blockIndex)]
+		blockHeight, ok := sessionOverlayBlockHeight(card, block, measureHeight, previewHeight, width)
+		height += sessionCardBlockGap(block, index) + blockHeight
+		exact = exact && ok
+	}
+	if card.Writing || card.Conversation && card.Busy && !card.Recording {
+		height = float32(math.Ceil(float64(height/streamGrowStep))) * streamGrowStep
+		if exact {
+			streamHeight = height
+		} else if streamHeight > 0 {
+			height = streamHeight
+		}
+	}
+	return min(int(math.Ceil(float64(height))), bodyMax), streamHeight, exact
+}
+
+func sessionOverlayTexts(state *sessionOverlayViewState, layoutState sessionOverlayLayout) []ovSized {
+	var texts []ovSized
+	switch state.Mode {
+	case ovNotice:
+		if state.Notice != nil {
+			texts = append(texts, noticeText(state.Notice.Text))
+		}
+	case ovRecording, ovWorking:
+		pill := &state.Pill
+		if pill.SceneText != "" {
+			texts = append(texts, sceneText(pill.SceneText))
+		}
+		if state.Mode == ovRecording && !pill.Starting {
+			texts = append(texts, kindTitleText(pill.Title))
+		}
+		if state.Mode == ovRecording && layoutState.ShowTime {
+			texts = append(texts, durationText(pill.ElapsedText))
+		}
+		if pill.CanSkip {
+			texts = append(texts, capsuleText(pill.SkipLabel))
+		}
+		if pill.CanThink {
+			texts = append(texts, capsuleText(pill.ThinkingLabel))
+		}
+		if pill.LiveText != "" && layoutState.LiveLines && !pill.LiveHint {
+			texts = append(texts, liveLinesKey(pill.LiveText))
+		} else if pill.LiveText != "" {
+			texts = append(texts, liveTextKey(pill.LiveText))
 		}
 	case ovAnswer:
-		out = cardTexts(a.cardNow()) // overlay_card.go
+		for index := 0; index < sessionCardBlockCount(state.Card); index++ {
+			text, title, quote := sessionCardBlockText(sessionCardBlockAt(state.Card, index), layoutState.Width)
+			texts = append(texts, text)
+			if title.text != "" {
+				texts = append(texts, title)
+			}
+			if quote.text != "" {
+				texts = append(texts, quote)
+			}
+		}
 	}
-	return out
+	return texts
 }
 
-// overlayMeasure measures, in the overlay's build, the texts the face's
-// size was guessed from; the next turn of the main loop keeps their
-// widths and fits the face to them (the build pass resizes nothing).
-// A window that shows again stays transparent until then: the fitting
-// is posted before the reveal.
-func (a *app) overlayMeasure(c *ui.Context) {
+func sessionOverlayMeasure(context *ui.Context, state *sessionOverlayViewState, layoutState sessionOverlayLayout, onMeasured func([]sessionOverlayMeasurement)) {
+	var measurements []sessionOverlayMeasurement
 	var keys []ovSized
-	var sizes []ovMeasured
-	for _, k := range a.overlayTexts() {
-		if _, ok := a.ov.textW[k]; ok || slices.Contains(keys, k) {
+	for _, key := range sessionOverlayTexts(state, layoutState) {
+		if _, ok := layoutState.Measured[key]; ok || slices.Contains(keys, key) {
 			continue
 		}
-		w, h := c.MeasureText(k.wrap, k.span())
-		keys, sizes = append(keys, k), append(sizes, ovMeasured{w, h})
+		width, height := context.MeasureText(key.wrap, key.span())
+		keys = append(keys, key)
+		measurements = append(measurements, sessionOverlayMeasurement{Key: key, Width: width, Height: height})
 	}
-	if len(keys) == 0 {
-		return
+	if len(measurements) > 0 && onMeasured != nil {
+		onMeasured(measurements)
 	}
-	a.post(func() {
-		if a.ov.textW == nil || len(a.ov.textW) > 256 {
-			a.ov.textW = map[ovSized]ovMeasured{}
-		}
-		for i, k := range keys {
-			a.ov.textW[k] = sizes[i]
-		}
-		a.overlayRestyle()
-	})
-}
-
-// textWidth guesses how wide text is at size DIPs: a wide (CJK) letter
-// takes the size, any other about 0.56 of it; a little more than less.
-func textWidth(text string, size float64) int {
-	w := 0.0
-	for _, r := range text {
-		switch {
-		case uitext.WideRune(r):
-			w += size
-		case r == ' ' || r == 'i' || r == 'l' || r == '.' || r == ',' || r == ':':
-			w += 0.32 * size
-		default:
-			w += 0.58 * size
-		}
-	}
-	return int(math.Ceil(w))
-}
-
-// ovTestArea is the work area the overlay takes without a display
-// (tests): a 1440 × 900 one under a menu bar.
-var ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 1440, Height: 875}
-
-// overlayArea is the work area of the display under the pointer.
-func (a *app) overlayArea() mygo.Rectangle {
-	if !a.overlayNative() {
-		return ovTestArea
-	}
-	return mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea
 }

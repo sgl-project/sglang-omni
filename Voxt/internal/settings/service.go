@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -24,13 +25,29 @@ type Documents interface {
 // Scales are the UI scales Appearance offers (90, 100, 110 and 125 %).
 var Scales = []float64{0.9, 1, 1.1, 1.25}
 
-// Themes are the values of Appearance.Theme.
-var Themes = []string{"system", "light", "dark"}
+const (
+	ThemeSystem      = "system"
+	ThemeLight       = "light"
+	ThemeDark        = "dark"
+	ThemeTransparent = "transparent"
+	DefaultPalette   = "#0d9384"
+
+	// Window transparency applies in transparent mode and is measured in percent.
+	MinWindowTransparency     = 5
+	DefaultWindowTransparency = 8
+	MaxWindowTransparency     = 15
+)
+
+// Themes are the choices in the appearance picker.
+var Themes = []string{ThemeSystem, ThemeDark, ThemeLight, ThemeTransparent}
 
 // Sidebar width bounds, DIPs at 100 %.
 const (
 	MinSidebarWidth = 170
 	MaxSidebarWidth = 320
+
+	MinHistoryDetailWidth = 290
+	MaxHistoryDetailWidth = 350
 )
 
 // Store implements Service over Documents.
@@ -142,8 +159,13 @@ func normalize(s Settings) Settings {
 	s.Version = Version
 	ap := &s.Appearance
 	if !slices.Contains(Themes, ap.Theme) {
-		ap.Theme = "system"
+		ap.Theme = ThemeSystem
 	}
+	ap.Palette = strings.ToLower(strings.TrimSpace(ap.Palette))
+	if _, err := strconv.ParseUint(strings.TrimPrefix(ap.Palette, "#"), 16, 24); err != nil || len(ap.Palette) != 7 || ap.Palette[0] != '#' {
+		ap.Palette = DefaultPalette
+	}
+	ap.WindowTransparency = min(max(ap.WindowTransparency, MinWindowTransparency), MaxWindowTransparency)
 	best := 1.0 // snap the scale to the nearest offered one
 	for _, v := range Scales {
 		if abs(v-ap.Scale) < abs(best-ap.Scale) {
@@ -153,6 +175,9 @@ func normalize(s Settings) Settings {
 	ap.Scale = best
 	if ap.SidebarWidth != 0 {
 		ap.SidebarWidth = min(max(ap.SidebarWidth, MinSidebarWidth), MaxSidebarWidth)
+	}
+	if ap.HistoryDetailWidth != 0 {
+		ap.HistoryDetailWidth = min(max(ap.HistoryDetailWidth, MinHistoryDetailWidth), MaxHistoryDetailWidth)
 	}
 	ap.ClosedSections = uniq(ap.ClosedSections)
 	s.General.MainLanguage = strings.TrimSpace(s.General.MainLanguage)

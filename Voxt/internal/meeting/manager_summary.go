@@ -36,12 +36,7 @@ func (m *Manager) GenerateMeetingSummary(ctx context.Context, meetingID string) 
 	}
 	record := TranscriptRecord(live, names)
 	tpl := m.cfg.Settings().Prompt
-	mainLang := "English"
-	if m.cfg.MainLanguage != nil {
-		if v := strings.TrimSpace(m.cfg.MainLanguage()); v != "" {
-			mainLang = v
-		}
-	}
+	mainLang := m.mainLanguage()
 	if activeID == meetingID {
 		m.mu.Lock()
 		m.state = StateFinishing
@@ -111,4 +106,18 @@ func segmentSourceToMeeting(src store.SegmentSource) Source {
 		return SourceSystem
 	}
 	return SourceMic
+}
+
+// transcriptLanguage stands in for an unset main language, so a meeting
+// held in Chinese is not summarized in a fixed English (#4011).
+const transcriptLanguage = "the language most of the transcript is in"
+
+// mainLanguage is the language summaries and follow-up answers are written in.
+func (m *Manager) mainLanguage() string {
+	if m.cfg.MainLanguage != nil {
+		if v := strings.TrimSpace(m.cfg.MainLanguage()); v != "" {
+			return v
+		}
+	}
+	return transcriptLanguage
 }

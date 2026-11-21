@@ -12,208 +12,103 @@ package main
 // there is no Automation permission to ask for.
 
 import (
-	"time"
-
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// System Settings panes.
-const (
-	privacyMicrophone    = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-	privacyAccessibility = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-	privacySpeech        = "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
-	privacyAudioCapture  = "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
-)
-
-// permissionsState is what the section last read.
-type permissionsState struct {
-	permSys permission.System
-	perms   struct {
-		mic     permission.State
-		speech  permission.State
-		access  bool
-		checked bool
-	}
-}
-
-// permState is a permission.State from the helper's (proto.Perm*).
-func permState(s string) permission.State {
-	switch s {
-	case proto.PermGranted:
-		return permission.Granted
-	case proto.PermDenied:
-		return permission.Denied
-	case proto.PermRestricted:
-		return permission.Restricted
-	case proto.PermNotDetermined:
-		return permission.NotDetermined
-	}
-	return permission.Unknown
-}
-
-// helperPerms takes the helper's answer to permissions.*.
-func (a *app) helperPerms(r proto.PermissionsResult, err error) {
-	if err != nil {
-		return // the section keeps what internal/permission read
-	}
-	a.perms.mic, a.perms.access, a.perms.checked = permState(r.Microphone), r.Accessibility, true
-	if r.SpeechRecognition != "" { // else an older helper: keep what internal/permission read
-		a.perms.speech = permState(r.SpeechRecognition)
-	}
-}
-
-func (a *app) openPermissions() {
-	if a.permSys == nil {
-		a.permSys = permission.Native()
-	}
-}
-
-// recheckPermissions reads the permissions: at once here (cheap system
-// calls), then as the helper sees them.
-func (a *app) recheckPermissions() {
-	a.perms.mic, a.perms.access, a.perms.checked = a.permSys.Microphone(), a.permSys.AccessibilityTrusted(), true
-	a.perms.speech = a.permSys.SpeechRecognition()
-	if a.hstatus.Has(proto.MethodPermissionsStatus) {
-		helperCall(a, proto.MethodPermissionsStatus, nil, 5*time.Second, a.helperPerms)
-	}
-}
-
-// askPermission shows macOS's prompt for a permission
-// (proto.Permission*), through the helper, else from here; then (nil:
-// nothing) runs once it was answered.
-func (a *app) askPermission(which string, then func()) {
-	answered := func() {
-		if then != nil {
-			then()
-		}
-	}
-	if a.hstatus.Has(proto.MethodPermissionsRequest) {
-		helperCall(a, proto.MethodPermissionsRequest, proto.PermissionsRequestParams{Permission: which}, 5*time.Minute, func(r proto.PermissionsResult, err error) {
-			a.helperPerms(r, err)
-			answered()
-		})
-		return
-	}
-	sys := a.permSys
-	recheck := func(bool) { a.post(func() { a.recheckPermissions(); answered() }) }
-	switch which {
-	case proto.PermissionAccessibility:
-		sys.PromptAccessibility()
-		a.recheckPermissions()
-		answered()
-	case proto.PermissionSpeechRecognition:
-		a.async(func() { sys.RequestSpeechRecognition(recheck) })
-	default:
-		a.async(func() { sys.RequestMicrophone(recheck) })
-	}
-}
-
-// askRequired asks for the permissions Voxt needs and lacks, in turn:
-// the microphone's prompt, then, once it was answered, Accessibility's
-// (which adds Voxt to its list in System Settings). One denied before
-// shows no prompt: its row's Open System Settings is the way.
-func (a *app) askRequired() {
-	ask := func() {
-		if !a.perms.access {
-			a.askPermission(proto.PermissionAccessibility, nil)
-		}
-	}
-	if a.perms.mic == permission.NotDetermined {
-		a.askPermission(proto.PermissionMicrophone, ask)
-		return
-	}
-	ask()
-}
-
-// openPrivacy opens a pane of System Settings.
-func (a *app) openPrivacy(c *ui.Context, url string) {
-	if a.win == nil {
-		c.Services().OpenURL(url)
-		return
-	}
-	go mygo.Shell.OpenExternal(url)
+type permissionsActions interface {
+	askRequired()
+	requestPermission(which string)
+	recheckPermissions()
+	openPrivacy(services permissionServices, url string)
 }
 
 // permissionsSettings is the Permissions section of the settings dialog.
-func (a *app) permissionsSettings(c *ui.Context) {
+// The dialog is too narrow for a row's status and buttons beside its name,
+// so they go under it on every row, not only on rows that happen to wrap.
+func permissionsSettings(c *ui.Context, state permissionsViewState, actions permissionsActions) {
+	permissionRows(c, state, actions, settingRowUnder)
+}
+
+// permissionRows lists the permissions, each a row made by row.
+func permissionRows(c *ui.Context, state permissionsViewState, actions permissionsActions, row func(c *ui.Context, key, title, desc string, control func())) {
 	t := c.Theme()
-	if !a.perms.checked {
-		a.recheckPermissions()
-	}
-	badge := func(text string, ok bool) {
-		if ok {
-			statusMark(c, icons.CheckCircle, t.Success, text)
+	badge := func(permission permissionRowViewState) {
+		if !permission.Known {
+			statusMark(c, icons.InfoCircle, tok(t).Text2, permission.Status).Tooltip(i18n.T("macOS does not let apps read this permission. Check it in System Settings."))
+		} else if permission.Allowed {
+			statusMark(c, icons.CheckCircle, t.Success, permission.Status)
 		} else {
-			statusMark(c, icons.DangerTriangle, t.Warning, text)
+			statusMark(c, icons.DangerTriangle, t.Warning, permission.Status)
 		}
 	}
-	if a.perms.mic == permission.NotDetermined || !a.perms.access {
+	if state.AskRequired {
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
-				a.askRequired()
+				actions.askRequired()
 			}
 		})
 	}
 	sectionTitle(c, i18n.T("Required"))
 
-	micText, micOK := uitext.PermissionText(a.perms.mic)
-	settingRow(c, "perm-mic", i18n.T("Microphone"), "", func() {
-		badge(micText, micOK)
-		if a.perms.mic == permission.NotDetermined {
+	row(c, "perm-mic", i18n.T("Microphone"), "", func() {
+		badge(state.Microphone)
+		if state.Microphone.Ask {
 			if ghostButton(c.Key("perm-mic-ask"), i18n.T("Ask")).Clicked() {
-				a.askPermission(proto.PermissionMicrophone, nil)
+				actions.requestPermission(state.Microphone.PermissionID)
 			}
 		}
-		if !micOK {
+		if state.Microphone.Open {
 			if ghostIconButton(c.Key("perm-mic-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-				a.openPrivacy(c, privacyMicrophone)
+				actions.openPrivacy(c.Services(), state.Microphone.SettingsURL)
 			}
 		}
 	})
-	accText, accOK := i18n.T("Not allowed"), a.perms.access
-	if accOK {
-		accText = i18n.T("Allowed")
-	}
-	settingRow(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results, read the selected text and the browser tab's address, and use single keys like Right ⌥ as shortcuts."), func() {
-		badge(accText, accOK)
-		if !accOK {
+	row(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results, read the selected text and the browser tab's address, and use single keys like Right ⌥ as shortcuts."), func() {
+		badge(state.Accessibility)
+		if state.Accessibility.Ask {
 			if ghostButton(c.Key("perm-access-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
-				a.askPermission(proto.PermissionAccessibility, nil)
+				actions.requestPermission(state.Accessibility.PermissionID)
 			}
+		}
+		if state.Accessibility.Open {
 			if ghostIconButton(c.Key("perm-access-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-				a.openPrivacy(c, privacyAccessibility)
+				actions.openPrivacy(c.Services(), state.Accessibility.SettingsURL)
 			}
 		}
 	})
 	sectionTitle(c, i18n.T("Optional"))
-	settingRow(c, "perm-system-audio", i18n.T("System audio recording (for meetings)"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
-		if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-			a.openPrivacy(c, privacyAudioCapture)
-		}
-	})
-	speechText, speechOK := uitext.PermissionText(a.perms.speech)
-	settingRow(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Needed only for System dictation."), func() {
-		badge(speechText, speechOK)
-		if a.perms.speech == permission.NotDetermined {
-			if ghostButton(c.Key("perm-speech-ask"), i18n.T("Ask")).Clicked() {
-				a.askPermission(proto.PermissionSpeechRecognition, nil)
+	row(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+		// macOS has no public read for this permission.
+		badge(state.SystemAudio)
+		if state.SystemAudio.Ask {
+			if ghostButton(c.Key("perm-system-audio-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
+				actions.requestPermission(state.SystemAudio.PermissionID)
 			}
 		}
-		if !speechOK {
+		if state.SystemAudio.Open {
+			if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
+				actions.openPrivacy(c.Services(), state.SystemAudio.SettingsURL)
+			}
+		}
+	})
+	row(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Needed only for System dictation."), func() {
+		badge(state.SpeechRecognition)
+		if state.SpeechRecognition.Ask {
+			if ghostButton(c.Key("perm-speech-ask"), i18n.T("Ask")).Clicked() {
+				actions.requestPermission(state.SpeechRecognition.PermissionID)
+			}
+		}
+		if state.SpeechRecognition.Open {
 			if ghostIconButton(c.Key("perm-speech-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-				a.openPrivacy(c, privacySpeech)
+				actions.openPrivacy(c.Services(), state.SpeechRecognition.SettingsURL)
 			}
 		}
 	})
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 		if secondaryIconButton(c.Key("perm-recheck"), icons.Refresh, i18n.T("Check again")).Label(i18n.T("Check again")).Clicked() {
-			a.recheckPermissions()
+			actions.recheckPermissions()
 		}
 		infoTip(c.Key("perm-note"), i18n.T("After changing a permission, you may need to reopen Voxt."))
 	})

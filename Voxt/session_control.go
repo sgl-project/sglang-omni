@@ -87,8 +87,11 @@ func (a *app) startSession(req session.StartRequest) *sessionNotice {
 // startSessionID is startSession that also returns the session's id ("" when
 // none started), so a Try area can tell its own session from any other.
 func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) {
-	if a.mgr == nil || a.sess.State.Live() {
+	if a.mgr == nil {
 		return "", nil
+	}
+	if a.bgID != "" && a.bgSess.State.Live() && (req.Kind != store.KindTranscribe || req.Try) {
+		return "", nil // only an ordinary Transcribe may run beside the background answer
 	}
 	if n := a.sessionBlocker(req.Kind); n != nil {
 		if !req.Try {
@@ -99,12 +102,32 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 	if n := a.speechWaits(req.Kind); n != nil { // Translate: only when it comes to speech
 		req.SpeechWait = n.text
 	}
-	if len(req.Previous) == 0 {
-		a.answer = answerCard{}
+	if a.sess.State.Live() {
+		// A Transcribe starts beside a streaming Rewrite or Translate
+		// answer: the answer finishes in the background (wall 116).
+		// Anything else waits, as before, a try too: it would clear the
+		// card. The answer backgrounds only once the session can start,
+		// or a refused start would leave a.sess frozen on the answer's
+		// last live snapshot.
+		if req.Kind != store.KindTranscribe || req.Try || !a.backgroundAnswer() {
+			return "", nil
+		}
+	}
+	if a.box.open && !req.Box && !(req.Kind == store.KindTranscribe && !req.Try && a.boxAnswered()) {
+		// A session that is not the box's replaces it; a Transcribe
+		// leaves the card with its answer alone (wall 116).
+		a.closeBox()
+	}
+	// A Transcribe leaves the answer card alone: it stays where it is
+	// (wall 116); any other new session sets it aside (#4013), and a try
+	// on a settings page clears it, as before.
+	if len(req.Previous) == 0 && (req.Kind != store.KindTranscribe || req.Try) {
+		a.setAside(req.Try)
 	}
 	a.notice = nil
 	id, err := a.mgr.Start(req)
 	if err != nil {
+		a.resurface()  // no session took the card's place
 		return "", nil // a session runs already
 	}
 	return id, nil
@@ -117,6 +140,7 @@ func (a *app) startTry(kind store.Kind) (string, *sessionNotice) {
 
 // stopSession stops the recording (the shortcut, the menu bar).
 func (a *app) stopSession() {
+	a.closeLangMenu()
 	if a.mgr != nil && a.sess.State == session.Recording {
 		a.mgr.Stop(a.sess.ID)
 	}
@@ -140,8 +164,9 @@ func (a *app) skipLLM() {
 // stopLLM ends the answer streaming into the card where it is; the card
 // keeps it (session.Manager's StopLLM).
 func (a *app) stopLLM() {
+	a.closeLangMenu()
 	if a.mgr != nil {
-		a.mgr.StopLLM(a.sess.ID)
+		a.mgr.StopLLM(a.cardSnapshot().ID)
 	}
 }
 
@@ -150,7 +175,7 @@ func (a *app) toggleTranscribe() {
 	switch {
 	case a.sess.State == session.Recording:
 		a.stopSession()
-	case !a.sess.State.Live():
+	case !a.sess.State.Live() || a.answerBackgroundable():
 		a.startTranscribe(a.front, "", false)
 	}
 }

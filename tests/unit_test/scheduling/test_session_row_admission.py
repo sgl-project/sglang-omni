@@ -447,6 +447,84 @@ def test_native_prefill_bypasses_first_turn_when_only_retained_rows_remain(
     assert plan.batch_to_run is not None
     assert plan.batch_to_run.reqs == expected
     assert scheduler.waiting_queue == [fresh]
+    assert (
+        scheduler.session_bridge.units_by_request_id[fresh.rid].capacity_wait_started_at
+        is not None
+    )
+    assert all(
+        scheduler.session_bridge.units_by_request_id[req.rid].capacity_wait_started_at
+        is None
+        for req in (first, second)
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("continuation_aware_admission", [True, False])
+def test_native_prefill_probes_single_untried_waiter_after_full_batch(
+    native_runtime_context: None, continuation_aware_admission: bool
+) -> None:
+    """A full batch must not strand an eligible session that was not tried."""
+    with get_context().override_server_args(page_size=4):
+        pool = AdmissionScheduler(
+            request_rows=4,
+            kv_pool_tokens=24,
+            device="cuda",
+            page_size=4,
+            continuation_aware_admission=continuation_aware_admission,
+        )
+        (row,) = pool.req_to_token_pool.alloc_rows(1)
+        positions = pool.token_to_kv_pool_allocator.alloc(4)
+        assert positions is not None
+        pool.req_to_token_pool.write((row, slice(0, 4)), positions)
+        peer = Req(
+            rid="running",
+            origin_input_text="",
+            origin_input_ids=array("q", [1, 2, 3, 4]),
+            sampling_params=SamplingParams(max_new_tokens=4),
+        )
+        peer.sampling_params.normalize(None)
+        peer.kv = ReqKvInfo(req_pool_idx=row, kv_committed_len=4, kv_allocated_len=4)
+        pool.running_batch.reqs.append(peer)
+        for session_id in ("first", "second"):
+            pool.open_session(session_id, holds_row=False)
+        first = pool.append_unit(
+            "first-req", "first", is_enqueued=True, prompt_tokens=5, max_new_tokens=4
+        )
+        second = pool.append_unit(
+            "second-req", "second", is_enqueued=True, prompt_tokens=1, max_new_tokens=1
+        )
+        for request in (first, second):
+            request.sampling_params.normalize(None)
+        scheduler = native_prefill_scheduler(pool)
+        scheduler.new_token_ratio_tracker.current = 1.0
+        scheduler.session_admission_timeout_seconds = 30.0
+        assert (
+            scheduler.session_bridge.check_session_capacity(
+                second.rid,
+                running_request_ids=frozenset({peer.rid}),
+                new_token_ratio=1.0,
+            )
+            is None
+        )
+
+        plan = scheduler.get_new_batch_prefill(scheduler.running_batch)
+        assert plan.batch_to_run.reqs == [first]
+        assert scheduler.waiting_queue == [second]
+        assert plan.running_batch.batch_is_full
+        assert scheduler.req_to_token_pool.available_size() == 2
+
+        first.output_ids.append(1)
+        plan.running_batch.reqs.append(first)
+        plan = scheduler.get_new_batch_prefill(plan.running_batch)
+        assert plan.batch_to_run is None
+        unit = scheduler.session_bridge.units_by_request_id[second.rid]
+        assert unit.capacity_wait_started_at is not None
+        started_at = unit.capacity_wait_started_at
+        scheduler.new_token_ratio_tracker.current = 0.0
+        plan = scheduler.get_new_batch_prefill(plan.running_batch)
+        assert plan.batch_to_run.reqs == [second]
+        assert unit.capacity_wait_started_at == started_at
 
 
 @pytest.mark.accelerator
@@ -490,6 +568,19 @@ def test_native_prefill_bypasses_turn_that_does_not_fit_the_kv_budget(
     assert plan.batch_to_run is not None
     assert plan.batch_to_run.reqs == [continuation]
     assert scheduler.waiting_queue == [fresh]
+    if first_is_session:
+        assert (
+            scheduler.session_bridge.units_by_request_id[
+                fresh.rid
+            ].capacity_wait_started_at
+            is not None
+        )
+    assert (
+        scheduler.session_bridge.units_by_request_id[
+            continuation.rid
+        ].capacity_wait_started_at
+        is None
+    )
 
 
 def test_retry_prefill_discards_rejected_ignore_eos_budget(
@@ -498,7 +589,13 @@ def test_retry_prefill_discards_rejected_ignore_eos_budget(
     """A rejected fixed-length request must not reserve KV against later candidates."""
     pool_state = AdmissionScheduler(request_rows=4, kv_pool_tokens=16)
     pool_state.tree_cache.disable = True
-    adder = SessionRetryPrefillAdder(
+    rejected_ids = []
+
+    class RecordingRetryPrefillAdder(SessionRetryPrefillAdder):
+        def on_capacity_wait(self, request_id: str) -> None:
+            rejected_ids.append(request_id)
+
+    adder = RecordingRetryPrefillAdder(
         page_size=1,
         tree_cache=pool_state.tree_cache,
         token_to_kv_pool_allocator=pool_state.token_to_kv_pool_allocator,
@@ -526,6 +623,7 @@ def test_retry_prefill_discards_rejected_ignore_eos_budget(
     assert adder.add_one_req(rejected, False, None) == AddReqResult.CONTINUE
     assert adder.add_one_req(accepted, False, None) == AddReqResult.CONTINUE
     assert adder.can_run_list == [accepted]
+    assert rejected_ids == [rejected.rid]
 
 
 @pytest.mark.parametrize("raise_on_retry", [False, True])
@@ -550,7 +648,9 @@ def test_native_prefill_retry_restores_queued_and_requeued_requests(
     def native_prefill(scheduler: OmniScheduler, batch: ScheduleBatch) -> NextBatchPlan:
         calls.append(list(scheduler.waiting_queue))
         if len(calls) == 2:
-            assert scheduler.get_prefill_adder_class() is SessionRetryPrefillAdder
+            assert issubclass(
+                scheduler.get_prefill_adder_class(), SessionRetryPrefillAdder
+            )
             scheduler.waiting_queue.append(requeued)
             if raise_on_retry:
                 raise RuntimeError("native prefill failed")
@@ -852,11 +952,8 @@ def test_native_prefill_selects_an_extra_reply_after_running_reservation_estimat
     assert candidate.sampling_params.max_new_tokens == 4
 
 
-@pytest.fixture
-def pressured_scheduler(
-    native_runtime_context: None,
-) -> OmniScheduler:
-    pool_state = AdmissionScheduler(request_rows=4, kv_pool_tokens=16)
+def make_pressured_scheduler(kv_pool_tokens: int) -> OmniScheduler:
+    pool_state = AdmissionScheduler(request_rows=4, kv_pool_tokens=kv_pool_tokens)
     for session_id in ("survivor", "victim"):
         pool_state.open_session(session_id, holds_row=True)
         request = pool_state.append_unit(
@@ -930,6 +1027,11 @@ def pressured_scheduler(
     return scheduler
 
 
+@pytest.fixture
+def pressured_scheduler(native_runtime_context: None) -> OmniScheduler:
+    return make_pressured_scheduler(kv_pool_tokens=16)
+
+
 def test_real_decode_shortage_releases_one_session_and_preserves_the_survivor(
     pressured_scheduler: OmniScheduler,
 ) -> None:
@@ -986,19 +1088,29 @@ def test_session_capacity_kill_reestimates_running_output_demand(
     )
     unit = bridge.accept(
         StagePayload("candidate", OmniRequest(None), {}),
-        SessionOperation("append", identity, ("talker",), TimedChunk("text", 0, 0, 0, {})),
+        SessionOperation(
+            "append", identity, ("talker",), TimedChunk("text", 0, 0, 0, {})
+        ),
     )
     unit.session_request = Req(
         "candidate", "", array("q", [1, 2, 3]), SamplingParams(max_new_tokens=1)
     )
-    assert bridge.check_session_capacity(
-        "candidate", running_request_ids=frozenset({"survivor"}), new_token_ratio=0.1
-    ) is None
-    assert bridge.check_session_capacity(
-        "candidate",
-        running_request_ids=frozenset({"survivor"}),
-        new_token_ratio=scheduler.new_token_ratio_tracker.current,
-    ) == "session KV capacity exhausted"
+    assert (
+        bridge.check_session_capacity(
+            "candidate",
+            running_request_ids=frozenset({"survivor"}),
+            new_token_ratio=0.1,
+        )
+        is None
+    )
+    assert (
+        bridge.check_session_capacity(
+            "candidate",
+            running_request_ids=frozenset({"survivor"}),
+            new_token_ratio=scheduler.new_token_ratio_tracker.current,
+        )
+        == "session KV capacity exhausted"
+    )
 
 
 def test_last_session_capacity_kill_resets_output_demand_estimate(
@@ -1017,7 +1129,10 @@ def test_last_session_capacity_kill_resets_output_demand_estimate(
     assert scheduler.relieve_session_capacity(batch)
 
     assert batch.is_empty()
-    assert scheduler.new_token_ratio_tracker.current == scheduler.new_token_ratio_tracker.init
+    assert (
+        scheduler.new_token_ratio_tracker.current
+        == scheduler.new_token_ratio_tracker.init
+    )
 
 
 @pytest.mark.parametrize("is_entry_rank", [False, True])
@@ -1088,6 +1203,46 @@ def test_mixed_decode_pressure_requeues_the_lower_priority_ordinary_request(
     assert scheduler.token_to_kv_pool_allocator.available_size() == 7
     assert survivor.kv.kv_allocated_len == 9
     assert scheduler.outbox.empty()
+
+
+def test_session_kill_leaves_final_ordinary_oom_to_native_retraction(
+    native_runtime_context: None,
+) -> None:
+    """The last ordinary request keeps native OOM behavior after a session dies."""
+    with get_context().override_server_args(
+        page_size=1,
+        speculative_algorithm="EAGLE",
+        speculative_num_steps=5,
+        speculative_eagle_topk=1,
+        speculative_num_draft_tokens=5,
+    ):
+        scheduler = make_pressured_scheduler(kv_pool_tokens=24)
+        AdmissionScheduler.open_session(scheduler, "idle", holds_row=True)
+        batch = scheduler.running_batch
+        ordinary, victim = batch.reqs
+        ordinary.priority = 0
+        ordinary.sampling_params.max_new_tokens = 4
+        victim.priority = 10
+        bridge = scheduler.session_bridge
+        bridge.release_append_unit(ordinary.rid)
+        scheduler.tree_cache.session.slots.pop(ordinary.rid)
+        ordinary.session = None
+        bridge.release_streaming_session(ordinary.rid)
+        bridge.sessions.pop(ordinary.rid)
+        batch.spec_algorithm = SpeculativeAlgorithm.EAGLE
+        with get_schedule().override(
+            retraction_policy="priority", schedule_low_priority_values_first=True
+        ):
+            assert scheduler.relieve_session_capacity(batch)
+
+        assert batch.reqs == [ordinary]
+        assert scheduler.waiting_queue == []
+        assert not batch.check_decode_mem()
+        retracted, _, aborted = batch.retract_decode()
+        assert retracted == []
+        assert aborted == [ordinary]
+        assert ordinary.to_finish is not None
+        assert batch.is_empty()
 
 
 class DeviceCompletion:

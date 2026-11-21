@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed, so only selected text can be translated.",
-		"No language model is set up. Set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
+		"No language model is set up. Set one up to translate.", "Translation", "Target language", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -46,12 +46,12 @@ func TestTranslatePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Translate.Cleanup {
 		t.Error("clean-up not saved")
 	}
-	click(t, tt, "Target language")
+	click(t, tt, "Target language for Translate")
 	click(t, tt, "Japanese")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "ja" {
 		t.Errorf("target %q", got)
 	}
-	click(t, tt, "Target language")
+	click(t, tt, "Target language for Translate")
 	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
@@ -66,7 +66,7 @@ func TestTranslatePage(t *testing.T) {
 	a.fui(hotkey.Translate).prompt = "Use British spelling."
 	a.fui(hotkey.Translate).promptDirty = true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
@@ -93,11 +93,14 @@ func TestRewritePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Rewrite.Cleanup {
 		t.Error("clean-up not saved")
 	}
+	if has(tt, "Input box") {
+		t.Error("the input box switch is back: the box is the only Rewrite")
+	}
 	if has(tt, "Long answers in the card") {
 		t.Error("0.1.0's card length setting is back")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	// A try that is blocked says why, here.
 	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
@@ -119,9 +122,10 @@ func TestOverlayWriting(t *testing.T) {
 		t.Errorf("selection %s %d text %q", a.ov.mode, a.ov.w, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Selection: "Hi", Draft: "你好", Card: true, TargetLanguage: "zh-Hans"})
-	// The card streams the draft; the pill keeps the selection, not the draft.
-	if a.ov.mode != ovWorking || a.answer.open || liveLineText(a.sess) != "Hi" {
-		t.Errorf("the draft of a card's answer: %s %+v text %q", a.ov.mode, a.answer, liveLineText(a.sess))
+	// The card streams the draft, in its language; the pill line keeps the
+	// selection, not the draft.
+	if v := a.cardNow(); a.ov.mode != ovAnswer || a.answer.open || !v.writing || v.text != "你好" || v.lang != "zh-Hans" || liveLineText(a.sess) != "Hi" {
+		t.Errorf("the draft of a card's answer: %s %+v text %q", a.ov.mode, v, liveLineText(a.sess))
 	}
 	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Selection: "Hi", Result: "你好", Card: true, Delivery: deliver.ReasonNotEditable, TargetLanguage: "zh-Hans"})
 	if !a.answer.open || a.answer.input.Selection != "Hi" || a.answer.lang != "zh-Hans" {
@@ -146,7 +150,7 @@ func TestOverlayWriting(t *testing.T) {
 	}
 	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"AI answer", "Try again", "shorter", "a long text"} {
+	for _, s := range []string{"Rewrite", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {
 			t.Errorf("failure card: no %q in %q", s, firstTexts(tt))
 		}
@@ -173,7 +177,7 @@ func TestOverlayWriting(t *testing.T) {
 	// It records in the card, a conversation (Voxt's).
 	a.followUp = "r2"
 	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording})
-	if v := a.cardNow(); a.ov.mode != ovAnswer || !a.answer.open || !v.conversation || !v.recording || !v.canStop {
+	if v := a.cachedCard(); a.ov.mode != ovAnswer || !a.answer.open || !v.Conversation || !v.Recording || !v.CanStop {
 		t.Errorf("follow-up recording %s %+v", a.ov.mode, v)
 	}
 	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "shorter", Title: "Note", Result: "Note."})

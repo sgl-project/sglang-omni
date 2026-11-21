@@ -13,12 +13,12 @@
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
 #include "fish_dac/fish_dac.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace fish_s2_pro {
 
@@ -78,9 +78,9 @@ public:
 
   // Generates up to max_frames frames, or as many as fit in max_positions()
   // after the prompt, passing each frame's evaluated int32 codes [codebooks] to
-  // on_frame. Stops at <|im_end|>; throws TranscriptionCancelled once cancel is
+  // on_frame. Stops at <|im_end|>; throws GenerationCancelled once cancel is
   // set, and std::invalid_argument for a prompt that leaves no position.
-  qwen3_asr::FinishReason
+  omni_common::FinishReason
   Generate(const SpeechPrompt &prompt, int max_frames,
            const SamplingOptions &sampling, const std::atomic<bool> &cancel,
            const std::function<void(const mlx::core::array &)> &on_frame) const;
@@ -109,13 +109,13 @@ private:
   // final-normed hidden state of the last position, [1, dim].
   mlx::core::array Forward(const mlx::core::array &x,
                            const TransformerConfig &config,
-                           std::vector<qwen3_asr::KVCache> &caches) const;
+                           std::vector<omni_common::KVCache> &caches) const;
   // The residual codes after semantic_code, chosen greedily from hidden; caches
   // are the fast transformer's, reused from frame to frame.
   std::vector<mlx::core::array>
   ResidualCodes(const mlx::core::array &hidden,
                 const mlx::core::array &semantic_code,
-                std::vector<qwen3_asr::KVCache> &caches) const;
+                std::vector<omni_common::KVCache> &caches) const;
   // The semantic token for candidate logits (semantic codes, then
   // <|im_end|>), as the CUDA server's sampler draws it.
   int SampleSemanticToken(const float *candidate_logits,

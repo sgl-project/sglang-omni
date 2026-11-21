@@ -22,13 +22,15 @@ from torch import nn
 from transformers import Qwen3Config
 
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
-    DRAFT_NOISE_SEED_SALT,
     DraftBlockSampler,
     DraftSamplingState,
     sample_draft_block,
-    seeded_exponential_noise,
 )
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
+from sglang_omni.sampling.speculative_noise import (
+    DRAFT_NOISE_SEED_SALT,
+    seeded_exponential_noise,
+)
 
 DRAFT_ARCHITECTURE = "FunCosyVoice3DSparkDraftModel"
 # Unified id of speech token 0 in the vocabulary the draft was trained on; the draft's
@@ -168,9 +170,12 @@ class MirroredMarkovHead(VanillaMarkov):
                 salt=DRAFT_NOISE_SEED_SALT,
                 column_count=draft_count * vocab_size,
             ).view(batch_size, draft_count, vocab_size)
+        # note (wilsonzheng0327): a lone request's anchor is a strided view, and the compiled block sampler guards on its stride.
         return self.block_sampler(
             base_logits,
-            first_prev_tokens.long(),
+            first_prev_tokens.to(
+                torch.long, copy=True, memory_format=torch.contiguous_format
+            ),
             exponential_noise,
             self.markov_w1.weight,
             self.markov_w2.weight,

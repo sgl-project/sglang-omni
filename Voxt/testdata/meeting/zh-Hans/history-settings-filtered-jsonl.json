@@ -1,0 +1,88 @@
+{
+  "name": "history-settings-filtered-jsonl",
+  "kind": "history-settings",
+  "history_settings": {
+    "open": true,
+    "directory": "~/Custom Recordings",
+    "missing_notice": "",
+    "can_use_default": true,
+    "usage_text": "2 段录音 · 2 KB",
+    "can_delete": true,
+    "can_export": true,
+    "recording_scopes": [
+      "全部录音",
+      "翻译中匹配“agenda”的"
+    ],
+    "recording_scope": "全部录音",
+    "text_scopes": [
+      "全部记录",
+      "翻译中匹配“agenda”的"
+    ],
+    "text_scope": "全部记录",
+    "text_formats": [
+      "Markdown",
+      "JSONL"
+    ],
+    "text_format": "JSONL",
+    "text_busy": false,
+    "busy": false,
+    "busy_label": "",
+    "progress": 0,
+    "can_cancel": false,
+    "clean_on": true,
+    "day_options": [
+      {
+        "label": "1 年",
+        "value": 365
+      },
+      {
+        "label": "6 个月",
+        "value": 180
+      },
+      {
+        "label": "3 个月",
+        "value": 90
+      },
+      {
+        "label": "30 天",
+        "value": 30
+      },
+      {
+        "label": "1 周",
+        "value": 7
+      }
+    ],
+    "days_selection": "30 天",
+    "count_options": [
+      {
+        "label": "不限",
+        "value": 0
+      },
+      {
+        "label": "50",
+        "value": 50
+      },
+      {
+        "label": "100",
+        "value": 100
+      },
+      {
+        "label": "300",
+        "value": 300
+      },
+      {
+        "label": "500",
+        "value": 500
+      },
+      {
+        "label": "1000",
+        "value": 1000
+      }
+    ],
+    "count_selection": "不限",
+    "prune_ask": false,
+    "prune_prompt": "",
+    "prune_detail": "",
+    "delete_audio_ask": false
+  }
+}

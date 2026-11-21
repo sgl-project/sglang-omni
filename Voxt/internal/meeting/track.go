@@ -24,26 +24,26 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		return &StartError{
 			Source:   src,
 			Err:      fmt.Errorf("meeting: no capture for %s", src),
-			Guidance: "meeting.system.unavailable",
+			Guidance: GuidanceSystem,
 		}
 	}
 	job := m.nextJob(src)
 	m.mu.Lock()
+	if m.timeline == nil { // the meeting ended while a reconnect waited for the lock
+		m.mu.Unlock()
+		return &StartError{Source: src, Err: fmt.Errorf("meeting: ended before %s reopened", src)}
+	}
 	m.timeline.Begin(src, job, m.timeline.Elapsed())
 	done := make(chan struct{})
 	m.tracks[src] = &track{src: src, job: job, audio: audio, done: done}
 	m.mu.Unlock()
 
 	tx, err := m.newTrackTranscriber(ctx, src, job)
-	if err != nil {
-		guidance := "meeting.mic.unavailable"
-		if src == SourceSystem {
-			guidance = "meeting.system.unavailable"
-		}
+	if err != nil { // the speech model, not the capture
 		m.mu.Lock()
 		delete(m.tracks, src)
 		m.mu.Unlock()
-		return &StartError{Source: src, Err: err, Guidance: guidance}
+		return &StartError{Source: src, Err: err, Guidance: GuidanceModel}
 	}
 	if tx != nil {
 		m.mu.Lock()
@@ -96,13 +96,14 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 					return
 				}
 				m.mu.Lock()
-				level := map[Source]float64{src: ev.Level.RMS}
-				for k, v := range m.snap.Level {
-					if k != src {
-						level[k] = v
-					}
+				levels := map[Source][]float64{}
+				for k, v := range m.snap.Levels {
+					levels[k] = v
 				}
-				m.snap.Level = level // a new map: snapshots handed out keep theirs
+				// A new map and slice: snapshots handed out keep theirs.
+				h := append(append([]float64(nil), levels[src]...), session.Level(ev.Level.RMS))
+				levels[src] = h[max(len(h)-session.Bars, 0):]
+				m.snap.Levels = levels
 				m.snap.Elapsed = m.timeline.Elapsed()
 				m.mu.Unlock()
 				m.noteLevel(src, ev.Level.RMS)
@@ -128,9 +129,9 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	select {
 	case err := <-started:
 		if err != nil {
-			guidance := "meeting.mic.unavailable"
+			guidance := GuidanceMic
 			if src == SourceSystem {
-				guidance = "meeting.system.unavailable"
+				guidance = GuidanceSystem
 			}
 			return &StartError{Source: src, Err: err, Guidance: guidance}
 		}

@@ -45,6 +45,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -125,6 +126,9 @@ const (
 	ProblemInternal = "internal"
 )
 
+// ErrNotTranslated marks an answer that still looks untranslated after Translate's strict retry.
+var ErrNotTranslated = errors.New("the language model did not translate the text")
+
 // Problem is what went wrong in a session.
 type Problem struct {
 	Code string
@@ -191,14 +195,27 @@ type Snapshot struct {
 	// recognised text (Rewrite's spoken instruction); Result what is
 	// delivered.
 	Partial, Raw, Result string
+	// Highlights are dictionary term and alias byte ranges in a
+	// Transcribe Result.
+	Highlights []dict.Span
+	// Spoken is the recognised text as the language model gets it (the
+	// dictionary's aliases replaced), from Composing on; "" when nothing
+	// was said (a selection to translate).
+	Spoken string
 	// Selection is the selected text read when the shortcut fired
 	// (Translate, Rewrite; "" for none), SelectionVia how ("ax", "copy").
 	Selection, SelectionVia string
+	// ReadingSelection: the selection is still being read from the app in
+	// front, which may get a ⌘C, so VoxtNew must not come in front yet.
+	ReadingSelection bool
+	// Typed is Rewrite's typed text that went with the request (the
+	// input box's; "" for none).
+	Typed string
 	// TargetLanguage is Translate's (a code: "en", "zh-Hans").
 	TargetLanguage string
 	// Draft is the answer so far while the language model writes
-	// (Translate, Rewrite); Title the answer's title (Rewrite writing
-	// from scratch).
+	// (Transcribe's clean-up, Translate, Rewrite); Title the answer's
+	// title (Rewrite writing from scratch).
 	Draft, Title string
 	// Retried: Translate asked again, strictly (the first answer looked
 	// untranslated).
@@ -206,8 +223,8 @@ type Snapshot struct {
 	// CanSkip: while Composing, SkipLLM inserts the recognised text in
 	// place of the model's answer (Transcribe, and Translate of speech).
 	CanSkip bool
-	// Thinking is the thinking level chosen for Transcribe's clean-up in
-	// the preview (Manager.Rethink); nil: the service's setting.
+	// Thinking is the thinking level chosen in the preview while the
+	// language model works (Manager.Rethink); nil: the service's setting.
 	Thinking *llm.Thinking
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
@@ -215,6 +232,15 @@ type Snapshot struct {
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
+	// ImageHint says which picture went to the language model
+	// ("window", "clipboard", "box"; "" for none), so the answer card
+	// can say so.
+	ImageHint string
+	// ImagePreview is the immutable clipboard/window JPEG available for
+	// display, with ImagePreviewKind identifying its source. It is preview-only:
+	// ImageHint remains the record of what the request actually sent.
+	ImagePreview     []byte
+	ImagePreviewKind string
 	// Landing says where the result was pasted (nil: not inserted): the
 	// app, Target or the app the user went to and focused a text field
 	// in. Target stays the app the scene was chosen for (the history's app).
@@ -239,8 +265,10 @@ type Snapshot struct {
 
 // CanStop says whether StopLLM can end the answer streaming into the
 // answer card where it is, keeping what the model wrote so far (#3886).
+// Not Transcribe's clean-up: the rest of what was said would be lost
+// (SkipLLM keeps all of it, as recognised).
 func (s Snapshot) CanStop() bool {
-	return s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return s.Kind != store.KindTranscribe && s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // Elapsed is how long the recording has run (from the first audio), at
@@ -291,7 +319,8 @@ type Services struct {
 	// LLM is nil when the feature has no language model ready.
 	LLM     LLM
 	LLMInfo Model
-	// Fallback is Translate's fallback model, asked once when LLM fails;
+	// Fallback is Translate's fallback model, or with the Language models
+	// page's switch another language model, asked once when LLM fails;
 	// nil: none.
 	Fallback     LLM
 	FallbackInfo Model
@@ -337,6 +366,18 @@ type Config struct {
 	// model, when the settings send it (Privacy.SendClipboardImage).
 	// Nil: never.
 	ClipboardImage func(ctx context.Context) ([]byte, error)
+	// BoxInput returns the Rewrite input box's typed text and pictures
+	// (JPEGs, encoded once when they were pasted) as they are when the
+	// answer is asked for (StartRequest.Box). It waits for pending image
+	// conversions and returns their error, if one needs confirmation. It
+	// is called on the session's goroutine. Nil: the box sends nothing.
+	BoxInput func(context.Context) (string, [][]byte, error)
+	// BoxAutoSuppressed reports whether the user removed the automatic
+	// selection or clipboard/window image from the box's preview. Nil: send both.
+	BoxAutoSuppressed func() (selection, image bool)
+	// BoxReview waits while the user reviews a newly captured automatic
+	// window image, before its request. Nil: send without another review.
+	BoxReview func(context.Context) error
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History
@@ -454,6 +495,15 @@ type StartRequest struct {
 	// or reading the selection: a retry from the answer card, or the
 	// same text into another language.
 	Text *TextInput
+	// Box marks a Rewrite session as the input box's: the box's typed
+	// text and pictures come from Config.BoxInput when the answer is
+	// asked for. The pictures are the user's own: they always go to the
+	// language model (llm.Request.ImagesRequired), ahead of a copied
+	// picture or the window's, which an empty box leaves to today's
+	// rule. Images, when set, goes the same way without the box (a
+	// follow-up or a new take on the card's answer).
+	Box    bool
+	Images [][]byte
 	// TargetLanguage overrides Translate's target ("": the settings').
 	TargetLanguage string
 	// Thinking overrides the language model's thinking for Translate's
@@ -467,6 +517,12 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// Conversation is the first session of the card's conversation this
+	// one continues (store.Entry.Conversation); "": it begins one.
+	Conversation string
+	// Replaces is the card answer this session replaces with a redo;
+	// "": it adds a turn instead.
+	Replaces string
 	// SpeechWait, when set, ends the session with these words instead of
 	// recording: the speech model it should use is still downloading.
 	// Translating a selection needs none and goes on.
@@ -479,11 +535,16 @@ type TextInput struct {
 	Raw string
 	// Selection is the selected text ("" for none).
 	Selection string
+	// Typed is Rewrite's typed text ("" for none).
+	Typed string
 }
 
 func (s Snapshot) clone() Snapshot {
 	if s.Levels != nil {
 		s.Levels = append([]float64(nil), s.Levels...)
+	}
+	if s.Highlights != nil {
+		s.Highlights = append([]dict.Span(nil), s.Highlights...)
 	}
 	if s.Problem != nil {
 		p := *s.Problem

@@ -109,7 +109,11 @@ MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
 default target is 4 requests with a 12 ms oldest-request deadline. While more
 request builds are pending, the scheduler waits for either limit; after build
 work drains, it releases immediately only when decode is idle. During active
-decode, it continues coalescing until the target or deadline. Override the two
+decode, it continues coalescing until the target or deadline. With a draft
+(DFlash or DFlash2), a ready prefill is released as soon as build work drains,
+whether or not decode is active; set
+`--asr.factory.prefill_coalesce_after_builds_during_decode true` to keep
+coalescing during decode. Override the two
 limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
 set the request target to `0` to disable coalescing.
 
@@ -125,6 +129,8 @@ sgl-omni serve \
   --asr.engine.cuda_graph_max_bs 16 \
   --mem-fraction-static 0.80
 ```
+
+On one CUDA GPU this serves the DFlash draft by default; see [Speculative Decoding](#speculative-decoding).
 
 **Intel GPU**
 
@@ -216,40 +222,55 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ### Speculative Decoding
 
-The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash) on one CUDA GPU.
+On one CUDA GPU, MOSS-TD serves with its DFlash draft, [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `OpenMOSS-Team/MOSS-Transcribe-Diarize`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Intel GPUs and other platforms serve without the draft, and so do a stage with `tp_size` above 1 and a copy outside the Hugging Face cache. The [two-replica H100 MPS profile](../basic_usage/mps_dp.md) turns it off, since it was validated without it. To serve without the draft, add `--asr.engine.disable_speculative_decoding true`:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
+```
+
+The DFlash2 draft [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2) continues that draft's training with DFlash2's two additions: small convolutions in each layer, and a candidate selector that picks each proposed token from the target head's top 16, so the draft has no output head of its own. It is 1% to 6% faster than the DFlash draft synchronously, with the same CER and DER (table below). Serve it by its path:
 
 ```bash
 sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
   --asr.engine.speculative_algorithm DFLASH \
-  --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
+  --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2 \
   --port 8000
 ```
 
+The selector takes its top 16 with FlashInfer's top-k kernel. The Docker image ships that kernel prebuilt. Without FlashInfer's prebuilt kernels, the first start compiles it, which took about 13 minutes on an H200 host, and later starts reuse it. Install them with `uv pip install flashinfer-jit-cache==0.7.2 --index-url https://flashinfer.ai/whl/cu130` to skip the compile.
+
+The notes below apply to both drafts:
+
 - **Acceptance length.** Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
 - **Transcripts.** The target verifies every proposed token, so accuracy stays at the target's level, but the text is not byte-identical to a run without the draft: MOSS-TD has many near-tied decisions, mostly timestamp hundredths, which any numeric change, including batching, can flip.
-- **Context.** The duration-scaled budget leaves room for the few tokens each step reserves. An explicit `max_new_tokens` that leaves no such room is rejected instead of clamped.
-- **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
+- **Context.** Every output budget leaves room for the few tokens each speculative step reserves, 16 with the default settings: a `max_new_tokens` that would not leave them is lowered to the remaining context less that reserve, where the server without a draft would take up to the remaining context.
+- **Capacity.** The draft's KV shares the pool, one slot per token, and is kept in fp8 (`speculative_draft_kv_cache_dtype fp8_e4m3`), which halves the 5-layer draft's share. With the memory of one H100 80GB at `mem_fraction_static=0.80` (measured on an H200 at 0.454), the pool holds 524k tokens, against 573k without the draft and 484k with the draft's KV in bf16. That decides whether 16 `aishell4_long` meetings of 37 to 40 minutes fit at once: with a bf16 draft KV at most 14 ran, and first output p95 was 48 to 51 s against 18 s without the draft; with fp8, 15 ran and first output p95 was 13 to 15 s, at the same throughput, acceptance, CER and DER. Given the same pool, the draft reaches first output sooner than the server without it (48 s against 148 s at 484k tokens), because it finishes meetings sooner. Long audio at high concurrency can still fill the pool; the scheduler then retracts requests and finishes them later, and every file completed.
 - **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on.
-- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
-- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
+- **Sampling.** `repetition_penalty` applies as ordinary decoding does: each verified position is penalized over the transcript so far and the drafted tokens before it. On one H200 with every `movies800times` clip sent at 1.2, no request failed, and transcripts differed from a synchronous server without the draft about as often as they do with no penalty (79 and 35 of 400 at 1 and 16 concurrent requests, against 100 and 28), while the penalty itself changes 392 of 400. Throughput fell 4% at one request and 10% at 16, and the logged acceptance length 6%. Requests with `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies those penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
+- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. `--asr.factory.prefill_drain_below_batch_size N` applies only with the draft and `enable_async_decode true`; otherwise the scheduler ignores it without a warning. With overlap, N processes a prefill's result before the next batch is chosen while fewer than N requests are decoding, and decode rounds still overlap; 0 never drains, and unset it follows `async_decode_min_batch_size`, which is 1, so no prefill is drained. On one H200 with DFlash2 on `movies800times`, N = 4096 kept first output within 1 ms of synchronous scheduling or earlier, at 97-99% of overlap's throughput. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
 
-Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`):
+Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`). Each draft ran on its own GPU of one node, against its own server without a draft. `movies800times` is the mean of 3 passes per load and `aishell4_long` one pass over its first 8 recordings (`--max-samples 8`):
 
-| Dataset | Scheduling | Concurrency 1 | 4 | 16 | 64 |
-|---|---|---:|---:|---:|---:|
-| `movies800times` | Synchronous | 1.68x | 1.54x | 1.34x | 1.15x |
-| `movies800times` | Overlapped | 1.90x | 1.72x | 1.56x | 1.42x |
-| `aishell4_long` | Synchronous | 2.50x | 3.17x | 3.56x | |
-| `aishell4_long` | Overlapped | 3.19x | 3.64x | 3.89x | |
-| `googletime` | Synchronous | 2.97x | 4.14x | 4.27x | |
-| `googletime` | Overlapped | 3.73x | 4.68x | 4.57x | |
+| Dataset | Draft | Scheduling | Concurrency 1 | 4 | 16 | 64 |
+|---|---|---|---:|---:|---:|---:|
+| `movies800times` | DFlash2 | Synchronous | 1.69x | 1.60x | 1.42x | 1.22x |
+| `movies800times` | DFlash | Synchronous | 1.63x | 1.54x | 1.41x | 1.21x |
+| `movies800times` | DFlash2 | Overlapped | 1.93x | 1.74x | 1.57x | 1.41x |
+| `movies800times` | DFlash | Overlapped | 1.87x | 1.68x | 1.51x | 1.37x |
+| `aishell4_long` | DFlash2 | Synchronous | 2.57x | 3.31x | 3.70x | |
+| `aishell4_long` | DFlash | Synchronous | 2.50x | 3.15x | 3.51x | |
+| `aishell4_long` | DFlash2 | Overlapped | 3.29x | 3.82x | 4.15x | |
+| `aishell4_long` | DFlash | Overlapped | 3.13x | 3.58x | 3.85x | |
 
-Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.
+In its own throughput DFlash2 is 1% to 6% faster than DFlash synchronously, 5% to 8% faster overlapped on `aishell4_long`, and within 1% overlapped on `movies800times` from 4 requests up, where the server without a draft ran 3% to 4% slower on the DFlash2 GPU. The logged acceptance length is 5.16 with DFlash2 and 4.82 with DFlash on `movies800times`, and 5.80 and 5.28 on `aishell4_long`. Neither draft or mode is slower than the server without a draft at any load measured, and CER and DER do not change. On `googletime`, measured earlier with the DFlash draft only, the gain was 2.97x, 4.14x and 4.27x at 1, 4 and 16 concurrent requests synchronously, and 3.73x, 4.68x and 4.57x overlapped.
 
 ### Per-request plain fallback
 
-Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options, such as `repetition_penalty=1.2`, through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
 
 ```bash
 sgl-omni serve \
@@ -259,7 +280,7 @@ sgl-omni serve \
 
 The [Qwen3-ASR fallback restrictions](qwen3_asr.md#per-request-plain-fallback) also apply to MOSS-TD.
 
-When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
+When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default from 2 decoding requests, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
 
 ## Benchmarking
 
@@ -318,7 +339,7 @@ pass every worker serve URL with a comma-separated `--profile-urls` value.
 
 ## Benchmark Results
 
-Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`.
+Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server without the draft, with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`; the draft's gains are under [Speculative Decoding](#speculative-decoding).
 
 ### movies800times
 

@@ -14,6 +14,8 @@ import pytest
 import torch
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.dspark_components import dspark_draft as sglang_dspark_draft
+from sglang.srt.utils import DynamicGradMode
+from torch._dynamo.utils import counters
 
 from sglang_omni.models.fun_cosyvoice3 import dspark_draft, dspark_worker
 from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
@@ -26,17 +28,12 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     materialize_draft_checkpoint,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
-    ACCEPTANCE_NOISE_SEED_SALT,
-    DRAFT_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
-    LARGEST_FLOAT32_BELOW_ONE,
-    RESIDUAL_NOISE_SEED_SALT,
     TOP_K_BOUND,
+    ExactAccept,
     exact_accept,
     rejection_sample,
     sample_draft_block,
-    seeded_exponential_noise,
-    seeded_uniform_noise,
     target_probabilities,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
@@ -51,6 +48,15 @@ from sglang_omni.models.fun_cosyvoice3.model_runner import (
     FunCosyVoice3ModelRunner,
 )
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOCAB_SIZE
+from sglang_omni.sampling.speculative_noise import (
+    ACCEPTANCE_NOISE_SEED_SALT,
+    DRAFT_NOISE_SEED_SALT,
+    LARGEST_FLOAT32_BELOW_ONE,
+    RESIDUAL_NOISE_SEED_SALT,
+    seeded_exponential_noise,
+    seeded_uniform_noise,
+)
+from sglang_omni.sampling.speculative_noise_kernel import draw_seeded_noise
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
@@ -59,6 +65,95 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 REQUIRES_CUDA = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="the seeded noise hashes with a CUDA kernel"
 )
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("batch_size", [1, 3, 64])
+@pytest.mark.parametrize("captured", [False, True])
+def test_fused_seeded_noise_preserves_the_existing_draws(
+    batch_size: int, captured: bool
+) -> None:
+    """Fusion must keep seeded proposals and acceptance decisions bit-identical."""
+    seeds = torch.arange(batch_size * 2, device="cuda", dtype=torch.int64)[::2]
+    output_lengths = torch.arange(batch_size, device="cuda", dtype=torch.int64) * 100003
+    draft_columns = DRAFT_TOKENS_PER_STEP * TOTAL_VOCAB_SIZE
+
+    def draw() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        draft = seeded_exponential_noise(
+            seeds,
+            output_lengths,
+            salt=DRAFT_NOISE_SEED_SALT,
+            column_count=draft_columns,
+        )
+        residual, uniform = draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=TOTAL_VOCAB_SIZE,
+            exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+            acceptance_columns=DRAFT_TOKENS_PER_STEP,
+            acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
+        )
+        return draft, residual, uniform
+
+    if captured:
+        draw()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            actual_draft, actual_residual, actual_uniform = draw()
+    else:
+        pass
+    seeds[-1] = 2**31 - 1
+    if batch_size >= 3:
+        # note (ruiling): These counters hit acceptance hashes 0 and 2**32 - 1 at column zero.
+        seeds[:2] = 0
+        output_lengths[:2] = torch.tensor([1639430020, 284207454], device="cuda")
+    else:
+        pass
+    if captured:
+        graph.replay()
+    else:
+        actual_draft, actual_residual, actual_uniform = draw()
+    expected_draft = (
+        -seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=DRAFT_NOISE_SEED_SALT,
+            column_count=draft_columns,
+        )
+        .log()
+        .float()
+    )
+    expected_residual = (
+        -seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=RESIDUAL_NOISE_SEED_SALT,
+            column_count=TOTAL_VOCAB_SIZE,
+        )
+        .log()
+        .float()
+    )
+    expected_uniform = (
+        seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=ACCEPTANCE_NOISE_SEED_SALT,
+            column_count=DRAFT_TOKENS_PER_STEP,
+        )
+        .float()
+        .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+    )
+    assert torch.equal(actual_draft, expected_draft)
+    assert torch.equal(actual_residual, expected_residual)
+    assert torch.equal(actual_uniform, expected_uniform)
+    assert torch.isfinite(actual_draft).all() and (actual_draft > 0).all()
+    assert (actual_uniform > 0).all() and (actual_uniform < 1).all()
+    if batch_size >= 3:
+        assert actual_uniform[0, 0] == 2**-33
+        assert actual_uniform[1, 0] == 1.0 - 2**-24
+    else:
+        pass
 
 
 def stage_distribution(
@@ -512,6 +607,7 @@ def run_speculative_step(
     markov_head: MirroredMarkovHead,
     base_logits: torch.Tensor,
     target_logits: torch.Tensor,
+    accept_function: ExactAccept = exact_accept,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Draft and verify one block per request, returning drafts, accepts and bonus."""
     device = base_logits.device
@@ -537,11 +633,14 @@ def run_speculative_step(
         batch, sampling_info, RequestHistories(slot_count=4, device=device)
     )
     markov_head.sampling_state = state.draft
-    draft_tokens, shaped_logits = markov_head.draw_block(
-        base_logits,
-        torch.tensor([request.output_ids[-1] for request in requests], device=device),
+    # As in serving, the anchor is a column of the step's token block.
+    token_block = torch.tensor(
+        [[request.output_ids[-1]] * VERIFY_TOKENS_PER_STEP for request in requests],
+        device=device,
     )
+    draft_tokens, shaped_logits = markov_head.draw_block(base_logits, token_block[:, 0])
     executor = object.__new__(ExactVerifyExecutor)
+    executor.accept_function = accept_function
     executor.step_state = state
     executor.gamma = DRAFT_TOKENS_PER_STEP
     executor.verify_num_draft_tokens = VERIFY_TOKENS_PER_STEP
@@ -558,6 +657,51 @@ def run_speculative_step(
         draft_tokens=draft_tokens,
     )
     return draft_tokens, accept.correct_len, accept.bonus
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+def test_the_first_requests_after_the_warm_up_compile_nothing() -> None:
+    """The warm-up traced inputs laid out unlike serving's, so each server's first requests recompiled the draft block and the exact verify for seconds."""
+    device = torch.device("cuda")
+    markov_head = MirroredMarkovHead(vocab_size=TOTAL_VOCAB_SIZE, markov_rank=4).to(
+        device
+    )
+    worker = object.__new__(FunCosyVoice3DSparkWorker)
+    worker.device = device
+    worker.gamma = DRAFT_TOKENS_PER_STEP
+    worker.draft_model = SimpleNamespace(markov_head=markov_head)
+    worker.exact_verify_executor = object.__new__(ExactVerifyExecutor)
+    torch.compiler.reset()
+    accept_function = torch.compile(exact_accept, dynamic=True)
+    worker.exact_verify_executor.accept_function = accept_function
+    markov_head.block_sampler = torch.compile(sample_draft_block, dynamic=True)
+    worker.warm_up_compiled_sampling()
+    compiled_graphs = counters["stats"]["unique_graphs"]
+
+    with DynamicGradMode():
+        for request_count in (1, 3):
+            run_speculative_step(
+                [
+                    seeded_step_request(f"request-{slot}", None, [3, 4], slot=slot)
+                    for slot in range(request_count)
+                ],
+                markov_head,
+                torch.randn(
+                    request_count,
+                    DRAFT_TOKENS_PER_STEP,
+                    TOTAL_VOCAB_SIZE,
+                    device=device,
+                ),
+                torch.randn(
+                    request_count * VERIFY_TOKENS_PER_STEP,
+                    TOTAL_VOCAB_SIZE,
+                    device=device,
+                ),
+                accept_function=accept_function,
+            )
+
+    assert counters["stats"]["unique_graphs"] == compiled_graphs
 
 
 @pytest.mark.accelerator

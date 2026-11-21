@@ -46,6 +46,13 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 }
 
 func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
+	// The final pass holds what it uses; the recording hold would keep MTD's predecessor alive.
+	m.mu.Lock()
+	if m.releaseModels != nil {
+		m.releaseModels()
+		m.releaseModels = nil
+	}
+	m.mu.Unlock()
 	err := FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(mt.ID))
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -65,9 +72,7 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 	m.resetAfterDone()
 	m.notify(m.snap)
 	if auto {
-		go func() {
-			_ = m.GenerateMeetingSummary(context.Background(), meetingID)
-		}()
+		go m.correctAndSummarize(context.Background(), meetingID)
 	}
 }
 
@@ -82,5 +87,25 @@ func (m *Manager) finalizeProgress(id string) func(float64) {
 		s := m.snap
 		m.mu.Unlock()
 		m.notify(s)
+	}
+}
+
+// correctAndSummarize corrects the transcript, then summarizes it; a
+// correction that fails leaves the summary to the recognised text.
+func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
+	if err := m.CorrectTranscript(ctx, id); err != nil {
+		m.warn("correct: " + err.Error())
+	}
+	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
+		m.warn("summary: " + err.Error())
+	}
+	if m.cfg.Updated != nil {
+		m.cfg.Updated(id)
+	}
+}
+
+func (m *Manager) warn(msg string) {
+	if m.cfg.Warn != nil {
+		m.cfg.Warn(msg)
 	}
 }

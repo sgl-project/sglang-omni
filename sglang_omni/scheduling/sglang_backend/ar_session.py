@@ -37,6 +37,7 @@ from sglang_omni.proto.session import (
 )
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.history_cut import (
+    DraftSessionKV,
     HistoryCut,
     LayerKVCache,
     RetainedKV,
@@ -272,10 +273,17 @@ class ARSessionBridge:
     """Map pipeline open, append, and close onto one SGLang streaming session."""
 
     def __init__(
-        self, bridge_scheduler: BridgeScheduler, adapter: ARSessionAdapter
+        self,
+        bridge_scheduler: BridgeScheduler,
+        adapter: ARSessionAdapter,
+        *,
+        speculative_reserve_tokens: int = 0,
+        draft_kv: DraftSessionKV | None = None,
     ) -> None:
         self.bridge_scheduler = bridge_scheduler
         self.adapter = adapter
+        self.speculative_reserve_tokens = speculative_reserve_tokens
+        self.draft_kv = draft_kv
         self.sessions: dict[str, BridgeSession] = {}
         self.units_by_request_id: dict[str, SessionUnit] = {}
         self.cancelling_request_id: str | None = None
@@ -483,6 +491,7 @@ class ARSessionBridge:
             - 1
             - len(adapter_request.origin_input_ids)
             - int(adapter_request.sampling_params.max_new_tokens or 0)
+            - self.speculative_reserve_tokens
         )
         history_cut = self.adapter.plan_history_cut(
             unit.session_identity, request_data, history_length, history_capacity
@@ -587,6 +596,7 @@ class ARSessionBridge:
                 record,
                 cut,
                 self.adapter.shift_key_positions,
+                draft_kv=self.draft_kv,
             )
         else:
             pass
@@ -702,8 +712,10 @@ class ARSessionBridge:
             )
         else:
             page_size = self.bridge_scheduler.token_to_kv_pool_allocator.page_size
-            required_kv_tokens = len(session_request.origin_input_ids) + int(
-                session_request.sampling_params.max_new_tokens or 0
+            required_kv_tokens = (
+                len(session_request.origin_input_ids)
+                + int(session_request.sampling_params.max_new_tokens or 0)
+                + self.speculative_reserve_tokens
             )
             reserved_kv_tokens = 0
             for active_append_unit in self.units_by_request_id.values():
@@ -747,7 +759,8 @@ class ARSessionBridge:
                         0,
                         ceil_align(
                             len(active_session_request.origin_input_ids)
-                            + output_token_count,
+                            + output_token_count
+                            + self.speculative_reserve_tokens,
                             page_size,
                         )
                         - ceil_align(allocated_kv_tokens, page_size),
@@ -872,6 +885,21 @@ class ARSessionBridge:
                 pass
             session = self.sessions[unit.session_identity.id]
             session.unit = None
+            request = unit.session_request
+            if self.draft_kv is not None and request is not None and request.output_ids:
+                record = self.bridge_scheduler.tree_cache.session_records().get(
+                    unit.session_identity.id
+                )
+                if record is not None:
+                    # note (ruiling): A verify can cache the final output token; plain decode recomputes it next turn, after any history cut, so both must retain the same prefix.
+                    record.kv_committed_len = min(
+                        record.kv_committed_len,
+                        len(request.origin_input_ids) + len(request.output_ids) - 1,
+                    )
+                else:
+                    pass
+            else:
+                pass
             session.embedding_spans.extend(unit.embedding_spans)
             if (
                 request_data is not None

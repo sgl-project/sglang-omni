@@ -15,7 +15,9 @@ import pytest
 import torch
 from sglang.srt.managers.io_struct import SessionParams, TokenizedGenerateReqInput
 from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams, MatchResult
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import Session
 from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
@@ -33,6 +35,7 @@ from sglang_omni.proto.session import (
     fragment_chunk,
     wire_size,
 )
+from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import (
@@ -650,6 +653,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.backlogged_request_build_payloads = deque()
+    scheduler.early_request_builds = False
     scheduler.waiting_queue = []
     scheduler.mark_running_request_aborted.return_value = False
     scheduler.mark_request_finished_immediately.return_value = []
@@ -685,6 +689,143 @@ def test_context_exhaustion_releases_append_unit() -> None:
     assert not bridge.units_by_request_id
     assert bridge.sessions[identity.id].unit is None
     scheduler.session_controller.get.return_value.abort_req.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("input_length", "requested_new_tokens", "expected_new_tokens"),
+    [
+        (7700, 2048, 474),
+        (8173, 2048, 1),
+        (8174, 2048, None),
+    ],
+)
+def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
+    monkeypatch: pytest.MonkeyPatch,
+    input_length: int,
+    requested_new_tokens: int,
+    expected_new_tokens: int | None,
+) -> None:
+    """Speculative session appends clamp max_new_tokens by the draft reserve and emit ContextExhaustedError once input plus reserve no longer fits."""
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
+    request_id = "append-spec"
+    identity = SessionIdentity("session-spec")
+    sampling_params = SamplingParams(
+        temperature=0.0,
+        max_new_tokens=requested_new_tokens,
+        min_new_tokens=0,
+    )
+    request = Req(
+        rid=request_id,
+        origin_input_text="",
+        origin_input_ids=[1] * input_length,
+        sampling_params=sampling_params,
+        vocab_size=128,
+    )
+    request.tokenizer = None
+    unit = SessionUnit(
+        request_id=request_id,
+        session_identity=identity,
+        stages=("thinker",),
+        chunk=TimedChunk("audio", 0, 1000, 0, b""),
+        session_request=request,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = False
+    scheduler.scheduler_thread_id = None
+    scheduler.is_entry_rank = True
+    scheduler.inbox = queue.Queue()
+    scheduler.outbox = queue.Queue()
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.deferred_request_payloads = {}
+    scheduler.pending_request_builds = {}
+    scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
+    scheduler.new_token_ratio_tracker = SimpleNamespace(current=1.0)
+    scheduler.pending_stream_ingress = {}
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.waiting_queue = []
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler.chunked_req = None
+    scheduler._pending_chunked_abort_req = (
+        None  # noqa: leading-underscore  # upstream scheduler contract
+    )
+    scheduler.decode_batch_states = {}
+    scheduler.previous_pending_decode = None
+    scheduler.async_pending = None
+    scheduler.result_queue = deque()
+    scheduler.request_finished_callback = None
+    scheduler.abort_callback = None
+    scheduler.prompt_cache_epoch = 0
+    scheduler.max_queued_requests = None
+    scheduler.enable_priority_scheduling = False
+    scheduler.abort_on_priority_when_disabled = False
+    scheduler.sliding_window_size = None
+    scheduler.chunked_prefill_size = None
+    scheduler.max_new_tokens_limit = None
+    scheduler.max_req_len = 8191
+    scheduler.max_req_input_len = 8190
+    scheduler.page_size = 1
+    scheduler.max_total_num_tokens = 16384
+    scheduler.model_config = SimpleNamespace(context_len=8192, vocab_size=128)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.enable_plain_fallback = False
+    scheduler.model_runner = SimpleNamespace(
+        speculative_verifies_repetition_penalty=False,
+        speculative_ignores_request_seed=False,
+    )
+    kv_pool = MHATokenToKVPool(16384, 1, torch.float32, 1, 4, 1, "cpu", False)
+    scheduler.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
+        16384, torch.float32, "cpu", kv_pool, False
+    )
+    scheduler.req_to_token_pool = SimpleNamespace(free_slots=[0, 1, 2, 3])
+    scheduler.tree_cache = SimpleNamespace(
+        session_records=lambda: {}, evictable_size=lambda: 0
+    )
+    scheduler.session_controller = Mock()
+    bridge = ARSessionBridge(scheduler, Mock(), speculative_reserve_tokens=16)
+    bridge.sessions[identity.id] = BridgeSession(session_identity=identity, unit=unit)
+    bridge.units_by_request_id[request_id] = unit
+    bridge.create_session_request = Mock()
+    scheduler.session_bridge = bridge
+
+    req_data = SGLangARRequestData(
+        req=request,
+        enforce_request_limits=True,
+        max_new_tokens=requested_new_tokens,
+    )
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        StagePayload(request_id, OmniRequest(None), {}),
+        False,
+        req_data,
+    )
+
+    if expected_new_tokens is None:
+        assert not scheduler.waiting_queue
+        output = scheduler.outbox.get_nowait()
+        assert output.type == "error"
+        assert isinstance(output.data, ContextExhaustedError)
+        assert str(output.data).startswith("context_exhausted:")
+        assert "limit 8174" in str(output.data)
+        assert not bridge.units_by_request_id
+        assert bridge.sessions[identity.id].unit is None
+        scheduler.session_controller.get.return_value.abort_req.assert_called_once()
+    else:
+        assert scheduler.outbox.empty()
+        assert scheduler.waiting_queue == [request]
+        assert request.sampling_params.max_new_tokens == expected_new_tokens
+        assert req_data.max_new_tokens == expected_new_tokens
+        assert unit.is_enqueued is True
 
 
 def test_an_ar_stage_holds_the_read_takes_a_control_and_answers_the_read_at_close():

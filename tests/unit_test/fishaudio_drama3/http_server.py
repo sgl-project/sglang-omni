@@ -23,6 +23,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_ENABLE_ASYNC_DECODE,
     DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS,
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
+    DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
     DEFAULT_MAX_RUNNING_REQUESTS,
@@ -110,6 +111,7 @@ def create_eos_masked_tts_engine_executor(
     first_frame_cuda_graph_max_requests: int = (
         DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS
     ),
+    gdn_prefill_cuda_graphs: bool = DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
@@ -125,6 +127,7 @@ def create_eos_masked_tts_engine_executor(
         max_new_tokens_cap=max_new_tokens,
         first_frame_cuda_graphs=first_frame_cuda_graphs,
         first_frame_cuda_graph_max_requests=first_frame_cuda_graph_max_requests,
+        gdn_prefill_cuda_graphs=gdn_prefill_cuda_graphs,
         triton_sampling=triton_sampling,
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,

@@ -13,11 +13,11 @@
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "common/tokenizer.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "qwen3_asr/qwen3_decoder.h"
 #include "qwen3_tts/qwen3_tts_codec.h"
 
 namespace qwen3_tts {
@@ -82,8 +82,8 @@ public:
   int PromptLength(const SpeechPrompt &prompt) const;
   // Generates up to max_frames frames, passing each frame's evaluated int32
   // codes [codebooks] to on_frame. Stops at the end-of-speech code; throws
-  // TranscriptionCancelled once cancel is set.
-  qwen3_asr::FinishReason
+  // GenerationCancelled once cancel is set.
+  omni_common::FinishReason
   Generate(const SpeechPrompt &prompt, const SamplingConfig &sampling,
            int max_frames, const std::atomic<bool> &cancel,
            const std::function<void(const mlx::core::array &)> &on_frame) const;
@@ -109,8 +109,8 @@ private:
   omni_common::Checkpoint checkpoint_;
   omni_common::Tokenizer tokenizer_;
   SpeechDecoder speech_decoder_;
-  qwen3_asr::Qwen3Decoder talker_;
-  qwen3_asr::Qwen3Decoder code_predictor_;
+  omni_common::Qwen3Decoder talker_;
+  omni_common::Qwen3Decoder code_predictor_;
   float talker_norm_eps_;
   float code_predictor_norm_eps_;
   int codebook_count_;

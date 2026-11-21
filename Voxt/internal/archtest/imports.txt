@@ -39,6 +39,7 @@ local asr
 local llm
 local vad
 meeting asr
+meeting compose
 meeting core
 meeting helper/proto
 meeting llm
@@ -86,7 +87,6 @@ uitext i18n
 uitext lang
 uitext llm
 uitext local
-uitext permission
 uitext session
 uitext settings
 uitext store

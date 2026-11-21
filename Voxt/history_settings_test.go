@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -52,40 +53,42 @@ func openHistSettings(t *testing.T, a *app, tt *ui.Tester) {
 	tt.SetSize(windowWidth, 1000)
 	a.navigate("/history")
 	click(t, tt, "History settings")
-	if !a.histSet.open || !hasExact(tt, "Storage location") {
+	if !a.histSetUI.open || !hasExact(tt, "Storage location") {
 		t.Fatalf("the dialog did not open: %q", firstTexts(tt))
 	}
 }
 
-// TestHistorySettingsDialog: the button opens it; Keep the recordings is
-// Privacy's setting; the recordings' number and size show; Done closes.
+// TestHistorySettingsDialog: the button opens it; the recordings' number
+// and size show; Done closes. Keep recordings is only on Settings →
+// Privacy (#3895), which opens the dialog too.
 func TestHistorySettingsDialog(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	seedAged(t, a, 1, 2)
 	openHistSettings(t, a, tt)
-	for _, s := range []string{"History settings", "Recordings", "Keep recordings", "Saved recordings", "2 recordings · 22 B",
+	for _, s := range []string{"History settings", "Recordings", "Saved recordings", "2 recordings · 22 B",
 		"Export recordings", "Automatic clean-up", "Clean up automatically", "Keep entries for", "3 months", "Keep at most", "No limit"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
 	}
+	if has(tt, "Keep recordings") || has(tt, "Save each recording") {
+		t.Error("the dialog repeats Privacy's Keep recordings")
+	}
+	click(t, tt, "Done")
+	if a.histSetUI.open {
+		t.Error("Done did not close it")
+	}
+	// Settings → Privacy has the switch, and opens the dialog. Scroll
+	// like openPrivacy: the rows sit under the fold where the lines
+	// measure taller (Linux CI), and a click there lands elsewhere.
+	openPrivacy(t, a, tt)
 	click(t, tt, "Save each recording")
 	if !a.prefs.Privacy.KeepAudio || !a.settings.Get().Privacy.KeepAudio {
 		t.Error("Keep recordings did not turn on")
 	}
-	click(t, tt, "Done")
-	if a.histSet.open {
-		t.Error("Done did not close it")
-	}
-	// Settings → Privacy shows the same value, and opens the dialog.
-	a.navigate("/settings/privacy")
-	frames(tt)
-	if !a.settingsForm.keepAudio {
-		t.Error("Privacy shows it off")
-	}
 	click(t, tt, "Open…")
-	if !a.histSet.open || a.currentPage() != "history" || a.settingsOpen {
-		t.Errorf("Privacy's link: open %v, page %s, settings %v", a.histSet.open, a.currentPage(), a.settingsOpen)
+	if !a.histSetUI.open || a.currentPage() != "history" || a.settingsOpen {
+		t.Errorf("Privacy's link: open %v, page %s, settings %v", a.histSetUI.open, a.currentPage(), a.settingsOpen)
 	}
 }
 
@@ -99,7 +102,7 @@ func TestHistoryCleanupAsks(t *testing.T) {
 	openHistSettings(t, a, tt)
 	click(t, tt, "3 months")
 	click(t, tt, "1 week")
-	if !a.histSet.pruneAsk || !has(tt, "Delete 3 entries now?") {
+	if !a.histSetUI.pruneAsk || !has(tt, "Delete 3 entries now?") {
 		t.Fatalf("no question: %q", firstTexts(tt))
 	}
 	click(t, tt, "Cancel")
@@ -127,8 +130,8 @@ func TestHistoryCleanupAsks(t *testing.T) {
 	// 100 a feature deletes none: saved without a question.
 	click(t, tt, "No limit")
 	click(t, tt, "100")
-	if a.histSet.pruneAsk || a.settings.Get().History.KeepCount != 100 {
-		t.Errorf("100: asked %v, %+v", a.histSet.pruneAsk, a.settings.Get().History)
+	if a.histSetUI.pruneAsk || a.settings.Get().History.KeepCount != 100 {
+		t.Errorf("100: asked %v, %+v", a.histSetUI.pruneAsk, a.settings.Get().History)
 	}
 	click(t, tt, "Clean up history")
 	if !a.settings.Get().History.CleanupOff || has(tt, "Keep entries for") {
@@ -145,8 +148,21 @@ func TestHistoryCleanupAsks(t *testing.T) {
 	}
 	tt.KeyDown(ui.KeyEscape)
 	frames(tt)
-	if a.histSet.pruneAsk || !a.settings.Get().History.CleanupOff || a.histSet.cleanOn {
-		t.Errorf("escape: ask %v, %+v, switch %v", a.histSet.pruneAsk, a.settings.Get().History, a.histSet.cleanOn)
+	if a.histSetUI.pruneAsk || !a.settings.Get().History.CleanupOff || a.histSetUI.cleanOn {
+		t.Errorf("escape: ask %v, %+v, switch %v", a.histSetUI.pruneAsk, a.settings.Get().History, a.histSetUI.cleanOn)
+	}
+}
+
+func TestHistoryCleanupSwitchKeepsPendingLimits(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.History.CleanupOff, s.History.KeepDays, s.History.KeepCount = false, 90, 0
+	})
+	a.histSetUI.cleanOn = false
+	a.histSetUI.daysSel = "1 week"
+	a.setHistoryCleanup(false)
+	if got := a.settings.Get().History; !got.CleanupOff || got.KeepDays != 90 || got.KeepCount != 0 {
+		t.Fatalf("cleanup switch saved pending limits: %+v", got)
 	}
 }
 
@@ -258,7 +274,7 @@ func TestHistoryExportAndDelete(t *testing.T) {
 		t.Errorf("toast %q", a.toasts)
 	}
 	// The Translate tab's: none.
-	a.hist.tab = 1
+	a.histUI.tab = 1
 	frames(tt)
 	click(t, tt, "All recordings")
 	click(t, tt, "Translate only")
@@ -293,8 +309,8 @@ func historySettingsShots(a *app, save func(string)) {
 	defer os.Remove(wav) // Settings → Storage's snapshots measure none
 	a.openHistorySettingsDialog()
 	save("history-settings")
-	hs := &a.histSet
-	hs.formFor, hs.daysSel = "asking", keepDaysLabels()[4]
+	hs := &a.histSetUI
+	hs.formFor, hs.daysSel = "asking", historyKeepDayOptions(i18n.CurrentTranslator())[4].Label
 	hs.pruneAsk, hs.pruneN = true, 12
 	save("history-settings-ask")
 	hs.pruneAsk, hs.open, hs.formFor = false, false, ""
