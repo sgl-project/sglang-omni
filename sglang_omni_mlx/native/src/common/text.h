@@ -18,6 +18,11 @@ void AppendUtf8(uint32_t code_point, std::string &out);
 size_t CodePointCount(const std::string &text);
 // Strips every Unicode space from both ends.
 std::string StripUnicodeWhitespace(const std::string &text);
+// Whether code_point is a script whose words are spaced (not CJK, Thai and
+// the like, nor whitespace).
+bool IsSpacedScript(uint32_t code_point);
+// Join segment texts, with a space only between two spaced scripts.
+std::string JoinTranscriptParts(const std::vector<std::string> &parts);
 // Whether text contains needle.
 bool Contains(const std::string &text, const char *needle);
 // Whether text has a space no combining mark attaches to, as Swift's
