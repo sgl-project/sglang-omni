@@ -360,8 +360,9 @@ func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewS
 
 // cardBubbleView is a conversation's turn (Voxt's
 // RewriteConversationBubble): the user's input fits its text on the right,
-// up to 340 wide in the small card; an answer takes that width and shows
-// Copy under the pointer.
+// up to 340 wide in the small card; an answer takes that width and, under
+// the pointer, shows a Copy icon right of it, in the room the bubble
+// leaves, so the icon never covers the text.
 func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	text, title, quote := sessionCardBlockText(block, width)
 	justify := ui.Start
@@ -384,13 +385,15 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 		quoteWidth, _ := context.MeasureText(0, quote.span())
 		text.wrap = layout.BubbleTextWidth(textWidth, titleWidth, quoteWidth, text.wrap)
 	}
-	ui.Row(context).Justify(justify).Margin(gap, 0, 0, 0).Children(func() {
+	row := ui.Row(context).Justify(justify).AlignItems(ui.Start).Gap(bubbleCopyGap).Margin(gap, 0, 0, 0)
+	// The whole row, so the pointer can move from the answer to its Copy.
+	hover := !block.User && !block.Live && row.Hovered()
+	row.Children(func() {
 		column := ui.Column(context.Key("bubble")).Width(text.wrap+2*layout.BubblePadX).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
 			Radius(layout.BubbleRadius).Background(background).Border(1, line)
 		if block.User {
 			column.AlignItems(ui.End)
 		}
-		hover := !block.User && !block.Live && column.Hovered()
 		column.Children(func() {
 			if block.Title != "" {
 				ui.Text(context, block.Title).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleAlpha)).SingleLine().Ellipsis("…").MaxWidth(text.wrap)
@@ -413,25 +416,32 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 			if block.Quote != "" {
 				cardQuoteView(context, block, quote.size, text.wrap, actions)
 			}
-			if hover {
-				copied := local.Overlay.bubbleCopied == block.Text
-				label, icon := i18n.T("Copy"), icons.Copy
-				if copied {
-					label, icon = i18n.T("Copied"), icons.CopyCheck
-				}
-				copyButton := ui.ButtonBase(context.Key("copy")).Absolute().Top(8).Right(8).Height(22).Padding(0, 8-layout.Border).Radius(11).
-					Background(ui.RGBA(0, 0, 0, 0.74)).Border(1, ui.RGBA(255, 255, 255, 0.12)).Label(label)
-				if copyButton.Children(func() {
-					ui.Row(context).Gap(4).AlignItems(ui.Center).Children(func() {
-						ui.Icon(context, icon.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.94))
-						ui.Text(context, label).FontSize(10).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.94)).SingleLine()
-					})
-				}).Clicked() {
-					actions.copyBubble(block)
-				}
-			}
 		})
+		if hover {
+			bubbleCopyButton(context, block, local, actions)
+		}
 	})
+}
+
+// bubbleCopyGap is the room between an answer bubble and its Copy icon.
+const bubbleCopyGap = 6
+
+// bubbleCopyButton is an answer bubble's Copy: an icon only, its name in
+// the tooltip; a check while the answer is the one just copied.
+func bubbleCopyButton(context *ui.Context, block sessionCardBlock, local sessionOverlayLocal, actions sessionOverlayActions) {
+	label, icon := i18n.T("Copy"), icons.Copy
+	if local.Overlay.bubbleCopied == block.Text {
+		label, icon = i18n.T("Copied"), icons.CopyCheck
+	}
+	button := ui.ButtonBase(context.Key("copy")).Size(24, 24).Shrink(0).Radius(12).
+		Background(ui.RGBA(0, 0, 0, 0.74)).Border(1, ui.RGBA(255, 255, 255, 0.12)).Label(label).Tooltip(label)
+	if button.Children(func() {
+		ui.Row(context).Grow(1).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+			ui.Icon(context, icon.Linear).Size(13, 13).TextColor(ui.RGBA(255, 255, 255, 0.94))
+		})
+	}).Clicked() {
+		actions.copyBubble(block)
+	}
 }
 
 // cardQuoteView is a follow-up's selection under its instruction, as wide
