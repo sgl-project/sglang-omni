@@ -981,9 +981,7 @@ def test_qwen3_asr_build_defaults_sm100_prefill_attention_to_flashinfer_for_the_
         recorded.build_kwargs.get("prefill_attention_backend")
         == expected_prefill_attention_backend
     )
-    assert recorded.build_kwargs.get("attention_backend") == server_args_overrides.get(
-        "attention_backend"
-    )
+    assert recorded.build_kwargs.get("attention_backend") is None
     assert (
         recorded.server_args.cuda_graph_config.prefill.backend == expected_prefill_graph
     )
