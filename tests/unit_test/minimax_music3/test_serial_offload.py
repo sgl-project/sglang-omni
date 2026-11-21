@@ -16,6 +16,8 @@ from typing import Literal
 import pytest
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.mem_cache.prefill_budget import PrefillBudget
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 try:
@@ -462,9 +464,10 @@ def run_sleep_with_concurrent_compute() -> None:
     torch.testing.assert_close(output.cpu(), expected.T)
 
 
-def test_scheduler_admits_only_the_owning_cfg_pair(
+def test_capacity_query_does_not_claim_or_change_ar_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Computing capacity claimed an owner before any pair entered a batch."""
     coordinator = registered_coordinator()
     monkeypatch.setattr(
         "sglang_omni.models.minimax_music3.scheduler.get_coordinator",
@@ -472,6 +475,17 @@ def test_scheduler_admits_only_the_owning_cfg_pair(
     )
     scheduler = MiniMaxMusic3Scheduler.__new__(MiniMaxMusic3Scheduler)
     scheduler.max_prefill_tokens = 100
+    scheduler.page_size = 1
+    scheduler.tree_cache = SimpleNamespace(
+        supports_mamba=lambda: False, evictable_size=lambda: 0
+    )
+    allocator = SimpleNamespace(
+        page_size=1,
+        available_size=lambda: 1000,
+        request_slot_reserve=lambda **kwargs: 0,
+    )
+    allocator.create_prefill_budget = lambda cache: PrefillBudget(allocator, cache)
+    scheduler.token_to_kv_pool_allocator = allocator
     monkeypatch.setattr(scheduler, "get_num_allocatable_reqs", lambda count: 4)
     queue = [
         Req(
@@ -485,12 +499,18 @@ def test_scheduler_admits_only_the_owning_cfg_pair(
     running_batch = ScheduleBatch.__new__(ScheduleBatch)
     running_batch.reqs = []
 
-    assert scheduler.pair_admission_limit(queue, running_batch) == 2
-    assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
-    coordinator.begin_dit_handoff("first")
-    assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
-    coordinator.end_dit_handoff("first")
-    assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+    with get_context().override_server_args(prefill_max_requests=None):
+        assert scheduler.pair_admission_limit(queue, running_batch) == 4
+        assert coordinator.owner_request_id is None
+        assert coordinator.try_acquire_ar("first")
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+        assert coordinator.owner_request_id == "first"
+        coordinator.begin_dit_handoff("first")
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+        assert coordinator.owner_request_id == "first"
+        coordinator.end_dit_handoff("first")
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+        assert coordinator.owner_request_id is None
 
 
 @pytest.mark.parametrize("source", ["mmap", "ram"])
