@@ -13,10 +13,10 @@ func TestDocsNameEveryMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, methods, _ := strings.Cut(string(doc), "\n## 4. Methods\n")
-	methods, _, _ = strings.Cut(methods, "\n## 5.")
-	if methods == "" {
-		t.Fatal("docs/helper-protocol.md has no §4 Methods")
+	_, methods, found := strings.Cut(string(doc), "\n## 4. Methods\n")
+	methods, _, end := strings.Cut(methods, "\n## 5.")
+	if !found || !end {
+		t.Fatal("docs/helper-protocol.md has no §4 Methods followed by §5")
 	}
 	for _, m := range slices.Concat(Requests, Notifications) {
 		row := "\n| `" + m + "`"
