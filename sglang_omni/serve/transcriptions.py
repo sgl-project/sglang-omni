@@ -127,8 +127,6 @@ def register_transcriptions(app: FastAPI) -> None:
         else:
             pass
 
-        # TODO(Ratish): add the same pre-parser body limit used by voice uploads
-        # once transcription upload limits are defined.
         audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
             form.file
         )

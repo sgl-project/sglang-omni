@@ -2,9 +2,13 @@
 """Shared request-size and timing limits for speech serving transports."""
 
 MAX_VOICE_UPLOAD_BYTES = 10 * 1024 * 1024
-_VOICE_UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
-MAX_VOICE_UPLOAD_BODY_BYTES = (
-    MAX_VOICE_UPLOAD_BYTES + _VOICE_UPLOAD_MULTIPART_OVERHEAD_BYTES
+MULTIPART_OVERHEAD_BYTES = 64 * 1024  # multipart framing beyond the file part
+MAX_VOICE_UPLOAD_BODY_BYTES = MAX_VOICE_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES
+
+# One hour of audio (the audio_chunking.max_total_audio_s default) is ~110 MiB as 16 kHz mono PCM or ~82 MiB as 192 kbit/s MP3, both within 128 MiB; an hour of raw 48 kHz stereo WAV (~659 MiB) is not.
+MAX_SPEECH_TO_TEXT_UPLOAD_BYTES = 128 * 1024 * 1024
+MAX_SPEECH_TO_TEXT_BODY_BYTES = (
+    MAX_SPEECH_TO_TEXT_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES
 )
 
 MAX_REFERENCE_AUDIO_BYTES = 10 * 1024 * 1024
