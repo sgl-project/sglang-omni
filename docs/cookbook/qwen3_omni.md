@@ -52,7 +52,7 @@ sgl-omni serve \
 
 Multimodal preprocessing (tokenization, image/video/audio feature extraction) runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to run it on a thread pool when CPU preprocessing is the bottleneck under concurrent load. Threaded preprocessing changes how requests arrive at the thinker, so greedy outputs of the bf16 MoE can differ from the serial default; keep the default when comparing accuracy across runs.
 
-Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+For video decoder thread allocation and overrides, see [Video Decoding](../basic_usage/omni.md#video-decoding).
 
 For MMSU-style audio-input / text-output benchmarks with short requests, use the fused text-path config so the full text path stays inside one worker process:
 
@@ -104,24 +104,7 @@ sgl-omni serve \
 
 ### Memory and Concurrency
 
-By default, leave `mem_fraction_static` unset and let SGLang-Omni auto-size the SGLang AR memory budget. If a specific machine needs manual tuning, you can pin the value globally or per AR stage:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --mem-fraction-static 0.88
-```
-
-Use per-stage flags when the thinker and talker need different budgets:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8008 \
-  --thinker.engine.mem_fraction_static 0.88 \
-  --talker_ar.engine.mem_fraction_static 0.88
-```
+For automatic memory sizing, global memory budgets, and per-stage overrides, see [Memory and Concurrency](../basic_usage/omni.md#memory-and-concurrency).
 
 The speech server launcher exposes the same per-stage controls:
 
@@ -137,8 +120,6 @@ python examples/run_omni.py qwen3-speech-server \
   --talker-mem-fraction-static 0.88
 ```
 
-`--mem-fraction-static` applies to every SGLang engine stage. A dotted per-stage path overrides the global value for that stage. Values must be greater than `0` and less than `1`.
-
 The thinker admits up to 64 running requests by default. Use the thinker-specific flag to lower or raise that limit in either text-only or speech mode:
 
 ```bash
@@ -147,16 +128,20 @@ sgl-omni serve \
   --thinker.engine.max_running_requests 16
 ```
 
-To configure the thinker through a pipeline YAML file instead, set the same path under the stage entry:
+For the equivalent YAML layout, see [Memory and Concurrency](../basic_usage/omni.md#memory-and-concurrency).
 
-```yaml
-stages:
-  thinker:
-    engine:
-      max_running_requests: 16
-```
+<span id="codec-coalescing-and-first-audio-latency"></span>
 
-### Codec Coalescing and First-Audio Latency
+### Speech Chunking and First-Audio Latency
+
+Speech is generated and sent in small pieces. First-audio latency is the time you wait before the first piece is available to play. Start with the default settings; change them only if you need speech to start sooner or want to improve performance under load. See [Speech Streaming Latency](../basic_usage/omni.md#speech-streaming-latency) for the general trade-off.
+
+Qwen3-Omni sends its first 10 codec frames (small units of encoded speech) individually, then groups later frames in sets of 10. The early frames help the audio decoder start without waiting for a full group. Setting `codec_coalesce_early_frames=0` removes this early delivery and can delay the first sound. These settings belong under `stages.talker_ar.factory`.
+
+If you change the audio decoder settings, measure the time until playback actually starts. Smaller groups alone do not guarantee a faster response: the decoder still needs enough frames, and requests may also wait for a GPU or network transfer.
+
+<details>
+<summary>Advanced: frame counts and decoder timing</summary>
 
 The speech pipeline sets `codec_coalesce_frames=10`, `codec_coalesce_early_frames=10`, and `codec_coalesce_first_frames=0` under `stages.talker_ar.factory`. The first 10 codec frames are sent individually; later frames are coalesced into groups of 10. Omitting a YAML override keeps these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to disable the early prefix. This aligns with the default Code2Wav 10-frame threshold: the first three windows contain 10, 20, and 30 frames, and subsequent full windows contain 35 frames including left context. These shapes can use the captured windows when CUDA Graph is enabled. Each window decodes one 10-frame chunk past its context, so an early prefix of 12 keeps these window lengths and its two extra frames wait for the next window.
 
@@ -164,7 +149,16 @@ With `initial_codec_chunk_frames=2` and `stream_chunk_size=10`, explicitly set `
 
 This is an input-readiness estimate, not a measured end-to-end TTFA delta or nine frames of audio playback time. Actual TTFA also depends on transport, queueing, and vocoder execution; the overall coalescing benchmark does not isolate the early-prefix setting.
 
+</details>
+
 ### Code2Wav Execution
+
+Code2Wav turns encoded speech into playable audio. Its GPU optimizations are enabled by default, so most users can keep the settings from the launch examples. They reuse prepared GPU work, process ready audio from several requests together, and overlap audio transfer with later computation.
+
+If you are troubleshooting, the options below let you disable individual optimizations. If you create a custom stage, keep its `gpu_memory_fraction` setting: GPU replay requires an explicit memory budget.
+
+<details>
+<summary>Advanced: GPU optimizations and configuration options</summary>
 
 Exact-shape CUDA Graph replay is enabled by default for Qwen3-Omni Code2Wav. The default stage config supplies a 2% typed GPU memory budget; colocated example configs override it with their hardware-specific budget.
 
@@ -201,7 +195,18 @@ stages:
       enable_output_overlap: false
 ```
 
+</details>
+
 ### Speech Stage Placement
+
+Start with the GPU layout from the launch examples. By default, the text-generation stage (thinker) and speech-generation stage (talker) use separate GPUs; the audio decoder (Code2Wav) shares the thinker GPU. This layout helps when several users send requests at once.
+
+If you move the thinker with `--thinker.gpu`, also set `--code2wav.gpu` if you want the audio decoder to move with it. When setting memory budgets manually, leave space for both stages on a shared GPU.
+
+A layout that handles many simultaneous requests well may behave differently with one request at a time. Test with the traffic you expect, paying attention to how soon speech starts and how long the complete reply takes.
+
+<details>
+<summary>Advanced: placement measurements and memory usage</summary>
 
 At concurrency 8, the talker is the heaviest speech stage: it holds its GPU at about 86% median utilization. Give it a GPU of its own. The code2wav vocoder is light by comparison (9–13% median utilization) and shares the thinker's GPU by default. That default holds only when the thinker stays on its own default GPU — a `--thinker.gpu` override moves the thinker alone, not code2wav, so pass `--code2wav.gpu` explicitly too if you relocate the thinker.
 
@@ -219,6 +224,8 @@ A concurrency-8 experiment held code2wav fixed on the thinker's GPU and varied o
 A follow-up single-variable pair tested moving code2wav to its own GPU instead, with the talker already isolated in both arms. Wall-clock time and end-to-end latency were flat (−0.7% and −0.9%, well within noise for a single interleaved pair) — giving the vocoder a dedicated GPU bought nothing, which is why code2wav shares the thinker's GPU instead of getting isolated like the talker.
 
 Single-stream traffic (one request at a time) sees a different trade-off. In the talker-placement experiment above, isolating the talker — moving it off the thinker's GPU — made single-stream end-to-end latency 14–17% worse: with one request in flight there is no contention to escape, while that experiment's thinker-to-talker handoff started crossing a device boundary. Single-stream TTFA still improved by about 30% (0.48–0.49 s to 0.34–0.35 s), because the talker no longer waits its turn on a shared GPU. Both the old and the new default layout already keep the thinker and talker on separate GPUs, so these numbers describe that experiment's topology change, not the default code2wav placement. Streaming TTS workloads should prefer this layout regardless, since TTFA is the latency users notice first.
+
+</details>
 
 ## Single-GPU FP8 on H100/H20
 
@@ -271,15 +278,15 @@ AutoRound quantization provides:
 
 ## Server Readiness
 
-Before it reports ready, the server sends itself a chat request with a small image, one second of audio and a short instruction (text and audio output in speech mode, text output in text-only mode, at most 8 new tokens from each stage that generates tokens), once per replica of its most replicated process, one after another, so that every replica serves one. `/health` returns 503 with status `starting` until these requests have passed through every stage, so the one-time kernel builds of that request path happen before the first user request. Inputs of other shapes, such as video or a large concurrent batch, can still build a kernel variant on first use. A failed warmup stops the server. `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600) bounds each request, and `--skip-server-warmup` reports ready without them.
+Qwen3-Omni warms up with a chat request containing a small image, one second of audio, and a short instruction. Speech mode requests text and audio output; text-only mode requests text. Each stage that generates tokens is limited to 8 new tokens. See [Server Readiness](../basic_usage/omni.md#server-readiness) for health status, replica coverage, timeout, and the skip option.
 
 ## Input / Output Modalities
 
-Qwen3-Omni accepts text, image, audio, and video input in both text-only and speech deployments. The [shared request examples](../basic_usage/omni.md#general-usage) cover image questions, spoken questions with images or video, and text-and-speech replies. To return audio, launch the speech pipeline; requesting audio on a text-only chat server returns text without an error. Realtime audio negotiation has a separate contract described below.
+Qwen3-Omni accepts text, image, audio, and video input in both text-only and speech deployments. The [shared request examples](../basic_usage/omni.md#general-usage) cover image questions, spoken questions with images or video, and text-and-speech replies. For speech output requirements and text-only server behavior, see [Speech Output](../basic_usage/omni.md#speech-output). Realtime audio negotiation has a separate contract described below.
 
 ### Sampling Parameters
 
-Standard sampling parameters apply to the thinker. When `modalities` includes `"audio"`, talker-specific parameters control speech generation.
+The [shared request parameters](../basic_usage/omni.md#request-parameters) document standard sampling fields, output formats, per-stage overrides, and video controls. The table below lists Qwen3-Omni sampling defaults and its talker-specific fields. Standard sampling parameters apply to the thinker; talker parameters apply when `modalities` includes `"audio"`.
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
@@ -289,24 +296,13 @@ Standard sampling parameters apply to the thinker. When `modalities` includes `"
 | `min_p` | float | `0.0` | Thinker |
 | `repetition_penalty` | float | `1.0` | Thinker |
 | `max_tokens` | int | `2048` | Thinker |
-| `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
-| `stop` | str or list | `null` | Thinker |
-| `seed` | int | `null` | Thinker |
-| `stream` | bool | `false` | Both |
-| `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
 | `talker_temperature` | float | `0.9` | Talker (audio output only) |
 | `talker_top_p` | float | `1.0` | Talker (audio output only) |
 | `talker_top_k` | int | `50` | Talker (audio output only) |
 | `talker_repetition_penalty` | float | `1.05` | Talker (audio output only) |
 | `talker_max_new_tokens` | int | `4096` | Talker (audio output only) |
-| `stage_sampling` | dict | `null` | Per-stage sampling override |
-| `stage_params` | dict | `null` | Per-stage non-sampling params |
-| `video_fps` | float | `null` | Frame sampling rate for video input (uses server default if unset) |
-| `video_max_frames` | int | `null` | Maximum number of frames sampled from a video |
-| `video_min_pixels` | int | `null` | Minimum pixels per video frame |
-| `video_max_pixels` | int | `null` | Maximum pixels per video frame |
-| `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
-| `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
+
+With `use_audio_in_video: true`, requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported.
 
 For HTTP and SSE errors, see [Known Limitations](../basic_usage/omni.md#known-limitations).
 
@@ -344,7 +340,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-- **Acceptance length.** Set `return_spec_tokens_details: true` to receive `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the prefill-sampled token, so it can exceed scheduler `accept len`), `spec_accept_rate`, draft counts, and a per-verify histogram. Streaming sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are omitted when no drafts were proposed or draft width is adaptive. Only thinker drafts are reported; per-stage reporting can follow when Talker supports drafts.
+- **Acceptance statistics.** Set `return_spec_tokens_details: true` to include thinker draft statistics in `sglext.spec_tokens_details`.
 - **Context.** These drafts have an 8,192-token context; the prompt, output budget, and speculative reservations must fit. Set `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
 - **Sampling.** Use `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`; disable logprobs and `return_hidden_states`. For `/generate`, set `return_logprob: false`.
 - **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to overlap work. With `--thinker.factory.async_decode_min_batch_size` set above 1, a decode batch smaller than it, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. Mixed prefill/decode batches (`enable_mixed_chunk=true`) and weight updates are unsupported with a draft.
@@ -354,12 +350,8 @@ sgl-omni serve \
 - **Speech output.** A request server needs `--text-only` with a draft. The session profile keeps speech output with either draft.
 - **Sessions.** The session profile takes either draft with synchronous decoding. The draft's 8,192-token context bounds the whole conversation, so add `--thinker.factory.max_seq_len 8192 --preprocessing.factory.max_seq_len 8192` to the session command along with the draft flags above.
 
-Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
-
 ## Known Limitations
 
-- **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps; different rates return an invalid-input error.
-
-- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Otherwise, any text in `content` is processed too.
-- **Colocated topology does not support `--thinker.tp_size 2`.** Startup raises a `ValueError`; use disaggregated topology for TP=2.
-- **Context limits apply to prompt and output.** The preprocessor rejects requests when prompt tokens meet or exceed `max_seq_len`, or when prompt tokens plus `max_new_tokens` meet or exceed it. Without both `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's checkpoint context (65,536 tokens for Instruct); setting both lower caps it. The talker uses its checkpoint limit unless `--talker_ar.factory.max_seq_len` sets it. A long spoken prompt may leave too little room for `talker_max_new_tokens`, so audio can end before the text.
+- **Use the same frame sampling rate for videos in one request.** This is how many frames the model reads per second, not the original video frame rate. Different sampling rates in the same request cause an error.
+- **Check the deployment layout when using multiple GPUs.** The colocated layout does not support splitting the text-generation model across two GPUs. If you need that setup, choose the disaggregated layout in [Server Configuration](#server-configuration).
+- **Long inputs leave less room for the answer.** The model has a limit on how much input and output it can handle together. If a request is too long, shorten the input or ask for a shorter answer. A long spoken question can also cause the audio reply to stop before the text reply finishes.
