@@ -162,6 +162,7 @@ class Drama3PipelineConfig(PipelineConfig):
             "repetition_penalty",
             "stream_audio",
             "split_granularity",
+            "carry_previous_audio",
         }
     )
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
