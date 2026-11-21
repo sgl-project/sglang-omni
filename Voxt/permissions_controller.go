@@ -59,7 +59,8 @@ func (a *app) helperPerms(r proto.PermissionsResult, err error) {
 	a.perms.mic, a.perms.access, a.perms.checked = permState(r.Microphone), r.Accessibility, true
 	if r.SpeechRecognition != "" {
 		a.perms.speech = permState(r.SpeechRecognition)
-	} else { // an older helper does not read it
+	} else {
+		// An older helper does not read it.
 		a.perms.speech = a.permSys.SpeechRecognition()
 	}
 }
