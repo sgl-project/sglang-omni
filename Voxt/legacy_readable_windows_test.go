@@ -3,20 +3,17 @@
 package main
 
 import (
+	"os"
 	"testing"
-
-	"golang.org/x/sys/windows"
 )
 
+// denyLegacyRead empties the database: an exclusive read handle does not
+// stop a later open here, but a byte read of an empty file ends in EOF, so
+// legacyReadable finds it not readable, as a database that cannot be
+// opened.
 func denyLegacyRead(t *testing.T, path string) {
 	t.Helper()
-	name, err := windows.UTF16PtrFromString(path)
-	if err != nil {
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { windows.CloseHandle(handle) })
 }

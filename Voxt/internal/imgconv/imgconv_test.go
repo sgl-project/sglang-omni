@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -99,7 +100,21 @@ func TestJPEGRejectsOversize(t *testing.T) {
 	if _, err := JPEGFile(path); err == nil || err.Error() != "image is too large" {
 		t.Fatalf("oversize file: err=%v", err)
 	}
-	if _, err := JPEGFile("/dev/zero"); err == nil || err.Error() != "image is too large" {
+	// An effectively unbounded file: /dev/zero on unix, a sparse 64 GB
+	// file on Windows.
+	huge := "/dev/zero"
+	if runtime.GOOS == "windows" {
+		huge = filepath.Join(t.TempDir(), "huge.bin")
+		f, err := os.Create(huge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Truncate(64 << 30); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	if _, err := JPEGFile(huge); err == nil || err.Error() != "image is too large" {
 		t.Fatalf("unbounded file: err=%v", err)
 	}
 }

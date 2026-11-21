@@ -21,7 +21,7 @@
   "Transcribe's shortcut %s: %s": "转录的快捷键 %s：%s",
   "Using System dictation for now.": "现在用的是系统听写。",
   "Voxt does not have microphone access. Allow it in System Settings.": "Voxt 没有麦克风权限，请在系统设置里允许。",
-  "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.": "没有辅助功能权限时，结果只会复制供你粘贴，右 ⌥ 这样的快捷键也不能用。",
+  "Without Accessibility access, results are copied for you to paste, and shortcuts such as %s do not work.": "没有辅助功能权限时，结果只能复制后由你手动粘贴，%s 这类快捷键也无法使用。",
   "character": "字",
   "characters": "字",
   "macOS asks for the microphone the first time you record.": "第一次录音时 macOS 会请求麦克风权限。",
