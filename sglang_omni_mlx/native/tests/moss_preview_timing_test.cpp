@@ -20,22 +20,23 @@ bool Check(bool condition, const char *expression) {
   return false;
 }
 
-// Records every allocation's size while armed, so the test can tell whether an
-// append allocated a preview timing object without reading the session's
-// private state.
-std::atomic<bool> g_record_allocs{false};
-std::atomic<size_t> g_alloc_count{0};
+// Records every allocation's size on the calling thread while armed, so the
+// test can tell whether an append allocated a preview timing object without
+// reading the session's private state. thread_local keeps the worker thread's
+// own allocations out of the counts and the measurement windows race-free.
+thread_local bool t_record_allocs = false;
+thread_local size_t t_alloc_count = 0;
 constexpr size_t kMaxRecordedAllocs = 8192;
-size_t g_alloc_sizes[kMaxRecordedAllocs];
+thread_local size_t t_alloc_sizes[kMaxRecordedAllocs];
 
 void RecordAlloc(std::size_t size) {
-  if (!g_record_allocs.load(std::memory_order_relaxed)) {
+  if (!t_record_allocs) {
     return;
   }
-  const size_t slot = g_alloc_count.fetch_add(1, std::memory_order_relaxed);
-  if (slot < kMaxRecordedAllocs) {
-    g_alloc_sizes[slot] = size;
+  if (t_alloc_count < kMaxRecordedAllocs) {
+    t_alloc_sizes[t_alloc_count] = size;
   }
+  ++t_alloc_count;
 }
 
 void *operator new(std::size_t size) {
@@ -59,18 +60,17 @@ void operator delete[](void *pointer, std::size_t) noexcept {
 
 struct AllocWatch {
   AllocWatch() {
-    g_alloc_count.store(0, std::memory_order_relaxed);
-    g_record_allocs.store(true, std::memory_order_relaxed);
+    t_alloc_count = 0;
+    t_record_allocs = true;
   }
-  ~AllocWatch() { g_record_allocs.store(false, std::memory_order_relaxed); }
+  ~AllocWatch() { t_record_allocs = false; }
 };
 
 size_t RecordedAllocCountOfSize(std::size_t size) {
-  const size_t count = std::min(g_alloc_count.load(std::memory_order_relaxed),
-                                kMaxRecordedAllocs);
+  const size_t count = std::min(t_alloc_count, kMaxRecordedAllocs);
   size_t matches = 0;
   for (size_t i = 0; i < count; ++i) {
-    if (g_alloc_sizes[i] == size) {
+    if (t_alloc_sizes[i] == size) {
       ++matches;
     }
   }
@@ -158,10 +158,11 @@ int main() {
   }
 
   // Regression: the timing object belongs to a decode, so an append that
-  // produces none must not allocate one.
-  omni_server::TranscriptionWorker worker([] {}, [] {}, 1);
+  // produces none must not allocate one. Declared so teardown joins the
+  // worker before anything its job references is destroyed.
   moss::MossTranscriber transcriber("", "", 0);
   std::vector<std::string> events;
+  omni_server::TranscriptionWorker worker([] {}, [] {}, 1);
   const auto session = std::make_shared<moss::MossRealtimeSession>(
       worker, transcriber, [&events](const std::string &event) {
         events.push_back(event);
@@ -173,11 +174,10 @@ int main() {
     AllocWatch watch;
     const auto probe = std::make_shared<omni_common::MossPreviewTiming>();
     (void)probe;
-    if (!Check(g_alloc_count.load(std::memory_order_relaxed) == 1,
-               "timing allocation is observable")) {
+    if (!Check(t_alloc_count == 1, "timing allocation is observable")) {
       return 1;
     }
-    timing_alloc_size = g_alloc_sizes[0];
+    timing_alloc_size = t_alloc_sizes[0];
   }
 
   // 30 samples stay below the 1.25 s preview minimum, so nothing decodes.
