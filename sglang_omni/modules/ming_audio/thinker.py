@@ -84,6 +84,7 @@ class Ming3AudioMTP(BailingMoeForCausalLMNextN):
 
 class Ming3AudioModelRunner(ModelRunner):
     speculative_ignores_request_seed = True
+    supports_speculative_async_decode = True
 
     def before_prefill(
         self,
