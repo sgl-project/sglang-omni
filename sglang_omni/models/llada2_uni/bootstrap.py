@@ -14,17 +14,16 @@ from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBack
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
-from sglang_omni.models.llada2_uni.cfg_attention_backend import (
-    CFG_ATTENTION_BACKEND,
-    register_llada2_cfg_flashinfer_backend,
-)
-from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
 from sglang_omni.models.llada2_uni.request_builders import (
     make_dllm_thinker_scheduler_adapters,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+ASCEND_ATTENTION_BACKEND = "ascend"
+CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
 
 
 def register_llada2_uni_cfg() -> None:
@@ -32,8 +31,38 @@ def register_llada2_uni_cfg() -> None:
 
     The text-only LowConfidence variant does not need this registration.
     """
+    from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
+
     algo_name_to_cls["LowConfidenceCFG"] = LowConfidenceCFG
+    if current_platform.is_npu():
+        # The ascend attention backend is frozen by NPU argument resolution;
+        # the CFG variant is injected by wrapping its factory instead.
+        from sglang_omni.models.llada2_uni.cfg_attention_ascend import (
+            register_llada2_cfg_ascend_backend,
+        )
+
+        register_llada2_cfg_ascend_backend()
+        return
+    else:
+        pass
+    from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+        register_llada2_cfg_flashinfer_backend,
+    )
+
     register_llada2_cfg_flashinfer_backend()
+
+
+def cfg_attention_backend_name() -> str:
+    """Attention backend that satisfies the LowConfidenceCFG contract."""
+    if current_platform.is_npu():
+        return ASCEND_ATTENTION_BACKEND
+    else:
+        pass
+    from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+        CFG_ATTENTION_BACKEND,
+    )
+
+    return CFG_ATTENTION_BACKEND
 
 
 def validate_cfg(server_args: ServerArgs) -> None:
@@ -42,9 +71,14 @@ def validate_cfg(server_args: ServerArgs) -> None:
         return
     else:
         pass
+    if current_platform.is_npu() and not cfg.disable_cuda_graph:
+        raise ValueError("LowConfidenceCFG decode CUDA graphs are not supported on NPU")
+    else:
+        pass
     register_llada2_uni_cfg()
-    if any(backend != CFG_ATTENTION_BACKEND for backend in attention_backends_of(cfg)):
-        raise ValueError("LowConfidenceCFG requires llada2_uni_cfg_flashinfer")
+    expected_backend = cfg_attention_backend_name()
+    if any(backend != expected_backend for backend in attention_backends_of(cfg)):
+        raise ValueError(f"LowConfidenceCFG requires {expected_backend}")
     else:
         pass
     if cfg.dllm_fdfo:

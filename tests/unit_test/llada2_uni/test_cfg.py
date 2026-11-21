@@ -651,3 +651,58 @@ def test_attention_writes_kv_for_masked_extend(
     torch.testing.assert_close(result, expected.view(4, 2))
     assert len(writes) == 1
     assert torch.equal(writes[0][1].loc, batch.out_cache_loc)
+
+
+def make_image_only_config() -> DllmConfig:
+    return DllmConfig(
+        algorithm="LowConfidenceCFG",
+        algorithm_config={"threshold": 0.2, "image_token_offset": 3},
+        block_size=4,
+        mask_id=9,
+        max_running_requests=1,
+        first_done_first_out_mode=False,
+    )
+
+
+def test_image_only_guidance_keeps_raw_logits_intact() -> None:
+    config = make_image_only_config()
+    request = LLaDA2UniRequest(
+        rid="cond",
+        origin_input_text="",
+        origin_input_ids=array("q", [1, 2, 3, 4]),
+        sampling_params=SamplingParams(max_new_tokens=4, temperature=0.0),
+        dllm_config=config,
+    )
+    request.dllm_phase = DllmReqPhase.INCOMING_DECODE
+    request._task_kind = "t2i"  # noqa: leading-underscore  # DLLM protocol
+    request._dllm_steps = 1  # noqa: leading-underscore  # DLLM protocol
+
+    input_ids = torch.tensor([1, 2, 9, 9])
+    # Text tokens score highest, so only an image-only mask keeps them out.
+    raw_logits = torch.tensor(
+        [
+            [5.0, 4.0, 3.0, 0.5, 1.0, 0.2],
+            [5.0, 4.0, 3.0, 0.5, 1.0, 0.2],
+            [5.0, 4.0, 3.0, 0.5, 1.0, 0.2],
+            [5.0, 4.0, 3.0, 0.5, 1.0, 0.2],
+        ]
+    )
+    snapshot = raw_logits.clone()
+
+    def forward(batch: NS, pp_proxy_tensors: None = None) -> NS:
+        return NS(logits_output=NS(full_logits=raw_logits), can_run_graph=False)
+
+    LowConfidenceCFG(config).run(
+        NS(forward=forward),
+        NS(
+            input_ids=input_ids,
+            batch_size=1,
+            reqs=[request],
+            dllm_prompt_mask=None,
+        ),
+    )
+
+    # The algorithm must not scribble over the model's logits buffer.
+    torch.testing.assert_close(raw_logits, snapshot, rtol=0, atol=0)
+    assert input_ids[:2].tolist() == [1, 2]
+    assert (input_ids[2:] >= 3).all()

@@ -15,10 +15,11 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from typing_extensions import NotRequired, TypedDict
 
 from sglang_omni.models.llada2_uni.bootstrap import (
+    ASCEND_ATTENTION_BACKEND,
+    cfg_attention_backend_name,
     create_dllm_thinker_scheduler,
     register_llada2_uni_cfg,
 )
-from sglang_omni.models.llada2_uni.cfg_attention_backend import CFG_ATTENTION_BACKEND
 from sglang_omni.models.llada2_uni.components.common import load_llada2_tokenizer
 from sglang_omni.models.llada2_uni.components.decoder_runtime import (
     initialize_decoder_runtime,
@@ -42,6 +43,7 @@ from sglang_omni.models.llada2_uni.request_builders import (
     merge_image_tokens_for_thinker,
 )
 from sglang_omni.models.weight_loader import resolve_dtype
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
@@ -148,13 +150,15 @@ def create_sglang_dllm_thinker_executor_from_config(
     resolved_gpu_id = concrete_device.index or 0
 
     overrides: dict[str, object] = {
-        "attention_backend": "flashinfer",
+        "attention_backend": (
+            ASCEND_ATTENTION_BACKEND if current_platform.is_npu() else "flashinfer"
+        ),
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
     }
     if dllm_algorithm == "LowConfidenceCFG":
         register_llada2_uni_cfg()
-        overrides["attention_backend"] = CFG_ATTENTION_BACKEND
+        overrides["attention_backend"] = cfg_attention_backend_name()
         overrides["dllm_fdfo"] = False
     else:
         pass

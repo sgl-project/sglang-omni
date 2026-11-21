@@ -110,9 +110,16 @@ class LowConfidenceCFG(DllmAlgorithm):
                 pass
 
             num_to_transfer = base + (step < remainder)
+            if force_image_only:
+                text_mask = (
+                    torch.arange(logits.shape[-1], device=logits.device)
+                    < self.image_token_offset
+                )
+            else:
+                pass
             for row, row_logits, row_mask in zip(active_ids, logits, mask):
                 if force_image_only:
-                    row_logits[:, : self.image_token_offset] = -torch.inf
+                    row_logits = row_logits.masked_fill(text_mask, -torch.inf)
                 else:
                     pass
                 predicted_ids = row_logits.argmax(dim=-1)
