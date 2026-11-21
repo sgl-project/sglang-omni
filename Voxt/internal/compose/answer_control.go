@@ -129,8 +129,14 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 		if bracketedToolPayload(rest) {
 			return false
 		}
-		if fields := strings.Fields(rest); len(fields) > 0 && strings.Contains(fields[0], "_") {
+		fields := strings.Fields(rest)
+		if len(fields) > 0 && strings.Contains(fields[0], "_") {
 			return false
+		}
+		// An input's tool marker is literal in a prose sentence, not before a payload.
+		if inlineLiteral(s, start, token) && (preservedControlToken(token, input) || previousControlToken(token, previous)) &&
+			(len(fields) > 1 || strings.ContainsFunc(rest, func(r rune) bool { return unicode.Is(unicode.Han, r) })) {
+			return true
 		}
 	}
 	if !trailingControlToken(token) || turnEndLeak(rest) {

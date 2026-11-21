@@ -57,7 +57,7 @@ func TestAnswerCleanupWithPreviousInput(t *testing.T) {
 		{name: "literal opener before real block", text: "The <think> tag <think>private</think>", previous: "<think>", want: "The"},
 		{name: "two inline literals", text: "Use <|im_end|> <think> tag", previous: "explain <|im_end|> and <think>", want: "Use"},
 		{name: "literal channel opener", text: "The <|channel> tag wraps reasoning.", previous: "explain <|channel>", want: "The"},
-		{name: "literal tool call opener", text: "The <|tool_call|> tag starts a call.", previous: "explain <|tool_call|>", want: "The"},
+		{name: "literal tool call opener", text: "The <|tool_call|> tag starts a call.", previous: "explain <|tool_call|>", want: "The <|tool_call|> tag starts a call."},
 		{name: "literal thinking opener at answer start", text: "<think> tag wraps reasoning.", previous: "explain <think>", want: ""},
 		{name: "literal thinking opener after a newline", text: "Markers:\n<think> tag opens reasoning.", previous: "explain <think>", want: "Markers:"},
 		{name: "literal thinking closer at answer start", text: "</think> tag ends reasoning.", previous: "explain </think>", want: "</think> tag ends reasoning."},
@@ -100,6 +100,8 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 	}{
 		{"end token", "Explain <|im_end|> literally", "Use <|im_end|> literally"},
 		{"thinking tags", "Explain <think> and </think> literally", "Keep <think>this</think> whole"},
+		{"dictated tool call token", "Use the <|tool_call|> token carefully.", "Use the <|tool_call|> token carefully."},
+		{"Chinese tool call token", "解释 <|tool_call|> 这个标记。", "解释 <|tool_call|> 这个标记。"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Clean(tc.text, tc.input); got != tc.text {
