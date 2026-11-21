@@ -335,7 +335,7 @@ func buildOnboardingViewState(translator *i18n.Translator, input onboardingViewS
 		state.Subtitle = translator.T("Voxt needs the microphone to hear you, and Accessibility to type the result where your cursor is. Allow them here, or later in Settings → Permissions.")
 	case obModels:
 		state.Title = translator.T("Models")
-		state.Subtitle = translator.T("Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.")
+		state.Subtitle = i18n.PlatformFor(translator, "Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.", "Voxt recognises speech with a model on this PC and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.")
 	case obTranscribe:
 		state.Title = translator.T("Try Transcribe")
 		state.Subtitle = translator.T("Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.")

@@ -305,8 +305,12 @@ func (d Data) Files() ([]string, error) {
 		if len(p) > 3 && p[0] == '/' && p[2] == ':' {
 			p = p[1:]
 		}
+		// A slash-absolute URI path is absolute even where the OS wants a
+		// drive letter (Windows gets real paths with one, but copied URI
+		// lists from other platforms carry the POSIX form).
+		slashAbs := len(p) > 1 && p[0] == '/'
 		p = filepath.FromSlash(p)
-		if filepath.IsAbs(p) {
+		if filepath.IsAbs(p) || slashAbs {
 			paths = append(paths, p)
 		}
 	}

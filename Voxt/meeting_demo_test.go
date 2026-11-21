@@ -226,7 +226,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 	case "history-access":
 		access := state.HistoryAccess
 		if access.Ask {
-			return i18n.T("Let programs on this Mac read the history?")
+			return i18n.Platform("Let programs on this Mac read the history?", "Let programs on this PC read the history?")
 		}
 		if access.ListOpen {
 			return i18n.T("Read log")
@@ -485,7 +485,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 				return row.Name
 			}
 		}
-		return i18n.T("On this Mac") // a Settings section now, without a page title
+		return i18n.Platform("On this Mac", "On this PC") // a Settings section now, without a page title
 
 	case "settings":
 		return settingsDemoExpectedText(state.Settings)
@@ -751,6 +751,7 @@ func TestMeetingDemoActionControls(t *testing.T) {
 			}
 			tester := newMeetingDemoTester(t, host)
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				if step.menu {
 					if err := tester.ChooseMenuItem(step.label); err != nil {
 						t.Fatalf("%s: %v (texts %q)", step.label, err, tester.Texts())

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,13 +10,20 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
+// meetingFixtureAdapt rewrites a fixture's JSON before decoding. Tests
+// set it to adapt the checked-in macOS captures to the platform they run
+// on (privacy deep links, shortcut glyphs); nil in the app.
+var meetingFixtureAdapt func([]byte) []byte
+
 func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return meetingFixtureState{}, err
 	}
-	defer file.Close()
-	decoder := json.NewDecoder(file)
+	if meetingFixtureAdapt != nil {
+		data = meetingFixtureAdapt(data)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var fixture meetingFixtureState
 	if err := decoder.Decode(&fixture); err != nil {

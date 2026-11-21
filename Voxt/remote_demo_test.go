@@ -125,6 +125,7 @@ func TestRemoteDemoActionControls(t *testing.T) {
 			selectMeetingDemoFixture(t, host, test.fixture)
 			tester := newMeetingDemoTester(t, host)
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				var err error
 				switch {
 				case step.at != nil:

@@ -165,12 +165,25 @@ func TestTranscribeHotkeyConflicts(t *testing.T) {
 func TestTranscribePasteLast(t *testing.T) {
 	a, tt := trTester(t)
 	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Off")
+	// Choose with the keyboard: where font metrics make the options
+	// taller than the popup, the first and last of them scroll out of
+	// view and a click lands on another row.
+	tt.Key(0, ui.KeyHome)
+	frames(tt)
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	if k := a.lib.settings.Get().Features.PasteLast.Keys; k != "" {
 		t.Fatalf("paste-last %q", k)
 	}
 	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Right ⌘")
+	tt.Key(0, ui.KeyHome)
+	frames(tt)
+	for range slices.Index(keyPresets, "RightCommand") + 1 {
+		tt.Key(0, ui.KeyDown) // past Off and the presets before RightCommand
+		frames(tt)
+	}
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	if k := a.lib.settings.Get().Features.PasteLast; k.Keys != "RightCommand" || k.Trigger != settings.TriggerTap {
 		t.Fatalf("paste-last %+v", k)
 	}

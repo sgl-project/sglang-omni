@@ -61,6 +61,7 @@ func TestSettingsDemoActionControls(t *testing.T) {
 				frames(tester)
 			}
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				var err error
 				switch {
 				case step.context:

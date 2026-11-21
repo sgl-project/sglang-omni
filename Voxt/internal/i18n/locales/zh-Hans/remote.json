@@ -42,6 +42,7 @@
   "Fewer characters than": "少于多少字",
   "For example: Technical talk; prefer product names from the dictionary.": "例如：技术讨论；优先识别词典里的产品名。",
   "Free, and the text stays on this Mac.": "免费，文字不离开这台 Mac。",
+  "Free, and the text stays on this PC.": "免费，文字不离开这台电脑。",
   "Frequency penalty": "频率惩罚",
   "From your app in the Volcengine speech console. Use its Access Token as the key below. Keys from the newer console need no App ID.": "火山引擎语音控制台里应用的 App ID，下面的密钥填它的 Access Token。新版控制台的 API Key 不需要 App ID。",
   "Generation settings": "生成设置",

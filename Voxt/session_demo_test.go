@@ -180,6 +180,7 @@ func TestSessionDemoActionControls(t *testing.T) {
 				clickSessionDemoBubbleCopy(t, host, tester)
 			}
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				if err := tester.ClickControl(step.label); err != nil {
 					t.Fatalf("%s: %v (controls %q)", step.label, err, tester.AccessLabels())
 				}
