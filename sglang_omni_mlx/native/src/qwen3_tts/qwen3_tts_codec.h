@@ -87,8 +87,6 @@ private:
   const int first_chunk_frames_;
   std::vector<mlx::core::array> frames_;
   int emitted_frames_ = 0;
-  // Frames whose first code is not 0.
-  int voiced_frames_ = 0;
   // A whole request's decoded samples, returned by Finish.
   std::vector<float> held_samples_;
 };
