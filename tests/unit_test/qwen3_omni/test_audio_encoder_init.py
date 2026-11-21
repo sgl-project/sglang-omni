@@ -13,7 +13,9 @@ def test_audio_encoder_initializes_with_installed_transformers(monkeypatch):
     )
     monkeypatch.setattr(audio_encoder, "share_segment_splits", lambda *args: None)
 
-    encoder = audio_encoder.Qwen3OmniAudioEncoder("unused", device="cpu")
+    encoder = audio_encoder.Qwen3OmniAudioEncoder(
+        "unused", device="cpu", mm_attention_backend=None
+    )
 
     assert encoder.audio_tower is tower
     lengths = encoder.downsample_lengths(torch.tensor([100, 200]))
