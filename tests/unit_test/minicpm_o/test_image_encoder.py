@@ -68,6 +68,73 @@ def test_padding_does_not_change_image_embeddings() -> None:
     torch.testing.assert_close(batched[:, 0], torch.tensor([1.0, 2.0, 3.0]))
 
 
+@pytest.mark.accelerator
+def test_cpu_metadata_matches_device_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compare image embeddings with the previous device-metadata execution path."""
+    checkpoint = checkpoint_dir()
+    if checkpoint is None or not torch.cuda.is_available():
+        pytest.skip("requires MiniCPM-o checkpoint weights and CUDA")
+    else:
+        pass
+
+    from sglang.srt.layers.attention import vision
+    from sglang.srt.layers.attention.vision import VisionAttentionMetadata
+
+    encoder = MiniCPMOImageEncoder(str(checkpoint), device="cuda", dtype="bfloat16")
+    run_vpm = encoder.run_vpm
+    resample = encoder.resampler.forward
+    prepare_metadata = vision.prepare_vision_attention_metadata
+
+    def device_vpm(
+        pixel_values: torch.Tensor,
+        patch_attn_mask: torch.Tensor,
+        tgt_sizes: torch.Tensor,
+        patch_counts_cpu: torch.Tensor,
+    ) -> torch.Tensor:
+        return run_vpm(
+            pixel_values,
+            patch_attn_mask.to(encoder.device),
+            tgt_sizes.to(encoder.device),
+            patch_counts_cpu,
+        )
+
+    def device_resample(
+        features: torch.Tensor, tgt_sizes: torch.Tensor
+    ) -> torch.Tensor:
+        return resample(features, tgt_sizes.to(encoder.device))
+
+    def device_metadata(
+        cu_seqlens: torch.Tensor,
+        device: torch.device,
+        *,
+        max_seqlen: int,
+    ) -> VisionAttentionMetadata:
+        """Ignore the supplied length to reproduce the previous GPU reduction."""
+        return prepare_metadata(cu_seqlens, device=device)
+
+    generator = torch.Generator().manual_seed(0)
+    patch_size = encoder.vpm.config.patch_size
+    tgt_sizes = torch.tensor([[8, 12], [3, 5], [1, 9]], dtype=torch.int32)
+    pixel_values = [
+        torch.randn(3, patch_size, height * width * patch_size, generator=generator)
+        for height, width in tgt_sizes.tolist()
+    ]
+    for chunk_size in (1, 2, 4):
+        encoder.vision_batch_size = chunk_size
+        with monkeypatch.context() as baseline:
+            baseline.setattr(encoder, "run_vpm", device_vpm)
+            baseline.setattr(encoder.resampler, "forward", device_resample)
+            baseline.setattr(
+                vision, "prepare_vision_attention_metadata", device_metadata
+            )
+            expected = encoder(pixel_values=pixel_values, tgt_sizes=tgt_sizes)[
+                "image_embeds"
+            ].clone()
+        actual = encoder(pixel_values=pixel_values, tgt_sizes=tgt_sizes)["image_embeds"]
+        assert torch.isfinite(actual).all()
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 def build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.dtype):
     """The pre-srt remote-code path this component replaced, as golden."""
     from transformers import AutoConfig
