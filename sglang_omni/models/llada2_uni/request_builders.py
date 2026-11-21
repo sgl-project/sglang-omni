@@ -36,6 +36,7 @@ from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniPipelineState,
     ThinkerOutput,
 )
+from sglang_omni.pipeline.umm import CONTEXT_KEY, ContextRef
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import (
     DllmRequest,
@@ -169,7 +170,6 @@ def build_dllm_thinker_request(
     phase = interleaved["phase"] if state.task_kind == "interleaved" else None
     image_phase = phase == "image"
     cfg_settings = stream_state
-    conditional_pad = 0
     max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
     if phase == "text":
         remaining = interleaved["max_seq_len"] - len(input_ids_array)
@@ -180,40 +180,30 @@ def build_dllm_thinker_request(
         max_new_tokens = min(interleaved["text_max_new_tokens"], remaining)
     elif image_phase:
         plan = interleaved["cfg_plan"]
-        branches = {"conditional": list(input_ids_array)}
-        branches.update(
-            {
-                "uncond" if name == "unconditional" else "uncond_img": ids
-                for name, ids in plan["branches"].items()
-            }
-        )
-        length = max(map(len, branches.values()))
-        # The frame's grid, image tokens only, as a text-to-image pass.
-        max_new_tokens = min(
-            interleaved["current_frame"]["remaining_image_tokens"],
-            interleaved["max_seq_len"] - length,
-        )
-        if max_new_tokens <= 0:
-            raise ValueError("interleaved image phase exhausted its token budget")
-        else:
-            pass
-        conditional_pad = length - len(input_ids_array)
-        input_ids_array = array(
-            "q", [tokenizer.mask_token_id] * conditional_pad + list(input_ids_array)
-        )
         cfg_settings = {
             "cfg_scale": plan["cfg_scale"],
             "cfg_image_scale": plan["cfg_image_scale"],
             "cfg_rescale": plan["cfg_rescale"],
         }
-        for name, ids in branches.items():
-            if name != "conditional":
-                (
-                    cfg_settings[f"{name}_input_ids"],
-                    cfg_settings[f"{name}_left_pad_len"],
-                ) = align_cfg_unconditional_input_ids(tokenizer, input_ids_array, ids)
-            else:
-                pass
+        length = len(input_ids_array)
+        for name, ids in plan["branches"].items():
+            branch = "uncond" if name == "unconditional" else "uncond_img"
+            pad_length = plan["pad_lengths"][name]
+            pad_start = plan["pad_starts"].get(name, 0)
+            cfg_settings[f"{branch}_input_ids"] = [
+                *ids[:pad_start],
+                *[tokenizer.mask_token_id] * pad_length,
+                *ids[pad_start:],
+            ]
+            cfg_settings[f"{branch}_pad_len"] = pad_length
+            cfg_settings[f"{branch}_pad_start"] = pad_start
+            length = max(length, pad_length + len(ids))
+        # The frame's grid, image tokens only, as a text-to-image pass.
+        max_new_tokens = interleaved["current_frame"]["remaining_image_tokens"]
+        if length + max_new_tokens > interleaved["max_seq_len"]:
+            raise ValueError("interleaved image phase exhausted its token budget")
+        else:
+            pass
     elif state.thinking_phase == "text":
         max_new_tokens = DEFAULT_THINKER_MAX_NEW_TOKENS
     elif state.task_kind in ("t2i", "edit"):
@@ -273,9 +263,6 @@ def build_dllm_thinker_request(
     )
     if image_phase:
         req._task_kind = "t2i"  # noqa: leading-underscore  # DLLM protocol
-        req._dllm_left_pad_len = (
-            conditional_pad  # noqa: leading-underscore  # DLLM protocol
-        )
     else:
         pass
     # dllm_steps sets the image pass, the thinking text keeps the block schedule.
@@ -303,34 +290,55 @@ def build_dllm_thinker_request(
         for branch in ("uncond", "uncond_img"):
             if branch == "uncond":
                 branch_ids = uncond_ids
-                pad_len = cfg_settings["uncond_left_pad_len"]
+                pad_len = cfg_settings["uncond_pad_len"]
             else:
                 branch_ids = cfg_settings.get("uncond_img_input_ids")
                 if branch_ids is None:
                     continue
                 else:
-                    pad_len = cfg_settings["uncond_img_left_pad_len"]
-            if len(branch_ids) != len(input_ids_array):
-                raise ValueError("CFG branches must have equal physical lengths")
+                    pad_len = cfg_settings["uncond_img_pad_len"]
+            if (len(branch_ids) - len(input_ids_array)) % dllm_config.block_size:
+                raise ValueError("CFG branches must share a block column")
             else:
                 pass
-            if not 0 <= pad_len <= len(branch_ids):
-                raise ValueError(f"Invalid CFG {branch} left-pad length: {pad_len}")
+            pad_start = cfg_settings.get(f"{branch}_pad_start", 0)
+            if not 0 <= pad_start <= pad_start + pad_len <= len(branch_ids):
+                raise ValueError(
+                    f"CFG {branch} padding is outside its prompt: "
+                    f"start={pad_start}, length={pad_len}"
+                )
+            else:
+                pass
+            # The scheduler masks this span by position alone, so it must be the padding.
+            if any(
+                padding_id != tokenizer.mask_token_id
+                for padding_id in branch_ids[pad_start : pad_start + pad_len]
+            ):
+                raise ValueError(
+                    f"CFG {branch} padding does not cover mask tokens: "
+                    f"start={pad_start}, length={pad_len}"
+                )
             else:
                 pass
             if branch == "uncond":
                 req._uncond_input_ids = list(
                     branch_ids
                 )  # noqa: leading-underscore  # DLLM protocol
-                req._uncond_left_pad_len = (
+                req._uncond_pad_len = (
                     pad_len  # noqa: leading-underscore  # DLLM protocol
+                )
+                req._uncond_pad_start = (
+                    pad_start  # noqa: leading-underscore  # DLLM protocol
                 )
             else:
                 req._uncond_img_input_ids = list(
                     branch_ids
                 )  # noqa: leading-underscore  # DLLM protocol
-                req._uncond_img_left_pad_len = (
+                req._uncond_img_pad_len = (
                     pad_len  # noqa: leading-underscore  # DLLM protocol
+                )
+                req._uncond_img_pad_start = (
+                    pad_start  # noqa: leading-underscore  # DLLM protocol
                 )
         if cfg_settings.get("uncond_img_input_ids") is not None:
             req._cfg_image_scale = cfg_settings[
@@ -402,7 +410,7 @@ def thinking_phase1_to_phase2(
         )
         cfg_inputs = {
             "uncond_input_ids": uncond_ids,
-            "uncond_left_pad_len": pad_len,
+            "uncond_pad_len": pad_len,
         }
     else:
         pass
@@ -476,14 +484,23 @@ def make_dllm_thinker_scheduler_adapters(
                     state,
                     tokenizer,
                     completed_phase=state.stream_state["interleaved"]["phase"],
+                    block_size=dllm_config.block_size,
                     finish_reason=data.finish_reason,
                 )
             else:
                 pass
-        return StagePayload(
+        result = StagePayload(
             request_id=payload.request_id,
             request=payload.request,
             data=state.to_dict(),
         )
+        # The next thinker phase continues this sequence, so its prefix stays cached.
+        if state.task_kind == "interleaved" and not state.stream_state[
+            "interleaved"
+        ].get("done"):
+            result.data[CONTEXT_KEY] = ContextRef(stage_name, payload.request_id)
+        else:
+            pass
+        return result
 
     return request_builder, result_adapter

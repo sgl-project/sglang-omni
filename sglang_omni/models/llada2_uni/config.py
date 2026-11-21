@@ -217,7 +217,9 @@ class LLaDA2UniInterleavedPipelineConfig(UMMPipelineConfig, LLaDA2UniPipelineCon
             name=THINKER_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
-            factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            factory=FactoryArgs(
+                max_seq_len=8192, dllm_algorithm="LowConfidenceCFG", reuse_prefix=True
+            ),
             env={"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"},
             engine=EngineArgs(
                 mem_fraction_static=0.75,

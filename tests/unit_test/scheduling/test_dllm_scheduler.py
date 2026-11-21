@@ -14,7 +14,9 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.mem_cache.allocator import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import EvictParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.unified_cache.components import ComponentType
@@ -23,10 +25,15 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.pipeline.umm import CONTEXT_KEY, ContextRef
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 from sglang_omni.scheduling.message import IncomingMessage
-from sglang_omni.scheduling.sglang_backend.request_data import DllmRequest
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    DllmRequest,
+    SGLangDLLMRequestData,
+)
 
 
 class ReqDouble:
@@ -82,7 +89,9 @@ def make_scheduler(
     scheduler.uncond_to_cond = {}
     scheduler.uncond_rids = set()
     scheduler.orphaned_uncond_rids = set()
-    scheduler.result_adapter = lambda value: value
+    scheduler.retained_contexts = {}
+    scheduler.contexts_to_retain = set()
+    scheduler.result_adapter = lambda request_data: StagePayload("req", None, {})
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
 
@@ -299,6 +308,8 @@ def test_block_that_cannot_be_followed_inside_the_context_finishes_by_length(
     context_len: int, finish_reason: str | None
 ) -> None:
     scheduler = make_scheduler(fdfo=False, context_len=context_len)
+    outbox = []
+    scheduler.outbox = SimpleNamespace(put=outbox.append)
     req = ReqDouble()
     req_data = SimpleNamespace(output_ids=None, finish_reason=None)
     scheduler.rid_to_req_data = {req.rid: req_data}
@@ -313,6 +324,9 @@ def test_block_that_cannot_be_followed_inside_the_context_finishes_by_length(
 
     assert req.finished() is (finish_reason is not None)
     assert req_data.finish_reason == finish_reason
+    assert [message.type for message in outbox] == (
+        ["result"] if finish_reason is not None else []
+    )
 
 
 def test_sync_dllm_result_commits_generated_suffix() -> None:
@@ -433,6 +447,99 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
 
     assert batch.reqs == requests
     assert all(req.extend_len == 32 for req in batch.reqs)
+
+
+@pytest.mark.parametrize(
+    ("lengths", "expected_rounds"),
+    [
+        (
+            [40, 104],
+            [
+                {"cond": (0, 32), "uncond": (0, 32)},
+                {"uncond": (32, 64)},
+                {"uncond": (64, 96)},
+                {"cond": (32, 64), "uncond": (96, 128)},
+            ],
+        ),
+        (
+            [8, 72],
+            [
+                {"uncond": (0, 32)},
+                {"uncond": (32, 64)},
+                {"cond": (0, 32), "uncond": (64, 96)},
+            ],
+        ),
+    ],
+    ids=["both-rows-encode-first", "conditional-decodes-at-admission"],
+)
+def test_cfg_rows_encode_at_their_own_length_then_decode_together(
+    chunked_scheduler: DllmScheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    lengths: list[int],
+    expected_rounds: list[dict[str, tuple[int, int]]],
+) -> None:
+    scheduler = chunked_scheduler
+    requests = scheduler.waiting_queue.copy()
+    for request, length in zip(requests, lengths, strict=True):
+        request.origin_input_ids = array("q", [1] * length)
+    scheduler.cond_to_unconds = {"cond": ["uncond"]}
+    scheduler.uncond_to_cond = {"uncond": "cond"}
+    scheduler.uncond_rids = {"uncond"}
+    scheduler.orphaned_uncond_rids = set()
+    requests[1]._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
+    monkeypatch.setattr(
+        dllm_scheduler_module,
+        "ScheduleBatch",
+        SimpleNamespace(
+            init_new=lambda **kwargs: SimpleNamespace(
+                reqs=kwargs["reqs"],
+                prepare_for_extend=lambda: None,
+                filter_batch=lambda **kwargs: None,
+            )
+        ),
+    )
+
+    rounds = []
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
+        for _ in expected_rounds:
+            batch = scheduler.schedule_next_batch()
+            rounds.append(
+                {req.rid: (req.prefix_len, req.extend_end) for req in batch.reqs}
+            )
+            scheduler.post_step(batch)
+
+    assert rounds == expected_rounds
+    assert not any(req.is_dllm_prefill() for req in batch.reqs)
+
+
+def test_companion_in_another_block_column_is_rejected(
+    chunked_scheduler: DllmScheduler,
+) -> None:
+    scheduler = chunked_scheduler
+    conditional = scheduler.waiting_queue[0]
+
+    with pytest.raises(ValueError, match="share a block column"):
+        scheduler.create_uncond_companion(
+            conditional, [1] * 129, 0, 0, "-uncond", mark_img=False
+        )
+
+
+def test_companion_keeps_the_span_of_its_padding(
+    chunked_scheduler: DllmScheduler,
+) -> None:
+    scheduler = chunked_scheduler
+    conditional = scheduler.waiting_queue[0]
+
+    scheduler.create_uncond_companion(
+        conditional, [1] * 96, 3, 40, "-uncond", mark_img=False
+    )
+
+    companion = scheduler.waiting_queue[-1]
+    assert companion.rid == "cond-uncond"
+    assert (
+        companion._dllm_pad_start,  # noqa: leading-underscore  # DLLM protocol
+        companion._dllm_pad_len,  # noqa: leading-underscore  # DLLM protocol
+    ) == (40, 3)
 
 
 def test_dllm_staging_admission_uses_dllm_config(
@@ -597,3 +704,273 @@ def test_tp_abort_at_forward_boundary(
         nprocs=2,
         join=True,
     )
+
+
+PHASE_POOL_TOKENS = 64
+GENERATED_TOKEN_ID = 50
+
+
+def build_phase_request(payload: StagePayload) -> SGLangDLLMRequestData:
+    params = SamplingParams(
+        max_new_tokens=payload.data["max_new_tokens"], temperature=0
+    )
+    params.normalize(None)
+    request = DllmRequest(
+        payload.request_id,
+        "",
+        array("q", payload.data["input_ids"]),
+        params,
+        dllm_config=payload.data["dllm_config"],
+    )
+    companion_ids = payload.data.get("uncond_ids")
+    if companion_ids is not None:
+        request._uncond_input_ids = (
+            companion_ids  # noqa: leading-underscore  # DLLM protocol
+        )
+        request._uncond_pad_len = 0  # noqa: leading-underscore  # DLLM protocol
+        request._uncond_pad_start = 0  # noqa: leading-underscore  # DLLM protocol
+    else:
+        pass
+    data = SGLangDLLMRequestData(output_ids=request.output_ids, req=request)
+    data.stage_payload = payload
+    return data
+
+
+def finish_phase(data: SGLangDLLMRequestData) -> StagePayload:
+    payload = data.stage_payload
+    context = (
+        {CONTEXT_KEY: ContextRef("thinker", payload.request_id)}
+        if payload.data["continues"]
+        else {}
+    )
+    return StagePayload(payload.request_id, None, context)
+
+
+@pytest.fixture
+def radix_scheduler() -> DllmScheduler:
+    # torch_native keeps a CUDA host off the Triton kernels, which cannot read these CPU pools.
+    with get_context().override_server_args(
+        page_size=4, max_prefill_tokens=64, attention_backend="torch_native"
+    ):
+        pool = ReqToTokenPool(3, PHASE_POOL_TOKENS, "cpu", False)
+        allocator = PagedTokenToKVPoolAllocator(
+            PHASE_POOL_TOKENS, 4, torch.float32, "cpu", None, False
+        )
+        allocator.use_triton_kernels = False
+        tree_cache = UnifiedRadixCache(
+            CacheInitParams(
+                disable=False,
+                req_to_token_pool=pool,
+                token_to_kv_pool_allocator=allocator,
+                page_size=4,
+                tree_components=(ComponentType.FULL,),
+            )
+        )
+        scheduler = DllmScheduler(
+            SimpleNamespace(tp_rank=0),
+            tree_cache,
+            pool,
+            allocator,
+            None,
+            SimpleNamespace(
+                context_len=PHASE_POOL_TOKENS, vocab_size=300, is_encoder_decoder=False
+            ),
+            DllmConfig(
+                algorithm="LowConfidence",
+                algorithm_config={},
+                block_size=4,
+                mask_id=99,
+                max_running_requests=3,
+            ),
+            request_builder=build_phase_request,
+            result_adapter=finish_phase,
+        )
+        # drain_and_purge reads messages only while the scheduler runs.
+        scheduler.running = True
+        yield scheduler
+
+
+def run_phase(
+    scheduler: DllmScheduler,
+    input_ids: list[int],
+    max_new_tokens: int,
+    *,
+    continues: bool = True,
+    request_id: str = "story",
+    uncond_ids: list[int] | None = None,
+) -> list[tuple[int, int]]:
+    """Run one thinker phase through the real cache and return its block spans."""
+    phase = {
+        "input_ids": input_ids,
+        "max_new_tokens": max_new_tokens,
+        "continues": continues,
+        "dllm_config": scheduler.dllm_config,
+    }
+    if uncond_ids is not None:
+        phase["uncond_ids"] = uncond_ids
+    else:
+        pass
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id=request_id,
+            type="new_request",
+            data=StagePayload(request_id, None, phase),
+        )
+    )
+    spans = []
+    for _ in range(32):
+        scheduler.drain_and_purge()
+        batch = scheduler.schedule_next_batch()
+        if batch is None:
+            continue
+        else:
+            pass
+        spans.extend((req.prefix_len, req.extend_end) for req in batch.reqs)
+        generated = [
+            [GENERATED_TOKEN_ID]
+            * max(req.extend_end - len(req.origin_input_ids) - len(req.output_ids), 0)
+            for req in batch.reqs
+        ]
+        scheduler.apply_results(
+            batch,
+            SimpleNamespace(
+                next_token_ids=generated,
+                accept_length_per_req_cpu=None,
+                dllm_algo_state=None,
+            ),
+        )
+        scheduler.post_step(batch)
+        if not scheduler.staging_queue:
+            return spans
+        else:
+            pass
+    raise AssertionError(f"phase of {request_id} never finished")
+
+
+PROMPT_IDS = list(range(1, 11))
+# The phase below generates six tokens, so the sequence fills four whole blocks.
+CONTINUED_IDS = [*PROMPT_IDS, *[GENERATED_TOKEN_ID] * 6, 60, 61]
+
+
+def evict_everything(scheduler: DllmScheduler) -> None:
+    scheduler.tree_cache.evict(EvictParams(num_tokens=PHASE_POOL_TOKENS))
+
+
+def test_next_phase_resumes_from_the_prefix_the_last_phase_pinned(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    scheduler = radix_scheduler
+
+    first_spans = run_phase(scheduler, PROMPT_IDS, 6)
+    evict_everything(scheduler)
+    second_spans = run_phase(scheduler, CONTINUED_IDS, 2, continues=False)
+
+    assert first_spans == [(0, 4), (4, 8), (8, 12), (12, 16)]
+    assert second_spans == [(16, 20)]
+    # The last phase leaves nothing pinned, so its whole sequence can be reclaimed.
+    assert scheduler.retained_contexts == {}
+    evict_everything(scheduler)
+    assert scheduler.token_to_kv_pool_allocator.available_size() == PHASE_POOL_TOKENS
+
+
+def test_phase_reaches_the_tree_once_when_it_ends(
+    radix_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publishing every block walked the row's whole path each round, for blocks nothing could match yet."""
+    scheduler = radix_scheduler
+    published = []
+    checkpoint = scheduler.tree_cache.checkpoint
+
+    def record_checkpoint(req: DllmRequest, *, up_to: int) -> None:
+        published.append(up_to)
+        checkpoint(req, up_to=up_to)
+
+    monkeypatch.setattr(scheduler.tree_cache, "checkpoint", record_checkpoint)
+
+    spans = run_phase(scheduler, PROMPT_IDS, 6)
+
+    assert len(spans) == 4
+    assert published == [16]
+
+
+def test_abort_between_phases_releases_the_pinned_prefix(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+
+    scheduler.abort("story")
+    scheduler.drain_and_purge()
+    evict_everything(scheduler)
+
+    assert scheduler.retained_contexts == {}
+    assert scheduler.token_to_kv_pool_allocator.available_size() == PHASE_POOL_TOKENS
+
+
+def test_admission_short_of_memory_gives_up_a_pinned_prefix(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+    other_ids = list(range(100, 140))
+
+    first_spans = run_phase(scheduler, other_ids, 12, request_id="other")
+
+    assert first_spans[0] == (0, 4)
+    assert "story" not in scheduler.retained_contexts
+
+
+def test_cfg_group_that_outgrows_the_free_pages_gives_up_a_pinned_prefix(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    """A pinned prefix could not be evicted, so a CFG group that decoded into the last free pages crashed the thinker."""
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+
+    run_phase(
+        scheduler,
+        list(range(100, 120)),
+        8,
+        continues=False,
+        request_id="other",
+        uncond_ids=list(range(200, 220)),
+    )
+
+    assert "story" not in scheduler.retained_contexts
+
+
+def test_abort_releases_a_cfg_row_that_never_ran(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    """An aborted conditional row that still waited for its companion kept the prefix its admission matched locked."""
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id="story",
+            type="new_request",
+            data=StagePayload(
+                "story",
+                None,
+                {
+                    "input_ids": CONTINUED_IDS,
+                    "max_new_tokens": 2,
+                    "continues": False,
+                    "dllm_config": scheduler.dllm_config,
+                    # A longer companion encodes alone while the conditional row waits.
+                    "uncond_ids": list(range(200, 226)),
+                },
+            ),
+        )
+    )
+    scheduler.drain_and_purge()
+    batch = scheduler.schedule_next_batch()
+    conditional = scheduler.rid_to_req_data["story"].req
+    assert conditional not in batch.reqs and conditional.lock is not None
+
+    scheduler.abort("story")
+    scheduler.drain_and_purge()
+    evict_everything(scheduler)
+
+    assert scheduler.tree_cache.protected_size() == 0
+    assert scheduler.token_to_kv_pool_allocator.available_size() == PHASE_POOL_TOKENS

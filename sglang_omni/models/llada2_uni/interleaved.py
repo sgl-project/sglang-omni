@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -16,6 +17,8 @@ from sglang_omni.models.llada2_uni.payload_types import (
     InterleavedState,
     LLaDA2UniPipelineState,
 )
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_INTERLEAVED = "You are a interleaved generation assistant."
 UNCONDITION_TOKEN = "<uncondition>"
@@ -91,6 +94,8 @@ class ImageHeader:
 class CFGBranchPlan:
     mode: Literal["none", "simple", "editing"]
     branches: dict[str, list[int]]
+    # Where each branch takes its padding, at the left unless named here.
+    pad_starts: dict[str, int]
     cfg_scale: float
     cfg_text_scale: float
     cfg_image_scale: float
@@ -187,6 +192,8 @@ def build_cfg_plan(
                 "unconditional": no_text,
                 "no_image": unconditional + current_text + header_ids,
             },
+            # note (qiujiawei): padding after the history keeps its blocks equal to the conditional row's, so their KV is shared.
+            {"unconditional": len(history)},
             config.cfg_text_scale,
             config.cfg_text_scale,
             config.cfg_image_scale,
@@ -197,12 +204,13 @@ def build_cfg_plan(
 
     scale = config.cfg_scale if config.cfg_scale > 0.0 else config.cfg_text_scale
     if scale == 1.0:
-        return CFGBranchPlan("none", {}, 1.0, 0.0, 0.0, config.cfg_rescale)
+        return CFGBranchPlan("none", {}, {}, 1.0, 0.0, 0.0, config.cfg_rescale)
     else:
         pass
     return CFGBranchPlan(
         "simple",
         {"unconditional": unconditional + header_ids},
+        {},
         scale,
         0.0,
         0.0,
@@ -242,12 +250,36 @@ def advance_text(
     state: LLaDA2UniPipelineState,
     tokenizer: PreTrainedTokenizerBase,
     *,
+    block_size: int,
     finish_reason: str | None,
 ) -> None:
     interleaved = state.stream_state["interleaved"]
+    image_token_offset = state.stream_state["image_token_offset"]
+    old_ids = [
+        int(token_id) for token_id in state.prompt["input_ids"].flatten().tolist()
+    ]
     output_ids = [
         int(token_id) for token_id in (state.thinker_out or {}).get("output_ids", [])
     ]
+    # note (qiujiawei): right after an image the model can open the text with stray image tokens; drop them, not the request.
+    if old_ids[-1] == token_id(tokenizer, "<|/image|>"):
+        stray_length = next(
+            (
+                index
+                for index, generated_id in enumerate(output_ids)
+                if generated_id < image_token_offset
+            ),
+            len(output_ids),
+        )
+        if stray_length:
+            logger.warning(
+                f"Dropped {stray_length} image token(s) opening the text after an image"
+            )
+            output_ids = output_ids[stray_length:]
+        else:
+            pass
+    else:
+        pass
     if not output_ids:
         raise ValueError("interleaved text phase produced no tokens")
     else:
@@ -260,11 +292,9 @@ def advance_text(
             pass
         reject_image_tokens(
             output_ids,
-            image_token_offset=state.stream_state["image_token_offset"],
+            image_token_offset=image_token_offset,
             context="text phase",
         )
-        prompt_ids = state.prompt["input_ids"]
-        old_ids = [int(token_id) for token_id in prompt_ids.flatten().tolist()]
         full_ids = old_ids + output_ids
         segment_start = int(interleaved["segment_start"])
         interleaved["trailing_text"] = tokenizer.decode(
@@ -278,7 +308,7 @@ def advance_text(
     header = parse_image_header(output_ids, tokenizer)
     reject_image_tokens(
         output_ids[: header.soi_position],
-        image_token_offset=state.stream_state["image_token_offset"],
+        image_token_offset=image_token_offset,
         context="text phase",
     )
     config = InterleavedGenerationParams.model_validate(
@@ -295,8 +325,6 @@ def advance_text(
         raise ValueError("interleaved image token budget cannot fit the grid and EOI")
     else:
         pass
-    prompt_ids = state.prompt["input_ids"]
-    old_ids = [int(token_id) for token_id in prompt_ids.flatten().tolist()]
     full_ids = old_ids + output_ids
     plan = build_cfg_plan(
         full_ids=full_ids,
@@ -305,8 +333,22 @@ def advance_text(
         tokenizer=tokenizer,
         config=config,
     )
-    longest_prefix = max(len(prefix) for prefix in [full_ids, *plan.branches.values()])
-    if longest_prefix + header.image_token_count + 1 > int(interleaved["max_seq_len"]):
+    # note (qiujiawei): rows only share a block column, whole pad blocks change nothing.
+    pad_lengths = {
+        name: (len(full_ids) - len(branch)) % block_size
+        for name, branch in plan.branches.items()
+    }
+    # The conditional row also holds the EOI that closes the frame.
+    longest_row = max(
+        [
+            len(full_ids) + 1,
+            *(
+                len(branch) + pad_lengths[name]
+                for name, branch in plan.branches.items()
+            ),
+        ]
+    )
+    if longest_row + header.image_token_count > int(interleaved["max_seq_len"]):
         raise ValueError("interleaved image frame would exceed thinker context")
     else:
         pass
@@ -325,6 +367,8 @@ def advance_text(
     interleaved["cfg_plan"] = {
         "mode": plan.mode,
         "branches": copy.deepcopy(plan.branches),
+        "pad_starts": dict(plan.pad_starts),
+        "pad_lengths": pad_lengths,
         "cfg_scale": plan.cfg_scale,
         "cfg_text_scale": plan.cfg_text_scale,
         "cfg_image_scale": plan.cfg_image_scale,
@@ -424,6 +468,7 @@ def advance_interleaved_state(
     tokenizer: PreTrainedTokenizerBase,
     *,
     completed_phase: str,
+    block_size: int,
     finish_reason: str | None = None,
 ) -> None:
     """Advance one phase and commit only after every validation succeeds."""
@@ -444,6 +489,7 @@ def advance_interleaved_state(
         advance_text(
             working,
             tokenizer,
+            block_size=block_size,
             finish_reason=finish_reason,
         )
     elif completed_phase == "image":

@@ -652,11 +652,11 @@ def test_edit_preprocess_merge_extract_and_decode(
     for branch_ids, pad_len in (
         (
             no_text_ids,
-            request._uncond_left_pad_len,
+            request._uncond_pad_len,
         ),  # noqa: leading-underscore  # DLLM protocol
         (
             no_image_ids,
-            request._uncond_img_left_pad_len,
+            request._uncond_img_pad_len,
         ),  # noqa: leading-underscore  # DLLM protocol
     ):
         assert len(branch_ids) == len(prompt_ids)

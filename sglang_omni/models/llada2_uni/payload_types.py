@@ -52,6 +52,8 @@ class InterleavedFrame(ImageGrid):
 class InterleavedCFGPlan(TypedDict):
     mode: Literal["none", "simple", "editing"]
     branches: dict[str, list[int]]
+    pad_starts: dict[str, int]
+    pad_lengths: dict[str, int]
     cfg_scale: float
     cfg_text_scale: float
     cfg_image_scale: float
@@ -92,9 +94,9 @@ class LLaDA2UniStreamState(TypedDict, total=False):
     cfg_rescale: float
     cfg_image_scale: float
     uncond_input_ids: list[int]
-    uncond_left_pad_len: int
+    uncond_pad_len: int
     uncond_img_input_ids: list[int]
-    uncond_img_left_pad_len: int
+    uncond_img_pad_len: int
 
 
 @dataclass

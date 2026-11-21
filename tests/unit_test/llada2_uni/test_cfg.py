@@ -20,22 +20,43 @@ from sglang.srt.layers.attention.flashinfer_backend import (
     PrefillMetadata,
 )
 from sglang.srt.layers.radix_attention import AttentionType, RadixAttention
-from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator import (
+    PagedTokenToKVPoolAllocator,
+    TokenToKVPoolAllocator,
+)
+from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
+from sglang.srt.mem_cache.radix_cache import RadixKey
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
     DecodeCudaGraphRunner,
 )
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 import sglang_omni.models.llada2_uni.cfg_attention_backend as cfg_attention_backend
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_model_runner import CFGCudaGraphRunner
 from sglang_omni.models.llada2_uni.bootstrap import validate_cfg
+from sglang_omni.models.llada2_uni.components.preprocessor import IMAGE_TOKEN_OFFSET
 from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
-from sglang_omni.models.llada2_uni.request_builders import LLaDA2UniRequest
+from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.request_builders import (
+    LLaDA2UniRequest,
+    make_dllm_thinker_scheduler_adapters,
+)
+from sglang_omni.pipeline.umm import CONTEXT_KEY, ContextRef
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmForwardBatch, DllmScheduler
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangDLLMRequestData
+from tests.unit_test.fixtures.llada2_fakes import Tokenizer, advance, preprocess
 
 
 class RaggedWrapperStub:
@@ -121,7 +142,8 @@ def test_cfg_graph_waits_for_padding_to_enter_cached_prefix(
     runner = object.__new__(CFGCudaGraphRunner)
     batch = NS(
         reqs=make_cfg_group(3),
-        dllm_left_pad_lens_cpu=[0, 6, 2],
+        dllm_pad_lens_cpu=[0, 6, 2],
+        dllm_pad_starts_cpu=[0, 0, 0],
         extend_prefix_lens_cpu=[prefix] * 3,
     )
     assert runner.can_run_graph(batch) is expected
@@ -146,7 +168,8 @@ def test_cfg_graph_rejects_unpadded_prefill(
         requests[row].dllm_phase = phase
     batch = NS(
         reqs=requests,
-        dllm_left_pad_lens_cpu=[0] * len(requests),
+        dllm_pad_lens_cpu=[0] * len(requests),
+        dllm_pad_starts_cpu=[0] * len(requests),
         extend_prefix_lens_cpu=[prefix] * len(requests),
     )
     runner = object.__new__(CFGCudaGraphRunner)
@@ -224,12 +247,13 @@ def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-def test_cfg_prefill_only_builds_kv_state() -> None:
+@pytest.mark.parametrize("rows", [slice(None), slice(1, 2)], ids=["group", "companion"])
+def test_cfg_prefill_only_builds_kv_state(rows: slice) -> None:
     algorithm = LowConfidenceCFG(make_config())
-    requests = make_cfg_group(2)
+    requests = make_cfg_group(2)[rows]
     for request in requests:
         request.dllm_phase = DllmReqPhase.INCOMING_PREFILL
-    input_ids = torch.tensor([1, 2, 3, 4, 9, 9, 3, 4])
+    input_ids = torch.tensor([1, 2, 3, 4, 9, 9, 3, 4])[-4 * len(requests) :]
     original = input_ids.clone()
     calls = 0
 
@@ -240,7 +264,7 @@ def test_cfg_prefill_only_builds_kv_state() -> None:
 
     result = algorithm.run(
         NS(forward=forward),
-        NS(reqs=requests, batch_size=2, input_ids=input_ids),
+        NS(reqs=requests, batch_size=len(requests), input_ids=input_ids),
     )
 
     assert result == (None, [], None, None, False)
@@ -268,10 +292,18 @@ def test_non_finite_cfg_scale_is_rejected(value: float) -> None:
         algorithm.run(None, NS(reqs=requests, batch_size=2))
 
 
-def test_scheduler_applies_left_padding_metadata() -> None:
+@pytest.mark.parametrize(
+    ("pad_start", "pad_length", "expected_positions"),
+    [(0, 6, [0, 0, 0, 1]), (5, 2, [4, 5, 5, 5])],
+    ids=["left", "after-history"],
+)
+def test_scheduler_applies_padding_metadata(
+    pad_start: int, pad_length: int, expected_positions: list[int]
+) -> None:
     scheduler = object.__new__(DllmScheduler)
     requests = make_cfg_group(2)
-    requests[1]._dllm_left_pad_len = 6  # noqa: leading-underscore  # DLLM protocol
+    requests[1]._dllm_pad_len = pad_length  # noqa: leading-underscore  # DLLM protocol
+    requests[1]._dllm_pad_start = pad_start  # noqa: leading-underscore  # DLLM protocol
     forward_batch = NS(
         positions=torch.arange(4, 8).repeat(2),
         extend_seq_lens_cpu=[4, 4],
@@ -280,11 +312,254 @@ def test_scheduler_applies_left_padding_metadata() -> None:
 
     scheduler.apply_cfg_padding_metadata(forward_batch, NS(reqs=requests))
 
-    assert forward_batch.dllm_left_pad_lens_cpu == [0, 6]
-    assert forward_batch.positions[4:].tolist() == [0, 0, 0, 1]
+    assert forward_batch.dllm_pad_lens_cpu == [0, pad_length]
+    assert forward_batch.dllm_pad_starts_cpu == [0, pad_start]
+    assert forward_batch.positions[4:].tolist() == expected_positions
 
 
-def test_attention_masks_local_and_cached_padding() -> None:
+@pytest.mark.parametrize(
+    "text_ids", [[], [73, 74, 75]], ids=["back-to-back", "captioned"]
+)
+def test_interleaved_frame_shares_the_history_kv_and_emits_only_image_tokens(
+    monkeypatch: pytest.MonkeyPatch, text_ids: list[int]
+) -> None:
+    """A frame drawn right after the previous image, with no text between them, failed the request with a non-image token."""
+    request = OmniRequest(
+        inputs=[{"role": "user", "content": "Illustrate a two-frame story"}],
+        params={},
+        metadata={"image_generation": {"mode": "interleaved"}},
+    )
+    state = LLaDA2UniPipelineState.from_dict(preprocess(request).data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    history_length = state.prompt["input_ids"].numel()
+    text_phase_output = [*text_ids, 10, 22, 23, 12]
+
+    block_size = 4
+    dllm_config = DllmConfig(
+        algorithm="LowConfidenceCFG",
+        algorithm_config={"image_token_offset": IMAGE_TOKEN_OFFSET},
+        block_size=block_size,
+        mask_id=Tokenizer.mask_token_id,
+        max_running_requests=3,
+    )
+    vocab_size = IMAGE_TOKEN_OFFSET + 16
+    request_builder, result_adapter = make_dllm_thinker_scheduler_adapters(
+        tokenizer=Tokenizer(), vocab_size=vocab_size, dllm_config=dllm_config
+    )
+    forward_count = 0
+    in_image_phase = False
+
+    def forward(forward_batch: NS, pp_proxy_tensors: None = None) -> NS:
+        nonlocal forward_count
+        forward_count += 1
+        assert forward_count < 100, "the phase never finished"
+        logits = torch.zeros(forward_batch.input_ids.numel(), vocab_size)
+        if in_image_phase:
+            logits[:, IMAGE_TOKEN_OFFSET + 7] = 20.0
+        else:
+            prompt_length = len(forward_batch.reqs[0].origin_input_ids)
+            for slot, position in enumerate(forward_batch.positions.tolist()):
+                generated = position - prompt_length
+                if 0 <= generated < len(text_phase_output):
+                    logits[slot, text_phase_output[generated]] = 20.0
+                else:
+                    pass
+        return NS(logits_output=NS(full_logits=logits), can_run_graph=False)
+
+    first_prefix_lengths: dict[str, int] = {}
+    companion_input_ids: dict[str, array] = {}
+    conditional_slots: list[int] = []
+    no_text_slots: list[int] = []
+    shared_length = history_length // block_size * block_size
+
+    def init_forward_batch(
+        batch: NS, model_runner: NS, *, return_hidden_states_before_norm: bool
+    ) -> NS:
+        for row in batch.reqs:
+            assert row.dllm_block_offset == row.prefix_len
+            first_prefix_lengths.setdefault(row.rid, row.prefix_len)
+            if row.rid != "story":
+                companion_input_ids[row.rid] = row.origin_input_ids
+            else:
+                pass
+            slots = req_to_token_pool.req_to_token[
+                row.kv.req_pool_idx, :shared_length
+            ].tolist()
+            if row.rid == "story":
+                conditional_slots[:] = slots
+            elif row.rid == "story-uncond":
+                no_text_slots[:] = slots
+            else:
+                pass
+        rows = [row.get_fill_ids()[row.prefix_len :] for row in batch.reqs]
+        # The real batch derives positions from the block offset, not the prefix.
+        positions = torch.cat(
+            [
+                torch.arange(row.dllm_block_offset, row.dllm_block_offset + block_size)
+                for row in batch.reqs
+            ]
+        )
+        committed_lengths = torch.tensor(
+            [len(row.origin_input_ids) + len(row.output_ids) for row in batch.reqs]
+        )
+        return NS(
+            input_ids=torch.tensor([token for row in rows for token in row]),
+            batch_size=len(rows),
+            positions=positions,
+            dllm_prompt_mask=(
+                positions.view(-1, block_size) < committed_lengths[:, None]
+                if any(row.dllm_has_literal_mask for row in batch.reqs)
+                else None
+            ),
+            extend_seq_lens_cpu=[len(row) for row in rows],
+            forward_mode=ForwardMode.DLLM_EXTEND,
+        )
+
+    def finish(request_data: SGLangDLLMRequestData) -> StagePayload:
+        scheduler.stop()
+        return result_adapter(request_data)
+
+    def run_phase(data: dict[str, object]) -> dict[str, object]:
+        scheduler.inbox.put(
+            IncomingMessage(
+                request_id="story",
+                type="new_request",
+                data=StagePayload(request_id="story", request=request, data=data),
+            )
+        )
+        scheduler.start()
+        message = scheduler.outbox.get_nowait()
+        assert message.type == "result", message.data
+        return message.data.data
+
+    def fail_on_idle_scheduler(_seconds: float) -> None:
+        raise AssertionError(
+            f"scheduler stalled, staging={scheduler.staging_queue}, "
+            f"waiting={scheduler.waiting_queue}, outbox={list(scheduler.outbox.queue)}"
+        )
+
+    monkeypatch.setattr(dllm_scheduler_module, "time", NS(sleep=fail_on_idle_scheduler))
+    monkeypatch.setattr(
+        dllm_scheduler_module, "DllmForwardBatch", NS(init_new=init_forward_batch)
+    )
+    worker = object.__new__(ModelWorker)
+    worker.dllm_algorithm = LowConfidenceCFG(dllm_config)
+    worker.tp_rank = 0
+    worker.model_runner = NS(device="cpu", forward=forward)
+
+    # torch_native keeps a CUDA host off the Triton kernels, which cannot read these CPU pools.
+    with get_context().override_server_args(
+        page_size=block_size, max_prefill_tokens=64, attention_backend="torch_native"
+    ):
+        # Admission reserves the text phase's whole token budget.
+        req_to_token_pool = ReqToTokenPool(3, 8192, "cpu", False)
+        allocator = PagedTokenToKVPoolAllocator(
+            32768, block_size, torch.float32, "cpu", None, False
+        )
+        allocator.use_triton_kernels = False
+        tree_cache = UnifiedRadixCache(
+            CacheInitParams(
+                disable=False,
+                req_to_token_pool=req_to_token_pool,
+                token_to_kv_pool_allocator=allocator,
+                page_size=block_size,
+                tree_components=(ComponentType.FULL,),
+            )
+        )
+        scheduler = DllmScheduler(
+            worker,
+            tree_cache,
+            req_to_token_pool,
+            allocator,
+            None,
+            NS(context_len=8192, vocab_size=vocab_size, is_encoder_decoder=False),
+            dllm_config,
+            request_builder=request_builder,
+            result_adapter=finish,
+        )
+        image_phase_data = run_phase(state.to_dict())
+        first_prefix_lengths.clear()
+        in_image_phase = True
+        image_result = run_phase(image_phase_data)
+        # The padded rows read the tree but never publish into it.
+        published_lengths = {
+            rid: tree_cache.match_prefix(
+                MatchPrefixParams(key=RadixKey(token_ids=input_ids))
+            ).device_prefix_len
+            for rid, input_ids in companion_input_ids.items()
+        }
+
+    assert published_lengths == {"story-uncond": shared_length, "story-uncond-img": 0}
+    state = LLaDA2UniPipelineState.from_dict(image_result)
+    assert state.thinker_out["output_ids"] == [IMAGE_TOKEN_OFFSET + 7] * 6
+    # The no-text row reads the history KV the conditional row already published.
+    assert first_prefix_lengths["story-uncond"] == shared_length
+    assert first_prefix_lengths["story"] >= shared_length
+    assert first_prefix_lengths["story-uncond-img"] == 0
+    assert no_text_slots == conditional_slots
+
+
+@pytest.mark.parametrize(
+    ("output_ids", "expected_context"),
+    [
+        ([71, 10, 22, 23, 12], ContextRef("thinker", "story")),
+        ([71, 2], None),
+    ],
+    ids=["next-phase-follows", "request-done"],
+)
+def test_thinker_result_reports_context_only_while_a_phase_follows(
+    output_ids: list[int], expected_context: ContextRef | None
+) -> None:
+    request = OmniRequest(
+        inputs=[{"role": "user", "content": "Illustrate a two-frame story"}],
+        params={},
+        metadata={"image_generation": {"mode": "interleaved"}},
+    )
+    payload = preprocess(request)
+    _, result_adapter = make_dllm_thinker_scheduler_adapters(
+        tokenizer=Tokenizer(),
+        vocab_size=IMAGE_TOKEN_OFFSET + 16,
+        dllm_config=make_config(),
+    )
+
+    result = result_adapter(
+        NS(stage_payload=payload, output_ids=output_ids, finish_reason="stop")
+    )
+
+    assert result.data.get(CONTEXT_KEY) == expected_context
+
+
+@pytest.mark.parametrize("reuse_prefix", [False, True])
+def test_only_a_thinker_asked_to_reuse_prefixes_keeps_the_radix_cache(
+    monkeypatch: pytest.MonkeyPatch, reuse_prefix: bool
+) -> None:
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.models.llada2_uni import bootstrap
+
+    class Stop(Exception):
+        pass
+
+    def stop_at_infrastructure(server_args: ServerArgs, *args: int, **kwargs: object):
+        raise Stop
+
+    monkeypatch.setattr(DllmConfig, "from_server_args", lambda server_args: None)
+    monkeypatch.setattr(
+        bootstrap, "create_sglang_infrastructure", stop_at_infrastructure
+    )
+    server_args = ServerArgs(model_path="dummy")
+
+    with pytest.raises(Stop):
+        bootstrap.create_dllm_thinker_scheduler(server_args, reuse_prefix=reuse_prefix)
+
+    assert resolved_view(server_args).disable_radix_cache is not reuse_prefix
+
+
+def make_planning_backend() -> (
+    tuple[cfg_attention_backend.LLaDA2CFGFlashInferAttnBackend, NS]
+):
     backend = object.__new__(cfg_attention_backend.LLaDA2CFGFlashInferAttnBackend)
     backend.cfg_prefill_wrapper_ragged = RaggedWrapperStub()
     backend.prefill_wrappers_paged = [object()]
@@ -303,8 +578,14 @@ def test_attention_masks_local_and_cached_padding() -> None:
         data_type=torch.float32,
         prefill_wrapper_ragged=RaggedWrapperStub(),
     )
+    return backend, begin_forward
+
+
+def test_attention_masks_local_and_cached_padding() -> None:
+    backend, begin_forward = make_planning_backend()
     batch = NS(
-        dllm_left_pad_lens_cpu=[0, 6],
+        dllm_pad_lens_cpu=[0, 6],
+        dllm_pad_starts_cpu=[0, 0],
         extend_prefix_lens_cpu=[4, 4],
         extend_seq_lens_cpu=[4, 4],
         forward_mode=NS(is_dllm_extend=lambda: True),
@@ -329,8 +610,9 @@ def test_attention_masks_local_and_cached_padding() -> None:
     batch.seq_lens += 4
     batch.extend_prefix_lens += 4
     backend.init_forward_metadata(batch)
-    assert not backend.cfg_local_left_pad_active
+    assert not backend.cfg_local_pad_active
     assert begin_forward.call_args.args[3].tolist() == [8, 2]
+    assert not backend.forward_metadata.extend_no_prefix
 
     batch.batch_size = 2
     backend.cfg_replay_batch = batch
@@ -342,6 +624,60 @@ def test_attention_masks_local_and_cached_padding() -> None:
     begin_forward.assert_called_once()
     assert begin_forward.call_args.args[3].tolist() == [8, 2]
     assert begin_forward.call_args.kwargs["plan"] is batch.kv_loc_plan
+
+
+def test_attention_reads_no_cached_kv_while_the_padding_is_still_ahead() -> None:
+    """A cold group whose only padding sat in a later block ran a paged pass over no KV."""
+    backend, begin_forward = make_planning_backend()
+    batch = NS(
+        dllm_pad_lens_cpu=[0, 2],
+        dllm_pad_starts_cpu=[0, 5],
+        extend_prefix_lens_cpu=[0, 0],
+        extend_seq_lens_cpu=[4, 4],
+        forward_mode=NS(is_dllm_extend=lambda: True),
+        seq_lens=torch.tensor([4, 4]),
+        extend_prefix_lens=torch.tensor([0, 0]),
+        req_pool_indices=torch.tensor([0, 1]),
+        kv_loc_plan=None,
+    )
+
+    backend.init_forward_metadata(batch)
+
+    assert not backend.cfg_local_pad_active
+    assert begin_forward.call_args.args[3].tolist() == [0, 0]
+    assert backend.forward_metadata.extend_no_prefix
+
+
+def test_attention_skips_padding_after_the_history() -> None:
+    backend, begin_forward = make_planning_backend()
+
+    def pack_read_stream(plan: None, *, out: torch.Tensor, **kwargs: int) -> None:
+        out[:] = torch.arange(out.numel())
+
+    backend.kv_index_translator = NS(pack_read_stream=pack_read_stream)
+    batch = NS(
+        dllm_pad_lens_cpu=[0, 2],
+        dllm_pad_starts_cpu=[0, 3],
+        extend_prefix_lens_cpu=[4, 4],
+        extend_seq_lens_cpu=[4, 4],
+        forward_mode=NS(is_dllm_extend=lambda: True),
+        seq_lens=torch.tensor([8, 8]),
+        extend_prefix_lens=torch.tensor([4, 4]),
+        req_pool_indices=torch.tensor([0, 1]),
+        kv_loc_plan=None,
+    )
+
+    backend.init_forward_metadata(batch)
+
+    # The second row skips its cached pad slot, and the first column of this block.
+    assert begin_forward.call_args.args[3].tolist() == [4, 3]
+    custom_kv_indices = begin_forward.call_args.kwargs["custom_kv_indices"]
+    assert custom_kv_indices.tolist() == [0, 1, 2, 3, 4, 5, 6]
+    mask = backend.cfg_prefill_wrapper_ragged.plan[1]["custom_mask"].reshape(2, 4, 4)
+    assert mask[0].all()
+    assert not mask[1, 1:, 0].any()
+    assert mask[1, 0, 0]
+    assert mask[1, :, 1:].all()
 
 
 def make_attention_backend(
@@ -361,6 +697,7 @@ def make_attention_backend(
     backend.token_to_kv_pool = pool
     backend.num_wrappers = 1
     backend.is_dllm_model = True
+    backend.dq_paged_kernel_lens = None
     backend.prefill_uses_dequant_workspace = False
     backend.kv_cache_quant_method = NS(needs_global_scale=lambda: False)
     backend.prefill_split_tile_size = None
@@ -395,8 +732,20 @@ def make_attention_backend(
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlashInfer requires CUDA")
-@pytest.mark.parametrize("initial_prefix", [0, 4])
-def test_attention_matches_dense_across_padding_boundary(initial_prefix: int) -> None:
+@pytest.mark.parametrize(
+    ("initial_prefix", "pad_start", "conditional_offset"),
+    [(0, 0, 0), (4, 0, 0), (0, 2, 0), (4, 2, 0), (4, 2, 4)],
+    ids=[
+        "left-first-block",
+        "left-cached",
+        "history-first-block",
+        "history-cached",
+        "history-rows-at-different-prefixes",
+    ],
+)
+def test_attention_matches_dense_across_padding_boundary(
+    initial_prefix: int, pad_start: int, conditional_offset: int
+) -> None:
     device, dtype = "cuda", torch.bfloat16
     heads, head_dim, block_size = 2, 64, 4
     backend, req_pool = make_attention_backend(2)
@@ -410,24 +759,31 @@ def test_attention_matches_dense_across_padding_boundary(initial_prefix: int) ->
     )
     cached_keys, cached_values = pool.get_kv_buffer(0)
     slots = req_pool.req_to_token[:2].long()
-    cached_keys[slots[:, :initial_prefix]] = keys[:, :initial_prefix]
-    cached_values[slots[:, :initial_prefix]] = values[:, :initial_prefix]
-    left_padding = (0, initial_prefix + 2)
+    for row, row_offset in enumerate((conditional_offset, 0)):
+        cached_length = initial_prefix + row_offset
+        cached_keys[slots[row, :cached_length]] = keys[row, :cached_length]
+        cached_values[slots[row, :cached_length]] = values[row, :cached_length]
+    pad_lengths = (0, initial_prefix + 2)
+    pad_starts = (0, pad_start)
 
-    for prefix in (initial_prefix, initial_prefix + block_size):
+    for second_row_prefix in (initial_prefix, initial_prefix + block_size):
+        prefixes = [second_row_prefix + conditional_offset, second_row_prefix]
+        seq_lens = [prefix + block_size for prefix in prefixes]
         batch = NS(
-            dllm_left_pad_lens_cpu=left_padding,
-            extend_prefix_lens_cpu=[prefix, prefix],
+            dllm_pad_lens_cpu=pad_lengths,
+            dllm_pad_starts_cpu=pad_starts,
+            extend_prefix_lens_cpu=prefixes,
             extend_seq_lens_cpu=[block_size, block_size],
             forward_mode=ForwardMode.DLLM_EXTEND,
-            seq_lens=torch.full(
-                (2,), prefix + block_size, dtype=torch.int32, device=device
-            ),
-            extend_prefix_lens=torch.full(
-                (2,), prefix, dtype=torch.int32, device=device
-            ),
+            seq_lens=torch.tensor(seq_lens, dtype=torch.int32, device=device),
+            extend_prefix_lens=torch.tensor(prefixes, dtype=torch.int32, device=device),
             req_pool_indices=torch.arange(2, dtype=torch.int32, device=device),
-            out_cache_loc=slots[:, prefix : prefix + block_size].flatten(),
+            out_cache_loc=torch.cat(
+                [
+                    slots[row, prefix : prefix + block_size]
+                    for row, prefix in enumerate(prefixes)
+                ]
+            ),
         )
         translator = backend.kv_index_translator
         translator.own_plan(batch).bind(batch, translator)
@@ -440,8 +796,18 @@ def test_attention_matches_dense_across_padding_boundary(initial_prefix: int) ->
             device=device,
             generator=generator,
         )
-        current_keys = keys[:, prefix : prefix + block_size].contiguous()
-        current_values = values[:, prefix : prefix + block_size].contiguous()
+        current_keys = torch.stack(
+            [
+                keys[row, prefix : prefix + block_size]
+                for row, prefix in enumerate(prefixes)
+            ]
+        )
+        current_values = torch.stack(
+            [
+                values[row, prefix : prefix + block_size]
+                for row, prefix in enumerate(prefixes)
+            ]
+        )
         backend.init_forward_metadata(batch)
         actual = backend.forward_extend(
             queries.flatten(0, 1),
@@ -450,11 +816,17 @@ def test_attention_matches_dense_across_padding_boundary(initial_prefix: int) ->
             layer,
             batch,
         ).view_as(queries)
-        for row, pad in enumerate(left_padding):
-            mask = torch.arange(prefix + block_size, device=device)[None, :] >= pad
-            mask = mask.expand(block_size, -1).clone()
-            for query in range(max(pad - prefix, 0)):
-                mask[query, prefix + query] = True
+        for row, (start, pad, prefix) in enumerate(
+            zip(pad_starts, pad_lengths, prefixes, strict=True)
+        ):
+            positions = torch.arange(prefix + block_size, device=device)
+            is_pad = (positions >= start) & (positions < start + pad)
+            mask = (~is_pad)[None, :].expand(block_size, -1).clone()
+            for query in range(block_size):
+                if is_pad[prefix + query]:
+                    mask[query, prefix + query] = True
+                else:
+                    pass
             scores = (
                 torch.einsum(
                     "qhd,khd->hqk",
@@ -560,7 +932,8 @@ def test_cfg_graph_replay_matches_eager_across_requests() -> None:
                 ),
                 extend_prefix_lens_cpu=[prefix] * 3,
                 extend_seq_lens_cpu=[block_size] * 3,
-                dllm_left_pad_lens_cpu=padding,
+                dllm_pad_lens_cpu=padding,
+                dllm_pad_starts_cpu=[0] * 3,
             )
             translator = eager_backend.kv_index_translator
             translator.own_plan(eager_batch).bind(eager_batch, translator)
@@ -597,7 +970,7 @@ def test_attention_writes_kv_for_masked_extend(
     monkeypatch: pytest.MonkeyPatch, cached: bool
 ) -> None:
     backend = object.__new__(cfg_attention_backend.LLaDA2CFGFlashInferAttnBackend)
-    backend.cfg_local_left_pad_active = True
+    backend.cfg_local_pad_active = True
     backend.cfg_has_cached_prefix = cached
     backend.forward_metadata = NS(swa_out_cache_loc=None)
     current = torch.ones(4, 1, 2)

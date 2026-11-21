@@ -1,41 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """Interleaved transitions, frame CFG, EOI stopping, and the UMM adapter."""
 
-import asyncio
+import copy
 from types import SimpleNamespace
 
 import pytest
 
-from sglang_omni.models.llada2_uni.components.preprocessor import (
-    IMAGE_TOKEN_OFFSET,
-    LLaDA2Preprocessor,
-)
+from sglang_omni.models.llada2_uni.components.preprocessor import IMAGE_TOKEN_OFFSET
 from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineConfig
-from sglang_omni.models.llada2_uni.interleaved import advance_interleaved_state
 from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.request_builders import build_dllm_thinker_request
 from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
-from sglang_omni.pipeline.umm import UMMContext, UMMOutput, UMMRequestError
-from sglang_omni.proto import OmniRequest, StagePayload
-
-
-class Tokenizer:
-    mask_token_id = 99
-    eos_token_id = 2
-    additional_stop_token_ids = [666]
-
-    def convert_tokens_to_ids(self, token):
-        return {"<|image|>": 10, "<|/image|>": 11, "<boi>": 12}[token]
-
-    def convert_ids_to_tokens(self, token):
-        return f"<|reserved_token_{token - 20}|>"
-
-    def encode(self, text, add_special_tokens=False):
-        return [100 + i for i, _ in enumerate(text.split())]
-
-    def decode(self, ids, skip_special_tokens=True):
-        return " ".join(str(token) for token in ids if token != self.eos_token_id)
-
+from sglang_omni.pipeline.umm import ContextRef, UMMContext, UMMOutput, UMMRequestError
+from sglang_omni.proto import OmniRequest
+from sglang_omni.scheduling.sglang_backend.request_data import DllmRequest
+from tests.unit_test.fixtures.llada2_fakes import (
+    BLOCK_SIZE,
+    Tokenizer,
+    advance,
+    preprocess,
+)
 
 CONFIG = {
     "mode": "interleaved",
@@ -51,47 +36,28 @@ CONFIG = {
 STORY = [{"role": "user", "content": "Illustrate a three-frame story"}]
 
 
-def preprocess(request, interleaved=True):
-    preprocessor = object.__new__(LLaDA2Preprocessor)
-    preprocessor.tokenizer = Tokenizer()
-    preprocessor.max_seq_len = 8192
-    preprocessor.interleaved = interleaved
-    return asyncio.run(
-        preprocessor(StagePayload(request_id="story", request=request, data={}))
-    )
-
-
 def initial_payload():
     return preprocess(
         OmniRequest(inputs=STORY, params={}, metadata={"image_generation": CONFIG})
     )
 
 
-def advance(state, ids):
-    state.thinker_out = {"output_ids": ids, "is_final": True}
-    advance_interleaved_state(
-        state, Tokenizer(), completed_phase=state.stream_state["interleaved"]["phase"]
-    )
+def image_request(state: LLaDA2UniPipelineState) -> DllmRequest:
+    return build_dllm_thinker_request(
+        state,
+        params={"stop": ["stop"], "stop_token_ids": [666]},
+        tokenizer=Tokenizer(),
+        vocab_size=IMAGE_TOKEN_OFFSET + 16,
+        dllm_config=SimpleNamespace(
+            block_size=BLOCK_SIZE,
+            mask_id=99,
+            requires_separate_context_encoding=False,
+        ),
+        request_id="story",
+    ).req
 
 
 def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
-    pytest.importorskip("sglang")
-    from sglang_omni.models.llada2_uni.request_builders import (
-        build_dllm_thinker_request,
-    )
-
-    def image_request(state):
-        return build_dllm_thinker_request(
-            state,
-            params={"stop": ["stop"], "stop_token_ids": [666]},
-            tokenizer=Tokenizer(),
-            vocab_size=IMAGE_TOKEN_OFFSET + 16,
-            dllm_config=SimpleNamespace(
-                block_size=4, mask_id=99, requires_separate_context_encoding=False
-            ),
-            request_id="story",
-        ).req
-
     state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
     advance(state, [71, 10, 22, 23, 12])
     req = image_request(state)
@@ -100,9 +66,11 @@ def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     assert req.sampling_params.max_new_tokens == 6
     assert req.sampling_params.stop_strs == []
     assert not req.sampling_params.stop_token_ids
-    assert len(req.origin_input_ids) == len(
-        req._uncond_input_ids
-    )  # noqa: leading-underscore  # DLLM protocol
+    # The rows share a block column, and no block of padding is left to encode.
+    pad_length = req._uncond_pad_len  # noqa: leading-underscore  # DLLM protocol
+    assert 0 <= pad_length < 4
+    companion_ids = req._uncond_input_ids  # noqa: leading-underscore  # DLLM protocol
+    assert (len(req.origin_input_ids) - len(companion_ids)) % 4 == 0
     assert req._cfg_scale == 4.0  # noqa: leading-underscore  # DLLM protocol
     assert req._dllm_steps == 32  # noqa: leading-underscore  # DLLM protocol
 
@@ -112,6 +80,83 @@ def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     interleaved = state.stream_state["interleaved"]
     assert interleaved["phase"] == "text" and interleaved["emit_frame"]
     assert state.prompt["input_ids"][0, -1].item() == 11
+
+
+def test_image_phase_budget_counts_the_padding_of_the_longest_row() -> None:
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    advance(state, [10, 22, 23, 12])
+    req = image_request(state)
+    longest_row = max(
+        len(req._uncond_input_ids),  # noqa: leading-underscore  # DLLM protocol
+        len(req._uncond_img_input_ids),  # noqa: leading-underscore  # DLLM protocol
+    )
+    assert longest_row > len(req.origin_input_ids)
+
+    state.stream_state["interleaved"]["max_seq_len"] = longest_row + 6
+    assert image_request(state).sampling_params.max_new_tokens == 6
+    state.stream_state["interleaved"]["max_seq_len"] = longest_row + 5
+    with pytest.raises(ValueError, match="exhausted its token budget"):
+        image_request(state)
+
+
+def test_no_text_row_tells_the_scheduler_where_its_padding_sits() -> None:
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    history_length = state.prompt["input_ids"].shape[1]
+    advance(state, [10, 22, 23, 12])
+
+    req = image_request(state)
+
+    pad_start = req._uncond_pad_start  # noqa: leading-underscore  # DLLM protocol
+    pad_length = req._uncond_pad_len  # noqa: leading-underscore  # DLLM protocol
+    companion_ids = req._uncond_input_ids  # noqa: leading-underscore  # DLLM protocol
+    assert pad_start == history_length and pad_length
+    assert [
+        index
+        for index, companion_id in enumerate(companion_ids)
+        if companion_id == Tokenizer.mask_token_id
+    ] == list(range(pad_start, pad_start + pad_length))
+
+
+def test_every_frame_the_text_phase_accepts_fits_its_image_request() -> None:
+    """A frame accepted near the context limit failed once its no-text row was padded to the conditional block column."""
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    prompt_length = state.prompt["input_ids"].shape[1]
+
+    accepted = 0
+    for max_seq_len in range(prompt_length, prompt_length + 24):
+        frame = copy.deepcopy(state)
+        frame.stream_state["interleaved"]["max_seq_len"] = max_seq_len
+        try:
+            # The next frame follows with no text, so its no-text row is the longest.
+            advance(frame, [10, 22, 23, 12])
+        except ValueError as error:
+            assert "exceed thinker context" in str(error)
+            continue
+        image_request(frame)
+        accepted += 1
+    assert accepted
+
+
+@pytest.mark.parametrize("text_ids", [[72, 10, 22, 23, 12], [75, 2]])
+def test_text_after_an_image_drops_the_image_tokens_it_opens_with(
+    text_ids: list[int],
+) -> None:
+    """Text that opened with an image token right after an image failed the request."""
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    prompt_ids = state.prompt["input_ids"][0].tolist()
+
+    with pytest.raises(ValueError, match="text phase emitted image token"):
+        advance(state, [text_ids[0], IMAGE_TOKEN_OFFSET, *text_ids[1:]])
+    advance(state, [IMAGE_TOKEN_OFFSET + 6, IMAGE_TOKEN_OFFSET + 7, *text_ids])
+    assert state.prompt["input_ids"][0].tolist() == prompt_ids + text_ids
 
 
 @pytest.mark.parametrize(
@@ -203,6 +248,21 @@ def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
     assert not adapter.runs
 
 
+def test_thinker_phase_hands_its_context_to_the_next_thinker_phase() -> None:
+    adapter = LLaDA2UniUMMAdapter("m")
+    context = umm_context()
+    start = adapter.start(context)
+    (text_phase,) = adapter.advance(
+        context, "prepare", preprocess(start.request).data
+    ).dispatches
+
+    context.produced = ContextRef("thinker", "story")
+    step = adapter.advance(context, "think", think(text_phase, [71, 10, 22, 23, 12]))
+
+    (image_phase,) = step.dispatches
+    assert image_phase.context == context.produced
+
+
 def test_interleaved_variant_runs_the_adapter_and_refuses_what_it_cannot_serve(
     monkeypatch,
 ):
@@ -216,6 +276,13 @@ def test_interleaved_variant_runs_the_adapter_and_refuses_what_it_cannot_serve(
     )
     config = manager.ConfigManager.from_model_path("m", "interleaved").config
     assert type(config) is LLaDA2UniInterleavedPipelineConfig
+    # Only this variant's phases continue one sequence, so only its thinker reuses prefixes.
+    assert resolve_stage_typed_kwargs(config.stage_named("thinker"))["reuse_prefix"]
+    for variant in ("text", "omni"):
+        other = manager.ConfigManager.from_model_path("m", variant).config
+        assert "reuse_prefix" not in resolve_stage_typed_kwargs(
+            other.stage_named("thinker")
+        )
     args = {
         **resolve_stage_typed_kwargs(config.stage_named("orchestrator")),
         **config.stage_factory_kwargs("orchestrator"),

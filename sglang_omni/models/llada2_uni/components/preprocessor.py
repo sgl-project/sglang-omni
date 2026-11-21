@@ -722,10 +722,10 @@ class LLaDA2Preprocessor:
         )
         if branch == "uncond":
             stream_state["uncond_input_ids"] = ids
-            stream_state["uncond_left_pad_len"] = pad_len
+            stream_state["uncond_pad_len"] = pad_len
         else:
             stream_state["uncond_img_input_ids"] = ids
-            stream_state["uncond_img_left_pad_len"] = pad_len
+            stream_state["uncond_img_pad_len"] = pad_len
 
     def build_edit_payload(
         self,

@@ -12,7 +12,7 @@ import queue as _queue_mod
 import threading
 import time
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -22,8 +22,8 @@ from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
-from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
-from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache, TreeLock
+from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.runtime_context import get_parallel, get_schedule
@@ -34,6 +34,7 @@ from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.pipeline.umm import CONTEXT_KEY
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import (
@@ -55,14 +56,17 @@ class DllmForwardBatch(ForwardBatch):
     """Keep DLLM metadata through the eager runner's dataclass batch rebuilds."""
 
     reqs: list[DllmRequest] = field(default_factory=list)
-    dllm_left_pad_lens_cpu: list[int] = field(default_factory=list)
+    dllm_pad_lens_cpu: list[int] = field(default_factory=list)
+    dllm_pad_starts_cpu: list[int] = field(default_factory=list)
 
 
 def release_kv_once(req: Req, tree_cache: BasePrefixCache) -> None:
     if req.kv.holds_kv:
         release_kv_cache(req, tree_cache, checkpoint=True)
     else:
-        pass
+        # A CFG row that never ran still pins the prefix it matched at admission.
+        tree_cache.unlock(req.lock)
+        req.lock = None
 
 
 class DllmScheduler:
@@ -118,6 +122,9 @@ class DllmScheduler:
         self.uncond_to_cond: dict[str, str] = {}
         self.uncond_rids: set[str] = set()
         self.orphaned_uncond_rids: set[str] = set()
+        # Prefixes pinned for the request's next phase, oldest first.
+        self.retained_contexts: dict[str, TreeLock] = {}
+        self.contexts_to_retain: set[str] = set()
 
     def warm_up_serving_thread(self) -> None:
         pass
@@ -235,7 +242,8 @@ class DllmScheduler:
                     self.create_uncond_companion(  # noqa: leading-underscore  # DLLM protocol
                         req,
                         uncond_ids,
-                        req._uncond_left_pad_len,
+                        req._uncond_pad_len,
+                        req._uncond_pad_start,
                         "-uncond",
                         mark_img=False,
                     )
@@ -246,7 +254,8 @@ class DllmScheduler:
                         self.create_uncond_companion(  # noqa: leading-underscore  # DLLM protocol
                             req,
                             uncond_img_ids,
-                            req._uncond_img_left_pad_len,
+                            req._uncond_img_pad_len,
+                            req._uncond_img_pad_start,
                             "-uncond-img",
                             mark_img=True,
                         )
@@ -284,6 +293,7 @@ class DllmScheduler:
         self.staging_queue = new_staging
 
         for rid in aborted:
+            self.release_context(rid)
             self.rid_to_req_data.pop(rid, None)
             for uncond_rid in self.cond_to_unconds.pop(rid, []):
                 self.uncond_to_cond.pop(uncond_rid, None)
@@ -305,23 +315,26 @@ class DllmScheduler:
         self,
         cond_req: DllmRequest,
         uncond_input_ids: list[int],
-        left_pad_len: int,
+        pad_length: int,
+        pad_start: int,
         rid_suffix: str,
         mark_img: bool,
     ) -> None:
         """Create a companion uncond Req for CFG and add to waiting queue."""
         uncond_rid = f"{cond_req.rid}{rid_suffix}"
         uncond_input_ids = list(uncond_input_ids)
-        if len(uncond_input_ids) != len(cond_req.origin_input_ids):
+        if (len(uncond_input_ids) - len(cond_req.origin_input_ids)) % (
+            cond_req.dllm_config.block_size
+        ):
             raise ValueError(
-                "CFG companion input must be physically aligned with the "
+                "CFG companion input must share a block column with the "
                 f"conditional input: cond={len(cond_req.origin_input_ids)}, "
                 f"companion={len(uncond_input_ids)}"
             )
         else:
             pass
-        if not 0 <= int(left_pad_len) <= len(uncond_input_ids):
-            raise ValueError("CFG left-pad length is outside the companion prompt")
+        if not 0 <= pad_start <= pad_start + pad_length <= len(uncond_input_ids):
+            raise ValueError("CFG padding is outside the companion prompt")
         else:
             pass
         uncond_sampling_params = SamplingParams(
@@ -341,9 +354,14 @@ class DllmScheduler:
         )
         uncond_req.tokenizer = cond_req.tokenizer
         uncond_req._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
-        uncond_req._dllm_left_pad_len = int(
-            left_pad_len
-        )  # noqa: leading-underscore  # DLLM protocol
+        # A companion reads shared prefixes, but its padded rows key nothing reusable.
+        uncond_req.skip_radix_cache_insert = True
+        uncond_req._dllm_pad_len = (
+            pad_length  # noqa: leading-underscore  # DLLM protocol
+        )
+        uncond_req._dllm_pad_start = (
+            pad_start  # noqa: leading-underscore  # DLLM protocol
+        )
         cond_req._cfg_group_rid = (
             cond_req.rid
         )  # noqa: leading-underscore  # DLLM protocol
@@ -381,41 +399,47 @@ class DllmScheduler:
         forward_batch: DllmForwardBatch,
         batch: ScheduleBatch,
     ) -> None:
-        """Apply mask and position metadata for mask-padded CFG branches."""
-        left_pad_lengths = [  # noqa: leading-underscore  # DLLM protocol
-            req._dllm_left_pad_len for req in batch.reqs
+        """Apply mask and position metadata for padded CFG branches."""
+        pad_lengths = [  # noqa: leading-underscore  # DLLM protocol
+            req._dllm_pad_len for req in batch.reqs
         ]
-        forward_batch.dllm_left_pad_lens_cpu = left_pad_lengths
-        if not any(left_pad_lengths):
+        pad_starts = [  # noqa: leading-underscore  # DLLM protocol
+            req._dllm_pad_start for req in batch.reqs
+        ]
+        forward_batch.dllm_pad_lens_cpu = pad_lengths
+        forward_batch.dllm_pad_starts_cpu = pad_starts
+        if not any(pad_lengths):
             return
         else:
             pass
-        if any(left_pad_length < 0 for left_pad_length in left_pad_lengths):
-            raise RuntimeError("CFG left-pad lengths must be non-negative")
+        if any(pad_length < 0 for pad_length in pad_lengths):
+            raise RuntimeError("CFG pad lengths must be non-negative")
         else:
             pass
         if not forward_batch.forward_mode.is_extend():
-            raise RuntimeError("CFG left-pad metadata requires an extend batch")
+            raise RuntimeError("CFG pad metadata requires an extend batch")
         else:
             pass
 
         extend_sequence_lengths = list(forward_batch.extend_seq_lens_cpu)
-        if len(extend_sequence_lengths) != len(left_pad_lengths):
+        if len(extend_sequence_lengths) != len(pad_lengths):
             raise RuntimeError(
-                f"CFG pad metadata batch mismatch: {len(left_pad_lengths)} vs "
+                f"CFG pad metadata batch mismatch: {len(pad_lengths)} vs "
                 f"{len(extend_sequence_lengths)}"
             )
         else:
             pass
 
         position_start = 0
-        for left_pad_length, extend_sequence_length in zip(
-            left_pad_lengths, extend_sequence_lengths
+        for pad_length, pad_start, extend_sequence_length in zip(
+            pad_lengths, pad_starts, extend_sequence_lengths
         ):
             position_end = position_start + int(extend_sequence_length)
-            if left_pad_length:
+            if pad_length:
                 request_positions = forward_batch.positions[position_start:position_end]
-                request_positions.sub_(left_pad_length).clamp_min_(0)
+                request_positions.sub_(
+                    (request_positions - pad_start).clamp(0, pad_length)
+                )
             else:
                 pass
             position_start = position_end
@@ -427,24 +451,23 @@ class DllmScheduler:
         else:
             pass
 
-    def synchronize_cfg_phases(self, reqs: list[DllmRequest]) -> None:
-        """Keep CFG companions in the conditional request's DLLM phase."""
-        if len(reqs) < 2:
-            return
+    def release_context(self, request_id: str) -> None:
+        lock = self.retained_contexts.pop(request_id, None)
+        if lock is not None:
+            self.tree_cache.unlock(lock)
         else:
             pass
-        cond_req = next(  # noqa: leading-underscore  # DLLM protocol
-            (req for req in reqs if not req._is_uncond), None
-        )
-        if cond_req is None:
-            return
-        else:
-            pass
-        for req in reqs:
-            if req._is_uncond:  # noqa: leading-underscore  # DLLM protocol
-                req.dllm_phase = cond_req.dllm_phase
-            else:
-                pass
+
+    def select_runnable_rows(self, reqs: list[DllmRequest]) -> list[DllmRequest]:
+        """Rows with a whole committed block encode first, then the group decodes."""
+        block_size = self.dllm_config.block_size
+        encoding_rows = [
+            req
+            for req in reqs
+            if req.prefix_len + block_size
+            <= len(req.origin_input_ids) + len(req.output_ids)
+        ]
+        return encoding_rows or reqs
 
     def get_request_group(self, queue: list[DllmRequest]) -> list[DllmRequest]:
         """Return the complete logical request group at the head of a queue."""
@@ -575,8 +598,16 @@ class DllmScheduler:
 
         from_staging = source_queue is self.staging_queue
         if from_staging:
-            for req in request_group:
+            runnable_rows = self.select_runnable_rows(request_group)
+            for req in runnable_rows:
+                has_run = req.kv.holds_kv
+                block_offset = req.dllm_block_offset
                 req.init_next_round_input()
+                # A new round advances the offset, but this row's first block is the one its admission matched.
+                if not has_run:
+                    req.dllm_block_offset = block_offset
+                else:
+                    pass
                 result = adder.add_dllm_staging_req(req)
                 if result == AddReqResult.NO_TOKEN:
                     break
@@ -594,14 +625,15 @@ class DllmScheduler:
                     break
                 else:
                     pass
+            runnable_rows = self.select_runnable_rows(request_group)
 
-        expected_rids = [req.rid for req in request_group]
+        expected_rids = [
+            req.rid for req in (runnable_rows if from_staging else request_group)
+        ]
         scheduled_rids = [req.rid for req in adder.can_run_list]
         ready = scheduled_rids == expected_rids
         if ready and len(request_group) > 1:
-            self.synchronize_cfg_phases(adder.can_run_list)
-            spans = {(req.prefix_len, req.extend_end) for req in adder.can_run_list}
-            if len(spans) != 1 or any(
+            if any(
                 req.extend_len != self.dllm_config.block_size
                 for req in adder.can_run_list
             ):
@@ -617,6 +649,11 @@ class DllmScheduler:
                 from_staging=from_staging,
                 request_snapshots=request_snapshots,
             )
+            # note (qiujiawei): reuse only saves work, an admission that lacks memory must not wait on it.
+            if self.retained_contexts:
+                self.release_context(next(iter(self.retained_contexts)))
+            else:
+                pass
             return None
         else:
             pass
@@ -632,8 +669,16 @@ class DllmScheduler:
             r for r in self.waiting_queue if r.rid not in staging_rids
         ]
 
+        # note (qiujiawei): pinned prefixes cannot be evicted, so give them up before this round's blocks run out of pages.
+        while self.retained_contexts and (
+            self.token_to_kv_pool_allocator.available_size()
+            + self.tree_cache.evictable_size()
+            < len(runnable_rows) * adder.ceil_paged_tokens(self.dllm_config.block_size)
+        ):
+            self.release_context(next(iter(self.retained_contexts)))
+
         new_batch = ScheduleBatch.init_new(
-            reqs=adder.can_run_list,
+            reqs=runnable_rows,
             req_to_token_pool=self.req_to_token_pool,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
             tree_cache=self.tree_cache,
@@ -805,6 +850,10 @@ class DllmScheduler:
                 try:
                     result = self.result_adapter(req_data)
                     message_type = "result"
+                    if isinstance(result.data, Mapping) and CONTEXT_KEY in result.data:
+                        self.contexts_to_retain.add(req.rid)
+                    else:
+                        pass
                 except Exception as exc:
                     logger.exception(f"DLLM result adapter failed for {req.rid}")
                     self.emit_request_error(req.rid, str(exc))
@@ -825,6 +874,14 @@ class DllmScheduler:
         for req in batch.reqs:
             if req.finished() or req.rid in orphaned:
                 release_kv_once(req, self.tree_cache)
+                self.release_context(req.rid)
+                if req.rid in self.contexts_to_retain:
+                    self.contexts_to_retain.remove(req.rid)
+                    self.retained_contexts[req.rid] = self.tree_cache.lock(
+                        req.last_node
+                    )
+                else:
+                    pass
                 exclude.add(req)
             else:
                 pass
@@ -849,7 +906,13 @@ class DllmScheduler:
                 continue
             else:
                 pass
-            checkpoint_kv_cache(req, self.tree_cache)
+            # A row waiting for its group has not advanced this round.
+            # note (qiujiawei): rows match the tree only at admission, which waits for staging to empty, so the
+            # tree takes a row once at release instead of walking its whole path every round.
+            if req in batch.reqs:
+                req.prefix_len = req.extend_end
+            else:
+                pass
             # Keep the row until finish/abort so release_kv_cache owns both
             # cached tokens and the request slot throughout staging.
             new_staging.append(req)

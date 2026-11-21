@@ -70,6 +70,7 @@ def create_dllm_thinker_scheduler(
     *,
     tp_rank: int = 0,
     nccl_port: int | None = None,
+    reuse_prefix: bool = False,
 ) -> DllmScheduler:
     """Create an DllmScheduler for the LLaDA2-Uni thinker.
 
@@ -79,13 +80,16 @@ def create_dllm_thinker_scheduler(
     validate_cfg(server_args)
     dllm_config = DllmConfig.from_server_args(server_args)
 
-    # sglang supports radix cache with dLLM, but Omni's dLLM staging
-    # path has only been validated without it; keep it disabled deliberately.
-    override_server_args(
-        server_args,
-        "sglang_omni.llada2_uni.disable_radix_cache",
-        disable_radix_cache=True,
-    )
+    # note (qiujiawei): reused KV can come from another attention kernel than the request's own, so only the
+    # interleaved pipeline, whose phases continue one sequence, takes the radix cache.
+    if not reuse_prefix:
+        override_server_args(
+            server_args,
+            "sglang_omni.llada2_uni.disable_radix_cache",
+            disable_radix_cache=True,
+        )
+    else:
+        pass
 
     (
         model_worker,
