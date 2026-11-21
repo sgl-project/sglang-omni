@@ -206,7 +206,7 @@ func (c *cognitive) Visit(n ast.Node) ast.Visitor {
 		c.branch(n.Body, n.Init, n.Cond, n.Post)
 		return nil
 	case *ast.RangeStmt:
-		c.branch(n.Body, n.X)
+		c.branch(n.Body, n.Key, n.Value, n.X)
 		return nil
 	case *ast.FuncLit:
 		c.nested(n.Body)
@@ -266,6 +266,7 @@ func TestCognitiveComplexity(t *testing.T) {
 		{"nested type switch", "func f(x any) { for { switch x.(type) { case int: g() } } }", 3},
 		{"nested select", "func f(c chan int) { for { select { case <-c: g() } } }", 3},
 		{"closure nests", "func f(x int) { g := func() { if x > 0 { h() } }; g() }", 2},
+		{"range key is scored", "func f(a []int, xs []int) { for a[f(a, xs)] = range xs { } }", 2},
 		{"labelled continue", "func f(xs []int) { outer: for range xs { for range xs { continue outer } } }", 4},
 		{"recursion", "func f(n int) int { if n == 0 { return 0 }; return f(n - 1) }", 2},
 		{"call by the name of the method", "func (s *t) f() { f() }", 1},
