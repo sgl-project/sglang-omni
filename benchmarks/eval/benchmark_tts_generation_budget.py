@@ -208,7 +208,7 @@ async def synthesize_probe(
         )
     else:
         pass
-    if result.finish_reason != "stop":
+    if result.finish_reason not in ("stop", "length"):
         result.errors.append(f"Unexpected finish reason: {result.finish_reason}")
     else:
         pass
@@ -248,6 +248,7 @@ async def run_generation_probe(
     with (output_dir / "results.jsonl").open("w", encoding="utf-8") as report:
         for case in cases:
             for seed in seeds:
+                baseline: GenerationProbeResult | None = None
                 pair_start = len(results)
                 for policy in policies:
                     request = request_template.model_copy(
@@ -287,6 +288,25 @@ async def run_generation_probe(
                         result.errors.append(
                             "Speech request exceeded its total time limit"
                         )
+                    if policy == "baseline":
+                        baseline = result
+                    else:
+                        pass
+                    # note(Alistairshi): Seeded pairs can diverge with prefix-cache or batch changes.
+                    if (
+                        policy == "text"
+                        and baseline is not None
+                        and baseline.finish_reason == "stop"
+                        and result.finish_reason == "length"
+                        and baseline.completion_frames is not None
+                        and result.completion_frames is not None
+                        and result.completion_frames < baseline.completion_frames
+                    ):
+                        result.errors.append(
+                            "Text budget is shorter than a naturally completed baseline"
+                        )
+                    else:
+                        pass
                     results.append(result)
                     report.write(result.model_dump_json() + "\n")
                     report.flush()

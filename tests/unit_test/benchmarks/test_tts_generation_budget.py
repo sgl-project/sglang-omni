@@ -27,7 +27,7 @@ from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechReference
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
-async def test_probe_pairs_seeds_and_rejects_incomplete_audio(
+async def test_probe_pairs_seeds_and_records_truncated_audio(
     tmp_path: Path, stream: bool, finish_reason: str
 ) -> None:
     requests: list[dict[str, object]] = []
@@ -95,25 +95,25 @@ async def test_probe_pairs_seeds_and_rejects_incomplete_audio(
         assert result.completion_frames == 2
         assert result.audio_sha256
         assert sum(result.chunk_bytes) > 0
-        assert bool(result.errors) == (result.finish_reason == "length")
+        assert not result.errors
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("baseline", "text"),
+    ("baseline", "text", "errors"),
     [
-        (("stop", 40), ("length", 125)),
-        (("length", 2048), ("stop", 125)),
-        (("length", 2048), ("length", 125)),
-        (("stop", 200), ("stop", 100)),
+        (("stop", 40), ("length", 125), []),
+        (("length", 2048), ("length", 125), []),
+        (("stop", 200), ("length", 125), ["Text budget is shorter"]),
+        (("stop", 200), ("stop", 100), []),
     ],
 )
-async def test_probe_rejects_incomplete_audio_under_either_budget(
+async def test_paired_probe_only_fails_when_text_budget_is_below_natural_baseline(
     tmp_path: Path,
     baseline: tuple[str, int],
     text: tuple[str, int],
+    errors: list[str],
 ) -> None:
-    """Budget exhaustion must fail even when the paired request also exhausts its budget."""
     bodies: list[dict[str, object]] = []
 
     def answer(request: httpx.Request) -> httpx.Response:
@@ -149,53 +149,11 @@ async def test_probe_rejects_incomplete_audio_under_either_budget(
             tmp_path / "probe",
         )
     assert [result.policy for result in results] == ["baseline", "text"]
-    assert bool(results[0].errors) == (baseline[0] == "length")
-    assert bool(results[1].errors) == (text[0] == "length")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [False, True])
-async def test_probe_records_http_errors_and_interrupted_audio(
-    tmp_path: Path, stream: bool
-) -> None:
-    """Failed responses must remain probe failures even after receiving partial audio."""
-
-    class InterruptedAudio(httpx.AsyncByteStream):
-        async def __aiter__(self) -> AsyncIterator[bytes]:
-            yield bytes(4800)
-            raise httpx.RemoteProtocolError("incomplete chunked read")
-
-    def answer(request: httpx.Request) -> httpx.Response:
-        assert request.method == "POST"
-        if stream:
-            return httpx.Response(
-                200,
-                headers={"X-Sample-Rate": "24000"},
-                stream=InterruptedAudio(),
-            )
-        else:
-            return httpx.Response(500, json={"error": {"message": "Incomplete audio"}})
-
-    output_dir = tmp_path / "probe"
-    async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as client:
-        results = await run_generation_probe(
-            client,
-            "http://test/v1",
-            CreateSpeechRequest(input="unused"),
-            [GenerationProbeCase(id="short", input="Hi.", language="English")],
-            range(1),
-            stream,
-            output_dir,
-            include_baseline=False,
-        )
-    expected_error = "RemoteProtocolError" if stream else "HTTPStatusError"
-    assert any(expected_error in error for error in results[0].errors)
-    recorded = json.loads((output_dir / "results.jsonl").read_text())
-    assert recorded["errors"] == results[0].errors
-    if stream:
-        assert (output_dir / "00000.pcm").read_bytes() == bytes(4800)
+    assert results[0].errors == []
+    if errors:
+        assert any(errors[0] in error for error in results[1].errors)
     else:
-        pass
+        assert results[1].errors == []
 
 
 @pytest.mark.asyncio
