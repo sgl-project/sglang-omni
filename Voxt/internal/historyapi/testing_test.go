@@ -88,7 +88,7 @@ func entryID(i int) string {
 // be long, and either can overflow the 104-byte socket path limit on macOS.
 func socketPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "vx")
+	dir, err := os.MkdirTemp(sockTempBase(), "vx")
 	if err != nil {
 		t.Fatal(err)
 	}

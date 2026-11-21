@@ -37,15 +37,15 @@
         },
         {
           "id": "command",
-          "label": "⌘ 组合"
+          "label": "右 ⌘ 组合"
         },
         {
           "id": "mouseMiddle",
-          "label": "鼠标中键 + fn⇧"
+          "label": "鼠标中键 + fn ⇧"
         }
       ],
-      "preset_selected": "鼠标中键 + fn⇧",
-      "preset_about": "鼠标中键 + fn⇧：单击滚轮转录，双击改写。鼠标快捷键需要辅助功能权限。",
+      "preset_selected": "鼠标中键 + fn ⇧",
+      "preset_about": "鼠标中键 + fn ⇧：单击滚轮转录，双击改写。鼠标快捷键需要辅助功能权限。",
       "preset_warnings": null,
       "shortcuts": [
         {

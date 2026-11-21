@@ -109,7 +109,7 @@ func TestWriteSRTAndText(t *testing.T) {
 // (a Unix socket's path is at most 104 bytes on macOS), and returns the path.
 func serve(t *testing.T, s *Server) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "fa")
+	dir, err := os.MkdirTemp(sockTempBase(), "fa")
 	if err != nil {
 		t.Fatal(err)
 	}

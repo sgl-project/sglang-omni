@@ -37,11 +37,11 @@
         },
         {
           "id": "command",
-          "label": "⌘ 组合"
+          "label": "右 ⌘ 组合"
         },
         {
           "id": "mouseMiddle",
-          "label": "鼠标中键 + fn⇧"
+          "label": "鼠标中键 + fn ⇧"
         },
         {
           "id": "",

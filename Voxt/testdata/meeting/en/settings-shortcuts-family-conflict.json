@@ -64,6 +64,7 @@
     ],
     "shortcuts": {
       "accessibility_installed": true,
+      "no_tap_notice": "Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it.",
       "strict_shortcuts": false,
       "preset": {
         "options": [
@@ -79,13 +80,13 @@
           },
           {
             "id": "command",
-            "title": "⌘ combination",
-            "about": "⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing."
+            "title": "Right ⌘ combination",
+            "about": "Right ⌘ combination: Right ⌘ only, away from the letter keys. Good if you keep Option for typing."
           },
           {
             "id": "mouseMiddle",
-            "title": "Middle mouse + fn⇧",
-            "about": "Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility."
+            "title": "Middle mouse + fn ⇧",
+            "about": "Middle mouse + fn ⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility."
           }
         ],
         "selected": "Right ⌥ (default)",

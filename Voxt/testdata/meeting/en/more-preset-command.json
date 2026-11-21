@@ -37,15 +37,15 @@
         },
         {
           "id": "command",
-          "label": "⌘ combination"
+          "label": "Right ⌘ combination"
         },
         {
           "id": "mouseMiddle",
-          "label": "Middle mouse + fn⇧"
+          "label": "Middle mouse + fn ⇧"
         }
       ],
-      "preset_selected": "⌘ combination",
-      "preset_about": "⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.",
+      "preset_selected": "Right ⌘ combination",
+      "preset_about": "Right ⌘ combination: Right ⌘ only, away from the letter keys. Good if you keep Option for typing.",
       "preset_warnings": null,
       "shortcuts": [
         {
