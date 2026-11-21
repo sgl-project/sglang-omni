@@ -118,7 +118,7 @@ func funcComplexities(t *testing.T, path string, data []byte) map[string]int {
 		if fn.Recv != nil && len(fn.Recv.List) > 0 {
 			name = receiverType(fn.Recv.List[0].Type) + "." + name
 		}
-		c := &cognitive{name: fn.Name.Name, method: fn.Recv != nil, counted: map[*ast.BinaryExpr]bool{}}
+		c := &cognitive{name: fn.Name.Name, counted: map[*ast.BinaryExpr]bool{}}
 		ast.Walk(c, fn.Body)
 		scores[name] = max(scores[name], c.score)
 	}
@@ -140,12 +140,12 @@ func receiverType(expr ast.Expr) string {
 }
 
 // cognitive scores one function body as gocognit does, so that
-// golangci-lint's gocognit gives the same numbers: the bodies of else and
-// else if are not nested one level deeper, and only a plain call of a
-// function by its own name counts as recursion.
+// golangci-lint's gocognit gives the same numbers: an else if adds one
+// whatever its nesting, an else body is not nested one level deeper, and
+// any plain call by the function's own name counts as recursion, even from
+// a method or to a builtin (len inside a method len).
 type cognitive struct {
 	name           string
-	method         bool
 	nesting, score int
 	counted        map[*ast.BinaryExpr]bool // inner operators of a run already scored
 }
@@ -172,18 +172,14 @@ func (c *cognitive) branch(body *ast.BlockStmt, header ...ast.Node) {
 	c.nested(body)
 }
 
-func (c *cognitive) ifStmt(n *ast.IfStmt, chained bool) {
+func (c *cognitive) ifStmt(n *ast.IfStmt) {
 	c.walk(n.Init)
 	c.walk(n.Cond)
-	if chained {
-		c.walk(n.Body)
-	} else {
-		c.nested(n.Body)
-	}
+	c.nested(n.Body)
 	switch e := n.Else.(type) {
 	case *ast.IfStmt:
 		c.score++
-		c.ifStmt(e, true)
+		c.ifStmt(e)
 	case *ast.BlockStmt:
 		c.score++
 		c.walk(e)
@@ -194,7 +190,7 @@ func (c *cognitive) Visit(n ast.Node) ast.Visitor {
 	switch n := n.(type) {
 	case *ast.IfStmt:
 		c.score += 1 + c.nesting
-		c.ifStmt(n, false)
+		c.ifStmt(n)
 		return nil
 	case *ast.SwitchStmt:
 		c.branch(n.Body, n.Init, n.Tag)
@@ -229,7 +225,7 @@ func (c *cognitive) Visit(n ast.Node) ast.Visitor {
 			}
 		}
 	case *ast.CallExpr:
-		if id, ok := n.Fun.(*ast.Ident); ok && !c.method && id.Name == c.name {
+		if id, ok := n.Fun.(*ast.Ident); ok && id.Name == c.name {
 			c.score++
 		}
 	}
@@ -261,6 +257,7 @@ func TestCognitiveComplexity(t *testing.T) {
 		{"if, else if, else", "func f(x int) { if x > 0 { g() } else if x < 0 { h() } else { g() } }", 3},
 		{"nested if", "func f(x int) { for { if x > 0 { if x > 1 { g() } } } }", 6},
 		{"else body is not nested", "func f(x int) { if x > 0 { g() } else { if x < 0 { h() } } }", 3},
+		{"else if body nests", "func f(x int) { for { if x > 0 { g() } else if x < 0 { if x < -1 { h() } } } }", 7},
 		{"one run of &&", "func f(a, b, c bool) bool { return a && b && c }", 1},
 		{"&& then ||", "func f(a, b, c bool) bool { return a && b || c }", 2},
 		{"parentheses start a run", "func f(a, b, c bool) bool { return a && (b && c) }", 2},
@@ -268,7 +265,7 @@ func TestCognitiveComplexity(t *testing.T) {
 		{"closure nests", "func f(x int) { g := func() { if x > 0 { h() } }; g() }", 2},
 		{"labelled continue", "func f(xs []int) { outer: for range xs { for range xs { continue outer } } }", 4},
 		{"recursion", "func f(n int) int { if n == 0 { return 0 }; return f(n - 1) }", 2},
-		{"method of the same name", "func (s *t) f() { f() }", 0},
+		{"call by the name of the method", "func (s *t) f() { f() }", 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

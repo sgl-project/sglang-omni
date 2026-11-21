@@ -54,7 +54,7 @@ internal/meeting/finalize.go FinalizePass 34
 internal/meeting/finalize.go diarizeTrack 40
 internal/meeting/finalize.go finalizeTrack 33
 internal/meeting/track.go Manager.runTrack 55
-internal/models/manager.go Manager.refresh 27
+internal/models/manager.go Manager.refresh 31
 internal/omni/asr.go ASR.final 32
 internal/omni/echo.go echoTail 36
 internal/omni/final.go transcribe 27
@@ -67,7 +67,7 @@ internal/recordings/move.go Move 59
 internal/session/run.go run.keep 26
 internal/session/run.go run.main 26
 internal/session/run_audio.go run.feed 97
-internal/session/run_listen.go run.listen 89
+internal/session/run_listen.go run.listen 92
 internal/session/write.go run.write 115
 internal/tools/declhash/main.go hashFile 38
 internal/tools/snapcmp/main.go compare 34
