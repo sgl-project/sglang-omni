@@ -1,4 +1,4 @@
-# The qwen3-asr-qwen3.8-27b-vivian cascade with a screen: Qwen3.8-27B puts what the user should read, not hear, such as commands, links and lists, between <screen> and </screen>, which Qwen3-TTS never speaks and the client shows.
+# Qwen3-ASR transcribes each utterance, Qwen3.8-27B answers with thinking off and Qwen3-TTS Base speaks it in the voice of one Vivian recording, cloned with its transcript, each a service of its own, with a screen: Qwen3.8-27B puts what the user should read, not hear, such as commands, links and lists, between <screen> and </screen>, which Qwen3-TTS never speaks and the client shows.
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-screen
 
