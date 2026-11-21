@@ -185,6 +185,13 @@ def test_chunked_http_sends_each_chunk_with_its_own_budget(
     [
         ("en", "It's FIVE words right here.", "it's five words", 2, 5),
         ("zh", "今天天气好。", "今天天气好好好", 2, 5),
+        ("ja", "今日はいい天気です。", "今日はいい天気", 2, 9),
+        ("ko", "오늘 날씨가 좋다.", "오늘 날씨가", 2, 7),
+        ("th", "วันนี้อากาศดี", "วันนี้อากาศด", 1, 9),
+        ("ru", "Сегодня хорошая погода.", "Сегодня хорошая", 1, 3),
+        ("fr", "Le café est très bon.", "le café est très", 1, 5),
+        ("tr", "Erdoğan bugün konuştu.", "Erdoğan bugün", 1, 3),
+        ("hi", "आज मौसम अच्छा है।", "आज मौसम अच्छा", 1, 4),
     ],
 )
 def test_score_counts_dropped_tails_and_repeated_text(

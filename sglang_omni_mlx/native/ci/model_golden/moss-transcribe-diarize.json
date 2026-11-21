@@ -27,7 +27,7 @@
   "Apple M5 Pro": {
    "metrics": {
     "wer_en": 0.01833,
-    "cer_zh": 0.05925,
+    "cer_zh": 0.05902,
     "mer_mixed": 0.14739
    },
    "clips": {
