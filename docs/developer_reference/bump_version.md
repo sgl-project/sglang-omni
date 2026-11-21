@@ -187,6 +187,8 @@ phase, and every later reader has to read from where the current release
 stores the value. The bump that introduced the read-only record turned
 several write-then-read-back sites into hard errors.
 
+**Attention backend capabilities.** `FULL_PREFILL_ATTENTION_BACKENDS` in `sglang_omni/scheduling/generation_batch_policy.py` names the attention backends that can capture the full prefill CUDA graph, and `FULL_PREFILL_ATTENTION_SUBSTITUTES` in `sglang_omni/scheduling/engine_factory.py` names the prefill backend used in place of an automatic one that cannot (`trtllm_mha`, SGLang's choice on SM100, for the builders that list SM100 in `full_prefill_substitute_sm_versions`). Both record what the pinned release can do, and no CPU test notices when a release changes it: a backend that gains full prefill capture keeps falling back to the breakable graph, or keeps being replaced, until both are updated.
+
 **Compat overlays.** `sglang_omni/models/dots_tts/compat.py`,
 `sglang_omni/models/qwen3_tts/compat.py` and
 `sglang_omni/models/qwen3_omni/components/vision_compat.py` bridge a pinned
