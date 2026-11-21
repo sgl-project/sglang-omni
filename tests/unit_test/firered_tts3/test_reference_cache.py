@@ -415,6 +415,34 @@ def test_failed_forward_fails_only_its_own_group(
         )
 
 
+@pytest.mark.usefixtures("fp32_encoder", "decoded_audio")
+def test_a_group_that_fails_together_retries_its_clips_alone(
+    reference_bundle: FireRedReferenceBundle,
+) -> None:
+    """A forward that fails only because clips share it, such as out of memory on the padded group, must not fail clips that encode alone."""
+    # Groups by ascending length: [short, mid] (24 patches), [long] (40), [capped] (48).
+    reference_bundle.batch_sample_budget = 640
+    forward_rows: list[int] = []
+
+    def run_out_of_memory_on_shared_forwards(
+        module: torch.nn.Module, args: tuple[torch.Tensor]
+    ) -> None:
+        forward_rows.append(args[0].shape[0])
+        if args[0].shape[0] > 1:
+            raise RuntimeError("out of memory")
+        else:
+            pass
+
+    reference_bundle.encoder.qwen3.layers[0].register_forward_pre_hook(
+        run_out_of_memory_on_shared_forwards
+    )
+    hook = FireRedReferenceHook(reference_bundle, model_id="stub", cache_enabled=False)
+    outcomes = encode_prepared_batch(hook, MIXED_REFERENCES)
+    assert forward_rows == [2, 1, 1, 1, 1]
+    for outcome, reference in zip(outcomes, MIXED_REFERENCES):
+        assert_matches_per_clip(outcome, hook.encode_one(reference))
+
+
 @pytest.mark.usefixtures("fp32_encoder", "batch_only")
 def test_bad_reference_fails_alone_without_re_encoding_its_batch_mates(
     reference_bundle: FireRedReferenceBundle, decoded_audio: list[tuple[str, str]]

@@ -200,6 +200,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         ) = None
         self.batch_thread: threading.Thread | None = None
         self.solo_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self.solo_future: concurrent.futures.Future[ArtifactT] | None = None
         if self.batching:
             self.batch_queue = _queue_mod.Queue()
             self.batch_thread = threading.Thread(
@@ -235,7 +236,12 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         else:
             pass
         if self.solo_executor is not None:
-            self.solo_executor.shutdown(wait=True)
+            self.solo_executor.shutdown(wait=False)
+            solo_future = self.solo_future
+            if solo_future is not None:
+                concurrent.futures.wait([solo_future], timeout=5.0)
+            else:
+                pass
         else:
             pass
         close = getattr(self._hook, "close", None)  # noqa: leading-underscore
@@ -249,19 +255,25 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             return self._hook.encode_one(item)  # noqa: leading-underscore
         else:
             pass
+        solo_future: concurrent.futures.Future[ArtifactT] | None = None
         with self.lock:
-            is_solo = self.encodes_alone and self.encodes_in_flight == 0
+            # note (yucheng): A lone request would only pay the batch linger, so it takes the per-item path, but only while the solo thread is idle: an encode that outlived its timed-out caller would otherwise hold it up.
+            is_solo = (
+                self.encodes_alone
+                and self.encodes_in_flight == 0
+                and (self.solo_future is None or self.solo_future.done())
+            )
             self.encodes_in_flight += 1
             if is_solo:
+                assert self.solo_executor is not None
                 self.solo_encodes += 1
+                solo_future = self.solo_executor.submit(self.hook.encode_one, item)
+                self.solo_future = solo_future
             else:
                 pass
         try:
-            # note (yucheng): A lone request would only pay the batch linger, so it takes the per-item path.
-            if is_solo and self.solo_executor is not None:
-                return self.solo_executor.submit(self.hook.encode_one, item).result(
-                    timeout=self.timeout_s
-                )
+            if solo_future is not None:
+                return solo_future.result(timeout=self.timeout_s)
             else:
                 pass
             prepared_item = self.hook.prepare_batch_input(item)

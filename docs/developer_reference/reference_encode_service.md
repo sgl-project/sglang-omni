@@ -179,7 +179,7 @@ path:
 - use an internal queue that drains up to `max_batch_size` or
   `max_batch_wait_ms`, calls one hook batch encode, and then stores,
   revalidates, cache-inserts, and resolves each item independently;
-- let a hook opt in to `can_encode_alone()` (default `False`): a leader that finds no other encode in flight hands `encode_one` to the service's one solo thread instead of joining the queue, so a lone request skips the batch wait and keeps the per-item result, and sequential lone requests always run on the same thread, while a leader arriving during any other encode joins the queue and batches as usual; because that leader skips `prepare_batch_input`, `encode_one` must work on an item that `prepare_batch_input` has not processed;
+- let a hook opt in to `can_encode_alone()` (default `False`): a leader that finds no other encode in flight and the service's one solo thread idle hands `encode_one` to that thread instead of joining the queue, so a lone request skips the batch wait and keeps the per-item result, and sequential lone requests always run on the same thread (a solo encode that outlives its timed-out caller sends the next lone request to the queue instead), while a leader arriving during any other encode joins the queue and batches as usual; because that leader skips `prepare_batch_input`, `encode_one` must work on an item that `prepare_batch_input` has not processed;
 - let `encode_batch` return an `Exception` in a slot to fail only that item;
   if it raises as a whole or returns the wrong number of results, retry per
   item with `encode_one` so one bad reference does not fail the whole batch.

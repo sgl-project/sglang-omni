@@ -406,25 +406,27 @@ def test_close_stops_the_solo_thread() -> None:
     ]
     service.close()
     assert len(solo_threads) == 1
+    solo_threads[0].join(timeout=5)
     assert not solo_threads[0].is_alive()
 
 
-def test_a_timed_out_lone_request_keeps_the_next_one_on_the_solo_thread() -> None:
-    """A caller that gives up on a slow lone encode must not let the next lone request start on a second thread."""
+def test_a_lone_request_skips_a_solo_thread_held_by_a_timed_out_encode() -> None:
+    """An encode that outlives its timed-out caller must not make the next lone request wait behind it."""
     hook = SoloHook()
     hook.single_gate = threading.Event()
-    service = make_service(hook, timeout_s=0.1)
+    service = make_service(hook, timeout_s=0.5, max_batch_wait_ms=0.0)
     try:
         with pytest.raises(concurrent.futures.TimeoutError):
             service.get_or_encode("a")
-        # The caller of "a" has left, so "b" is a lone request while "a" still holds the solo thread.
-        with pytest.raises(concurrent.futures.TimeoutError):
-            service.get_or_encode("b")
+        # "a" still holds the solo thread, so the lone request "b" goes to the batch worker instead of waiting behind it.
+        assert tuple(service.get_or_encode("b").tolist()) == (1, ord("b"))
+        assert hook.batch_sizes == [1]
         hook.single_gate.set()
-        with hook.single_done:
-            assert hook.single_done.wait_for(
-                lambda: len(hook.single_threads) == 2, timeout=5
-            )
+        assert service.solo_future is not None
+        service.solo_future.result(timeout=5)
+        # Once the solo thread is idle again, the next lone request takes it.
+        service.get_or_encode("cc")
+        assert hook.single_calls == ["a", "cc"]
         assert len(set(hook.single_threads)) == 1
         assert service.stats()["solo_encodes"] == 2
     finally:
