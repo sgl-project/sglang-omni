@@ -16,6 +16,8 @@ type historyActions interface {
 	openHistoryFeature(feature string)
 	openHistoryPrivacy()
 	openHistorySettingsDialog()
+	// saveHistoryDetailWidth keeps the detail width in DIPs at 100 %, 0 for the default.
+	saveHistoryDetailWidth(width float64)
 	copyHistoryText(text string)
 	showHistoryRecording(id string)
 	retryHistoryEntry(id string)

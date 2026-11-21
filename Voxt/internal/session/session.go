@@ -205,6 +205,9 @@ type Snapshot struct {
 	// Selection is the selected text read when the shortcut fired
 	// (Translate, Rewrite; "" for none), SelectionVia how ("ax", "copy").
 	Selection, SelectionVia string
+	// ReadingSelection: the selection is still being read from the app in
+	// front, which may get a ⌘C, so VoxtNew must not come in front yet.
+	ReadingSelection bool
 	// Typed is Rewrite's typed text that went with the request (the
 	// input box's; "" for none).
 	Typed string

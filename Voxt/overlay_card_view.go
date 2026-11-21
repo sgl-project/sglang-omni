@@ -153,6 +153,17 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		actions.toggleThinkMenu()
 	}
 	if !card.Failed {
+		cardInsertCopy(context, card, actions)
+	}
+	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
+		actions.closeAnswer()
+	}
+}
+
+// cardInsertCopy are the answer's Insert and Copy buttons (the answer
+// card's header, and the Rewrite card's).
+func cardInsertCopy(context *ui.Context, card *sessionCardViewState, actions sessionOverlayActions) {
+	{
 		if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
 			actions.insertAnswer()
 		}
@@ -166,9 +177,6 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyTip, copyIcon, card.CanCopy) {
 			actions.copyAnswer()
 		}
-	}
-	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
-		actions.closeAnswer()
 	}
 }
 
