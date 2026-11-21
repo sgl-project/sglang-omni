@@ -34,8 +34,9 @@ type homeActivity struct {
 // activityResult is a result that ended before the log was read: its
 // session (its History entry's ID) and when it started.
 type activityResult struct {
-	id string
-	at time.Time
+	id     string
+	at     time.Time
+	result activity.Result
 }
 
 type activitySaves struct {
@@ -67,7 +68,7 @@ func (a *app) loadActivity() {
 			// that read that day before then did not see it.
 			for _, r := range act.pending {
 				if !seen[r.id] {
-					act.log.Add(r.at)
+					act.log.Add(r.at, r.result)
 				}
 			}
 			act.pending = nil
@@ -99,7 +100,9 @@ func readActivity(ctx context.Context, docs store.Documents, history store.Histo
 		}
 		for _, e := range entries {
 			if e.Status == store.StatusDone && strings.TrimSpace(e.Result) != "" {
-				log.Add(e.CreatedAt.Local())
+				log.Add(e.CreatedAt.Local(), activity.Result{
+					Chars: countChars(e.Result), Spoken: countChars(e.RawText), Audio: time.Duration(e.AudioMS) * time.Millisecond,
+				})
 				if e.CreatedAt.After(recent) {
 					seen[e.ID] = true
 				}
@@ -118,13 +121,15 @@ func (a *app) recordActivity(s session.Snapshot) {
 	}
 	act := &a.act
 	// Its day is its start's, as its History entry's (CreatedAt).
-	result := activityResult{id: s.ID, at: cmp.Or(s.StartedAt, time.Now())}
+	result := activityResult{id: s.ID, at: cmp.Or(s.StartedAt, time.Now()), result: activity.Result{
+		Chars: countChars(s.Result), Spoken: countChars(s.Raw), Audio: s.Timings.Audio,
+	}}
 	if !act.loaded {
 		act.pending = append(act.pending, result)
 		a.loadActivity()
 		return
 	}
-	act.log.Add(result.at)
+	act.log.Add(result.at, result.result)
 	act.gen++
 	a.saveActivity()
 }

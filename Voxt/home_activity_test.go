@@ -93,7 +93,7 @@ func TestActivityPendingBeforeRead(t *testing.T) {
 	a, tt := homeTester(t)
 	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
 	var stored activity.Log
-	stored.Add(time.Now().AddDate(0, 0, -1))
+	stored.Add(time.Now().AddDate(0, 0, -1), activity.Result{})
 	data, _ := stored.Marshal()
 	if err := a.lib.store.Documents().Put(context.Background(), activity.Key, data); err != nil {
 		t.Fatal(err)
@@ -112,19 +112,19 @@ func TestHomeActivityViewState(t *testing.T) {
 	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local) // a Friday
 	var log activity.Log
 	for _, d := range []int{-1, 0} {
-		log.Add(now.AddDate(0, 0, d))
+		log.Add(now.AddDate(0, 0, d), activity.Result{})
 	}
 	for range 12 {
-		log.Add(now.AddDate(0, 0, -3))
+		log.Add(now.AddDate(0, 0, -3), activity.Result{})
 	}
-	log.Add(now.AddDate(0, -9, 0)) // before this page
+	log.Add(now.AddDate(0, -9, 0), activity.Result{}) // before this page
 	tr := i18n.NewTranslator("en")
 	state := buildHomeActivityViewState(tr, log, 0, now)
 	if len(state.Weeks) != homeActivityWeeks || !state.CanBack || state.CanForward || state.Levels != activity.Levels {
 		t.Fatalf("%d weeks, back %v forward %v", len(state.Weeks), state.CanBack, state.CanForward)
 	}
 	last := state.Weeks[len(state.Weeks)-1]
-	if friday := last[5]; friday.Level != 1 || friday.Future || friday.Tip != "Nov 20, 2026: 1 result" {
+	if friday := last[5]; friday.Level != 1 || friday.Future || friday.Date != "Nov 20, 2026" || friday.Count != "1 result" {
 		t.Fatalf("today %+v", friday)
 	}
 	if tuesday := last[2]; tuesday.Level != 4 {
@@ -133,19 +133,20 @@ func TestHomeActivityViewState(t *testing.T) {
 	if saturday := last[6]; !saturday.Future {
 		t.Fatalf("tomorrow is not future: %+v", saturday)
 	}
-	if monday := last[1]; monday.Tip != "Nov 16, 2026: no results" {
-		t.Fatalf("an empty day: %q", monday.Tip)
+	if monday := last[1]; monday.Date != "Nov 16, 2026" || monday.Count != "No activity" {
+		t.Fatalf("an empty day: %q %q", monday.Date, monday.Count)
 	}
 	if n := len(state.Months); n < 5 || state.Months[n-1].Label != "Nov" {
 		t.Fatalf("months %+v", state.Months)
 	}
 	zh := buildHomeActivityViewState(i18n.NewTranslator("zh-Hans"), log, 0, now)
-	if tip := zh.Weeks[len(zh.Weeks)-1][5].Tip; tip != "2026年11月20日：1 次" || zh.Weekdays[1] != "一" {
+	if day := zh.Weeks[len(zh.Weeks)-1][5]; day.Date != "2026年11月20日" || day.Count != "1 次" || zh.Weekdays[1] != "一" {
+		tip := day.Date + " " + day.Count
 		t.Fatalf("zh-Hans: %q %q", tip, zh.Weekdays)
 	}
 	older := buildHomeActivityViewState(tr, log, 1, now)
-	if !older.CanForward || older.Weeks[len(older.Weeks)-1][5].Tip != "May 22, 2026: no results" {
-		t.Fatalf("a page back: forward %v, %q", older.CanForward, older.Weeks[len(older.Weeks)-1][5].Tip)
+	if !older.CanForward || older.Weeks[len(older.Weeks)-1][5].Date != "Jun 19, 2026" {
+		t.Fatalf("a page back: forward %v, %q", older.CanForward, older.Weeks[len(older.Weeks)-1][5].Date)
 	}
 }
 
@@ -154,7 +155,7 @@ func TestHomeActivityViewState(t *testing.T) {
 func TestHomeActivityShows(t *testing.T) {
 	a, tt := homeTester(t)
 	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
-	a.act.log.Add(time.Now())
+	a.act.log.Add(time.Now(), activity.Result{})
 	a.act.gen++
 	frames(tt)
 	for _, s := range []string{"Activity", "Less often", "More often"} {
@@ -162,11 +163,12 @@ func TestHomeActivityShows(t *testing.T) {
 			t.Errorf("no %q: %q", s, firstTexts(tt))
 		}
 	}
-	today := homeActivityDayTip(i18n.CurrentTranslator(), time.Now(), 1)
+	tr := i18n.CurrentTranslator()
+	today := homeActivityDate(tr, time.Now()) + " " + homeActivityCount(tr, 1)
 	if _, ok := tt.Find(today); !ok {
 		t.Fatalf("no square for today (%q)", today)
 	}
-	a.act.log.Add(time.Now().AddDate(-1, 0, 0))
+	a.act.log.Add(time.Now().AddDate(-1, 0, 0), activity.Result{})
 	a.act.gen++
 	click(t, tt, "Earlier weeks")
 	if a.act.page != 1 {

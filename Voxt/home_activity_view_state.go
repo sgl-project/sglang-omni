@@ -8,14 +8,25 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
-// homeActivityWeeks is how many weeks a calendar page shows: half a year.
-const homeActivityWeeks = 26
+// homeActivityWeeks is how many weeks a calendar page shows: about five
+// months, so the days keep a readable size beside the numbers.
+const homeActivityWeeks = 22
+
+// homeActivityStatViewState is one of the numbers beside the calendar:
+// "12,345" and "characters".
+type homeActivityStatViewState struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
 
 type homeActivityDayViewState struct {
 	// Level is the square's shade (activity.Level); Future a day after
 	// today, drawn empty.
-	Level  int    `json:"level"`
-	Tip    string `json:"tip"`
+	Level int `json:"level"`
+	// Date and Count are the two lines of the square's tooltip: its day,
+	// and its results or that it had none.
+	Date   string `json:"date"`
+	Count  string `json:"count"`
 	Future bool   `json:"future,omitempty"`
 }
 
@@ -25,6 +36,9 @@ type homeActivityMonthViewState struct {
 }
 
 type homeActivityViewState struct {
+	// Stats are every result's characters, how fast speech goes and the
+	// days in a row.
+	Stats    []homeActivityStatViewState   `json:"stats"`
 	Weekdays [7]string                     `json:"weekdays"`
 	Weeks    [][7]homeActivityDayViewState `json:"weeks"`
 	Months   []homeActivityMonthViewState  `json:"months"`
@@ -38,7 +52,7 @@ type homeActivityViewState struct {
 // buildHomeActivityViewState lays out page (0: the weeks up to today) of
 // the log's calendar.
 func buildHomeActivityViewState(translator *i18n.Translator, log activity.Log, page int, now time.Time) homeActivityViewState {
-	state := homeActivityViewState{CanForward: page > 0, Levels: activity.Levels}
+	state := homeActivityViewState{CanForward: page > 0, Levels: activity.Levels, Stats: homeActivityStats(translator, log.Stats(now))}
 	names := []rune("SMTWTFS")
 	if translator.Locale() == "zh-Hans" {
 		names = []rune("日一二三四五六")
@@ -56,7 +70,7 @@ func buildHomeActivityViewState(translator *i18n.Translator, log activity.Log, p
 			count := log.Get(day).Count
 			state.Weeks[week][weekday] = homeActivityDayViewState{
 				Level: activity.Level(count), Future: key > today,
-				Tip: homeActivityDayTip(translator, day, count),
+				Date: homeActivityDate(translator, day), Count: homeActivityCount(translator, count),
 			}
 			if day.Day() == 1 {
 				state.Months = append(state.Months, homeActivityMonthViewState{Week: week, Label: homeActivityMonth(translator, day.Month())})
@@ -73,16 +87,20 @@ func buildHomeActivityViewState(translator *i18n.Translator, log activity.Log, p
 	return state
 }
 
-// homeActivityDayTip is a square's tooltip: its date and its results.
-func homeActivityDayTip(translator *i18n.Translator, day time.Time, count int) string {
-	date := day.Format("Jan 2, 2006")
+// homeActivityDate is a square's day, as its tooltip's first line says it.
+func homeActivityDate(translator *i18n.Translator, day time.Time) string {
 	if translator.Locale() == "zh-Hans" {
-		date = fmt.Sprintf("%d年%d月%d日", day.Year(), day.Month(), day.Day())
+		return fmt.Sprintf("%d年%d月%d日", day.Year(), day.Month(), day.Day())
 	}
+	return day.Format("Jan 2, 2006")
+}
+
+// homeActivityCount is a square's results, its tooltip's second line.
+func homeActivityCount(translator *i18n.Translator, count int) string {
 	if count == 0 {
-		return translator.T("%s: no results", date)
+		return translator.T("No activity")
 	}
-	return translator.T("%s: %s", date, translator.N(count, "%d result", "%d results", count))
+	return translator.N(count, "%d result", "%d results", count)
 }
 
 func homeActivityMonth(translator *i18n.Translator, month time.Month) string {
@@ -90,4 +108,18 @@ func homeActivityMonth(translator *i18n.Translator, month time.Month) string {
 		return fmt.Sprintf("%d月", month)
 	}
 	return month.String()[:3]
+}
+
+// homeActivityStats are the log's numbers as the card shows them; the
+// speed is a dash before any speech was timed.
+func homeActivityStats(translator *i18n.Translator, s activity.Stats) []homeActivityStatViewState {
+	speed := "—"
+	if s.PerMinute > 0 {
+		speed = groupDigits(s.PerMinute)
+	}
+	return []homeActivityStatViewState{
+		{Value: groupDigits(s.Chars), Label: translator.N(s.Chars, "character", "characters")},
+		{Value: speed, Label: translator.T("characters a minute")},
+		{Value: groupDigits(s.Streak), Label: translator.T("day streak")},
+	}
 }

@@ -15,9 +15,9 @@ func day(s string) time.Time {
 
 func TestAddAndStore(t *testing.T) {
 	var l Log
-	l.Add(day("2026-11-07"))
-	l.Add(day("2026-11-07"))
-	l.Add(day("2026-11-08"))
+	l.Add(day("2026-11-07"), Result{})
+	l.Add(day("2026-11-07"), Result{})
+	l.Add(day("2026-11-08"), Result{})
 	data, err := l.Marshal()
 	if err != nil {
 		t.Fatal(err)
@@ -55,5 +55,21 @@ func TestWeeks(t *testing.T) {
 	}
 	if got := DayKey(weeks[2][5]); got != "2026-11-20" {
 		t.Errorf("the end's day is %s", got)
+	}
+}
+
+func TestStats(t *testing.T) {
+	var l Log
+	l.Add(day("2026-11-18"), Result{Chars: 100, Spoken: 90, Audio: 30 * time.Second})
+	l.Add(day("2026-11-19"), Result{Chars: 40, Spoken: 60, Audio: 30 * time.Second})
+	l.Add(day("2026-11-19"), Result{Chars: 7}) // typed, no speech
+	if got := l.Stats(day("2026-11-20")); got != (Stats{Chars: 147, PerMinute: 150, Streak: 2}) {
+		t.Fatalf("a run up to yesterday: %+v", got)
+	}
+	if got := l.Stats(day("2026-11-21")); got.Streak != 0 {
+		t.Fatalf("a missed day ends the run: %+v", got)
+	}
+	if got := (Log{}).Stats(day("2026-11-21")); got != (Stats{}) {
+		t.Fatalf("empty: %+v", got)
 	}
 }
