@@ -1,6 +1,6 @@
 # MiniMax
 
-Music generation models from MiniMax.
+Image and audio generation models from MiniMax.
 
 ```{toctree}
 ---
@@ -9,4 +9,5 @@ titlesonly: true
 ---
 
 ../minimax_music3.md
+../minimax_h3_image_musa.md
 ```
