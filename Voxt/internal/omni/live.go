@@ -390,6 +390,7 @@ func (s *live) finalPass(pcm []byte) {
 	}
 	start := time.Now()
 	language := s.language
+	finalBias := s.a.finalBias(s.bias)
 	var texts []string
 	done, busy := 0, time.Duration(0)
 	if pc := s.pc; pc != nil {
@@ -409,12 +410,12 @@ func (s *live) finalPass(pcm []byte) {
 	var err error
 	if tail := pcm[done:]; len(tail) > 0 {
 		hint := language
-		text, language, err = s.a.final(s.ctx, s.l, tail, hint, s.bias)
+		text, language, err = s.a.final(s.ctx, s.l, tail, hint, finalBias)
 		if err != nil && s.ctx.Err() == nil && !s.l.p.alive() {
 			// The server died under the recording (a crash, memory pressure): the audio is all here, so once more on a new one.
 			if l, aerr := s.a.rt.acquire(s.ctx, s.a.spec, s.a.dir, s.a.draft); aerr == nil {
 				s.a.rt.logf("warning", "%s: its server died during the session (%v): the Final runs again on a new one", s.a.spec.ID, err)
-				text, language, err = s.a.final(s.ctx, l, tail, hint, s.bias)
+				text, language, err = s.a.final(s.ctx, l, tail, hint, finalBias)
 				l.release()
 			}
 		}

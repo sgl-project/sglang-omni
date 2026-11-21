@@ -57,7 +57,9 @@
 // layout, and recordings over 60 s (Voxt: 1200 s; the encoder's memory
 // grows with a request's audio) cut at their quietest 100 ms, the
 // chunks sharing the budget and the first chunk's detected language
-// forced on the rest. On audio without speech the model writes its
+// forced on the rest. MOSS instead gets the bounded terms in its Hotwords
+// format on post-stop Finals only, never on live or intermediate previews.
+// On audio without speech the model writes its
 // context out: a request's text that ends in a sentence of the context's
 // terms is checked against the same audio recognised without it, and
 // the terms it did not hear go (echo.go).

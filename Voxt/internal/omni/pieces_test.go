@@ -105,8 +105,33 @@ func TestLivePieces(t *testing.T) {
 	}
 }
 
-// TestLivePiecesEvents: every piece recognised while recording reports
-// the final text so far (asr.EventPiece), growing, before the Final,
+// TestMossPiecesSkipHotwords: intermediate MOSS pieces keep the plain-text
+// instruction; only the post-stop tail adds the dictionary.
+func TestMossPiecesSkipHotwords(t *testing.T) {
+	f, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}"})
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 2*time.Second, time.Second, 1500*time.Millisecond, 3*time.Second
+	a.spec.ASR.PauseMin = 150 * time.Millisecond
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "en", Hints: []string{"Zephyria"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, speechAndPauses(2))
+	f.waitLogged(t, "piece 1 of the recording")
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if evs := drain(t, st); len(evs) == 0 || evs[len(evs)-1].Kind != asr.EventFinal {
+		t.Fatalf("events %+v", evs)
+	}
+	finals := f.records("final")
+	instruction := again(ASRMoss).ASR.Instruction
+	if len(finals) != 2 || finals[0].Fields["prompt"] != instruction || finals[1].Fields["prompt"] != instruction+" Hotwords: Zephyria" {
+		t.Errorf("finals %+v", finals)
+	}
+}
+
+// TestLivePiecesEvents: every piece recognised while recording reports the
+// final text so far (asr.EventPiece), growing, before the Final,
 // each a prefix of it, so the session can start its clean-up of the
 // finished stretches.
 func TestLivePiecesEvents(t *testing.T) {

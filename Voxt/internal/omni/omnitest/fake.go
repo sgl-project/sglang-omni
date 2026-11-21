@@ -59,6 +59,9 @@ type Opts struct {
 	// Text is a Final's text (default "fake transcript"); "{n}" in it is
 	// the request's number (1 for the server's first Final).
 	Text string
+	// NoPromptText, when non-empty, answers a Final that has no prompt,
+	// so a hotword test can make the no-context comparison differ.
+	NoPromptText string
 	// WindowTexts adds Whisper's per-window metadata to a Final.
 	WindowTexts []string
 	// FailFrom: the Finals from this one on (1 = the first) answer an
@@ -104,6 +107,7 @@ func Env(o Opts) []string {
 	v.Set("mode", o.Mode)
 	v.Set("log", o.Log)
 	v.Set("text", o.Text)
+	v.Set("noprompttext", o.NoPromptText)
 	v["windows"] = o.WindowTexts
 	v.Set("delay", o.Delay.String())
 	v.Set("load", o.Load.String())
@@ -126,7 +130,7 @@ func Enabled() bool { return os.Getenv(EnvFake) != "" }
 
 func opts() Opts {
 	v, _ := url.ParseQuery(os.Getenv(EnvFake))
-	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), WindowTexts: v["windows"]}
+	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), NoPromptText: v.Get("noprompttext"), WindowTexts: v["windows"]}
 	o.Delay, _ = time.ParseDuration(v.Get("delay"))
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
