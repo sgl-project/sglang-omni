@@ -72,6 +72,7 @@ type app struct {
 	appEnhanceState
 	appIconsState
 	dictionaryState
+	snippetsState
 	homeState
 	onboardingState
 	scPromptState

@@ -69,6 +69,7 @@ session helper/proto
 session lang
 session llm
 session settings
+session snippet
 session store
 session vad
 store/sqlitestore core

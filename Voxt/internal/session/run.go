@@ -19,6 +19,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -59,8 +60,9 @@ type run struct {
 	onDraft func(string)
 	own     Snapshot
 
-	svc   Services
-	terms []store.Term
+	svc      Services
+	terms    []store.Term
+	snippets []snippet.Snippet
 	// svcDone gets the services, resolved meanwhile; resolved once r.svc
 	// holds them.
 	svcDone  chan svcResult
@@ -111,9 +113,10 @@ type capResult struct {
 }
 
 type svcResult struct {
-	svc   Services
-	terms []store.Term
-	err   error
+	svc      Services
+	terms    []store.Term
+	snippets []snippet.Snippet
+	err      error
 }
 
 type openResult struct {
@@ -236,7 +239,9 @@ func (r *run) main() {
 	text := r.spoken(raw)
 	switch kind {
 	case store.KindTranscribe:
-		r.transcribe(text)
+		if !r.insertSnippet(text) {
+			r.transcribe(text)
+		}
 	case store.KindTranslate:
 		r.write(text, "")
 	case store.KindRewrite:
@@ -266,7 +271,11 @@ func (r *run) resolve(speech bool) {
 		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
 			terms, _ = cfg.Glossary(r.ctx)
 		}
-		done <- svcResult{svc, terms, err}
+		var snippets []snippet.Snippet
+		if err == nil && cfg.Snippets != nil {
+			snippets, _ = cfg.Snippets(r.ctx) // none read: none applied
+		}
+		done <- svcResult{svc, terms, snippets, err}
 	}()
 }
 

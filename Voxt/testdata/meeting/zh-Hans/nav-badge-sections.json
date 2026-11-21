@@ -64,6 +64,11 @@
             "title": "词典",
             "badge": "2",
             "selected": false
+          },
+          {
+            "path": "/snippets",
+            "title": "片段",
+            "selected": false
           }
         ]
       },

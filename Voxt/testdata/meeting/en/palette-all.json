@@ -58,6 +58,11 @@
         "title": "Dictionary"
       },
       {
+        "id": "go/snippets",
+        "group": "Go to",
+        "title": "Snippets"
+      },
+      {
         "id": "go/logs",
         "group": "Go to",
         "title": "Logs"

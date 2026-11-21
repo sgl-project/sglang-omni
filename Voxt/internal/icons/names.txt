@@ -11,6 +11,7 @@ pen-new-round           # Rewrite
 target                  # App enhancement
 cloud                   # Remote models
 notebook-bookmark       # Dictionary
+text-square             # Snippets
 shield-keyhole          # Permissions
 clipboard-list          # Logs
 settings                # Settings, Settings → General

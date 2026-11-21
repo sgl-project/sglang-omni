@@ -73,6 +73,11 @@
               "path": "/dictionary",
               "title": "词典",
               "selected": false
+            },
+            {
+              "path": "/snippets",
+              "title": "片段",
+              "selected": false
             }
           ]
         },

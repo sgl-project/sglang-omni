@@ -210,7 +210,7 @@ func TestKeyParity(t *testing.T) {
 var catalogAreas = []string{
 	"appenhance", "dictionary", "feature", "history", "home", "legacy",
 	"meeting", "models", "notes", "onboarding", "overlay", "remote",
-	"session", "settings", "shell", "updates",
+	"session", "settings", "shell", "snippets", "updates",
 }
 
 // catalogAliases name a root file's area when its name prefix does not:

@@ -134,6 +134,9 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	if r.settings.Dictionary.Enabled && cfg.Glossary != nil {
 		r.terms, _ = cfg.Glossary(r.ctx)
 	}
+	if cfg.Snippets != nil {
+		r.snippets, _ = cfg.Snippets(r.ctx) // none read: none applied
+	}
 	if p := r.lacks(); p != nil {
 		return e, p.Err
 	}

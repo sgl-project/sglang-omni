@@ -39,6 +39,7 @@ var navGroups = []navGroup{
 	}},
 	{"Resources", []navPage{
 		{"/dictionary", "Dictionary", dictionaryIcon},
+		{"/snippets", "Snippets", snippetsIcon},
 	}},
 	{"System", []navPage{
 		{"/logs", "Logs", logsIcon},
@@ -131,6 +132,8 @@ func pageTitleFor(translator *i18n.Translator, path string) string {
 		return translator.T("Language models")
 	case "/dictionary":
 		return translator.T("Dictionary")
+	case "/snippets":
+		return translator.T("Snippets")
 	case "/logs":
 		return translator.T("Logs")
 	case settingsPath:
@@ -159,6 +162,7 @@ var (
 	modelsIcon         = icons.Soundwave
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
+	snippetsIcon       = icons.TextSquare
 	notesIcon          = icons.Notes
 	meetingIcon        = icons.MicrophoneLarge
 	permissionsIcon    = icons.ShieldKeyhole

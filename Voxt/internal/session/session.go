@@ -49,6 +49,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
@@ -382,6 +383,10 @@ type Config struct {
 	// dictionary's enabled terms (nil: none).
 	History  store.History
 	Glossary func(ctx context.Context) ([]store.Term, error)
+	// Snippets lists the user's snippets (nil: none): a Transcribe that is
+	// only a trigger is its snippet, and triggers in a dictation are
+	// replaced in its result (snippets.go).
+	Snippets func(ctx context.Context) ([]snippet.Snippet, error)
 	// Notes keeps the results of note sessions (nil: they show in the
 	// card, with a problem).
 	Notes store.Notes

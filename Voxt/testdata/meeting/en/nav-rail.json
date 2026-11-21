@@ -68,6 +68,11 @@
             "path": "/dictionary",
             "title": "Dictionary",
             "selected": false
+          },
+          {
+            "path": "/snippets",
+            "title": "Snippets",
+            "selected": false
           }
         ]
       },

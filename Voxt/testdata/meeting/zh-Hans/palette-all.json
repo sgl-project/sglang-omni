@@ -58,6 +58,11 @@
         "title": "词典"
       },
       {
+        "id": "go/snippets",
+        "group": "前往",
+        "title": "片段"
+      },
+      {
         "id": "go/logs",
         "group": "前往",
         "title": "日志"

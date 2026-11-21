@@ -1,0 +1,21 @@
+{
+  "Add snippet": "添加片段",
+  "Edit snippet": "编辑片段",
+  "No snippets yet": "还没有片段",
+  "Save what you type again and again: an address, a link, a reply, a prompt.": "把常打的字存起来：地址、链接、回复、提示词。",
+  "Say a trigger and Voxt types the text you saved, as it is.": "说出触发词，Voxt 原样打出你存的内容。",
+  "Snippet": "内容",
+  "Trigger": "触发词",
+  "Too long: a trigger takes %d characters, a snippet %d.": "太长了：触发词最多 %d 个字，内容最多 %d 个字。",
+  "Another snippet has this trigger.": "已经有片段用了这个触发词。",
+  "Type the text it stands for.": "填写要打出的内容。",
+  "Type what you will say.": "填写你要说的触发词。",
+  "What Voxt types, as written here.": "Voxt 会原样打出这里的文字。",
+  "What you say: my email, intro reply.": "你要说的话，例如：我的邮箱、自我介绍。",
+  "Your street, city and postcode": "街道、城市和邮编",
+  "meeting link": "会议链接",
+  "my address": "我的地址",
+  "my email": "我的邮箱",
+  "Trigger to say": "要说的触发词",
+  "Text of the snippet": "片段的内容"
+}

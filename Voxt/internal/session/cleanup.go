@@ -74,11 +74,16 @@ func (r *run) transcribe(text string) {
 			r.logf("info", "composed %s in %v", r.logText(result), llmTime.Round(time.Millisecond))
 		}
 	}
+	r.finish(Done, problem, r.expandSnippets(result), r.transcribeOpts())
+}
+
+// transcribeOpts are how a Transcribe result is delivered.
+func (r *run) transcribeOpts() finishOpts {
 	var o finishOpts
 	if r.settings.Features.Transcribe.ShowCard {
 		o.card = deliver.ReasonCard
 	}
-	r.finish(Done, problem, result, o)
+	return o
 }
 
 // cleanUpFirst is a dictation's first clean-up: what the early clean-up
