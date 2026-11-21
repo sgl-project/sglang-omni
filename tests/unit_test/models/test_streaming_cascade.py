@@ -2706,7 +2706,7 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
     generator = build(graph.node("llm").component.model_dump())
     generator.place(graph, "llm")
 
-    async def complete(messages):
+    async def complete(messages, tool_choice):
         for content in (
             "[Che",
             "erful]",
@@ -2715,7 +2715,7 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
             " a breath. [soon] stays",
             " calm. [ca",
         ):
-            yield ChatDelta(content=content)
+            yield ChatChoice(delta=ChatDelta(content=content))
 
     generator.complete = complete
     outputs = await drain(

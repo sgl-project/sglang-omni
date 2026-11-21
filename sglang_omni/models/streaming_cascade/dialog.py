@@ -483,9 +483,7 @@ class Dialog(StreamComponent):
                         style_starts=self.reply_style_starts,
                     )
                 )
-                self.end_reply(
-                    len(self.messages) - 1, reply, self.reply_style_starts
-                )
+                self.end_reply(len(self.messages) - 1, reply, self.reply_style_starts)
         elif control_type(chunk) == SPEECH_STARTED:
             self.is_user_speaking = True
             if self.reply is not None:

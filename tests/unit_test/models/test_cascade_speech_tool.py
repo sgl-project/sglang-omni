@@ -636,7 +636,7 @@ async def test_the_synthesizer_speaks_a_call_and_emits_its_text_before_the_audio
     synthesizer = speech_synthesizer()
     sentences: list[str] = []
 
-    async def speak(sentence: str, language: str | None):
+    async def speak(sentence: str, language: str | None, style: str | None):
         sentences.append(sentence)
         yield np.zeros(240, dtype="<f4")
 
@@ -680,7 +680,7 @@ async def test_the_synthesizer_repeats_a_token_budget_cut_on_the_turn_done_it_se
     """A reply or speech the token budget cut ended in a turn.done like a whole one's, so the client reported it as a completed response."""
     synthesizer = speech_synthesizer()
 
-    async def speak(sentence: str, language: str | None):
+    async def speak(sentence: str, language: str | None, style: str | None):
         yield np.zeros(240, dtype="<f4")
 
     synthesizer.speak = speak
@@ -693,7 +693,7 @@ async def test_the_synthesizer_repeats_a_token_budget_cut_on_the_turn_done_it_se
 async def test_a_failed_speech_service_ends_the_speech_with_the_error_instead_of_the_session():
     synthesizer = speech_synthesizer()
 
-    async def speak(sentence: str, language: str | None):
+    async def speak(sentence: str, language: str | None, style: str | None):
         if sentence == "Two.":
             raise httpx.ConnectError("refused")
         else:
@@ -717,7 +717,7 @@ async def test_a_speech_with_nothing_to_speak_is_reported_instead_of_completed(t
     synthesizer = speech_synthesizer()
     sentences: list[str] = []
 
-    async def speak(sentence: str, language: str | None):
+    async def speak(sentence: str, language: str | None, style: str | None):
         sentences.append(sentence)
         yield np.zeros(240, dtype="<f4")
 
@@ -1130,7 +1130,7 @@ async def test_the_synthesizer_speaks_a_sentence_before_the_call_is_complete():
     synthesizer = speech_synthesizer()
     events: list[str] = []
 
-    async def speak(sentence: str, language: str | None):
+    async def speak(sentence: str, language: str | None, style: str | None):
         events.append(sentence)
         yield np.zeros(240, dtype="<f4")
 
@@ -1157,7 +1157,7 @@ async def test_pieces_of_a_streamed_speech_that_failed_start_no_other_speech():
     synthesizer = speech_synthesizer()
     attempts: list[str] = []
 
-    async def speak(sentence: str, language: str | None):
+    async def speak(sentence: str, language: str | None, style: str | None):
         attempts.append(sentence)
         raise httpx.ConnectError("refused")
         yield
@@ -1180,7 +1180,7 @@ async def test_pieces_of_a_speech_that_arrive_after_its_interrupt_are_dropped():
     synthesizer = speech_synthesizer()
     sentences: list[str] = []
 
-    async def speak(sentence: str, language: str | None):
+    async def speak(sentence: str, language: str | None, style: str | None):
         sentences.append(sentence)
         yield np.zeros(240, dtype="<f4")
 
