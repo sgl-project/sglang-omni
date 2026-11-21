@@ -35,6 +35,11 @@ from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.higgs_tts.request_builders import (
+    HIGGS_DEFAULT_MAX_NEW_TOKENS,
+    HIGGS_TTS_BUDGET_MARGIN,
+    calculate_higgs_max_new_tokens,
+)
 from sglang_omni.models.higgs_tts.text_tokenizer import HiggsTokenizerAdapter
 from sglang_omni.models.higgs_tts.utils import (
     apply_delay_pattern,
@@ -268,6 +273,8 @@ def create_preprocessing_executor(
     num_codebooks: int = 8,
     codebook_size: int = 1026,
     max_concurrency: int = 16,
+    max_new_tokens: int | None = HIGGS_DEFAULT_MAX_NEW_TOKENS,
+    max_new_tokens_safety_factor: float = HIGGS_TTS_BUDGET_MARGIN,
 ) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
     """CPU stage: text tokenize + optional ref-audio file IO.
 
@@ -431,6 +438,36 @@ def create_preprocessing_executor(
             target_text_for_encoder = text
             reference_text_for_encoder = reference_text
 
+        raw_max_new_tokens = params.get("max_new_tokens")
+        if raw_max_new_tokens is not None:
+            effective_max_new_tokens = int(raw_max_new_tokens)
+        else:
+            safety = params.get("max_new_tokens_safety_factor") or params.get(
+                "safety_factor"
+            )
+            sf = float(safety) if safety is not None else max_new_tokens_safety_factor
+            tok_obj = getattr(adapter, "tok", getattr(adapter, "tokenizer", None))
+            effective_max_new_tokens = calculate_higgs_max_new_tokens(
+                text,
+                tokenizer=tok_obj,
+                safety_factor=sf,
+                max_cap=max_new_tokens or HIGGS_DEFAULT_MAX_NEW_TOKENS,
+            )
+
+        if bool(params.get("auto_max_new_tokens")):
+            safety = params.get("max_new_tokens_safety_factor") or params.get(
+                "safety_factor"
+            )
+            sf = float(safety) if safety is not None else max_new_tokens_safety_factor
+            tok_obj = getattr(adapter, "tok", getattr(adapter, "tokenizer", None))
+            dynamic_budget = calculate_higgs_max_new_tokens(
+                text,
+                tokenizer=tok_obj,
+                safety_factor=sf,
+                max_cap=max_new_tokens or HIGGS_DEFAULT_MAX_NEW_TOKENS,
+            )
+            effective_max_new_tokens = min(effective_max_new_tokens, dynamic_budget)
+
         state = HiggsTtsState(
             prompt_token_ids=prompt_ids,
             reference_codes_delayed=ref_codes_delayed,
@@ -442,7 +479,7 @@ def create_preprocessing_executor(
             uploaded_voice_created_at=uploaded_voice_created_at,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
-            max_new_tokens=int(params.get("max_new_tokens", 2048)),
+            max_new_tokens=effective_max_new_tokens,
             temperature=float(
                 params.get("temperature", sampling_defaults["temperature"])
             ),
