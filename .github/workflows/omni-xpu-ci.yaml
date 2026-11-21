@@ -83,6 +83,7 @@ jobs:
               - 'sglang_omni/**'
               - 'tests/unit_test/xpu/**'
               - 'tests/unit_test/ming3_tts/**'
+              - 'tests/test_ci/xpu_model/**'
               - 'tests/unit_test/dots_tts/**'
               - 'tests/unit_test/ming3_audio/**'
               - 'tests/unit_test/nemotron3_5_asr/**'
@@ -240,6 +241,14 @@ jobs:
         run: |
           set -euxo pipefail
           docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+          # $XPU_CI_MODEL_CACHE is a host Hugging Face cache for the model
+          # serving lane. Unset is the safe default: that lane then finds no
+          # checkpoint and skips every model by name, rather than downloading
+          # tens of GB onto a runner.
+          cache_mount=()
+          if [ -n "${XPU_CI_MODEL_CACHE:-}" ]; then
+            cache_mount=(-v "${XPU_CI_MODEL_CACHE}:/root/.cache/huggingface:ro")
+          fi
           docker run -dt \
             --name "${CONTAINER_NAME}" \
             --device /dev/dri \
@@ -247,6 +256,7 @@ jobs:
             --group-add render \
             --shm-size 32g \
             -v "${GITHUB_WORKSPACE}:/workspace/sglang-omni-pr" \
+            "${cache_mount[@]}" \
             -e ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK}" \
             "${IMAGE_TAG}" \
             sleep infinity
@@ -278,12 +288,29 @@ jobs:
             pip install --no-cache-dir pytest pytest-asyncio
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pytest tests/unit_test/xpu/test_device_layer.py \
+              tests/unit_test/xpu/test_model_support.py \
               tests/unit_test/ming3_tts/test_ming3_tts_runtime.py \
               tests/unit_test/dots_tts/test_flow_head.py \
               tests/unit_test/dots_tts/test_tail.py \
               tests/unit_test/ming3_audio/test_talker.py \
               tests/unit_test/nemotron3_5_asr/test_hf_compat.py \
               tests/unit_test/nemotron3_5_asr/test_model_runner.py -v -x
+
+      - name: Serve every XPU model
+        # Off on pull requests: it serves each model in turn, which is hours
+        # rather than the PR job's minutes. The weight-free half of this
+        # coverage already runs above, in test_model_support.py.
+        if: ${{ github.event_name != 'pull_request' }}
+        timeout-minutes: 240
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # A row skips, rather than fails, when its checkpoint is absent, its
+          # topology wants more cards than the runner has, or the table says
+          # this image cannot serve it. So an incomplete runner reports what it
+          # could not do instead of going red.
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
+            pytest tests/test_ci/xpu_model -m xpu_serving -v -rs
 
       - name: Cleanup container and image
         if: always()
