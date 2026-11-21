@@ -233,6 +233,31 @@ test("after a cut the screen shows the blocks in the prefix the server's history
   assert.equal(session.screen, "");
 });
 
+test("a block shows once its closing tag has played or was kept, though the server reports a point at each of its lines", () => {
+  // The block on its own lines from test_openai_speech_never_speaks_a_screen_block_but_counts_it_in_progress, which ends at 72.
+  const text = "命令我放在屏幕上了。\n<screen>\nbrew install python@3.12\npython3 --version\n</screen>\n装好以后输入 python3 就能用。";
+  const point = (textEnd) => ({ type: "sglang.response.progress", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, text_end: textEnd, audio_ms: 100 });
+  const { session } = openSession(text, [10, 19, 44].map((textEnd) => ({ textEnd, audioMs: 100 })));
+  session.played("resp_0", 100, false);
+  assert.equal(session.screen, "");
+  session.handle(point(62));
+  session.handle(point(72));
+  assert.equal(session.screen, "brew install python@3.12\npython3 --version");
+  const { session: cut } = openSession(text, [10, 19, 44, 62, 72].map((textEnd) => ({ textEnd, audioMs: 100 })));
+  cut.played("resp_0", 100, true);
+  cut.handle({ type: "sglang.response.heard", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, text_end: 44 });
+  assert.equal(cut.screen, "");
+});
+
+test("a block the reply left open shows once the completed reply's end has played", () => {
+  const text = "The steps are on screen: <screen>1. Open Settings. 2. Tap Wi-Fi.";
+  const { session } = openSession(text, [35, 50, 53, text.length].map((textEnd) => ({ textEnd, audioMs: 100 })));
+  session.played("resp_0", 100, false);
+  assert.equal(session.screen, "");
+  session.handle({ type: "response.done", response: { id: "resp_0", status: "completed" } });
+  assert.equal(session.screen, "1. Open Settings. 2. Tap Wi-Fi.");
+});
+
 function openGranted(interaction) {
   const sent = [];
   const session = new DuplexSession({ transport: (event) => sent.push(event), now: () => 0 });
