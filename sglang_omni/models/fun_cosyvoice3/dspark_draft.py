@@ -170,9 +170,12 @@ class MirroredMarkovHead(VanillaMarkov):
                 salt=DRAFT_NOISE_SEED_SALT,
                 column_count=draft_count * vocab_size,
             ).view(batch_size, draft_count, vocab_size)
+        # note (wilsonzheng0327): a lone request's anchor is a strided view, and the compiled block sampler guards on its stride.
         return self.block_sampler(
             base_logits,
-            first_prev_tokens.long(),
+            first_prev_tokens.to(
+                torch.long, copy=True, memory_format=torch.contiguous_format
+            ),
             exponential_noise,
             self.markov_w1.weight,
             self.markov_w2.weight,
