@@ -40,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.config.outputs.matrix }}
+      base_image_a3: ${{ steps.config.outputs.base_image_a3 }}
+      base_image_950: ${{ steps.config.outputs.base_image_950 }}
       publish: ${{ steps.publication.outputs.publish }}
     steps:
       - name: Validate publication settings
@@ -67,7 +69,11 @@ jobs:
         id: config
         run: |
           matrix=$(python scripts/npu/config.py --matrix)
+          base_image_a3=$(python scripts/npu/config.py --get base-image-a3)
+          base_image_950=$(python scripts/npu/config.py --get base-image-950)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "base_image_a3=$base_image_a3" >> "$GITHUB_OUTPUT"
+          echo "base_image_950=$base_image_950" >> "$GITHUB_OUTPUT"
 
   build_and_publish_arm64:
     needs: preprocess
@@ -92,19 +98,40 @@ jobs:
         if: matrix.device == '910b'
         id: prepare
         run: |
+          sglang_version=$(python scripts/npu/config.py --get sglang-version)
           cann_image=$(python scripts/npu/config.py --get cann-image-910b)
           modelscope_version=$(python scripts/npu/config.py --get modelscope-version)
           evalscope_version=$(python scripts/npu/config.py --get evalscope-version)
+          echo "sglang_tag=v$sglang_version" >> "$GITHUB_OUTPUT"
           echo "cann_image=$cann_image" >> "$GITHUB_OUTPUT"
+          echo "cann_image_tag=${cann_image%@*}" >> "$GITHUB_OUTPUT"
           echo "modelscope_version=$modelscope_version" >> "$GITHUB_OUTPUT"
           echo "evalscope_version=$evalscope_version" >> "$GITHUB_OUTPUT"
           bash scripts/npu/prepare_sglang_a2.sh .cache/sglang-910b
+      - name: Build the SGLang 910B base
+        if: matrix.device == '910b'
+        id: sglang_base
+        uses: docker/build-push-action@v6
+        with:
+          context: .cache/sglang-910b
+          file: .cache/sglang-910b/npu.Dockerfile
+          platforms: linux/arm64
+          build-contexts: ${{ steps.prepare.outputs.cann_image_tag }}=docker-image://${{ steps.prepare.outputs.cann_image }}
+          build-args: |
+            DEVICE_TYPE=910b
+            CANN_VERSION=${{ matrix.cann }}
+            SGLANG_TAG=${{ steps.prepare.outputs.sglang_tag }}
+            MODELSCOPE_VERSION=${{ steps.prepare.outputs.modelscope_version }}
+            EVALSCOPE_VERSION=${{ steps.prepare.outputs.evalscope_version }}
+          outputs: type=oci,dest=${{ runner.temp }}/sglang-910b,tar=false
+          provenance: false
+          cache-from: type=gha,scope=sglang-910b
+          cache-to: ${{ needs.preprocess.outputs.publish == 'true' && 'type=gha,mode=max,scope=sglang-910b' || '' }}
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          bake-target: omni-910b
           flavor: latest=false
           tags: |
             type=ref,event=tag,suffix=-cann${{ matrix.cann }}-${{ matrix.device }}
@@ -118,7 +145,6 @@ jobs:
           username: ${{ secrets.ASCEND_NPU_DOCKER_USERNAME }}
           password: ${{ secrets.ASCEND_NPU_DOCKER_TOKEN }}
       - name: Build and publish ARM64 image
-        if: matrix.device != '910b'
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -126,7 +152,8 @@ jobs:
           file: docker/npu.Dockerfile
           platforms: linux/arm64
           build-args: |
-            SGLANG_IMAGE=${{ matrix.base_image }}
+            SGLANG_IMAGE=${{ matrix.device == '910b' && 'sglang-a2-base' || matrix.device == 'a3' && needs.preprocess.outputs.base_image_a3 || needs.preprocess.outputs.base_image_950 }}
+          build-contexts: ${{ matrix.device == '910b' && format('sglang-a2-base=oci-layout://{0}/sglang-910b@{1}', runner.temp, steps.sglang_base.outputs.digest) || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
           push: ${{ needs.preprocess.outputs.publish == 'true' }}
@@ -134,42 +161,14 @@ jobs:
           cache-from: type=gha,scope=npu-${{ matrix.device }}
           # Only a publishing run writes the layer cache: a pull request's goes to its own ref, which no other pull request reads.
           cache-to: ${{ needs.preprocess.outputs.publish == 'true' && format('type=gha,mode=max,scope=npu-{0}', matrix.device) || '' }}
-      - name: Build SGLang and Omni for 910B
-        if: matrix.device == '910b'
-        id: bake
-        uses: docker/bake-action@v6
-        env:
-          SGLANG_TAG: ${{ matrix.sglang_tag }}
-          CANN_VERSION: ${{ matrix.cann }}
-          CANN_IMAGE: ${{ steps.prepare.outputs.cann_image }}
-          MODELSCOPE_VERSION: ${{ steps.prepare.outputs.modelscope_version }}
-          EVALSCOPE_VERSION: ${{ steps.prepare.outputs.evalscope_version }}
-          SGLANG_IMAGE: ${{ matrix.base_image }}
-        with:
-          source: .
-          files: |
-            docker/npu-a2.hcl
-            ${{ steps.meta.outputs.bake-file }}
-          targets: omni-910b
-          provenance: false
-          set: |
-            omni-910b.cache-from=type=gha,scope=npu-910b
-            ${{ needs.preprocess.outputs.publish == 'true' && 'omni-910b.cache-to=type=gha,mode=max,scope=npu-910b' || '' }}
-            ${{ needs.preprocess.outputs.publish == 'true' && 'omni-910b.output=type=registry' || '' }}
       - name: Record published image
         if: needs.preprocess.outputs.publish == 'true'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
-          BAKE_METADATA: ${{ steps.bake.outputs.metadata }}
+          DIGEST: ${{ steps.build.outputs.digest }}
           DEVICE: ${{ matrix.device }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
-          if [[ "$DEVICE" == 910b ]]; then
-            DIGEST=$(jq -er '.["omni-910b"]["containerimage.digest"]' <<< "$BAKE_METADATA")
-          else
-            DIGEST="$BUILD_DIGEST"
-          fi
           {
             echo "### NPU image: $DEVICE"
             echo "Image: $IMAGE@$DIGEST"

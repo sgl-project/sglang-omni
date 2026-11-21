@@ -16,12 +16,8 @@ ROOT = Path(__file__).resolve().parents[3]
 CONFIG, MATRIX = read_config(ROOT)
 
 
-def test_release_matrix_selects_matching_base_images() -> None:
-    assert {row["device"]: row["base_image"] for row in MATRIX} == {
-        "a3": CONFIG["base-image-a3"],
-        "950": CONFIG["base-image-950"],
-        "910b": "sglang-a2-base",
-    }
+def test_release_matrix_adds_a2_with_shared_cann_version() -> None:
+    assert {row["device"] for row in MATRIX} == {"a3", "950", "910b"}
     (cann_version,) = {row["cann"] for row in MATRIX}
     assert f"-cann{cann_version}-a3@" in CONFIG["base-image-a3"]
 

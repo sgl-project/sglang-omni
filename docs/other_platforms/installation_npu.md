@@ -1,6 +1,6 @@
 # Installation — NPU
 
-Install SGLang-Omni on ARM64 Linux with Ascend A2 (910B), A3, or 950 devices.
+Install SGLang-Omni on ARM64 Linux with Ascend A3 or A2 / 910B devices.
 Choose the Docker image for your device or install into an existing Ascend environment.
 
 ## Prerequisites
@@ -27,25 +27,25 @@ selected by [`pyproject_npu.toml`](https://github.com/sgl-project/sglang-omni/bl
 dependencies. Model weights, host drivers and TorchCodec are not included.
 Model support on NPU and optional dependencies must be checked separately.
 
-<a id="a3-image-installation"></a>
+### A3 image installation
 
-### A3 and 950 image installation
-
-Use an ARM64 Linux host with Docker and select the tag for your device (`a3` or `950`).
+Use an ARM64 Linux host with Docker and Ascend A3 devices.
 
 **1. Pull the image**
 
 Pull the image matching your hardware from Huawei Cloud SWR:
 
-- For a release, use `v<version>-cann9.1.0-a3` or `v<version>-cann9.1.0-950`, replacing `v<version>` with a published Omni release tag.
-- For the latest published development build, use `main-cann9.1.0-a3` or `main-cann9.1.0-950`.
+- **Release:** use `v<version>-cann9.0.0-a3` for deployments, replacing
+  `v<version>` with a published version tag.
+- **Development:** use `main-cann9.0.0-a3` for the latest published development
+  build. Scheduled or manual publications update this rolling tag.
 
 ```bash
 # Release (replace v<version> with a published version):
-# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.1.0-a3
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.0.0-a3
 
 # Development (A3):
-IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.1.0-a3
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-a3
 
 docker pull "$IMAGE"
 ```
@@ -94,7 +94,8 @@ Use an ARM64 Linux host with Docker and Ascend A2 / 910B devices.
 
 **1. Pull the image**
 
-The A2 release tag `v<version>-cann9.1.0-910b` and development tag `main-cann9.1.0-910b` become available after their respective Omni builds publish successfully. Use the tag listed in the publishing workflow summary.
+Use `v<version>-cann9.1.0-910b` for a release, or
+`main-cann9.1.0-910b` for the latest published development build.
 
 ```bash
 # Release (replace v<version> with a published version):

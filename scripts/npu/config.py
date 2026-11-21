@@ -33,19 +33,11 @@ def read_config(root: Path = ROOT) -> tuple[dict[str, str], list[dict[str, str]]
                 f"base-image-{device} must pin SGLang {version}, {device} and a digest"
             )
         else:
-            matrix.append({"device": device, "cann": match[1], "base_image": image})
-    cann_version = matrix[0]["cann"]
-    if cann_version != matrix[1]["cann"]:
+            matrix.append({"device": device, "cann": match[1]})
+    if matrix[0]["cann"] != matrix[1]["cann"]:
         raise ValueError("A3 and 950 must use the same CANN release")
     else:
-        matrix.append(
-            {
-                "device": "910b",
-                "cann": cann_version,
-                "base_image": "sglang-a2-base",
-                "sglang_tag": f"v{version}",
-            }
-        )
+        matrix.append({"device": "910b", "cann": matrix[0]["cann"]})
         return config, matrix
 
 

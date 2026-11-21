@@ -11,7 +11,6 @@ on:
       - ".github/workflows/release-docker-npu.yml"
       - ".github/workflows/release-docker-npu-nightly.yml"
       - "docker/npu.Dockerfile"
-      - "docker/npu-a2.hcl"
       - "pyproject.toml"
       - "pyproject_npu.toml"
       - "scripts/npu/**"
