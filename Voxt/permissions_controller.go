@@ -21,6 +21,8 @@ type permissionsState struct {
 		speech  permission.State
 		access  bool
 		checked bool
+		// systemAudioAsked: in this run; macOS lets no app read the answer.
+		systemAudioAsked bool
 	}
 	permissionsCache struct {
 		key   permissionsCacheKey
@@ -34,6 +36,7 @@ type permissionsCacheKey struct {
 	microphone    permission.State
 	speech        permission.State
 	accessibility bool
+	systemAudio   bool
 }
 
 // permState is a permission.State from the helper's (proto.Perm*).
@@ -71,12 +74,14 @@ func (a *app) openPermissions() {
 func (a *app) permissionsModel() permissionsViewState {
 	key := permissionsCacheKey{
 		locale: i18n.Locale(), microphone: a.perms.mic, speech: a.perms.speech, accessibility: a.perms.access,
+		systemAudio: a.perms.systemAudioAsked,
 	}
 	if a.permissionsCache.valid && a.permissionsCache.key == key {
 		return a.permissionsCache.state
 	}
 	state := buildPermissionsViewState(i18n.CurrentTranslator(), permissionsStateInput{
 		Microphone: a.perms.mic, Accessibility: a.perms.access, SpeechRecognition: a.perms.speech,
+		SystemAudioAsked: a.perms.systemAudioAsked,
 	})
 	a.permissionsCache.key, a.permissionsCache.state, a.permissionsCache.valid = key, state, true
 	return state
@@ -104,6 +109,9 @@ func (a *app) askPermission(which string, then func()) {
 	if a.hstatus.Has(proto.MethodPermissionsRequest) {
 		helperCall(a, proto.MethodPermissionsRequest, proto.PermissionsRequestParams{Permission: which}, 5*time.Minute, func(r proto.PermissionsResult, err error) {
 			a.helperPerms(r, err)
+			if which == proto.PermissionSystemAudio && err == nil {
+				a.perms.systemAudioAsked = true
+			}
 			answered()
 		})
 		return
