@@ -14,7 +14,11 @@ from numpy.typing import NDArray
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 
-from sglang_omni.models.nemotron3_5_asr import encoder, model_runner
+from sglang_omni.models.nemotron3_5_asr import (
+    encoder,
+    encoder_state_pool,
+    model_runner,
+)
 from sglang_omni.models.nemotron3_5_asr.encoder import (
     CapturedEncoderBatch,
     NemotronStreamingEncoderGraphRunner,
@@ -41,6 +45,12 @@ XPU_ACCELERATOR_MARKS = [
 CUDA_ACCELERATOR_MARKS = [
     pytest.mark.accelerator,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+]
+NPU_ACCELERATOR_MARKS = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(
+        not hasattr(torch, "npu") or not torch.npu.is_available(), reason="NPU required"
+    ),
 ]
 
 
@@ -258,6 +268,13 @@ def test_streaming_encoder_routes_graph_and_eager_batches(
         pytest.param(
             "xpu", False, False, marks=XPU_ACCELERATOR_MARKS, id="xpu-disabled"
         ),
+        pytest.param(
+            "npu",
+            True,
+            False,
+            marks=NPU_ACCELERATOR_MARKS,
+            id="npu-eager-fallback",
+        ),
         pytest.param("cpu", True, False, id="cpu-no-backend"),
     ],
 )
@@ -307,3 +324,58 @@ def test_runner_selects_graph_execution_from_the_device_platform(
         assert runner.encoder_graph_runner is None
         graph_runner_class.assert_not_called()
     runner.close()
+
+
+def test_streaming_batch_synchronizes_the_stream_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = object.__new__(Nemotron3_5ASRModelRunner)
+    runner.device = torch.device("npu")
+    runner.device_module = Mock()
+    runner.model = Mock()
+    runner.model_lock = threading.Lock()
+    runner.encoder_graph_runner = None
+    runner.processor = Mock()
+    runner.processor.default_num_lookahead_tokens = 3
+    runner.processor.batch_decode.return_value = ["hello <en-US>"]
+    state = Mock()
+    state.tokens = []
+    state.decoder_steps = 0
+    chunk = Mock()
+    chunk.input_features = torch.zeros(1, 1, 1)
+    chunk.prompt_ids = torch.tensor([0])
+    monkeypatch.setattr(model_runner, "has_device_streams", lambda device: True)
+    monkeypatch.setattr(
+        model_runner,
+        "encode_pooled_streaming_batch",
+        Mock(return_value=torch.empty(1, 1, 1)),
+    )
+    monkeypatch.setattr(model_runner, "decode_streaming_batch", Mock())
+
+    result = runner.run_streaming_batch([state], [chunk], requested_languages=["auto"])
+
+    assert runner.device_module.synchronize.call_count == 2
+    for synchronize_call in runner.device_module.synchronize.call_args_list:
+        assert synchronize_call.args == (runner.device,)
+    assert result.clean_texts == ["hello"]
+
+
+def test_encoder_pool_close_synchronizes_the_stream_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = EncoderPoolLayout(
+        attention_shape=(1, 1, 4, 2),
+        convolution_shapes={"conv.0": (2, 2)},
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    pool = NemotronEncoderStatePool(layout, 1)
+    device_module = Mock()
+    monkeypatch.setattr(encoder_state_pool, "has_device_streams", lambda device: True)
+    monkeypatch.setattr(
+        encoder_state_pool.torch, "get_device_module", lambda device: device_module
+    )
+
+    pool.close()
+
+    device_module.synchronize.assert_called_once_with(layout.device)

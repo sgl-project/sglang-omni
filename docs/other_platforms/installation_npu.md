@@ -260,6 +260,16 @@ On NPU the reference audio for voice cloning is decoded through the soundfile
 fallback because torchcodec is not usable in NPU images. Validated on Ascend
 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.22.
 
+### Nemotron 3.5 ASR
+
+Nemotron 3.5 ASR runs eager on a single Ascend 910B with the BF16 example:
+
+```bash
+sgl-omni serve --config examples/configs/nemotron3_5_asr_npu.yaml --port 8000
+```
+
+The encoder runs eager because NPU is not yet in the model's graph-capture device set. See the [Nemotron 3.5 ASR cookbook](../cookbook/nemotron3_5_asr.md#ascend-npu) for the first-request compilation and low-memory host notes.
+
 ### MiniMax-Music3
 
 Use this command to launch MiniMax-Music3 on Ascend NPU:

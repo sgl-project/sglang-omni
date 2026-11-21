@@ -93,8 +93,6 @@ TURN_BASED_TERMINALS = {
     ("incomplete", "max_output_tokens"),
 }
 TURN_BASED_INTERRUPTED_TERMINAL = ("cancelled", "interrupted")
-# note (jeffro): a cascade ends a reply whose speech service failed this way and goes on with the session, so the session kept the protocol; it is counted on its own rather than as a protocol failure.
-TURN_BASED_SPEECH_FAILED_TERMINAL = ("failed", "speech_error")
 TURN_BASED_OBSERVATIONS = (
     "input_audio_buffer.speech_stopped",
     "conversation.item.input_audio_transcription.delta",
@@ -197,7 +195,7 @@ def evaluate_trace(
     audio_times: list[float] = []
     units: list[tuple[int, float]] = []
     input_byte_count = output_byte_count = next_sequence = admissions = 0
-    admission_rejections = speech_starts = interruptions = speech_failures = 0
+    admission_rejections = speech_starts = interruptions = 0
     session_id = requested_type = None
     updated = ended = drained = closed = False
     previous_time = -math.inf
@@ -537,11 +535,6 @@ def evaluate_trace(
                                 "without a preceding speech_started",
                             )
                             interruptions += 1
-                        elif (
-                            turn_based
-                            and (status, reason) == TURN_BASED_SPEECH_FAILED_TERMINAL
-                        ):
-                            speech_failures += 1
                         elif turn_based:
                             check(
                                 (status, reason) in TURN_BASED_TERMINALS,
@@ -782,7 +775,6 @@ def evaluate_trace(
             {
                 "responses_created": len(response_states),
                 "responses_interrupted": interruptions,
-                "responses_speech_failed": speech_failures,
             }
             if turn_based
             else {}

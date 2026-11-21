@@ -9,13 +9,22 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.client import Client
+from sglang_omni.config.session_audio import (
+    MAX_PENDING_OUTPUT_BYTES,
+    MAX_PENDING_OUTPUT_CHUNKS,
+    REALTIME_IDLE_TIMEOUT_S,
+    REALTIME_MAX_PENDING_CHUNKS,
+    REALTIME_OPERATION_TIMEOUT_S,
+)
 from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
+from sglang_omni.models.nemotron3_5_asr.realtime import create_realtime_deployment
 from sglang_omni.models.nemotron3_5_asr.session import NemotronSessionScheduler
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
@@ -32,6 +41,19 @@ def create_fake_scheduler() -> NemotronSessionScheduler:
         max_open_sessions=64,
         max_state_bytes=1 << 30,
     )
+
+
+def test_realtime_session_limits_cover_npu_first_window_compile() -> None:
+    pipeline_config = Nemotron3_5ASRPipelineConfig(model_path="nemotron-test")
+    deployment = create_realtime_deployment(Mock(spec=Client), pipeline_config)
+    adapter = deployment.adapter_factory()
+
+    assert adapter.limits.operation_timeout_s == REALTIME_OPERATION_TIMEOUT_S
+    assert adapter.limits.idle_timeout_s == REALTIME_IDLE_TIMEOUT_S
+    assert adapter.limits.max_pending_chunks == REALTIME_MAX_PENDING_CHUNKS
+    assert adapter.limits.max_output_chunks == MAX_PENDING_OUTPUT_CHUNKS
+    assert adapter.limits.max_output_bytes == MAX_PENDING_OUTPUT_BYTES
+    assert deployment.session_limits == adapter.limits
 
 
 @pytest.mark.parametrize("sample_count", [0, 4040, 10000])
