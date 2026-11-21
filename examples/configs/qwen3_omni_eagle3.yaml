@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+config_cls: Qwen3OmniPipelineConfig
+name: qwen3-omni-eagle3
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+stages:
+  preprocessing:
+    factory:
+      max_seq_len: 8192
+  image_encoder:
+    gpu_memory_fraction: 0.025
+  audio_encoder:
+    gpu_memory_fraction: 0.025
+  thinker:
+    gpu_memory_fraction: 0.75
+    factory:
+      max_seq_len: 8192
+    engine:
+      speculative_algorithm: EAGLE3
+      speculative_draft_model_path: yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio
+      speculative_draft_model_revision: 4c197a033a9ffec3f4fe693edc4e5e65a9d7fe89
+      speculative_num_steps: 3
+      speculative_eagle_topk: 1
+      speculative_num_draft_tokens: 4

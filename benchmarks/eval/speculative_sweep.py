@@ -5,7 +5,7 @@ One command for every draft: name its server config and a workload. The no-draft
 
 The summary gives, per concurrency, both sides' throughput, the gain, p95 latency and its change, first-output p95 when the client streams, the workload's accuracy metrics and failed requests; then k, the loads where the draft is worse than no draft, and per leg the startup time, KV pool, peak token usage, retractions, acceptance length and peak GPU memory. sweep.json holds the same comparison, and baseline.yaml and draft.yaml the configs each side served.
 
-Set CUDA_VISIBLE_DEVICES to one GPU that nothing else uses: after each leg the managed server ends every process still using it. Arguments after -- go to the client, such as --stream to measure first output.
+Set CUDA_VISIBLE_DEVICES to one GPU that nothing else uses. By default the sweep cleans up leftover GPU processes and waits for memory release after each leg. With --skip-gpu-cleanup it stops only the managed server and skips that wait. Peak GPU memory measures the whole device, including any other processes on it. Arguments after -- go to the client, such as --stream to measure first output.
 
 TTS workloads save generated audio at every load in every leg before starting one ASR server to score all saved audio. The ASR server uses the port after the last generation leg. Transcription is outside the TTS performance measurement and uses --asr-model-path and --asr-concurrency.
 
@@ -32,12 +32,14 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from benchmarks.benchmarker.utils import managed_omni_server
+from benchmarks.eval.speculative_omni import measure_omni
 from benchmarks.eval.speculative_tts import generate_tts, measure_tts
 from benchmarks.eval.speculative_workloads import (
     HOST,
     WORKLOADS,
     AsrWorkload,
     LoadSettings,
+    OmniWorkload,
     TtsWorkload,
     measure_asr,
     measure_transcribe_diarize,
@@ -85,6 +87,13 @@ DRIVER_CLIENT_FLAGS = (
     "--reuse-asr-results",
     "--asr-results-file",
     "--speed-results-file",
+)
+OMNI_DRIVER_CLIENT_FLAGS = (
+    "--model",
+    "--modalities",
+    "--enable-audio",
+    "--save-audio",
+    "--request-rate",
 )
 TTS_DRIVER_CLIENT_FLAGS = (
     "--model",
@@ -204,11 +213,16 @@ def run_leg(
         host=HOST,
         log_file=server_log,
         server_config=str(server_config),
+        wait_for_gpu_release=not args.skip_gpu_cleanup,
     ):
         startup_s = time.monotonic() - started
         logger.info(f"{name}: server ready in {startup_s:.1f} s")
         if isinstance(workload, AsrWorkload):
             loads = measure_asr(
+                workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
+            )
+        elif isinstance(workload, OmniWorkload):
+            loads = measure_omni(
                 workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
             )
         elif isinstance(workload, TtsWorkload):
@@ -243,6 +257,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--workload", choices=list(WORKLOADS), required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--skip-gpu-cleanup",
+        action="store_true",
+        help="Stop only the managed server and skip the GPU memory release wait.",
+    )
     parser.add_argument(
         "--asr-model-path",
         help="ASR model used to score saved TTS audio after all generation legs finish.",
@@ -317,6 +336,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--asr-concurrency must be positive")
     elif args.max_samples is not None and args.max_samples < 1:
         parser.error("--max-samples must be positive")
+    elif isinstance(WORKLOADS[args.workload], OmniWorkload) and any(
+        flag.startswith(argument.split("=")[0])
+        for argument in args.client_args
+        if argument.startswith("--")
+        for flag in OMNI_DRIVER_CLIENT_FLAGS
+    ):
+        parser.error(
+            "Omni client arguments must not override routing, output modality or request load"
+        )
     elif is_tts and any(
         flag.startswith(argument.split("=")[0])
         for argument in args.client_args
@@ -414,6 +442,7 @@ def main() -> None:
             port=asr_port,
             host=HOST,
             log_file=args.output_dir / "asr_server.log",
+            wait_for_gpu_release=not args.skip_gpu_cleanup,
         ):
             for leg in legs:
                 logger.info(f"{leg.name}: scoring saved TTS audio")

@@ -356,6 +356,20 @@ sgl-omni serve \
 
 Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
 
+The shared speculative sweep supports `omni-mmmu` (image input) and `omni-mmsu` (audio input), both with streamed text output. Use `examples/configs/qwen3_omni_dflash.yaml` or `examples/configs/qwen3_omni_eagle3.yaml`; the sweep derives the matching no-draft configuration. For a small functional check:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
+  --draft-config examples/configs/qwen3_omni_dflash.yaml \
+  --workload omni-mmmu --output-dir results/sweep/qwen3_omni_dflash_smoke \
+  --concurrencies 1,2 --repeats 1 --max-samples 4 --order AB \
+  --skip-gpu-cleanup -- --repo-id zhaochenyang20/mmmu-ci-50 --max-tokens 128
+```
+
+`--skip-gpu-cleanup` stops only the managed server and skips the GPU memory release wait. Peak GPU memory covers the whole device, including any other processes. For the full c1–c64 ABBA sweep with three repeats per load, remove `--max-samples`, `--concurrencies`, `--repeats`, `--order` and the client arguments after `--`. Use `-- --repo-id PATH` to compare both sides on the same local dataset. To measure repeated prefixes, pass a dataset with duplicated prompts and add `--prefix-cache` before `--`. Check the cached prompt token share in the report to verify reuse.
+
+The report includes accuracy, request throughput, end-to-end and first-text p95 latency, failures, sampled GPU memory, and KV and acceptance statistics from the server log.
+
 ## Known Limitations
 
 - **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps; different rates return an invalid-input error.

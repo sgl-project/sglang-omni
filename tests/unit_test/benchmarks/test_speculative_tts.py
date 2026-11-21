@@ -255,12 +255,12 @@ def test_mismatched_quality_samples_fail_instead_of_scoring_another_run(
 
 
 @pytest.mark.parametrize(
-    ("order", "warmup", "failing_phase"),
+    ("order", "warmup", "failing_phase", "skip_gpu_cleanup"),
     [
-        ("AB", False, None),
-        ("ABBA", True, None),
-        ("ABBA", True, "generation"),
-        ("ABBA", False, "transcription"),
+        ("AB", False, None, False),
+        ("ABBA", True, None, True),
+        ("ABBA", True, "generation", True),
+        ("ABBA", False, "transcription", True),
     ],
 )
 def test_sweep_scores_all_legs_on_one_separate_asr_server_and_cleans_up(
@@ -269,6 +269,7 @@ def test_sweep_scores_all_legs_on_one_separate_asr_server_and_cleans_up(
     order: str,
     warmup: bool,
     failing_phase: Literal["generation", "transcription"] | None,
+    skip_gpu_cleanup: bool,
 ) -> None:
     """Scoring used to restart ASR between TTS legs and reuse a generation port."""
     events: list[str] = []
@@ -289,7 +290,9 @@ def test_sweep_scores_all_legs_on_one_separate_asr_server_and_cleans_up(
         host: str,
         log_file: Path,
         server_config: str | None = None,
+        wait_for_gpu_release: bool = True,
     ) -> Iterator[None]:
+        assert wait_for_gpu_release is not skip_gpu_cleanup
         assert active_models == []
         active_models.append(model_path)
         server_ports.append(port)
@@ -378,6 +381,7 @@ def test_sweep_scores_all_legs_on_one_separate_asr_server_and_cleans_up(
             "--asr-concurrency",
             "3",
             *([] if warmup else ["--no-warmup"]),
+            *(["--skip-gpu-cleanup"] if skip_gpu_cleanup else []),
             "--",
             "--stream",
         ],
