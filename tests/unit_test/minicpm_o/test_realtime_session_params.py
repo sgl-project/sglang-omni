@@ -551,6 +551,7 @@ async def test_session_overrides_stay_local_to_the_session() -> None:
         repetition_penalty=1.2,
         listen_prob_scale=0.5,
         force_listen_count=0,
+        quiet_unit_gain_limit=30.0,
         max_new_tokens_per_unit=8,
         repetition_window_size=64,
         talker_temperature=0.6,
@@ -613,7 +614,13 @@ def test_stage_reference_precedence_is_per_session(
         ("default", {}),
     ):
         request = OmniRequest(
-            None, params={"instructions": "", "max_slice_nums": 1, **params}
+            None,
+            params={
+                "instructions": "",
+                "max_slice_nums": 1,
+                "quiet_unit_gain_limit": 1.0,
+                **params,
+            },
         )
         perception.open(SessionIdentity(session_id), request)
         speech.open(SessionIdentity(session_id), request)

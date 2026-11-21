@@ -44,6 +44,14 @@ MEL_BUFFER_SAMPLES = SLIDE_TRIGGER_SAMPLES + UNIT_SAMPLES
 DYNAMIC_NORM_MIN_SAMPLES = 5 * SAMPLE_RATE
 LOG_FLOOR_DB = -10.0
 DYNAMIC_RANGE_DB = 8.0
+LEVEL_FRAME_SAMPLES = SAMPLE_RATE // 10
+# note (yaourt): The loudest 100 ms of a spoken "Hi." at -16 dBFS, the level the soft greeting trials are answered at.
+NORMAL_SPEECH_FRAME_RMS = 0.22
+# note (yaourt): The noise floor is the tenth percentile of the last five seconds of frame levels; a unit is raised only when a frame stands this far above it.
+NOISE_FLOOR_FRAMES = 50
+NOISE_FLOOR_PERCENTILE = 10
+MIN_NOISE_FLOOR_RMS = 1e-4
+SPEECH_TO_NOISE_FLOOR_RATIO = 3.0
 
 
 class ImageEncoder(Protocol):
@@ -159,6 +167,10 @@ class MiniCPMOPerceptionState:
     max_slice_nums: int
     image_encoder: ImageEncoder
     mel_filter_bank: LogMelFilterBank
+    quiet_unit_gain_limit: float = 1.0
+    frame_levels: np.ndarray = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float32)
+    )
     audio_buffer: np.ndarray = field(
         default_factory=lambda: np.zeros(0, dtype=np.float32)
     )
@@ -204,6 +216,7 @@ class MiniCPMOPerceptionState:
         image_encoder: ImageEncoder,
         max_slice_nums: int,
         mel_filter_bank: LogMelFilterBank,
+        quiet_unit_gain_limit: float,
     ) -> MiniCPMOPerceptionState:
         state = cls(
             tokenizer=tokenizer,
@@ -212,6 +225,7 @@ class MiniCPMOPerceptionState:
             image_encoder=image_encoder,
             max_slice_nums=max_slice_nums,
             mel_filter_bank=mel_filter_bank,
+            quiet_unit_gain_limit=quiet_unit_gain_limit,
         )
         prompt_ids = list(
             tokenizer.encode(
@@ -263,6 +277,37 @@ class MiniCPMOPerceptionState:
 
         Only the new frames are computed; the clipping peak is kept per frame.
         """
+        if self.quiet_unit_gain_limit > 1:
+            frame_count = waveform.size // LEVEL_FRAME_SAMPLES
+            unit_levels = np.sqrt(
+                np.square(waveform[: frame_count * LEVEL_FRAME_SAMPLES])
+                .reshape(frame_count, LEVEL_FRAME_SAMPLES)
+                .mean(axis=1)
+            )
+            earlier_levels = self.frame_levels
+            self.frame_levels = np.concatenate([earlier_levels, unit_levels])[
+                -NOISE_FLOOR_FRAMES:
+            ]
+            loudest_level = float(unit_levels.max(initial=0.0))
+            # note (yaourt): A session's first unit has no noise floor to stand above, so it is never raised.
+            if (
+                earlier_levels.size
+                and loudest_level
+                > SPEECH_TO_NOISE_FLOOR_RATIO
+                * max(
+                    float(np.percentile(earlier_levels, NOISE_FLOOR_PERCENTILE)),
+                    MIN_NOISE_FLOOR_RMS,
+                )
+            ):
+                gain = min(
+                    max(NORMAL_SPEECH_FRAME_RMS / loudest_level, 1.0),
+                    self.quiet_unit_gain_limit,
+                )
+                waveform = np.clip(waveform * np.float32(gain), -1.0, 1.0)
+            else:
+                pass
+        else:
+            pass
         # note (Junnan Li): The checkpoint front-pads the first chunk to 1035 ms so the encoder's CNN context is full.
         if self.audio_chunk_index == 0:
             chunk_samples = FIRST_CHUNK_SAMPLES

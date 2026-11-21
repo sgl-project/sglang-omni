@@ -201,6 +201,7 @@ def test_open_session_merges_patch_into_current_configuration() -> None:
         ("top_k", True),
         ("top_p", 1.1),
         ("force_listen_count", 1.5),
+        ("quiet_unit_gain_limit", 0.5),
         ("max_new_tokens_per_unit", 0),
         ("talker_temperature", -1.0),
         ("talker_top_k", 0),
