@@ -240,6 +240,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         if (
             self.full_prefill_substitute_sm_versions
             and current_platform.is_cuda()
+            and get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.FULL
             and get_visible_gpu_sm_version(gpu_id)
             in self.full_prefill_substitute_sm_versions
         ):
@@ -253,7 +254,6 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             # note (Xuanfei): the substitute was measured only with automatic attention backends, the default KV cache dtype and no draft; under a draft the prefill backend also serves target verify and the draft worker.
             if (
                 substitute_prefill_attention_backend is not None
-                and cfg.cuda_graph_config.prefill.backend == CudaGraphBackend.FULL
                 and overrides.get("attention_backend") is None
                 and overrides.get("prefill_attention_backend") is None
                 and overrides.get("decode_attention_backend") is None
