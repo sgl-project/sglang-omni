@@ -4,15 +4,39 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
+
 ### Changed
 
+- **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **A shorter explanation for the model fallback switch** (#4377): the Language models switch is now called Retry with another model on this Mac, and its note says in three short sentences what it does.
+
+### Fixed
+
+- **Rewrite is one card from the shortcut to the last follow-up** (#4375): the Rewrite card no longer hands over to a preview at the screen's edge and then to a separate answer card. It stays while your speech is recognised and the language model works, and says what it is doing; the answer is written in that same card, above the text box, with Insert and Copy in its header. The text box stays at the foot of the card: type there and press Enter to follow up (no recording needed), or press the Rewrite shortcut to say it, and the conversation scrolls above. The card keeps one height and follows Rewrite's card size for its width (Fill included), with the size button in its corner. Typed text alone is now enough: nothing has to be said. With Rewrite's card switched off, the card closes once the result is inserted. Sending again after a failure keeps the card too.
+- **Cards can be dragged and covered by other windows; only previews stay on top**: since Rewrite became one card (#4375), its card could not be moved, and like every answer card it floated above all apps' windows. Drag the Rewrite card by its margins or its header, as the answer card; it keeps its place when its size changes and through follow-ups, stays on the screen, and opens at its usual place next time. Answer cards and the Rewrite card no longer stay on top: another app's window can cover them. A card comes in front when it opens and with each new answer, and every press of the Rewrite shortcut brings the Rewrite card in front, as a click on it would: the press that opens it, the one that sends, and a follow-up. The recording pill and its live text, and the meeting's live window, are previews and still stay on top.
+- **Cards act like any app's window: the Rewrite card is no longer hidden under WeChat, and Rectangle moves cards**: a card stayed under the app you pressed the shortcut in, because macOS keeps a window of an app that is not in front under the front app's windows, and window managers such as Rectangle moved that app's window instead of the card, because Voxt never came to the front. Now each press of the Rewrite shortcut shows the Rewrite card above every window at once, and once Voxt has read your selection it comes to the front with the card as its window; an answer card of Transcribe, Translate or Rewrite does the same when it opens and with each new answer. Then the card is an ordinary window: the next app you click covers it, and Rectangle's shortcuts move it. A card that opens after you went to another app stays behind it instead of taking the front. Previews (the recording pill, its live text, the meeting's live window) still float above other windows and do not take the front, but are ordinary windows too: click one and Rectangle moves it. Closing a card gives the front back to the app you were in.
+- **Pictures copied from more places paste into the Rewrite card**: an image file copied in Finder pasted its file name, because Finder also puts the name on the clipboard as text; it now pastes the picture (HEIC too), while another copied file still pastes its name. A clipboard holding only a JPEG, HEIC or WebP picture pasted nothing; it now pastes the picture. Text copied with a picture of itself, such as a spreadsheet range, still pastes as text.
 
 ### 中文
 
+#### 新增
+
+- **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
+
 #### 变更
 
+- **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **模型回退开关的说明更简短**（#4377）：语言模型页的开关改名为“出错时改用本机其他模型”，说明改成三句短话。
+
+#### 修复
+
+- **改写从按下快捷键到最后一次追问只有一张卡片**（#4375）：改写卡片不再先换成屏幕边缘的预览条、再换成另一张结果卡片。识别语音和语言模型处理时它一直留在屏幕上，并说明正在做什么；结果直接写在这张卡片里、输入框的上方，标题栏有“插入”和“复制”。输入框一直在卡片底部：在里面打字按 Enter 就是追问（不用录音），也可以按改写快捷键说出来，对话在上方滚动。卡片高度固定，宽度跟随改写的卡片大小（包括“充满”），角上有切换大小的按钮。只打字不说话也可以发送。关掉改写的“显示卡片”时，结果插入后卡片关闭。发送失败后再次发送，卡片同样留着。
+- **卡片可以拖动，也能被别的窗口盖住；只有预览置顶**：改写变成一张卡片（#4375）之后，改写卡片拖不动，而且和所有答案卡片一样浮在所有 App 的窗口之上。现在和答案卡片一样，按住改写卡片的空白处或标题栏就能拖动；换卡片大小和追问时留在拖到的位置，并始终留在屏幕内，下次打开回到原来的位置。答案卡片和改写卡片不再置顶：别的 App 的窗口可以盖住它们。卡片出现时和每次有新答案时回到最前；每按一次改写快捷键（打开、结束录音发送、追问），改写卡片都会回到最前，和点它一下一样。录音时的浮窗胶囊和实时文字、会议浮窗是预览，仍然置顶。
+- **卡片和别的 App 的窗口一样：改写卡片不再被微信盖住，Rectangle 也能移动卡片**：卡片会留在你按快捷键时所在的 App 下面，因为 macOS 会把不在前台的 App 的窗口放在前台 App 的窗口下面；Rectangle 这类窗口管理器移动的也是那个 App 的窗口，因为 Voxt 从来不会到前台。现在每按一次改写快捷键，改写卡片都会立刻浮到所有窗口之上，Voxt 读完你选中的文字后就到前台，卡片是它的窗口；转录、翻译、改写的答案卡片在出现时和每次有新答案时也一样。之后卡片就是普通窗口：你点别的 App，那个 App 会盖住它；Rectangle 的快捷键移动的是它。卡片出现时你已经去了别的 App，它就留在后面，不抢前台。预览（录音胶囊、实时文字、会议浮窗）仍然浮在其他窗口之上，出现时不抢前台，但也是普通窗口：点一下，Rectangle 就能移动它。关掉卡片时，前台还给你原来所在的 App。
+- **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
 
 ## [2.1.2] - 2026-11-19
 

@@ -57,7 +57,7 @@ func sidebarRow(c *ui.Context, state settingsAppearanceViewState, actions settin
 	})
 }
 
-// paletteSettings is the Color row: a swatch that unfolds the picker,
+// paletteSettings is the Color row: Default or Custom unfolds the picker,
 // with previews of the palette in light and dark.
 func paletteSettings(c *ui.Context, state settingsAppearanceViewState, actions settingsAppearanceActions, local *settingsAppearanceLocalUI) {
 	title := i18n.T("Color")
@@ -80,11 +80,11 @@ func paletteSettings(c *ui.Context, state settingsAppearanceViewState, actions s
 				arrow.Opacity(0)
 			}
 			ui.Spacer(c)
-			color := local.colorPalette
-			ui.Box(c).Size(px(t, 23), px(t, 23)).Radius(px(t, 6)).Background(k.Subtle).Border(1, k.Line).Padding(px(t, 2)).Children(func() {
-				ui.Box(c).Fill().Radius(px(t, 4)).Border(1, ui.RGBA(255, 255, 255, 0.16)).
-					Gradient(color.Mix(ui.RGB(255, 255, 255), 0.09), color.Mix(ui.RGB(0, 0, 0), 0.09), 180)
-			})
+			value := i18n.T("Custom")
+			if state.Palette == "" || state.Palette == state.DefaultPalette {
+				value = i18n.T("Default")
+			}
+			ui.Text(c, value).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Shrink(0)
 		})
 		trigger.Changed()
 		panel := parts.Panel(func() {
