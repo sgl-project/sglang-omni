@@ -60,9 +60,6 @@ from sglang_omni.models.qwen3_tts import engine_builder as qwen3_engine_builder
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts import streaming_vocoder as qwen3_streaming_vocoder
-from sglang_omni.models.qwen3_tts.compat import (
-    apply_qwen_tts_transformers_compatibility_patches,
-)
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 from sglang_omni.models.qwen3_tts.incremental_codec import (
@@ -139,11 +136,9 @@ from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
 from sglang_omni.vendor.sglang.layers import RMSNorm
 from tests.unit_test.fakes import FakeExecutionBridge
+from tests.unit_test.fixtures import qwen3_tts_codec
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 from tests.unit_test.pipeline.helpers import make_stage
-from tests.unit_test.qwen3_tts.test_incremental_codec import (
-    Decoder as SmallCodecDecoder,
-)
 
 
 def placeholder_prompt_constants(
@@ -12153,29 +12148,9 @@ def assert_whole_requests_decode_on_reserved_rows_beside_a_stream(
 def test_qwen3_tts_whole_requests_decode_on_reserved_rows_beside_a_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    apply_qwen_tts_transformers_compatibility_patches()
-    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
-        Qwen3TTSTokenizerV2DecoderConfig,
-    )
-    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
-        Qwen3TTSTokenizerV2DecoderTransformerModel,
-    )
-
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     torch.manual_seed(31)
-    decoder = SmallCodecDecoder(block_channels=(16, 8))
-    decoder.pre_transformer = Qwen3TTSTokenizerV2DecoderTransformerModel(
-        Qwen3TTSTokenizerV2DecoderConfig(
-            hidden_size=512,
-            latent_dim=2,
-            num_attention_heads=16,
-            num_key_value_heads=16,
-            head_dim=64,
-            intermediate_size=1024,
-            num_hidden_layers=2,
-        )
-    )
-    decoder = decoder.to("cuda:0").eval()
+    decoder = qwen3_tts_codec.Decoder().to("cuda:0").eval()
     decoder.config = SimpleNamespace(codebook_size=16, num_quantizers=2)
     tokenizer = SimpleNamespace(
         model=SimpleNamespace(
