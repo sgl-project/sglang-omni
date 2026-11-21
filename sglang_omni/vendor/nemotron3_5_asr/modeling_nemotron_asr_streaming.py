@@ -745,16 +745,30 @@ class NemotronAsrStreamingEncoderAttention(nn.Module):
             )
 
         # will compute matrix_ac - terms (a) and (c) - and add matrix_bd
-        attn_output, attn_weights = attention_interface(
-            self,
-            query=query_states_with_bias_u,
-            key=key_states,
-            value=value_states,
-            attention_mask=matrix_bd,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            **kwargs,
-        )
+        if self.config._attn_implementation == "sdpa":
+            # note (hereisaway): Transformers inverts any non-bool attention mask
+            # when torch_npu is importable, which reads this relative-position
+            # bias as an all-masked matrix. Hand the bias to SDPA directly.
+            attn_output = nn.functional.scaled_dot_product_attention(
+                query_states_with_bias_u,
+                key_states,
+                value_states,
+                attn_mask=matrix_bd,
+                dropout_p=0.0 if not self.training else self.attention_dropout,
+                scale=self.scaling,
+            ).transpose(1, 2)
+            attn_weights = None
+        else:
+            attn_output, attn_weights = attention_interface(
+                self,
+                query=query_states_with_bias_u,
+                key=key_states,
+                value=value_states,
+                attention_mask=matrix_bd,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                **kwargs,
+            )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)

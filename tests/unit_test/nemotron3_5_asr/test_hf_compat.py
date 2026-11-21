@@ -53,6 +53,7 @@ from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron3_5_asr import (
     Nemotron3_5AsrForRNNT,
 )
 from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron_asr_streaming import (
+    NemotronAsrStreamingEncoderAttention,
     NemotronAsrStreamingEncoderCausalConvPaddingCache,
     NemotronAsrStreamingEncoderModelOutput,
 )
@@ -546,3 +547,35 @@ def test_parakeet_compat_forwards_cache_aware_encoder_kwargs(
     ]
     assert prepared["encoder_valid_lengths"].tolist() == [3, 3]
     assert prepared["encoder_frame_idxs"].tolist() == [0, 0]
+
+
+def test_attention_keeps_position_bias_under_the_torch_npu_mask_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A float relative-position bias must not become an all-masked bool mask.
+
+    Transformers inverts any non-bool attention mask when torch_npu is
+    importable, so the previous implementation returned an all-zero attention
+    output on every host with torch_npu installed.
+    """
+    sdpa_attention = pytest.importorskip("transformers.integrations.sdpa_attention")
+    monkeypatch.setattr(sdpa_attention, "_is_torch_npu_available", True, raising=False)
+    torch.manual_seed(0)
+    config = NemotronAsrStreamingEncoderConfig(
+        hidden_size=16,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        attention_bias=False,
+        attention_dropout=0.0,
+    )
+    config._attn_implementation = "sdpa"  # noqa: leading-underscore  # Transformers attribute
+    attention = NemotronAsrStreamingEncoderAttention(config, layer_idx=0).eval()
+
+    hidden_states = torch.randn(1, 6, 16)
+    position_embeddings = torch.randn(1, 11, 16)
+    attention_mask = torch.ones(1, 1, 6, 6, dtype=torch.bool)
+    with torch.no_grad():
+        output, _ = attention(hidden_states, position_embeddings, attention_mask)
+
+    assert torch.isfinite(output).all()
+    assert output.abs().max() > 0
