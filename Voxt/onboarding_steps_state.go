@@ -32,9 +32,18 @@ func buildOnboardingPermissions(translator *i18n.Translator, input onboardingVie
 	if input.PermissionAccess {
 		access.Code, access.Text, access.OK, access.CanAsk, access.CanOpen = "granted", translator.T("Allowed"), true, false, false
 	}
+	audio := systemAudioPermission(translator, input.SystemAudioAsked)
+	code := "unknown"
+	if input.SystemAudioAsked {
+		code = "asked"
+	}
 	return onboardingPermissionsViewState{
 		AskRequired: input.PermissionMic == permission.NotDetermined || !input.PermissionAccess,
 		Microphone:  microphone, Access: access, Speech: speech,
+		SystemAudio: onboardingPermissionRowViewState{
+			Code: code, Text: audio.Status, CanAsk: audio.Ask, CanOpen: audio.Open, AskAction: audio.PermissionID,
+			AskTooltip: translator.T("Adds Voxt to the list in System Settings"), Tip: audio.Tip,
+		},
 	}
 }
 

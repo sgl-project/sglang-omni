@@ -1,0 +1,77 @@
+{
+  "name": "permission-system-audio-asked",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 1,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Permissions",
+    "subtitle": "Voxt needs the microphone to hear you, and Accessibility to type the result where your cursor is. Allow them here, or later in Settings → Permissions.",
+    "recording": false,
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "code": "granted",
+        "text": "Allowed",
+        "ok": true,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "microphone",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "granted",
+        "text": "Allowed",
+        "ok": true,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "accessibility",
+        "ask_tooltip": "Adds Voxt to the list in System Settings"
+      },
+      "speech": {
+        "code": "granted",
+        "text": "Allowed",
+        "ok": true,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "speechRecognition",
+        "ask_tooltip": ""
+      },
+      "system_audio": {
+        "code": "asked",
+        "text": "Asked: check System Settings",
+        "ok": false,
+        "can_ask": false,
+        "can_open": true,
+        "ask_action": "systemAudio",
+        "ask_tooltip": "Adds Voxt to the list in System Settings",
+        "tip": "If you allowed it when macOS asked, it is on. No prompt means macOS asked before. Check it in System Settings."
+      }
+    },
+    "footer": {
+      "mode": "next",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

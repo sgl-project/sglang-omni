@@ -33,7 +33,7 @@ func TestOnboardingFixtureCoverage(t *testing.T) {
 		steps := map[int]bool{}
 		states := map[string]bool{}
 		problems := map[string]bool{}
-		permissions := map[string]bool{}
+		permissions, systemAudio := map[string]bool{}, map[string]bool{}
 		for name, fixture := range fixtures {
 			state := fixture.Onboarding
 			if state == nil {
@@ -53,6 +53,7 @@ func TestOnboardingFixtureCoverage(t *testing.T) {
 			}
 			if state.Permissions != nil && state.Permissions.Microphone.Code != "" {
 				permissions[state.Permissions.Microphone.Code] = true
+				systemAudio[state.Permissions.SystemAudio.Code] = true
 			}
 		}
 		for step := 0; step < obSteps; step++ {
@@ -66,6 +67,7 @@ func TestOnboardingFixtureCoverage(t *testing.T) {
 		assertMeetingFixtureSet(t, locale+" onboarding session states", meetingTypedConstants(t, "internal/session/session.go", "State"), states)
 		assertMeetingFixtureSet(t, locale+" onboarding problem codes", meetingNamedConstants(t, "internal/session/session.go", "Problem"), problems)
 		assertMeetingFixtureSet(t, locale+" onboarding permission states", onboardingPermissionStateCodes(t), permissions)
+		assertMeetingFixtureSet(t, locale+" onboarding system audio states", map[string]bool{"unknown": true, "asked": true}, systemAudio)
 		for _, preset := range append(append([]string{}, settings.Presets...), "") {
 			name := preset
 			if name == "" {

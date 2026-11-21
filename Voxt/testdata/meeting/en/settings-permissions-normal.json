@@ -88,6 +88,7 @@
         "status": "Unknown",
         "allowed": false,
         "known": false,
+        "tip": "macOS does not let apps read this permission. Check it in System Settings.",
         "ask": true,
         "open": true
       },

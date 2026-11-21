@@ -59,6 +59,10 @@ func onboardingFixtureScenarios() []meetingFixtureScenario {
 			input.PermissionAccess = state == permission.Granted
 		})
 	}
+	add("permission-system-audio-asked", obPermissions, func(input *onboardingViewStateInput) {
+		input.PermissionMic, input.PermissionSpeech, input.PermissionAccess = permission.Granted, permission.Granted, true
+		input.SystemAudioAsked = true
+	})
 	add("step-transcribe", obTranscribe, func(input *onboardingViewStateInput) {})
 	add("step-translate", obTranslate, func(input *onboardingViewStateInput) {})
 	add("step-rewrite", obRewrite, func(input *onboardingViewStateInput) {})
