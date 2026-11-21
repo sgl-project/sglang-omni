@@ -181,7 +181,7 @@ func TestOnboardingSteps(t *testing.T) {
 	}
 	a.obGo(obMore)
 	frames(tt)
-	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Your shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", "⌃⌥V", "Start using Voxt"} {
+	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Your shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", platformText("⌃⌥V"), "Start using Voxt"} {
 		if !has(tt, s) {
 			t.Errorf("more: no %q in %q", s, tt.Texts())
 		}

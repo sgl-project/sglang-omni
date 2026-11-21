@@ -193,11 +193,15 @@ sys.exit(0 if isinstance(reply, dict) and reply.get("ok") is True and isinstance
     (($# == 3)) || usage
     build_number "$2" >/dev/null
     [[ "$3" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$3' is not OWNER/REPO"
-    jq --arg version "$2" --arg base "https://github.com/$3/releases/download/voxt-v$2/" \
-      'if .version != $version or .url == "" or .signature == "" or .size <= 0
-       then error("not a signed update manifest of " + $version) else . end
-       | .url = ($base + (.url | split("/") | last))
-       | if .deltas then .deltas |= map(.url = ($base + (.url | split("/") | last))) else . end'
+    json_python -c 'import json, sys, os
+m = json.load(sys.stdin)
+version, base = sys.argv[1], sys.argv[2]
+if m.get("version") != version or not m.get("url") or not m.get("signature") or not (m.get("size", 0) > 0):
+    raise SystemExit("not a signed update manifest of " + version)
+m["url"] = base + m["url"].rsplit("/", 1)[-1]
+for d in m.get("deltas") or []:
+    d["url"] = base + d["url"].rsplit("/", 1)[-1]
+print(json.dumps(m, indent=2))' "$2" "https://github.com/$3/releases/download/voxt-v$2/"
     ;;
   beta-changelog)
     # MyGo signs an update only with notes under the exact version's heading, and a beta's version exists only in CI:

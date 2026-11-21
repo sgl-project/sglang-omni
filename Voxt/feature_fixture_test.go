@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -24,7 +25,11 @@ func TestFeatureViewStateUsesExplicitLocale(t *testing.T) {
 	if got := state.Models.ASR.Options[0].Label; got != "自动（现在用：Fixture speech model）" {
 		t.Errorf("automatic model label %q", got)
 	}
-	if got := state.Shortcuts.Rows[0].Value; got != "右 ⌥" {
+	want := "右 ⌥"
+	if runtime.GOOS == "windows" {
+		want = "右 Alt"
+	}
+	if got := state.Shortcuts.Rows[0].Value; got != want {
 		t.Errorf("shortcut label %q", got)
 	}
 	if got := state.Shortcuts.Rows[0].Custom.ErrorText; got != "请输入按键，例如 Control+Option+Space。" {

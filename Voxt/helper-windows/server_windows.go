@@ -98,6 +98,7 @@ func implementedMethods() []string {
 		proto.MethodTextFocus,
 		proto.MethodTextSelection,
 		proto.MethodTextPaste,
+		proto.MethodClipboardImage,
 		proto.MethodTextRead,
 	}
 }
@@ -291,6 +292,22 @@ func (server *helperServer) serve(message proto.Message) {
 		server.serveOutput(message)
 	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:
 		server.serveTextIO(message)
+	case proto.MethodClipboardImage:
+		var params proto.ClipboardImageParams
+		if err := message.DecodeParams(&params); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+		maxSide := params.MaxSide
+		if maxSide <= 0 {
+			maxSide = proto.ScreenMaxSide
+		}
+		jpeg, err := clipboardImage(maxSide)
+		if err != nil {
+			server.fail(message.ID, proto.CodeInternal, "clipboard.image: %v", err)
+			return
+		}
+		server.result(message.ID, proto.ClipboardImageResult{JPEG: jpeg})
 	default:
 		server.fail(message.ID, proto.CodeMethodNotFound, "Unknown method %s", message.Method)
 	}

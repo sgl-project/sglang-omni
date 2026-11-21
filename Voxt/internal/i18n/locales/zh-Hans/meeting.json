@@ -31,6 +31,7 @@
   "Delete this meeting?": "删除这场会议？",
   "Discard": "丢弃",
   "Disk space is running low. End the meeting soon or free space on this Mac.": "磁盘空间不足。请尽快结束会议或在本机腾出空间。",
+  "Disk space is running low. End the meeting soon or free space on this PC.": "磁盘空间不足。请尽快结束会议或在本机腾出空间。",
   "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4.": "在语音识别模型页下载 MOSS-Transcribe-Diarize，把对方的话按说话人 1–4 分开。",
   "Expand": "展开",
   "Export .txt…": "导出 .txt…",

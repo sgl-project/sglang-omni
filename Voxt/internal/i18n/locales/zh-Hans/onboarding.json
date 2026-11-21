@@ -1,6 +1,8 @@
 {
   "%d model is already on this Mac": "已在这台 Mac 上找到 %d 个模型",
+  "%d model is already on this PC": "已在这台电脑上找到 %d 个模型",
   "%d models are already on this Mac": "已在这台 Mac 上找到 %d 个模型",
+  "%d models are already on this PC": "已在这台电脑上找到 %d 个模型",
   "%s has no shortcut yet. Use Start, or add one on its page.": "%s 还没有快捷键。可以点“开始”，或到它的页面添加一个。",
   "%s isn't installed, but %s (from %s) is. Use it for now?": "%s 还没安装，不过已有 %s（来自 %s）。先用它吗？",
   "%s isn't installed, but %s is. Use it for now?": "%s 还没安装，不过已有 %s。先用它吗？",
@@ -64,6 +66,7 @@
   "Voxt is ready. Two more things make it yours.": "Voxt 已经可以用了。下面两项能让它更顺手。",
   "Voxt needs the microphone to hear you, and Accessibility to type the result where your cursor is. Allow them here, or later in Settings → Permissions.": "Voxt 需要麦克风来听你说话，需要辅助功能把结果输入到光标处。在这里允许，或以后在“设置 → 权限”里允许。",
   "Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.": "Voxt 用这台 Mac 上的模型识别语音，用你设置的语言模型整理、翻译和改写。下面这个模型最适合起步，“设置 → 语音识别模型”里还有其他模型。",
+  "Voxt recognises speech with a model on this PC and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.": "Voxt 用这台电脑上的模型识别语音，用你设置的语言模型整理、翻译和改写。下面这个模型最适合起步，“设置 → 语音识别模型”里还有其他模型。",
   "Welcome": "欢迎",
   "With App enhancement, the address of the current tab picks a group of rules. The language model never sees it.": "开启应用增强后，当前标签页的网址用来选择规则分组，语言模型看不到它。",
   "Write a short note to the team saying I'll be ten minutes late to the stand-up.": "给团队写一条短消息，说我站会要晚到十分钟。",

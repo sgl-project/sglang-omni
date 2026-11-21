@@ -231,7 +231,7 @@ func TestNightlyVulnerabilityScanUsesDarwin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := string(data)
+	workflow := strings.ReplaceAll(string(data), "\r\n", "\n")
 	start := strings.Index(workflow, "  vulnerabilities:\n")
 	end := strings.Index(workflow, "\n  nightly:\n")
 	if start < 0 || end < 0 || end <= start {
