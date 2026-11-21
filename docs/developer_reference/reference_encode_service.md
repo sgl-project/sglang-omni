@@ -37,6 +37,10 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT]):
     def store_artifact(self, artifact: ArtifactT) -> StoredT: ...
     def load_artifact(self, stored: StoredT) -> ArtifactT: ...
     def revalidate(self, item: InputT, key: ReferenceEncodeKey) -> bool: ...
+    def can_encode_batch(self) -> bool: ...
+    def can_encode_alone(self) -> bool: ...
+    def prepare_batch_input(self, item: InputT) -> InputT: ...
+    def encode_batch(self, items: list[InputT]) -> Sequence[ArtifactT | Exception]: ...
 
 
 class KeyedReferenceEncodeHook(ReferenceEncodeHook[InputT, ArtifactT, StoredT]):
@@ -146,12 +150,13 @@ in-flight entry.
 
 ## M4a And M4b Boundary
 
-This document covers **M4a only**: the ad-hoc reference cache and same-key
-single-flight that ships today.
+This document covers **M4a**: the ad-hoc reference cache and same-key
+single-flight, plus the opt-in batch hooks described below.
 
-**M4b (different-key batch coalescing) is not implemented and is a non-goal
-here**; it is described only to mark the scope boundary. Do not add M4b runtime
-code until profiling proves it is worth the extra scheduling surface.
+**M4b (different-key batch coalescing) is opt-in and off by default.** A hook
+enables it with `can_encode_batch()` and the service batches only when it is
+built with `max_batch_size > 1`. Turn it on for a model only after profiling
+proves it is worth the extra scheduling surface.
 
 Before building M4b, run cold-cache workloads with different reference audio per
 request at concurrency 8 and 16 for FishAudio S2-Pro, Qwen3-TTS, and
@@ -161,8 +166,8 @@ Build M4b for a model only if different-key reference encode remains a top
 bottleneck and batching gives at least 15% p95 latency reduction or 20%
 throughput improvement versus M4a.
 
-If M4b is built later, it should be an opt-in extension of
-`ReferenceEncodeService`, not the default path:
+Batching is an opt-in extension of `ReferenceEncodeService`, not the default
+path:
 
 - add explicit hook capability, for example `can_encode_batch()` defaulting to
   `False`, and call `encode_batch(items)` only for hooks that opt in;
@@ -170,11 +175,14 @@ If M4b is built later, it should be an opt-in extension of
 - preserve M4a ordering: normalize input, compute cache key, check cache,
   merge same-key inflight work, and only then enqueue distinct cache-miss
   leaders for different-key batching;
+- call `prepare_batch_input(item)` (default: return the item) in the caller's thread, only on the encode path (cache misses and uncacheable inputs, never cache hits or merged followers, and not a request that encodes alone) and before the item joins the queue, so decoding and padding run in parallel instead of behind the single batch worker; an exception raised there fails that request and its same-key followers, never the batch;
 - use an internal queue that drains up to `max_batch_size` or
   `max_batch_wait_ms`, calls one hook batch encode, and then stores,
   revalidates, cache-inserts, and resolves each item independently;
-- on a batch failure, retry per item so one bad reference does not fail the
-  whole batch.
+- let a hook opt in to `can_encode_alone()` (default `False`): a leader that finds no other encode in flight hands `encode_one` to the service's one solo thread instead of joining the queue, so a lone request skips the batch wait and keeps the per-item result, and sequential lone requests always run on the same thread, while a leader arriving during any other encode joins the queue and batches as usual; because that leader skips `prepare_batch_input`, `encode_one` must work on an item that `prepare_batch_input` has not processed;
+- let `encode_batch` return an `Exception` in a slot to fail only that item;
+  if it raises as a whole or returns the wrong number of results, retry per
+  item with `encode_one` so one bad reference does not fail the whole batch.
 
 Model rollout should stay evidence-driven. MOSS-TTS Local already has its own
 batched reference encoder and should not be migrated just to fit this generic

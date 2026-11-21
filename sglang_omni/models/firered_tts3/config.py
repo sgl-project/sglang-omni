@@ -291,9 +291,11 @@ class FireRedTTS3PipelineConfig(PipelineConfig):
             else:
                 return {**TALKER_FACTORY_DEFAULTS, **generation_limits}
         elif stage_name == "reference_encode":
+            is_base = self.variant == "base"
             return {
                 "max_concurrency": 8,
-                "max_batch_size": 1,
+                # note (yucheng): Batched references can differ at bf16 rounding level, which Instruct cannot take because its stop head needs bit-exact conditioning.
+                "max_batch_size": 8 if is_base else 1,
                 "max_batch_wait_ms": 4.0,
                 "warmup_on_init": True,
                 "reference_cache": True,

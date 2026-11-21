@@ -203,7 +203,7 @@ Top-level fields (the endpoint drops unknown top-level keys silently — model k
 | `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0]` |
 | `response_format` | string | `"wav"` | Output format; `pcm` required when `stream` is true |
 | `stream` | bool | `false` | Stream raw 24 kHz PCM chunks |
-| `seed` | int | `null` | Per-request flow-sampler seed; fixed seed + fixed request is bit-exact |
+| `seed` | int | `null` | Per-request flow-sampler seed; fixed seed + fixed request reproduces the same audio under the conditions in [Known Limitations](#known-limitations) |
 | `language` | string | `"Chinese"` | Language tag for Base: `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, `Italian`. Other checkpoint tags require the pipeline config class's `additional_speech_languages` (see above); `Auto` is unsupported |
 | `task_type` | string | omitted (cloning) | Instruct tasks: `Base` (cloning) / `VoiceDesign` / `SemanticEdit` / `AcousticEdit`; `TTS` and `tts` are rejected |
 | `instructions` | string | `null` | VoiceDesign description, SemanticEdit instruction, or a raw AcousticEdit template |
@@ -253,7 +253,7 @@ The HTTP, batch, and WebSocket APIs use `stage_params` for model options. The of
 
 | Mode | What changes | Use |
 |---|---|---|
-| `fp32` | nothing — the reference stack | Bit-exact deployments; the Instruct default |
+| `fp32` | nothing — the reference stack | Bit-exact deployments (on Base also set `max_batch_size: 1`, see [Reference Encoding](#reference-encoding)); the Instruct default |
 | `compile_fp32` | torch.compile over the fp32 DiT | Faster fp32 |
 | `bf16` | DiT matmul body in bf16, eager | (measured slower than compile_bf16; kept for A/B) |
 | `compile_bf16` | bf16 body + torch.compile | The throughput stack; Base / Speaker default |
@@ -315,6 +315,19 @@ stages:
       skip_min_patch_stop: false
 ```
 
+### Reference Encoding
+
+The `reference_encode` stage turns each reference clip into a CAM++ speaker embedding and RedAE prompt latents, and caches the result per clip (`stages.reference_encode.factory.reference_cache`, on by default). Base encodes concurrent cache misses together in one RedAE forward: `stages.reference_encode.factory.max_batch_size` defaults to 8 on Base and 1 on Instruct, and `max_batch_wait_ms` (default 4) is how long the first queued miss waits for company before the forward starts. A miss that finds no other reference encode in flight skips the batch and is encoded alone on one dedicated thread, without the wait, so a single client gets the per-clip encode. `max_concurrency` (default 8) is the number of request threads. Clips that join a batch are decoded in the request threads, so a slow decode does not hold up the batch, and each forward is limited to 96 s of padded audio (rows times the longest clip): a longer reference splits the batch and one over 96 s runs alone.
+
+A batched encode can differ from a single encode at bf16 rounding level, and a cached reference keeps the conditioning of its first encode; [Known Limitations](#known-limitations) says what that means for a fixed seed. Instruct keeps `max_batch_size: 1` because its stop head needs bit-exact conditioning. Set `max_batch_size: 1` on Base to encode every reference alone, or a larger value on Instruct to opt in:
+
+```yaml
+stages:
+  reference_encode:
+    factory:
+      max_batch_size: 1
+```
+
 ### Performance
 
 Base voice cloning, one fixed Chinese request (~4.8 s audio), 1x L20, streaming path, warm service at the final commit. The vLLM column is the reference port's final tuned stack on 1x H20 (a longer ~7.8 s utterance); L20 and H20 measure within a few percent of each other on this stack's other TTS models.
@@ -330,7 +343,7 @@ Concurrency-1 latency and TTFP beat the vLLM port clearly; vLLM still leads on c
 ### Known Limitations
 
 - Single GPU only (`tp_size=1`); one variant per deployment.
-- End-to-end parity with the fp32 reference is statistical, not bitwise: any bf16 backbone (including the reference vLLM port) diverges chaotically after a few patches. At a fixed seed every request is deterministic and bit-exact against itself, and the c=1 (exact-bucket) paths stay bit-exact across the CUDA-graph and compile stacks; c>=2 batched flow output drifts within the known batched-GEMM envelope.
+- End-to-end parity with the fp32 reference is statistical, not bitwise: any bf16 backbone (including the reference vLLM port) diverges chaotically after a few patches. At a fixed seed and request the audio is bit-exact against itself when the talker flow runs at c=1 and the reference encode is unbatched (a reference encoded alone, a cache hit on one that was first encoded alone, or `max_batch_size: 1`), and the c=1 (exact-bucket) paths stay bit-exact across the CUDA-graph and compile stacks. Otherwise it is only statistically stable: c>=2 batched flow output drifts within the known batched-GEMM envelope, and on Base a reference encoded together with other uncached references can differ at bf16 rounding level from an alone encode (see [Reference Encoding](#reference-encoding)), a difference its cache entry then keeps until the entry is evicted or the server restarts.
 - Instruct VoiceDesign / SemanticEdit pay a text-AR phase (up to 200 tokens) before the first audio chunk.
 - The Speaker variant takes no reference audio, and incremental text upload mid-generation is not supported.
 - Concurrency above ~16 needs a VRAM budget review: each captured flow-graph batch row costs ~1.2 GB.

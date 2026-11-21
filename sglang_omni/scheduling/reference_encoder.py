@@ -6,6 +6,7 @@ import logging
 import queue as _queue_mod
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Generic, cast
 
@@ -57,7 +58,16 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT, RawInputT]):
     def can_encode_batch(self) -> bool:
         return False
 
-    def encode_batch(self, items: list[InputT]) -> list[ArtifactT]:
+    def can_encode_alone(self) -> bool:
+        """Whether a request with no other encode in flight may call encode_one on the service's solo thread instead of joining the batch queue. encode_one must then work on an item that prepare_batch_input has not processed."""
+        return False
+
+    def prepare_batch_input(self, item: InputT) -> InputT:
+        """Do per-item work such as decoding in the calling thread, before the item joins the batch queue."""
+        return item
+
+    def encode_batch(self, items: list[InputT]) -> Sequence[ArtifactT | Exception]:
+        """Encode prepared items; an Exception in a slot fails only that item."""
         return [self.encode_one(item) for item in items]
 
 
@@ -177,21 +187,32 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         self.uncacheable = 0
         self.batches = 0
         self.batched_items = 0
+        self.solo_encodes = 0
         self.last_log_time = 0.0
         self.max_batch_size = int(max_batch_size)
         self.max_batch_wait_s = float(max_batch_wait_ms) / 1000.0
         self.batching = self.max_batch_size > 1 and bool(hook.can_encode_batch())
+        self.encodes_alone = bool(hook.can_encode_alone())
+        self.encodes_in_flight = 0
         self.batch_queue: (
             _queue_mod.Queue[tuple[InputT, concurrent.futures.Future[ArtifactT]] | None]
             | None
         ) = None
         self.batch_thread: threading.Thread | None = None
+        self.solo_executor: concurrent.futures.ThreadPoolExecutor | None = None
         if self.batching:
             self.batch_queue = _queue_mod.Queue()
             self.batch_thread = threading.Thread(
                 target=self.batch_worker, name=batch_worker_name, daemon=True
             )
             self.batch_thread.start()
+            if self.encodes_alone:
+                # note (yucheng): Lone requests share one thread so they keep running on a thread that encodes often, instead of on request threads that the batch worker leaves idle.
+                self.solo_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix=f"{batch_worker_name}-solo"
+                )
+            else:
+                pass
         else:
             pass
 
@@ -213,6 +234,10 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             thread.join(timeout=5.0)
         else:
             pass
+        if self.solo_executor is not None:
+            self.solo_executor.shutdown(wait=True)
+        else:
+            pass
         close = getattr(self._hook, "close", None)  # noqa: leading-underscore
         if callable(close):
             close()
@@ -224,9 +249,28 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             return self._hook.encode_one(item)  # noqa: leading-underscore
         else:
             pass
-        future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
-        self.batch_queue.put((item, future))
-        return future.result(timeout=self.timeout_s)
+        with self.lock:
+            is_solo = self.encodes_alone and self.encodes_in_flight == 0
+            self.encodes_in_flight += 1
+            if is_solo:
+                self.solo_encodes += 1
+            else:
+                pass
+        try:
+            # note (yucheng): A lone request would only pay the batch linger, so it takes the per-item path.
+            if is_solo and self.solo_executor is not None:
+                return self.solo_executor.submit(self.hook.encode_one, item).result(
+                    timeout=self.timeout_s
+                )
+            else:
+                pass
+            prepared_item = self.hook.prepare_batch_input(item)
+            future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
+            self.batch_queue.put((prepared_item, future))
+            return future.result(timeout=self.timeout_s)
+        finally:
+            with self.lock:
+                self.encodes_in_flight -= 1
 
     def drain_batch(
         self,
@@ -425,6 +469,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 "uncacheable": self.uncacheable,
                 "batches": self.batches,
                 "batched_items": self.batched_items,
+                "solo_encodes": self.solo_encodes,
             }
 
     @staticmethod
@@ -466,5 +511,6 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 "uncacheable": self.uncacheable,
                 "batches": self.batches,
                 "batched_items": self.batched_items,
+                "solo_encodes": self.solo_encodes,
             }
         logger.info("%s reference encode stats: %s", self.log_prefix, stats)
