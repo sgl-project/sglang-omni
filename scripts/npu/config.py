@@ -50,8 +50,6 @@ def main() -> None:
             "sglang-version",
             "sglang-dockerfile-sha256",
             "cann-image-910b",
-            "modelscope-version",
-            "evalscope-version",
             "base-image-a3",
             "base-image-950",
         ],
@@ -74,11 +72,6 @@ def main() -> None:
             raise ValueError(
                 f"cann-image-910b must pin the CANN {cann_version} 910B image"
             )
-        elif args.get in (
-            "modelscope-version",
-            "evalscope-version",
-        ) and not re.fullmatch(r"\d+\.\d+\.\d+", config_value):
-            raise ValueError(f"{args.get} must be a numeric X.Y.Z release")
         else:
             print(config_value)
     else:

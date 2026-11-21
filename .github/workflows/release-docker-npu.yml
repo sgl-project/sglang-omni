@@ -100,13 +100,9 @@ jobs:
         run: |
           sglang_version=$(python scripts/npu/config.py --get sglang-version)
           cann_image=$(python scripts/npu/config.py --get cann-image-910b)
-          modelscope_version=$(python scripts/npu/config.py --get modelscope-version)
-          evalscope_version=$(python scripts/npu/config.py --get evalscope-version)
           echo "sglang_tag=v$sglang_version" >> "$GITHUB_OUTPUT"
           echo "cann_image=$cann_image" >> "$GITHUB_OUTPUT"
           echo "cann_image_tag=${cann_image%@*}" >> "$GITHUB_OUTPUT"
-          echo "modelscope_version=$modelscope_version" >> "$GITHUB_OUTPUT"
-          echo "evalscope_version=$evalscope_version" >> "$GITHUB_OUTPUT"
           bash scripts/npu/prepare_sglang_a2.sh .cache/sglang-910b
       - name: Build the SGLang 910B base
         if: matrix.device == '910b'
@@ -121,8 +117,6 @@ jobs:
             DEVICE_TYPE=910b
             CANN_VERSION=${{ matrix.cann }}
             SGLANG_TAG=${{ steps.prepare.outputs.sglang_tag }}
-            MODELSCOPE_VERSION=${{ steps.prepare.outputs.modelscope_version }}
-            EVALSCOPE_VERSION=${{ steps.prepare.outputs.evalscope_version }}
           outputs: type=oci,dest=${{ runner.temp }}/sglang-910b,tar=false
           provenance: false
           cache-from: type=gha,scope=sglang-910b
