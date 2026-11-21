@@ -725,6 +725,7 @@ segment timestamps; unsupported models return HTTP 400 before inference.</p>
 <p>Streaming is available with <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> for <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">text</span></code>, using the same
 SSE lifecycle as transcriptions: <code class="docutils literal notranslate"><span class="pre">transcript.text.delta</span></code> events, one
 <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event, then <code class="docutils literal notranslate"><span class="pre">data:</span> <span class="pre">[DONE]</span></code>.</p>
+<p>Set the form field <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> to include speculative decoding statistics in <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> when the backend reports them. Buffered <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> responses include the field in the response body. Streams include it in the <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event.</p>
 </section>
 </section>
 
