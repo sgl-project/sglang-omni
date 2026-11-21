@@ -1,6 +1,7 @@
 """Realtime output delivery and completion state."""
 
 import asyncio
+import json
 import math
 from collections import deque
 from dataclasses import dataclass, replace
@@ -11,6 +12,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     OutputEvent,
+    PluginChunk,
     ResponseEvent,
     ResponseFinished,
     ResponseProgress,
@@ -41,6 +43,10 @@ def envelope_size_bytes(envelope: Envelope) -> int:
         event, (TextDelta, TextFinished, ResponseFinished, InputTranscription)
     ):
         return len(event.text.encode()) + ENVELOPE_BYTES
+    elif isinstance(event, PluginChunk) and isinstance(event.payload, bytes):
+        return math.ceil(len(event.payload) / 3) * 4 + ENVELOPE_BYTES
+    elif isinstance(event, PluginChunk):
+        return len(json.dumps(event.payload).encode()) + ENVELOPE_BYTES
     else:
         return ENVELOPE_BYTES
 

@@ -1848,6 +1848,7 @@ def register_realtime(app: FastAPI) -> None:
                 return {
                     "model": model_name,
                     **deployment.capabilities.to_granted_capabilities(),
+                    **deployment.capabilities.plugin_ports(),
                     "limits": asdict(deployment.limits),
                 }
 
