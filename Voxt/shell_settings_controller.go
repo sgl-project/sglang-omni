@@ -84,6 +84,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		// An earlier background save can publish after a newer appearance edit.
 		a.syncSavedAppearancePreview(&new.Appearance)
 	}
+	// The live detail width moves only on the main thread (a drag save or
+	// a reset); a notification published before a reset must not restore it.
+	new.Appearance.HistoryDetailWidth = a.prefs.Appearance.HistoryDetailWidth
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
 	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {

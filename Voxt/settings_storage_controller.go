@@ -297,6 +297,7 @@ func (a *app) resetLook() {
 	d := settings.Defaults()
 	a.paletteRevision.Add(1)
 	a.transparencyRevision.Add(1)
+	a.historyWidthRevision.Add(1)
 	a.paletteSavePending, a.transparencySavePending = false, false
 	a.updateSettings(func(s *settings.Settings) { s.Appearance, s.General.Language = d.Appearance, d.General.Language })
 	a.loadAppearancePreview()
@@ -309,6 +310,7 @@ func (a *app) resetLook() {
 func (a *app) resetSettings() {
 	a.paletteRevision.Add(1)
 	a.transparencyRevision.Add(1)
+	a.historyWidthRevision.Add(1)
 	a.paletteSavePending, a.transparencySavePending = false, false
 	a.updateSettings(func(s *settings.Settings) {
 		*s = settings.Defaults()

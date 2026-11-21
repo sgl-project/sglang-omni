@@ -189,7 +189,13 @@ func (a *app) openHistoryPrivacy() { a.navigate("/settings/privacy") }
 
 // saveHistoryDetailWidth keeps the detail width in DIPs at 100 %, 0 for the default.
 func (a *app) saveHistoryDetailWidth(width float64) {
-	a.updateSettings(func(s *settings.Settings) { s.Appearance.HistoryDetailWidth = width })
+	revision := a.historyWidthRevision.Add(1)
+	a.updateSettings(func(s *settings.Settings) {
+		// A reset after this save starts wins over its background write.
+		if a.historyWidthRevision.Load() == revision {
+			s.Appearance.HistoryDetailWidth = width
+		}
+	})
 }
 
 func (a *app) copyHistoryText(text string) {

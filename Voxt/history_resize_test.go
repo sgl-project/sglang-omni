@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -127,6 +128,70 @@ func TestResetRestoresHistoryDetailWidth(t *testing.T) {
 			}
 			if saved := a.settings.Get().Appearance.HistoryDetailWidth; saved != 0 {
 				t.Fatalf("saved width after reset %g", saved)
+			}
+		})
+	}
+}
+
+// A width save still in flight when a reset starts must not commit after it.
+func TestResetInvalidatesHistoryWidthSaves(t *testing.T) {
+	for _, reset := range []struct {
+		name string
+		fn   func(*app)
+	}{
+		{"resetLook", (*app).resetLook},
+		{"resetSettings", (*app).resetSettings},
+	} {
+		t.Run(reset.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			revision := a.historyWidthRevision.Add(1) // a width save in flight
+			reset.fn(a)
+			// The in-flight save's background write runs only after the reset.
+			if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+				if a.historyWidthRevision.Load() == revision {
+					s.Appearance.HistoryDetailWidth = settings.MaxHistoryDetailWidth
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := a.settings.Get().Appearance.HistoryDetailWidth; got != 0 {
+				t.Errorf("stale width save survived reset: %g", got)
+			}
+		})
+	}
+}
+
+// A save's settings.Changed delivered after a reset must not restore the width.
+func TestResetKeepsHistoryWidthAfterLateNotification(t *testing.T) {
+	for _, reset := range []struct {
+		name string
+		fn   func(*app)
+	}{
+		{"resetLook", (*app).resetLook},
+		{"resetSettings", (*app).resetSettings},
+	} {
+		t.Run(reset.name, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			seedHistory(t, a)
+			tt.SetSize(1100, 740)
+			before := a.settings.Get()
+			a.updateSettings(func(s *settings.Settings) { s.Appearance.HistoryDetailWidth = settings.MaxHistoryDetailWidth })
+			widthSaved := a.settings.Get()
+			a.navigate("/history")
+			a.histUI.sel = histInserted
+			frames(tt)
+			reset.fn(a)
+			a.settingsChanged(before, widthSaved) // the save's notification lands after the reset
+			frames(tt)
+			r, ok := tt.Find("Entry details")
+			if !ok {
+				t.Fatal("missing details")
+			}
+			if r.W != historyPanelW {
+				t.Errorf("visible width after delayed width notification = %g, want %d", r.W, historyPanelW)
+			}
+			if got := a.prefs.Appearance.HistoryDetailWidth; got != 0 {
+				t.Errorf("live preference after delayed width notification = %g, want 0", got)
 			}
 		})
 	}

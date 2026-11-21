@@ -65,6 +65,9 @@ type shellState struct {
 	paletteSavePending      bool
 	transparencySavePending bool
 	transparencyRevision    atomic.Uint64
+	// historyWidthRevision invalidates a detail-width save still in
+	// flight when the look or every setting is reset.
+	historyWidthRevision atomic.Uint64
 
 	logsState     // shell_logs_controller.go
 	navState      // shell_nav_controller.go
