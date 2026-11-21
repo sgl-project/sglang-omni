@@ -45,7 +45,7 @@ func meetingASRSettings(c *ui.Context, state settingsMeetingViewState, actions s
 		}
 	})
 	spokenLanguage := state.SpokenLanguageSelected
-	settingRow(c, "mt-lang", i18n.T("Spoken language"), i18n.T("The language the speech model listens for. Choose one when the whole meeting is in it."), func() {
+	settingRow(c, "mt-lang", i18n.T("Spoken language"), i18n.T("The language the speech model listens for. Choose one when the whole meeting is in it. For Speaker 1–4 labels, install MOSS-Transcribe-Diarize and choose Chinese or English here."), func() {
 		if ui.Select(c.Key("mt-lang-sel"), &spokenLanguage, settingsLanguageLabels(state.SpokenLanguageOptions)).Label(i18n.T("Spoken language in meetings")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
 			actions.setMeetingLanguage(settingsLanguageCode(spokenLanguage, state.SpokenLanguageOptions))
 		}

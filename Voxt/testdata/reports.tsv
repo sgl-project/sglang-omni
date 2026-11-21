@@ -39,3 +39,4 @@ report	fix	symptom	level	check
 #4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
 #4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
+#4394	#4420	Meeting settings do not say that speaker labels need MOSS-Transcribe-Diarize and an explicit Chinese or English spoken language	L	TestMeetingSpeechSettings
