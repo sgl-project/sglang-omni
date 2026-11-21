@@ -212,6 +212,10 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
 
+See [duplex/lifecycle_stress/README.md](duplex/lifecycle_stress/README.md) for
+the realtime session lifecycle stress benchmark: session cleanup and capacity
+recovery under bulk open, close, drop, cancel, idle, reconnect and interrupt.
+
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1
 generates + persists WAVs while the TTS server runs, phase 2 transcribes through
