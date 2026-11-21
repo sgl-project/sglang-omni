@@ -77,103 +77,15 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
+The [TTS client examples](../basic_usage/tts.md#python) cover the Python and OpenAI SDK clients for the same request.
+
 ### Voice Cloning
 
-Provide a reference clip when you want voice cloning. The `references` field accepts `audio_path`
-(a local path, HTTP URL, or base64 data URI) and `text` (the transcript of that clip). Supplying
-the transcript materially improves cloning quality.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-    "voice": "default",
-    "input": "SGLang-Omni is a great project!",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }]
-  }' \
-  --output output.wav
-```
-
-`ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
-`references[0].text`.
-
-**Python**
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-        "voice": "default",
-        "input": "Get the trust fund to the bank early.",
-        "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-        "ref_text": "We asked over twenty different people, and they all said it was his.",
-    },
-)
-resp.raise_for_status()
-with open("output.wav", "wb") as f:
-    f.write(resp.content)
-```
-
-### Reference Audio Sources
-
-`audio_path` / `ref_audio` may be a local filesystem path readable by the server, an HTTP(S) URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, decoded with `soundfile`):
-
-```python
-import base64
-import requests
-
-reference_url = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
-reference_resp = requests.get(reference_url)
-reference_resp.raise_for_status()
-ref_audio = (
-    "data:audio/wav;base64,"
-    + base64.b64encode(reference_resp.content).decode("ascii")
-)
-
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-        "voice": "default",
-        "input": "SGLang-Omni is a great project!",
-        "ref_audio": ref_audio,
-        "ref_text": "Transcript of the reference clip.",
-    },
-)
-resp.raise_for_status()
-with open("output_data_uri.wav", "wb") as f:
-    f.write(resp.content)
-```
-
-Reference encodes are cached (LRU) and coalesced into batched codec calls, so resending the same reference clip skips re-encoding.
+MOSS-TTS-Local clones from a reference clip, and supplying the clip's transcript in `references[0].text` (or `ref_text`) materially improves speaker similarity. See [Voice cloning in TTS Model Usage](../basic_usage/tts.md#voice-cloning) for the request fields, the reference sources the server accepts, and a client example. Reference encodes are cached (LRU) and coalesced into batched codec calls, so resending the same clip skips re-encoding.
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw 48 kHz
-mono PCM chunks in real time. Pipe the stream through `ffmpeg` when you want a
-playable WAV file:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  | ffmpeg -f s16le -ar 48000 -ac 1 -i pipe:0 output_stream.wav
-```
+MOSS-TTS-Local streams 48 kHz PCM. Add `"stream": true` with `"response_format": "pcm"` to a speech request; the shared raw PCM and SSE clients are in [TTS Model Usage](../basic_usage/tts.md#streaming). To write a playable WAV, pipe the response body through `ffmpeg -f s16le -ar 48000 -ac 1 -i pipe:0 output.wav`.
 
 ### Duration Control
 
