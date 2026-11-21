@@ -96,25 +96,7 @@ with open("output.wav", "wb") as f:
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
-chunks in real time:
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mistralai/Voxtral-4B-TTS-2603",
-    "voice": "casual_male",
-    "input": "Get the trust fund to the bank early.",
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
-
-Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
-the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
-for a full Python raw PCM consumer.
+Use the shared [streaming examples](../basic_usage/tts.md#streaming) with `model="mistralai/Voxtral-4B-TTS-2603"`, a preset `voice` such as `casual_male`, `stream=true`, and `response_format="pcm"`. Omit `language` and `references`.
 
 ## Request Parameters
 
