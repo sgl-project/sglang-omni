@@ -14,6 +14,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.arkasr"
 
@@ -64,7 +65,6 @@ class ArkasrPipelineConfig(PipelineConfig):
                 encoder_max_batch_size=8,
                 enable_encoder_cuda_graph=True,
                 prefill_coalesce_requests=16,
-                prefill_coalesce_wait_ms=32,
                 prefill_coalesce_when_idle=True,
                 prefill_coalesce_requires_pending_builds=True,
                 enable_pre_lm_encoder=True,
@@ -75,14 +75,21 @@ class ArkasrPipelineConfig(PipelineConfig):
                 pre_lm_max_batch_size=8,
                 pre_lm_max_batch_wait_ms=0,
                 pre_lm_max_pending=32,
-                request_build_max_workers=2,
                 request_build_max_pending=16,
             ),
-            engine=EngineArgs(max_running_requests=32),
+            # note (wilsonzheng0327): at 32 a full cap admits queued requests one or two per prefill, and throughput fell 30% from 32 to 64 concurrent requests on H200.
+            engine=EngineArgs(max_running_requests=64),
             gpu=0,
             terminal=True,
         )
     ]
+
+    def resolved_env_defaults(self) -> dict[str, str]:
+        # Set before worker startup: torch_npu caches its Host queue settings.
+        if current_platform.is_npu():
+            return {"PER_STREAM_QUEUE": "1", **self.env_defaults}
+        else:
+            return dict(self.env_defaults)
 
 
 EntryClass = ArkasrPipelineConfig

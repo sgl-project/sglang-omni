@@ -233,7 +233,9 @@ raw summary.
 `--fingerprint` records the client environment and the server `/v1/models`
 identity.
 
-For `benchmark_tts_seedtts.py`, request latency and RTF end when the response body has been received. Audio payloads are retained during generation; WAV encoding and disk writes happen after the timed cohort and before speed results or generated-audio metadata are published. `--audio-artifact-max-bytes` bounds retained payload bytes (default: 1 GiB), including the last warmup response until its sample is replaced. It does not bound in-flight HTTP buffers or total process memory. Exceeding the limit or failing to save a WAV aborts the run; increase the limit or reduce the cohort size to fit available memory. Speed results record the configured limit and `audio_artifact_peak_bytes`.
+For `benchmark_tts_seedtts.py`, including mixed streaming/non-streaming loads, request latency and RTF end when the response body has been received. Audio payloads are retained during generation; WAV encoding and disk writes happen after the timed cohort and before speed results or generated-audio metadata are published. `--audio-artifact-max-bytes` bounds retained payload bytes (default: 1 GiB), including retained warmup responses until their sample IDs are replaced or the cohort is flushed. It does not bound in-flight HTTP buffers or total process memory. Exceeding the limit or failing to save a WAV aborts the run; increase the limit or reduce the cohort size to fit available memory. Speed results record the configured limit and `audio_artifact_peak_bytes`.
+
+`--mixture 48+16,48+0,0+16 --generate-only` runs non streaming and streaming closed loop clients at the same time, one load after another on one server, and measures each load over a fixed window (`--mixture-duration-s`, default 120, after `--mixture-settle-s`, default 10). Each load writes `ns<NS>_s<S>[_r<k>]/speed_results.json` with per class `summary_by_class` and a `mixture` block, and `mixture_sweep.json` aggregates the loads. One load without `--generate-only` writes to `--output-dir` and then scores WER on every request in `generated.json`. See [the TTS benchmark runbook](../docs/developer_reference/tts_bench.md#mixed-streaming-and-non-streaming-load) for the fields and caveats.
 
 Chat-completion speed runs forward `--seed` on the request when it is set
 (MMSU, MMAU, and MMAR also use it to shuffle the dataset) and accept
@@ -658,6 +660,57 @@ The [runbook](../docs/developer_reference/full_duplex_guide.md) runs all of them
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 
+## Duplex-MPE (Multi-Party Full-Duplex Evaluation)
+
+[Duplex-MPE](https://arxiv.org/abs/2609.31948) ([Project Page](https://step-out.github.io/Duplex-MPE-Page/) | [GitHub](https://github.com/step-out/Duplex-MPE) | [Hugging Face](https://huggingface.co/datasets/ChengqianMa/Duplex-MPE)) evaluates selective participation of a full-duplex speech assistant (`Aria`) inside continuous 3–4 human multi-party conversations over `/v1/realtime`. Unlike dyadic turn-taking suites or static-prefix chat benchmarks, Duplex-MPE streams multi-speaker conversations in closed loop: after the single direct user request (`T`) in each scenario, the client feeds silence until causal Silero VAD detects fresh speech onset within `5.0 s` and `2.0 s` of confirmed endpoint silence (capped at `60.0 s`) before advancing to the next human turn.
+
+The full dataset pins Hugging Face revision `6d5f59fab1237c14ee8229ea36f111b7423b0fe6` (`2,000` paired `explicit` and `implicit` scenarios = `4,000` streams, `31,025` mono WAV clips). A deterministic `20`-pair (`40`-stream) smoke subset is available via `duplex-mpe-mini`:
+
+```bash
+# 20-pair (40-scenario) smoke subset
+python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini --local-dir benchmarks/cache/duplex_mpe_mini
+
+# Full 2,000-pair (4,000-scenario) benchmark
+python -m benchmarks.dataset.prepare --dataset duplex-mpe --local-dir benchmarks/cache/duplex_mpe
+```
+
+`benchmark_duplex_mpe.py` inspects `/v1/realtime/capabilities` to negotiate native full-duplex (`MiniCPM-o 4.5` at 16 kHz in / 24 kHz out, `PersonaPlex` at 24 kHz in / 24 kHz out, `Nemotron VoiceChat` at 16 kHz in / 22.05 kHz out) as well as `turn_based` (`Qwen3-Omni`, `Streaming Cascade`) and `legacy` sessions automatically. Following Section 3.4 of the Duplex-MPE paper, scored full-duplex evaluation applies only to native full-duplex endpoints (`evaluation_mode="scored_full_duplex"`); turn-based and legacy runs execute as separate unscored probes (`evaluation_mode="unscored_turn_based_probe"`), reporting `interaction` and `turn_detection` while omitting `TR` and `AY`. Each scenario opens with the spoken duty preamble (`audio/aria_duty_preamble.wav`), so models that reject text `session.instructions` remain directly comparable.
+
+```bash
+# 1. Serve the /v1/realtime model under test (e.g., MiniCPM-o 4.5 on port 8000)
+python -m sglang_omni.cli serve \
+    --model-path openbmb/MiniCPM-o-4_5 --variant session \
+    --enable-realtime --port 8000
+
+# 2. Serve Qwen3-ASR-1.7B on port 8001 for window transcription
+python -m sglang_omni.cli serve \
+    --model-path Qwen/Qwen3-ASR-1.7B --port 8001
+
+# 3. Configure an OpenAI-compatible semantic judge (e.g., SGLang Qwen3.8-27B on port 30000)
+#    See benchmarks/configs/duplex_mpe_judge.example.json (declares model, optional model_revision, enable_thinking, and per-task decoding; stores api_key_env name, never raw keys)
+
+# 4. Run end-to-end on the 40-scenario smoke set (or omit --mini for all 4,000 scenarios)
+python -m benchmarks.eval.benchmark_duplex_mpe \
+    --dataset-root benchmarks/cache/duplex_mpe_mini \
+    --output-dir benchmarks/results/duplex_mpe_minicpmo \
+    --mini \
+    --model openbmb/MiniCPM-o-4_5 \
+    --base-url http://127.0.0.1:8000 \
+    --asr-base-url http://127.0.0.1:8001 \
+    --judge-config benchmarks/configs/duplex_mpe_judge.example.json
+```
+
+Phases can also run independently via `--phase {generate,asr,judge,score}` against the same `--output-dir` so model, ASR, and judge servers do not need to hold GPU memory simultaneously (`generate` writes `report.json`, `asr` writes `transcribed.json`, `judge` writes `labels.json`, and `--phase all` or `--phase score` emits `RESULTS.md` and `duplex_mpe_results.json` with selected/completed/missing coverage counts and a partial-run banner whenever coverage is incomplete, exiting non-zero whenever any scenario or semantic task fails or remains incomplete). Scoring covers the four capabilities — `TR` (`fresh_onset_response_rate`), `AA` (`conditional_answer_accuracy` and `unconditional_answer_accuracy`), `SP` (`silence_preservation` across `N1`–`N3` bystander turns), and `AY` (`answering_window_yield` when another human resolves `N4_Q` via `N4_R`) — alongside coverage diagnostics `RP` (`response_presence`) and `WR` (`window_response`). The public dataset is released under CC BY 4.0; cite:
+
+```bibtex
+@article{ma2026duplexmpe,
+  title   = {Duplex-MPE: Benchmarking Multi-Party Interaction in Full-Duplex Dialogue},
+  author  = {Ma, Chengqian and Feng, Wenhao and Jin, Weixuan and Dai, Gaole and Xie, Tianyu and Ma, Yuexiao and Kang, Zhaolu and Zhao, Xiangyu and Zheng, Xiawu and Chao, Fei},
+  journal = {arXiv preprint arXiv:2609.31948},
+  year    = {2026}
+}
+```
+
 ## SocialOmni
 
 SocialOmni has two levels. Level 1 contains 2,000 four-choice speaker
@@ -886,6 +939,8 @@ python -m benchmarks.dataset.prepare --dataset videomme-ci-50  # Video-MME CI su
 python -m benchmarks.dataset.prepare --dataset videomme      # full Video-MME
 python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI subset
 python -m benchmarks.dataset.prepare --dataset socialomni --local-dir /path/to/socialomni
+python -m benchmarks.dataset.prepare --dataset duplex-mpe       # full Duplex-MPE (2,000 pairs / 4,000 streams)
+python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini  # 20-pair (40-stream) Duplex-MPE smoke subset
 ```
 
 Most datasets are pre-warmed into the default Hugging Face cache via

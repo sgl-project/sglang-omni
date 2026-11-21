@@ -27,6 +27,7 @@ from sglang_omni.models.moss_transcribe_diarize.whisper_encoder import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.port_claim import claim_tcp_port
 
 pytestmark = pytest.mark.accelerator
 
@@ -148,6 +149,8 @@ def encoder_bundle():
         pass
 
     from sglang.srt.distributed.parallel_state import (
+        destroy_distributed_environment,
+        destroy_model_parallel,
         get_default_distributed_backend,
         init_distributed_environment,
         initialize_model_parallel,
@@ -158,27 +161,29 @@ def encoder_bundle():
     from transformers import AutoConfig
 
     DEVICE_MODULE.set_device(DEVICE)
-    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-    os.environ.setdefault("MASTER_PORT", "29551")
 
     audio_config = AutoConfig.from_pretrained(
         snaps[0], trust_remote_code=True
     ).audio_config
     published = get_context().override_server_args()
     published.install()
+    # note (wilsonzheng0327): this group lives in the pytest process, so it claims its own port instead of exporting MASTER_PORT, and is destroyed at teardown so later tests and their subprocesses never meet a port it still holds.
+    owns_world = not torch.distributed.is_initialized()
+    owns_model_parallel = False
     try:
         with get_parallel().override(tp_rank=0, attn_tp_rank=0):
-            if not torch.distributed.is_initialized():
+            if owns_world:
                 init_distributed_environment(
                     world_size=1,
                     rank=0,
                     local_rank=0,
-                    distributed_init_method=f"tcp://127.0.0.1:{os.environ['MASTER_PORT']}",
+                    distributed_init_method=f"tcp://127.0.0.1:{claim_tcp_port()}",
                     backend=get_default_distributed_backend(DEVICE.type),
                 )
             else:
                 pass
-            if not model_parallel_is_initialized():
+            owns_model_parallel = not model_parallel_is_initialized()
+            if owns_model_parallel:
                 initialize_model_parallel()
             else:
                 pass
@@ -195,6 +200,14 @@ def encoder_bundle():
             runner.capture(CHUNK_BUCKETS)
             yield encoder, num_mel_bins, runner
     finally:
+        if owns_model_parallel:
+            destroy_model_parallel()
+        else:
+            pass
+        if owns_world:
+            destroy_distributed_environment()
+        else:
+            pass
         published.restore()
 
 

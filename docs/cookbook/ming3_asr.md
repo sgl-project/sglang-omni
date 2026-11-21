@@ -15,6 +15,18 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny
 
 Send one audio file to `POST /v1/audio/transcriptions`. The examples below use `tests/data/query_to_cars.wav` and return `how many cars are there in the picture`.
 
+## DSpark decoding
+
+To enable [DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark), set `speculative_algorithm` to `DSPARK` and use `temperature=0`. The registry pins the draft revision automatically:
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.engine.speculative_algorithm DSPARK \
+  --thinker.engine.speculative_draft_model_path wirybeaver/Ming-3.0-asr-tiny-dspark \
+  --dspark-use-greedy-draft true \
+  --ragged-verify-mode static
+```
+
 ## Transcription
 
 The prompt is the checkpoint's transcription instruction followed by the audio. The chat template is not used. The model answers with a language label, a tab, and the transcript, and this endpoint returns only the transcript. Decoding is greedy unless `temperature` is set. Generation stops at the end-of-text token or after 256 new tokens.
@@ -134,3 +146,15 @@ data: [DONE]
 ```
 
 The first stable text is emitted immediately; later updates use a 50 ms interval (`--thinker.factory.stream_emit_interval_seconds`). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event's `text`. When `max_new_tokens` is reached, `transcript.text.done` includes `"finish_reason":"length"` and the partial transcript.
+
+## MTP decoding
+
+Enable MTP with the [fine-tuned prediction weights](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-mtp):
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.engine.speculative_algorithm NEXTN \
+  --thinker.engine.speculative_draft_model_path wirybeaver/Ming-3.0-asr-tiny-mtp
+```
+
+Omit `--thinker.engine.speculative_draft_model_path` to use the official MTP bundled with the target checkpoint. Ming ASR MTP requires `speculative_eagle_topk=1` and `repetition_penalty=1.0`. You can omit both settings: NEXTN sets the former at startup, and transcription requests use the latter by default.

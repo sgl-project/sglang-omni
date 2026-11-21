@@ -8,13 +8,16 @@ import time
 import github
 from github import Auth, Github
 from resolve_ci_labels import (
+    ASR_STAGE_LABEL,
     CI_STAGES,
     RUN_LINT_ONLY_LABEL,
+    TTS_STAGE_LABEL,
     resolve_ci_plan,
     select_workflows,
 )
 
 PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
+SHORT_TARGET_BY_SHARED_STAGE_LABEL = {ASR_STAGE_LABEL: "asr", TTS_STAGE_LABEL: "tts"}
 
 
 def get_env_var(name):
@@ -77,15 +80,22 @@ def handle_tag_run_ci(
         "lint": frozenset({RUN_LINT_ONLY_LABEL}),
     }
     for stage in CI_STAGES:
-        labels_by_target[stage.name.replace("_", "-")] = frozenset({stage.label})
+        if stage.label in SHORT_TARGET_BY_SHARED_STAGE_LABEL:
+            stage_target = SHORT_TARGET_BY_SHARED_STAGE_LABEL[stage.label]
+        else:
+            stage_target = stage.name.replace("_", "-")
+        labels_by_target[stage_target] = frozenset({stage.label})
         for label, preset in stage.preset_by_model_label.items():
-            if stage.name == "asr":
+            if stage.label == ASR_STAGE_LABEL:
                 target = f"{preset}-asr"
             elif stage.name == "mps":
                 target = f"mps-{preset}"
             else:
                 target = preset
-            labels_by_target[target] = frozenset({stage.label, label})
+            if stage.is_selected_by_model_label:
+                labels_by_target[target] = frozenset({label})
+            else:
+                labels_by_target[target] = frozenset({stage.label, label})
     unknown_targets = requested_targets - labels_by_target.keys()
     if unknown_targets:
         pull_request.create_issue_comment(
@@ -108,7 +118,7 @@ def handle_tag_run_ci(
             pass
     final_labels = (current_labels - removed_labels) | requested_labels
     try:
-        plan = resolve_ci_plan(final_labels, seed=str(pull_request.number))
+        resolve_ci_plan(final_labels, seed=str(pull_request.number))
     except ValueError as error:
         pull_request.create_issue_comment(str(error))
         comment.create_reaction("confused")
@@ -117,8 +127,6 @@ def handle_tag_run_ci(
     for label in sorted(removed_labels):
         pull_request.remove_from_labels(label)
     pull_request.add_to_labels(*sorted(requested_labels))
-    for label in plan.ignored_model_labels:
-        print(f"Ignoring {label}: its stage is not selected.")
 
     if react_on_success:
         comment.create_reaction("+1")

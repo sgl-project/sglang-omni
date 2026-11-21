@@ -39,7 +39,7 @@ MTP uses additional GPU memory. Speedup depends on the workload and output lengt
 Usage notes:
 
 - To disable MTP in a config that enables it, add `--thinker.engine.disable_speculative_decoding true`.
-- MTP uses synchronous decoding (`--thinker.factory.enable_async_decode false`, the default).
+- MTP decodes synchronously by default. Add `--thinker.factory.enable_async_decode true` to overlap each verify round with the host work of the previous one. `--thinker.factory.async_decode_min_batch_size N` keeps batches of fewer than N requests synchronous. On 4×H20 at TP4, overlap raised MTP transcription throughput by 5–6% at 16 and 32 running requests and made no measurable difference at 8 or fewer, so leave it off at low load.
 - Keep `speculative_eagle_topk=1` and `repetition_penalty=1`. Prefix caching and chunked prefill are unavailable for this model.
 
 For MTP acceptance statistics, set `return_spec_tokens_details=true` on chat or transcription requests and read `sglext.spec_tokens_details` in the JSON response.
@@ -68,19 +68,19 @@ Speed against the same server without a draft, on two H200s with SGLang 0.5.23, 
 
 The draft accepts about 6.8 tokens per step on transcripts but only 1.3-2.5 on chat answers, so it slows chat down; MTP accepts 2.4-2.8 on every workload. Each server takes one algorithm, so pick the one that matches most of its traffic.
 
-More running requests on two GPUs, transcribing held-out clips with the load equal to `max_running_requests`:
+More running requests on two GPUs, transcribing SeedTTS English and Chinese (3,106 clips) with the load equal to `max_running_requests`:
 
 | Running requests | No draft | MTP | DFlash |
 |---|---:|---:|---:|
-| 8 | 8.46 clips/s | 10.24 (1.21x) | 12.36 (1.46x) |
-| 16 | 10.59 clips/s | 13.36 (1.26x) | Does not start |
-| 32 | 13.46 clips/s | 16.63 (1.24x) | Does not start |
-| 64 | 16.40 clips/s | Does not start | Does not start |
+| 16 | 15.95 clips/s | 20.82 (1.31x) | 22.84 (1.43x) |
+| 32 | 21.92 clips/s | Does not start | 34.20 (1.56x) |
+| 64 | 29.46 clips/s | Does not start | 38.71 (1.31x) |
+
+MTP at 32 starts only when the thinker loads before the other stages on its GPUs.
 
 Usage notes:
 
-- Verifying on the Kimi delta attention layers keeps one state per proposed token per running request, about 4.9 GB per GPU for the draft at 8 requests. Where a table says the server does not start, it stops at startup with `Loaded weights leave no GPU memory for the KV cache`, and raising `mem_fraction_static` does not help.
-- On four GPUs (`--thinker.tp_size 4`) the draft starts with 32 running requests and served 18.33 held-out clips/s, against 16.13 with MTP and 13.96 without a draft at the same cap.
+- Verifying on the Kimi delta attention layers records each proposed token's inputs in a ring buffer and folds the accepted prefix into the state (`--thinker.engine.enable_linear_replayssm_spec`, on by default with the draft).
 - SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft's is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.
 - The draft decodes synchronously. Keep `repetition_penalty=1`. The draft rejects a request `seed` when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.
 
@@ -149,7 +149,7 @@ The chat response keeps the generated answer. Set `modalities` to `["text", "aud
 
 ## Apple Silicon: native MLX
 
-The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's MLX 0.32.3 toolchain, without Python, PyTorch or CUDA.
+The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's pinned MLX toolchain, without Python, PyTorch or CUDA.
 
 ```bash
 python sglang_omni_mlx/native/ci/provision_models.py "$MING3_AUDIO_DATA" \

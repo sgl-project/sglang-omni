@@ -67,7 +67,6 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 prefill_coalesce_wait_ms=12,
                 prefill_coalesce_when_idle=True,
                 prefill_coalesce_requires_pending_builds=True,
-                prefill_coalesce_after_builds_during_decode=True,
             ),
             engine=EngineArgs(
                 # Note (Jiaxin Deng): 16 left half of a C32 load queued behind
