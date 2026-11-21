@@ -65,6 +65,15 @@ class StageByteBudgets(TypedDict):
     enforce_total_reserve: bool
 
 
+def group_gpu_ids(group: StageGroup) -> set[int]:
+    return {
+        gpu_id
+        for process_spec in group.process_specs
+        for stage_spec in process_spec.stage_specs
+        for gpu_id in stage_spec.owned_gpu_ids
+    }
+
+
 def engine_stage_capacity(
     config: PipelineConfig,
     stage: StageConfig,
@@ -972,22 +981,80 @@ class MultiProcessPipelineRunner:
                 task.cancel()
             await asyncio.gather(*waits, return_exceptions=True)
 
-    def spawn_waves(self) -> list[list[StageGroup]]:
-        """Partition groups so every weight-share follower starts last.
+    def sizes_kv_from_free_memory(
+        self,
+        group: StageGroup,
+        stages_by_name: Mapping[str, StageConfig],
+    ) -> bool:
+        config_cls = type(self.config)
+        for process_spec in group.process_specs:
+            for stage_spec in process_spec.stage_specs:
+                if (
+                    not stage_spec.owned_gpu_ids
+                    or stage_spec.kv_cache_bytes is not None
+                ):
+                    continue
+                else:
+                    pass
+                logical_name, _ = parse_replica_instance_name(stage_spec.stage_name)
+                stage_config = stages_by_name.get(logical_name)
+                if (
+                    stage_config is not None
+                    and config_cls.stage_config_cls(logical_name).engine_stage
+                    and stage_config.gpu_memory_fraction is None
+                ):
+                    return True
+                else:
+                    pass
+        return False
 
-        # Note (Jiaxin Deng): a follower waits for the leader's export inside
-        # the per-GPU startup lock, so a follower that wins that lock first
-        # would block the leader that has to release it.
-        """
-        if self.weight_share is None:
-            return [list(self.groups)]
+    def spawn_waves(self) -> list[list[StageGroup]]:
+        """Order startup waves so free-memory KV engines precede colocated stages and weight-share followers run last."""
+        followers = [
+            group for group in self.groups if self.is_weight_share_follower(group)
+        ]
+        non_followers = [
+            group for group in self.groups if not self.is_weight_share_follower(group)
+        ]
+        stages_by_name = {stage.name: stage for stage in self.config.stages}
+        free_memory_engines = [
+            group
+            for group in non_followers
+            if self.sizes_kv_from_free_memory(group, stages_by_name)
+        ]
+        if not free_memory_engines:
+            waves = [non_followers] if non_followers else []
+        else:
+            engine_gpus = set().union(
+                *(group_gpu_ids(group) for group in free_memory_engines)
+            )
+            other_groups = [
+                group
+                for group in non_followers
+                if not self.sizes_kv_from_free_memory(group, stages_by_name)
+            ]
+            waves = [
+                free_memory_engines
+                + [
+                    group
+                    for group in other_groups
+                    if group_gpu_ids(group).isdisjoint(engine_gpus)
+                ]
+            ]
+            colocated_others = [
+                group
+                for group in other_groups
+                if not group_gpu_ids(group).isdisjoint(engine_gpus)
+            ]
+            if colocated_others:
+                waves.append(colocated_others)
+            else:
+                pass
+        if followers:
+            waves.append(followers)
         else:
             pass
-        followers = [g for g in self.groups if self.is_weight_share_follower(g)]
-        leaders_and_rest = [
-            g for g in self.groups if not self.is_weight_share_follower(g)
-        ]
-        return [leaders_and_rest, followers]
+        return waves
 
     def shutdown_waves(self) -> list[list[StageGroup]]:
         """Retire followers before their leader.
@@ -1000,7 +1067,13 @@ class MultiProcessPipelineRunner:
             return [list(self.groups)]
         else:
             pass
-        return list(reversed(self.spawn_waves()))
+        followers = [
+            group for group in self.groups if self.is_weight_share_follower(group)
+        ]
+        leaders_and_rest = [
+            group for group in self.groups if not self.is_weight_share_follower(group)
+        ]
+        return [followers, leaders_and_rest]
 
     async def monitor_children(self) -> None:
         while self.started:
