@@ -36,7 +36,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 	t := c.Theme()
 	badge := func(permission permissionRowViewState) {
 		if !permission.Known {
-			statusMark(c, icons.InfoCircle, tok(t).Text2, permission.Status).Tooltip(i18n.T("macOS does not let apps read this permission. Check it in System Settings."))
+			statusMark(c, icons.InfoCircle, tok(t).Text2, permission.Status).Tooltip(i18n.Platform("macOS does not let apps read this permission. Check it in System Settings.", "No permission is needed on Windows."))
 		} else if permission.Allowed {
 			statusMark(c, icons.CheckCircle, t.Success, permission.Status)
 		} else {
@@ -45,7 +45,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 	}
 	if state.AskRequired {
 		ui.Row(c).Children(func() {
-			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
+			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.Platform("macOS asks for each in turn: the microphone, then Accessibility.", "Windows asks for the microphone the first time you record.")).Clicked() {
 				actions.askRequired()
 			}
 		})
@@ -79,7 +79,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 		}
 	})
 	sectionTitle(c, i18n.T("Optional"))
-	row(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+	row(c, "perm-system-audio", i18n.T("System audio recording"), i18n.Platform("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.", "Lets Voxt record sound from other apps during a meeting. No permission is needed on Windows."), func() {
 		// macOS has no public read for this permission.
 		badge(state.SystemAudio)
 		if state.SystemAudio.Ask {

@@ -7,7 +7,6 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // keyRow is a shortcut's widget-local editing state.
@@ -30,8 +29,7 @@ func featureShortcuts(c *ui.Context, feature string, state *featureShortcutsView
 		actions.addFeatureShortcut(feature)
 	}
 	if !state.HotkeysInstalled {
-		notice(c, prefix+"-no-tap", noticeWarn,
-			i18n.T("Without Accessibility, only shortcuts like %s work. fn, single modifiers, double taps and long presses need it.", uitext.HotkeyText("Control+Option+Space")),
+		notice(c, prefix+"-no-tap", noticeWarn, state.NoTapNotice,
 			"", func() {
 				if ui.Button(c.Key(prefix+"-open-perms"), i18n.T("Open Permissions")).Clicked() {
 					actions.openFeaturePermissions()

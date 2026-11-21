@@ -52,7 +52,7 @@ func obLanguageRow(c *ui.Context, state onboardingModelsViewState, actions onboa
 		if state.LanguageReady {
 			return
 		}
-		caption(c, i18n.T("Cleans up, translates and rewrites the text. Run one on this Mac with Ollama, LM Studio or oMLX, or use a service's API key."))
+		caption(c, i18n.Platform("Cleans up, translates and rewrites the text. Run one on this Mac with Ollama, LM Studio or oMLX, or use a service's API key.", "Cleans up, translates and rewrites the text. Run one on this PC with Ollama, LM Studio or oMLX, or use a service's API key."))
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("ob-llm-setup"), i18n.T("Set up a language model")).Clicked() {
 				actions.obLeave(remotePath)

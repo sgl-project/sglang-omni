@@ -70,8 +70,12 @@ func TestMain(m *testing.M) {
 func runIsolated(m *testing.M) int {
 	// A Unix socket's path holds at most 104 bytes on macOS, and the tests
 	// bind sockets in their temporary folders: keep those short however
-	// long TMPDIR is.
-	short, err := os.MkdirTemp("/tmp", "vx")
+	// long TMPDIR is (the system temp is short enough on Windows).
+	base := ""
+	if runtime.GOOS != "windows" {
+		base = "/tmp"
+	}
+	short, err := os.MkdirTemp(base, "vx")
 	if err != nil {
 		panic(err)
 	}

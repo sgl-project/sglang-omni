@@ -100,7 +100,7 @@ func deleteOutcome(id string, res []fammodels.Result, err error) string {
 		return i18n.T("%s was removed. Its files stay because %s uses them too.", name, uitext.Names(names))
 	}
 	if apps := r.Decision.UserNames(); len(apps) > 0 {
-		return i18n.T("%s was removed from Voxt. Its files stay on this Mac for %s.", name, uitext.Names(apps))
+		return i18n.Platform("%s was removed from Voxt. Its files stay on this Mac for %s.", "%s was removed from Voxt. Its files stay on this PC for %s.", name, uitext.Names(apps))
 	}
 	return ""
 }

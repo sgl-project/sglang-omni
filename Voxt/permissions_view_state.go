@@ -6,13 +6,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 )
 
-// System Settings panes.
-const (
-	privacyMicrophone    = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-	privacyAccessibility = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-	privacySpeech        = "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
-	privacyAudioCapture  = "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
-)
+// The privacy settings deep links (privacyMicrophone & friends) are
+// platform constants: the x-apple URLs on macOS, empty elsewhere
+// (permissions_privacy_darwin.go, permissions_privacy_other.go).
 
 type permissionRowViewState struct {
 	PermissionID string `json:"permission_id"`

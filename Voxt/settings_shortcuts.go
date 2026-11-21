@@ -28,8 +28,7 @@ func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions 
 	k := tok(t)
 	caption(c, i18n.T("Click a shortcut to change it on its feature's page."))
 	if !state.AccessibilityInstalled {
-		notice(c, "sc-no-tap", noticeWarn,
-			i18n.T("Without Accessibility, only shortcuts like %s work. fn, single modifiers, double taps and long presses need it.", uitext.HotkeyText("Control+Option+Space")),
+		notice(c, "sc-no-tap", noticeWarn, state.NoTapNotice,
 			"", func() {
 				if ui.Button(c.Key("sc-open-perms"), i18n.T("Open Permissions")).Clicked() {
 					actions.openShortcutPermissions()
@@ -131,34 +130,6 @@ func shortcutIcon(code string) icons.Icon {
 	default:
 		return icons.Microphone3
 	}
-// presetTitle is a shortcut preset's name ("": custom).
-func presetTitle(p string) string {
-	switch p {
-	case settings.PresetOption:
-		return i18n.T("%s (default)", uitext.HotkeyText("RightOption"))
-	case settings.PresetFn:
-		return i18n.T("fn (Auralink's keys)")
-	case settings.PresetCommand:
-		return i18n.T("%s combination", uitext.HotkeyText("RightCommand"))
-	case settings.PresetMouseMiddle:
-		return i18n.T("Middle mouse + %s", uitext.HotkeyText("Fn+Shift"))
-	}
-	return i18n.T("Custom")
-}
-
-// presetAbout is one line on who a preset suits (setup guide).
-func presetAbout(p string) string {
-	switch p {
-	case settings.PresetOption:
-		return i18n.T("%s: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.", uitext.HotkeyText("RightOption"))
-	case settings.PresetFn:
-		return i18n.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
-	case settings.PresetCommand:
-		return i18n.T("%s combination: %s only, away from the letter keys. Good if you keep Option for typing.", uitext.HotkeyText("RightCommand"), uitext.HotkeyText("RightCommand"))
-	case settings.PresetMouseMiddle:
-		return i18n.T("Middle mouse + %s: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.", uitext.HotkeyText("Fn+Shift"))
-	}
-	return ""
 }
 
 // shortcutPresetPicker is the preset dropdown and warnings (settings and

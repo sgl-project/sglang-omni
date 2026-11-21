@@ -1,8 +1,8 @@
-//go:build !darwin && !windows
+//go:build !darwin
 
 package main
 
-// System Settings panes on platforms without a deep-link scheme.
+// Privacy settings deep links exist only on macOS.
 const (
 	privacyMicrophone    = ""
 	privacyAccessibility = ""

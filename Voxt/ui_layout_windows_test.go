@@ -25,7 +25,7 @@ func TestDictionaryHeaderFitsWithWideSidebar(t *testing.T) {
 		}
 	}
 	click(t, tt, "Add term")
-	if !a.dv.editOpen {
+	if !a.dictUI.editOpen {
 		t.Error("Add term did not open the editor")
 	}
 }
