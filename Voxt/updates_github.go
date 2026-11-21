@@ -104,10 +104,10 @@ func parseVersion(s string) (version, bool) {
 	return v, true
 }
 
-// checksReleases reports whether a build of version v without an update
-// feed checks GitHub's releases: a release or a beta, not a development
-// build.
-func checksReleases(dev bool, v string) bool { return !dev && releaseVersion.MatchString(v) }
+// checksReleases enables the GitHub fallback for macOS releases and betas.
+func checksReleases(platform string, dev bool, version string) bool {
+	return platform == "darwin" && !dev && releaseVersion.MatchString(version)
+}
 
 // release is a version found: its notes (Markdown) and where to get it.
 type release struct {

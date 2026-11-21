@@ -1,0 +1,134 @@
+name: Voxt Windows Beta
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Voxt/**"
+      - "!Voxt/**/*.md"
+      - ".github/workflows/voxt-windows-beta.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - name: Set the beta version
+        id: version
+        shell: pwsh
+        run: |
+          $config = Get-Content mygo.json -Raw | ConvertFrom-Json
+          $baseVersion = [version]$config.version
+          $commitTime = [DateTimeOffset]::Parse((git show -s --format=%cI HEAD))
+          $date = $commitTime.UtcDateTime.ToString('yyyyMMdd')
+          $config.version = "$($baseVersion.Major).$($baseVersion.Minor).$($baseVersion.Build + 1)-beta.$date.$env:GITHUB_RUN_NUMBER"
+          $config | ConvertTo-Json -Depth 20 | Set-Content mygo.json -Encoding utf8NoBOM
+          "version=$($config.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Build the NSIS installer
+        shell: bash
+        run: bash scripts/build-windows.sh
+
+      - name: Check silent installation and uninstallation
+        shell: pwsh
+        env:
+          VOXT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $source = Resolve-Path "build/windows-amd64/Voxt Setup $env:VOXT_VERSION amd64.exe"
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'voxt-install-smoke'
+          $install = Start-Process -FilePath $source.Path -ArgumentList "/S /D=$installDirectory" -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "NSIS install failed with exit code $($install.ExitCode)."
+          }
+          foreach ($file in 'Voxt.exe', 'voxtnew-helper.exe', 'Uninstall.exe') {
+            Get-Item -LiteralPath (Join-Path $installDirectory $file) -ErrorAction Stop
+          }
+          $uninstallerPath = Join-Path $installDirectory 'Uninstall.exe'
+          $uninstall = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $installDirectory 'Voxt.exe'))) {
+            throw "NSIS uninstall failed with exit code $($uninstall.ExitCode)."
+          }
+
+          New-Item -ItemType Directory -Path 'build/artifact' | Out-Null
+          $installerName = "Voxt-$($env:VOXT_VERSION)-windows-amd64-setup.exe"
+          $installerPath = Join-Path 'build/artifact' $installerName
+          Copy-Item -LiteralPath $source.Path -Destination $installerPath
+          $sha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sha256  $installerName`n" | Set-Content "$installerPath.sha256" -Encoding ascii -NoNewline
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Voxt-${{ steps.version.outputs.version }}-windows-amd64-unsigned
+          path: Voxt/build/artifact/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  publish:
+    if: >-
+      github.repository == 'sgl-project/sglang-omni' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    concurrency:
+      group: voxt-windows-beta-publish
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: Voxt-${{ needs.package.outputs.version }}-windows-amd64-unsigned
+          path: installer
+
+      - name: Publish the Windows beta
+        shell: bash
+        working-directory: installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VOXT_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          installer="Voxt-$VOXT_VERSION-windows-amd64-setup.exe"
+          checksum="$installer.sha256"
+          sha256sum --check -- "$checksum"
+          tag="voxt-win-v$VOXT_VERSION"
+          if release=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish); then
+            if [[ "$(jq -r .targetCommitish <<< "$release")" != "$GITHUB_SHA" ]]; then
+              echo "::error::Release $tag targets a different commit."
+              exit 1
+            fi
+            draft="$(jq -r .isDraft <<< "$release")"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --draft --prerelease --latest=false --title "Voxt $VOXT_VERSION for Windows" \
+              --notes "Unsigned Windows x64 beta built from $GITHUB_SHA. Install with $installer."
+            draft=true
+          fi
+          if [[ "$draft" == true ]]; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber "$installer" "$checksum"
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          fi
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -r '[.[][] | select(.prerelease and (.draft | not) and (.tag_name | test("^voxt-win-v[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[0-9]{8}\\.[0-9]+$")))] | sort_by(.created_at, .id) | reverse | .[5:][] | .tag_name' \
+            | while IFS= read -r old_tag; do
+                gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              done
