@@ -43,6 +43,8 @@ class MiniCPMOThinkerSessionState:
     drain_units_left: int = 0
     force_listen_counter: int = 0
     generated_history: list[int] = field(default_factory=list)
+    # note (yaourt): The highest turn_eos probability of each of the open reply's latest units that began inside it, the running unit last.
+    turn_eos_peaks: list[float] = field(default_factory=list)
     reply_units: list[ReplyUnit] = field(default_factory=list)
     is_latest_reply_ended: bool = False
     units_since_last_spoken: int = 0
