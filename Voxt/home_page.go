@@ -29,7 +29,7 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 	if state.TryRecording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
-	columnPageHeader(c, i18n.T("Home"), func() {
+	centeredPageHeaderBy(c, pageMaxW, i18n.T("Home"), func() { homeMascot(c, state.Outfit) }, func() {
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open setup guide")).Clicked() {
 			actions.openHomeGuide()
 		}
