@@ -689,23 +689,27 @@
 <td><p><code class="docutils literal notranslate"><span class="pre">wav</span></code></p></td>
 <td><p>Explicit values override the default in every mode. HTTP streaming accepts <code class="docutils literal notranslate"><span class="pre">pcm</span></code> or <code class="docutils literal notranslate"><span class="pre">wav</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sample_rate</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Requested output rate in Hz. Omit to encode the model’s native 24 kHz audio at a rate supported by the selected format. See <a class="reference internal" href="../../basic_usage/tts.html#request-parameters"><span class="std std-ref">output sample rates</span></a> for encoder restrictions</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Stream raw WAV audio chunks by default; set <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code> for raw PCM</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream_format</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream_format</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">audio</span></code></p></td>
 <td><p>Raw audio bytes by default; explicit <code class="docutils literal notranslate"><span class="pre">sse</span></code> enables SSE events even when <code class="docutils literal notranslate"><span class="pre">stream</span></code> is omitted</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code></p></td>
 <td><p>ramp <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">-&gt;</span> <span class="pre">2</span> <span class="pre">-&gt;</span> <span class="pre">4</span></code> when omitted</p></td>
 <td><p>First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp’s first chunk only. Smaller values lower TTFA but underrun more easily; <code class="docutils literal notranslate"><span class="pre">0</span></code> uses the steady stride from the start</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream_codec_output</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream_codec_output</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>Forward codec frames to the vocoder as they are generated. Set <code class="docutils literal notranslate"><span class="pre">false</span></code> to restore whole-utterance decoding for CustomVoice/VoiceDesign</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">suppress_bootstrap_silence</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">suppress_bootstrap_silence</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>Withhold the silent bootstrap codec frame’s audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set <code class="docutils literal notranslate"><span class="pre">false</span></code> to keep the leading silence</p></td>
 </tr>

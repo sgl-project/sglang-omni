@@ -1211,122 +1211,127 @@ removes the persisted sample. The list response includes API-process
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;wav&quot;</span></code></p></td>
 <td><p>Output audio format: <code class="docutils literal notranslate"><span class="pre">wav</span></code>, <code class="docutils literal notranslate"><span class="pre">mp3</span></code>, <code class="docutils literal notranslate"><span class="pre">flac</span></code>, <code class="docutils literal notranslate"><span class="pre">pcm</span></code>, <code class="docutils literal notranslate"><span class="pre">aac</span></code>, or <code class="docutils literal notranslate"><span class="pre">opus</span></code>. Explicit values override the default in every mode. HTTP streaming accepts only <code class="docutils literal notranslate"><span class="pre">wav</span></code> or <code class="docutils literal notranslate"><span class="pre">pcm</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">speed</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sample_rate</span></code></p></td>
+<td><p>int</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Requested output rate in Hz for the Python server, from <code class="docutils literal notranslate"><span class="pre">7350</span></code> to <code class="docutils literal notranslate"><span class="pre">192000</span></code> subject to the format’s encoder limits. For example, pass <code class="docutils literal notranslate"><span class="pre">8000</span></code> for 8 kHz</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">speed</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
 <td><p>Playback speed multiplier from <code class="docutils literal notranslate"><span class="pre">0.25</span></code> to <code class="docutils literal notranslate"><span class="pre">4.0</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
 <td><p>bool</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Enable raw WAV streaming by default. Set <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code> for raw PCM, or <code class="docutils literal notranslate"><span class="pre">stream_format=&quot;sse&quot;</span></code> for SSE events</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream_format</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream_format</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&quot;audio&quot;</span></code></p></td>
 <td><p>Streaming transport: <code class="docutils literal notranslate"><span class="pre">audio</span></code> returns raw WAV or PCM bytes when streaming is enabled; <code class="docutils literal notranslate"><span class="pre">sse</span></code> enables SSE even when <code class="docutils literal notranslate"><span class="pre">stream</span></code> is omitted or false. SSE uses data-only <code class="docutils literal notranslate"><span class="pre">message</span></code> events by default. The server startup flag <code class="docutils literal notranslate"><span class="pre">--enable-speech-sse-named-events</span></code> selects the framing and error type shown in the <a class="reference internal" href="#sse-event-framing"><span class="std std-ref">SSE Event Framing table</span></a></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific first streaming chunk override. Qwen3-TTS, Higgs, MOSS-TTS Local, and Zonos2 document support; <code class="docutils literal notranslate"><span class="pre">0</span></code> selects their steady chunk size. Ming-Omni-TTS rejects this field</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream_codec_output</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream_codec_output</span></code></p></td>
 <td><p>bool</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set <code class="docutils literal notranslate"><span class="pre">false</span></code> to restore whole-utterance decoding for CustomVoice / VoiceDesign</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">suppress_bootstrap_silence</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">suppress_bootstrap_silence</span></code></p></td>
 <td><p>bool</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>Qwen3-TTS only. Withhold the silent bootstrap codec frame’s audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set <code class="docutils literal notranslate"><span class="pre">false</span></code> to keep the leading silence</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">references</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">references</span></code></p></td>
 <td><p>list</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Reference audio for voice cloning. Each item has <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> (local path / file URL / data URL / remote URL) and <code class="docutils literal notranslate"><span class="pre">text</span></code>. For Qwen3-TTS Base, the only item may instead carry <code class="docutils literal notranslate"><span class="pre">speaker_embedding</span></code>: the x-vector the same checkpoint’s speaker encoder computes from the clip, 1024 numbers for 0.6B and 2048 for 1.7B, each finite in the model’s dtype, which implies x-vector-only mode</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Reference audio path / URL / base64 string. Equivalent to <code class="docutils literal notranslate"><span class="pre">references[0].audio_path</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ref_text</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ref_text</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Transcript for <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code>. Equivalent to <code class="docutils literal notranslate"><span class="pre">references[0].text</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">language</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">language</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific language hint; supported values vary by model</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">task_type</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">task_type</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific task selector; Qwen3-TTS supports <code class="docutils literal notranslate"><span class="pre">Base</span></code>, <code class="docutils literal notranslate"><span class="pre">CustomVoice</span></code>, and <code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">instructions</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">instructions</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific style or voice instructions</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Maximum number of generated tokens</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">token_count</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">token_count</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific duration token target</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">duration_tokens</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">duration_tokens</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Alias-style duration token target for models that expose duration control</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">x_vector_only_mode</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">x_vector_only_mode</span></code></p></td>
 <td><p>bool</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Qwen3-TTS Base speaker-embedding mode</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Sampling temperature</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Top-p sampling</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Top-k sampling</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific sampling cutoff</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Repetition penalty</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stage_params</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stage_params</span></code></p></td>
 <td><p>object</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific stage overrides; see the model cookbook</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details</span></code></p></td>
 <td><p>bool</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>With a speculative draft, return this request’s acceptance statistics: <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-*</span></code> headers on buffered audio, <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> on <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> and on the raw audio outcome</p></td>
@@ -1334,6 +1339,8 @@ removes the persisted sample. The list response includes API-process
 </tbody>
 </table>
 </div>
+<p>The Python server also accepts <code class="docutils literal notranslate"><span class="pre">sample_rate</span></code> in batch defaults, batch items, and WebSocket session configuration. WAV and PCM accept any rate in the supported range. FLAC rates above <code class="docutils literal notranslate"><span class="pre">65535</span></code> Hz must be divisible by 10. AAC and MP3 accept rates supported by their encoders, and explicit Opus output uses <code class="docutils literal notranslate"><span class="pre">48000</span></code> Hz. The server rejects unsupported explicit rates before synthesis.</p>
+<p>Omitting <code class="docutils literal notranslate"><span class="pre">sample_rate</span></code> uses the model’s native rate where the encoder supports it. Compressed encoders may adapt that rate, such as Opus playback at 48 kHz. WAV headers, HTTP <code class="docutils literal notranslate"><span class="pre">X-Sample-Rate</span></code>, batch result <code class="docutils literal notranslate"><span class="pre">sample_rate</span></code>, and WebSocket <code class="docutils literal notranslate"><span class="pre">audio.start.sample_rate</span></code> report the delivered rate.</p>
 </section>
 <section id="error-handling">
 <h2>Error Handling<a class="headerlink" href="#error-handling" title="Link to this heading">#</a></h2>
