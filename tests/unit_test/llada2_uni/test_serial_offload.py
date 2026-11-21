@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from queue import Queue
-from threading import Lock
+from threading import Event, Lock
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
@@ -340,3 +341,51 @@ def test_offload_event_loop_schedules_until_stopped(
     assert not scheduler.running
     assert not scheduler.has_residency
     assert not scheduler.coordinator.lock.locked()
+
+
+def test_stop_during_residency_wait_does_not_dispatch(
+    monkeypatch: pytest.MonkeyPatch, offload_scheduler: SerialOffloadDllmScheduler
+) -> None:
+    """Stopping while another stage owns the GPU must not start queued work."""
+    scheduler = offload_scheduler
+    scheduler.inbox = Queue()
+    scheduler.abort_lock = Lock()
+    scheduler.aborted_request_ids = set()
+    scheduler.tp_size = 1
+    scheduler.orphaned_uncond_rids = set()
+    request = scheduler.waiting_queue[0]
+    request.finished.return_value = False
+    waiting_for_residency = Event()
+    acquire = scheduler.coordinator.acquire
+
+    def acquire_after_other_stage() -> None:
+        assert scheduler.coordinator.lock.locked()
+        waiting_for_residency.set()
+        acquire()
+
+    monkeypatch.setattr(scheduler.coordinator, "acquire", acquire_after_other_stage)
+    dispatch = Mock(side_effect=AssertionError("dispatched after stop"))
+    monkeypatch.setattr(DllmScheduler, "schedule_next_batch", dispatch)
+    forward = Mock(side_effect=AssertionError("forward after stop"))
+    scheduler.tp_worker.forward_batch_generation = forward
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler.coordinator.lock.acquire()
+        stopped = executor.submit(scheduler.start)
+        try:
+            assert waiting_for_residency.wait(timeout=5)
+            scheduler.stop()
+        finally:
+            scheduler.coordinator.lock.release()
+        stopped.result(timeout=5)
+
+    dispatch.assert_not_called()
+    forward.assert_not_called()
+    assert scheduler.waiting_queue == [request]
+    adapter = scheduler.tp_worker.model_runner.memory_saver_adapter
+    adapter.resume.assert_called_once_with("weights")
+    adapter.pause.assert_called_once_with("weights")
+    assert not scheduler.running
+    assert not scheduler.has_residency
+    assert not scheduler.coordinator.lock.locked()
+    assert scheduler.coordinator.failure is None
