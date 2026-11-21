@@ -94,15 +94,15 @@ Use an ARM64 Linux host with Docker and Ascend A2 / 910B devices.
 
 **1. Pull the image**
 
-Use `v<version>-cann9.0.0-910b` for a release, or
-`main-cann9.0.0-910b` for the latest published development build.
+Use `v<version>-cann9.1.0-910b` for a release, or
+`main-cann9.1.0-910b` for the latest published development build.
 
 ```bash
 # Release (replace v<version> with a published version):
-# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.0.0-910b
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.1.0-910b
 
 # Development (A2 / 910B):
-IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-910b
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.1.0-910b
 
 docker pull "$IMAGE"
 ```

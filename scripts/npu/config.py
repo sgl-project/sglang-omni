@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # Python 3.10 source installations
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def read_config(root: Path = ROOT) -> tuple[dict, list[dict]]:
+def read_config(root: Path = ROOT) -> tuple[dict[str, str], list[dict[str, str]]]:
     manifest = tomllib.loads((root / "pyproject_npu.toml").read_text())
     config = manifest["tool"]["sglang-omni"]["npu"]
     version = config["sglang-version"]
@@ -32,24 +32,49 @@ def read_config(root: Path = ROOT) -> tuple[dict, list[dict]]:
             raise ValueError(
                 f"base-image-{device} must pin SGLang {version}, {device} and a digest"
             )
-        matrix.append({"device": device, "cann": match[1]})
+        else:
+            matrix.append({"device": device, "cann": match[1]})
     if matrix[0]["cann"] != matrix[1]["cann"]:
         raise ValueError("A3 and 950 must use the same CANN release")
-    return config, matrix
+    else:
+        matrix.append({"device": "910b", "cann": matrix[0]["cann"]})
+        return config, matrix
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument(
-        "--get", choices=["sglang-version", "base-image-a3", "base-image-950"]
+        "--get",
+        choices=[
+            "sglang-version",
+            "sglang-dockerfile-sha256",
+            "cann-image-910b",
+            "base-image-a3",
+            "base-image-950",
+        ],
     )
     modes.add_argument("--matrix", action="store_true")
     args = parser.parse_args()
     config, matrix = read_config()
     if args.get:
-        print(config[args.get])
-    elif args.matrix:
+        config_value = config[args.get]
+        cann_version = matrix[0]["cann"]
+        if args.get == "sglang-dockerfile-sha256" and not re.fullmatch(
+            r"[0-9a-f]{64}", config_value
+        ):
+            raise ValueError("sglang-dockerfile-sha256 must be a SHA-256 digest")
+        elif args.get == "cann-image-910b" and not re.fullmatch(
+            rf"quay\.io/ascend/cann:{re.escape(cann_version)}-910b-ubuntu22\.04-py3\.12"
+            r"@sha256:[0-9a-f]{64}",
+            config_value,
+        ):
+            raise ValueError(
+                f"cann-image-910b must pin the CANN {cann_version} 910B image"
+            )
+        else:
+            print(config_value)
+    else:
         print(json.dumps({"include": matrix}))
 
 
