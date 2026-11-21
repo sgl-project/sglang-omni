@@ -1,0 +1,92 @@
+name: Advisory pull request review
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Pull request number to review
+        required: true
+        type: string
+      offline:
+        description: Run collection only without a model call
+        required: true
+        default: true
+        type: boolean
+      follow_up:
+        description: Authorize the second review of this pull request
+        required: true
+        default: false
+        type: boolean
+      review_scope:
+        description: Choose documentation or changed Python unit-test contracts
+        type: choice
+        default: docs
+        options:
+          - docs
+          - unit_tests
+      unit_test_context_paths:
+        description: Additional evidence paths for unit tests, one per line
+        type: string
+
+permissions: {}
+
+jobs:
+  review:
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.draft == false &&
+       github.event.pull_request.user.type != 'Bot' &&
+       vars.ADVISORY_REVIEW_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: advisory-review-pr-${{ github.event.pull_request.number || inputs.pull_request_number }}
+      cancel-in-progress: true
+    permissions:
+      checks: read
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install reviewer dependencies
+        run: python -m pip install 'pydantic==2.12.5'
+      - name: Review fixed pull request revisions
+        id: review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+          AUTOMATIC_REVIEW: ${{ github.event_name == 'pull_request_target' }}
+          OFFLINE_REVIEW: ${{ github.event_name == 'workflow_dispatch' && inputs.offline || 'false' }}
+          FOLLOW_UP: ${{ github.event_name == 'workflow_dispatch' && inputs.follow_up || 'false' }}
+          REVIEW_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.review_scope || '' }}
+          UNIT_TEST_CONTEXT_PATHS: ${{ github.event_name == 'workflow_dispatch' && inputs.unit_test_context_paths || '' }}
+          DOCS_REVIEW_MODEL: ${{ vars.DOCS_REVIEW_MODEL }}
+          UNIT_TEST_REVIEW_MODEL: ${{ vars.UNIT_TEST_REVIEW_MODEL }}
+          DOCS_REVIEW_BUDGET: ${{ vars.DOCS_REVIEW_BUDGET }}
+          DOCS_REVIEW_API_KEY: ${{ github.event_name == 'pull_request_target' && secrets.DOCS_REVIEW_API_KEY || (!inputs.offline && secrets.DOCS_REVIEW_API_KEY || '') }}
+        run: python -m scripts.docs_review.github_pilot
+      - name: Upload advisory report
+        if: always() && steps.review.conclusion == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: docs-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docs-review/artifact/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Report incomplete automatic review
+        if: >-
+          github.event_name == 'pull_request_target' &&
+          steps.review.outputs.execution != '' &&
+          (steps.review.outputs.execution != 'complete' || steps.review.outputs.stale == 'true')
+        run: exit 1
