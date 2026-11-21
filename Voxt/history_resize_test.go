@@ -93,6 +93,45 @@ func TestHistoryDetailResizeBounds(t *testing.T) {
 	}
 }
 
+// Resetting the look or every setting also forgets the resized detail.
+func TestResetRestoresHistoryDetailWidth(t *testing.T) {
+	for _, reset := range []struct {
+		name string
+		fn   func(*app)
+	}{
+		{"resetLook", (*app).resetLook},
+		{"resetSettings", (*app).resetSettings},
+	} {
+		t.Run(reset.name, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			seedHistory(t, a)
+			tt.SetSize(1100, 740)
+			a.updateSettings(func(s *settings.Settings) { s.Appearance.HistoryDetailWidth = settings.MaxHistoryDetailWidth })
+			a.navigate("/history")
+			a.histUI.sel = histInserted
+			frames(tt)
+			detailWidth := func() float32 {
+				r, ok := tt.Find("Entry details")
+				if !ok {
+					t.Fatal("missing details")
+				}
+				return r.W
+			}
+			if got := detailWidth(); got != settings.MaxHistoryDetailWidth {
+				t.Fatalf("width before reset %g", got)
+			}
+			reset.fn(a)
+			frames(tt)
+			if got := detailWidth(); got != historyPanelW {
+				t.Fatalf("width after reset %g", got)
+			}
+			if saved := a.settings.Get().Appearance.HistoryDetailWidth; saved != 0 {
+				t.Fatalf("saved width after reset %g", saved)
+			}
+		})
+	}
+}
+
 // Saved widths use unscaled DIPs so a larger interface keeps the same limits.
 func TestHistoryDetailResizeScale(t *testing.T) {
 	a, _, tt := newTestApp(t)

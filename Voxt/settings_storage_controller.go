@@ -301,6 +301,7 @@ func (a *app) resetLook() {
 	a.updateSettings(func(s *settings.Settings) { s.Appearance, s.General.Language = d.Appearance, d.General.Language })
 	a.loadAppearancePreview()
 	a.navUI.sideW, a.navUI.sections = 0, nil
+	a.histUI.panelWidth = 0
 	a.toast(i18n.T("The look is back to its defaults"))
 }
 
@@ -315,6 +316,7 @@ func (a *app) resetSettings() {
 	})
 	a.loadAppearancePreview()
 	a.navUI.sideW, a.navUI.sections = 0, nil
+	a.histUI.panelWidth = 0
 	a.toast(i18n.T("Every setting is back to its default"))
 }
 
