@@ -27,7 +27,7 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 		})
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		cardAttachView(context, card, local)
-		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, actions, local, onMeasured)
+		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)
 		if card.Message != "" {
 			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Padding(0, layout.CardSizeBtn+layout.CardSizeBtnInset-layout.CardPadX+layout.CardHeadGap, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -292,13 +292,16 @@ func cardWave(context *ui.Context, levels []float64, recording, heard, motion bo
 	})
 }
 
-func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, width int, scrolls bool, faceAlpha float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	if cardInputOriginal(context, card, local, bodyHeight) {
 		return
 	}
 	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
 		block := sessionCardBlockAt(card, 0)
 		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight, width)
+		// The page is as translucent as the card's face, over the same
+		// material: an opaque page drew a darker box (#3836 feedback).
+		request.background = tok(context.Theme()).OverlayFace.Alpha(faceAlpha)
 		if actions.overlayTranscriptResult(context.Key("ov-transcript"), request) {
 			return
 		}
@@ -321,13 +324,26 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 	} else if follow && scroll.Y >= scroll.MaxY-2 {
 		scroll.Y = math.MaxFloat32
 	}
-	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(scroll).Children(func() {
+	blocks := func() {
+		// The scroller's room is in the card's padding, right of the text.
 		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
 			for index := 0; index < sessionCardBlockCount(card); index++ {
 				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, width, actions, local, onMeasured)
 			}
 		})
-	})
+	}
+	if !scrolls {
+		// The card grows to its text until the screen's room runs out
+		// (overlay_size.go): text past a body with room is a frame the
+		// card has not grown to yet. The body clips it there instead of
+		// scrolling, which flashed the scroll bar under the pointer and,
+		// following the end, moved the text a line up and back each time
+		// the card grew (#3836 feedback).
+		scroll.X, scroll.Y, scroll.MaxX, scroll.MaxY = 0, 0, 0, 0
+		ui.Column(context.Key("ov-card-clip")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0).ClipY().Children(blocks)
+		return
+	}
+	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0).TrackScroll(scroll).Children(blocks)
 }
 
 func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {

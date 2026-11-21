@@ -43,6 +43,7 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 				tryCard(c)
 			}
 			homeToday(c, state)
+			homeActivitySection(c, state, actions)
 			homeRecentList(c, state, actions, local)
 		})
 	})
