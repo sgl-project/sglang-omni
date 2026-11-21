@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
+- **Import dictionary terms from the command line**: while Voxt runs, `Voxt dictionary import terms.csv` merges a CSV, text or Voxt 1.x dictionary file into your dictionary the way Dictionary → Import… does: new spellings are added, known ones get the aliases they lacked, nothing is removed. `--dry-run` says how many terms it would add and update without saving, and `--json` prints the counts for a script. The Dictionary page refreshes when the import saves terms. See docs/dictionary-import.md.
 
 ### Changed
 
@@ -24,6 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
+- **在命令行里导入词典词条**：Voxt 运行时，`Voxt dictionary import terms.csv` 按“词典 → 导入…”的方式把 CSV、文本或 Voxt 1.x 词典文件合并进词典：新写法新增，已有的词条补上缺的别名，不删除任何词条。`--dry-run` 只报告会新增、更新几条，不保存；`--json` 以 JSON 输出计数，方便脚本使用。导入保存了词条时，词典页会刷新。用法见 docs/dictionary-import.md。
 
 #### 变更
 
