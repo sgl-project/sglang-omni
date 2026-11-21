@@ -411,6 +411,7 @@ def make_qwen3_asr_scheduler_adapters(
                 # split batched encoder output and key its embedding cache.
                 "num_audio_tokens": num_audio_tokens,
                 "audio_fingerprint": fingerprint,
+                "reuse_encoder_windows": is_streaming_refresh,
             },
         )
         # general_mm_embed_routine locates audio positions by matching each
