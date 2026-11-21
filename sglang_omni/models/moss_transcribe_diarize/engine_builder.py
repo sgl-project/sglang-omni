@@ -95,6 +95,7 @@ class MossTranscribeDiarizeEngineBuilder(
         encoder_max_batch_size: int,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        early_request_builds: bool | None,
         stream_emit_interval_s: float,
         enable_trimmed_fbank: bool = True,
     ) -> None:
@@ -125,6 +126,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.enable_trimmed_fbank = enable_trimmed_fbank
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.early_request_builds = early_request_builds
         self.stream_emit_interval_s = stream_emit_interval_s
         self.processor: ProcessorMixin | None = None
         self.tokenizer: PreTrainedTokenizerBase | None = None
@@ -380,6 +382,12 @@ class MossTranscribeDiarizeEngineBuilder(
             ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
+            # note (wilsonzheng0327): only with the draft by default, where a request would otherwise wait for the rest of a verify round before its build starts; without it, early builds made Fun-ASR's first output later.
+            "early_request_builds": (
+                self.speculative_worker_class is not None
+                if self.early_request_builds is None
+                else self.early_request_builds
+            ),
         }
         if scheduler_kwargs["async_prefill"]:
             # The full-graph scheduler need not stall for encoder builds. Keep
