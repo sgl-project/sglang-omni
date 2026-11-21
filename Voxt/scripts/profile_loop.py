@@ -30,6 +30,8 @@ SERVER_NAMES = {
     "moss_transcribe_diarize_server",
 }
 PGREP_PATTERN = "/(" + "|".join(sorted(SERVER_NAMES)) + ")( |$)"
+FOOTPRINT_RE = re.compile(r"Footprint: ([0-9.]+) (B|KB|MB|GB)")
+FOOTPRINT_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
 CONFIG_FIELDS = {
     "name",
     "mode",
@@ -157,26 +159,36 @@ def pgrep_contenders(excluded_pids: set[int] | None = None) -> list[str]:
     return contending_processes(result.stdout, excluded_pids)
 
 
-def process_rss_detail(name: str) -> dict[str, object]:
+def process_pids(name: str) -> set[int]:
+    result = subprocess.run(
+        ["pgrep", "-x", name], capture_output=True, text=True, timeout=5
+    )
+    return {int(pid) for pid in result.stdout.split()}
+
+
+def process_rss_detail(name: str, pids: set[int] | None = None) -> dict[str, object]:
     """The largest RSS across a server's processes, with the reason when unavailable.
 
     The reason distinguishes a missing process, a denied `ps` (EPERM) and any
     other nonzero exit, so a null value is never recorded without its cause.
     """
     try:
-        pids = subprocess.run(
-            ["pgrep", "-x", name], capture_output=True, text=True, timeout=5
-        ).stdout.split()
+        target_pids = process_pids(name) if pids is None else pids
     except OSError as error:
         return {"value": None, "unavailable_reason": f"pgrep failed: {error}"}
-    if not pids:
-        return {"value": None, "unavailable_reason": f"no process named {name}"}
+    if not target_pids:
+        reason = (
+            f"no target process named {name} belongs to this group"
+            if pids is not None
+            else f"no process named {name}"
+        )
+        return {"value": None, "unavailable_reason": reason}
     largest = 0
     first_error: str | None = None
-    for pid in pids:
+    for pid in sorted(target_pids):
         try:
             result = subprocess.run(
-                ["ps", "-o", "rss=", "-p", pid],
+                ["ps", "-o", "rss=", "-p", str(pid)],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -191,18 +203,102 @@ def process_rss_detail(name: str) -> dict[str, object]:
             first_error = (
                 f"ps exited {result.returncode} for pid {pid}: {result.stderr.strip()}"
             )
+    if first_error is not None:
+        return {"value": None, "unavailable_reason": first_error}
     if largest:
         return {"value": largest, "unavailable_reason": None}
-    return {
-        "value": None,
-        "unavailable_reason": first_error or f"ps returned no rss for {name}",
-    }
+    return {"value": None, "unavailable_reason": f"ps returned no rss for {name}"}
 
 
 def process_rss_bytes(name: str) -> int | None:
     """The largest RSS across a server's processes, or null when ps is unavailable."""
     value = process_rss_detail(name)["value"]
     return value if isinstance(value, int) else None
+
+
+def process_footprint_bytes(pid: int) -> int | None:
+    try:
+        result = subprocess.run(
+            ["footprint", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except OSError:
+        return None
+    match = FOOTPRINT_RE.search(result.stdout)
+    if not match:
+        return None
+    return int(float(match.group(1)) * FOOTPRINT_UNITS[match.group(2)])
+
+
+def process_argv(name: str, pids: set[int]) -> list[str]:
+    if not pids:
+        return []
+    result = subprocess.run(
+        ["pgrep", "-fl", name], capture_output=True, text=True, timeout=5
+    )
+    lines = []
+    for line in result.stdout.splitlines():
+        pid_text, _, command = line.partition(" ")
+        if command.startswith("pgrep"):
+            continue
+        if pid_text.isdigit() and int(pid_text) in pids:
+            lines.append(command.strip())
+    return sorted(set(lines))
+
+
+def scoped_processes(
+    name: str,
+    scope: set[int] | None,
+    root: int | None,
+    scope_reason: str | None,
+) -> dict[str, object]:
+    """Memory and argv evidence limited to processes owned by one measurement run."""
+    global_pids = process_pids(name)
+    if scope is None:
+        reason = f"cannot attribute processes to this group: {scope_reason}"
+        return {
+            "root_pid": root,
+            "pids": [],
+            "footprint_bytes": None,
+            "rss_bytes": None,
+            "rss_unavailable_reason": reason,
+            "argv": [],
+            "unavailable_reason": reason,
+            "outside_count": len(global_pids),
+        }
+    attributed = global_pids & scope
+    rss_detail = process_rss_detail(name, attributed)
+    footprints = {}
+    failed_footprint_pids = []
+    for pid in sorted(attributed):
+        value = process_footprint_bytes(pid)
+        if value is None:
+            failed_footprint_pids.append(pid)
+        else:
+            footprints[pid] = value
+    footprint_reason = None
+    if not attributed:
+        footprint_reason = f"no target process named {name} belongs to this group"
+    elif failed_footprint_pids:
+        footprint_reason = (
+            f"incomplete footprint evidence; failed pids: {failed_footprint_pids}"
+        )
+    return {
+        "root_pid": root,
+        "pids": sorted(attributed),
+        "footprint_bytes": (
+            max(footprints.values())
+            if attributed and not failed_footprint_pids
+            else None
+        ),
+        "rss_bytes": rss_detail["value"],
+        "rss_unavailable_reason": rss_detail["unavailable_reason"],
+        "argv": process_argv(name, attributed),
+        "unavailable_reason": footprint_reason,
+        "outside_count": len(global_pids - attributed),
+    }
 
 
 def median(values: list[float]) -> float:

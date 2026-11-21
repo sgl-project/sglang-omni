@@ -210,6 +210,156 @@ class EnvironmentProbeTests(unittest.TestCase):
         self.assertEqual(detail["value"], 2048 * 1024)
         self.assertIsNone(detail["unavailable_reason"])
 
+    def test_rss_detail_rejects_partial_pid_failure(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="123\n456\n", stderr=""
+                )
+            if arguments == ["ps", "-o", "rss=", "-p", "123"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="2048\n", stderr=""
+                )
+            if arguments == ["ps", "-o", "rss=", "-p", "456"]:
+                raise OSError(1, "Operation not permitted")
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            detail = loop.process_rss_detail("sensevoice_server")
+        self.assertIsNone(detail["value"])
+        self.assertIn("456", str(detail["unavailable_reason"]))
+        self.assertIn("Operation not permitted", str(detail["unavailable_reason"]))
+
+    def test_scoped_processes_rejects_partial_rss_failure(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="100\n200\n", stderr=""
+                )
+            if arguments[:2] == ["pgrep", "-fl"]:
+                return subprocess.CompletedProcess(
+                    args=arguments,
+                    returncode=0,
+                    stdout=(
+                        "100 /omni/bin/sensevoice_server --port 0\n"
+                        "200 /omni/bin/sensevoice_server --port 1\n"
+                    ),
+                    stderr="",
+                )
+            if arguments[0] == "footprint":
+                return subprocess.CompletedProcess(
+                    args=arguments,
+                    returncode=0,
+                    stdout="Footprint: 100 MB\n",
+                    stderr="",
+                )
+            if arguments == ["ps", "-o", "rss=", "-p", "100"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="2048\n", stderr=""
+                )
+            if arguments == ["ps", "-o", "rss=", "-p", "200"]:
+                raise OSError(1, "Operation not permitted")
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            scoped = loop.scoped_processes("sensevoice_server", {100, 200}, 999, None)
+        self.assertEqual(scoped["footprint_bytes"], 100 * 1024**2)
+        self.assertIsNone(scoped["unavailable_reason"])
+        self.assertIsNone(scoped["rss_bytes"])
+        self.assertIn("200", str(scoped["rss_unavailable_reason"]))
+
+    def test_scoped_processes_without_target_records_null_reasons(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="300\n", stderr=""
+                )
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            scoped = loop.scoped_processes("sensevoice_server", {999}, 999, None)
+        self.assertEqual(scoped["pids"], [])
+        self.assertIsNone(scoped["footprint_bytes"])
+        self.assertIn("no target process", str(scoped["unavailable_reason"]))
+        self.assertIsNone(scoped["rss_bytes"])
+        self.assertIn("no target process", str(scoped["rss_unavailable_reason"]))
+        self.assertEqual(scoped["outside_count"], 1)
+
+    def test_scoped_processes_without_scope_records_null_reasons(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="300\n", stderr=""
+                )
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            scoped = loop.scoped_processes(
+                "sensevoice_server", None, None, "no test process found"
+            )
+        self.assertIn("no test process found", str(scoped["unavailable_reason"]))
+        self.assertIn("no test process found", str(scoped["rss_unavailable_reason"]))
+
+    def test_scoped_processes_rejects_partial_footprint_failure(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="100\n200\n", stderr=""
+                )
+            if arguments[:2] == ["pgrep", "-fl"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="", stderr=""
+                )
+            if arguments == ["footprint", "-p", "100"]:
+                return subprocess.CompletedProcess(
+                    args=arguments,
+                    returncode=0,
+                    stdout="Footprint: 100 MB\n",
+                    stderr="",
+                )
+            if arguments == ["footprint", "-p", "200"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=1, stdout="", stderr="denied"
+                )
+            if arguments[0] == "ps":
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="2048\n", stderr=""
+                )
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            scoped = loop.scoped_processes("sensevoice_server", {100, 200}, 999, None)
+        self.assertIsNone(scoped["footprint_bytes"])
+        self.assertIn("200", str(scoped["unavailable_reason"]))
+        self.assertEqual(scoped["rss_bytes"], 2048 * 1024)
+
+    def test_scoped_processes_rejects_failed_footprint_reads(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="100\n200\n", stderr=""
+                )
+            if arguments[:2] == ["pgrep", "-fl"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="", stderr=""
+                )
+            if arguments[0] == "footprint":
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=1, stdout="", stderr="denied"
+                )
+            if arguments[0] == "ps":
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="2048\n", stderr=""
+                )
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            scoped = loop.scoped_processes("sensevoice_server", {100, 200}, 999, None)
+        self.assertIsNone(scoped["footprint_bytes"])
+        self.assertIn("footprint", str(scoped["unavailable_reason"]))
+        self.assertEqual(scoped["rss_bytes"], 2048 * 1024)
+        self.assertIsNone(scoped["rss_unavailable_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
