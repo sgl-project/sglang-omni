@@ -652,6 +652,22 @@ class Qwen3TTSInitialDecodeGraphs:
         return self.outputs[key][:batch_size, ..., :output_sample_count].clone()
 
 
+def is_async_decode(
+    device: torch.device,
+    async_decode: bool | None,
+    *,
+    enable_stateful_codec_decoder: bool,
+    enable_deterministic_inference: bool,
+) -> bool:
+    """Whether the vocoder decodes on its asynchronous workers; a deterministic stateful decode stays synchronous, and an unset choice follows the device."""
+    if enable_stateful_codec_decoder and enable_deterministic_inference:
+        return False
+    elif async_decode is None:
+        return has_device_streams(device)
+    else:
+        return bool(async_decode)
+
+
 class Qwen3TTSStreamingVocoderScheduler(
     StreamingVocoderBase[Qwen3TTSStreamState, None]
 ):
@@ -920,14 +936,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.followup_decode_graphs = self.followup_graph_holders[0]
         self.full_decode_chunk_frames = 0
         self.full_decode_context_frames = 0
-        self.async_decode = (
-            False
-            if self.enable_stateful_codec_decoder and self.deterministic_inference
-            else (
-                has_device_streams(self.device)
-                if async_decode is None
-                else bool(async_decode)
-            )
+        self.async_decode = is_async_decode(
+            self.device,
+            async_decode,
+            enable_stateful_codec_decoder=self.enable_stateful_codec_decoder,
+            enable_deterministic_inference=self.deterministic_inference,
         )
         # note (ratish): a whole-utterance graph runs the conv stack eagerly on every padded
         # frame; the window graphs decode the same frames with the codec's fused kernels.
@@ -1115,25 +1128,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         dtype: torch.dtype,
         in_place_frames: int,
     ) -> Qwen3TTSCodecStateArena | None:
-        """The stream rows, and as many for whole requests, that the asynchronous workers decode against; a set slot count is checked in every mode."""
-        if num_slots is not None and (
-            isinstance(num_slots, bool)
-            or not isinstance(num_slots, int)
-            or num_slots <= 0
-        ):
-            # note (ratish): the slot count arrives untyped from factory config, and a fraction would pass the arena's own check and size it to zero rows.
-            raise ValueError(
-                f"--vocoder.factory.codec_state_slots must be a positive integer, got {num_slots!r}"
-            )
-        elif self.incremental_decoder is None or (not self.async_decode):
+        """The stream rows, and as many for whole requests, that the asynchronous workers decode against."""
+        if self.incremental_decoder is None or (not self.async_decode):
             # note (ratish): the left-context decoder keeps no Codec state and a synchronous decode keeps it on each stream, so only the asynchronous stateful workers take rows.
             return None
-        elif num_slots is None:
-            raise ValueError(
-                "Qwen3-TTS has no Codec state slot count for asynchronous decode; set "
-                "--vocoder.factory.codec_state_slots to a positive integer, or leave it unset "
-                "and bound --tts_engine.engine.max_queued_requests so the in-flight cap sets it"
-            )
         else:
             pass
         arena_type = (

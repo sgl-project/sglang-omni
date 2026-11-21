@@ -11779,8 +11779,16 @@ def configured_vocoder(
     vocoder_overrides: dict[str, bool | int | float | None],
     is_deterministic: bool,
     max_queued_requests: int | None,
+    has_checkpoint: bool = True,
 ) -> Qwen3TTSStreamingVocoderScheduler:
-    """Build the vocoder through the config, factory and real scheduler; None queued requests leaves admission without a cap."""
+    """Build the vocoder through the config, factory and real scheduler; None queued requests leaves admission without a cap, and without a checkpoint its load fails."""
+
+    def load_checkpoint_config(model_path: str) -> dict[str, str]:
+        if has_checkpoint:
+            return {"tts_model_type": "custom_voice"}
+        else:
+            raise FileNotFoundError(model_path)
+
     config = Qwen3TTSPipelineConfig(model_path="model")
     config.enable_deterministic_inference = is_deterministic
     config.stage_named("tts_engine").engine = EngineArgs(
@@ -11798,9 +11806,7 @@ def configured_vocoder(
         lambda *args, **kwargs: FakeQwen3TTSSpeechTokenizer(),
     )
     monkeypatch.setattr(
-        qwen3_stages,
-        "load_qwen3_tts_checkpoint_config",
-        lambda model_path: {"tts_model_type": "custom_voice"},
+        qwen3_stages, "load_qwen3_tts_checkpoint_config", load_checkpoint_config
     )
     monkeypatch.setattr(
         qwen3_streaming_vocoder,
@@ -11851,12 +11857,14 @@ def test_qwen3_tts_async_vocoder_needs_a_slot_count(
     vocoder_overrides: dict[str, bool | int | float | None],
     max_queued_requests: int | None,
 ) -> None:
+    """An asynchronous vocoder with no slot count fails before its checkpoint loads."""
     with pytest.raises(ValueError, match="no Codec state slot count"):
         configured_vocoder(
             monkeypatch,
             vocoder_overrides,
             is_deterministic=False,
             max_queued_requests=max_queued_requests,
+            has_checkpoint=False,
         )
 
 
@@ -11874,12 +11882,14 @@ def test_qwen3_tts_vocoder_refuses_a_slot_count_that_is_not_a_positive_integer(
     monkeypatch: pytest.MonkeyPatch,
     vocoder_overrides: dict[str, bool | int | float | None],
 ) -> None:
+    """A slot count that is not a positive integer fails before the checkpoint loads."""
     with pytest.raises(ValueError, match="must be a positive integer"):
         configured_vocoder(
             monkeypatch,
             vocoder_overrides,
             is_deterministic=False,
             max_queued_requests=64,
+            has_checkpoint=False,
         )
 
 

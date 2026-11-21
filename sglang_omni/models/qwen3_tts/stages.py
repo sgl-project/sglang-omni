@@ -38,6 +38,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     Qwen3TTSStreamingVocoderScheduler,
     UnsupportedAdminData,
+    is_async_decode,
 )
 from sglang_omni.models.weight_loader import load_weights_by_prefix
 from sglang_omni.platforms import current_platform
@@ -486,6 +487,29 @@ def create_vocoder_executor(
     if incremental_codec_compile is None:
         incremental_codec_compile = (
             enable_stateful_codec_decoder and torch.device(device).type != "npu"
+        )
+    else:
+        pass
+    has_codec_arena = enable_stateful_codec_decoder and is_async_decode(
+        torch.device(device),
+        async_decode,
+        enable_stateful_codec_decoder=enable_stateful_codec_decoder,
+        enable_deterministic_inference=enable_deterministic_inference,
+    )
+    # note (ratish): checked before the checkpoint loads, so a server that cannot start loads nothing; the count arrives untyped from factory config, and a fraction would pass the arena's own check and size it to zero rows.
+    if codec_state_slots is not None and (
+        isinstance(codec_state_slots, bool)
+        or not isinstance(codec_state_slots, int)
+        or codec_state_slots <= 0
+    ):
+        raise ValueError(
+            f"--vocoder.factory.codec_state_slots must be a positive integer, got {codec_state_slots!r}"
+        )
+    elif codec_state_slots is None and has_codec_arena:
+        raise ValueError(
+            "Qwen3-TTS has no Codec state slot count for asynchronous decode; set "
+            "--vocoder.factory.codec_state_slots to a positive integer, or leave it unset "
+            "and bound --tts_engine.engine.max_queued_requests so the in-flight cap sets it"
         )
     else:
         pass
