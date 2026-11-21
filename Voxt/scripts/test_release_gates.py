@@ -6,6 +6,7 @@ Every kept group must show the native min_preview_samples it ran with
 missing field and a missing reason are all invalid) and the distinct
 text hashes the kept decision was written against.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -131,21 +132,83 @@ class EnvironmentProbeTests(unittest.TestCase):
             if arguments[0] == "ps":
                 raise OSError(1, "Operation not permitted")
             if arguments[:2] == ["/usr/bin/pmset", "-g"]:
-                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout="Now drawing from 'AC Power'\n" if arguments[2] == "batt" else "No thermal warning\n", stderr="")
+                return subprocess.CompletedProcess(
+                    args=arguments,
+                    returncode=0,
+                    stdout=(
+                        "Now drawing from 'AC Power'\n"
+                        if arguments[2] == "batt"
+                        else "No thermal warning\n"
+                    ),
+                    stderr="",
+                )
             if arguments[:2] == ["/usr/sbin/ioreg", "-c"]:
-                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout='"HIDIdleTime" = 300000000000\n', stderr="")
+                return subprocess.CompletedProcess(
+                    args=arguments,
+                    returncode=0,
+                    stdout='"HIDIdleTime" = 300000000000\n',
+                    stderr="",
+                )
             if arguments[:2] == ["/usr/bin/pgrep", "-fl"]:
-                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout="", stderr="")
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="", stderr=""
+                )
             if arguments[:2] == ["pgrep", "-x"]:
-                return subprocess.CompletedProcess(args=arguments, returncode=0, stdout="123\n", stderr="")
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="123\n", stderr=""
+                )
             raise AssertionError(arguments)
 
         with mock.patch("profile_loop.subprocess.run", side_effect=output):
             self.assertIsNone(loop.process_rss_bytes("qwen3_asr_server"))
+            detail = loop.process_rss_detail("qwen3_asr_server")
             environment = loop.host_environment()
+        self.assertIsNone(detail["value"])
+        self.assertIn("Operation not permitted", str(detail["unavailable_reason"]))
         self.assertEqual(environment["power_source"], "AC Power")
         self.assertEqual(environment["idle_seconds"], 300)
         self.assertEqual(environment["contenders"], [])
+
+    def test_rss_detail_distinguishes_missing_process_and_nonzero_exit(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                if arguments[2] == "qwen3_asr_server":
+                    return subprocess.CompletedProcess(
+                        args=arguments, returncode=1, stdout="", stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="123\n", stderr=""
+                )
+            if arguments[0] == "ps":
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=1, stdout="", stderr="ps: illegal option"
+                )
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            missing = loop.process_rss_detail("qwen3_asr_server")
+            failed = loop.process_rss_detail("sensevoice_server")
+        self.assertIsNone(missing["value"])
+        self.assertIn("no process named", str(missing["unavailable_reason"]))
+        self.assertIsNone(failed["value"])
+        self.assertIn("ps exited 1", str(failed["unavailable_reason"]))
+
+    def test_rss_detail_reports_value_without_reason(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="123\n", stderr=""
+                )
+            if arguments[0] == "ps":
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout=" 2048 \n", stderr=""
+                )
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            detail = loop.process_rss_detail("sensevoice_server")
+        self.assertEqual(detail["value"], 2048 * 1024)
+        self.assertIsNone(detail["unavailable_reason"])
 
 
 if __name__ == "__main__":

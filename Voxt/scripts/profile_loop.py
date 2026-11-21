@@ -157,21 +157,52 @@ def pgrep_contenders(excluded_pids: set[int] | None = None) -> list[str]:
     return contending_processes(result.stdout, excluded_pids)
 
 
-def process_rss_bytes(name: str) -> int | None:
-    """The largest RSS across a server's processes, or null when ps is unavailable."""
+def process_rss_detail(name: str) -> dict[str, object]:
+    """The largest RSS across a server's processes, with the reason when unavailable.
+
+    The reason distinguishes a missing process, a denied `ps` (EPERM) and any
+    other nonzero exit, so a null value is never recorded without its cause.
+    """
     try:
-        pids = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True, timeout=5).stdout.split()
-    except OSError:
-        return None
+        pids = subprocess.run(
+            ["pgrep", "-x", name], capture_output=True, text=True, timeout=5
+        ).stdout.split()
+    except OSError as error:
+        return {"value": None, "unavailable_reason": f"pgrep failed: {error}"}
+    if not pids:
+        return {"value": None, "unavailable_reason": f"no process named {name}"}
     largest = 0
+    first_error: str | None = None
     for pid in pids:
         try:
-            result = subprocess.run(["ps", "-o", "rss=", "-p", pid], capture_output=True, text=True, timeout=5)
-        except OSError:
+            result = subprocess.run(
+                ["ps", "-o", "rss=", "-p", pid],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except OSError as error:
+            if first_error is None:
+                first_error = f"ps denied for pid {pid}: {error}"
             continue
         if result.returncode == 0 and result.stdout.strip().isdigit():
             largest = max(largest, int(result.stdout.strip()) * 1024)
-    return largest or None
+        elif first_error is None:
+            first_error = (
+                f"ps exited {result.returncode} for pid {pid}: {result.stderr.strip()}"
+            )
+    if largest:
+        return {"value": largest, "unavailable_reason": None}
+    return {
+        "value": None,
+        "unavailable_reason": first_error or f"ps returned no rss for {name}",
+    }
+
+
+def process_rss_bytes(name: str) -> int | None:
+    """The largest RSS across a server's processes, or null when ps is unavailable."""
+    value = process_rss_detail(name)["value"]
+    return value if isinstance(value, int) else None
 
 
 def median(values: list[float]) -> float:
