@@ -5,8 +5,15 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
+)
+
+// Width bounds of the History detail panel in DIPs at 100 %.
+const (
+	historyPanelW    = settings.MinHistoryDetailWidth
+	historyPanelMaxW = settings.MaxHistoryDetailWidth
 )
 
 type historyMarkViewState struct {
@@ -96,6 +103,8 @@ type historyViewState struct {
 	Rows              []historyRowViewState   `json:"rows"`
 	Empty             *historyEmptyViewState  `json:"empty,omitempty"`
 	Detail            *historyDetailViewState `json:"detail,omitempty"`
+	// DetailWidth is the saved detail width in DIPs at 100 %, 0 for the default.
+	DetailWidth float64 `json:"detail_width,omitempty"`
 }
 
 type historyDetailStateInput struct {
@@ -120,6 +129,7 @@ type historyViewStateInput struct {
 	HomeDir           string
 	Now               time.Time
 	Detail            *historyDetailStateInput
+	DetailWidth       float64
 }
 
 func historyTabsFor(translator *i18n.Translator) []string {
@@ -139,6 +149,7 @@ func buildHistoryViewState(translator *i18n.Translator, input historyViewStateIn
 	state := historyViewState{
 		Read: input.Read, Error: input.Error, Kind: string(input.Kind), Query: input.Query,
 		Tabs: historyTabsFor(translator), KeepHistory: input.KeepHistory, SettingsAvailable: input.SettingsAvailable,
+		DetailWidth: input.DetailWidth,
 	}
 	if count := len(input.Entries); count > 0 {
 		state.CountLabel = translator.N(count, "%d entry", "%d entries", count)

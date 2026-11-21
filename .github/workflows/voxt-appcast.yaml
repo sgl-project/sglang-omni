@@ -53,7 +53,8 @@ permissions:
 jobs:
   appcast:
     name: Voxt appcast
-    if: github.event_name == 'workflow_dispatch'
+    # A Voxt Beta run by hand calls this workflow as workflow_dispatch too; only a run of Voxt Appcast itself offers a release to Voxt 1.x.
+    if: github.event_name == 'workflow_dispatch' && github.workflow == 'Voxt Appcast'
     runs-on: macos-15
     timeout-minutes: 30
     environment: voxt-release
