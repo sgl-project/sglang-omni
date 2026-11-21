@@ -61,7 +61,7 @@ The tests are:
 - `TestEvalLongASR` (the long clips on the speech model): `eval_longasr_test.go`;
 - `TestEvalDictASR` (the dictionary's echo and worth on the speech models, #24; `VOXTNEW_EVAL_ASR` picks them): `eval_dictasr_test.go`, with the dictionaries in `eval_dict_test.go`.
 
-The language-model evals (`TestEvalLLM`, `TestEvalGlossary`, `TestEvalLong`, `TestEvalRewrite`, `TestEvalDictLLM`, and the whole sessions of `TestEvalAppEnhancement` and `TestEvalDictionary`) ran Voxt's own local language models in `voxtnew-llm`; they went with it. Their sections below are kept as the record of what was measured.
+The language-model evals (TestEvalLLM, TestEvalGlossary, TestEvalLong, TestEvalRewrite, TestEvalDictLLM, and the whole sessions of TestEvalAppEnhancement and TestEvalDictionary) ran Voxt's own local language models in `voxtnew-llm`; they went with it. Their sections below are kept as the record of what was measured.
 
 They log a `CONTENTION` line when another `qwen3_asr_server` was running before they started, since that skews the times. The numbers below come from runs without one at their start. mac-air is shared, though: other apps' engines (AudioSmith, Dicta) and another thread's runs were seen during the day, with swap in use. Read the times as upper bounds, and compare them only with runs on the same machine. `scripts/mac-regress.sh` (manual-test.md §10.6) runs the quick eval with the other Mac tests.
 
@@ -157,12 +157,14 @@ Since 11-09 (#3644 FB27, rambling left in) each example also repeats a phrase, w
 The faults without the example were the self-corrections kept and "uh" left in. No answer copied the example. A check that took three shared words for a copy ("Please send the report to me by Thursday") was too strict: it now needs five words in a row.
 
 **Decision: the example turn is in.** It applies to Transcribe and spoken Translate, with Cleanup on, for both template sets. For Translate, the example is sent only when the target is English or Simplified Chinese, the two languages the example's answer is written in.
+
+**Update (#4228):** Transcribe no longer sends this example turn. A third-party model treated a short dictation as an instruction to rewrite the example and returned its text instead of the transcript. Transcribe now puts the cleanup rules in the system prompt without an example, in both the built-in and custom prompt paths. Spoken Translate keeps the translated example described here.
 - `llm.fast` gains the most: its faultless clean-ups go from 14 to 16 of 20, and its translations from 2 to 6 of 6.
 - `llm.balanced`'s translations go from 4 to 6 of 6. Its clean-ups stay at 18 of 20, a little closer to the expected text.
 - It costs about 80–160 ms more of the first token: the example is about 60 more prompt tokens.
 - compose's golden prompts show the turn (`internal/compose/testdata/golden`).
 
-### Long dictation (two clips, 95–104 s; M3b, `TestEvalLong`)
+### Long dictation (two clips, 95–104 s; M3b, TestEvalLong)
 
 The two long clips by their words: `long-zh` (441 characters, Chinese with English words) and `long-all` (742 characters, whole sentences alternating between English and Chinese, starting in English). M3 found that `llm.balanced` translated all of `long-all` into English. M3b measured where that starts, and how to cut the text so that it does not.
 
@@ -215,11 +217,11 @@ The translation's target is one language, so it has no language to lose. A whole
 
 **`llm.fast` does not clean up long text.** It keeps nearly every filler on Chinese from about 100 characters up (3 short clips joined), whole or in pieces. Pieces do not help it. It cleans one short dictation well (16 of 20, above), so the 300-character pieces are no fix for it. Users who dictate long texts need `llm.balanced`.
 
-### Long clean-ups under memory pressure (10-17, `TestEvalLong`)
+### Long clean-ups under memory pressure (10-17, TestEvalLong)
 
 On 10-17 the user's clean-ups timed out twice on mac-air (a 366-character dictation as one request, and the first of two pieces of a 502-character one), and the text went in as recognised. The Mac's swap was 17.1 of 18.4 GB used, with macOS's memory-pressure level still "normal"; `voxtnew-llm` had 80–97 MB resident of a 3.4 GB footprint: the model's weights were swapped out and read back while it wrote. It wrote 10–14 tokens a second instead of 19–26, its first token after 2 s instead of 0.2–0.5 s, so a 366-character answer took 20 s or more against the fixed 15 s.
 
-`TestEvalLong` now also reports each run's slowest request, its longest wait for a first token and its longest wait between two tokens (`long.md`). On mac-air with the same kind of pressure (swap 15.3–15.9 of 16.4–17.4 GB used, level "normal"; the user's VoxtNew with its speech model, Dicta's engine and the browsers running), `llm.balanced`:
+TestEvalLong now also reports each run's slowest request, its longest wait for a first token and its longest wait between two tokens (`long.md`). On mac-air with the same kind of pressure (swap 15.3–15.9 of 16.4–17.4 GB used, level "normal"; the user's VoxtNew with its speech model, Dicta's engine and the browsers running), `llm.balanced`:
 
 | | whole requests | in pieces |
 |---|---|---|
@@ -242,7 +244,7 @@ So a fixed 15 s cut answers that were coming steadily, and nothing in the stream
 - The only fault either way is the self-correction at a sentence's end that the model also misses on its short clip: it moves with where the text is cut, and is kept twice in pieces and once whole.
 - The first cleaned text reaches the overlay in about half the time; the whole clean-up takes 0.5–3.5 s longer (the second request's first token).
 - A piece that fails keeps half as much text as recognised.
-- `long-zh` (441 characters, two pieces at either threshold) and the language-cut runs of `long-all` are unchanged: no fault and 6.3% (`long-all` in 10 pieces). `TestEvalLLM` quick (short clips, one piece) is unchanged.
+- `long-zh` (441 characters, two pieces at either threshold) and the language-cut runs of `long-all` are unchanged: no fault and 6.3% (`long-all` in 10 pieces). TestEvalLLM quick (short clips, one piece) is unchanged.
 
 Every slow request now logs the Mac's memory (behavior.md 5.5), so the next report shows the cause.
 
@@ -341,7 +343,7 @@ Hy-MT2 takes its own prompt and no clean-up rules (behavior.md 3.13). Raw speech
 - **Clean-up first was rejected.** It wins on self-corrections, but `voxtnew-llm` holds one model at a time, so every spoken translation would load the 4B model and Hy-MT2 in turn: about 1.5 s of loading and 2.7 s of clean-up for a 0.5 s translation.
 - **The trade-off for the user.** Self-corrections reach Hy-MT2 as spoken ("next Tuesday, no, next Wednesday"). A user who wants them resolved picks a general model for Translate: `llm.balanced` with the example got 6 of 6 in 3.6 s, `llm.fast` 6 of 6 in 1.4 s.
 
-### The glossary on misheard terms (`TestEvalGlossary`)
+### The glossary on misheard terms (TestEvalGlossary)
 
 Each dictionary clip's transcript as a speech model wrote it without the dictionary (`heard`), cleaned up with the eval dictionary as the glossary. Since M3b the session first replaces the dictionary's aliases (`dict.Replace`: "Or Link" becomes Auralink, behavior.md 7.9a), and the glossary of a dictionary of up to 30 terms is in the dictionary's order (M2b's decision: the same system prompt for every dictation, which the prompt cache keeps):
 
@@ -357,7 +359,7 @@ Each dictionary clip's transcript as a speech model wrote it without the diction
 - **The dictionary's order costs one term.** On `dict-5`, "Voxnu" stays "Voxnu" when Auralink, the term the text mentions, is no longer listed first (greedy decoding: the same every run); the other nine answers are the same. The 20 short clips' clean-ups and translations score the same with either order (the tables above are from M3b's run).
 - `llm.fast` mostly ignores the glossary, as M2 saw.
 
-### Rewrite (`TestEvalRewrite`, F1)
+### Rewrite (TestEvalRewrite, F1)
 
 Eight Rewrite requests as the session builds them (compose, Cleanup on), each sampled with two seeds (one in quick mode): six selections with a spoken instruction (polite and shorter, fix the grammar, a bulleted list, formal, shorter, friendlier; three English, three Chinese, one of them with an English instruction) and two messages written from an instruction alone (the answer card's JSON, English and Chinese). An answer has a fault when it loses a fact the text gave, keeps what the instruction asked to fix ("ridiculous", "buyed"), changes the language, is not shorter when asked, is no list when asked, opens with a preamble ("Sure, here is…"), or, from an instruction alone, is not the JSON answer with a title. Tone and wording are not scored: `rewrite.md` lists every answer. Quick mode checks `llm.balanced` against a floor of 60%.
 
@@ -389,7 +391,7 @@ Eight Rewrite requests as the session builds them (compose, Cleanup on), each sa
 - `llm.gemma4` with the example has none. Its translation fault is the same late correction, kept ("before Friday. Wait, before Thursday."). Without the example it leaves 呃 and 就是说 and one English correction, as the others do: the example turn helps it too.
 - Neither ever changed the language or copied the example.
 
-**Long dictation** (`TestEvalLong`, the same clips as M3b's; compare with `llm.balanced`'s tables above):
+**Long dictation** (TestEvalLong, the same clips as M3b's; compare with `llm.balanced`'s tables above):
 
 | | `llm.qwen3` | `llm.gemma4` |
 |---|---|---|
@@ -434,7 +436,7 @@ All 20 short clips with Chinese as the main language (the English clips and the 
 | glossary, terms written: as heard / aliases replaced | 8 / 9 | 6 / 7 (5 / 6) | 9 / 9 (8 / 8) | 10 / 10 |
 | spoken Translate | unchanged (its prompt is) | | | |
 
-Long dictation with the new wording (`TestEvalLong`, the four models): in pieces, as the session sends them, `llm.qwen3` now keeps every English piece in English: `long-all` 6.3% with one late correction kept, the same as `llm.balanced` (6.3%), 8.3 s against 10.7 s. Whole, it now turns `long-all` into English (60%), as `llm.balanced` does (58.5%): the language cuts are what keeps a mixed dictation's languages, for both. `llm.gemma4` in pieces is unchanged (4.8%); whole it now leaves a few "um" and "uh" (5.8%, was 2.9%). `llm.balanced` and `llm.fast` are as M3b measured them (`long-all` in pieces 6.3% and 10.1%).
+Long dictation with the new wording (TestEvalLong, the four models): in pieces, as the session sends them, `llm.qwen3` now keeps every English piece in English: `long-all` 6.3% with one late correction kept, the same as `llm.balanced` (6.3%), 8.3 s against 10.7 s. Whole, it now turns `long-all` into English (60%), as `llm.balanced` does (58.5%): the language cuts are what keeps a mixed dictation's languages, for both. `llm.gemma4` in pieces is unchanged (4.8%); whole it now leaves a few "um" and "uh" (5.8%, was 2.9%). `llm.balanced` and `llm.fast` are as M3b measured them (`long-all` in pieces 6.3% and 10.1%).
 
 
 **Decision: both are usable for clean-up, Translate and Rewrite** as alternatives of `llm.balanced` and `llm.fast`, with compose's new wording; their `Features` stay unrestricted. Without the wording, `llm.qwen3` would not be usable for Transcribe by anyone who dictates English with Chinese as the main language.
@@ -484,7 +486,7 @@ So the user's rest was most likely a stretch with no speech but a filler. VoxtNe
 - **`asr.fast` takes the 30 most recently changed terms** (follow-up, `ASRTuning.ContextTerms`; `asr.accurate` keeps Voxt's 500). With the large dictionary its guarded rows are now the medium dictionary's: error 10.3% → 7.5% as recorded and 13.4% → 7.0% with the noise, terms written 16–17 → 16–18 of 26, median Final 721 → 353 ms and 845 → 546 ms (the raw rows send the whole list as a free prompt, as before). The same run's other rows are unchanged.
 - **Long live session.** `long-zh` with 3 s of noise, recognised in pieces, with the small dictionary: no echo either way (`asr.accurate` 5.6%, `asr.fast` 6.3%).
 
-### The language models and the glossary (`TestEvalDictLLM`)
+### The language models and the glossary (TestEvalDictLLM)
 
 *History: measured on the retired local language models in `voxtnew-llm`, with tests that were removed with it.*
 
@@ -508,7 +510,7 @@ Every short clip's words, as said, go through Transcribe's clean-up (29 answers 
 
 A dictionary of more than 30 terms now keeps its rule in the system prompt, the same for every dictation ("the user message may open with a `<glossary>` block…; never output it"). Its terms that the text mentions go in a `<glossary>` block that opens the last user message, after the system prompt and the example, which the prompt cache keeps (behavior.md 5.16). A dictionary of up to 30 terms is unchanged: the whole glossary stays in the system prompt.
 
-The runs were on mac-air with `TestEvalDictLLM` and `TestEvalGlossary`, before (5bdbd174) and after. The user's VoxtNew had its models loaded throughout, so times are upper bounds.
+The runs were on mac-air with TestEvalDictLLM and TestEvalGlossary, before (5bdbd174) and after. The user's VoxtNew had its models loaded throughout, so times are upper bounds.
 
 | | before | after |
 |---|---|---|
@@ -554,6 +556,6 @@ These sessions are sensitive to load. While two other threads ran their models o
 - Noise, real voices and accents.
 - Recordings from a microphone.
 - Sessions that run through the helper's real capture.
-- Rewrite's tone and wording (`TestEvalRewrite` checks facts, language, length and form; the answers are read by hand).
+- Rewrite's tone and wording (TestEvalRewrite checks facts, language, length and form; the answers are read by hand).
 - Translation into languages other than English.
 - `TestMacE2EOmni` covers the live path with the real helper on the speech sample; scripts/mac-regress.sh runs it.

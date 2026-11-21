@@ -82,7 +82,7 @@ def cuda_platform_for_engine_builder_tests(
     monkeypatch.setattr(
         fish_engine,
         "current_platform",
-        SimpleNamespace(is_npu=lambda: False),
+        SimpleNamespace(is_musa=lambda: False, is_npu=lambda: False),
     )
 
 

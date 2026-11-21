@@ -5,6 +5,7 @@
 #include <optional>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 
 namespace fishaudio_drama3 {
@@ -160,7 +161,7 @@ mx::array Drama3Model::GatedDeltaLayer(const mx::array &x,
 
 mx::array Drama3Model::AttentionLayer(const mx::array &x,
                                       const std::string &prefix,
-                                      qwen3_asr::KVCache &cache) const {
+                                      omni_common::KVCache &cache) const {
   const int batch = x.shape(0);
   const int time = x.shape(1);
   const mx::array projected =

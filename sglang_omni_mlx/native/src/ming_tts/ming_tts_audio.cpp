@@ -117,12 +117,12 @@ mx::array AudioTransformer::Forward(mx::array hidden,
     const mx::array mlp_input = checkpoint_.RmsNorm(
         hidden, prefix + ".post_attention_layernorm", epsilon_);
     hidden = mx::add(
-        hidden, checkpoint_.Linear(
-                    mx::multiply(
-                        omni_common::Silu(checkpoint_.Linear(
-                            mlp_input, prefix + ".mlp.gate_proj")),
-                        checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-                    prefix + ".mlp.down_proj"));
+        hidden,
+        checkpoint_.Linear(
+            omni_common::Swiglu(
+                checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
+                checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+            prefix + ".mlp.down_proj"));
   }
   return checkpoint_.RmsNorm(hidden, prefix_ + ".norm", epsilon_);
 }
@@ -285,7 +285,7 @@ mx::array MingAudioDecoder::DecodeChunk(const mx::array &latents,
     const int ready = frames.shape(1) - (last_chunk ? 0 : 1);
     if (ready == 0) {
       state.pending = frames;
-      mx::eval(*state.pending);
+      mx::async_eval(*state.pending);
       return mx::zeros({latents.shape(0), 0}, mx::float32);
     } else {
     }
@@ -319,7 +319,7 @@ mx::array MingAudioDecoder::DecodeChunk(const mx::array &latents,
     } else {
     }
   }
-  mx::eval(arrays);
+  mx::async_eval(arrays);
   if (last_chunk) {
     state = AudioDecoderState{};
   } else {

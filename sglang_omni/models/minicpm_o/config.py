@@ -59,6 +59,10 @@ def audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="audio_encoder",
         process=process,
         factory_path=f"{PKG}.stages.create_audio_encoder_executor",
+        # note (wirybeaver): the frame budget admits eight full 30-second chunks.
+        factory=FactoryArgs(
+            max_batch_size=8, max_batch_wait_ms=0, max_batch_mel_frames=24000
+        ),
         gpu=gpu,
         disable_direct_cuda_ipc_payload=True,
         next="thinker",

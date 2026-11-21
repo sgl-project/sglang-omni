@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ming_tts/ming_tts_model.h"
+#include "common/kv_cache.h"
 
 #include <cassert>
 #include <cmath>
@@ -176,9 +177,8 @@ mx::array MingBackbone::EmbedTokens(const mx::array &input_ids) const {
 mx::array MingBackbone::Mlp(const mx::array &x,
                             const std::string &prefix) const {
   return checkpoint_.Linear(
-      mx::multiply(
-          omni_common::Silu(checkpoint_.Linear(x, prefix + ".gate_proj")),
-          checkpoint_.Linear(x, prefix + ".up_proj")),
+      omni_common::Swiglu(checkpoint_.Linear(x, prefix + ".gate_proj"),
+                          checkpoint_.Linear(x, prefix + ".up_proj")),
       prefix + ".down_proj");
 }
 
@@ -224,10 +224,9 @@ mx::array MingBackbone::Moe(const mx::array &x,
                 std::nullopt, row_experts, sorted);
           }
         };
-        return project(
-            mx::multiply(omni_common::Silu(project(rows, "gate_proj")),
-                         project(rows, "up_proj")),
-            "down_proj");
+        return project(omni_common::Swiglu(project(rows, "gate_proj"),
+                                           project(rows, "up_proj")),
+                       "down_proj");
       });
   const mx::array output = mx::astype(
       mx::reshape(
@@ -247,8 +246,9 @@ mx::array MingBackbone::Moe(const mx::array &x,
   }
 }
 
-mx::array MingBackbone::Forward(const mx::array &embeddings,
-                                std::vector<qwen3_asr::KVCache> &caches) const {
+mx::array
+MingBackbone::Forward(const mx::array &embeddings,
+                      std::vector<omni_common::KVCache> &caches) const {
   assert(embeddings.ndim() == 3 && embeddings.shape(2) == config_.hidden_size);
   assert(caches.size() == static_cast<size_t>(config_.num_hidden_layers));
   const int batch = embeddings.shape(0), length = embeddings.shape(1);
@@ -298,8 +298,8 @@ mx::array MingBackbone::Forward(const mx::array &embeddings,
   return checkpoint_.RmsNorm(hidden, "norm", config_.rms_norm_eps);
 }
 
-std::vector<qwen3_asr::KVCache> MingBackbone::NewCaches() const {
-  return std::vector<qwen3_asr::KVCache>(config_.num_hidden_layers);
+std::vector<omni_common::KVCache> MingBackbone::NewCaches() const {
+  return std::vector<omni_common::KVCache>(config_.num_hidden_layers);
 }
 
 } // namespace ming_tts

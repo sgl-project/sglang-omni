@@ -1,75 +1,60 @@
 package main
 
-// The Transcribe page's "End with a word" row (settings.Features.EndWord,
-// Voxt 1.x's Voice End Command): the word said last ends the recording
-// and is left out of the text (internal/session). Only a speech model
-// that streams hears it, so the row shows only with one; the word works
-// in every feature whose speech model streams.
-
 import (
 	"slices"
-	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// endWordPresets are the words Voxt 1.x offered.
-var endWordPresets = []string{"over", "end", "完毕", "好了"}
-
-// trEndWordRow is the end word: Off, one of endWordPresets, or a word
-// typed after Custom….
-func (a *app) trEndWordRow(c *ui.Context) {
-	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || !m.Stream {
+// trEndWordRow draws the streaming speech model's end-word setting.
+func trEndWordRow(c *ui.Context, state *featureEndWordViewState, actions featureActions, local *keyRow) {
+	if state == nil {
 		return
 	}
 	t := c.Theme()
-	r := &a.fui(hotkey.Transcribe).endWord
-	cur := a.prefs.Features.EndWord
-	off, custom := i18n.T("Off"), i18n.T("Custom…")
-	switch {
-	case r.custom:
-		r.sel = custom
-	case cur == "":
-		r.sel = off
-	case slices.Contains(endWordPresets, cur):
-		r.sel = cur
-	default:
-		r.sel, r.custom, r.text = custom, true, cur
+	if state.Custom && !local.custom {
+		local.custom, local.text = true, state.CustomText
+	}
+	if local.custom {
+		local.sel = i18n.T("Custom…")
+	} else {
+		local.sel = state.Value
 	}
 	ui.Column(c.Key("tr-endword")).Gap(px(t, 6)).Children(func() {
 		settingRow(c, "tr-endword-row", i18n.T("End with a word"), i18n.T("Say this word and pause to stop recording. It is left out of the text. Works only with speech models that show text as you speak."), func() {
-			opts := slices.Concat([]string{off}, endWordPresets, []string{custom})
-			if ui.Select(c.Key("tr-endword-sel"), &r.sel, opts).Label(i18n.T("Word that ends the recording")).Width(px(t, 180)).Changed() {
-				switch r.sel {
-				case custom:
-					r.custom, r.text = true, ""
-				case off:
-					r.custom = false
-					a.setEndWord("")
-				default:
-					r.custom = false
-					a.setEndWord(r.sel)
+			options := make([]string, len(state.Options))
+			for index, option := range state.Options {
+				options[index] = option.Label
+			}
+			if !slices.Contains(options, local.sel) {
+				local.sel = state.Value
+			}
+			if ui.Select(c.Key("tr-endword-sel"), &local.sel, options).Label(i18n.T("Word that ends the recording")).Width(px(t, 180)).Changed() {
+				for _, option := range state.Options {
+					if option.Label != local.sel {
+						continue
+					}
+					if option.Custom {
+						local.custom, local.text = true, ""
+						return
+					}
+					local.custom = false
+					actions.setFeatureEndWord(option.Value)
+					return
 				}
 			}
 		})
-		if !r.custom {
+		if !local.custom {
 			return
 		}
-		in := ui.TextInput(c.Key("tr-endword-text"), &r.text).Placeholder("over").Label(i18n.T("Your word that ends the recording")).MaxWidth(px(t, 240))
-		if in.Changed() {
-			r.edited = true
+		input := ui.TextInput(c.Key("tr-endword-text"), &local.text).Placeholder("over").Label(i18n.T("Your word that ends the recording")).MaxWidth(px(t, 240))
+		if input.Changed() {
+			local.edited = true
 		}
-		if r.edited && (in.Submitted() || !in.Focused()) {
-			r.edited = false
-			a.setEndWord(strings.Join(strings.Fields(r.text), " "))
+		if local.edited && (input.Submitted() || !input.Focused()) {
+			local.edited = false
+			actions.setFeatureEndWord(local.text)
 		}
 	})
-}
-
-func (a *app) setEndWord(word string) {
-	a.updateSettings(func(s *settings.Settings) { s.Features.EndWord = word })
 }

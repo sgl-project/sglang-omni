@@ -7,10 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
-
-const openingDuration = 3200 * time.Millisecond
 
 //go:embed assets/opening/*.png
 var openingFiles embed.FS
@@ -36,28 +33,14 @@ func openingImage(name string) *ui.Bitmap {
 	return bitmap
 }
 
-func (a *app) startOpening() {
-	if a.prefs.Setup.Done || a.prefs.Setup.OpeningShown {
-		return
-	}
-	a.openingStarted = time.Now()
-	a.updateSettings(func(s *settings.Settings) { s.Setup.OpeningShown = true })
-}
-
 func openingProgress(elapsed, start, duration time.Duration) float32 {
 	progress := min(max(float64(elapsed-start)/float64(duration), 0), 1)
 	return float32(1 - math.Pow(1-progress, 3))
 }
 
-func (a *app) openingView(c *ui.Context) bool {
-	if a.openingStarted.IsZero() {
-		return false
-	}
-	elapsed := time.Since(a.openingStarted)
-	if elapsed >= openingDuration || a.prefs.Appearance.ReduceMotion || c.Preferences().ReduceMotion {
-		a.openingStarted = time.Time{}
-		return false
-	}
+// openingView plays the first-use opening (#4173) before the setup guide.
+func openingView(c *ui.Context, state *openingViewState) {
+	elapsed := state.Elapsed
 	c.After(time.Second / 60)
 	entrance := openingProgress(elapsed, 0, 450*time.Millisecond)
 	wordmark := openingProgress(elapsed, time.Second, 500*time.Millisecond)
@@ -83,5 +66,4 @@ func (a *app) openingView(c *ui.Context) bool {
 			})
 		})
 	})
-	return true
 }

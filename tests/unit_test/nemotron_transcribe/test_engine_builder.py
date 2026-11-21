@@ -4,6 +4,10 @@
 from types import SimpleNamespace
 
 import pytest
+import torch
+from sglang.srt.model_executor.model_runner_components.weight_updater import (
+    _unsupported_derived_weight_cache_error,
+)
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
@@ -13,6 +17,11 @@ from sglang_omni.models.nemotron_transcribe.config import (
 )
 from sglang_omni.models.nemotron_transcribe.engine_builder import (
     NemotronTranscribeEngineBuilder,
+)
+from sglang_omni.models.nemotron_transcribe.fp8_linear import (
+    FP8_DTYPE,
+    Fp8Linear,
+    attach_fp8_linears,
 )
 from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
@@ -81,6 +90,74 @@ def test_encoder_compilation_uses_resolved_decoder_concurrency(
     )
     assert encoder.dynamic_batches is expected_dynamic
     assert model.encoder_max_batch_size == 8
+    assert _unsupported_derived_weight_cache_error(model.perception) is None
+
+
+@pytest.mark.parametrize(
+    "perception_fp8,compile_perception,gemm_supported,keeps_fp8",
+    [
+        (True, False, True, True),
+        (True, True, True, True),
+        (True, False, False, False),
+        (False, False, True, False),
+    ],
+)
+def test_fp8_encoder_linears_need_the_option_and_fp8_gemms(
+    monkeypatch: pytest.MonkeyPatch,
+    perception_fp8: bool,
+    compile_perception: bool,
+    gemm_supported: bool,
+    keeps_fp8: bool,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder, "init_mm_embedding_cache", lambda size_bytes: None
+    )
+    monkeypatch.setattr(
+        engine_builder, "fp8_gemm_supported", lambda device: gemm_supported
+    )
+    linear = Fp8Linear.replacing(nn.Linear(16, 16, dtype=torch.bfloat16))
+    model = SimpleNamespace(perception=nn.Sequential(linear), encoder_max_batch_size=0)
+    builder = make_builder(compile_perception=compile_perception)
+    builder.perception_fp8 = perception_fp8
+    builder.setup_model_resources(
+        model,
+        SimpleNamespace(max_running_requests=1),
+        generation_cuda_graph_enabled=True,
+    )
+    assert isinstance(model.perception[0], Fp8Linear) is keeps_fp8
+    assert isinstance(model.perception[0], nn.Linear) is not keeps_fp8
+    rejects_updates = _unsupported_derived_weight_cache_error(model.perception)
+    assert (rejects_updates is not None) is keeps_fp8
+
+
+@pytest.mark.parametrize("checkpoint_fp8", [False, True])
+def test_fp8_weights_loaded_after_encoder_setup_stay_dense(
+    monkeypatch: pytest.MonkeyPatch, checkpoint_fp8: bool
+) -> None:
+    monkeypatch.setattr(
+        engine_builder, "init_mm_embedding_cache", lambda size_bytes: None
+    )
+    dense = nn.Linear(16, 16, dtype=torch.bfloat16)
+    linear = Fp8Linear.replacing(dense) if checkpoint_fp8 else dense
+    model = SimpleNamespace(perception=nn.Sequential(linear), encoder_max_batch_size=0)
+    builder = make_builder()
+    builder.perception_fp8 = False
+    builder.setup_model_resources(
+        model,
+        SimpleNamespace(max_running_requests=1),
+        generation_cuda_graph_enabled=True,
+    )
+    dense = model.perception[0]
+    weight = torch.randn(16, 16).to(FP8_DTYPE)
+    scale = torch.tensor(0.5)
+    loadable = attach_fp8_linears(
+        model.perception,
+        {"0.weight": weight, "0.weight_scale": scale, "0.input_scale": scale},
+    )
+
+    assert model.perception[0] is dense
+    assert loadable.keys() == {"0.weight"}
+    assert torch.equal(loadable["0.weight"], weight.float() * scale)
 
 
 def test_pre_lm_encoder_starts_after_model_setup(

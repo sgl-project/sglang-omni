@@ -295,9 +295,9 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer) const {
   return mx::add(
       residual,
       checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           mlp_input, prefix + ".mlp.gate_proj")),
-                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+          omni_common::Swiglu(
+              checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
+              checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
           prefix + ".mlp.down_proj"));
 }
 

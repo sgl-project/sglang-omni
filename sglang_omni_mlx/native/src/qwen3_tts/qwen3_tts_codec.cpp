@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -19,7 +18,6 @@ namespace {
 
 constexpr const char *kPrefix = "decoder";
 constexpr float kCodebookUsageEps = 1e-5f;
-constexpr float kSnakeEps = 1e-9f;
 constexpr float kConvNextNormEps = 1e-6f;
 constexpr std::array<int, 3> kResidualDilations = {1, 3, 9};
 // Note (Jiaxin Deng): the CUDA vocoder decodes a whole request in 300-frame
@@ -60,19 +58,6 @@ private:
   size_t previous_cache_limit_bytes_ = 0;
 };
 
-// The other half of each head, the first half negated.
-mx::array RotateHalf(const mx::array &x) {
-  const int half = x.shape(-1) / 2;
-  const mx::Shape &shape = x.shape();
-  mx::Shape stop = shape;
-  stop.back() = half;
-  mx::Shape start(shape.size(), 0);
-  const mx::array first = mx::slice(x, start, stop);
-  start.back() = half;
-  const mx::array second = mx::slice(x, start, shape);
-  return mx::concatenate({mx::negative(second), first}, -1);
-}
-
 bool EndsWith(const std::string &text, const std::string &suffix) {
   return text.size() >= suffix.size() &&
          text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
@@ -81,7 +66,8 @@ bool EndsWith(const std::string &text, const std::string &suffix) {
 } // namespace
 
 omni_common::WeightMap
-SpeechDecoder::PrepareWeights(omni_common::WeightMap weights) {
+SpeechDecoder::PrepareWeights(const nlohmann::json &config,
+                              omni_common::WeightMap weights) {
   omni_common::WeightMap prepared;
   const std::string usage_suffix = "._codebook.cluster_usage";
   for (auto &[name, array] : weights) {
@@ -115,6 +101,29 @@ SpeechDecoder::PrepareWeights(omni_common::WeightMap weights) {
       prepared.insert_or_assign(name, array);
     }
   }
+  // Transposed convolutions run as their stride-1 phases.
+  const nlohmann::json &decoder = config.at("decoder_config");
+  const auto phase = [&prepared](const std::string &name, int stride) {
+    mx::array &weight = prepared.at(name);
+    weight = omni_common::TransposedConvolutionPhases(weight, stride);
+  };
+  const auto ratios = decoder.at("upsampling_ratios").get<std::vector<int>>();
+  for (size_t stage = 0; stage < ratios.size(); ++stage) {
+    phase(std::string(kPrefix) + ".upsample." + std::to_string(stage) +
+              ".0.conv.weight",
+          ratios[stage]);
+  }
+  const auto rates = decoder.at("upsample_rates").get<std::vector<int>>();
+  for (size_t stage = 0; stage < rates.size(); ++stage) {
+    phase(std::string(kPrefix) + ".decoder." + std::to_string(stage + 1) +
+              ".block.1.conv.weight",
+          rates[stage]);
+  }
+  // Note (XXXXRT666): the checkpoint is float32; the decoder runs in float16,
+  // with Snake computed in float32.
+  for (auto &[name, array] : prepared) {
+    array = mx::astype(array, mx::float16);
+  }
   return prepared;
 }
 
@@ -126,8 +135,8 @@ SpeechDecoder::SpeechDecoder(
 
 SpeechDecoder::SpeechDecoder(const nlohmann::json &config,
                              omni_common::WeightMap weights)
-    : checkpoint_(PrepareWeights(std::move(weights)), nlohmann::json::object()),
-      inverse_frequencies_(0.0f) {
+    : checkpoint_(PrepareWeights(config, std::move(weights)),
+                  nlohmann::json::object()) {
   const nlohmann::json &decoder = config.at("decoder_config");
   codebook_count_ = decoder.at("num_quantizers").get<int>();
   semantic_codebook_count_ = decoder.at("num_semantic_quantizers").get<int>();
@@ -145,35 +154,13 @@ SpeechDecoder::SpeechDecoder(const nlohmann::json &config,
                              "many key/value heads as query heads");
   } else {
   }
-  const float rope_theta = decoder.at("rope_theta").get<float>();
-  inverse_frequencies_ = mx::divide(
-      mx::array(1.0f),
-      mx::power(mx::array(rope_theta),
-                mx::divide(mx::arange(0.0, static_cast<double>(head_dim_), 2.0,
-                                      mx::float32),
-                           mx::array(static_cast<float>(head_dim_)))));
-  mx::eval(inverse_frequencies_);
-}
-
-mx::array SpeechDecoder::RmsNorm(const mx::array &x,
-                                 const std::string &prefix) const {
-  const mx::array x_float = mx::astype(x, mx::float32);
-  const mx::array variance =
-      mx::mean(mx::power(x_float, mx::array(2.0f)), -1, true);
-  const mx::array normed = mx::multiply(
-      x_float, mx::rsqrt(mx::add(variance, mx::array(rms_norm_eps_))));
-  return mx::astype(
-      mx::multiply(checkpoint_.Weight(prefix + ".weight"), normed), x.dtype());
+  rope_theta_ = decoder.at("rope_theta").get<float>();
 }
 
 mx::array SpeechDecoder::Snake(const mx::array &x,
                                const std::string &prefix) const {
-  const mx::array alpha = mx::exp(checkpoint_.Weight(prefix + ".alpha"));
-  const mx::array beta = mx::exp(checkpoint_.Weight(prefix + ".beta"));
-  return mx::add(
-      x, mx::multiply(
-             mx::divide(mx::array(1.0f), mx::add(beta, mx::array(kSnakeEps))),
-             mx::power(mx::sin(mx::multiply(x, alpha)), mx::array(2.0f))));
+  return omni_common::Snake(x, checkpoint_.Weight(prefix + ".alpha"),
+                            checkpoint_.Weight(prefix + ".beta"), true);
 }
 
 mx::array SpeechDecoder::CausalConvolution(const mx::array &x,
@@ -194,26 +181,21 @@ mx::array SpeechDecoder::CausalConvolution(const mx::array &x,
 mx::array SpeechDecoder::TransposedConvolution(const mx::array &x,
                                                const std::string &prefix,
                                                int stride) const {
-  const mx::array &weight = checkpoint_.Weight(prefix + ".weight");
-  const mx::array y = mx::add(mx::conv_transpose1d(x, weight, stride),
-                              checkpoint_.Weight(prefix + ".bias"));
-  const int trim = weight.shape(1) - stride;
-  if (trim > 0) {
-    return mx::slice(y, {0, 0, 0}, {y.shape(0), y.shape(1) - trim, y.shape(2)});
-  } else {
-    return y;
-  }
+  const mx::array &phases = checkpoint_.Weight(prefix + ".weight");
+  const mx::array y = omni_common::ConvolveTransposed(x, phases, stride,
+                                                      phases.shape(1) * stride);
+  return mx::add(
+      mx::slice(y, {0, 0, 0}, {y.shape(0), x.shape(1) * stride, y.shape(2)}),
+      checkpoint_.Weight(prefix + ".bias"));
 }
 
-mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
-                                          const mx::array &cosines,
-                                          const mx::array &sines,
-                                          const mx::array &mask) const {
+mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer) const {
   const std::string prefix =
       std::string(kPrefix) + ".pre_transformer.layers." + std::to_string(layer);
   const int batch = x.shape(0);
   const int length = x.shape(1);
-  const mx::array normed = RmsNorm(x, prefix + ".input_layernorm");
+  const mx::array normed =
+      checkpoint_.RmsNorm(x, prefix + ".input_layernorm", rms_norm_eps_);
   const auto heads = [&](const std::string &projection) {
     return mx::transpose(
         mx::reshape(
@@ -222,16 +204,15 @@ mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
         {0, 2, 1, 3});
   };
   const auto rotate = [&](const mx::array &projected) {
-    return mx::add(mx::multiply(projected, cosines),
-                   mx::multiply(RotateHalf(projected), sines));
+    return mx::fast::rope(projected, head_dim_, false, rope_theta_, 1.0f, 0);
   };
-  const mx::array queries = rotate(heads("q_proj"));
-  const mx::array keys = rotate(heads("k_proj"));
-  const mx::array values = heads("v_proj");
+  // Note (Jiaxin Deng): the decoder's attention is causal within its
+  // sliding window, as the CUDA vocoder's; a full causal mask changes the
+  // samples of chunks longer than the window.
   const mx::array attended = mx::fast::scaled_dot_product_attention(
-      queries, keys, values,
+      rotate(heads("q_proj")), rotate(heads("k_proj")), heads("v_proj"),
       static_cast<float>(std::pow(static_cast<double>(head_dim_), -0.5)),
-      /*window_size=*/-1, "", mask);
+      sliding_window_frames_, "causal");
   const mx::array attention_output = checkpoint_.Linear(
       mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, length, -1}),
       prefix + ".self_attn.o_proj");
@@ -239,12 +220,12 @@ mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
       x,
       mx::multiply(checkpoint_.Weight(prefix + ".self_attn_layer_scale.scale"),
                    attention_output));
-  const mx::array mlp_input =
-      RmsNorm(hidden, prefix + ".post_attention_layernorm");
+  const mx::array mlp_input = checkpoint_.RmsNorm(
+      hidden, prefix + ".post_attention_layernorm", rms_norm_eps_);
   const mx::array mlp_output = checkpoint_.Linear(
-      mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                       mlp_input, prefix + ".mlp.gate_proj")),
-                   checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+      omni_common::Swiglu(
+          checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
+          checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
       prefix + ".mlp.down_proj");
   return mx::add(hidden, mx::multiply(checkpoint_.Weight(
                                           prefix + ".mlp_layer_scale.scale"),
@@ -268,9 +249,7 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
       const mx::array rows = checkpoint_.Embed(
           ids, quantizer_prefix + ".vq.layers." + std::to_string(codebook) +
                    ".codebook.embed");
-      sum = sum.has_value()
-                ? mx::add(*sum, rows)
-                : mx::add(mx::zeros(rows.shape(), mx::float32), rows);
+      sum = sum.has_value() ? mx::add(*sum, rows) : rows;
     }
     return mx::conv1d(
         *sum, checkpoint_.Weight(quantizer_prefix + ".output_proj.weight"));
@@ -286,31 +265,12 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
 
   const std::string transformer = prefix + ".pre_transformer";
   hidden = checkpoint_.Linear(hidden, transformer + ".input_proj");
-  const mx::array positions = mx::astype(mx::arange(frame_count), mx::float32);
-  const mx::array frequencies =
-      mx::transpose(mx::multiply(mx::reshape(inverse_frequencies_, {1, -1, 1}),
-                                 mx::reshape(positions, {1, 1, -1})),
-                    {0, 2, 1});
-  const mx::array angles = mx::concatenate({frequencies, frequencies}, -1);
-  const mx::array cosines = mx::expand_dims(mx::cos(angles), 1);
-  const mx::array sines = mx::expand_dims(mx::sin(angles), 1);
-  // Note (Jiaxin Deng): the decoder's attention is causal within its
-  // sliding window, as the CUDA vocoder's; a full causal mask changes the
-  // samples of chunks longer than the window.
-  const mx::array queries = mx::expand_dims(mx::arange(frame_count), 1);
-  const mx::array keys = mx::expand_dims(mx::arange(frame_count), 0);
-  const mx::array masked = mx::logical_or(
-      mx::less(queries, keys),
-      mx::less_equal(keys,
-                     mx::subtract(queries, mx::array(sliding_window_frames_))));
-  const mx::array mask =
-      mx::multiply(mx::astype(masked, mx::float32),
-                   mx::array(std::numeric_limits<float>::lowest()));
   for (int layer = 0; layer < transformer_layer_count_; ++layer) {
-    hidden = TransformerLayer(hidden, layer, cosines, sines, mask);
+    hidden = TransformerLayer(hidden, layer);
   }
-  hidden = checkpoint_.Linear(RmsNorm(hidden, transformer + ".norm"),
-                              transformer + ".output_proj");
+  hidden = checkpoint_.Linear(
+      checkpoint_.RmsNorm(hidden, transformer + ".norm", rms_norm_eps_),
+      transformer + ".output_proj");
 
   for (size_t stage = 0; stage < upsampling_ratios_.size(); ++stage) {
     const std::string stage_prefix =
@@ -345,12 +305,19 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
       x = CausalConvolution(x, unit_prefix + ".conv2.conv", 1, 1);
       wave = mx::add(x, wave);
     }
+    // Note (XXXXRT666): each stage's buffers are larger than the last's, so as
+    // one graph the freed ones stay live until the end; evaluated per stage
+    // and waited on, so the next stage reuses this one's buffers, a 19 s chunk
+    // peaks 1.5 GB lower.
+    mx::eval(wave);
   }
   const int output_stage = static_cast<int>(upsample_rates_.size()) + 1;
   wave = Snake(wave, stack + "." + std::to_string(output_stage));
   wave = CausalConvolution(
       wave, stack + "." + std::to_string(output_stage + 1) + ".conv", 1, 1);
-  return mx::reshape(mx::clip(wave, mx::array(-1.0f), mx::array(1.0f)), {-1});
+  return mx::reshape(mx::clip(mx::astype(wave, mx::float32), mx::array(-1.0f),
+                              mx::array(1.0f)),
+                     {-1});
 }
 
 SpeechStream::SpeechStream(const SpeechDecoder &decoder, bool streamed,

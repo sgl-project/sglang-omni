@@ -1,0 +1,89 @@
+{
+  "name": "notes-empty",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "",
+    "rows": [],
+    "edit": {
+      "id": "",
+      "draft": "",
+      "saving": false
+    },
+    "shortcut": {
+      "keys": "RightCommand",
+      "current_text": "Right ⌘",
+      "options": [
+        {
+          "label": "Off",
+          "keys": ""
+        },
+        {
+          "label": "Right ⌥",
+          "keys": "RightOption"
+        },
+        {
+          "label": "Right ⌥ ⇧",
+          "keys": "RightOption+Shift"
+        },
+        {
+          "label": "⌃ Right ⌥",
+          "keys": "Control+RightOption"
+        },
+        {
+          "label": "Right ⌘",
+          "keys": "RightCommand"
+        },
+        {
+          "label": "Right ⇧",
+          "keys": "RightShift"
+        },
+        {
+          "label": "fn",
+          "keys": "Fn"
+        },
+        {
+          "label": "fn ⇧",
+          "keys": "Fn+Shift"
+        },
+        {
+          "label": "fn ⌃",
+          "keys": "Fn+Control"
+        },
+        {
+          "label": "⌥Space",
+          "keys": "Option+Space"
+        },
+        {
+          "label": "⌃⌥Space",
+          "keys": "Control+Option+Space"
+        },
+        {
+          "label": "Custom…",
+          "keys": ""
+        }
+      ],
+      "problems": null,
+      "problem_codes": null,
+      "system_codes": null,
+      "used_by": null,
+      "empty_hint": "Press Right ⌘ in any app, speak, and press it again. What you say is saved here instead of typed.",
+      "set_hint": false,
+      "helper_records": false,
+      "selection": "Right ⌘",
+      "custom": false,
+      "typing": false,
+      "edited": false,
+      "text": "RightCommand",
+      "editing_text": "Right ⌘",
+      "parsed_keys": "RightCommand",
+      "parse_error": "",
+      "parse_code": "",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}
