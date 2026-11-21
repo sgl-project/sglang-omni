@@ -2,6 +2,8 @@ variable "SGLANG_TAG" {}
 variable "CANN_VERSION" {}
 variable "CANN_IMAGE" {}
 variable "SGLANG_IMAGE" {}
+variable "MODELSCOPE_VERSION" {}
+variable "EVALSCOPE_VERSION" {}
 
 target "sglang-910b" {
   context    = ".cache/sglang-910b"
@@ -11,9 +13,11 @@ target "sglang-910b" {
     (split("@", CANN_IMAGE)[0]) = "docker-image://${CANN_IMAGE}"
   }
   args = {
-    DEVICE_TYPE  = "910b"
-    CANN_VERSION = CANN_VERSION
-    SGLANG_TAG   = SGLANG_TAG
+    DEVICE_TYPE        = "910b"
+    CANN_VERSION       = CANN_VERSION
+    SGLANG_TAG         = SGLANG_TAG
+    MODELSCOPE_VERSION = MODELSCOPE_VERSION
+    EVALSCOPE_VERSION  = EVALSCOPE_VERSION
   }
 }
 

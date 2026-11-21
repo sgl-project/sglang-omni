@@ -37,14 +37,6 @@ def read_config(root: Path = ROOT) -> tuple[dict[str, str], list[dict[str, str]]
     cann_version = matrix[0]["cann"]
     if cann_version != matrix[1]["cann"]:
         raise ValueError("A3 and 950 must use the same CANN release")
-    elif not re.fullmatch(r"[0-9a-f]{64}", config["sglang-dockerfile-sha256"]):
-        raise ValueError("sglang-dockerfile-sha256 must be a SHA-256 digest")
-    elif not re.fullmatch(
-        rf"quay\.io/ascend/cann:{re.escape(cann_version)}-910b-ubuntu22\.04-py3\.12"
-        r"@sha256:[0-9a-f]{64}",
-        config["cann-image-910b"],
-    ):
-        raise ValueError(f"cann-image-910b must pin the CANN {cann_version} 910B image")
     else:
         matrix.append(
             {
@@ -52,7 +44,6 @@ def read_config(root: Path = ROOT) -> tuple[dict[str, str], list[dict[str, str]]
                 "cann": cann_version,
                 "base_image": "sglang-a2-base",
                 "sglang_tag": f"v{version}",
-                "cann_image": config["cann-image-910b"],
             }
         )
         return config, matrix
@@ -67,6 +58,8 @@ def main() -> None:
             "sglang-version",
             "sglang-dockerfile-sha256",
             "cann-image-910b",
+            "modelscope-version",
+            "evalscope-version",
             "base-image-a3",
             "base-image-950",
         ],
@@ -75,8 +68,28 @@ def main() -> None:
     args = parser.parse_args()
     config, matrix = read_config()
     if args.get:
-        print(config[args.get])
-    elif args.matrix:
+        config_value = config[args.get]
+        cann_version = matrix[0]["cann"]
+        if args.get == "sglang-dockerfile-sha256" and not re.fullmatch(
+            r"[0-9a-f]{64}", config_value
+        ):
+            raise ValueError("sglang-dockerfile-sha256 must be a SHA-256 digest")
+        elif args.get == "cann-image-910b" and not re.fullmatch(
+            rf"quay\.io/ascend/cann:{re.escape(cann_version)}-910b-ubuntu22\.04-py3\.12"
+            r"@sha256:[0-9a-f]{64}",
+            config_value,
+        ):
+            raise ValueError(
+                f"cann-image-910b must pin the CANN {cann_version} 910B image"
+            )
+        elif args.get in (
+            "modelscope-version",
+            "evalscope-version",
+        ) and not re.fullmatch(r"\d+\.\d+\.\d+", config_value):
+            raise ValueError(f"{args.get} must be a numeric X.Y.Z release")
+        else:
+            print(config_value)
+    else:
         print(json.dumps({"include": matrix}))
 
 

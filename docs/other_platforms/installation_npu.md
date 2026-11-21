@@ -143,7 +143,7 @@ visible devices (`gpu: 0` selects the first visible device).
 
 A3 and 950 builds use the SGLang images pinned in `pyproject_npu.toml`. For A2, `bash scripts/npu/prepare_sglang_a2.sh <output-directory>` prepares the NPU Dockerfile from the matching SGLang release and adds the `910b` to `A2` mapping for MemFabric. The CI workflow builds that SGLang base with 910B CANN and kernel packages, then passes it to the same `docker/npu.Dockerfile` used for A3 and 950.
 
-When upgrading SGLang, set `sglang-dockerfile-sha256` to the hash of the unmodified release Dockerfile. Check that its default kernel tag matches the SGLang release workflow and that `cann-image-910b` pins the corresponding ARM64-compatible CANN image.
+When upgrading SGLang, update `sglang-version`, the A3 and 950 image digests, and `sglang-dockerfile-sha256` together in `pyproject_npu.toml`. Check that the Dockerfile's default kernel tag matches the SGLang release workflow and that `cann-image-910b` pins the corresponding ARM64-compatible CANN image. Set `modelscope-version` and `evalscope-version` to the versions installed in those SGLang images. Updating an A3 image digest alone does not update the A2 build inputs.
 
 <a id="option-b-manual-install"></a>
 

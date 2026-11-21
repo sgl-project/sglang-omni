@@ -133,6 +133,8 @@ override-dependencies = [
 sglang-version = "0.5.23"
 sglang-dockerfile-sha256 = "e0cf30f1514c7a00806b1aebb5fbc4d316e83b9ebd685fcd49831e9d01a54b06"
 cann-image-910b = "quay.io/ascend/cann:9.1.0-910b-ubuntu22.04-py3.12@sha256:cfa76a9bcd84dd81c487d6d26edb8b95e2140525891009ccb6009e5cd2544d8e"
+modelscope-version = "1.40.2"
+evalscope-version = "1.14.1"
 base-image-a3 = "lmsysorg/sglang:v0.5.23-cann9.1.0-a3@sha256:dd3b73ce2368c8e404947059f0290c1a898664dd116e33da765ed0b9efc0e9e9"
 base-image-950 = "lmsysorg/sglang:v0.5.23-cann9.1.0-950@sha256:8a7d0b1dab849d2c6d441e5eab7a4e298bfbe8ba09a68e415ccf7bd6957fdad7"
 

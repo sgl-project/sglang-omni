@@ -90,7 +90,15 @@ jobs:
           python-version: '3.11'
       - name: Prepare the SGLang 910B Dockerfile
         if: matrix.device == '910b'
-        run: bash scripts/npu/prepare_sglang_a2.sh .cache/sglang-910b
+        id: prepare
+        run: |
+          cann_image=$(python scripts/npu/config.py --get cann-image-910b)
+          modelscope_version=$(python scripts/npu/config.py --get modelscope-version)
+          evalscope_version=$(python scripts/npu/config.py --get evalscope-version)
+          echo "cann_image=$cann_image" >> "$GITHUB_OUTPUT"
+          echo "modelscope_version=$modelscope_version" >> "$GITHUB_OUTPUT"
+          echo "evalscope_version=$evalscope_version" >> "$GITHUB_OUTPUT"
+          bash scripts/npu/prepare_sglang_a2.sh .cache/sglang-910b
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -133,7 +141,9 @@ jobs:
         env:
           SGLANG_TAG: ${{ matrix.sglang_tag }}
           CANN_VERSION: ${{ matrix.cann }}
-          CANN_IMAGE: ${{ matrix.cann_image }}
+          CANN_IMAGE: ${{ steps.prepare.outputs.cann_image }}
+          MODELSCOPE_VERSION: ${{ steps.prepare.outputs.modelscope_version }}
+          EVALSCOPE_VERSION: ${{ steps.prepare.outputs.evalscope_version }}
           SGLANG_IMAGE: ${{ matrix.base_image }}
         with:
           source: .
@@ -150,10 +160,16 @@ jobs:
         if: needs.preprocess.outputs.publish == 'true'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          DIGEST: ${{ steps.build.outputs.digest || fromJSON(steps.bake.outputs.metadata)['omni-910b']['containerimage.digest'] }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          BAKE_METADATA: ${{ steps.bake.outputs.metadata }}
           DEVICE: ${{ matrix.device }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
+          if [[ "$DEVICE" == 910b ]]; then
+            DIGEST=$(jq -er '.["omni-910b"]["containerimage.digest"]' <<< "$BAKE_METADATA")
+          else
+            DIGEST="$BUILD_DIGEST"
+          fi
           {
             echo "### NPU image: $DEVICE"
             echo "Image: $IMAGE@$DIGEST"
