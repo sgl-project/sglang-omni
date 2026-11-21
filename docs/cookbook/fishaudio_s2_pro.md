@@ -1,6 +1,6 @@
 # Fish Audio S2-Pro
 
-[Fish Audio S2-Pro](https://huggingface.co/fishaudio/s2-pro) is a text-to-speech model that generates **44.1 kHz** speech through the OpenAI-compatible `/v1/audio/speech` API. It accepts text alone or a reference clip for voice cloning, and can stream audio during generation.
+[Fish Audio S2-Pro](https://huggingface.co/fishaudio/s2-pro) generates speech at a native sample rate of **44.1 kHz**. The OpenAI-compatible `/v1/audio/speech` API accepts text alone or a reference clip for voice cloning, and can stream audio during generation.
 
 ## Prerequisites
 
@@ -78,7 +78,7 @@ For one clip, you can use `ref_audio` and optional `ref_text`. If you also send 
 
 Add `"stream": true` and `"response_format": "pcm"` to either request above to receive audio while generation is still running.
 
-Use the shared [streaming examples](../basic_usage/tts.md#raw-wav-and-pcm) or [Python streaming client](../basic_usage/tts.md#python-streaming-client) with the S2-Pro fields above. S2-Pro outputs **44.1 kHz, signed 16-bit little-endian mono PCM**. The Python client reads the sample rate from the response headers.
+Use the shared [streaming examples](../basic_usage/tts.md#raw-wav-and-pcm) or [Python streaming client](../basic_usage/tts.md#python-streaming-client) with the S2-Pro fields above. The Python server streams **signed 16-bit little-endian mono PCM** at 44.1 kHz by default. To request 16 kHz output, add `"sample_rate": 16000` to the JSON body. Use the `X-Sample-Rate` response header for playback.
 
 A streamed request decodes in 40-frame windows, then every 45 frames, with 20 frames of overlap and a 512-sample crossfade. Streaming PCM can differ from non-streaming WAV even with the same seed. For interactive playback, the [S2-Pro playground](../basic_usage/tts.md#interactive-playground) consumes the same raw PCM stream.
 
