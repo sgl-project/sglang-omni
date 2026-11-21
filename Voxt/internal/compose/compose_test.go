@@ -428,6 +428,9 @@ func TestUntranslated(t *testing.T) {
 		{"我们周五发布", "我们周五发布 Release", "en", true},
 		{"我们周五发布", "我们在周五发版", "en", true}, // still Chinese
 		{"我们周五发布", "We ship on Friday.", "en", false},
+		{"<指令>你好</指令>", "<指令>Hello</指令>", "en", false},
+		{"<指令>你好</指令>", "<指令>你好</指令>", "en", true},
+		{"<指令>你好</指令>", "<指令>你好 Hello</指令>", "en", true},
 		{"我们周五发布", "我们周五发布", "zh-Hans", false},       // already Chinese: nothing to redo
 		{"Good morning", "Good morning", "en", true}, // Latin into Latin: only the same text
 		{"Good morning", "Bonjour", "fr", false},
