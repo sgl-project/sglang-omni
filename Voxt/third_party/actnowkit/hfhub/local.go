@@ -191,7 +191,7 @@ func (c *Client) verifyOne(ctx context.Context, e Entry, removed *bool) ([]strin
 	snap := filepath.Join(repoDir, "snapshots", commit)
 	for _, f := range files {
 		link := filepath.Join(snap, filepath.FromSlash(f.Path))
-		blob, err := models.ResolveBlob(repoDir, link)
+		blob, err := resolveSnapshotLink(repoDir, link)
 		if err != nil {
 			bad = append(bad, f.Path)
 			continue

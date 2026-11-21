@@ -25,15 +25,18 @@ import (
 const OpImport = "import"
 
 // OriginImported marks a claim made by Import.
+
 const OriginImported = "imported"
 
 // KindImported is the schema kind of models/imported/<bundle id>.json.
+
 const KindImported = "models.imported"
 
 // ImportedFile is $FAMILY/models/imported/<bundle id>.json: what this app
 // already brought over into which $HUB, so that a model the user deletes
 // afterwards is not imported again at the next launch. Only that app
 // writes it.
+
 func ImportedFile(d family.Dir, bundleID string) string {
 	return filepath.Join(d.ModelsDir(), "imported", bundleID+".json")
 }
@@ -88,6 +91,7 @@ const (
 )
 
 // ImportReserve is the free space a copy across volumes leaves.
+
 const ImportReserve int64 = 2e9
 
 // Import brings this app's models into s.Hub from the Hugging Face caches
@@ -122,6 +126,7 @@ const ImportReserve int64 = 2e9
 // not come back; busy, no-space and failed ones are tried again at the
 // next call. Call it at launch before showing model states, and after the
 // model folder changed. It is safe to run from several apps at once.
+
 func (s *Store) Import(ctx context.Context, from []string, backup bool, want ...Claim) ([]ImportResult, error) {
 	var sources []string
 	for _, f := range from {
@@ -284,6 +289,7 @@ func (s *Store) importOne(ctx context.Context, sources []string, w Claim, backup
 var errNoSpace = errors.New("not enough free space to copy across volumes")
 
 // srcFile is a file of the source snapshot.
+
 type srcFile struct {
 	rel  string // path in the snapshot, slash-separated
 	blob string // blob name in the destination
@@ -375,6 +381,7 @@ func linkSnapshotFrom(src, dst string, ref Ref) (linked, copied int64, err error
 			copied += f.size
 		}
 	}
+
 	// The snapshot, built beside its place and renamed in.
 	snaps := filepath.Join(repoDir, "snapshots")
 	final := filepath.Join(snaps, ref.Revision)
@@ -424,35 +431,6 @@ func linkSnapshotFrom(src, dst string, ref Ref) (linked, copied int64, err error
 	return linked, copied, RecordBlobSizes(dst, ref.Repo, sizes)
 }
 
-// linkFiles makes <dir>/<rel> → ../../blobs/<blob> (relative, like
-// huggingface_hub); fresh: dir is new.
-func linkFiles(dir string, files []srcFile, fresh bool) error {
-	for _, f := range files {
-		link := filepath.Join(dir, filepath.FromSlash(f.rel))
-		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
-			return err
-		}
-		target := strings.Repeat("../", strings.Count(f.rel, "/")+2) + "blobs/" + f.blob
-		if !fresh {
-			if cur, err := os.Readlink(link); err == nil && cur == target {
-				continue
-			}
-			_ = os.Remove(link)
-		}
-		if err := os.Symlink(target, link); err == nil {
-			continue
-		}
-		blob := filepath.Join(dir, "..", "..", "blobs", f.blob)
-		if err := os.Link(blob, link); err == nil {
-			continue
-		}
-		if err := copyBlob(blob, link, f.size); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // linkBlob hard-links src to dst (replacing a wrong-sized dst).
 func linkBlob(src, dst string) error {
 	tmp := dst + ".import-tmp"
@@ -465,6 +443,19 @@ func linkBlob(src, dst string) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+func hashFile(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // copyBlob copies src to dst through a temporary file.
@@ -491,17 +482,4 @@ func copyBlob(src, dst string, size int64) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
-}
-
-func hashFile(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

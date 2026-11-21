@@ -1,33 +1,25 @@
 diff --git a/conformance/check.go b/conformance/check.go
-index 31ea4375..8af544f2 100644
+index 31ea437..d1d1f3c 100644
 --- a/conformance/check.go
 +++ b/conformance/check.go
-@@ -7,6 +7,7 @@ import (
- 	"os"
- 	"path/filepath"
- 	"regexp"
-+	"runtime"
- 	"strings"
- 	"time"
- 
-@@ -181,13 +182,13 @@ func Check(d family.Dir, hub string, sys registry.System) []Problem {
+@@ -181,13 +181,13 @@ func Check(d family.Dir, hub string, sys registry.System) []Problem {
  			return nil
  		}
  		if de.IsDir() {
 -			if fi.Mode().Perm()&0o077 != 0 {
-+			if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
++			if !permBitsOK(fi) {
  				add("warning", p, "directory mode %04o, want 0700", fi.Mode().Perm())
  			}
  			return nil
  		}
  		name := de.Name()
 -		if fi.Mode().Perm()&0o077 != 0 {
-+		if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
++		if !permBitsOK(fi) {
  			add("warning", p, "file mode %04o, want 0600", fi.Mode().Perm())
  		}
  		if strings.HasPrefix(name, ".") && strings.Contains(name, ".tmp-") && time.Since(fi.ModTime()) > time.Hour {
 diff --git a/conformance/conformance_test.go b/conformance/conformance_test.go
-index 6cd3d217..241000a0 100644
+index 6cd3d21..241000a 100644
 --- a/conformance/conformance_test.go
 +++ b/conformance/conformance_test.go
 @@ -150,7 +150,11 @@ func TestCheck(t *testing.T) {
@@ -44,33 +36,85 @@ index 6cd3d217..241000a0 100644
  			t.Errorf("no problem mentions %q: %v", want, problems)
  		}
 diff --git a/conformance/fixture.go b/conformance/fixture.go
-index 40244bf0..2dbb5dd6 100644
+index 40244bf..18d7235 100644
 --- a/conformance/fixture.go
 +++ b/conformance/fixture.go
-@@ -151,7 +151,9 @@ func (fx *Fixture) Install(r Repo) {
+@@ -151,7 +151,7 @@ func (fx *Fixture) Install(r Repo) {
  		must(fx.T, os.MkdirAll(filepath.Dir(link), 0o755))
  		os.Remove(link)
  		target := strings.Repeat("../", strings.Count(f.Path, "/")+2) + "blobs/" + f.BlobID()
 -		must(fx.T, os.Symlink(target, link))
-+		if err := os.Symlink(target, link); err != nil {
-+			must(fx.T, os.Link(blob, link))
-+		}
++		linkFixtureBlob(fx, blob, target, link)
  	}
  	must(fx.T, os.MkdirAll(filepath.Join(dir, "refs"), 0o755))
  	must(fx.T, os.WriteFile(filepath.Join(dir, "refs", "main"), []byte(r.Ref.Revision), 0o644))
+diff --git a/conformance/fixture_link_unix.go b/conformance/fixture_link_unix.go
+new file mode 100644
+index 0000000..bb3829c
+--- /dev/null
++++ b/conformance/fixture_link_unix.go
+@@ -0,0 +1,10 @@
++//go:build !windows
++
++package conformance
++
++import "os"
++
++// linkFixtureBlob symlinks the fixture's snapshot entry (Windows: hard link).
++func linkFixtureBlob(fx *Fixture, _, target, link string) {
++	must(fx.T, os.Symlink(target, link))
++}
+diff --git a/conformance/fixture_link_windows.go b/conformance/fixture_link_windows.go
+new file mode 100644
+index 0000000..61662a5
+--- /dev/null
++++ b/conformance/fixture_link_windows.go
+@@ -0,0 +1,12 @@
++//go:build windows
++
++package conformance
++
++import "os"
++
++// linkFixtureBlob links the fixture's snapshot entry: symlink, else hard link.
++func linkFixtureBlob(fx *Fixture, blob, target, link string) {
++	if err := os.Symlink(target, link); err != nil {
++		must(fx.T, os.Link(blob, link))
++	}
++}
+diff --git a/conformance/permbits_unix.go b/conformance/permbits_unix.go
+new file mode 100644
+index 0000000..283f4fb
+--- /dev/null
++++ b/conformance/permbits_unix.go
+@@ -0,0 +1,8 @@
++//go:build !windows
++
++package conformance
++
++import "os"
++
++// permBitsOK is the family directory's privacy check (0600/0700).
++func permBitsOK(fi os.FileInfo) bool { return fi.Mode().Perm()&0o077 == 0 }
+diff --git a/conformance/permbits_windows.go b/conformance/permbits_windows.go
+new file mode 100644
+index 0000000..fc782d5
+--- /dev/null
++++ b/conformance/permbits_windows.go
+@@ -0,0 +1,8 @@
++//go:build windows
++
++package conformance
++
++import "os"
++
++// permBitsOK: Windows has no POSIX permission bits to check.
++func permBitsOK(os.FileInfo) bool { return true }
 diff --git a/family/atomic.go b/family/atomic.go
-index 96a5a77f..c0607f52 100644
+index 96a5a77..b3a3269 100644
 --- a/family/atomic.go
 +++ b/family/atomic.go
-@@ -6,6 +6,7 @@ import (
- 	"fmt"
- 	"os"
- 	"path/filepath"
-+	"runtime"
- 	"strings"
- 	"time"
- )
-@@ -23,7 +24,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+@@ -23,7 +23,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
  	if err != nil {
  		return err
  	}
@@ -79,25 +123,49 @@ index 96a5a77f..c0607f52 100644
  		os.Remove(tmp)
  		return err
  	}
-@@ -31,6 +32,16 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
- 	return nil
- }
- 
+diff --git a/family/atomic_unix.go b/family/atomic_unix.go
+new file mode 100644
+index 0000000..173d1f6
+--- /dev/null
++++ b/family/atomic_unix.go
+@@ -0,0 +1,10 @@
++//go:build !windows
++
++package family
++
++import "os"
++
++// renameFile renames a file (Windows retries while another process holds it).
++func renameFile(oldPath, newPath string) error {
++	return os.Rename(oldPath, newPath)
++}
+diff --git a/family/atomic_windows.go b/family/atomic_windows.go
+new file mode 100644
+index 0000000..31cb9cc
+--- /dev/null
++++ b/family/atomic_windows.go
+@@ -0,0 +1,19 @@
++//go:build windows
++
++package family
++
++import (
++	"os"
++	"time"
++)
++
++// renameFile retries while a reader or an antivirus scan holds the file.
 +func renameFile(oldPath, newPath string) error {
 +	for attempt := 0; ; attempt++ {
 +		err := os.Rename(oldPath, newPath)
-+		if err == nil || runtime.GOOS != "windows" || attempt == 99 {
++		if err == nil || attempt == 99 {
 +			return err
 +		}
 +		time.Sleep(5 * time.Millisecond)
 +	}
 +}
-+
- // writeTemp writes data to a new temporary file beside path and returns
- // its name.
- func writeTemp(path string, data []byte, perm os.FileMode) (string, error) {
 diff --git a/family/family_test.go b/family/family_test.go
-index 784730ea..22372005 100644
+index 784730e..2237200 100644
 --- a/family/family_test.go
 +++ b/family/family_test.go
 @@ -6,6 +6,7 @@ import (
@@ -120,7 +188,7 @@ index 784730ea..22372005 100644
  	}
  	stale := filepath.Join(dir, "sub", ".f.json.tmp-1-abc")
 diff --git a/family/jsonfile.go b/family/jsonfile.go
-index c0d4463d..997b13c5 100644
+index c0d4463..997b13c 100644
 --- a/family/jsonfile.go
 +++ b/family/jsonfile.go
 @@ -90,7 +90,7 @@ func Load(path, kind string, major int, v any) error {
@@ -134,7 +202,7 @@ index c0d4463d..997b13c5 100644
  	}
 diff --git a/family/jsonfile_other.go b/family/jsonfile_other.go
 new file mode 100644
-index 00000000..4f0e5286
+index 0000000..4f0e528
 --- /dev/null
 +++ b/family/jsonfile_other.go
 @@ -0,0 +1,7 @@
@@ -147,7 +215,7 @@ index 00000000..4f0e5286
 +func openForLimitedRead(path string) (*os.File, error) { return os.Open(path) }
 diff --git a/family/jsonfile_windows.go b/family/jsonfile_windows.go
 new file mode 100644
-index 00000000..ddef2eac
+index 0000000..ddef2ea
 --- /dev/null
 +++ b/family/jsonfile_windows.go
 @@ -0,0 +1,23 @@
@@ -175,7 +243,7 @@ index 00000000..ddef2eac
 +	return os.NewFile(uintptr(handle), path), nil
 +}
 diff --git a/family/lock_other.go b/family/lock_other.go
-index 30f1272a..2e32b542 100644
+index 30f1272..2e32b54 100644
 --- a/family/lock_other.go
 +++ b/family/lock_other.go
 @@ -1,4 +1,4 @@
@@ -186,7 +254,7 @@ index 30f1272a..2e32b542 100644
  
 diff --git a/family/lock_windows.go b/family/lock_windows.go
 new file mode 100644
-index 00000000..1f683ce6
+index 0000000..1f683ce
 --- /dev/null
 +++ b/family/lock_windows.go
 @@ -0,0 +1,83 @@
@@ -274,7 +342,7 @@ index 00000000..1f683ce6
 +	return exitCode == stillActive
 +}
 diff --git a/go.mod b/go.mod
-index 4ae2526c..2f23fab0 100644
+index 4ae2526..2f23fab 100644
 --- a/go.mod
 +++ b/go.mod
 @@ -2,4 +2,7 @@ module github.com/hehehai/actnowkit
@@ -287,7 +355,7 @@ index 4ae2526c..2f23fab0 100644
 +	golang.org/x/sys v0.50.0
 +)
 diff --git a/go.sum b/go.sum
-index 4ca215bf..54623702 100644
+index 4ca215b..5462370 100644
 --- a/go.sum
 +++ b/go.sum
 @@ -1,2 +1,4 @@
@@ -296,80 +364,29 @@ index 4ca215bf..54623702 100644
 +golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=
 +golang.org/x/sys v0.50.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 diff --git a/hfhub/cache_files.go b/hfhub/cache_files.go
-index ebca1619..0465107f 100644
+index ebca161..826a389 100644
 --- a/hfhub/cache_files.go
 +++ b/hfhub/cache_files.go
-@@ -13,7 +13,9 @@ import (
- 	"io"
- 	"os"
- 	"path/filepath"
-+	"runtime"
- 	"strings"
-+	"time"
- )
- 
- // checkBlob hashes a file: sha256 for LFS files, the git blob id for others.
-@@ -85,7 +87,17 @@ func writeAtomic(path string, data []byte) error {
+@@ -85,7 +85,7 @@ func writeAtomic(path string, data []byte) error {
  		os.Remove(tmp.Name())
  		return err
  	}
 -	return os.Rename(tmp.Name(), path)
-+	for attempt := 0; ; attempt++ {
-+		err := os.Rename(tmp.Name(), path)
-+		if err == nil {
-+			return nil
-+		}
-+		if runtime.GOOS != "windows" || attempt == 99 {
-+			os.Remove(tmp.Name())
-+			return err
-+		}
-+		time.Sleep(5 * time.Millisecond)
-+	}
++	return renameFile(tmp.Name(), path)
  }
  
  // linkSnapshot makes snapshots/<commit>/<path> → ../../blobs/<blob> for
-@@ -113,7 +125,7 @@ func linkSnapshot(repoDir, commit string, files []remoteFile) error {
+@@ -113,7 +113,7 @@ func linkSnapshot(repoDir, commit string, files []remoteFile) error {
  			continue
  		}
  		os.Remove(link)
 -		if err := os.Symlink(target, link); err != nil {
-+		if err := linkOrCopy(target, link, filepath.Join(repoDir, "blobs", f.blob)); err != nil {
++		if err := linkBlobFile(target, link, filepath.Join(repoDir, "blobs", f.blob)); err != nil {
  			return err
  		}
  	}
-@@ -122,3 +134,30 @@ func linkSnapshot(repoDir, commit string, files []remoteFile) error {
- 	}
- 	return nil
- }
-+
-+func linkOrCopy(target, link, blob string) error {
-+	if err := os.Symlink(target, link); err == nil {
-+		return nil
-+	}
-+	if err := os.Link(blob, link); err == nil {
-+		return nil
-+	}
-+	in, err := os.Open(blob)
-+	if err != nil {
-+		return err
-+	}
-+	defer in.Close()
-+	info, err := in.Stat()
-+	if err != nil {
-+		return err
-+	}
-+	out, err := os.OpenFile(link, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
-+	if err != nil {
-+		return err
-+	}
-+	_, err = io.Copy(out, in)
-+	if closeErr := out.Close(); err == nil {
-+		err = closeErr
-+	}
-+	return err
-+}
 diff --git a/hfhub/client_test.go b/hfhub/client_test.go
-index 143f178e..1da37f64 100644
+index 143f178..154aaf3 100644
 --- a/hfhub/client_test.go
 +++ b/hfhub/client_test.go
 @@ -14,6 +14,7 @@ import (
@@ -410,7 +427,7 @@ index 143f178e..1da37f64 100644
  	// keeps it.
  	l, _ := c.Status(ctx, e)
 -	shared, _ := os.Readlink(filepath.Join(l.Snapshot, "config.json"))
-+	shared, _ := models.ResolveBlob(RepoDir(c.opts.CacheDir, testRepo), filepath.Join(l.Snapshot, "config.json"))
++	shared, _ := resolveSnapshotLink(RepoDir(c.opts.CacheDir, testRepo), filepath.Join(l.Snapshot, "config.json"))
  	old := filepath.Join(repo, "snapshots", strings.Repeat("f", 40))
  	os.MkdirAll(old, 0o755)
 -	os.Symlink(shared, filepath.Join(old, "config.json"))
@@ -455,7 +472,7 @@ index 143f178e..1da37f64 100644
  		t.Errorf("with weights: %+v", l)
  	}
 diff --git a/hfhub/disk_other.go b/hfhub/disk_other.go
-index c564d115..b3854dcb 100644
+index c564d11..b3854dc 100644
 --- a/hfhub/disk_other.go
 +++ b/hfhub/disk_other.go
 @@ -1,4 +1,4 @@
@@ -466,7 +483,7 @@ index c564d115..b3854dcb 100644
  
 diff --git a/hfhub/disk_windows.go b/hfhub/disk_windows.go
 new file mode 100644
-index 00000000..129f1d62
+index 0000000..129f1d6
 --- /dev/null
 +++ b/hfhub/disk_windows.go
 @@ -0,0 +1,31 @@
@@ -502,49 +519,254 @@ index 00000000..129f1d62
 +	}
 +}
 diff --git a/hfhub/download.go b/hfhub/download.go
-index ff192ede..e268ee53 100644
+index ff192ed..0cf1e33 100644
 --- a/hfhub/download.go
 +++ b/hfhub/download.go
-@@ -11,6 +11,7 @@ import (
- 	"net/http"
- 	"os"
- 	"path/filepath"
-+	"runtime"
- 	"strings"
- 	"sync"
- 	"sync/atomic"
-@@ -621,13 +622,28 @@ func (c *Client) finishFile(ctx context.Context, fs *fileState) error {
- 		return err
+@@ -28,6 +28,7 @@ type task struct {
+ 	to    int64 // exclusive
+ }
+ 
++
+ // fileState is a blob being downloaded, its lock held.
+ type fileState struct {
+ 	remoteFile
+@@ -40,6 +41,7 @@ type fileState struct {
+ 	closed bool
+ }
+ 
++
+ // close closes the file and releases the blob lock. Safe twice.
+ func (fs *fileState) close() {
+ 	fs.mu.Lock()
+@@ -52,6 +54,7 @@ func (fs *fileState) close() {
+ 	fs.lock.Release()
+ }
+ 
++
+ // finishAttempts bounds how often a download goes back to fetching when
+ // blobs vanished between its shared and exclusive repo locks (a deletion
+ // in between).
+@@ -62,6 +65,7 @@ const finishAttempts = 3
+ // error leaves what was fetched for resuming. With Options.Store the
+ // repos are claimed: the main one while its snapshot is finished, the
+ // auxiliary ones after it.
++
+ func (c *Client) Download(ctx context.Context, e Entry, progress func(Progress)) error {
+ 	defer c.lockRepo(e.Repo)()
+ 	plans, sum, err := c.planAll(ctx, e)
+@@ -103,6 +107,7 @@ func (c *Client) Download(ctx context.Context, e Entry, progress func(Progress))
+ 	return nil
+ }
+ 
++
+ // fetchRepo downloads one repo's plan holding its repo lock: shared while
+ // fetching blobs, exclusive while finishing the snapshot. It returns the
+ // repo's claim (nil without a Store); the main repo's is already made.
+@@ -138,6 +143,7 @@ func (c *Client) fetchRepo(ctx context.Context, p *plan, progress func(Progress)
+ 	return nil, lastErr
+ }
+ 
++
+ // missingBlobs are the paths of p whose blobs are not in place.
+ func (c *Client) missingBlobs(p *plan) []string {
+ 	var missing []string
+@@ -149,6 +155,7 @@ func (c *Client) missingBlobs(p *plan) []string {
+ 	return missing
+ }
+ 
++
+ // finishRepo links the snapshot and writes the ref (the caller holds the
+ // repo lock exclusively), then claims the main repo.
+ func (c *Client) finishRepo(ctx context.Context, p *plan, fetched bool) (*models.Claim, error) {
+@@ -209,6 +216,7 @@ func (c *Client) finishRepo(ctx context.Context, p *plan, fetched bool) (*models
+ 	return &claim, nil
+ }
+ 
++
+ // fetchBlobs downloads the blobs of a plan that are not in place, each
+ // holding its blob lock. It reports whether it wrote any.
+ func (c *Client) fetchBlobs(ctx context.Context, p *plan, progress func(Progress)) (bool, error) {
+@@ -385,6 +393,7 @@ func (c *Client) fetchBlobs(ctx context.Context, p *plan, progress func(Progress
+ 	return fetched.Load(), nil
+ }
+ 
++
+ // waitBlob waits for a blob lock another process holds, calling waiting
+ // with its owner's bundle id at every try.
+ func (c *Client) waitBlob(ctx context.Context, repo, blob string, waiting func(owner string)) (*models.HeldLock, error) {
+@@ -427,6 +436,7 @@ func (c *Client) waitBlob(ctx context.Context, repo, blob string, waiting func(o
  	}
- 	if !ok {
+ }
+ 
++
+ // prepare opens a blob's .incomplete file for writing (its lock is held)
+ // and lists the tasks still to do, resuming what is there; have is the
+ // bytes already written.
+@@ -471,6 +481,7 @@ func (c *Client) prepare(f remoteFile, final string, lock *models.HeldLock) (fs
+ 	return fs, tasks, pt.done, nil
+ }
+ 
++
+ // throttle calls fn at most once every d, and always when final.
+ func throttle(d time.Duration, fn func(final bool)) func(final bool) {
+ 	var mu sync.Mutex
+@@ -486,6 +497,7 @@ func throttle(d time.Duration, fn func(final bool)) func(final bool) {
+ 	}
+ }
+ 
++
+ // fetch downloads one task, retrying transient failures from where it got.
+ func (c *Client) fetch(ctx context.Context, p *plan, t task, add func(int64)) error {
+ 	u := p.ep + "/" + p.repo + "/resolve/" + p.commit + "/" + escapePath(t.file.Path)
+@@ -516,6 +528,7 @@ func (c *Client) fetch(ctx context.Context, p *plan, t task, add func(int64)) er
+ 	return err
+ }
+ 
++
+ type permanent struct{ error }
+ 
+ func (p permanent) Unwrap() error { return p.error }
+@@ -525,6 +538,7 @@ func retryable(err error) bool {
+ 	return !errors.As(err, &pe)
+ }
+ 
++
+ // fetchRange writes bytes [from, t.to) of the file at their offsets and
+ // returns how many it wrote.
+ func (c *Client) fetchRange(ctx context.Context, ep, u, token string, t task, from int64, add func(int64)) (int64, error) {
+@@ -588,6 +602,7 @@ func (c *Client) fetchRange(ctx context.Context, ep, u, token string, t task, fr
+ 	return off - from, nil
+ }
+ 
++
+ // taskDone records a finished task and finishes its file after the last.
+ func (c *Client) taskDone(ctx context.Context, t task) error {
+ 	fs := t.file
+@@ -608,26 +623,3 @@ func (c *Client) taskDone(ctx context.Context, t task) error {
+ 	}
+ 	return nil
+ }
+-
+-// finishFile checks a complete .incomplete blob, moves it in place and
+-// releases its lock.
+-func (c *Client) finishFile(ctx context.Context, fs *fileState) error {
+-	defer fs.close()
+-	if err := fs.f.Sync(); err != nil {
+-		return err
+-	}
+-	ok, err := checkBlob(ctx, fs.path, fs.remoteFile)
+-	if err != nil {
+-		return err
+-	}
+-	if !ok {
+-		os.Remove(fs.path)
+-		os.Remove(fs.path + ".parts")
+-		return fmt.Errorf("%s: %w", fs.Path, ErrChecksum)
+-	}
+-	if err := os.Rename(fs.path, strings.TrimSuffix(fs.path, ".incomplete")); err != nil {
+-		return err
+-	}
+-	os.Remove(fs.path + ".parts")
+-	return nil
+-}
+diff --git a/hfhub/download_finish_unix.go b/hfhub/download_finish_unix.go
+new file mode 100644
+index 0000000..8e3c4c4
+--- /dev/null
++++ b/hfhub/download_finish_unix.go
+@@ -0,0 +1,34 @@
++//go:build !windows
++
++package hfhub
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"strings"
++)
++
++
++// finishFile checks a complete .incomplete blob, moves it in place and
++// releases its lock.
++func (c *Client) finishFile(ctx context.Context, fs *fileState) error {
++	defer fs.close()
++	if err := fs.f.Sync(); err != nil {
++		return err
++	}
++	ok, err := checkBlob(ctx, fs.path, fs.remoteFile)
++	if err != nil {
++		return err
++	}
++	if !ok {
++		os.Remove(fs.path)
++		os.Remove(fs.path + ".parts")
++		return fmt.Errorf("%s: %w", fs.Path, ErrChecksum)
++	}
++	if err := os.Rename(fs.path, strings.TrimSuffix(fs.path, ".incomplete")); err != nil {
++		return err
++	}
++	os.Remove(fs.path + ".parts")
++	return nil
++}
+diff --git a/hfhub/download_finish_windows.go b/hfhub/download_finish_windows.go
+new file mode 100644
+index 0000000..3113d06
+--- /dev/null
++++ b/hfhub/download_finish_windows.go
+@@ -0,0 +1,50 @@
++//go:build windows
++
++package hfhub
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"strings"
++	"time"
++)
++
++
++// finishFile checks a complete .incomplete blob, moves it in place and
++// releases its lock.
++func (c *Client) finishFile(ctx context.Context, fs *fileState) error {
++	defer fs.close()
++	if err := fs.f.Sync(); err != nil {
++		return err
++	}
++	ok, err := checkBlob(ctx, fs.path, fs.remoteFile)
++	if err != nil {
++		return err
++	}
++	if !ok {
 +		if err := fs.f.Close(); err != nil {
 +			return err
 +		}
- 		os.Remove(fs.path)
- 		os.Remove(fs.path + ".parts")
- 		return fmt.Errorf("%s: %w", fs.Path, ErrChecksum)
- 	}
++		os.Remove(fs.path)
++		os.Remove(fs.path + ".parts")
++		return fmt.Errorf("%s: %w", fs.Path, ErrChecksum)
++	}
 +	if err := fs.f.Close(); err != nil {
 +		return err
 +	}
- 	if err := os.Rename(fs.path, strings.TrimSuffix(fs.path, ".incomplete")); err != nil {
- 		return err
- 	}
--	os.Remove(fs.path + ".parts")
++	if err := os.Rename(fs.path, strings.TrimSuffix(fs.path, ".incomplete")); err != nil {
++		return err
++	}
 +	for attempt := 0; ; attempt++ {
 +		err := os.Remove(fs.path + ".parts")
 +		if err == nil || os.IsNotExist(err) {
 +			break
 +		}
-+		if runtime.GOOS != "windows" || attempt == 99 {
++		if attempt == 99 {
 +			break
 +		}
 +		time.Sleep(5 * time.Millisecond)
 +	}
- 	return nil
- }
++	return nil
++}
 diff --git a/hfhub/family_test.go b/hfhub/family_test.go
-index cbf435da..468d150d 100644
+index cbf435d..610eb14 100644
 --- a/hfhub/family_test.go
 +++ b/hfhub/family_test.go
 @@ -80,7 +80,7 @@ func wait(t *testing.T, what string, ch <-chan struct{}) {
@@ -579,12 +801,12 @@ index cbf435da..468d150d 100644
  
  	l, _ := ca.Status(ctx, e)
 -	blob, _ := filepath.EvalSymlinks(filepath.Join(l.Snapshot, "model.safetensors"))
-+	blob, _ := models.ResolveBlob(RepoDir(env.hub, testRepo), filepath.Join(l.Snapshot, "model.safetensors"))
++	blob, _ := resolveSnapshotLink(RepoDir(env.hub, testRepo), filepath.Join(l.Snapshot, "model.safetensors"))
  	data, _ := os.ReadFile(blob)
  	data[100] ^= 1
  	os.WriteFile(blob, data, 0o644)
 diff --git a/hfhub/hub_test.go b/hfhub/hub_test.go
-index 744442a0..2d449ddb 100644
+index 744442a..2d449dd 100644
 --- a/hfhub/hub_test.go
 +++ b/hfhub/hub_test.go
 @@ -20,7 +20,7 @@ func TestCacheDir(t *testing.T) {
@@ -605,8 +827,68 @@ index 744442a0..2d449ddb 100644
  		t.Errorf("TokenFile %q", TokenFile())
  	}
  	if MaskToken("hf_abcdefghijkl") != "hf_…ijkl" || MaskToken("short") != "•••••" {
+diff --git a/hfhub/link_unix.go b/hfhub/link_unix.go
+new file mode 100644
+index 0000000..9ed6e9b
+--- /dev/null
++++ b/hfhub/link_unix.go
+@@ -0,0 +1,11 @@
++//go:build !windows
++
++package hfhub
++
++import "os"
++
++// linkBlobFile links the snapshot entry to its blob (Windows falls back to
++// a hard link, then a copy).
++func linkBlobFile(target, link, _ string) error {
++	return os.Symlink(target, link)
++}
+diff --git a/hfhub/link_windows.go b/hfhub/link_windows.go
+new file mode 100644
+index 0000000..cd21720
+--- /dev/null
++++ b/hfhub/link_windows.go
+@@ -0,0 +1,37 @@
++//go:build windows
++
++package hfhub
++
++import (
++	"io"
++	"os"
++)
++
++// linkBlobFile links the snapshot entry to its blob: a symlink when the
++// system allows it, else a hard link, else a copy.
++func linkBlobFile(target, link, blob string) error {
++	if err := os.Symlink(target, link); err == nil {
++		return nil
++	}
++	if err := os.Link(blob, link); err == nil {
++		return nil
++	}
++	in, err := os.Open(blob)
++	if err != nil {
++		return err
++	}
++	defer in.Close()
++	info, err := in.Stat()
++	if err != nil {
++		return err
++	}
++	out, err := os.OpenFile(link, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
++	if err != nil {
++		return err
++	}
++	_, err = io.Copy(out, in)
++	if closeErr := out.Close(); err == nil {
++		err = closeErr
++	}
++	return err
++}
 diff --git a/hfhub/local.go b/hfhub/local.go
-index eb06df88..8b6afd83 100644
+index eb06df8..05f516f 100644
 --- a/hfhub/local.go
 +++ b/hfhub/local.go
 @@ -191,7 +191,7 @@ func (c *Client) verifyOne(ctx context.Context, e Entry, removed *bool) ([]strin
@@ -614,12 +896,86 @@ index eb06df88..8b6afd83 100644
  	for _, f := range files {
  		link := filepath.Join(snap, filepath.FromSlash(f.Path))
 -		blob, err := filepath.EvalSymlinks(link)
-+		blob, err := models.ResolveBlob(repoDir, link)
++		blob, err := resolveSnapshotLink(repoDir, link)
  		if err != nil {
  			bad = append(bad, f.Path)
  			continue
+diff --git a/hfhub/rename_unix.go b/hfhub/rename_unix.go
+new file mode 100644
+index 0000000..5d9db74
+--- /dev/null
++++ b/hfhub/rename_unix.go
+@@ -0,0 +1,10 @@
++//go:build !windows
++
++package hfhub
++
++import "os"
++
++// renameFile renames a file (Windows retries while another process holds it).
++func renameFile(oldPath, newPath string) error {
++	return os.Rename(oldPath, newPath)
++}
+diff --git a/hfhub/rename_windows.go b/hfhub/rename_windows.go
+new file mode 100644
+index 0000000..217b800
+--- /dev/null
++++ b/hfhub/rename_windows.go
+@@ -0,0 +1,19 @@
++//go:build windows
++
++package hfhub
++
++import (
++	"os"
++	"time"
++)
++
++// renameFile retries while a reader or an antivirus scan holds the file.
++func renameFile(oldPath, newPath string) error {
++	for attempt := 0; ; attempt++ {
++		err := os.Rename(oldPath, newPath)
++		if err == nil || attempt == 99 {
++			return err
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++}
+diff --git a/hfhub/resolve_unix.go b/hfhub/resolve_unix.go
+new file mode 100644
+index 0000000..b69e4fb
+--- /dev/null
++++ b/hfhub/resolve_unix.go
+@@ -0,0 +1,10 @@
++//go:build !windows
++
++package hfhub
++
++import "path/filepath"
++
++// resolveSnapshotLink is the snapshot entry's blob, by the link.
++func resolveSnapshotLink(_, link string) (string, error) {
++	return filepath.EvalSymlinks(link)
++}
+diff --git a/hfhub/resolve_windows.go b/hfhub/resolve_windows.go
+new file mode 100644
+index 0000000..c07228d
+--- /dev/null
++++ b/hfhub/resolve_windows.go
+@@ -0,0 +1,11 @@
++//go:build windows
++
++package hfhub
++
++import "github.com/hehehai/actnowkit/models"
++
++// resolveSnapshotLink is the snapshot entry's blob: a symlink's target, or
++// the entry itself when it is a hard link or a copy (no blob to follow).
++func resolveSnapshotLink(repoDir, link string) (string, error) {
++	return models.ResolveBlob(repoDir, link)
++}
 diff --git a/internal/darwin/xattr.go b/internal/darwin/xattr.go
-index 72a3f6b6..768454b9 100644
+index 72a3f6b..768454b 100644
 --- a/internal/darwin/xattr.go
 +++ b/internal/darwin/xattr.go
 @@ -15,7 +15,6 @@ func errno() syscall.Errno {
@@ -631,115 +987,644 @@ index 72a3f6b6..768454b9 100644
  func SetXattr(path, name string, value []byte) error {
  	if err := loadLibSystem(); err != nil {
 diff --git a/models/decide.go b/models/decide.go
-index 23220eab..9c1c4a24 100644
+index 23220ea..889d274 100644
 --- a/models/decide.go
 +++ b/models/decide.go
-@@ -270,21 +270,33 @@ func (s *Store) DeleteModel(ctx context.Context, ref Ref, model string, scope Sc
+@@ -26,6 +26,7 @@ type User struct {
+ 	Orphan bool
+ }
+ 
++
+ // Decision is what deleting a model would do (spec §7.6), computed from
+ // the disk, every app's claims and the running apps' runtime files.
+ type Decision struct {
+@@ -57,12 +58,14 @@ type Decision struct {
+ 	LastSnapshot bool
+ }
+ 
++
+ // InUse reports whether another app needs the files: deleting "from this
+ // app" then keeps them (spec §7.6 step 1.4).
+ func (d Decision) InUse() bool { return len(d.Users) > 0 || len(d.LoadedBy) > 0 || d.Unsure }
+ 
+ // UserNames are the names of Users, LoadedBy and Unclaimed, each once, for the
+ // dialogs ("AudioSmith also uses this model").
++
+ func (d Decision) UserNames() []string {
+ 	var out []string
+ 	for _, u := range append(append(slices.Clone(d.Users), d.LoadedBy...), d.Unclaimed...) {
+@@ -73,6 +76,7 @@ func (d Decision) UserNames() []string {
+ 	return out
+ }
+ 
++
+ func (s *Store) apps() map[string]AppState {
+ 	if s.Apps == nil {
+ 		return nil
+@@ -80,6 +84,7 @@ func (s *Store) apps() map[string]AppState {
+ 	return s.Apps()
+ }
+ 
++
+ // userOf names a bundle id for the UI.
+ func userOf(bid string, apps map[string]AppState) User {
+ 	u := User{BundleID: bid, Name: bid}
+@@ -95,6 +100,7 @@ func userOf(bid string, apps map[string]AppState) User {
+ 	return u
+ }
+ 
++
+ // installed: an app missing from the map counts as installed.
+ func installed(apps map[string]AppState, bid string) bool {
+ 	if apps == nil {
+@@ -104,6 +110,7 @@ func installed(apps map[string]AppState, bid string) bool {
+ 	return !ok || st.Installed
+ }
+ 
++
+ // Decide computes what deleting ref would do. It takes no lock: Delete
+ // calls it again holding the repo lock.
+ func (s *Store) Decide(ref Ref) (Decision, error) {
+@@ -152,10 +159,12 @@ func (s *Store) Decide(ref Ref) (Decision, error) {
+ 	return d, nil
+ }
+ 
++
+ func sortUsers(u []User) {
+ 	slices.SortFunc(u, func(a, b User) int { return strings.Compare(a.BundleID, b.BundleID) })
+ }
+ 
++
+ // Scope of a deletion.
+ type Scope int
+ 
+@@ -170,6 +179,7 @@ const (
+ )
+ 
+ // Result is what Delete did.
++
+ type Result struct {
+ 	Decision Decision // as decided holding the lock
+ 	Deleted  bool     // the files went
+@@ -182,6 +192,7 @@ type Result struct {
+ 	OwnModels []string
+ }
+ 
++
+ // Delete removes ref from this app, following spec §7.6 step 1:
+ //
+ //  1. this app's claim goes first (whatever happens next);
+@@ -241,6 +252,7 @@ func (s *Store) Delete(ctx context.Context, ref Ref, scope Scope) (Result, error
+ 	return res, nil
+ }
+ 
++
+ // DeleteModel removes one of this app's models (a catalogue id) from ref:
+ // the model's main repo, or one of its auxiliary repos. When other models
+ // of this app still use ref, ThisApp only releases model from the claim
+@@ -270,64 +282,6 @@ func (s *Store) DeleteModel(ctx context.Context, ref Ref, model string, scope Sc
  	return s.Delete(ctx, ref, scope)
  }
  
+-// snapshotBlobs maps the blobs a snapshot links (absolute paths) to their
+-// sizes.
+-func snapshotBlobs(snap string) map[string]int64 {
+-	out := map[string]int64{}
+-	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
+-		if err != nil || d.IsDir() {
+-			return nil
+-		}
+-		target, err := filepath.EvalSymlinks(p)
+-		if err != nil {
+-			return nil
+-		}
+-		if fi, err := os.Stat(target); err == nil {
+-			out[target] = fi.Size()
+-		}
+-		return nil
+-	})
+-	return out
+-}
+-
+-// usedBlobNames are the blob names (base names of link targets) linked by
+-// the snapshots of repoDir other than skip.
+-func usedBlobNames(repoDir, skip string) (used map[string]bool, others int) {
+-	used = map[string]bool{}
+-	snaps := filepath.Join(repoDir, "snapshots")
+-	entries, _ := os.ReadDir(snaps)
+-	for _, e := range entries {
+-		if !e.IsDir() || e.Name() == skip || e.Name() == skip+".incomplete" {
+-			continue
+-		}
+-		others++
+-		_ = filepath.WalkDir(filepath.Join(snaps, e.Name()), func(p string, d fs.DirEntry, err error) error {
+-			if err == nil && d.Type()&fs.ModeSymlink != 0 {
+-				if t, err := os.Readlink(p); err == nil {
+-					used[filepath.Base(t)] = true
+-				}
+-			}
+-			return nil
+-		})
+-	}
+-	return used, others
+-}
+-
+-// freeable is what deleting ref's snapshot would free.
+-func freeable(hub string, ref Ref) (int64, bool) {
+-	repoDir := RepoDir(hub, ref.Repo)
+-	used, others := usedBlobNames(repoDir, ref.Revision)
+-	var n int64
+-	for p, size := range snapshotBlobs(SnapshotDir(hub, ref)) {
+-		if fi, err := os.Stat(p); err == nil && linkedElsewhere(fi) {
+-			continue // an imported blob the Hugging Face cache still holds
+-		}
+-		if !used[filepath.Base(p)] {
+-			n += size
+-		}
+-	}
+-	return n, others == 0
+-}
+ 
+ // DeleteSnapshot removes ref's files (spec §7.6 step 1.5): the snapshot
+ // (and an unfinished one), the refs naming it, the blobs no remaining
+@@ -392,19 +346,6 @@ func DeleteSnapshot(hub string, ref Ref) (int64, error) {
+ 	return freed, nil
+ }
+ 
+-// removeSize removes p and returns the space that frees: nothing for a
+-// file with other hard links (an imported blob the Hugging Face cache
+-// still holds).
+-func removeSize(p string) int64 {
+-	fi, err := os.Lstat(p)
+-	if err != nil {
+-		return 0
+-	}
+-	if os.Remove(p) != nil || linkedElsewhere(fi) {
+-		return 0
+-	}
+-	return fi.Size()
+-}
+ 
+ // Orphan is an uninstalled app's claims (spec §7.6 step 4).
+ type Orphan struct {
+@@ -415,42 +356,6 @@ type Orphan struct {
+ 	Bytes int64
+ }
+ 
+-// Orphans lists the claims of apps the registry says are uninstalled
+-// (needs Store.Apps), for "N models (X GB) are only used by apps that
+-// are no longer installed" (TextOrphans).
+-func (s *Store) Orphans() ([]Orphan, error) {
+-	apps := s.apps()
+-	if apps == nil {
+-		return nil, nil
+-	}
+-	all, errs := ReadAllClaims(s.Family)
+-	if len(errs) > 0 {
+-		return nil, errors.Join(errs...)
+-	}
+-	var out []Orphan
+-	for bid, cf := range all {
+-		if bid == s.BundleID || installed(apps, bid) || (cf.Root != "" && !SameHub(cf.Root, s.Hub)) || len(cf.Claims) == 0 {
+-			continue
+-		}
+-		o := Orphan{User: userOf(bid, apps), Claims: cf.Claims}
+-		o.Orphan = true
+-		seen := map[string]bool{}
+-		for _, c := range cf.Claims {
+-			if usedByInstalled(all, apps, bid, c.Ref(), s.Hub) {
+-				continue
+-			}
+-			for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
+-				if !seen[p] {
+-					seen[p] = true
+-					o.Bytes += n
+-				}
+-			}
+-		}
+-		out = append(out, o)
+-	}
+-	slices.SortFunc(out, func(a, b Orphan) int { return strings.Compare(a.BundleID, b.BundleID) })
+-	return out, nil
+-}
+ 
+ func usedByInstalled(all map[string]Claims, apps map[string]AppState, skip string, ref Ref, hub string) bool {
+ 	for bid, cf := range all {
+@@ -464,6 +369,7 @@ func usedByInstalled(all map[string]Claims, apps map[string]AppState, skip strin
+ 	return false
+ }
+ 
++
+ // CleanOrphans deletes the models only the uninstalled app bundleID
+ // claimed (each as Delete would, skipping busy repos), then removes that
+ // app's claims, manifest and runtime files. It returns what happened to
+@@ -519,6 +425,7 @@ func (s *Store) CleanOrphans(ctx context.Context, bundleID string) ([]Result, er
+ 	return out, nil
+ }
+ 
++
+ // Usage splits the disk space of this app's claimed models (blobs counted
+ // once): Mine only this app uses, Shared other apps use too (spec §7.6
+ // step 6).
+@@ -526,33 +433,6 @@ type Usage struct {
+ 	Mine, Shared int64
+ }
+ 
+-// Usage computes it.
+-func (s *Store) Usage() (Usage, error) {
+-	mine, err := s.Claims()
+-	if err != nil {
+-		return Usage{}, err
+-	}
+-	var u Usage
+-	seen := map[string]bool{}
+-	for _, c := range mine.Claims {
+-		d, err := s.Decide(c.Ref())
+-		if err != nil {
+-			continue
+-		}
+-		for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
+-			if seen[p] {
+-				continue
+-			}
+-			seen[p] = true
+-			if d.InUse() {
+-				u.Shared += n
+-			} else {
+-				u.Mine += n
+-			}
+-		}
+-	}
+-	return u, nil
+-}
+ 
+ // Found is a wanted model found on disk, for the first-run reuse card
+ // (spec §7.10.1).
+@@ -565,6 +445,7 @@ type Found struct {
+ 	By []User
+ }
+ 
++
+ // Survey checks which of the wanted models (this app's recommended pack)
+ // are already installed, and by whom. Claiming the installed ones with
+ // OriginReused is "Use them".
+@@ -594,6 +475,7 @@ func (s *Store) Survey(want ...Claim) []Found {
+ 	return out
+ }
+ 
++
+ // EngineCopyMinAge: empty mlx-audio directories younger than this may be
+ // another app's engine at work (spec §7.8).
+ const EngineCopyMinAge = 10 * time.Minute
+@@ -602,6 +484,7 @@ const EngineCopyMinAge = 10 * time.Minute
+ // that are older than minAge (EngineCopyMinAge): mlx-audio-swift leaves
+ // them after failed loads, and its next load would then delete the hub
+ // snapshot. It returns their names.
++
+ func CleanEngineCopies(hub string, minAge time.Duration) ([]string, error) {
+ 	dir := EngineCopiesDir(hub)
+ 	entries, err := os.ReadDir(dir)
+diff --git a/models/decide_unix.go b/models/decide_unix.go
+new file mode 100644
+index 0000000..6603c04
+--- /dev/null
++++ b/models/decide_unix.go
+@@ -0,0 +1,156 @@
++//go:build !windows
++
++package models
++
++import (
++	"errors"
++	"io/fs"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++)
++
++
++// snapshotBlobs maps the blobs a snapshot links (absolute paths) to their
++// sizes.
++func snapshotBlobs(snap string) map[string]int64 {
++	out := map[string]int64{}
++	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
++		if err != nil || d.IsDir() {
++			return nil
++		}
++		target, err := filepath.EvalSymlinks(p)
++		if err != nil {
++			return nil
++		}
++		if fi, err := os.Stat(target); err == nil {
++			out[target] = fi.Size()
++		}
++		return nil
++	})
++	return out
++}
++
++
++// usedBlobNames are the blob names (base names of link targets) linked by
++// the snapshots of repoDir other than skip.
++func usedBlobNames(repoDir, skip string) (used map[string]bool, others int) {
++	used = map[string]bool{}
++	snaps := filepath.Join(repoDir, "snapshots")
++	entries, _ := os.ReadDir(snaps)
++	for _, e := range entries {
++		if !e.IsDir() || e.Name() == skip || e.Name() == skip+".incomplete" {
++			continue
++		}
++		others++
++		_ = filepath.WalkDir(filepath.Join(snaps, e.Name()), func(p string, d fs.DirEntry, err error) error {
++			if err == nil && d.Type()&fs.ModeSymlink != 0 {
++				if t, err := os.Readlink(p); err == nil {
++					used[filepath.Base(t)] = true
++				}
++			}
++			return nil
++		})
++	}
++	return used, others
++}
++
++
++// freeable is what deleting ref's snapshot would free.
++func freeable(hub string, ref Ref) (int64, bool) {
++	repoDir := RepoDir(hub, ref.Repo)
++	used, others := usedBlobNames(repoDir, ref.Revision)
++	var n int64
++	for p, size := range snapshotBlobs(SnapshotDir(hub, ref)) {
++		if fi, err := os.Stat(p); err == nil && linkedElsewhere(fi) {
++			continue // an imported blob the Hugging Face cache still holds
++		}
++		if !used[filepath.Base(p)] {
++			n += size
++		}
++	}
++	return n, others == 0
++}
++
++
++// removeSize removes p and returns the space that frees: nothing for a
++// file with other hard links (an imported blob the Hugging Face cache
++// still holds).
++func removeSize(p string) int64 {
++	fi, err := os.Lstat(p)
++	if err != nil {
++		return 0
++	}
++	if os.Remove(p) != nil || linkedElsewhere(fi) {
++		return 0
++	}
++	return fi.Size()
++}
++
++
++// Orphans lists the claims of apps the registry says are uninstalled
++// (needs Store.Apps), for "N models (X GB) are only used by apps that
++// are no longer installed" (TextOrphans).
++func (s *Store) Orphans() ([]Orphan, error) {
++	apps := s.apps()
++	if apps == nil {
++		return nil, nil
++	}
++	all, errs := ReadAllClaims(s.Family)
++	if len(errs) > 0 {
++		return nil, errors.Join(errs...)
++	}
++	var out []Orphan
++	for bid, cf := range all {
++		if bid == s.BundleID || installed(apps, bid) || (cf.Root != "" && !SameHub(cf.Root, s.Hub)) || len(cf.Claims) == 0 {
++			continue
++		}
++		o := Orphan{User: userOf(bid, apps), Claims: cf.Claims}
++		o.Orphan = true
++		seen := map[string]bool{}
++		for _, c := range cf.Claims {
++			if usedByInstalled(all, apps, bid, c.Ref(), s.Hub) {
++				continue
++			}
++			for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
++				if !seen[p] {
++					seen[p] = true
++					o.Bytes += n
++				}
++			}
++		}
++		out = append(out, o)
++	}
++	slices.SortFunc(out, func(a, b Orphan) int { return strings.Compare(a.BundleID, b.BundleID) })
++	return out, nil
++}
++
++
++// Usage computes it.
++func (s *Store) Usage() (Usage, error) {
++	mine, err := s.Claims()
++	if err != nil {
++		return Usage{}, err
++	}
++	var u Usage
++	seen := map[string]bool{}
++	for _, c := range mine.Claims {
++		d, err := s.Decide(c.Ref())
++		if err != nil {
++			continue
++		}
++		for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
++			if seen[p] {
++				continue
++			}
++			seen[p] = true
++			if d.InUse() {
++				u.Shared += n
++			} else {
++				u.Mine += n
++			}
++		}
++	}
++	return u, nil
++}
+diff --git a/models/decide_windows.go b/models/decide_windows.go
+new file mode 100644
+index 0000000..5a24d54
+--- /dev/null
++++ b/models/decide_windows.go
+@@ -0,0 +1,171 @@
++//go:build windows
++
++package models
++
++import (
++	"errors"
++	"io/fs"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++)
++
 +type snapshotBlob struct {
 +	sizeBytes     int64
 +	snapshotLinks uint32
 +}
 +
- // snapshotBlobs maps the blobs a snapshot links (absolute paths) to their
--// sizes.
--func snapshotBlobs(snap string) map[string]int64 {
--	out := map[string]int64{}
++
++
++// snapshotBlobs maps the blobs a snapshot links (absolute paths) to their
 +// sizes and the snapshot entries hard-linked to them.
 +func snapshotBlobs(snap string) map[string]snapshotBlob {
 +	out := map[string]snapshotBlob{}
 +	repoDir := filepath.Dir(filepath.Dir(snap))
- 	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
- 		if err != nil || d.IsDir() {
- 			return nil
- 		}
--		target, err := filepath.EvalSymlinks(p)
++	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
++		if err != nil || d.IsDir() {
++			return nil
++		}
 +		target, err := ResolveBlob(repoDir, p)
 +		if err != nil {
 +			return nil
 +		}
 +		targetInfo, err := os.Stat(target)
- 		if err != nil {
- 			return nil
- 		}
--		if fi, err := os.Stat(target); err == nil {
--			out[target] = fi.Size()
++		if err != nil {
++			return nil
++		}
 +		blob := snapshotBlob{sizeBytes: targetInfo.Size(), snapshotLinks: out[target].snapshotLinks}
 +		if linkInfo, err := os.Stat(p); err == nil && os.SameFile(targetInfo, linkInfo) {
 +			blob.snapshotLinks++
- 		}
++		}
 +		out[target] = blob
- 		return nil
- 	})
- 	return out
-@@ -302,9 +314,9 @@ func usedBlobNames(repoDir, skip string) (used map[string]bool, others int) {
- 		}
- 		others++
- 		_ = filepath.WalkDir(filepath.Join(snaps, e.Name()), func(p string, d fs.DirEntry, err error) error {
--			if err == nil && d.Type()&fs.ModeSymlink != 0 {
--				if t, err := os.Readlink(p); err == nil {
--					used[filepath.Base(t)] = true
++		return nil
++	})
++	return out
++}
++
++
++// usedBlobNames are the blob names (base names of link targets) linked by
++// the snapshots of repoDir other than skip.
++func usedBlobNames(repoDir, skip string) (used map[string]bool, others int) {
++	used = map[string]bool{}
++	snaps := filepath.Join(repoDir, "snapshots")
++	entries, _ := os.ReadDir(snaps)
++	for _, e := range entries {
++		if !e.IsDir() || e.Name() == skip || e.Name() == skip+".incomplete" {
++			continue
++		}
++		others++
++		_ = filepath.WalkDir(filepath.Join(snaps, e.Name()), func(p string, d fs.DirEntry, err error) error {
 +			if err == nil && !d.IsDir() {
 +				if target, err := ResolveBlob(repoDir, p); err == nil {
 +					used[filepath.Base(target)] = true
- 				}
- 			}
- 			return nil
-@@ -318,13 +330,14 @@ func freeable(hub string, ref Ref) (int64, bool) {
- 	repoDir := RepoDir(hub, ref.Repo)
- 	used, others := usedBlobNames(repoDir, ref.Revision)
- 	var n int64
--	for p, size := range snapshotBlobs(SnapshotDir(hub, ref)) {
--		if fi, err := os.Stat(p); err == nil && linkedElsewhere(fi) {
--			continue // an imported blob the Hugging Face cache still holds
++				}
++			}
++			return nil
++		})
++	}
++	return used, others
++}
++
++
++// freeable is what deleting ref's snapshot would free.
++func freeable(hub string, ref Ref) (int64, bool) {
++	repoDir := RepoDir(hub, ref.Repo)
++	used, others := usedBlobNames(repoDir, ref.Revision)
++	var n int64
 +	for p, blob := range snapshotBlobs(SnapshotDir(hub, ref)) {
 +		if used[filepath.Base(p)] {
 +			continue
- 		}
--		if !used[filepath.Base(p)] {
--			n += size
++		}
 +		if fi, err := os.Stat(p); err == nil && linkedElsewhere(p, fi, blob.snapshotLinks) {
 +			continue // an imported blob the Hugging Face cache still holds
- 		}
++		}
 +		n += blob.sizeBytes
- 	}
- 	return n, others == 0
- }
-@@ -400,7 +413,8 @@ func removeSize(p string) int64 {
- 	if err != nil {
- 		return 0
- 	}
--	if os.Remove(p) != nil || linkedElsewhere(fi) {
++	}
++	return n, others == 0
++}
++
++
++// removeSize removes p and returns the space that frees: nothing for a
++// file with other hard links (an imported blob the Hugging Face cache
++// still holds).
++func removeSize(p string) int64 {
++	fi, err := os.Lstat(p)
++	if err != nil {
++		return 0
++	}
 +	linked := linkedElsewhere(p, fi, 0)
 +	if os.Remove(p) != nil || linked {
- 		return 0
- 	}
- 	return fi.Size()
-@@ -442,7 +456,7 @@ func (s *Store) Orphans() ([]Orphan, error) {
- 			for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
- 				if !seen[p] {
- 					seen[p] = true
--					o.Bytes += n
++		return 0
++	}
++	return fi.Size()
++}
++
++
++// Orphans lists the claims of apps the registry says are uninstalled
++// (needs Store.Apps), for "N models (X GB) are only used by apps that
++// are no longer installed" (TextOrphans).
++func (s *Store) Orphans() ([]Orphan, error) {
++	apps := s.apps()
++	if apps == nil {
++		return nil, nil
++	}
++	all, errs := ReadAllClaims(s.Family)
++	if len(errs) > 0 {
++		return nil, errors.Join(errs...)
++	}
++	var out []Orphan
++	for bid, cf := range all {
++		if bid == s.BundleID || installed(apps, bid) || (cf.Root != "" && !SameHub(cf.Root, s.Hub)) || len(cf.Claims) == 0 {
++			continue
++		}
++		o := Orphan{User: userOf(bid, apps), Claims: cf.Claims}
++		o.Orphan = true
++		seen := map[string]bool{}
++		for _, c := range cf.Claims {
++			if usedByInstalled(all, apps, bid, c.Ref(), s.Hub) {
++				continue
++			}
++			for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
++				if !seen[p] {
++					seen[p] = true
 +					o.Bytes += n.sizeBytes
- 				}
- 			}
- 		}
-@@ -545,9 +559,9 @@ func (s *Store) Usage() (Usage, error) {
- 			}
- 			seen[p] = true
- 			if d.InUse() {
--				u.Shared += n
++				}
++			}
++		}
++		out = append(out, o)
++	}
++	slices.SortFunc(out, func(a, b Orphan) int { return strings.Compare(a.BundleID, b.BundleID) })
++	return out, nil
++}
++
++
++// Usage computes it.
++func (s *Store) Usage() (Usage, error) {
++	mine, err := s.Claims()
++	if err != nil {
++		return Usage{}, err
++	}
++	var u Usage
++	seen := map[string]bool{}
++	for _, c := range mine.Claims {
++		d, err := s.Decide(c.Ref())
++		if err != nil {
++			continue
++		}
++		for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
++			if seen[p] {
++				continue
++			}
++			seen[p] = true
++			if d.InUse() {
 +				u.Shared += n.sizeBytes
- 			} else {
--				u.Mine += n
++			} else {
 +				u.Mine += n.sizeBytes
- 			}
- 		}
- 	}
++			}
++		}
++	}
++	return u, nil
++}
 diff --git a/models/disk_other.go b/models/disk_other.go
-index 22517e3d..9fb01a7c 100644
+index 22517e3..9fb01a7 100644
 --- a/models/disk_other.go
 +++ b/models/disk_other.go
 @@ -1,4 +1,4 @@
@@ -754,22 +1639,9 @@ index 22517e3d..9fb01a7c 100644
  
 -func linkedElsewhere(os.FileInfo) bool { return false }
 +func linkedElsewhere(string, os.FileInfo, uint32) bool { return false }
-diff --git a/models/disk_unix.go b/models/disk_unix.go
-index 8f4c2ba9..548550bd 100644
---- a/models/disk_unix.go
-+++ b/models/disk_unix.go
-@@ -28,7 +28,7 @@ func freeSpace(dir string) int64 {
- 
- // linkedElsewhere reports a file with other hard links (an imported blob
- // still in the Hugging Face cache): removing this name frees nothing.
--func linkedElsewhere(fi os.FileInfo) bool {
-+func linkedElsewhere(_ string, fi os.FileInfo, _ uint32) bool {
- 	st, ok := fi.Sys().(*syscall.Stat_t)
- 	return ok && st.Nlink > 1
- }
 diff --git a/models/disk_windows.go b/models/disk_windows.go
 new file mode 100644
-index 00000000..7c4ce844
+index 0000000..7c4ce84
 --- /dev/null
 +++ b/models/disk_windows.go
 @@ -0,0 +1,47 @@
@@ -821,14 +1693,274 @@ index 00000000..7c4ce844
 +	return info.NumberOfLinks > snapshotLinks+1
 +}
 diff --git a/models/import.go b/models/import.go
-index 9e5121ce..75057e6a 100644
+index 9e5121c..5b3ff7d 100644
 --- a/models/import.go
 +++ b/models/import.go
-@@ -439,7 +439,14 @@ func linkFiles(dir string, files []srcFile, fresh bool) error {
- 			}
- 			_ = os.Remove(link)
+@@ -25,19 +25,23 @@ import (
+ const OpImport = "import"
+ 
+ // OriginImported marks a claim made by Import.
++
+ const OriginImported = "imported"
+ 
+ // KindImported is the schema kind of models/imported/<bundle id>.json.
++
+ const KindImported = "models.imported"
+ 
+ // ImportedFile is $FAMILY/models/imported/<bundle id>.json: what this app
+ // already brought over into which $HUB, so that a model the user deletes
+ // afterwards is not imported again at the next launch. Only that app
+ // writes it.
++
+ func ImportedFile(d family.Dir, bundleID string) string {
+ 	return filepath.Join(d.ModelsDir(), "imported", bundleID+".json")
+ }
+ 
++
+ // Imported is the content of ImportedFile.
+ type Imported struct {
+ 	Schema   string        `json:"schema"`
+@@ -47,16 +51,19 @@ type Imported struct {
+ 	Extra    family.Extra  `json:"-"`
+ }
+ 
++
+ func (i *Imported) UnmarshalJSON(b []byte) error {
+ 	type plain Imported
+ 	return family.UnmarshalKnown(b, (*plain)(i), &i.Extra)
+ }
+ 
++
+ func (i Imported) MarshalJSON() ([]byte, error) {
+ 	type plain Imported
+ 	return family.MarshalKnown(plain(i), i.Extra)
+ }
+ 
++
+ // ImportedHub is what was handled for one destination $HUB: refs
+ // ("repo@commit") imported, already there, or found in no source.
+ type ImportedHub struct {
+@@ -64,6 +71,7 @@ type ImportedHub struct {
+ 	Refs []string `json:"refs"`
+ }
+ 
++
+ // ImportResult is what Import did with one model.
+ type ImportResult struct {
+ 	Ref  Ref
+@@ -77,6 +85,7 @@ type ImportResult struct {
+ 	Err    error
+ }
+ 
++
+ // Actions of ImportResult.
+ const (
+ 	ImportImported = "imported"
+@@ -88,6 +97,7 @@ const (
+ )
+ 
+ // ImportReserve is the free space a copy across volumes leaves.
++
+ const ImportReserve int64 = 2e9
+ 
+ // Import brings this app's models into s.Hub from the Hugging Face caches
+@@ -122,6 +132,7 @@ const ImportReserve int64 = 2e9
+ // not come back; busy, no-space and failed ones are tried again at the
+ // next call. Call it at launch before showing model states, and after the
+ // model folder changed. It is safe to run from several apps at once.
++
+ func (s *Store) Import(ctx context.Context, from []string, backup bool, want ...Claim) ([]ImportResult, error) {
+ 	var sources []string
+ 	for _, f := range from {
+@@ -183,6 +194,7 @@ func (s *Store) Import(ctx context.Context, from []string, backup bool, want ...
+ 	return out, errors.Join(errs...)
+ }
+ 
++
+ func (s *Store) readImported() (Imported, error) {
+ 	var rec Imported
+ 	err := family.Load(ImportedFile(s.Family, s.BundleID), KindImported, 1, &rec)
+@@ -192,6 +204,7 @@ func (s *Store) readImported() (Imported, error) {
+ 	return rec, err
+ }
+ 
++
+ func (s *Store) recordImported(rec Imported, refs []string) error {
+ 	i := slices.IndexFunc(rec.Hubs, func(h ImportedHub) bool { return SameHub(h.Root, s.Hub) })
+ 	if i < 0 {
+@@ -211,6 +224,7 @@ func (s *Store) recordImported(rec Imported, refs []string) error {
+ 	return family.WriteJSON(path, rec)
+ }
+ 
++
+ func (s *Store) importOne(ctx context.Context, sources []string, w Claim, backup, claim bool) ImportResult {
+ 	ref := w.Ref()
+ 	res := ImportResult{Ref: ref}
+@@ -281,9 +295,11 @@ func (s *Store) importOne(ctx context.Context, sources []string, w Claim, backup
+ 	return res
+ }
+ 
++
+ var errNoSpace = errors.New("not enough free space to copy across volumes")
+ 
+ // srcFile is a file of the source snapshot.
++
+ type srcFile struct {
+ 	rel  string // path in the snapshot, slash-separated
+ 	blob string // blob name in the destination
+@@ -291,6 +307,7 @@ type srcFile struct {
+ 	size int64
+ }
+ 
++
+ // linkSnapshotFrom builds dst's snapshot of ref from src's: blobs hard-
+ // linked (or copied across volumes), links ../../blobs/<blob>, refs naming
+ // the commit. Both repo locks are held.
+@@ -375,7 +392,8 @@ func linkSnapshotFrom(src, dst string, ref Ref) (linked, copied int64, err error
+ 			copied += f.size
  		}
+ 	}
+-	// The snapshot, built beside its place and renamed in.
++	
++// The snapshot, built beside its place and renamed in.
+ 	snaps := filepath.Join(repoDir, "snapshots")
+ 	final := filepath.Join(snaps, ref.Revision)
+ 	if isDir(final) {
+@@ -424,27 +442,6 @@ func linkSnapshotFrom(src, dst string, ref Ref) (linked, copied int64, err error
+ 	return linked, copied, RecordBlobSizes(dst, ref.Repo, sizes)
+ }
+ 
+-// linkFiles makes <dir>/<rel> → ../../blobs/<blob> (relative, like
+-// huggingface_hub); fresh: dir is new.
+-func linkFiles(dir string, files []srcFile, fresh bool) error {
+-	for _, f := range files {
+-		link := filepath.Join(dir, filepath.FromSlash(f.rel))
+-		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+-			return err
+-		}
+-		target := strings.Repeat("../", strings.Count(f.rel, "/")+2) + "blobs/" + f.blob
+-		if !fresh {
+-			if cur, err := os.Readlink(link); err == nil && cur == target {
+-				continue
+-			}
+-			_ = os.Remove(link)
+-		}
 -		if err := os.Symlink(target, link); err != nil {
+-			return err
+-		}
+-	}
+-	return nil
+-}
+ 
+ // linkBlob hard-links src to dst (replacing a wrong-sized dst).
+ func linkBlob(src, dst string) error {
+@@ -460,6 +457,20 @@ func linkBlob(src, dst string) error {
+ 	return os.Rename(tmp, dst)
+ }
+ 
++
++func hashFile(p string) (string, error) {
++	f, err := os.Open(p)
++	if err != nil {
++		return "", err
++	}
++	defer f.Close()
++	h := sha256.New()
++	if _, err := io.Copy(h, f); err != nil {
++		return "", err
++	}
++	return hex.EncodeToString(h.Sum(nil)), nil
++}
++
+ // copyBlob copies src to dst through a temporary file.
+ func copyBlob(src, dst string, size int64) error {
+ 	in, err := os.Open(src)
+@@ -486,15 +497,3 @@ func copyBlob(src, dst string, size int64) error {
+ 	return os.Rename(tmp, dst)
+ }
+ 
+-func hashFile(p string) (string, error) {
+-	f, err := os.Open(p)
+-	if err != nil {
+-		return "", err
+-	}
+-	defer f.Close()
+-	h := sha256.New()
+-	if _, err := io.Copy(h, f); err != nil {
+-		return "", err
+-	}
+-	return hex.EncodeToString(h.Sum(nil)), nil
+-}
+diff --git a/models/import_link_unix.go b/models/import_link_unix.go
+new file mode 100644
+index 0000000..47d066b
+--- /dev/null
++++ b/models/import_link_unix.go
+@@ -0,0 +1,32 @@
++//go:build !windows
++
++package models
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++
++// linkFiles makes <dir>/<rel> → ../../blobs/<blob> (relative, like
++// huggingface_hub); fresh: dir is new.
++func linkFiles(dir string, files []srcFile, fresh bool) error {
++	for _, f := range files {
++		link := filepath.Join(dir, filepath.FromSlash(f.rel))
++		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
++			return err
++		}
++		target := strings.Repeat("../", strings.Count(f.rel, "/")+2) + "blobs/" + f.blob
++		if !fresh {
++			if cur, err := os.Readlink(link); err == nil && cur == target {
++				continue
++			}
++			_ = os.Remove(link)
++		}
++		if err := os.Symlink(target, link); err != nil {
++			return err
++		}
++	}
++	return nil
++}
+diff --git a/models/import_link_windows.go b/models/import_link_windows.go
+new file mode 100644
+index 0000000..e40bad4
+--- /dev/null
++++ b/models/import_link_windows.go
+@@ -0,0 +1,39 @@
++//go:build windows
++
++package models
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++
++// linkFiles makes <dir>/<rel> → ../../blobs/<blob> (relative, like
++// huggingface_hub); fresh: dir is new.
++func linkFiles(dir string, files []srcFile, fresh bool) error {
++	for _, f := range files {
++		link := filepath.Join(dir, filepath.FromSlash(f.rel))
++		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
++			return err
++		}
++		target := strings.Repeat("../", strings.Count(f.rel, "/")+2) + "blobs/" + f.blob
++		if !fresh {
++			if cur, err := os.Readlink(link); err == nil && cur == target {
++				continue
++			}
++			_ = os.Remove(link)
++		}
 +		if err := os.Symlink(target, link); err == nil {
 +			continue
 +		}
@@ -837,11 +1969,13 @@ index 9e5121ce..75057e6a 100644
 +			continue
 +		}
 +		if err := copyBlob(blob, link, f.size); err != nil {
- 			return err
- 		}
- 	}
++			return err
++		}
++	}
++	return nil
++}
 diff --git a/models/models_test.go b/models/models_test.go
-index 16f34612..ba134738 100644
+index 16f3461..ba13473 100644
 --- a/models/models_test.go
 +++ b/models/models_test.go
 @@ -7,6 +7,7 @@ import (
@@ -901,10 +2035,12 @@ index 16f34612..ba134738 100644
  	for _, bad := range []string{"", "a", "a/b/c", "../x", "a/..", "a/.b/../c", "/abs", "a/b c"} {
 diff --git a/models/resolve_blob.go b/models/resolve_blob.go
 new file mode 100644
-index 00000000..d17c6833
+index 0000000..ebd4fe5
 --- /dev/null
 +++ b/models/resolve_blob.go
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,71 @@
++//go:build windows
++
 +package models
 +
 +import (
@@ -975,30 +2111,422 @@ index 00000000..d17c6833
 +	return hex.EncodeToString(lfsHash.Sum(nil)), hex.EncodeToString(gitHash.Sum(nil)), nil
 +}
 diff --git a/models/status.go b/models/status.go
-index 86c22459..54706302 100644
+index 86c2245..b8e5571 100644
 --- a/models/status.go
 +++ b/models/status.go
-@@ -91,13 +91,15 @@ func Check(hub string, c Claim) Status {
- 		present[rel] = true
- 		if want, ok := c.Sizes[rel]; ok && want > 0 && fi.Size() != want {
- 			st.Damaged = append(st.Damaged, rel)
+@@ -1,11 +1,8 @@
+ package models
+ 
+ import (
+-	"io/fs"
+ 	"os"
+ 	"path/filepath"
+-	"slices"
+-	"strings"
+ )
+ 
+ // State is how much of a model is on disk.
+@@ -35,102 +32,6 @@ type Status struct {
+ // without any is Partial (a tool may have fetched config.json alone).
+ var weightExts = []string{".safetensors", ".bin", ".npz", ".gguf", ".onnx", ".pt", ".pth", ".mlmodelc", ".mlpackage"}
+ 
+-// Check says whether c's snapshot is installed, from the files alone (no
+-// hashing, no network; spec §7.5): the snapshot directory exists, every
+-// link reaches its blob, every file c.Files lists is there, each file has
+-// the size recorded for its blob (SizesFile) and the size c.Sizes gives,
+-// and a main repo has a weights file. Hashes are checked when downloading
+-// and when the user asks (hfhub Verify).
+-func Check(hub string, c Claim) Status {
+-	ref := c.Ref()
+-	var st Status
+-	if !ValidRepo(ref.Repo) || ref.Revision == "" {
+-		st.State = Missing
+-		return st
+-	}
+-	repoDir := RepoDir(hub, ref.Repo)
+-	if _, err := os.Stat(repoDir); err != nil {
+-		st.State = Missing
+-		return st
+-	}
+-	if entries, err := os.ReadDir(filepath.Join(repoDir, "blobs")); err == nil {
+-		for _, e := range entries {
+-			if strings.HasSuffix(e.Name(), ".incomplete") {
+-				if info, err := e.Info(); err == nil {
+-					st.Incomplete += info.Size()
+-				}
+-			}
+-		}
+-	}
+-	snap := SnapshotDir(hub, ref)
+-	if fi, err := os.Stat(snap); err != nil || !fi.IsDir() {
+-		st.State = Partial
+-		if st.Incomplete == 0 && !nonEmpty(filepath.Join(repoDir, "blobs")) && !nonEmpty(filepath.Join(repoDir, "snapshots")) {
+-			st.State = Missing
+-		}
+-		return st
+-	}
+-	st.Snapshot = snap
+-	recorded := ReadBlobSizes(hub, ref.Repo)
+-	present := map[string]bool{}
+-	seen := map[string]bool{}
+-	weights := false
+-	files := 0
+-	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
+-		if err != nil || d.IsDir() {
+-			return nil
+-		}
+-		rel, _ := filepath.Rel(snap, p)
+-		rel = filepath.ToSlash(rel)
+-		fi, err := os.Stat(p) // follows the link to the blob
+-		if err != nil {
+-			st.Missing = append(st.Missing, rel)
+-			return nil
+-		}
+-		files++
+-		present[rel] = true
+-		if want, ok := c.Sizes[rel]; ok && want > 0 && fi.Size() != want {
+-			st.Damaged = append(st.Damaged, rel)
 -		} else if t, err := os.Readlink(p); err == nil && recorded != nil {
 -			if want, ok := recorded[filepath.Base(t)]; ok && fi.Size() != want {
+-				st.Damaged = append(st.Damaged, rel)
+-			}
+-		}
+-		key := p
+-		if target, err := filepath.EvalSymlinks(p); err == nil {
+-			key = target
+-		}
+-		if !seen[key] {
+-			seen[key] = true
+-			st.Bytes += fi.Size()
+-		}
+-		if slices.Contains(weightExts, strings.ToLower(filepath.Ext(rel))) {
+-			weights = true
+-		}
+-		return nil
+-	})
+-	for _, f := range c.Files {
+-		if strings.ContainsAny(f, "*?[") {
+-			if !matchAny(present, f) {
+-				st.Missing = append(st.Missing, f)
+-			}
+-			continue
+-		}
+-		if !present[f] && !slices.Contains(st.Missing, f) {
+-			st.Missing = append(st.Missing, f)
+-		}
+-	}
+-	switch {
+-	case len(st.Missing) > 0 || len(st.Damaged) > 0 || files == 0:
+-		st.State = Partial
+-	case !c.Aux && len(c.Files) == 0 && !weights:
+-		st.State = Partial
+-	default:
+-		st.State = Installed
+-	}
+-	return st
+-}
+-
+ // matchAny reports whether a glob ("v3/*") matches any present file.
+ func matchAny(present map[string]bool, pattern string) bool {
+ 	for p := range present {
+diff --git a/models/status_check_unix.go b/models/status_check_unix.go
+new file mode 100644
+index 0000000..aefd525
+--- /dev/null
++++ b/models/status_check_unix.go
+@@ -0,0 +1,107 @@
++//go:build !windows
++
++package models
++
++import (
++	"io/fs"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++)
++
++// Check says whether c's snapshot is installed, from the files alone (no
++// hashing, no network; spec §7.5): the snapshot directory exists, every
++// link reaches its blob, every file c.Files lists is there, each file has
++// the size recorded for its blob (SizesFile) and the size c.Sizes gives,
++// and a main repo has a weights file. Hashes are checked when downloading
++// and when the user asks (hfhub Verify).
++func Check(hub string, c Claim) Status {
++	ref := c.Ref()
++	var st Status
++	if !ValidRepo(ref.Repo) || ref.Revision == "" {
++		st.State = Missing
++		return st
++	}
++	repoDir := RepoDir(hub, ref.Repo)
++	if _, err := os.Stat(repoDir); err != nil {
++		st.State = Missing
++		return st
++	}
++	if entries, err := os.ReadDir(filepath.Join(repoDir, "blobs")); err == nil {
++		for _, e := range entries {
++			if strings.HasSuffix(e.Name(), ".incomplete") {
++				if info, err := e.Info(); err == nil {
++					st.Incomplete += info.Size()
++				}
++			}
++		}
++	}
++	snap := SnapshotDir(hub, ref)
++	if fi, err := os.Stat(snap); err != nil || !fi.IsDir() {
++		st.State = Partial
++		if st.Incomplete == 0 && !nonEmpty(filepath.Join(repoDir, "blobs")) && !nonEmpty(filepath.Join(repoDir, "snapshots")) {
++			st.State = Missing
++		}
++		return st
++	}
++	st.Snapshot = snap
++	recorded := ReadBlobSizes(hub, ref.Repo)
++	present := map[string]bool{}
++	seen := map[string]bool{}
++	weights := false
++	files := 0
++	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
++		if err != nil || d.IsDir() {
++			return nil
++		}
++		rel, _ := filepath.Rel(snap, p)
++		rel = filepath.ToSlash(rel)
++		fi, err := os.Stat(p) // follows the link to the blob
++		if err != nil {
++			st.Missing = append(st.Missing, rel)
++			return nil
++		}
++		files++
++		present[rel] = true
++		if want, ok := c.Sizes[rel]; ok && want > 0 && fi.Size() != want {
++			st.Damaged = append(st.Damaged, rel)
++		} else if t, err := os.Readlink(p); err == nil && recorded != nil {
++			if want, ok := recorded[filepath.Base(t)]; ok && fi.Size() != want {
++				st.Damaged = append(st.Damaged, rel)
++			}
++		}
++		key := p
++		if target, err := filepath.EvalSymlinks(p); err == nil {
++			key = target
++		}
++		if !seen[key] {
++			seen[key] = true
++			st.Bytes += fi.Size()
++		}
++		if slices.Contains(weightExts, strings.ToLower(filepath.Ext(rel))) {
++			weights = true
++		}
++		return nil
++	})
++	for _, f := range c.Files {
++		if strings.ContainsAny(f, "*?[") {
++			if !matchAny(present, f) {
++				st.Missing = append(st.Missing, f)
++			}
++			continue
++		}
++		if !present[f] && !slices.Contains(st.Missing, f) {
++			st.Missing = append(st.Missing, f)
++		}
++	}
++	switch {
++	case len(st.Missing) > 0 || len(st.Damaged) > 0 || files == 0:
++		st.State = Partial
++	case !c.Aux && len(c.Files) == 0 && !weights:
++		st.State = Partial
++	default:
++		st.State = Installed
++	}
++	return st
++}
+diff --git a/models/status_check_windows.go b/models/status_check_windows.go
+new file mode 100644
+index 0000000..e973950
+--- /dev/null
++++ b/models/status_check_windows.go
+@@ -0,0 +1,109 @@
++//go:build windows
++
++package models
++
++import (
++	"io/fs"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++)
++
++// Check says whether c's snapshot is installed, from the files alone (no
++// hashing, no network; spec §7.5): the snapshot directory exists, every
++// link reaches its blob, every file c.Files lists is there, each file has
++// the size recorded for its blob (SizesFile) and the size c.Sizes gives,
++// and a main repo has a weights file. Hashes are checked when downloading
++// and when the user asks (hfhub Verify).
++func Check(hub string, c Claim) Status {
++	ref := c.Ref()
++	var st Status
++	if !ValidRepo(ref.Repo) || ref.Revision == "" {
++		st.State = Missing
++		return st
++	}
++	repoDir := RepoDir(hub, ref.Repo)
++	if _, err := os.Stat(repoDir); err != nil {
++		st.State = Missing
++		return st
++	}
++	if entries, err := os.ReadDir(filepath.Join(repoDir, "blobs")); err == nil {
++		for _, e := range entries {
++			if strings.HasSuffix(e.Name(), ".incomplete") {
++				if info, err := e.Info(); err == nil {
++					st.Incomplete += info.Size()
++				}
++			}
++		}
++	}
++	snap := SnapshotDir(hub, ref)
++	if fi, err := os.Stat(snap); err != nil || !fi.IsDir() {
++		st.State = Partial
++		if st.Incomplete == 0 && !nonEmpty(filepath.Join(repoDir, "blobs")) && !nonEmpty(filepath.Join(repoDir, "snapshots")) {
++			st.State = Missing
++		}
++		return st
++	}
++	st.Snapshot = snap
++	recorded := ReadBlobSizes(hub, ref.Repo)
++	present := map[string]bool{}
++	seen := map[string]bool{}
++	weights := false
++	files := 0
++	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
++		if err != nil || d.IsDir() {
++			return nil
++		}
++		rel, _ := filepath.Rel(snap, p)
++		rel = filepath.ToSlash(rel)
++		fi, err := os.Stat(p) // follows the link to the blob
++		if err != nil {
++			st.Missing = append(st.Missing, rel)
++			return nil
++		}
++		files++
++		present[rel] = true
++		if want, ok := c.Sizes[rel]; ok && want > 0 && fi.Size() != want {
++			st.Damaged = append(st.Damaged, rel)
 +		} else if target, err := ResolveBlob(repoDir, p); err != nil {
 +			st.Missing = append(st.Missing, rel)
 +		} else if recorded != nil {
 +			if want, ok := recorded[filepath.Base(target)]; ok && fi.Size() != want {
- 				st.Damaged = append(st.Damaged, rel)
- 			}
- 		}
- 		key := p
--		if target, err := filepath.EvalSymlinks(p); err == nil {
++				st.Damaged = append(st.Damaged, rel)
++			}
++		}
++		key := p
 +		if target, err := ResolveBlob(repoDir, p); err == nil {
- 			key = target
- 		}
- 		if !seen[key] {
++			key = target
++		}
++		if !seen[key] {
++			seen[key] = true
++			st.Bytes += fi.Size()
++		}
++		if slices.Contains(weightExts, strings.ToLower(filepath.Ext(rel))) {
++			weights = true
++		}
++		return nil
++	})
++	for _, f := range c.Files {
++		if strings.ContainsAny(f, "*?[") {
++			if !matchAny(present, f) {
++				st.Missing = append(st.Missing, f)
++			}
++			continue
++		}
++		if !present[f] && !slices.Contains(st.Missing, f) {
++			st.Missing = append(st.Missing, f)
++		}
++	}
++	switch {
++	case len(st.Missing) > 0 || len(st.Damaged) > 0 || files == 0:
++		st.State = Partial
++	case !c.Aux && len(c.Files) == 0 && !weights:
++		st.State = Partial
++	default:
++		st.State = Installed
++	}
++	return st
++}
+diff --git a/models/status_oldlayout_test.go b/models/status_oldlayout_test.go
+new file mode 100644
+index 0000000..bbaafe1
+--- /dev/null
++++ b/models/status_oldlayout_test.go
+@@ -0,0 +1,31 @@
++//go:build !windows
++
++package models
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++// An old snapshot links its files straight into snapshots/<rev>/, with no
++// blobs/ behind them (the pre-blob cache layout). It is still installed:
++// the size is all the check asks.
++func TestCheckOldLayoutWithoutBlobs(t *testing.T) {
++	hub := t.TempDir()
++	repoDir := RepoDir(hub, repoA)
++	snap := filepath.Join(repoDir, "snapshots", revA)
++	if err := os.MkdirAll(snap, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	for name, size := range map[string]int64{"config.json": 10, "model.safetensors": 100} {
++		if err := os.WriteFile(filepath.Join(snap, name), make([]byte, size), 0o644); err != nil {
++			t.Fatal(err)
++		}
++	}
++	c := Claim{Repo: repoA, Revision: revA, Sizes: map[string]int64{"config.json": 10, "model.safetensors": 100}}
++	st := Check(hub, c)
++	if st.State != Installed {
++		t.Fatalf("old layout snapshot is %v (missing %v), want Installed", st.State, st.Missing)
++	}
++}
+diff --git a/models/testblob_unix_test.go b/models/testblob_unix_test.go
+new file mode 100644
+index 0000000..c8a1a1a
+--- /dev/null
++++ b/models/testblob_unix_test.go
+@@ -0,0 +1,11 @@
++//go:build !windows
++
++package models
++
++import "path/filepath"
++
++// testBlobPath is the snapshot entry's blob in tests (a link's target, or
++// the entry itself).
++func testBlobPath(repoDir, p string) (string, error) {
++	return filepath.EvalSymlinks(p)
++}
+diff --git a/models/testblob_windows_test.go b/models/testblob_windows_test.go
+new file mode 100644
+index 0000000..14495ed
+--- /dev/null
++++ b/models/testblob_windows_test.go
+@@ -0,0 +1,8 @@
++//go:build windows
++
++package models
++
++// testBlobPath is the snapshot entry's blob in tests.
++func testBlobPath(repoDir, p string) (string, error) {
++	return ResolveBlob(repoDir, p)
++}
 diff --git a/models/v08_test.go b/models/v08_test.go
-index 4fbe8296..c5474117 100644
+index 4fbe829..b9e49f7 100644
 --- a/models/v08_test.go
 +++ b/models/v08_test.go
 @@ -4,20 +4,11 @@ import (
@@ -1028,7 +2556,7 @@ index 4fbe8296..c5474117 100644
  		t.Fatalf("before %+v", st)
  	}
 -	weights, _ := filepath.EvalSymlinks(filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
-+	weights, err := ResolveBlob(RepoDir(e.hub, repoA), filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
++	weights, err := testBlobPath(RepoDir(e.hub, repoA), filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -1061,7 +2589,7 @@ index 4fbe8296..c5474117 100644
  	if data, _ := os.ReadFile(filepath.Join(RepoDir(e.hub, repoA), "refs", "main")); string(data) != revA {
  		t.Fatalf("refs/main %q", data)
 diff --git a/registry/discover.go b/registry/discover.go
-index febff64e..bbfc30b9 100644
+index febff64..bbfc30b 100644
 --- a/registry/discover.go
 +++ b/registry/discover.go
 @@ -174,12 +174,16 @@ func BundlePath() string {
@@ -1084,7 +2612,7 @@ index febff64e..bbfc30b9 100644
  
  // TeamID is the Team ID of the running app's signature ("" when ad hoc
 diff --git a/registry/registry_test.go b/registry/registry_test.go
-index b034f4e6..3db9b03d 100644
+index b034f4e..3db9b03 100644
 --- a/registry/registry_test.go
 +++ b/registry/registry_test.go
 @@ -201,7 +201,8 @@ func TestDiscover(t *testing.T) {
@@ -1098,7 +2626,7 @@ index b034f4e6..3db9b03d 100644
  	}
  	if got := bundleOf("/usr/local/bin/tool"); got != "" {
 diff --git a/runtime/memory_other.go b/runtime/memory_other.go
-index 31a1bbf0..e7097f9d 100644
+index 31a1bbf..e7097f9 100644
 --- a/runtime/memory_other.go
 +++ b/runtime/memory_other.go
 @@ -1,4 +1,4 @@
@@ -1109,7 +2637,7 @@ index 31a1bbf0..e7097f9d 100644
  
 diff --git a/runtime/memory_windows.go b/runtime/memory_windows.go
 new file mode 100644
-index 00000000..8d569f8f
+index 0000000..a5e495e
 --- /dev/null
 +++ b/runtime/memory_windows.go
 @@ -0,0 +1,33 @@
@@ -1126,14 +2654,14 @@ index 00000000..8d569f8f
 +var globalMemoryStatusEx = windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalMemoryStatusEx")
 +
 +type memoryStatusEx struct {
-+	sizeBytes                uint32
-+	memoryLoadPercent        uint32
-+	totalPhysicalBytes       uint64
-+	availablePhysicalBytes   uint64
-+	totalPageFileBytes       uint64
-+	availablePageFileBytes   uint64
-+	totalVirtualBytes        uint64
-+	availableVirtualBytes    uint64
++	sizeBytes                     uint32
++	memoryLoadPercent             uint32
++	totalPhysicalBytes            uint64
++	availablePhysicalBytes        uint64
++	totalPageFileBytes            uint64
++	availablePageFileBytes        uint64
++	totalVirtualBytes             uint64
++	availableVirtualBytes         uint64
 +	availableExtendedVirtualBytes uint64
 +}
 +
@@ -1147,7 +2675,7 @@ index 00000000..8d569f8f
 +	return status.totalPhysicalBytes
 +}
 diff --git a/runtime/proc_other.go b/runtime/proc_other.go
-index 52796133..f1ba4660 100644
+index 5279613..f1ba466 100644
 --- a/runtime/proc_other.go
 +++ b/runtime/proc_other.go
 @@ -1,4 +1,4 @@
@@ -1158,7 +2686,7 @@ index 52796133..f1ba4660 100644
  
 diff --git a/runtime/proc_windows.go b/runtime/proc_windows.go
 new file mode 100644
-index 00000000..c761cd8a
+index 0000000..c761cd8
 --- /dev/null
 +++ b/runtime/proc_windows.go
 @@ -0,0 +1,34 @@
@@ -1197,7 +2725,7 @@ index 00000000..c761cd8a
 +	return time.Now().Add(-time.Duration(uptimeMilliseconds) * time.Millisecond)
 +}
 diff --git a/settings/settings_test.go b/settings/settings_test.go
-index 6f30720b..8fd957cf 100644
+index 6f30720..8fd957c 100644
 --- a/settings/settings_test.go
 +++ b/settings/settings_test.go
 @@ -4,6 +4,7 @@ import (

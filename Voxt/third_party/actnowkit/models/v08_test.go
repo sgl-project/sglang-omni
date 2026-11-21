@@ -17,7 +17,7 @@ func TestCheckSizes(t *testing.T) {
 	if st := Check(e.hub, c); st.State != Installed {
 		t.Fatalf("before %+v", st)
 	}
-	weights, err := ResolveBlob(RepoDir(e.hub, repoA), filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
+	weights, err := testBlobPath(RepoDir(e.hub, repoA), filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
 	if err != nil {
 		t.Fatal(err)
 	}

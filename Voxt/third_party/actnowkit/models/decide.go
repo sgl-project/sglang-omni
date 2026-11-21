@@ -63,6 +63,7 @@ func (d Decision) InUse() bool { return len(d.Users) > 0 || len(d.LoadedBy) > 0 
 
 // UserNames are the names of Users, LoadedBy and Unclaimed, each once, for the
 // dialogs ("AudioSmith also uses this model").
+
 func (d Decision) UserNames() []string {
 	var out []string
 	for _, u := range append(append(slices.Clone(d.Users), d.LoadedBy...), d.Unclaimed...) {
@@ -170,6 +171,7 @@ const (
 )
 
 // Result is what Delete did.
+
 type Result struct {
 	Decision Decision // as decided holding the lock
 	Deleted  bool     // the files went
@@ -270,78 +272,6 @@ func (s *Store) DeleteModel(ctx context.Context, ref Ref, model string, scope Sc
 	return s.Delete(ctx, ref, scope)
 }
 
-type snapshotBlob struct {
-	sizeBytes     int64
-	snapshotLinks uint32
-}
-
-// snapshotBlobs maps the blobs a snapshot links (absolute paths) to their
-// sizes and the snapshot entries hard-linked to them.
-func snapshotBlobs(snap string) map[string]snapshotBlob {
-	out := map[string]snapshotBlob{}
-	repoDir := filepath.Dir(filepath.Dir(snap))
-	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		target, err := ResolveBlob(repoDir, p)
-		if err != nil {
-			return nil
-		}
-		targetInfo, err := os.Stat(target)
-		if err != nil {
-			return nil
-		}
-		blob := snapshotBlob{sizeBytes: targetInfo.Size(), snapshotLinks: out[target].snapshotLinks}
-		if linkInfo, err := os.Stat(p); err == nil && os.SameFile(targetInfo, linkInfo) {
-			blob.snapshotLinks++
-		}
-		out[target] = blob
-		return nil
-	})
-	return out
-}
-
-// usedBlobNames are the blob names (base names of link targets) linked by
-// the snapshots of repoDir other than skip.
-func usedBlobNames(repoDir, skip string) (used map[string]bool, others int) {
-	used = map[string]bool{}
-	snaps := filepath.Join(repoDir, "snapshots")
-	entries, _ := os.ReadDir(snaps)
-	for _, e := range entries {
-		if !e.IsDir() || e.Name() == skip || e.Name() == skip+".incomplete" {
-			continue
-		}
-		others++
-		_ = filepath.WalkDir(filepath.Join(snaps, e.Name()), func(p string, d fs.DirEntry, err error) error {
-			if err == nil && !d.IsDir() {
-				if target, err := ResolveBlob(repoDir, p); err == nil {
-					used[filepath.Base(target)] = true
-				}
-			}
-			return nil
-		})
-	}
-	return used, others
-}
-
-// freeable is what deleting ref's snapshot would free.
-func freeable(hub string, ref Ref) (int64, bool) {
-	repoDir := RepoDir(hub, ref.Repo)
-	used, others := usedBlobNames(repoDir, ref.Revision)
-	var n int64
-	for p, blob := range snapshotBlobs(SnapshotDir(hub, ref)) {
-		if used[filepath.Base(p)] {
-			continue
-		}
-		if fi, err := os.Stat(p); err == nil && linkedElsewhere(p, fi, blob.snapshotLinks) {
-			continue // an imported blob the Hugging Face cache still holds
-		}
-		n += blob.sizeBytes
-	}
-	return n, others == 0
-}
-
 // DeleteSnapshot removes ref's files (spec §7.6 step 1.5): the snapshot
 // (and an unfinished one), the refs naming it, the blobs no remaining
 // snapshot links (with their partial downloads, except blobs whose lock
@@ -405,21 +335,6 @@ func DeleteSnapshot(hub string, ref Ref) (int64, error) {
 	return freed, nil
 }
 
-// removeSize removes p and returns the space that frees: nothing for a
-// file with other hard links (an imported blob the Hugging Face cache
-// still holds).
-func removeSize(p string) int64 {
-	fi, err := os.Lstat(p)
-	if err != nil {
-		return 0
-	}
-	linked := linkedElsewhere(p, fi, 0)
-	if os.Remove(p) != nil || linked {
-		return 0
-	}
-	return fi.Size()
-}
-
 // Orphan is an uninstalled app's claims (spec §7.6 step 4).
 type Orphan struct {
 	User
@@ -427,43 +342,6 @@ type Orphan struct {
 	// Bytes is what cleaning up would free: the claimed snapshots no
 	// installed app claims.
 	Bytes int64
-}
-
-// Orphans lists the claims of apps the registry says are uninstalled
-// (needs Store.Apps), for "N models (X GB) are only used by apps that
-// are no longer installed" (TextOrphans).
-func (s *Store) Orphans() ([]Orphan, error) {
-	apps := s.apps()
-	if apps == nil {
-		return nil, nil
-	}
-	all, errs := ReadAllClaims(s.Family)
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
-	}
-	var out []Orphan
-	for bid, cf := range all {
-		if bid == s.BundleID || installed(apps, bid) || (cf.Root != "" && !SameHub(cf.Root, s.Hub)) || len(cf.Claims) == 0 {
-			continue
-		}
-		o := Orphan{User: userOf(bid, apps), Claims: cf.Claims}
-		o.Orphan = true
-		seen := map[string]bool{}
-		for _, c := range cf.Claims {
-			if usedByInstalled(all, apps, bid, c.Ref(), s.Hub) {
-				continue
-			}
-			for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
-				if !seen[p] {
-					seen[p] = true
-					o.Bytes += n.sizeBytes
-				}
-			}
-		}
-		out = append(out, o)
-	}
-	slices.SortFunc(out, func(a, b Orphan) int { return strings.Compare(a.BundleID, b.BundleID) })
-	return out, nil
 }
 
 func usedByInstalled(all map[string]Claims, apps map[string]AppState, skip string, ref Ref, hub string) bool {
@@ -540,34 +418,6 @@ type Usage struct {
 	Mine, Shared int64
 }
 
-// Usage computes it.
-func (s *Store) Usage() (Usage, error) {
-	mine, err := s.Claims()
-	if err != nil {
-		return Usage{}, err
-	}
-	var u Usage
-	seen := map[string]bool{}
-	for _, c := range mine.Claims {
-		d, err := s.Decide(c.Ref())
-		if err != nil {
-			continue
-		}
-		for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
-			if seen[p] {
-				continue
-			}
-			seen[p] = true
-			if d.InUse() {
-				u.Shared += n.sizeBytes
-			} else {
-				u.Mine += n.sizeBytes
-			}
-		}
-	}
-	return u, nil
-}
-
 // Found is a wanted model found on disk, for the first-run reuse card
 // (spec §7.10.1).
 type Found struct {
@@ -616,6 +466,7 @@ const EngineCopyMinAge = 10 * time.Minute
 // that are older than minAge (EngineCopyMinAge): mlx-audio-swift leaves
 // them after failed loads, and its next load would then delete the hub
 // snapshot. It returns their names.
+
 func CleanEngineCopies(hub string, minAge time.Duration) ([]string, error) {
 	dir := EngineCopiesDir(hub)
 	entries, err := os.ReadDir(dir)

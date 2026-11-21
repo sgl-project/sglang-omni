@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -30,16 +29,6 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	syncDir(filepath.Dir(path))
 	return nil
-}
-
-func renameFile(oldPath, newPath string) error {
-	for attempt := 0; ; attempt++ {
-		err := os.Rename(oldPath, newPath)
-		if err == nil || runtime.GOOS != "windows" || attempt == 99 {
-			return err
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 }
 
 // writeTemp writes data to a new temporary file beside path and returns

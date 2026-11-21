@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -182,13 +181,13 @@ func Check(d family.Dir, hub string, sys registry.System) []Problem {
 			return nil
 		}
 		if de.IsDir() {
-			if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+			if !permBitsOK(fi) {
 				add("warning", p, "directory mode %04o, want 0700", fi.Mode().Perm())
 			}
 			return nil
 		}
 		name := de.Name()
-		if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+		if !permBitsOK(fi) {
 			add("warning", p, "file mode %04o, want 0600", fi.Mode().Perm())
 		}
 		if strings.HasPrefix(name, ".") && strings.Contains(name, ".tmp-") && time.Since(fi.ModTime()) > time.Hour {
