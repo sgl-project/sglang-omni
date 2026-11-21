@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from enum import Enum
+from pathlib import Path
 from typing import Annotated, NamedTuple, Optional
 
 import typer
@@ -93,7 +94,7 @@ def export(
 
     # export config in a yaml file
     if output_path is None:
-        output_path = f"./config_{config.name}.yaml"
+        output_path = f"./config_{Path(config.name).name}.yaml"
     else:
         pass
 
