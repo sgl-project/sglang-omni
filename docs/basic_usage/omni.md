@@ -274,6 +274,12 @@ with requests.post(
             pass
 ```
 
+### Speech Streaming Latency
+
+Speech can arrive in chunks so playback can begin before the whole answer is ready. First-audio latency is the wait before the first playable chunk arrives; it is different from the time needed to finish the entire reply.
+
+Smaller chunks can let playback begin sooner, while larger chunks can reduce transfer and processing overhead. The result depends on the model, audio decoder, server load, and network. Start with the model defaults and measure with your expected traffic before tuning. See [Qwen3-Omni speech chunking](../cookbook/qwen3_omni.md#speech-chunking-and-first-audio-latency) for its settings.
+
 ## Realtime Interaction
 
 Realtime interaction is separate from both a completed chat request and an SSE response. The client and server keep a WebSocket session open and exchange input and output events continuously. Model pages document the supported event names, audio formats, and session limits.

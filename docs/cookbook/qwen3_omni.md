@@ -130,7 +130,18 @@ sgl-omni serve \
 
 For the equivalent YAML layout, see [Memory and Concurrency](../basic_usage/omni.md#memory-and-concurrency).
 
-### Codec Coalescing and First-Audio Latency
+<span id="codec-coalescing-and-first-audio-latency"></span>
+
+### Speech Chunking and First-Audio Latency
+
+Speech is generated and sent in small pieces. First-audio latency is the time you wait before the first piece is available to play. Start with the default settings; change them only if you need speech to start sooner or want to improve performance under load. See [Speech Streaming Latency](../basic_usage/omni.md#speech-streaming-latency) for the general trade-off.
+
+Qwen3-Omni sends its first 10 codec frames (small units of encoded speech) individually, then groups later frames in sets of 10. The early frames help the audio decoder start without waiting for a full group. Setting `codec_coalesce_early_frames=0` removes this early delivery and can delay the first sound. These settings belong under `stages.talker_ar.factory`.
+
+If you change the audio decoder settings, measure the time until playback actually starts. Smaller groups alone do not guarantee a faster response: the decoder still needs enough frames, and requests may also wait for a GPU or network transfer.
+
+<details>
+<summary>Advanced: frame counts and decoder timing</summary>
 
 The speech pipeline sets `codec_coalesce_frames=10`, `codec_coalesce_early_frames=10`, and `codec_coalesce_first_frames=0` under `stages.talker_ar.factory`. The first 10 codec frames are sent individually; later frames are coalesced into groups of 10. Omitting a YAML override keeps these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to disable the early prefix. This aligns with the default Code2Wav 10-frame threshold: the first three windows contain 10, 20, and 30 frames, and subsequent full windows contain 35 frames including left context. These shapes can use the captured windows when CUDA Graph is enabled. Each window decodes one 10-frame chunk past its context, so an early prefix of 12 keeps these window lengths and its two extra frames wait for the next window.
 
@@ -138,7 +149,16 @@ With `initial_codec_chunk_frames=2` and `stream_chunk_size=10`, explicitly set `
 
 This is an input-readiness estimate, not a measured end-to-end TTFA delta or nine frames of audio playback time. Actual TTFA also depends on transport, queueing, and vocoder execution; the overall coalescing benchmark does not isolate the early-prefix setting.
 
+</details>
+
 ### Code2Wav Execution
+
+Code2Wav turns encoded speech into playable audio. Its GPU optimizations are enabled by default, so most users can keep the settings from the launch examples. They reuse prepared GPU work, process ready audio from several requests together, and overlap audio transfer with later computation.
+
+If you are troubleshooting, the options below let you disable individual optimizations. If you create a custom stage, keep its `gpu_memory_fraction` setting: GPU replay requires an explicit memory budget.
+
+<details>
+<summary>Advanced: GPU optimizations and configuration options</summary>
 
 Exact-shape CUDA Graph replay is enabled by default for Qwen3-Omni Code2Wav. The default stage config supplies a 2% typed GPU memory budget; colocated example configs override it with their hardware-specific budget.
 
@@ -175,7 +195,18 @@ stages:
       enable_output_overlap: false
 ```
 
+</details>
+
 ### Speech Stage Placement
+
+Start with the GPU layout from the launch examples. By default, the text-generation stage (thinker) and speech-generation stage (talker) use separate GPUs; the audio decoder (Code2Wav) shares the thinker GPU. This layout helps when several users send requests at once.
+
+If you move the thinker with `--thinker.gpu`, also set `--code2wav.gpu` if you want the audio decoder to move with it. When setting memory budgets manually, leave space for both stages on a shared GPU.
+
+A layout that handles many simultaneous requests well may behave differently with one request at a time. Test with the traffic you expect, paying attention to how soon speech starts and how long the complete reply takes.
+
+<details>
+<summary>Advanced: placement measurements and memory usage</summary>
 
 At concurrency 8, the talker is the heaviest speech stage: it holds its GPU at about 86% median utilization. Give it a GPU of its own. The code2wav vocoder is light by comparison (9–13% median utilization) and shares the thinker's GPU by default. That default holds only when the thinker stays on its own default GPU — a `--thinker.gpu` override moves the thinker alone, not code2wav, so pass `--code2wav.gpu` explicitly too if you relocate the thinker.
 
@@ -193,6 +224,8 @@ A concurrency-8 experiment held code2wav fixed on the thinker's GPU and varied o
 A follow-up single-variable pair tested moving code2wav to its own GPU instead, with the talker already isolated in both arms. Wall-clock time and end-to-end latency were flat (−0.7% and −0.9%, well within noise for a single interleaved pair) — giving the vocoder a dedicated GPU bought nothing, which is why code2wav shares the thinker's GPU instead of getting isolated like the talker.
 
 Single-stream traffic (one request at a time) sees a different trade-off. In the talker-placement experiment above, isolating the talker — moving it off the thinker's GPU — made single-stream end-to-end latency 14–17% worse: with one request in flight there is no contention to escape, while that experiment's thinker-to-talker handoff started crossing a device boundary. Single-stream TTFA still improved by about 30% (0.48–0.49 s to 0.34–0.35 s), because the talker no longer waits its turn on a shared GPU. Both the old and the new default layout already keep the thinker and talker on separate GPUs, so these numbers describe that experiment's topology change, not the default code2wav placement. Streaming TTS workloads should prefer this layout regardless, since TTFA is the latency users notice first.
+
+</details>
 
 ## Single-GPU FP8 on H100/H20
 
