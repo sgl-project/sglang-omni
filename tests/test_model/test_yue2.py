@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Real-checkpoint acoustic and HTTP serving checks for one CUDA device."""
+"""Real-checkpoint acoustic and HTTP serving checks for one accelerator."""
 
 import concurrent.futures
 import io
@@ -20,10 +20,12 @@ import torch
 from sglang_omni.models.yue2.acoustic import synthesize_latents
 from sglang_omni.models.yue2.request import CODEC_OFFSET
 from sglang_omni.models.yue2.runtime import Yue2Runtime
+from sglang_omni.platforms import current_platform
+from sglang_omni.utils.device import resolve_concrete_device
 
 pytestmark = [
     pytest.mark.accelerator,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+    pytest.mark.skipif(current_platform.is_cpu(), reason="Accelerator required"),
     pytest.mark.skipif(
         not os.environ.get("YUE2_MODEL_PATH"),
         reason="Set YUE2_MODEL_PATH to run real-checkpoint tests",
@@ -38,10 +40,15 @@ TOKEN_BUDGET = 16
 
 @pytest.fixture(scope="module", params=[False, True, "fused"])
 def runtime(request: pytest.FixtureRequest) -> Yue2Runtime:
+    device = resolve_concrete_device(None)
+    if request.param == "fused" and device.type != "cuda":
+        pytest.skip("YuE2 fused kernels need sgl_kernel on CUDA")
+    else:
+        pass
     return Yue2Runtime.from_pretrained(
         os.environ["YUE2_MODEL_PATH"],
         VAE_PATH,
-        torch.device("cuda:0"),
+        device,
         vae_core_frames=1024,
         vae_halo_frames=16,
         fuse_projections=bool(request.param),
@@ -66,6 +73,9 @@ def test_acoustic_solver_recovers_after_abort(runtime: Yue2Runtime) -> None:
 
 
 def test_acoustic_render_returns_stereo_audio(runtime: Yue2Runtime) -> None:
+    accelerator = resolve_concrete_device(None)
+    assert next(runtime.model.parameters()).device.type == accelerator.type
+    assert next(runtime.vae.parameters()).device.type == accelerator.type
     tokens = [CODEC_OFFSET + token for token in range(TOKEN_BUDGET)]
     audio = runtime.render([1, 2, 3], tokens, 42, 2, lambda: False)
     assert audio.shape == (2, TOKEN_BUDGET * 1920 - 64)

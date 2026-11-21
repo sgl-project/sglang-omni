@@ -12,10 +12,10 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 
 
-def cuda_device(device: str | None, gpu_id: int | None) -> torch.device:
+def accelerator_device(device: str | None, gpu_id: int | None) -> torch.device:
     resolved = torch.device(resolve_concrete_device(device, gpu_id))
-    if resolved.type != "cuda":
-        raise ValueError("YuE2 serving requires a CUDA device")
+    if resolved.type == "cpu":
+        raise ValueError("YuE2 serving requires an accelerator")
     else:
         return resolved
 
@@ -63,7 +63,7 @@ def create_acoustic_executor(
     runtime = Yue2Runtime.from_pretrained(
         model_path,
         vae_path,
-        cuda_device(device, gpu_id),
+        accelerator_device(device, gpu_id),
         vae_core_frames=vae_core_frames,
         vae_halo_frames=vae_halo_frames,
         fuse_projections=fuse_projections,

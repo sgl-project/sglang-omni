@@ -182,8 +182,8 @@ def create_ar_executor(
     shared_weights_dir: str | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
 ) -> OmniScheduler[Yue2ARRequestData]:
-    if resolve_concrete_device(device, gpu_id).type != "cuda":
-        raise ValueError("YuE2 serving requires a CUDA device")
+    if resolve_concrete_device(device, gpu_id).type == "cpu":
+        raise ValueError("YuE2 serving requires an accelerator")
     else:
         pass
     builder = Yue2EngineBuilder(

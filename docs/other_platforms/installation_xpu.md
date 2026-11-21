@@ -746,6 +746,32 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 **Expected result:** Play `rock_1.wav` to hear the generated music.
 
+### YuE2 (text-to-music, single XPU)
+
+The AR stage runs the bf16 transformer on the SGLang engine with decode graphs, which capture on XPU and stay on by default, as on CUDA. Cross-process weight sharing reduces a tensor to an IPC handle only on CUDA, so here the acoustic stage loads its own copy of the AR weights instead: both stages together hold about 21 GB of a 24 GB card, so give the model an otherwise-idle card, move the acoustic stage to a second one with `--yue2_acoustic.gpu 1`, or shrink the 65,536-token KV cache with `--yue2_ar.engine.max_total_tokens`. The acoustic stage's `fused_kernels` option needs sgl-kernel's CUDA kernels and stays off; `fuse_projections` works.
+**Launch**
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve --model-path m-a-p/YuE2-3B --host 0.0.0.0 --port 8000
+```
+
+**Request**
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "m-a-p/YuE2-3B",
+    "input": "[Verse]\nMorning light is shining through\nEvery road leads back to you",
+    "instructions": "Gentle acoustic pop, warm female vocals, piano and guitar",
+    "seed": 42,
+    "max_new_tokens": 1500
+  }' \
+  --output song.wav
+```
+
+**Expected result:** Play `song.wav` to hear the generated song.
+
 ### Ming-Omni (omni chat and speech, one or two XPUs)
 
 Ming-flash-omni-2.0's thinker holds 194 GiB of bf16 weights, so on 24 GB cards it runs TP=1 with

@@ -49,6 +49,7 @@ from sglang_omni.models.yue2.stages import (
     create_acoustic_executor,
 )
 from sglang_omni.models.yue2.vae import DecoderConfig, VaeConfig, Yue2Vae
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.serve.openai_errors import generation_error_status_code
@@ -457,10 +458,17 @@ def test_acoustic_model_reads_ar_weights_from_engine_storage(
     assert set(borrower.state_dict()) == set(model.state_dict())
 
 
-def test_stages_share_ar_weights_only_on_one_gpu() -> None:
+@pytest.mark.parametrize("device_type,shares", [("cuda", True), ("xpu", False)])
+def test_stages_share_ar_weights_only_on_one_cuda_gpu(
+    monkeypatch: pytest.MonkeyPatch, device_type: str, shares: bool
+) -> None:
+    """Only CUDA reduces a tensor to an IPC handle, so other devices must not be
+    handed a share directory that would ship the AR weights by value."""
+    monkeypatch.setattr(current_platform, "device_type", device_type, raising=False)
     config = Yue2PipelineConfig(model_path="model")
     shared = config.stage_factory_kwargs("yue2_ar")
-    assert shared and shared == config.stage_factory_kwargs("yue2_acoustic")
+    assert bool(shared) == shares
+    assert shared == config.stage_factory_kwargs("yue2_acoustic")
     config.stage_named("yue2_acoustic").gpu = 1
     assert config.stage_factory_kwargs("yue2_ar") == {}
 
