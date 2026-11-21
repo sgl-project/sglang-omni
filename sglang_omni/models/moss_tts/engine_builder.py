@@ -14,6 +14,7 @@ from sglang_omni.models.moss_tts.hf_loading import (
     resolve_moss_tts_context_length,
 )
 from sglang_omni.models.moss_tts.request_builders import MossTTSSGLangRequestData
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
@@ -84,7 +85,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
         return {
             "max_running_requests": 16,
             "dtype": dtype,
-            "disable_cuda_graph": False,
+            "disable_cuda_graph": current_platform.is_xpu(),
             "disable_overlap_schedule": True,
             "enable_torch_compile": False,
             "max_prefill_tokens": min(self.context_length, 8192),
