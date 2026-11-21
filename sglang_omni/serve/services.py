@@ -2,12 +2,12 @@
 """Start the services a pipeline depends on and stop them with it."""
 
 import asyncio
+import http.client
 import logging
 import os
 import signal
 import subprocess
 import time
-import urllib.error
 import urllib.request
 
 from sglang_omni.config.schema import ServiceConfig
@@ -26,7 +26,7 @@ def is_serving(port: int) -> bool:
             f"http://127.0.0.1:{port}{READY_PATH}", timeout=2
         ) as response:
             return response.status == 200
-    except (urllib.error.URLError, TimeoutError):
+    except (OSError, http.client.HTTPException):
         return False
 
 

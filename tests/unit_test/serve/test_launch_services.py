@@ -4,6 +4,7 @@
 import os
 import socket
 import sys
+import threading
 
 import pytest
 
@@ -46,6 +47,13 @@ def exiting_service(name: str, port: int, code: int) -> ServiceConfig:
     )
 
 
+def answer_once(listener: socket.socket, response_bytes: bytes) -> None:
+    connection, _ = listener.accept()
+    with connection:
+        connection.recv(65536)
+        connection.sendall(response_bytes)
+
+
 def is_process_group_alive(pid: int) -> bool:
     try:
         os.killpg(pid, 0)
@@ -69,6 +77,16 @@ async def test_services_start_in_order_and_stop_together():
         pids = [process.pid for _, process in services.started]
     assert not any(is_process_group_alive(pid) for pid in pids)
     assert not is_serving(first.port) and not is_serving(second.port)
+
+
+@pytest.mark.parametrize("response_bytes", [b"", b"not http\r\n\r\n"])
+def test_a_port_that_does_not_answer_http_is_not_serving(response_bytes):
+    """is_serving raised when the port dropped the connection or answered non-HTTP bytes."""
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        thread = threading.Thread(target=answer_once, args=(listener, response_bytes))
+        thread.start()
+        assert not is_serving(listener.getsockname()[1])
+        thread.join()
 
 
 @pytest.mark.asyncio
