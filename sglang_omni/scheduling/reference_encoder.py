@@ -66,6 +66,10 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         """Do per-item work such as decoding in the calling thread, before the item joins the batch queue."""
         return item
 
+    def batch_groups(self, items: list[InputT]) -> list[list[int]]:
+        """Split a drained batch into the index groups that encode_batch runs one after another; the service delivers each group's results as soon as that group finishes."""
+        return [list(range(len(items)))]
+
     def encode_batch(self, items: list[InputT]) -> Sequence[ArtifactT | Exception]:
         """Encode prepared items; an Exception in a slot fails only that item."""
         return [self.encode_one(item) for item in items]
@@ -194,6 +198,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         self.batching = self.max_batch_size > 1 and bool(hook.can_encode_batch())
         self.encodes_alone = bool(hook.can_encode_alone())
         self.encodes_in_flight = 0
+        self.closing = False
         self.batch_queue: (
             _queue_mod.Queue[tuple[InputT, concurrent.futures.Future[ArtifactT]] | None]
             | None
@@ -227,7 +232,10 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
 
     def close(self) -> None:
         if self.batch_queue is not None:
-            self.batch_queue.put(None)
+            # note (yucheng): Admission checks this flag under the same lock, so no request joins the queue after the shutdown sentinel.
+            with self.lock:
+                self.closing = True
+                self.batch_queue.put(None)
         else:
             pass
         thread = self.batch_thread
@@ -260,6 +268,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             # note (yucheng): A lone request would only pay the batch linger, so it takes the per-item path, but only while the solo thread is idle: an encode that outlived its timed-out caller would otherwise hold it up.
             is_solo = (
                 self.encodes_alone
+                and not self.closing
                 and self.encodes_in_flight == 0
                 and (self.solo_future is None or self.solo_future.done())
             )
@@ -273,26 +282,54 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 pass
         try:
             if solo_future is not None:
-                return solo_future.result(timeout=self.timeout_s)
+                # note (yucheng): The service drops its reference once the solo encode ends, so a failed encode's traceback does not keep its tensors alive: here when the caller sees the result, or in the callback when the caller timed out first.
+                solo_future.add_done_callback(self.release_solo_future)
+                try:
+                    return solo_future.result(timeout=self.timeout_s)
+                finally:
+                    if solo_future.done():
+                        self.release_solo_future(solo_future)
+                    else:
+                        pass
             else:
                 pass
             prepared_item = self.hook.prepare_batch_input(item)
             future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
-            self.batch_queue.put((prepared_item, future))
-            return future.result(timeout=self.timeout_s)
+            with self.lock:
+                if self.closing:
+                    raise RuntimeError("reference encode service is shutting down")
+                else:
+                    self.batch_queue.put((prepared_item, future))
+            try:
+                return future.result(timeout=self.timeout_s)
+            except concurrent.futures.TimeoutError:
+                # note (yucheng): The worker skips a cancelled entry, so a request that times out before its encode starts is dropped instead of encoded for nobody.
+                future.cancel()
+                raise
         finally:
             with self.lock:
                 self.encodes_in_flight -= 1
+
+    def release_solo_future(self, future: concurrent.futures.Future[ArtifactT]) -> None:
+        with self.lock:
+            if self.solo_future is future:
+                self.solo_future = None
+            else:
+                pass
 
     def drain_batch(
         self,
     ) -> tuple[list[tuple[InputT, concurrent.futures.Future[ArtifactT]]], bool]:
         assert self.batch_queue is not None
-        first = self.batch_queue.get()
-        if first is None:
-            return ([], True)
-        else:
-            pass
+        first = None
+        while first is None:
+            entry = self.batch_queue.get()
+            if entry is None:
+                return ([], True)
+            elif entry[1].set_running_or_notify_cancel():
+                first = entry
+            else:
+                pass
         batch = [first]
         deadline = time.monotonic() + self.max_batch_wait_s
         while len(batch) < self.max_batch_size:
@@ -310,9 +347,10 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                     break
             if entry is None:
                 return (batch, True)
+            elif entry[1].set_running_or_notify_cancel():
+                batch.append(entry)
             else:
                 pass
-            batch.append(entry)
         return (batch, False)
 
     def batch_worker(self) -> None:
@@ -323,50 +361,42 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 logger.exception("reference encode batch worker: drain failed")
                 continue
             if batch:
+                items = [item for item, _ in batch]
+                # note (yucheng): A failed split falls back to one group, because an exception here would end the worker and leave every later request to time out.
                 try:
-                    results: list[ArtifactT | BaseException] = self.encode_batch(
-                        [item for item, _ in batch]
-                    )
-                except BaseException as exc:
-                    logger.exception("reference encode batch worker: encode failed")
-                    results = [exc] * len(batch)
-                for (_, future), outcome in zip(batch, results):
-                    if future.cancelled():
-                        continue
+                    groups = self._hook.batch_groups(items)  # noqa: leading-underscore
+                    if sorted(index for group in groups for index in group) != list(
+                        range(len(items))
+                    ):
+                        raise RuntimeError(
+                            f"batch_groups returned {groups} for {len(items)} items"
+                        )
                     else:
                         pass
-                    if isinstance(outcome, BaseException):
-                        future.set_exception(fresh_exception(outcome))
-                    else:
-                        future.set_result(cast(ArtifactT, outcome))
+                except Exception:
+                    logger.exception(
+                        "%s batch_groups failed; encoding the drained batch as one group",
+                        self.log_prefix or "reference encode",
+                    )
+                    groups = [list(range(len(items)))]
+                for group in groups:
+                    try:
+                        results: list[ArtifactT | BaseException] = self.encode_batch(
+                            [items[index] for index in group]
+                        )
+                    except BaseException as exc:
+                        logger.exception("reference encode batch worker: encode failed")
+                        results = [exc] * len(group)
+                    for index, outcome in zip(group, results):
+                        future = batch[index][1]
+                        if isinstance(outcome, BaseException):
+                            future.set_exception(fresh_exception(outcome))
+                        else:
+                            future.set_result(cast(ArtifactT, outcome))
             else:
                 pass
             if stopping:
-                self.drain_pending_on_shutdown()
                 return
-            else:
-                pass
-
-    def drain_pending_on_shutdown(self) -> None:
-        """Fail queued waiters instead of leaving them to time out."""
-        if self.batch_queue is None:
-            return
-        else:
-            pass
-        while True:
-            try:
-                entry = self.batch_queue.get_nowait()
-            except _queue_mod.Empty:
-                return
-            if entry is None:
-                continue
-            else:
-                pass
-            _, future = entry
-            if not future.cancelled():
-                future.set_exception(
-                    RuntimeError("reference encode service is shutting down")
-                )
             else:
                 pass
 

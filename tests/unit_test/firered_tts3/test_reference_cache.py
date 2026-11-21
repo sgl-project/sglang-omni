@@ -378,6 +378,18 @@ def test_batched_reference_encode_bounds_padded_samples_per_forward(
         assert_matches_per_clip(batched_artifact, hook.encode_one(reference))
 
 
+@pytest.mark.usefixtures("decoded_audio")
+def test_reference_hook_splits_a_drained_batch_by_the_padded_sample_budget(
+    reference_bundle: FireRedReferenceBundle,
+) -> None:
+    """The service delivers each of these groups on its own, so they must be the forwards encode_batch runs."""
+    # Groups by ascending length: [short, mid] (24 patches), [long] (40), [capped] (48).
+    reference_bundle.batch_sample_budget = 640
+    hook = FireRedReferenceHook(reference_bundle, model_id="stub", cache_enabled=False)
+    prepared = [hook.prepare_batch_input(item) for item in MIXED_REFERENCES]
+    assert hook.batch_groups(prepared) == [[1, 3], [0], [2]]
+
+
 @pytest.mark.usefixtures("fp32_encoder", "decoded_audio")
 def test_failed_forward_fails_only_its_own_group(
     reference_bundle: FireRedReferenceBundle,

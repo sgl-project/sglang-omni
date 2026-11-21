@@ -129,17 +129,7 @@ class FireRedReferenceBundle:
         self, clips: list[torch.Tensor]
     ) -> list[ReferenceConditioning | Exception]:
         """Encode normalized clips, one right-padded RedAE forward per length-sorted group."""
-        # note (yucheng): Sorting keeps padding small, and the budget bounds rows x longest clip so one long reference cannot multiply memory by the batch size.
-        groups: list[list[int]] = []
-        for index in sorted(range(len(clips)), key=lambda i: clips[i].shape[-1]):
-            if (
-                groups
-                and (len(groups[-1]) + 1) * clips[index].shape[-1]
-                <= self.batch_sample_budget
-            ):
-                groups[-1].append(index)
-            else:
-                groups.append([index])
+        groups = self.batch_groups(clips)
         outcomes: dict[int, ReferenceConditioning | Exception] = {}
         probe = ProfilingProbe.create()
         with self.lock:
@@ -152,6 +142,11 @@ class FireRedReferenceBundle:
                     outcomes.update(self.encode_group(clips, group, probe))
                 except Exception as exc:
                     if len(group) > 1:
+                        logger.warning(
+                            "FireRedTTS3 batched reference forward of %d clips failed (%s); retrying them one at a time",
+                            len(group),
+                            exc,
+                        )
                         split = True
                     else:
                         outcomes[group[0]] = exc.with_traceback(None)
@@ -161,6 +156,21 @@ class FireRedReferenceBundle:
                     pass
         probe.log(f"batch of {len(clips)}")
         return [outcomes[index] for index in range(len(clips))]
+
+    def batch_groups(self, clips: list[torch.Tensor]) -> list[list[int]]:
+        """Split clips into length-sorted index groups whose rows x longest clip stay under the sample budget."""
+        # note (yucheng): Sorting keeps padding small, and the budget bounds rows x longest clip so one long reference cannot multiply memory by the batch size.
+        groups: list[list[int]] = []
+        for index in sorted(range(len(clips)), key=lambda i: clips[i].shape[-1]):
+            if (
+                groups
+                and (len(groups[-1]) + 1) * clips[index].shape[-1]
+                <= self.batch_sample_budget
+            ):
+                groups[-1].append(index)
+            else:
+                groups.append([index])
+        return groups
 
     def encode_group(
         self, clips: list[torch.Tensor], group: list[int], probe: ProfilingProbe
@@ -281,6 +291,10 @@ class FireRedReferenceHook(
         return ReferenceAudioInput(
             item.audio_path, item.max_audio_seconds, normalized_audio
         )
+
+    def batch_groups(self, items: list[ReferenceAudioInput]) -> list[list[int]]:
+        assert all(item.normalized_audio is not None for item in items)
+        return self.bundle.batch_groups([item.normalized_audio for item in items])
 
     def encode_batch(
         self, items: list[ReferenceAudioInput]
