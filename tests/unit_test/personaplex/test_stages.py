@@ -31,6 +31,7 @@ from sglang_omni.models.personaplex.prompts import (
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
+from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 CALLER_SAMPLES = 2000
@@ -289,6 +290,7 @@ def test_every_realtime_stage_holds_max_sessions_calls():
     assert config.stage_factory_kwargs("lm") == {
         "audio_temperature": 0.5,
         "audio_top_k": 7,
+        "kv_cache_tokens": 3 * 8192,
         "server_args_overrides": {
             "max_running_requests": 3 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
         },
@@ -345,6 +347,67 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
 def test_session_lm_slots_below_max_sessions_plus_one_are_rejected():
     with pytest.raises(ValueError, match="max_running_requests=3"):
         resolve_session_config(lm={"engine": {"max_running_requests": 3}})
+
+
+@pytest.mark.parametrize(
+    "dtype,cache_format,tensor_parallel_size,expected_bytes_per_token",
+    [
+        ("bfloat16", "auto", 1, 524288),
+        ("auto", "auto", 1, 524288),
+        ("half", "auto", 2, 262144),
+        ("float", "auto", 1, 1048576),
+        ("bfloat16", "fp8_e4m3", 1, 262144),
+    ],
+)
+def test_session_kv_budget_uses_the_engine_dtype_and_rank_head_count(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    dtype: str,
+    cache_format: str,
+    tensor_parallel_size: int,
+    expected_bytes_per_token: int,
+) -> None:
+    """The automatic byte budget must reach the actual engine bootstrap scope."""
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    budgets: list[int] = []
+
+    def build(self, model_path, **kwargs):
+        budgets.append(consume_stage_kv_cache_bytes())
+        return Mock()
+
+    monkeypatch.setattr(stages.PersonaPlexSessionEngineBuilder, "build", build)
+    stages.create_session_lm_executor(
+        str(tmp_path),
+        dtype=dtype,
+        depformer_cuda_graph_batch_sizes=[],
+        audio_temperature=0.0,
+        audio_top_k=1,
+        kv_cache_tokens=8192 * 3,
+        server_args_overrides={
+            "kv_cache_dtype": cache_format,
+            "tp_size": tensor_parallel_size,
+        },
+    )
+    assert budgets == [8192 * 3 * expected_bytes_per_token]
+
+
+@pytest.mark.parametrize("cache_format", ["nvfp4", "fp4_mx_block16", "mxfp8"])
+def test_session_automatic_budget_rejects_unpriced_block_scales(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache_format: str
+) -> None:
+    """Counting packed elements alone would under-budget block-quantized KV."""
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    with pytest.raises(ValueError, match="Set lm.engine.kv_cache_bytes"):
+        stages.create_session_lm_executor(
+            str(tmp_path),
+            depformer_cuda_graph_batch_sizes=[],
+            audio_temperature=0.0,
+            audio_top_k=1,
+            kv_cache_tokens=8192,
+            server_args_overrides={"kv_cache_dtype": cache_format},
+        )
 
 
 def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):
