@@ -40,3 +40,4 @@ report	fix	symptom	level	check
 #4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
 #4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
+#4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
