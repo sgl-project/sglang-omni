@@ -51,11 +51,12 @@ type remoteWaitStateInput struct {
 }
 
 type remoteViewState struct {
-	BackBar *remoteBackBarViewState `json:"back_bar,omitempty"`
-	Wait    remoteWaitViewState     `json:"wait"`
-	Switch  bool                    `json:"switch,omitempty"`
-	Cards   remoteCardsViewState    `json:"cards"`
-	Dialog  *remoteDialogViewState  `json:"dialog,omitempty"`
+	BackBar           *remoteBackBarViewState `json:"back_bar,omitempty"`
+	Wait              remoteWaitViewState     `json:"wait"`
+	Switch            bool                    `json:"switch,omitempty"`
+	SwitchDescription string                  `json:"switch_description"`
+	Cards             remoteCardsViewState    `json:"cards"`
+	Dialog            *remoteDialogViewState  `json:"dialog,omitempty"`
 }
 
 type remotePageStateInput struct {
@@ -126,9 +127,10 @@ type remoteServiceStateInput struct {
 
 func buildRemotePageViewState(translator *i18n.Translator, input remotePageStateInput) remoteViewState {
 	state := remoteViewState{
-		Wait:   buildRemoteWaitViewState(translator, input.Wait),
-		Switch: input.Switch,
-		Cards:  buildRemoteCardsViewState(translator, input.Cards),
+		Wait:              buildRemoteWaitViewState(translator, input.Wait),
+		Switch:            input.Switch,
+		SwitchDescription: translator.T("When a feature's language model fails, Voxt retries once with another model you set up, such as Ollama on this Mac. Voxt never uses an external API you did not choose for that feature, and a used-up plan does not trigger a switch."),
+		Cards:             buildRemoteCardsViewState(translator, input.Cards),
 	}
 	if input.BackBarText != "" {
 		state.BackBar = &remoteBackBarViewState{Text: input.BackBarText}

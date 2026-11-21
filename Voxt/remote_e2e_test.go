@@ -177,12 +177,24 @@ func TestRemoteErrorKeepsNoKey(t *testing.T) {
 
 // TestRemotePage: setting a service up on the Language models page saves
 // its key in the keyring (never the settings) and offers its model to the
-// features; Remove takes both away again.
+// features; Remove takes both away again. The model switch explains its
+// retry and privacy limit in two sentences, in English and Chinese.
 func TestRemotePage(t *testing.T) {
 	keys := &memKeys{m: map[string]string{}}
 	useKeys(t, keys)
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
+	frames(tt)
+	const english = "When a feature's language model fails, Voxt retries once with another model you set up, such as Ollama on this Mac. Voxt never uses an external API you did not choose for that feature, and a used-up plan does not trigger a switch."
+	if !hasExact(tt, english) {
+		t.Errorf("English switch description is missing: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	const chinese = "某个功能用的语言模型出错时，Voxt 会改用你设置的另一个语言模型（比如这台 Mac 上的 Ollama），重试一次。Voxt 不会使用你没有为这个功能选择的外部 API，套餐额度用完时也不会切换。"
+	if !hasExact(tt, chinese) {
+		t.Errorf("Chinese switch description is missing: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
 	frames(tt)
 	if !has(tt, "On this Mac") || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
 		t.Errorf("no where labels: %q", tt.Texts())
