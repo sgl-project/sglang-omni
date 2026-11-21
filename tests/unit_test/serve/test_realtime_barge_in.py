@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -20,6 +21,10 @@ class FakeVAD:
     def __init__(self, config: object | None = None) -> None: ...
 
     def reset(self) -> None: ...
+
+    def process(self, audio: bytes) -> list[Emit]:
+        del audio
+        return []
 
 
 class RecordingWebSocket:
@@ -287,3 +292,27 @@ async def test_teardown_cancels_turn_without_starting_transcription(
     assert turn.cancelled()
     assert len(client.requests) == 1
     assert session.conversation == []
+
+
+@pytest.mark.asyncio
+async def test_g711_input_is_decoded_to_16khz_pcm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, _, _ = make_session(monkeypatch, [])
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {"input_audio_format": "g711_ulaw"},
+        }
+    )
+
+    await session.dispatch(
+        {
+            "type": "input_audio_buffer.append",
+            "audio": base64.b64encode(b"\x00" * 800).decode(),
+        }
+    )
+
+    assert session.session_object.input_audio_format == "g711_ulaw"
+    assert session.audio_buffer.num_samples == 1600
+    await session.teardown()

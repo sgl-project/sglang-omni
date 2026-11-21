@@ -52,6 +52,7 @@ from sglang_omni.serve.realtime.events import (
     TurnDetectionType,
     parse_transcription_client_event,
 )
+from sglang_omni.serve.realtime.g711 import G711StreamDecoder, is_g711
 from sglang_omni.serve.transcription_chunking import (
     SILENT_CHUNK_PEAK_THRESHOLD,
     join_transcript_parts,
@@ -102,6 +103,7 @@ def new_id(prefix: str) -> str:
 class TranscriptionSessionSettings:
     language: str | None = None
     decode_interval_ms: int = 2000
+    input_audio_format: str = "pcm16"
     # the session seeds this from the model's server_vad declaration,
     # and the client may change it via session.update.
     turn_detection: TurnDetection | None = None
@@ -185,6 +187,7 @@ class RealtimeTranscriptionSession:
             target_sr=PCM_SAMPLE_RATE,
             max_bytes=max_buffer_bytes,
         )
+        self.input_decoder: G711StreamDecoder | None = None
         self.vad: StatelessVAD | None = self.new_vad(self.settings.turn_detection)
         self.active_segment: ActiveTranscriptionSegment | None = None
         self.committed_segments: list[CommittedTranscriptionSegment] = []
@@ -334,6 +337,7 @@ class RealtimeTranscriptionSession:
             id=self.session_id,
             model=self.model_name,
             language=self.settings.language,
+            input_audio_format=self.settings.input_audio_format,
             decode_interval_ms=self.settings.decode_interval_ms,
             turn_detection=self.settings.turn_detection,
         )
@@ -380,13 +384,18 @@ class RealtimeTranscriptionSession:
         update = event.session.model_dump(exclude_unset=True)
         if not self.audio_buffer.is_empty() and any(
             key in update
-            for key in ("language", "decode_interval_ms", "turn_detection")
+            for key in (
+                "language",
+                "decode_interval_ms",
+                "input_audio_format",
+                "turn_detection",
+            )
         ):
             await self.send_error(
                 "invalid_request_error",
                 "session_active",
-                "Language, decode interval and VAD settings cannot change "
-                "while uncommitted audio is buffered.",
+                "Language, decode interval, input format and VAD settings "
+                "cannot change while uncommitted audio is buffered.",
             )
             return
         else:
@@ -404,6 +413,12 @@ class RealtimeTranscriptionSession:
                 if decode_interval_ms is not None
                 else self.transcription_config.decode_interval_ms
             )
+        else:
+            pass
+        if "input_audio_format" in update:
+            audio_format = update["input_audio_format"]
+            self.settings.input_audio_format = audio_format or "pcm16"
+            self.input_decoder = None
         else:
             pass
         if "turn_detection" in update:
@@ -455,10 +470,20 @@ class RealtimeTranscriptionSession:
             pcm = base64.b64decode(event.audio, validate=False)
         except (ValueError, binascii.Error):
             await self.send_error(
-                "invalid_request_error", "invalid_audio", "Audio must be base64 PCM16."
+                "invalid_request_error", "invalid_audio", "Audio must be base64."
             )
             return
-        if len(pcm) % 2:
+        audio_format = self.settings.input_audio_format
+        if is_g711(audio_format):
+            if (
+                self.input_decoder is None
+                or self.input_decoder.audio_format != audio_format
+            ):
+                self.input_decoder = G711StreamDecoder(audio_format)
+            else:
+                pass
+            pcm = self.input_decoder.decode(pcm)
+        elif len(pcm) % 2:
             await self.send_error(
                 "invalid_request_error",
                 "invalid_audio",
@@ -830,6 +855,7 @@ class RealtimeTranscriptionSession:
         self.decode_event.clear()
 
         self.audio_buffer.clear()
+        self.input_decoder = None
         self.active_segment = None
         if self.vad is not None:
             self.vad.reset()
