@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,12 +30,26 @@ func TestReleasePreflight(t *testing.T) {
 		"docs/get_started/voxt-tutorials/start.md":    dmg,
 		"docs/get_started/voxt-tutorials/en/start.md": dmg,
 	}
+	// A section far larger than a pipe buffer: grep -q closing the pipe
+	// early kills sed with SIGPIPE, so a pipefail pipeline misreads a long
+	// valid section as having no entry.
+	var long strings.Builder
+	long.WriteString("# Changelog\n\n## [9.1.0] - 2026-01-02\n\n### Added\n\n")
+	for i := 1; i <= 3000; i++ {
+		fmt.Fprintf(&long, "- English entry number %d of a long release section\n", i)
+	}
+	long.WriteString("\n### 中文\n\n#### 新增\n\n")
+	for i := 1; i <= 3000; i++ {
+		fmt.Fprintf(&long, "- 长版本说明的第 %d 条中文条目\n", i)
+	}
+	long.WriteString("\n## [9.0.0] - 2026-01-01\n")
 	for _, c := range []struct {
 		name, file, content string
 		want                string // a row of the output
 		fails               bool
 	}{
 		{"good", "", "", "pulls      ok", false},
+		{"long section", "Voxt/CHANGELOG.md", long.String(), "changelog  ok", false},
 		{"helper version", "Voxt/helper/Support/Info.plist", "<key>CFBundleShortVersionString</key>\n<string>9.0.0</string>\n", "version    FAIL", true},
 		{"no section", "Voxt/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n- A thing (#12)\n", "changelog  FAIL", true},
 		{"no Chinese", "Voxt/CHANGELOG.md", "## [9.1.0] - 2026-01-02\n\n- A thing (#12)\n", "changelog  FAIL", true},
