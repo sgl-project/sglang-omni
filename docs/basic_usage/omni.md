@@ -383,14 +383,6 @@ Fields accepted by `/v1/chat/completions`. Model support and defaults vary; the 
 
 Limiting `video_max_frames` or the pixel budget keeps video latency predictable.
 
-## Speculative Decoding Statistics
-
-These fields apply when the deployment supports speculative decoding and has a compatible draft configured. Draft checkpoints, context budgets, sampling restrictions, and scheduling controls depend on the model; see [Qwen3-Omni Speculative Decoding](../cookbook/qwen3_omni.md#speculative-decoding) for that deployment.
-
-Set `return_spec_tokens_details: true` to receive `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the prefill-sampled token, so it can exceed scheduler `accept len`), `spec_accept_rate`, draft counts, and a per-verify histogram. Streaming sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are omitted when no drafts were proposed or draft width is adaptive.
-
-Compare modes with matching workloads and prefix-cache conditions; measure TTFT, throughput, and accuracy for your workload.
-
 ## Known Limitations
 
 - Non-streaming requests return HTTP 400 for invalid media, HTTP 503 when the request queue is full, and HTTP 500 for other server failures.

@@ -340,7 +340,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-- **Acceptance statistics.** See [Speculative Decoding Statistics](../basic_usage/omni.md#speculative-decoding-statistics) for the request flag and response fields. Qwen3-Omni reports thinker drafts only.
+- **Acceptance statistics.** Set `return_spec_tokens_details: true` to include thinker draft statistics in `sglext.spec_tokens_details`.
 - **Context.** These drafts have an 8,192-token context; the prompt, output budget, and speculative reservations must fit. Set `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
 - **Sampling.** Use `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`; disable logprobs and `return_hidden_states`. For `/generate`, set `return_logprob: false`.
 - **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to overlap work. With `--thinker.factory.async_decode_min_batch_size` set above 1, a decode batch smaller than it, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions, and weight updates are unsupported with a draft.
