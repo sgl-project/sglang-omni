@@ -116,6 +116,12 @@ class SharedRealtimeSession:
                     envelope.event, output_modalities=envelope.output_modalities
                 )
             server_event["event_id"] = "evt_" + uuid.uuid4().hex
+            if envelope.response_request_metrics is not None:
+                server_event["response_request_metrics"] = (
+                    envelope.response_request_metrics
+                )
+            else:
+                pass
             if envelope.unit is not None:
                 unit = envelope.unit
                 server_event.setdefault("sglang", {}).update(

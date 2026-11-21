@@ -41,6 +41,7 @@ from sglang_omni.serve.realtime.schema import (
     SessionType,
     TailPolicy,
 )
+from sglang_omni.serve.realtime.types import ResponseRequestMetrics
 
 
 class ResponseContent(TypedDict, total=False):
@@ -133,6 +134,7 @@ class ServerEvent(TypedDict, total=False):
     tail_policy: TailPolicy
     text_end: int
     audio_ms: float
+    response_request_metrics: ResponseRequestMetrics
 
 
 def project_output(

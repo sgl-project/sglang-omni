@@ -204,7 +204,9 @@ class SessionRuntime:
                     "output_modalities", self.capabilities.output_modalities
                 )
             )
-            self.output_buffer.emit(event, producing_unit, modalities)
+            self.output_buffer.emit(
+                event, producing_unit, modalities, observed_at_seconds=time.monotonic()
+            )
             self.mark_activity()
 
     def require_open(self) -> None:
@@ -628,6 +630,10 @@ class SessionRuntime:
                 else:
                     pass
                 self.processing_unit.set(unit)
+                if self.capabilities.interaction == "native":
+                    self.output_buffer.mark_model_turn_request_started(time.monotonic())
+                else:
+                    pass
                 try:
                     consumption = await self.adapter.process(unit)
                 finally:

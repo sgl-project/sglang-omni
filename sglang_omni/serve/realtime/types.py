@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
-from typing import Protocol, get_args
+from typing import Literal, Protocol, get_args
+
+from typing_extensions import TypedDict
 
 from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
@@ -35,6 +37,18 @@ PCM16_BYTES_PER_SAMPLE = 2
 MS_PER_SECOND = 1000
 MAX_BUFFERED_INPUT_S = 60
 SUPPORTED_OUTPUT_MODALITIES = frozenset({"text", "audio"})
+
+
+class ResponseRequestMeasurementOrigin(TypedDict):
+    ttft: str
+    ttfp: str
+
+
+class ResponseRequestMetrics(TypedDict, total=False):
+    source: Literal["server_monotonic_request_start"]
+    measurement_origin: ResponseRequestMeasurementOrigin
+    ttft_ms: float
+    ttfp_ms: float
 
 
 class ProtocolError(ValueError):
@@ -236,6 +250,7 @@ class Envelope:
     unit: Unit | None = None
     chunk_index: int = 0
     output_modalities: tuple[str, ...] | None = None
+    response_request_metrics: ResponseRequestMetrics | None = None
 
 
 class OutputSink(Protocol):
