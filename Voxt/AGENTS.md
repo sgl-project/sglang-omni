@@ -29,6 +29,7 @@ For every change, by a person or an agent. A rule here comes with a number measu
 Code:
 
 - **The app calls every function.** A test calls the function the app calls. Delete a wrapper that only its own test reaches and move that test to the real function; keep shared fakes and helpers. Compare `deadcode -tags=meetingdemo,updatecheck ./...` with `deadcode -test -tags=meetingdemo,updatecheck ./...` and review the functions only the first command lists.
+- **A function stays readable**: cognitive complexity (gocognit's score) at most 25, where 97% of the code's 4424 functions are (`TestComplexFuncs`). The functions over it are in `internal/archtest/complexity.txt` with their score, which must match: they may not grow more complex, a simplification lowers the line, and a new function over the limit is split, not listed.
 - **A removal is complete in one PR**: the callers, helpers, strings and translations, doc links and environment switches of what is removed go with it.
 - **An unchecked error is written down**: `_ = f()` with a one-line reason. On a path that moves or deletes the user's data, each error is handled or logged.
 - **Every `VOXTNEW_*` environment switch is documented** by the PR that adds it: what it does and who sets it (`docs/development.md`, or the doc of its area).
