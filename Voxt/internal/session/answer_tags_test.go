@@ -37,15 +37,17 @@ func TestTranslateKeepsInputTags(t *testing.T) {
 func TestRewriteDropsEchoedInputTags(t *testing.T) {
 	const fox = "The quick brown fox jumps over the lazy dog."
 	earlier := []compose.Turn{{Instruction: "make it shorter", Selection: fox, Answer: compose.Answer{Content: "The quick fox."}}}
+	templateEarlier := []compose.Turn{{Instruction: "write an instruction template", Selection: fox, Answer: compose.Answer{Content: "The quick fox."}}}
 	asJSON := func(content string) string {
 		b, _ := json.Marshal(compose.Answer{Title: "T", Content: content})
 		return string(b)
 	}
 	template := "Use:\n<instruction>\n{task}\n</instruction>\n<selected_text>\n{text}\n</selected_text>"
+	instructionTemplate := "<instruction>\n{task}\n</instruction>"
 	for _, tc := range []struct {
-		name, raw, sel string
-		previous       []compose.Turn
-		answer, want   string
+		name, raw, sel, typed string
+		previous              []compose.Turn
+		answer, want          string
 	}{
 		{name: "the instruction, after a selection", raw: "make it shorter", sel: fox,
 			answer: "<instruction>\nmake it shorter\n</instruction>\n\nDone: The quick fox.", want: "make it shorter\n\nDone: The quick fox."},
@@ -63,13 +65,57 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 			answer: "<selected_text>ship friday</selected_text> sent", want: "<selected_text>ship friday</selected_text> sent"},
 		{name: "a requested template stays", raw: "write a prompt template",
 			answer: asJSON(template), want: template},
+		{name: "a whole instruction template stays", raw: "write an instruction template",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
 		{name: "a requested template stays, after a selection", raw: "turn it into a template", sel: fox,
 			answer: template, want: template},
+		{name: "a whole instruction wrapper around the answer", raw: "make it formal", sel: "see you tmrw",
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a whole selected_text template stays", raw: "write a selected_text template",
+			answer: asJSON("<selected_text>{text}</selected_text>"), want: "<selected_text>{text}</selected_text>"},
+		{name: "generic prompt wording does not request tags", raw: "rewrite this prompt to be shorter",
+			answer: asJSON("<selected_text>Use a shorter prompt.</selected_text>"), want: "Use a shorter prompt."},
+		{name: "editing a named prompt does not request tags", raw: "rewrite this instruction prompt to be shorter",
+			answer: asJSON("<instruction>Use a shorter prompt.</instruction>"), want: "Use a shorter prompt."},
+		{name: "a later creation verb does not change prompt editing", raw: "rewrite this instruction prompt to make it shorter",
+			answer: asJSON("<instruction>Use a shorter prompt.</instruction>"), want: "Use a shorter prompt."},
+		{name: "make with a definite prompt is editing", raw: "make this instruction prompt shorter",
+			answer: asJSON("<instruction>Use a shorter prompt.</instruction>"), want: "Use a shorter prompt."},
+		{name: "want with a definite prompt is editing", raw: "I want this instruction prompt to be shorter",
+			answer: asJSON("<instruction>Use a shorter prompt.</instruction>"), want: "Use a shorter prompt."},
+		{name: "an instructional prompt is not a tag name", raw: "rewrite this instructional prompt to be shorter",
+			answer: asJSON("<instruction>Use a shorter prompt.</instruction>"), want: "Use a shorter prompt."},
+		{name: "a negated template mention is not a request", raw: "Do not use an instruction template",
+			answer: asJSON("<instruction>Use a shorter prompt.</instruction>"), want: "Use a shorter prompt."},
+		{name: "a template question is not a request", raw: "Can I use an instruction template?",
+			answer: asJSON("<instruction>Use a shorter prompt.</instruction>"), want: "Use a shorter prompt."},
+		{name: "a different requested tag does not keep the wrapper", raw: "write an instruction template",
+			answer: asJSON("<selected_text>A real answer</selected_text>"), want: "A real answer"},
+		{name: "template intent can follow the template", raw: "An instruction template is what I want",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "template intent can have a later writer", raw: "An instruction template is what I want you to write",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "prompt intent can have a later generator", raw: "An instruction prompt is what I want you to generate",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "prompt intent can have a later creator", raw: "An instruction prompt is what I want you to create",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "turning text into a prompt keeps the tags", raw: "turn this into an instruction prompt",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "template prose in the selection", raw: "make it formal", sel: "The template is attached.",
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a template request only in an earlier turn", raw: "make it formal", previous: templateEarlier,
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a typed selected_text template request", raw: "do it", sel: "see you tmrw", typed: "write a selected_text template",
+			answer: "<selected_text>{text}</selected_text>", want: "<selected_text>{text}</selected_text>"},
+		{name: "template prose in typed input", raw: "make it formal", sel: "see you tmrw", typed: "The template is attached.",
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a repeated Chinese template keyword", raw: "照做", sel: "see you tmrw", typed: "这个模板太啰嗦，重新写一个 selected_text 模板",
+			answer: "<selected_text>{text}</selected_text>", want: "<selected_text>{text}</selected_text>"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, &fakeFile{}, &fakeLLM{text: tc.answer}, func(c *Config, s *settings.Settings) { c.Select = &fakeSelector{} })
 			if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack, Card: true, Previous: tc.previous,
-				Text: &TextInput{Raw: tc.raw, Selection: tc.sel}}); err != nil {
+				Text: &TextInput{Raw: tc.raw, Selection: tc.sel, Typed: tc.typed}}); err != nil {
 				t.Fatal(err)
 			}
 			if end := h.rec.wait(t); end.State != Done || end.Result != tc.want || !end.Card {

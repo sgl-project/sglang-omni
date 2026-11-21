@@ -20,9 +20,29 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 		{"OK: <typed_text>\ntype this\n</typed_text>", "OK: type this"},
 		{"<typed_text>\nA typed note.\n</typed_text>", "A typed note."},
 		{"<typed_text>\ntype this", "type this"},
+		{"<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow."},
+		{"OK: <selected_text>The quick brown fox", "OK: The quick brown fox"},
 	} {
 		checkAnswer(t, tc.out, tc.want, selection, instruction, typed)
 	}
+	checkAnswer(t, "<instruction>Use 230 V.</instruction>", "Use 230 V.", "", "fix the voltage")
+	checkAnswer(t, "<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow.", "The template is attached.", "make it formal")
+	checkAnswer(t, "<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow.", "see you tmrw", "The template is attached.\nmake it formal", "The template is attached.")
+	checkAnswer(t, "<selected_text>Use a shorter prompt.</selected_text>", "Use a shorter prompt.", "", "rewrite this prompt to be shorter")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "rewrite this instruction prompt to be shorter")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "rewrite this instruction prompt to make it shorter")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "rewrite this instruction prompt because I want it shorter")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "make this instruction prompt shorter")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "I want this instruction prompt to be shorter")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "rewrite this instructional prompt to be shorter")
+	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "把这个 instruction 提示词改短些")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Do not use an instruction template")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Do not write an instruction template")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Can I use an instruction template?")
+	checkAnswer(t, "<instruction>Use a shorter prompt.</instruction>", "Use a shorter prompt.", "", "Do I need an instruction template?")
+	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "不要使用 instruction 模板")
+	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "你可以用 instruction 模板吗？")
+	checkAnswer(t, "<selected_text>A real answer</selected_text>", "A real answer", "", "write an instruction template")
 }
 
 // TestAnswerKeepsRequestedTags: tags that are part of the answer, such as
@@ -36,6 +56,38 @@ func TestAnswerKeepsRequestedTags(t *testing.T) {
 	own := "Put it in <instruction>\nthe task\n</instruction>, then answer."
 	checkAnswer(t, own, own, own, "fix")
 	checkAnswer(t, "<selected_text>"+own+"</selected_text>", own, own, "fix")
+}
+
+func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
+	template := "<instruction>\n{task}\n</instruction>"
+	checkAnswer(t, template, template, "", "Write an instruction template")
+	checkAnswer(t, template, template, "", "Write an instruction prompt")
+	checkAnswer(t, template, template, "", "An instruction template is what I want")
+	checkAnswer(t, template, template, "", "An instruction template is what I want you to write")
+	checkAnswer(t, template, template, "", "An instruction prompt is what I want you to generate")
+	checkAnswer(t, template, template, "", "An instruction prompt is what I want you to create")
+	checkAnswer(t, template, template, "", "turn this into an instruction prompt")
+	checkAnswer(t, template, template, "", "convert this to an instruction prompt")
+	checkAnswer(t, template, template, "", "rewrite this as an instruction prompt")
+	checkAnswer(t, template, template, "", "Can you write an instruction template?")
+	checkAnswer(t, template, template, "", "把文字改成 instruction 提示词")
+}
+
+func TestAnswerKeepsSingleSelectedTextPair(t *testing.T) {
+	template := "<selected_text>{text}</selected_text>"
+	checkAnswer(t, template, template, "", "Write a selected_text template")
+	checkAnswer(t, template, template, "see you tmrw", "write a selected_text template\ndo it", "write a selected_text template")
+	checkAnswer(t, template, template, "see you tmrw", "这个模板太啰嗦，重新写一个 selected_text 模板\n照做", "这个模板太啰嗦，重新写一个 selected_text 模板")
+}
+
+func TestAnswerTitleDropsWholeInstructionPair(t *testing.T) {
+	raw, _ := json.Marshal(Answer{Title: "<instruction>Greeting</instruction>", Content: "Hello"})
+	if got, ok := ParseAnswer(string(raw), "write a greeting"); !ok || got.Title != "Greeting" {
+		t.Errorf("ParseAnswer title = %q, want Greeting", got.Title)
+	}
+	if got := PartialAnswer(string(raw), "write a greeting"); got.Title != "Greeting" {
+		t.Errorf("PartialAnswer title = %q, want Greeting", got.Title)
+	}
 }
 
 func checkAnswer(t *testing.T, out, want string, input ...string) {
