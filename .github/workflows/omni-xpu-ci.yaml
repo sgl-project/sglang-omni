@@ -86,6 +86,7 @@ jobs:
               - 'tests/unit_test/dots_tts/**'
               - 'tests/unit_test/ming3_audio/**'
               - 'tests/unit_test/nemotron3_5_asr/**'
+              - 'tests/unit_test/qwen3_tts/**'
               - 'pyproject_xpu.toml'
               - 'scripts/xpu/**'
               - 'docker/xpu.Dockerfile'
@@ -283,7 +284,11 @@ jobs:
               tests/unit_test/dots_tts/test_tail.py \
               tests/unit_test/ming3_audio/test_talker.py \
               tests/unit_test/nemotron3_5_asr/test_hf_compat.py \
-              tests/unit_test/nemotron3_5_asr/test_model_runner.py -v -x
+              tests/unit_test/nemotron3_5_asr/test_model_runner.py \
+              tests/unit_test/qwen3_tts/test_incremental_codec.py \
+              tests/unit_test/qwen3_tts/test_incremental_codec_cuda_graph.py \
+              tests/unit_test/qwen3_tts/test_reference_encoder_cuda_graph.py \
+              tests/unit_test/qwen3_tts/test_xpu_speaker_encoder.py -v -x
 
       - name: Cleanup container and image
         if: always()

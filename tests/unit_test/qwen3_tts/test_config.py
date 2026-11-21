@@ -12,6 +12,7 @@ from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
 
@@ -28,6 +29,18 @@ def test_vocoder_platform_default_keeps_npu_opt_in(
     expected["running_stream_count"] = 64
     expected["shares_engine_speech_tokenizer"] = True
     assert config.stage_factory_kwargs("vocoder") == expected
+
+
+def test_vocoder_platform_default_keeps_xpu_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XPU starts the vocoder decoding synchronously, so the warmup captures no decode
+    graph: capturing the shape set the CUDA defaults imply ran past the stage startup
+    budget on one Arc Pro B60 and then exhausted its 24 GB."""
+    monkeypatch.setattr(qwen3_tts_config, "current_platform", XPUOmniPlatform())
+    config = Qwen3TTSPipelineConfig(model_path="model")
+
+    assert config.stage_factory_kwargs("vocoder")["async_decode"] is False
 
 
 def test_admission_defaults_load_without_the_engine() -> None:

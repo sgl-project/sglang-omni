@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import sys
 import types
 from pathlib import Path
@@ -28,6 +29,7 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     pad_convs_by_integers,
     smallest_bucket,
 )
+from sglang_omni.platforms import current_platform
 
 HOP = 16
 
@@ -271,6 +273,63 @@ def test_speech_tokenizer_loader_gives_the_encoder_float32_checkpoint_weights_wh
             assert table is None
     assert tokenizer.model.decoder.proj.weight.dtype == torch.bfloat16
     assert tokenizer.model.decoder.inv_freq.dtype == torch.float32
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_xpu(), reason="Intel XPU is required")
+def test_reference_code_batcher_encodes_on_xpu_without_a_graph(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Base reference audio encodes on the XPU, eager and at its own length: the Mimi
+    encoder reads a tensor on the host mid-forward, which an XPU capture cannot record,
+    so the batcher keeps its encode stream, captures no bucket, and does not round a
+    clip past the ladder up to a bucket the way a captured encoder does."""
+    torch.manual_seed(5)
+    device = torch.device("xpu", torch.xpu.current_device())
+    model = MimiModel(small_mimi_config())
+    for module in model.modules():
+        if isinstance(module, MimiEuclideanCodebook):
+            module.embed_sum.normal_()
+        else:
+            pass
+    model = model.to(device).eval()
+    pad_convs_by_integers(model)
+    encode = model.encode
+    encoded_samples: list[int] = []
+
+    def recording_encode(
+        values: torch.Tensor, *, num_quantizers: int, return_dict: bool
+    ) -> MimiEncoderOutput:
+        encoded_samples.append(int(values.shape[-1]))
+        return encode(values, num_quantizers=num_quantizers, return_dict=return_dict)
+
+    monkeypatch.setattr(model, "encode", recording_encode)
+    waveform = torch.rand(7 * HOP).numpy()
+    with caplog.at_level(logging.INFO, logger=qwen3_request_builders.__name__):
+        batcher = qwen3_request_builders.Qwen3TTSRefCodeBatcher(
+            fake_speech_tokenizer(model, quantizers=2),
+            max_batch_wait_ms=0,
+            graph_bucket_frames=(4,),
+        )
+    try:
+        assert batcher.encode_stream is not None
+        assert batcher.graph_runner is None
+        codes = batcher.encode(waveform, 24000)
+    finally:
+        batcher.close()
+
+    assert "qwen3_tts_reference_encoder_graph resolved=eager" in caplog.text
+    assert encoded_samples == [7 * HOP]
+    with torch.inference_mode():
+        values = torch.zeros((1, 1, 7 * HOP), device=device)
+        values[0, 0].copy_(torch.from_numpy(waveform))
+        clip_samples = torch.tensor(waveform.size, device=device)
+        with exact_length_encode(model, clip_samples):
+            expected = encode(values, num_quantizers=2, return_dict=True).audio_codes
+    assert codes.device == device
+    assert codes.shape == (7, 2)
+    assert int(codes.unique().numel()) > 1
+    assert torch.equal(codes, expected[0, :, :7].transpose(0, 1))
 
 
 def test_smallest_bucket_picks_the_first_bucket_that_fits() -> None:
