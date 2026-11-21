@@ -337,9 +337,50 @@ nsys profile --gpu-metrics-devices $GPU_ID --gpu-metrics-set gh100 \
 
 Low SM activity at the tuned single replica's peak may indicate reclaimable headroom; confirm it with a controlled DP comparison before relying on it. If SM activity is already near the ceiling, stop here.
 
+## Case Study on Multi-GPU H100 with Higgs TTS Model
+
+Whether the tuned per-card DP3+MPS unit scales cleanly when several cards on the same host run it in parallel, and whether NUMA placement changes the answer. This series was run on a 6-card H100 node (`node0` = physical cores 0-31 / SMT siblings 64-95, GPUs 0-3; `node1` = physical cores 32-63 / SMT siblings 96-127, GPUs 4-5). The detailed record is in issue [#1075](https://github.com/sgl-project/sglang-omni/issues/1075).
+
+**Single-card DP × MPS baseline.**
+| Configuration | Aggregate throughput | Per-replica | SM Active | MPS on ÷ off |
+|---|---:|---:|---:|---:|
+| DP1 | 19.6 to 21.1 qps | — | ~29% (max 78), GPU ~71% idle | — |
+| DP2, MPS off | 12.6 qps | 6.4 / 6.2 (even) | 96% | — |
+| DP2, MPS on | 19.2 qps | 9.7 / 9.5 (even) | 91% | 1.5x |
+| DP3, MPS off | 12.6 to 12.8 qps | ~4.2 each | ~99% | — |
+| DP3, MPS on | 24.2 to 25.1 qps | ~8.0 each | 94% | ~1.9x |
+
+Multi-GPU DP3+MPS scales near-linearly with Higgs TTS.
+
+Intra-NUMA and cross-NUMA scaling. Placing the two cards on the same NUMA node and placing them on separate nodes land within measurement noise of each other.
+
+| Configuration | Cards | Core binding | Aggregate qps (rep 1 / rep 2) | Per-replica | Per-card SM Active | Relative to 1 card |
+|---|---|---|---:|---:|---:|---:|
+| 1 card DP3 + MPS (reference) | GPU0 | `node0` 0-9 / 10-19 / 20-29 | 22.46 / 25.01 qps | ~8.0 each | 94.5 to 95.1% | 1.0x |
+| 2 cards, intra-NUMA | GPU0 + GPU1 | share `node0` cores | 51.32 / 46.90 qps | ~8.0 each | gpu0 91 to 95%, gpu1 ~95% | ~2.0x |
+| 2 cards, cross-NUMA | GPU0 + GPU4 | one block per node | 52.94 / 55.14 qps | ~8.0 each | node0 78 to 95%, node1 84 to 95% | ~2.2x |
+
+To reproduce, launch each card independently with the launcher, then drive all replicas in parallel:
+
+```bash
+# One private MPS stack + DP3 per card
+GPU_ID=0 CORE_BLOCKS="0-9 10-19 20-29" BASE_PORT=8801 MAX_TOTAL_TOKENS=100000 \
+  bash examples/mps_dp/launch.sh up
+GPU_ID=4 CORE_BLOCKS="32-41 42-51 52-61" BASE_PORT=8811 MAX_TOTAL_TOKENS=100000 \
+  bash examples/mps_dp/launch.sh up
+
+# Drive every replica across every card in parallel
+bash tmp/drive_multi.sh cross_numa 48 200 \
+  8801:64-73:0 8802:74-83:0 8803:84-93:0 \
+  8811:96-105:1 8812:106-115:1 8813:116-125:1
+
+# Per-card SM Active during the run
+nvidia-smi dmon -i 0,4 -s u -d 1 -o T
+```
+
 ## Limits and next steps
 
-1. **Generality is not fully validated.** Beyond the pinned H100 Higgs case study, we also ran related experiments on H200 and used SGLang to serve Qwen3-4B directly; both lines of work largely confirmed the same-GPU DP gains. Space and time limit how completely we can present those results here, and the measurements are not yet as polished as we would like. We believe same-GPU DP is a promising direction for smaller models on GPUs with ample memory and compute headroom, but the experimental coverage is still incomplete.
+1. **Generality is not fully validated.** Beyond the pinned single-card H100 Higgs case study, we confirmed that the per-card DP3+MPS unit scales almost linearly to a second card (~2.0 to 2.2x, intra- and cross-NUMA) on the same host, we also ran related experiments on H200 and used SGLang to serve Qwen3-4B directly; both lines of work largely confirmed the same-GPU DP gains. Space and time limit how completely we can present those results here, and the measurements are not yet as polished as we would like. We believe same-GPU DP is a promising direction for smaller models on GPUs with ample memory and compute headroom, but the experimental coverage is still incomplete.
 
 2. **KV sizing is hardware- and workload-specific.** The launcher enforces equal per-replica KV capacity through a common `MAX_TOTAL_TOKENS`. A sizing procedure that generalizes across models, runtimes, and GPU configurations still requires further study.
 
