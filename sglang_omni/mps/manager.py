@@ -21,7 +21,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from sglang_omni.mps.state import MpsGpuPaths, state_root_lock, validate_control_socket
+from sglang_omni.mps.state import (
+    PRIVILEGED_SOCKET_NAME,
+    MpsGpuPaths,
+    state_root_lock,
+    validate_control_socket,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +125,7 @@ class MpsManager:
             )
         else:
             pass
-        validate_control_socket(self.paths.control_socket)
+        validate_control_socket(self.paths.pipe_dir / PRIVILEGED_SOCKET_NAME)
         try:
             with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
                 if not self.paths.state_dir.exists():
