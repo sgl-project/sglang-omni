@@ -34,6 +34,8 @@ FORMAT_MIME_TYPES: dict[str, str] = {
 # Default sample rate for generated audio
 DEFAULT_SAMPLE_RATE = 24000
 MAX_AUDIO_OUTPUT_SAMPLE_RATE = 192000
+FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ = 65535
+FLAC_HIGH_SAMPLE_RATE_STEP_HZ = 10
 
 
 # Configurations for PyAV encoding
@@ -105,6 +107,15 @@ def audio_output_sample_rate_error(
         return f"sample_rate must be at most {MAX_AUDIO_OUTPUT_SAMPLE_RATE}"
     elif response_format == "opus" and output_sample_rate != 48000:
         return "sample_rate must be 48000 for Opus output"
+    elif (
+        response_format == "flac"
+        and output_sample_rate > FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ
+        and output_sample_rate % FLAC_HIGH_SAMPLE_RATE_STEP_HZ != 0
+    ):
+        return (
+            f"sample_rate for FLAC above {FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ} Hz "
+            f"must be divisible by {FLAC_HIGH_SAMPLE_RATE_STEP_HZ}"
+        )
     elif (
         response_format in PYAV_ENCODE_CONFIGS
         and output_sample_rate

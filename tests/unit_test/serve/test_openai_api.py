@@ -5215,14 +5215,23 @@ def test_speech_output_sample_rate_matches_buffered_and_streamed_audio(
     assert len(audio_bytes) == round(sample_count * sample_rate / 24000) * 2
 
 
-@pytest.mark.parametrize("sample_rate", [0, "16000", True, 192001])
+@pytest.mark.parametrize(
+    ("response_format", "sample_rate"),
+    [("wav", 0), ("wav", "16000"), ("wav", True), ("wav", 192001), ("flac", 65536)],
+)
 def test_speech_rejects_invalid_output_sample_rate_before_generation(
+    response_format: Literal["wav", "flac"],
     sample_rate: int | str | bool,
 ) -> None:
     speech_client = FixedSpeechClient(np.zeros(2400, dtype=np.float32))
     client = TestClient(create_app(speech_client, model_name="tts"))
     response = client.post(
-        "/v1/audio/speech", json={"input": "Hello.", "sample_rate": sample_rate}
+        "/v1/audio/speech",
+        json={
+            "input": "Hello.",
+            "response_format": response_format,
+            "sample_rate": sample_rate,
+        },
     )
     assert response.status_code == 400
     assert speech_client.requests == []

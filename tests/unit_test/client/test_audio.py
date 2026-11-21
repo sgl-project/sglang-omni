@@ -271,6 +271,7 @@ def test_output_sample_rate_preserves_stereo() -> None:
         ("wav", 12345),
         ("wav", 192000),
         ("flac", 12345),
+        ("flac", 65540),
         ("mp3", 44100),
         ("aac", 22050),
         ("opus", 48000),
