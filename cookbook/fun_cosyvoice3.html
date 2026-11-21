@@ -1129,7 +1129,15 @@ flow_merge_pad_budget_percent = 25
 </section>
 <section id="speculative-decoding">
 <h3>Speculative Decoding<a class="headerlink" href="#speculative-decoding" title="Link to this heading">#</a></h3>
-<p>SpeechSpec’s DSpark draft <a class="reference external" href="https://huggingface.co/yuekai/cosyvoice3_llm_dspark"><code class="docutils literal notranslate"><span class="pre">yuekai/cosyvoice3_llm_dspark</span></code></a> proposes 7 speech tokens per step from three of the LLM’s hidden layers, and the LLM verifies them in one forward pass.</p>
+<p>The DSpark draft <a class="reference external" href="https://huggingface.co/wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark"><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark</span></code></a> (Apache-2.0) proposes 7 speech tokens per step from three of the LLM’s hidden layers, and the LLM verifies them in one forward pass. It has the shape of SpeechSpec’s draft <a class="reference external" href="https://huggingface.co/yuekai/cosyvoice3_llm_dspark"><code class="docutils literal notranslate"><span class="pre">yuekai/cosyvoice3_llm_dspark</span></code></a>, which states no license, and is trained on English and Chinese voice-cloning requests labelled by this server’s own sampler.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.engine.speculative_algorithm<span class="w"> </span>DSPARK<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.engine.speculative_draft_model_path<span class="w"> </span>wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>SpeechSpec’s draft still serves by its path, which stays pinned to the revision it was measured on, <code class="docutils literal notranslate"><span class="pre">0b1b28dbb751bac3b74eea5dcc11e0570c91563b</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--tts_engine.engine.speculative_algorithm<span class="w"> </span>DSPARK<span class="w"> </span><span class="se">\</span>
@@ -1137,9 +1145,71 @@ flow_merge_pad_budget_percent = 25
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>Gain over the same server without a draft, on one H200 with SGLang 0.5.23 and the default sampling, streamed, 400 SeedTTS utterances per language, two passes per load, A B B A on fresh servers. Each draft ran on its own GPU of one node against its own server without a draft, with <a class="reference download internal" download="" href="../_downloads/2b09674dacab02f3cb9dd422c6285215/fun_cosyvoice3_dspark.yaml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">examples/configs/fun_cosyvoice3_dspark.yaml</span></code></span></a> or the same file naming SpeechSpec’s path, and <code class="docutils literal notranslate"><span class="pre">tts-seedtts-zh</span></code> for Chinese. The sweep runs on the one GPU in <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> and ends every process left on it after each leg, so pick a GPU nothing else uses:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.speculative_sweep<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--draft-config<span class="w"> </span>examples/configs/fun_cosyvoice3_dspark.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--workload<span class="w"> </span>tts-seedtts-en<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>results/fun_cosyvoice3_dspark_en<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--repeats<span class="w"> </span><span class="m">2</span><span class="w"> </span>--max-samples<span class="w"> </span><span class="m">400</span><span class="w"> </span>--<span class="w"> </span>--stream
+</pre></div>
+</div>
+<p>Each language and draft’s <code class="docutils literal notranslate"><span class="pre">sweep.json</span></code> and <code class="docutils literal notranslate"><span class="pre">summary.md</span></code> are in <a class="reference external" href="https://huggingface.co/wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark/tree/de7228f28739fd63086fbe461b7694cd0ec5be2a/evals/2026-11-16_h200"><code class="docutils literal notranslate"><span class="pre">evals/2026-11-16_h200</span></code></a> of the draft’s repository:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Language</p></th>
+<th class="head"><p>Draft</p></th>
+<th class="head text-right"><p>Concurrency 1</p></th>
+<th class="head text-right"><p>2</p></th>
+<th class="head text-right"><p>4</p></th>
+<th class="head text-right"><p>8</p></th>
+<th class="head text-right"><p>16</p></th>
+<th class="head text-right"><p>Accepted per verify</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>English</p></td>
+<td><p>This draft</p></td>
+<td class="text-right"><p>1.41x</p></td>
+<td class="text-right"><p>1.42x</p></td>
+<td class="text-right"><p>1.35x</p></td>
+<td class="text-right"><p>1.29x</p></td>
+<td class="text-right"><p>1.19x</p></td>
+<td class="text-right"><p>2.95</p></td>
+</tr>
+<tr class="row-odd"><td><p>English</p></td>
+<td><p>SpeechSpec</p></td>
+<td class="text-right"><p>1.15x</p></td>
+<td class="text-right"><p>1.14x</p></td>
+<td class="text-right"><p>1.13x</p></td>
+<td class="text-right"><p>1.11x</p></td>
+<td class="text-right"><p>1.08x</p></td>
+<td class="text-right"><p>2.21</p></td>
+</tr>
+<tr class="row-even"><td><p>Chinese</p></td>
+<td><p>This draft</p></td>
+<td class="text-right"><p>1.54x</p></td>
+<td class="text-right"><p>1.51x</p></td>
+<td class="text-right"><p>1.43x</p></td>
+<td class="text-right"><p>1.36x</p></td>
+<td class="text-right"><p>1.22x</p></td>
+<td class="text-right"><p>3.10</p></td>
+</tr>
+<tr class="row-odd"><td><p>Chinese</p></td>
+<td><p>SpeechSpec</p></td>
+<td class="text-right"><p>1.47x</p></td>
+<td class="text-right"><p>1.44x</p></td>
+<td class="text-right"><p>1.39x</p></td>
+<td class="text-right"><p>1.31x</p></td>
+<td class="text-right"><p>1.21x</p></td>
+<td class="text-right"><p>2.98</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>In its own throughput this draft is 10–25% faster than SpeechSpec’s on English and 1–4% on Chinese. In this sweep, first audio p95 is within 5% of no draft from 1 to 16 requests with either draft; with this one it is at most 1.9% higher on English and 4.2% on Chinese. At 16 requests that margin is thin: an <a class="reference external" href="https://huggingface.co/wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark/tree/de7228f28739fd63086fbe461b7694cd0ec5be2a/evals/2026-11-14_h200">earlier sweep</a> with the same command measured 6.0% higher on English with this draft and 5.4% on Chinese with SpeechSpec’s, while from 1 to 8 requests neither sweep is more than 1.8% higher with either draft. English WER with this draft is 1.21–1.43% across loads, with one 1.92% pass at 2 requests, against 1.10–1.36% without a draft; Chinese CER is 0.18–0.29% against 0.20–0.27%.</p>
 <p>Send <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details:</span> <span class="pre">true</span></code> with a speech request to get its acceptance statistics. Buffered audio adds <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Accept-Length</span></code>, <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Accept-Rate</span></code>, <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Num-Correct-Drafts</span></code>, <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Num-Proposed-Drafts</span></code> and <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Verify-Ct</span></code> headers; the SSE <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> event and the raw PCM outcome from <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/audio/speech/{request_id}</span></code> carry <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code>, which also holds the per-verify histogram. <code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code> is speech tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log’s <code class="docutils literal notranslate"><span class="pre">accept</span> <span class="pre">len</span></code>, which counts only verified tokens. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code>, and their headers, are left out when no drafts were proposed or the draft width is adaptive.</p>
 <p>Verification reproduces CosyVoice3’s sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request’s <code class="docutils literal notranslate"><span class="pre">seed</span></code> fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.</p>
-<p>LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:</p>
+<p>With SpeechSpec’s draft, LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Batch</p></th>
