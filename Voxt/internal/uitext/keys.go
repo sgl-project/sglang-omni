@@ -114,7 +114,7 @@ func SystemName() string {
 	if runtime.GOOS == "windows" {
 		return i18n.T("Windows")
 	}
-	return i18n.T("macOS")
+	return "macOS" // a brand name, not translated (the catalog's is for the sounds source)
 }
 
 // ParseErrorText says why typed keys do not parse.
