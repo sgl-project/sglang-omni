@@ -2583,15 +2583,33 @@ class OmniScheduler(Generic[RequestDataT]):
                 )
             else:
                 session_id = unit.session_identity.id
-                self.emit_request_error(
-                    request.rid,
-                    SessionCapacityExhaustedError(
-                        "the next decode step cannot fit in the KV pool"
-                    ),
+                error = SessionCapacityExhaustedError(
+                    "the next decode step cannot fit in the KV pool"
                 )
+                self.emit_request_error(request.rid, error)
                 self.abort(request.rid)
-                bridge.release_streaming_session(session_id)
+                for session_payload in bridge.close_session(bridge.sessions[session_id]):
+                    if session_payload.request_id in self.aborted_request_ids:
+                        pass
+                    elif self.is_entry_rank:
+                        self.emit_request_error(session_payload.request_id, error)
+                    else:
+                        self.outbox.put(
+                            OutgoingMessage(
+                                request_id=session_payload.request_id,
+                                type="result",
+                                data=session_payload,
+                            )
+                        )
                 batch.filter_batch()
+                if batch.is_empty():
+                    self.new_token_ratio_tracker.reset()
+                else:
+                    self.new_token_ratio_tracker.current = (
+                        self.new_token_ratio_tracker.estimate_new_token_ratio_after_retract(
+                            batch.reqs
+                        )
+                    )
             batch.batch_is_full = False
         return True
 

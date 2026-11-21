@@ -963,6 +963,100 @@ def test_real_decode_shortage_releases_one_session_and_preserves_the_survivor(
     assert scheduler.req_to_token_pool.alloc_rows(1) is not None
 
 
+def test_session_capacity_kill_reestimates_running_output_demand(
+    pressured_scheduler: OmniScheduler,
+) -> None:
+    """A capacity kill must revise the decayed admission ratio for survivors."""
+    scheduler = pressured_scheduler
+    batch = scheduler.running_batch
+    survivor = batch.reqs[0]
+    scheduler.new_token_ratio_tracker.current = 0.001
+    expected = NewTokenRatioTracker.estimate_new_token_ratio_after_retract([survivor])
+    assert expected > scheduler.new_token_ratio_tracker.current
+
+    assert scheduler.relieve_session_capacity(batch)
+
+    assert batch.reqs == [survivor]
+    assert scheduler.new_token_ratio_tracker.current == pytest.approx(expected)
+    bridge = scheduler.session_bridge
+    identity = SessionIdentity("candidate")
+    bridge.apply_operation(
+        StagePayload("candidate-open", OmniRequest(None), {}),
+        SessionOperation("open", identity, ("talker",)),
+    )
+    unit = bridge.accept(
+        StagePayload("candidate", OmniRequest(None), {}),
+        SessionOperation("append", identity, ("talker",), TimedChunk("text", 0, 0, 0, {})),
+    )
+    unit.session_request = Req(
+        "candidate", "", array("q", [1, 2, 3]), SamplingParams(max_new_tokens=1)
+    )
+    assert bridge.check_session_capacity(
+        "candidate", running_request_ids=frozenset({"survivor"}), new_token_ratio=0.1
+    ) is None
+    assert bridge.check_session_capacity(
+        "candidate",
+        running_request_ids=frozenset({"survivor"}),
+        new_token_ratio=scheduler.new_token_ratio_tracker.current,
+    ) == "session KV capacity exhausted"
+
+
+def test_last_session_capacity_kill_resets_output_demand_estimate(
+    pressured_scheduler: OmniScheduler,
+) -> None:
+    """After the last running session is killed, later work starts from the idle estimate."""
+    scheduler = pressured_scheduler
+    batch = scheduler.running_batch
+    idle_request, victim = batch.reqs
+    scheduler.session_bridge.release_append_unit(idle_request.rid)
+    batch.filter_batch(reqs_to_exclude={idle_request})
+    assert batch.reqs == [victim]
+    assert not batch.check_decode_mem()
+    scheduler.new_token_ratio_tracker.current = 0.001
+
+    assert scheduler.relieve_session_capacity(batch)
+
+    assert batch.is_empty()
+    assert scheduler.new_token_ratio_tracker.current == scheduler.new_token_ratio_tracker.init
+
+
+@pytest.mark.parametrize("is_entry_rank", [False, True])
+def test_session_capacity_kill_closes_bridge_and_pending_read(
+    pressured_scheduler: OmniScheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    is_entry_rank: bool,
+) -> None:
+    """A capacity kill releases the session and closes the read on every rank."""
+    scheduler = pressured_scheduler
+    scheduler.is_entry_rank = is_entry_rank
+    scheduler.tp_size = 1 if is_entry_rank else 2
+    bridge = scheduler.session_bridge
+    closed: list[SessionIdentity] = []
+    monkeypatch.setattr(bridge.adapter, "close", closed.append)
+    read = StagePayload("victim-read", OmniRequest(None), {})
+    bridge.sessions["victim"].output_read = read
+
+    assert scheduler.relieve_session_capacity(scheduler.running_batch)
+
+    assert "victim" not in bridge.sessions
+    assert closed == [SessionIdentity("victim")]
+    if is_entry_rank:
+        error = scheduler.outbox.get_nowait()
+        assert error.request_id == "victim"
+        assert isinstance(error.data, SessionCapacityExhaustedError)
+        read_error = scheduler.outbox.get_nowait()
+        assert read_error.request_id == "victim-read"
+        assert read_error.type == "error"
+        assert isinstance(read_error.data, SessionCapacityExhaustedError)
+        assert str(read_error.data) == str(error.data)
+    else:
+        result = scheduler.outbox.get_nowait()
+        assert result.request_id == "victim-read"
+        assert result.type == "result"
+        assert result.data.data == {"closed": True}
+    assert scheduler.outbox.empty()
+
+
 def test_mixed_decode_pressure_requeues_the_lower_priority_ordinary_request(
     pressured_scheduler: OmniScheduler,
 ) -> None:
