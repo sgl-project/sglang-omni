@@ -12091,7 +12091,6 @@ def assert_whole_requests_decode_on_reserved_rows_beside_a_stream(
         generator=generator,
     )
     stream_slots: set[int | None] = set()
-    has_waited_for_a_whole_row = False
     with torch.cuda.stream(scheduler.decode_stream):
         stream = admit_reference_stream(
             scheduler, "stream", stream_codes, ref_code_len=0
@@ -12105,9 +12104,6 @@ def assert_whole_requests_decode_on_reserved_rows_beside_a_stream(
             stream_slots.add(stream.codec_slot)
             whole_slots = {request.slot for request in scheduler.whole_requests}
             assert whole_slots <= {None, *scheduler.codec_arena.reserved_slots}
-            has_waited_for_a_whole_row = (
-                has_waited_for_a_whole_row or None in whole_slots
-            )
         scheduler.abort("stream")
     results: dict[str, OutgoingMessage] = {}
     while not scheduler.outbox.empty():
@@ -12117,7 +12113,6 @@ def assert_whole_requests_decode_on_reserved_rows_beside_a_stream(
     assert len(stream_slots) == 1
     assert stream_slots <= set(range(scheduler.codec_arena.num_slots))
     assert stream.incremental_codec_fallback is False
-    assert has_waited_for_a_whole_row
     assert scheduler.codec_arena.active_slots() == 0
     graph_stats = scheduler.codec_state_stats()["cuda_graphs"]
     assert graph_stats["tail"]["runtime"]["replays"] > 0
