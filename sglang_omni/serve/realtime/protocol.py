@@ -12,10 +12,11 @@ from starlette.status import (
     WS_1000_NORMAL_CLOSURE,
     WS_1008_POLICY_VIOLATION,
     WS_1011_INTERNAL_ERROR,
+    WS_1013_TRY_AGAIN_LATER,
 )
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.admission import ContextExhaustedError, SessionCapacityExhaustedError
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLIENT_CLOSED,
     CLOSE_REASON_CONTEXT_LIMIT,
@@ -147,6 +148,8 @@ class SharedRealtimeSession:
             close_code = WS_1000_NORMAL_CLOSURE
         elif close_reason in POLICY_CLOSE_REASONS:
             close_code = WS_1008_POLICY_VIOLATION
+        elif close_reason == SessionCapacityExhaustedError.CODE:
+            close_code = WS_1013_TRY_AGAIN_LATER
         else:
             close_code = WS_1011_INTERNAL_ERROR
         close_reason = close_reason.encode("utf-8")[:MAX_CLOSE_REASON_BYTES].decode(

@@ -1666,6 +1666,20 @@ Each rule is followed by the error it raises.
 
 During initial session opening, only a capacity rejection is reported as `admission_rejected` with `sglang.fatal: false`; the client may retry `session.update` on the same WebSocket before sending audio, within the admission deadline. If opening exceeds its own deadline, the server sends fatal `session_open_timeout` and closes the session. This differs from `session_update_timeout`, which limits the wait for an initial update or retryable admission; an admission already in progress may finish after that deadline. The separate pipeline idle fallback reports `session_idle_timeout`. Other initialization failures close the session with their known error code, or `internal` when no specific code is available. Configuration negotiation errors below retain their existing request-error behavior.
 
+After opening, an AR session unit waits when KV or request-row capacity temporarily prevents admission. Its waiting deadline starts at the first capacity refusal and follows the unit into the native prefill queue; ordinary prefill batching does not start it. The default is 30 seconds; a shorter configured SGLang waiting timeout also applies. The separate session operation timeout can expire first, producing its existing operation-timeout error instead of the capacity error. Qwen3-Omni thinker and talker stage factories expose `session_admission_timeout_seconds`, a positive finite value in seconds:
+
+```yaml
+stages:
+  thinker:
+    factory:
+      session_admission_timeout_seconds: 30
+  talker_ar:
+    factory:
+      session_admission_timeout_seconds: 30
+```
+
+Running replies use SGLang's output-demand estimate for admission, while the configured maximum output length continues to limit generation. Completed Qwen3-Omni talker replies release their retained KV because each following reply resets that history. A waiting deadline or a real decode-capacity shortfall produces `session_capacity_exhausted` and ends the affected realtime session with WebSocket close code 1013. Clients can retry in a new session after capacity becomes available. Under sustained overload, higher admitted concurrency can increase waiting time and audio underruns; evaluate successful-session rate and playback metrics together.
+
 - A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
 - A field other than the hot ones in {ref}`Session settings <session-settings>` changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
 - `instructions` longer than 65536 characters — `instructions exceed context or have invalid type`.

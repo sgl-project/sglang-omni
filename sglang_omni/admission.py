@@ -54,3 +54,25 @@ class ContextExhaustedError(ValueError):
     @classmethod
     def matches(cls, exc: BaseException) -> bool:
         return isinstance(exc, cls) or str(exc).startswith(f"{cls.CODE}:")
+
+
+class SessionCapacityExhaustedError(RuntimeError):
+    """A session exhausted KV cache or request-row capacity."""
+
+    CODE = "session_capacity_exhausted"
+
+    def __init__(self, message: str = "") -> None:
+        prefix = f"{self.CODE}:"
+        if message.startswith(prefix):
+            formatted_message = message
+        elif message.strip():
+            formatted_message = f"{prefix} {message}"
+        else:
+            formatted_message = prefix
+        super().__init__(formatted_message)
+
+    @classmethod
+    def matches(cls, exc: BaseException | str | None) -> bool:
+        return isinstance(exc, cls) or (
+            isinstance(exc, RuntimeError) and str(exc).startswith(f"{cls.CODE}:")
+        )

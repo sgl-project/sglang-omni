@@ -64,6 +64,8 @@ class ReplyText:
 
 
 class QwenTalkerSessionAdapter(ARSessionAdapter):
+    retain_completed_kv: bool = False
+
     def __init__(
         self,
         prefill_builder: TalkerPrefillBuilder,

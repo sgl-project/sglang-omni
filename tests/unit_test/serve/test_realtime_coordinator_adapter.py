@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from sglang_omni.admission import SessionCapacityExhaustedError
 from sglang_omni.client.client import Client
 from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
@@ -251,7 +252,23 @@ async def test_unexpected_output_stream_end_fails_the_session(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (RuntimeError(CONTEXT_EXHAUSTED_MESSAGE), "context_exhausted"),
+        (
+            SessionCapacityExhaustedError("KV budget exhausted"),
+            "session_capacity_exhausted",
+        ),
+        (
+            RuntimeError("session_capacity_exhausted: KV budget exhausted"),
+            "session_capacity_exhausted",
+        ),
+    ],
+)
 async def test_context_exhaustion_without_pending_unit_fails_the_session_without_logging(
+    error: Exception,
+    expected_code: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     coordinator = SessionCoordinator([])
@@ -260,16 +277,14 @@ async def test_context_exhaustion_without_pending_unit_fails_the_session_without
     with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER_NAME):
         await adapter.open("sess_1", SESSION_CONFIG, sink)
         adapter.active_unit = build_unit(0)
-        adapter.output_converter = Mock(
-            side_effect=RuntimeError(CONTEXT_EXHAUSTED_MESSAGE)
-        )
+        adapter.output_converter = Mock(side_effect=error)
         coordinator.emit("text", None, b"reply")
         await asyncio.wait_for(sink.has_published.wait(), PROCESS_TIMEOUT_S)
         await adapter.close()
 
     assert sink.published == [
         (
-            TurnFailure("server_error", "context_exhausted", CONTEXT_EXHAUSTED_MESSAGE),
+            TurnFailure("server_error", expected_code, str(error)),
             None,
         )
     ]
@@ -277,17 +292,33 @@ async def test_context_exhaustion_without_pending_unit_fails_the_session_without
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_match"),
+    [
+        (RuntimeError(CONTEXT_EXHAUSTED_MESSAGE), "context_exhausted"),
+        (
+            SessionCapacityExhaustedError("KV budget exhausted"),
+            "session_capacity_exhausted",
+        ),
+        (
+            RuntimeError("session_capacity_exhausted: KV budget exhausted"),
+            "session_capacity_exhausted",
+        ),
+    ],
+)
 async def test_context_exhaustion_with_pending_unit_fails_the_unit_without_logging(
+    error: Exception,
+    expected_match: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     coordinator = SessionCoordinator([b"reply"])
     sink = RecordingSink()
     adapter = build_adapter(coordinator)
-    adapter.output_converter = Mock(side_effect=RuntimeError(CONTEXT_EXHAUSTED_MESSAGE))
+    adapter.output_converter = Mock(side_effect=error)
     with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER_NAME):
         await adapter.open("sess_1", SESSION_CONFIG, sink)
 
-        with pytest.raises(RuntimeError, match="context_exhausted"):
+        with pytest.raises(RuntimeError, match=expected_match):
             await asyncio.wait_for(adapter.process(build_unit(0)), PROCESS_TIMEOUT_S)
         await adapter.close()
 

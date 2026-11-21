@@ -18,7 +18,7 @@ from starlette.types import Message
 from starlette.websockets import WebSocket
 
 import sglang_omni.serve.realtime.runtime as runtime_module
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import QueueFullError, SessionCapacityExhaustedError
 from sglang_omni.client.client import Client
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.profiler.event_recorder import get_recorder
@@ -476,6 +476,23 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
             "context_exhausted",
             False,
         ),
+        (
+            SessionCapacityExhaustedError("KV cache exhausted"),
+            "session_capacity_exhausted",
+            False,
+        ),
+        (
+            RuntimeError("session_capacity_exhausted: KV cache exhausted"),
+            "session_capacity_exhausted",
+            False,
+        ),
+        (
+            ValueError("session_capacity_exhausted: wrong exception type"),
+            "internal",
+            True,
+        ),
+        (RuntimeError("CUDA out of memory"), "internal", True),
+        (QueueFullError(), "internal", True),
         (RuntimeError("talker step failed"), "internal", True),
         (OutputBudgetError(), "output_budget_exhausted", False),
         (ContextLimitError(), "context_limit", False),

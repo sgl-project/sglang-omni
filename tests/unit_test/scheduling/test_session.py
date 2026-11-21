@@ -644,6 +644,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.deferred_request_payloads = {}
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.pending_stream_ingress = {}
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
@@ -740,6 +741,8 @@ def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
     scheduler.deferred_request_payloads = {}
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
+    scheduler.new_token_ratio_tracker = SimpleNamespace(current=1.0)
     scheduler.pending_stream_ingress = {}
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
