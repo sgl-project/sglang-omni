@@ -344,7 +344,7 @@ def test_apple_rejects_unsupported_runtime_options(monkeypatch, override, match)
         builder.validate_before_infrastructure(SimpleNamespace(**args))
 
 
-def capture_builder(monkeypatch) -> fun_asr_builder.FunASREngineBuilder:
+def capture_builder(monkeypatch, **stage_kwargs) -> fun_asr_builder.FunASREngineBuilder:
     captured = []
     monkeypatch.setattr(
         fun_asr_builder.FunASREngineBuilder,
@@ -356,7 +356,7 @@ def capture_builder(monkeypatch) -> fun_asr_builder.FunASREngineBuilder:
         "make_fun_asr_stream_output_builder",
         lambda **kwargs: object(),
     )
-    fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+    fun_asr_stages.create_sglang_fun_asr_executor("dummy", **stage_kwargs)
     return captured[0]
 
 
@@ -540,6 +540,87 @@ def test_without_a_draft_the_context_and_async_decode_are_unchanged(
     assert builder.extra_scheduler_kwargs()["enable_async_decode"] is True
 
 
+@pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, False),
+        (None, True, True),
+        (False, True, False),
+        (True, False, True),
+    ],
+)
+def test_early_request_builds_default_on_only_with_a_draft(
+    monkeypatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """By default a build starts on arrival only under the draft; an explicit setting reaches the scheduler unchanged."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    builder = capture_builder(monkeypatch, early_request_builds=requested)
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    assert builder.extra_scheduler_kwargs()["early_request_builds"] is expected
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
+
+
+@pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, True),
+        (None, True, False),
+        (True, True, True),
+        (False, False, False),
+    ],
+)
+def test_prefill_hold_during_decode_defaults_off_with_a_draft(
+    monkeypatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """By default a prefill is held during decode only without a draft; an explicit setting reaches the scheduler unchanged."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    builder = capture_builder(
+        monkeypatch, prefill_coalesce_after_builds_during_decode=requested
+    )
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    assert (
+        builder.extra_scheduler_kwargs()["prefill_coalesce_after_builds_during_decode"]
+        is expected
+    )
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
+
+
 @pytest.mark.parametrize("fails", [False, True])
 def test_the_stage_releases_the_draft_copy_after_the_build(
     monkeypatch, tmp_path: Path, fails: bool
@@ -640,3 +721,24 @@ def test_dflash_worker_reaches_the_decoder_through_the_outer_model() -> None:
     assert model.get_input_embeddings() is decoder_embedding
     assert model.lm_head is decoder_head
     assert captured_layer_ids == [[1, 13, 24]]
+
+
+@pytest.mark.parametrize("is_cuda", [False, True])
+def test_verify_applies_repetition_penalty_where_the_draft_runs(
+    monkeypatch, is_cuda: bool
+) -> None:
+    """Realtime requests set repetition_penalty once a session carries a transcript prefix, so the draft must not refuse it on CUDA."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
+    builder = capture_builder(monkeypatch)
+
+    model_runner = builder.make_model_runner(
+        SimpleNamespace(gpu_id=0, model_runner=SimpleNamespace(model=object())),
+        SimpleNamespace(),
+    )
+
+    assert model_runner.speculative_repetition_penalty_owner == (
+        "verify_logits" if is_cuda else None
+    )

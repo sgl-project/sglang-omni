@@ -28,7 +28,9 @@ func TestCardRedoKeepsScrollKeyWhenWritingStarts(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 	card := &sessionCardViewState{ID: "old-card", Blocks: []sessionCardBlock{{Kind: sessionCardBody, Text: "old answer"}}}
-	tester := ui.NewTester(func(context *ui.Context) { cardBody(context, "redo-session", card, 120, layout.AnswerW, a, local, nil) }, 400, 300)
+	tester := ui.NewTester(func(context *ui.Context) {
+		cardBody(context, "redo-session", card, 120, layout.AnswerW, false, 1, a, local, nil)
+	}, 400, 300)
 	frames(tester)
 	card.Writing = true
 	card.Live[0] = sessionCardWritingBlock("new answer", store.KindRewrite)

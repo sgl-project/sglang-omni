@@ -50,9 +50,6 @@ func sessionCardPreviewKey(sessionID string, card *sessionCardViewState, blockIn
 func newSessionOverlayPreviewRequest(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, blockIndex int, textColor uiColor, bodyHeight float32, width int) sessionOverlayPreviewRequest {
 	text, _, _ := sessionCardBlockText(block, width)
 	background := ui.RGB(36, 36, 40)
-	if blockIndex < 0 {
-		background = ui.RGB(22, 22, 26)
-	}
 	return sessionOverlayPreviewRequest{
 		key: sessionCardPreviewKey(sessionID, card, blockIndex), text: text,
 		textColor: textColor, link: context.Theme().Accent, background: background,
@@ -78,7 +75,9 @@ func sessionCardBlockAt(card *sessionCardViewState, index int) sessionCardBlock 
 // resolved width (layout.CardSize.Width: the fill size follows the work
 // area, so the step alone does not say how wide the card is).
 func sessionCardBlockText(block sessionCardBlock, width int) (text, title, quote ovSized) {
-	bodyWidth := float32(width - 2*layout.CardPadX - layout.CardInset)
+	// The text keeps CardPadX on both sides; the scroller's room
+	// (CardInset) is in the card's padding, right of the text.
+	bodyWidth := float32(width - 2*layout.CardPadX)
 	switch block.Kind {
 	case sessionCardProblem:
 		return ovSized{block.Text, layout.CardTextSize, layout.CardTextWeight, bodyWidth - layout.ProblemIcon - layout.ProblemGap, ""}, ovSized{}, ovSized{}
