@@ -91,6 +91,8 @@ from benchmarks.metrics.video import (
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.asr import (
     DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    SKIPPED_TEXT_AUDIO_WER_WARNING,
+    add_asr_router_port_argument,
     compute_text_audio_consistency,
 )
 from benchmarks.tasks.video_understanding import (
@@ -128,6 +130,7 @@ class VideoEvalConfig:
     repo_id: str | None = None
     enable_audio: bool = False
     asr_device: str = "cuda:0"
+    asr_router_port: int | None = None
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     lang: str = "en"
 
@@ -222,12 +225,16 @@ async def run_video_eval(
         "per_sample": per_sample,
     }
     if config.enable_audio and compute_wer:
-        results["wer"] = compute_text_audio_consistency(
-            request_results,
-            config.lang,
-            config.asr_device,
-            asr_concurrency=config.asr_concurrency,
-        )
+        if config.asr_router_port is None:
+            logger.warning(SKIPPED_TEXT_AUDIO_WER_WARNING)
+        else:
+            results["wer"] = compute_text_audio_consistency(
+                request_results,
+                config.lang,
+                config.asr_device,
+                asr_router_port=config.asr_router_port,
+                asr_concurrency=config.asr_concurrency,
+            )
 
     if config.output_dir:
         save_json_results(results, config.output_dir, output_filename)
@@ -261,6 +268,7 @@ def video_eval_config_from_args(args: argparse.Namespace) -> VideoEvalConfig:
         timeout_s=args.timeout_s,
         enable_audio=args.enable_audio,
         asr_device=args.asr_device,
+        asr_router_port=args.asr_router_port,
         asr_concurrency=args.asr_concurrency,
         lang=args.lang,
     )
@@ -314,6 +322,7 @@ def add_video_eval_args(parser: argparse.ArgumentParser, *, repo_help: str) -> N
         default="cuda:0",
         help="Device for ASR model when --enable-audio is used.",
     )
+    add_asr_router_port_argument(parser)
     parser.add_argument(
         "--asr-concurrency",
         type=int,
