@@ -12,7 +12,6 @@
   "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.": "还没设置语言模型。翻译和改写需要它，转录会直接输入识别出的原文。",
   "No speech model is installed. Install one to transcribe, translate and rewrite by voice.": "还没安装语音识别模型。安装后才能用语音转录、翻译和改写。",
   "Open History": "打开历史页",
-  "Open in History": "在历史中打开",
   "Press %s to start": "按 %s 开始",
   "Results appear here after you use a shortcut.": "用过快捷键后，结果会显示在这里。",
   "Speak anywhere and Voxt types at your cursor": "随处说，随处写",

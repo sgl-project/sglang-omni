@@ -156,7 +156,7 @@ func homeRecentList(c *ui.Context, state *homeViewState, actions homeActions, lo
 		for _, recent := range state.Recent {
 			rowState := recent.Row
 			row := ui.ButtonBase(c.Key("home-recent-"+rowState.ID)).Padding(px(t, sp2), px(t, sp3)).Radius(px(t, radiusControl)).
-				Gap(px(t, sp3)).AlignItems(ui.Center).Label(rowState.Title).Tooltip(i18n.T("Open in History"))
+				Gap(px(t, sp3)).AlignItems(ui.Center).Label(rowState.Title)
 			if row.Hovered() {
 				row.Background(k.Hover)
 			}
