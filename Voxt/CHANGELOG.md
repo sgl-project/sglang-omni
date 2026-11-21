@@ -28,6 +28,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A preview's button no longer stays highlighted with its tooltip over the live text**: since cards and previews became ordinary windows, they followed the pointer only while Voxt was the app in front. While you dictated into another app, a button the pointer last rested on when Voxt was in front, such as Use transcript, stayed highlighted, and its tooltip ("Insert the recognised text without waiting for the language model") covered the first line of the live text although the pointer was elsewhere; hovering a button did nothing. They now follow the pointer whichever app is in front: the tooltip shows only while the pointer rests on the button.
 - **Pictures copied from more places paste into the Rewrite card**: an image file copied in Finder pasted its file name, because Finder also puts the name on the clipboard as text; it now pastes the picture (HEIC too), while another copied file still pastes its name. A clipboard holding only a JPEG, HEIC or WebP picture pasted nothing; it now pastes the picture. Text copied with a picture of itself, such as a spreadsheet range, still pastes as text.
 - **The answer card's scroll bar stays still while an answer streams** (#4320): the text stays centered, and the Markdown page matches the card's transparency instead of drawing a darker box.
+- **Check again no longer makes the permission rows flash** (#4365): in Settings → Permissions and the setup guide's Permissions step, a granted Microphone or Speech Recognition row showed "Not asked yet" for a moment after Check again or when you came back to Voxt. The rows now keep what they show until the helper answers.
 
 ### 中文
 
@@ -55,6 +56,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **预览里的按钮不再一直高亮，提示也不再盖住实时文字**：卡片和预览改成普通窗口之后，只有 Voxt 在前台时才跟踪鼠标。你在别的 App 里听写时，上次 Voxt 在前台时鼠标停过的按钮（比如“用识别原文”）会一直高亮，它的提示“不等语言模型，直接插入识别原文”盖住实时文字的第一行，鼠标根本不在那里；真把鼠标移上去反而没有反应。现在不管哪个 App 在前台都跟踪鼠标：只有鼠标停在按钮上时才出现提示。
 - **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
 - **答案卡片流式输出时滚动条不再闪烁**（#4320）：文字保持左右居中，Markdown 页面与卡片使用相同的透明度，不再显示更深的底色块。
+- **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
 
 ## [2.1.2] - 2026-11-19
 

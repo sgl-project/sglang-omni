@@ -387,6 +387,9 @@ func TestPermissionsSettings(t *testing.T) {
 	// A recheck keeps what is shown until the helper answers: this
 	// process's read (the microphone allowed) never shows in between
 	// (#4365).
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermDenied, SpeechRecognition: proto.PermNotDetermined}, nil
+	}
 	var held []func()
 	a.postQueue = func(fn func()) { held = append(held, fn) }
 	a.recheckPermissions()
@@ -397,7 +400,7 @@ func TestPermissionsSettings(t *testing.T) {
 	for _, fn := range held {
 		fn()
 	}
-	if len(held) == 0 || a.perms.mic != permission.NotDetermined || !a.perms.checked {
+	if len(held) == 0 || a.perms.mic != permission.Denied {
 		t.Errorf("after the helper answered (%d posts): %+v", len(held), a.perms)
 	}
 	// An older helper does not read Speech Recognition: this process does.
