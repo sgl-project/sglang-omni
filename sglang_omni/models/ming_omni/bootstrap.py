@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeAlias
+from functools import partial
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.ming_omni.io import ThinkerOutput
+from sglang_omni.models.ming_omni.pd import MingThinkerPDAdapter
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
+)
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -41,6 +47,10 @@ def create_thinker_scheduler(
     tp_size: int = 1,
     nccl_port: int | None = None,
     enable_streaming_tts: bool = False,
+    pd_role: Literal["prefill", "decode"] | None = None,
+    pd_stage_name: str | None = None,
+    pd_partner_stage: str | None = None,
+    max_inflight_handoffs: int | None = None,
 ) -> "OmniScheduler[SGLangARRequestData]":
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
@@ -112,7 +122,39 @@ def create_thinker_scheduler(
         eos_token_id=getattr(tokenizer, "eos_token_id", None),
     )
 
-    return OmniScheduler(
+    scheduler_factory = partial(OmniScheduler)
+    if pd_role is not None:
+        if not pd_stage_name or pd_role not in ("prefill", "decode"):
+            raise ValueError(
+                "PD requires an explicit stage name and prefill/decode role"
+            )
+        else:
+            pass
+        adapter = MingThinkerPDAdapter(tokenizer=tokenizer)
+        if pd_role == "prefill":
+            if not pd_partner_stage:
+                raise ValueError("Prefill requires an explicit Decode partner stage")
+            else:
+                pass
+            scheduler_factory = partial(
+                OmniPrefillScheduler,
+                stage_name=pd_stage_name,
+                partner_stage=pd_partner_stage,
+                state_builder=adapter.build_state,
+                max_inflight_handoffs=max_inflight_handoffs,
+            )
+        else:
+            scheduler_factory = partial(
+                OmniDecodeScheduler,
+                stage_name=pd_stage_name,
+                state_restorer=adapter.restore_state,
+                resume_schema=adapter.schema,
+                emit_transferred_token=True,
+            )
+    else:
+        pass
+
+    return scheduler_factory(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -122,7 +164,7 @@ def create_thinker_scheduler(
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
-        stream_output_builder=stream_output_builder,
+        stream_output_builder=(None if pd_role == "prefill" else stream_output_builder),
     )
 
 
