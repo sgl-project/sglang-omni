@@ -142,6 +142,7 @@ def make_engine_builder(
         stream_emit_interval_s=0.05,
     )
     builder.context_length = context_length
+    builder.gpu_id = 0
     return builder
 
 
@@ -916,6 +917,96 @@ def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
         builder.draft_checkpoint.cleanup()
     else:
         assert builder.infra_kwargs() == {}
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "server_args_overrides", "expected_prefill_attention_backend"),
+    [
+        (100, {}, "flashinfer"),
+        (100, {"kv_cache_dtype": "auto"}, "flashinfer"),
+        (100, {"decode_attention_backend": "fa3"}, "flashinfer"),
+        (100, {"cuda_graph_backend_prefill": "full"}, "flashinfer"),
+        (100, {"cuda_graph_config": {"prefill": {"backend": "full"}}}, "flashinfer"),
+        (90, {}, None),
+        (103, {}, None),
+        (120, {}, None),
+        (None, {}, None),
+        (100, {"attention_backend": "fa3"}, None),
+        (100, {"prefill_attention_backend": "trtllm_mha"}, "trtllm_mha"),
+        (100, {"disable_cuda_graph": True}, None),
+        (100, {"cuda_graph_backend_prefill": "breakable"}, None),
+        (100, {"cuda_graph_config": {"prefill": {"backend": "breakable"}}}, None),
+        (100, {"kv_cache_dtype": "nvfp4"}, None),
+    ],
+)
+def test_qwen3_asr_build_defaults_sm100_prefill_attention_to_flashinfer_for_the_full_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int | None,
+    server_args_overrides: dict[str, object],
+    expected_prefill_attention_backend: str | None,
+) -> None:
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    monkeypatch.setattr(
+        qwen3_asr_builder, "get_visible_gpu_sm_version", lambda gpu_id: sm_version
+    )
+
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy", server_args_overrides=server_args_overrides
+    )
+
+    assert (
+        recorded.build_kwargs.get("prefill_attention_backend")
+        == expected_prefill_attention_backend
+    )
+    assert recorded.build_kwargs.get("attention_backend") == server_args_overrides.get(
+        "attention_backend"
+    )
+
+
+def test_qwen3_asr_build_keeps_automatic_prefill_attention_under_a_draft(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    monkeypatch.setattr(
+        qwen3_asr_builder, "get_visible_gpu_sm_version", lambda gpu_id: 100
+    )
+    write_dflash_checkpoint(tmp_path, non_causal=False)
+
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy",
+        server_args_overrides={
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        },
+    )
+
+    assert recorded.build_kwargs.get("attention_backend") is None
+    assert recorded.build_kwargs.get("prefill_attention_backend") is None
+
+
+def test_qwen3_asr_build_leaves_prefill_attention_alone_off_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = patch_engine_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: pytest.fail(f"unexpected SM lookup for GPU {gpu_id}"),
+    )
+
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy",
+        mm_attention_backend="fa3",
+        server_args_overrides={"cuda_graph_backend_prefill": "full"},
+    )
+
+    assert recorded.build_kwargs.get("prefill_attention_backend") is None
 
 
 @pytest.mark.parametrize("with_draft", [False, True])

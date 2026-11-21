@@ -368,6 +368,14 @@ The limits shared with the other ASR models are listed in
 
 ## Platform Configuration
 
+### Blackwell SM100 prefill attention
+
+Qwen3-ASR asks for the `full` prefill CUDA graph on CUDA, which needs the `fa3`, `fa4` or `flashinfer` prefill attention backend. On SM100 GPUs (B200) SGLang's automatic attention backend is `trtllm_mha`, so without a DFlash draft the server sets `prefill_attention_backend` to `flashinfer` and decode keeps `trtllm_mha`. This applies to Qwen3-ASR-0.6B by default and to Qwen3-ASR-1.7B only when it runs without its draft, for example with `--asr.engine.disable_speculative_decoding true`. The default is not applied with a draft, with an explicit `--asr.engine.attention_backend` or `--asr.engine.prefill_attention_backend`, with a quantized `--asr.engine.kv_cache_dtype`, with CUDA graphs disabled, or when the prefill graph is not `full`; other GPU architectures are unchanged. It was measured on B200 only. Restore the previous behavior, the `breakable` prefill graph on `trtllm_mha`, with:
+
+```bash
+sgl-omni serve --model-path "${MODEL_PATH}" --asr.engine.prefill_attention_backend trtllm_mha
+```
+
 ### Ascend NPU graph execution
 
 See [Qwen3-ASR graph execution on Ascend NPU](../other_platforms/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
