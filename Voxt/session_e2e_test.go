@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/hehehai/actnowkit/sounds"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
@@ -265,7 +266,8 @@ func TestSessionReturnFinishes(t *testing.T) {
 			set, keys, _ := fileSetup(t, "finished sentence", chat)
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
 			a := newSessionApp(t, ev, set, keys)
-			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+			a.playSound = func(sounds.Target) {} // the wait below, not the start cue, gives the recording its audio (#4446)
+			a.pump("the recording", func() bool { return a.sess.State == session.Recording && len(a.sess.Levels) >= 5 })
 			if !strings.Contains(a.hotkeysSent, "ID:finish") {
 				t.Fatal("Return is not bound while Transcribe records")
 			}
