@@ -56,3 +56,13 @@ python .github/scripts/check_omni_installed_requirements.py
 The install commands keep `--prerelease=allow` from the releases that pinned `cuda-tile==1.6.0rc5`; SGLang 0.5.23 pins no pre-release package and the CUDA path resolves without the flag. With the flag, uv may take a pre-release of any package when one is newer than the latest release on PyPI, which is why `uv pip freeze` can list development or release-candidate versions of packages such as `einops`, `safetensors` or `grpcio`.
 
 SGLang 0.5.23 ships `manylinux_2_34` wheels, so the CUDA path needs glibc 2.34 or newer, as on Ubuntu 22.04. On an older system uv stops with `sglang==0.5.23 has no wheels with a matching platform tag`.
+
+## CUDA toolkit for the pip / uv install path
+
+**Symptom.** A server started from the pip / uv or from-source path fails during stage startup, before the API server binds its port, with `RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist`, or a JIT link step reports `cannot find -lcudart` or `cannot find -lcuda`.
+
+**Check.** FlashInfer and the SGLang JIT resolve a CUDA root from `CUDA_HOME` or `CUDA_PATH`, then from `nvcc` on `PATH`, then from `/usr/local/cuda`, and both link against `<root>/lib64` and `<root>/lib64/stubs`. The CUDA wheels install the toolkit under `site-packages/nvidia/cu<major>` with a `lib` directory and no driver stub, so nothing resolves when the host has only the wheels.
+
+**Fix.** A system CUDA toolkit is not a prerequisite for these paths. When `CUDA_HOME` and `CUDA_PATH` are unset and no system toolkit is present, SGLang-Omni links a toolkit-shaped CUDA root at `~/.cache/sglang-omni/cuda-home-<bucket>` and exports it as `CUDA_HOME` for the stage processes. The log line `Applied GPU compatibility env override: CUDA_HOME=...` confirms the derived root. Set `CUDA_HOME` yourself to use a system toolkit instead.
+
+If the build then stops at `CUDA compiler and CUDA toolkit headers are incompatible`, the installed `nvidia-cuda-nvcc`, `nvidia-nvvm`, `nvidia-cuda-crt` and `nvidia-cuda-runtime` wheels are on mixed versions, and one release must be pinned for all four.

@@ -74,6 +74,8 @@ these build dependencies first:
 - **UCX 1.20.x** with CUDA + verbs — [upstream](https://github.com/openucx/ucx), or reuse flags in [`docker/Dockerfile`](../../docker/Dockerfile).
 - **flash-attn-4** `>=4.0.0b18`, matching `torch==2.14.1` and SGLang 0.5.23's `nvidia-cutlass-dsl` 4.8.0 pin.
 
+A system CUDA toolkit is not required: when none is installed, SGLang-Omni derives a CUDA root from the NVIDIA wheels at stage startup. See [CUDA toolkit for the pip / uv install path](./troubleshooting.md#cuda-toolkit-for-the-pip--uv-install-path).
+
 **Prepare the environment.**
 
 ```bash
