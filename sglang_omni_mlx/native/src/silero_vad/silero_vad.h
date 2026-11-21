@@ -54,6 +54,9 @@ public:
   PredictProbabilities(const std::vector<float> &samples) const;
 
   const TimestampOptions &defaults() const { return defaults_; }
+  // Whether the constructor primed the Metal kernels with its throwaway
+  // warmup stream (silero_vad_warmup_test's revert check).
+  bool WarmedUp() const { return warmed_up_; }
 
 private:
   omni_common::Checkpoint checkpoint_;
@@ -62,6 +65,7 @@ private:
   int pad_ = 64;
   int cutoff_ = 129;
   TimestampOptions defaults_;
+  bool warmed_up_ = false;
 };
 
 // Speech segments from per-chunk probabilities, as Swift probsToTimestamps.
