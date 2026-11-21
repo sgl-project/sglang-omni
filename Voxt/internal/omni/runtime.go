@@ -54,6 +54,10 @@ type Config struct {
 	// Log gets a line about the servers ("info", "warning", "error"); their
 	// stderr goes there too (they never write audio or text). nil: none.
 	Log func(level, msg string)
+	// DecodeProbe times each Final request a live session makes (the
+	// batch preview's and the pieces') and logs them at the session's
+	// end, for the latency harness. Off: no probe, no overhead.
+	DecodeProbe bool
 	// OnModel is told when a server's model is loaded (the server said it
 	// is ready), busy (its first lease), idle (its last lease ended) and
 	// unloaded (its process exited: idle stop, switch, Unload, Close or a

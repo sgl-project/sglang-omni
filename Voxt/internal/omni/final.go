@@ -34,6 +34,7 @@ type finalRequest struct {
 	maxTokens int
 	layout    string
 	preview   bool // a provisional request with faster disconnect detection
+	piece     bool // a long session's incremental Final (pieces.go)
 }
 
 // finalResult is a request's answer.
@@ -89,6 +90,21 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 // A stream silent for stall (the server's heartbeat is every 250 ms) has
 // hung the server: it is killed.
 func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Duration) (finalResult, error) {
+	if p := decodeProbeOf(ctx); p != nil {
+		kind := r.decodeKind()
+		ahead := int(p.inflight.Add(1) - 1)
+		submitted := time.Now()
+		res, err := transcribeRound(ctx, l, r, stall)
+		finished := time.Now()
+		p.inflight.Add(-1)
+		ev := decodeEvent{Kind: kind, SubmittedMS: submitted.UnixMilli(), FinishedMS: finished.UnixMilli(), Inflight: ahead}
+		p.record(ev)
+		return res, err
+	}
+	return transcribeRound(ctx, l, r, stall)
+}
+
+func transcribeRound(ctx context.Context, l *lease, r finalRequest, stall time.Duration) (finalResult, error) {
 	body, ctype := r.body(l.endpoint().model)
 	// The hint goes to the log, never the recognised text: a wrong hint
 	// translated Chinese dictation (#3398) and nothing showed it.

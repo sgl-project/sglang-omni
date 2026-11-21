@@ -58,6 +58,7 @@ import (
 type latencyStages struct {
 	appReady, heard, ready, load, partial, final, insert, done time.Duration
 	minPreviewSamples                                          int
+	decodes                                                    []latencyDecode
 }
 
 type latencyResult struct {
@@ -83,8 +84,12 @@ type latencyResult struct {
 	StopToDoneMS                       float64 `json:"stop_to_done_ms"`
 	LiveUpdates                        int     `json:"live_updates"`
 	LongestUpdateGapMS                 float64 `json:"longest_update_gap_ms"`
-	Text                               string  `json:"text"`
-	TextSHA256                         string  `json:"text_sha256"`
+	// The session's per-request timings (preview/piece/final, with the
+	// queue ahead of each), when the omni decode probe emitted them.
+	DecodeEvents                  []latencyDecode `json:"decode_events,omitempty"`
+	DecodeEventsUnavailableReason string          `json:"decode_events_unavailable_reason,omitempty"`
+	Text                          string          `json:"text"`
+	TextSHA256                    string          `json:"text_sha256"`
 }
 
 // minPreviewEvidence is the actual gate when the native event arrived,
@@ -101,6 +106,10 @@ var readyLine = regexp.MustCompile(`omni: (\S+) ready on \S+ after (\S+) \(pid`)
 
 var minPreviewLine = regexp.MustCompile(`"min_preview_samples"\s*:\s*(\d+)`)
 
+// decodeLine is the omni package's per-session request timing line: a
+// JSON array of {kind, submitted_ms, finished_ms, inflight}. No text.
+var decodeLine = regexp.MustCompile(`(\S+): decode_events (\[.*\])`)
+
 // latencyLog keeps when each model's server became ready and how long
 // its start took.
 type latencyLog struct {
@@ -108,6 +117,16 @@ type latencyLog struct {
 	ready          map[string][]readyAt
 	latestModel    string
 	previewByModel map[string]int
+	decodes        map[string][]latencyDecode
+}
+
+// latencyDecode is one Final request's timing from the omni decode_event
+// line: kind, submit/finish times and the queue ahead of it. No text.
+type latencyDecode struct {
+	Kind        string `json:"kind"`
+	SubmittedMS int64  `json:"submitted_ms"`
+	FinishedMS  int64  `json:"finished_ms"`
+	Inflight    int    `json:"inflight"`
 }
 
 type readyAt struct {
@@ -123,6 +142,16 @@ func (l *latencyLog) add(msg string) {
 			l.previewByModel = map[string]int{}
 		}
 		l.previewByModel[l.latestModel], _ = strconv.Atoi(m[1])
+	}
+	if m := decodeLine.FindStringSubmatch(msg); m != nil {
+		var events []latencyDecode
+		if err := json.Unmarshal([]byte(m[2]), &events); err == nil {
+			if l.decodes == nil {
+				l.decodes = map[string][]latencyDecode{}
+			}
+			l.decodes[m[1]] = append(l.decodes[m[1]], events...)
+		}
+		return
 	}
 	m := readyLine.FindStringSubmatch(msg)
 	if m == nil {
@@ -140,6 +169,19 @@ func (l *latencyLog) minPreview(id string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.previewByModel[id]
+}
+
+// decodesSince is model id's request timings submitted at or after t.
+func (l *latencyLog) decodesSince(id string, t time.Time) []latencyDecode {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []latencyDecode
+	for _, ev := range l.decodes[id] {
+		if ev.SubmittedMS >= t.UnixMilli() {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // since is the newest start of model id's server after t.
@@ -221,6 +263,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 	lg := &latencyLog{}
 	old := omniNewRuntime
 	omniNewRuntime = func(cfg omni.Config) *omni.Runtime {
+		cfg.DecodeProbe = true
 		log := cfg.Log
 		cfg.Log = func(level, msg string) {
 			lg.add(msg)
@@ -375,6 +418,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 		st.heard.Round(time.Millisecond), st.ready.Round(time.Millisecond), st.load.Round(time.Millisecond),
 		st.partial.Round(time.Millisecond), updates, speak, gap.Round(time.Millisecond), st.final.Round(time.Millisecond), st.insert.Round(time.Millisecond), st.done.Round(time.Millisecond), len([]rune(a.sess.Raw)), firstRunes(a.sess.Raw, 40))
 	st.minPreviewSamples = lg.minPreview(id)
+	st.decodes = lg.decodesSince(id, t0)
 	writeLatencyResult(t, name, id, round, st, updates, gap, a.sess.Raw)
 	return st
 }
@@ -399,6 +443,10 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 	}
 	if result.MinPreviewSamples == nil {
 		result.MinPreviewSamplesUnavailableReason = "no native moss_preview_timing event for this model or runtime"
+	}
+	result.DecodeEvents = st.decodes
+	if len(result.DecodeEvents) == 0 {
+		result.DecodeEventsUnavailableReason = "no omni decode_event lines for this session"
 	}
 	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -486,6 +534,68 @@ func TestLatencyResultWritesNullPreviewWithReason(t *testing.T) {
 	}
 	if reason, _ := row["min_preview_samples_unavailable_reason"].(string); reason == "" {
 		t.Fatalf("a null min_preview_samples needs its unavailable_reason: %v", row)
+	}
+}
+
+func TestLatencyDecodeEventLines(t *testing.T) {
+	lg := &latencyLog{}
+	lg.add(`asr.sensevoice: decode_events [{"kind":"preview","submitted_ms":1700000001000,"finished_ms":1700000003900,"inflight":0},{"kind":"final","submitted_ms":1700000004100,"finished_ms":1700000004600,"inflight":1}]`)
+	lg.add(`asr.sensevoice: some other line`)
+	before := time.UnixMilli(1700000002000)
+	events := lg.decodesSince("asr.sensevoice", before)
+	if len(events) != 1 || events[0].Kind != "final" || events[0].Inflight != 1 || events[0].FinishedMS != 1700000004600 {
+		t.Fatalf("decodes since %v: %+v", before, events)
+	}
+	if all := lg.decodesSince("asr.sensevoice", time.UnixMilli(1700000000000)); len(all) != 2 || all[0].Kind != "preview" {
+		t.Fatalf("all decodes: %+v", all)
+	}
+}
+
+func TestLatencyResultDecodeEventsJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", path)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	stages := latencyStages{final: time.Second, decodes: []latencyDecode{{Kind: "preview", SubmittedMS: 1000, FinishedMS: 3900, Inflight: 0}}}
+	writeLatencyResult(t, "cold", "asr.test", 1, stages, 1, time.Second, "text")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(data, &row); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := row["decode_events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("decode_events: %v", row)
+	}
+	ev, _ := events[0].(map[string]any)
+	if ev["kind"] != "preview" || ev["submitted_ms"] != 1000.0 || ev["finished_ms"] != 3900.0 || ev["inflight"] != 0.0 {
+		t.Fatalf("decode event: %v", ev)
+	}
+	if _, present := row["decode_events_unavailable_reason"]; present {
+		t.Fatalf("a session with events still carries the reason: %v", row)
+	}
+	if text, present := row["decode_events"].([]any)[0].(map[string]any)["text"]; present || text != nil {
+		t.Fatalf("decode events never carry text: %v", row)
+	}
+
+	path2 := filepath.Join(t.TempDir(), "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", path2)
+	writeLatencyResult(t, "cold", "asr.test", 1, latencyStages{final: time.Second}, 1, time.Second, "text")
+	data2, err := os.ReadFile(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row2 map[string]any
+	if err := json.Unmarshal(data2, &row2); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := row2["decode_events"]; present {
+		t.Fatalf("a session without events writes no empty list: %v", row2)
+	}
+	if reason, _ := row2["decode_events_unavailable_reason"].(string); reason == "" {
+		t.Fatalf("missing events need their unavailable_reason: %v", row2)
 	}
 }
 

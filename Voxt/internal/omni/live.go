@@ -62,6 +62,7 @@ type live struct {
 	finalOnly bool
 	// writeGate, set by a test only, holds the writer before each write.
 	writeGate <-chan struct{}
+	probe     *decodeProbe  // the session's Final request timings (decode_probe.go)
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
 	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
@@ -125,8 +126,16 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	} else {
 		a.rt.logf("info", "%s: live session with language hint %q, previewed by Final requests", a.spec.ID, hint)
 	}
+	// The probe times the Final requests a session makes itself: the
+	// batch preview's and the pieces'. A realtime session's text arrives
+	// on its socket; it has nothing to time here.
+	var probe *decodeProbe
+	if a.rt.cfg.DecodeProbe && (conn == nil || (a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil))) {
+		probe = &decodeProbe{}
+		ctx = withDecodeProbe(ctx, probe)
+	}
 	sctx, cancel := context.WithCancel(ctx)
-	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn,
+	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn, probe: probe,
 		language: hint, bias: a.spec.ASR.contextBias(req.Hints, req.Prompt),
 		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
 		completed: make(chan string, 1), readDone: make(chan struct{}), writeDone: make(chan struct{}),
@@ -510,6 +519,13 @@ func (s *live) emit(ev asr.Event) {
 // end sends the last event (none for a zero Kind), closes the events and
 // releases the server; only the first call counts.
 func (s *live) end(ev asr.Event) {
+	if s.probe != nil {
+		if events := s.probe.Events(); len(events) > 0 {
+			if raw, err := json.Marshal(events); err == nil {
+				s.a.rt.logf("info", "%s: decode_events %s", s.a.spec.ID, raw)
+			}
+		}
+	}
 	s.mu.Lock()
 	if !s.ended {
 		if ev.Kind != 0 {
