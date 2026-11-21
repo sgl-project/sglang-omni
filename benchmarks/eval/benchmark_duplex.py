@@ -25,14 +25,20 @@ from benchmarks.duplex.client import (
     TRANSPORT,
     run_session,
 )
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
+from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName
 
 
 async def run(
-    args: argparse.Namespace, pcm: bytes, server: dict[str, JsonValue]
+    url: str,
+    pcm: bytes,
+    server: dict[str, JsonValue],
+    *,
+    output: Path,
+    profile: ProfileName,
+    timeout_s: float,
 ) -> dict[str, JsonValue]:
-    args.output.mkdir(parents=True, exist_ok=False)
-    (args.output / "input.pcm").write_bytes(pcm)
+    output.mkdir(parents=True, exist_ok=False)
+    (output / "input.pcm").write_bytes(pcm)
     cases = [
         {
             "id": "continuous",
@@ -42,13 +48,13 @@ async def run(
     ]
     manifest = {
         "schema_version": 1,
-        "profile": args.profile,
+        "profile": profile,
         "source": source_fingerprint(),
         "server": server,
         "config": {
             "packet_ms": PACKET_MS,
             "paced": True,
-            "timeout_s": args.timeout,
+            "timeout_s": timeout_s,
             "input_duration_s": len(pcm) / (SAMPLE_RATE * 2),
             "transport": TRANSPORT,
             "unsupported": [
@@ -72,19 +78,19 @@ async def run(
         },
         "cases": cases,
     }
-    (args.output / "manifest.json").write_text(
+    (output / "manifest.json").write_text(
         json.dumps(manifest, indent=2, allow_nan=False) + "\n"
     )
     for case in cases:
         await run_session(
-            args.url,
+            url,
             pcm,
-            trace_path=args.output / case["trace_file"],
-            timeout_s=args.timeout,
-            profile=args.profile,
+            trace_path=output / case["trace_file"],
+            timeout_s=timeout_s,
+            profile=profile,
         )
-    report = replay_run(args.output)
-    (args.output / "report.json").write_text(
+    report = replay_run(output)
+    (output / "report.json").write_text(
         json.dumps(report, indent=2, allow_nan=False) + "\n"
     )
     return report
@@ -156,7 +162,16 @@ def main() -> None:
         )
     except ValueError as exc:
         parser.error(str(exc))
-    report = asyncio.run(run(args, pcm, server))
+    report = asyncio.run(
+        run(
+            args.url,
+            pcm,
+            server,
+            output=args.output,
+            profile=args.profile,
+            timeout_s=args.timeout,
+        )
+    )
     print(json.dumps(report["summary"], indent=2, allow_nan=False))
     raise SystemExit(
         0 if report["summary"]["passed"] == report["summary"]["selected"] else 1
