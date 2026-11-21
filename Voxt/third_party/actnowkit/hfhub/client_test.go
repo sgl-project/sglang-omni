@@ -561,7 +561,7 @@ func TestDelete(t *testing.T) {
 	// Another snapshot (an older revision) shares config.json's blob and
 	// keeps it.
 	l, _ := c.Status(ctx, e)
-	shared, _ := models.ResolveBlob(RepoDir(c.opts.CacheDir, testRepo), filepath.Join(l.Snapshot, "config.json"))
+	shared, _ := resolveSnapshotLink(RepoDir(c.opts.CacheDir, testRepo), filepath.Join(l.Snapshot, "config.json"))
 	old := filepath.Join(repo, "snapshots", strings.Repeat("f", 40))
 	os.MkdirAll(old, 0o755)
 	if runtime.GOOS == "windows" {

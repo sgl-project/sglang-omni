@@ -372,7 +372,7 @@ func TestFamilyVerifyRepair(t *testing.T) {
 	defer w.Close()
 
 	l, _ := ca.Status(ctx, e)
-	blob, _ := models.ResolveBlob(RepoDir(env.hub, testRepo), filepath.Join(l.Snapshot, "model.safetensors"))
+	blob, _ := resolveSnapshotLink(RepoDir(env.hub, testRepo), filepath.Join(l.Snapshot, "model.safetensors"))
 	data, _ := os.ReadFile(blob)
 	data[100] ^= 1
 	os.WriteFile(blob, data, 0o644)

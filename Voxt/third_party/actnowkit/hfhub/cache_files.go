@@ -13,9 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
 )
 
 // checkBlob hashes a file: sha256 for LFS files, the git blob id for others.
@@ -87,17 +85,7 @@ func writeAtomic(path string, data []byte) error {
 		os.Remove(tmp.Name())
 		return err
 	}
-	for attempt := 0; ; attempt++ {
-		err := os.Rename(tmp.Name(), path)
-		if err == nil {
-			return nil
-		}
-		if runtime.GOOS != "windows" || attempt == 99 {
-			os.Remove(tmp.Name())
-			return err
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	return renameFile(tmp.Name(), path)
 }
 
 // linkSnapshot makes snapshots/<commit>/<path> → ../../blobs/<blob> for
@@ -125,7 +113,7 @@ func linkSnapshot(repoDir, commit string, files []remoteFile) error {
 			continue
 		}
 		os.Remove(link)
-		if err := linkOrCopy(target, link, filepath.Join(repoDir, "blobs", f.blob)); err != nil {
+		if err := linkBlobFile(target, link, filepath.Join(repoDir, "blobs", f.blob)); err != nil {
 			return err
 		}
 	}
@@ -133,31 +121,4 @@ func linkSnapshot(repoDir, commit string, files []remoteFile) error {
 		return os.Rename(dir, final)
 	}
 	return nil
-}
-
-func linkOrCopy(target, link, blob string) error {
-	if err := os.Symlink(target, link); err == nil {
-		return nil
-	}
-	if err := os.Link(blob, link); err == nil {
-		return nil
-	}
-	in, err := os.Open(blob)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	info, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	out, err := os.OpenFile(link, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(out, in)
-	if closeErr := out.Close(); err == nil {
-		err = closeErr
-	}
-	return err
 }
