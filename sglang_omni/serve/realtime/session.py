@@ -17,6 +17,9 @@ from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
 from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     ClientEvent,
+    ConversationItemCreate,
+    ConversationItemDelete,
+    ConversationItemRetrieve,
     ConversationItemTruncate,
     InputAudioBufferAppend,
     InputAudioBufferClear,
@@ -51,6 +54,9 @@ HANDLERS: dict[type[ClientEvent], str] = {
     InputAudioBufferAppend: "handle_audio_append",
     InputAudioBufferClear: "handle_audio_clear",
     ResponseCancel: "handle_response_cancel",
+    ConversationItemCreate: "handle_conversation_item_create",
+    ConversationItemRetrieve: "handle_conversation_item_retrieve",
+    ConversationItemDelete: "handle_conversation_item_delete",
     ConversationItemTruncate: "handle_conversation_item_truncate",
 }
 
@@ -77,6 +83,17 @@ class ConversationItem:
     role: str  # "user" | "assistant"
     text: str
     item_id: str | None = None
+
+
+def conversation_item_payload(item: ConversationItem) -> dict[str, object]:
+    """Return one history item in the shape the conversation.item.* events report."""
+    return {
+        "id": item.item_id,
+        "type": "message",
+        "status": "completed",
+        "role": item.role,
+        "content": [{"type": "input_text", "text": item.text}],
+    }
 
 
 @dataclass
@@ -546,6 +563,145 @@ class RealtimeSession:
             del self.cancelled_assistant_item_ids[oldest_item_id]
         else:
             pass
+
+    async def handle_conversation_item_create(
+        self, event: ConversationItemCreate
+    ) -> None:
+        """Add one text turn to the history the next response is rendered from.
+
+        Only message items with input_text parts are accepted; every other item
+        or content type is refused without touching the history. A missing item
+        id gets a server-generated id, and a supplied one is kept when the
+        session does not already hold it.
+        """
+        item = event.item
+        if item.type != "message":
+            await self.send_error(
+                "invalid_request_error",
+                "unsupported_item_type",
+                f"Only message items are supported; got {item.type!r}.",
+            )
+            return
+        else:
+            pass
+        if item.role not in ("user", "assistant"):
+            await self.send_error(
+                "invalid_request_error",
+                "invalid_role",
+                "A message item's role must be 'user' or 'assistant'.",
+            )
+            return
+        else:
+            pass
+        parts = item.content or []
+        if not parts or any(
+            part.type != "input_text" or part.text is None for part in parts
+        ):
+            await self.send_error(
+                "invalid_request_error",
+                "unsupported_content_type",
+                "A message item's content must hold input_text parts with text.",
+            )
+            return
+        else:
+            pass
+
+        item_id = item.id or new_id("item")
+        if any(existing.item_id == item_id for existing in self.conversation):
+            await self.send_error(
+                "invalid_request_error",
+                "item_already_exists",
+                f"An item with id {item_id!r} already exists.",
+            )
+            return
+        else:
+            pass
+        insert_index: int | None
+        if event.previous_item_id is None:
+            insert_index = len(self.conversation)
+        else:
+            insert_index = next(
+                (
+                    index + 1
+                    for index, existing in enumerate(self.conversation)
+                    if existing.item_id == event.previous_item_id
+                ),
+                None,
+            )
+            if insert_index is None:
+                await self.send_error(
+                    "invalid_request_error",
+                    "item_not_found",
+                    f"Item {event.previous_item_id!r} was not found.",
+                )
+                return
+            else:
+                pass
+
+        conversation_item = ConversationItem(
+            role=item.role,
+            text="".join(part.text or "" for part in parts),
+            item_id=item_id,
+        )
+        self.conversation.insert(insert_index, conversation_item)
+        await self.send(
+            make_event(
+                "conversation.item.created",
+                previous_item_id=event.previous_item_id,
+                item=conversation_item_payload(conversation_item),
+            )
+        )
+
+    async def handle_conversation_item_retrieve(
+        self, event: ConversationItemRetrieve
+    ) -> None:
+        item = next(
+            (
+                existing
+                for existing in self.conversation
+                if existing.item_id == event.item_id
+            ),
+            None,
+        )
+        if item is None:
+            await self.send_error(
+                "invalid_request_error",
+                "item_not_found",
+                f"Item {event.item_id!r} was not found.",
+            )
+            return
+        else:
+            pass
+        await self.send(
+            make_event(
+                "conversation.item.retrieved",
+                item=conversation_item_payload(item),
+            )
+        )
+
+    async def handle_conversation_item_delete(
+        self, event: ConversationItemDelete
+    ) -> None:
+        """Drop an item from the history the next response is rendered from."""
+        item_index = next(
+            (
+                index
+                for index, existing in enumerate(self.conversation)
+                if existing.item_id == event.item_id
+            ),
+            None,
+        )
+        if item_index is None:
+            await self.send_error(
+                "invalid_request_error",
+                "item_not_found",
+                f"Item {event.item_id!r} was not found.",
+            )
+            return
+        else:
+            pass
+        self.conversation.pop(item_index)
+        await self.send(make_event("conversation.item.deleted", item_id=event.item_id))
 
     async def handle_conversation_item_truncate(
         self, event: ConversationItemTruncate
