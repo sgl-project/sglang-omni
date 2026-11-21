@@ -64,6 +64,7 @@
     ],
     "shortcuts": {
       "accessibility_installed": false,
+      "no_tap_notice": "没有辅助功能权限时，只能用 ⌃⌥空格 这类组合键。fn、单个修饰键、双击和长按都需要这个权限。",
       "strict_shortcuts": true,
       "preset": {
         "options": [
@@ -79,13 +80,13 @@
           },
           {
             "id": "command",
-            "title": "⌘ 组合",
-            "about": "⌘ 组合：只用右 ⌘，离字母键远。适合要用 Option 键打字的用户。"
+            "title": "右 ⌘ 组合",
+            "about": "右 ⌘ 组合：只用右 ⌘，离字母键远。适合要用 Option 键打字的用户。"
           },
           {
             "id": "mouseMiddle",
-            "title": "鼠标中键 + fn⇧",
-            "about": "鼠标中键 + fn⇧：单击滚轮转录，双击改写。鼠标快捷键需要辅助功能权限。"
+            "title": "鼠标中键 + fn ⇧",
+            "about": "鼠标中键 + fn ⇧：单击滚轮转录，双击改写。鼠标快捷键需要辅助功能权限。"
           },
           {
             "id": "",

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -197,7 +196,7 @@ func (p *process) stop() {
 	if p.wait(shutdownGrace) {
 		return
 	}
-	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	_ = p.cmd.Process.Signal(terminateSignal)
 	if p.wait(terminateGrace) {
 		return
 	}

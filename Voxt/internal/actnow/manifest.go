@@ -6,6 +6,7 @@ package actnow
 
 import (
 	"encoding/json"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -102,9 +103,18 @@ func StampKeys(prefs *settings.Settings, now time.Time) bool {
 
 // Manifest is VoxtNew's manifest for prefs (memory only).
 func (f *Family) Manifest(prefs settings.Settings) registry.Manifest {
+	// registry.BundlePath walks the executable path looking for a ".app"
+	// directory; its loop only terminates on Unix-style roots, so it spins
+	// forever on Windows (filepath.Dir never yields "/", "." or "" at the
+	// drive root). There is no .app bundle outside macOS: skip it.
+	var path, team string
+	if runtime.GOOS == "darwin" {
+		path = registry.BundlePath()
+		team = registry.TeamID()
+	}
 	return registry.Manifest{
 		App: AppID, BundleID: f.bundleID, Name: "Voxt", Version: f.version,
-		Path: registry.BundlePath(), TeamID: registry.TeamID(), URLScheme: "voxtnew",
+		Path: path, TeamID: team, URLScheme: "voxtnew",
 		Links: Links, Capabilities: Capabilities,
 		Models:    &registry.ModelsInfo{Root: f.Hub()},
 		Shortcuts: Shortcuts(prefs),

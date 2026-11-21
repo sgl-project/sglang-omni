@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -60,6 +61,7 @@ func TestMain(m *testing.M) {
 		crashInTest(dir) // shell_crash_test.go
 	}
 	runListModels = failListModels
+	meetingFixtureAdapt = adaptMeetingFixtureTestdata
 	os.Exit(runIsolated(m))
 }
 
@@ -70,8 +72,12 @@ func TestMain(m *testing.M) {
 func runIsolated(m *testing.M) int {
 	// A Unix socket's path holds at most 104 bytes on macOS, and the tests
 	// bind sockets in their temporary folders: keep those short however
-	// long TMPDIR is.
-	short, err := os.MkdirTemp("/tmp", "vx")
+	// long TMPDIR is (the system temp is short enough on Windows).
+	base := ""
+	if runtime.GOOS != "windows" {
+		base = "/tmp"
+	}
+	short, err := os.MkdirTemp(base, "vx")
 	if err != nil {
 		panic(err)
 	}
@@ -131,6 +137,10 @@ func TestIsolatedHomeDoesNotLinkAMissingMyGoCache(t *testing.T) {
 	home := t.TempDir()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestIsolatedHomeDoesNotLinkAMissingMyGoCache$")
 	cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "VOXT_TEST_EMPTY_MYGO_CACHE=1")
+	if runtime.GOOS == "windows" {
+		// os.UserCacheDir reads %LocalAppData%, not XDG_CACHE_HOME, on Windows.
+		cmd.Env = append(cmd.Env, "LOCALAPPDATA="+filepath.Join(home, "localappdata"))
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("clean-cache test run: %v\n%s", err, output)
@@ -323,6 +333,35 @@ func requireCJKFont(t *testing.T) {
 	}
 }
 
+func shellWithFakeBin(shell, dir string, args ...string) *exec.Cmd {
+	if runtime.GOOS != "windows" {
+		cmd := exec.Command(shell, args...)
+		cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return cmd
+	}
+	path := filepath.ToSlash(dir)
+	volume := filepath.VolumeName(path)
+	if len(volume) >= 2 && volume[1] == ':' {
+		path = "/" + strings.ToLower(volume[:1]) + strings.TrimPrefix(path, volume)
+	}
+	if len(args) > 0 && args[0] == "-c" {
+		cmd := exec.Command(shell, "-c", "PATH="+path+":$PATH; bash -s")
+		cmd.Stdin = strings.NewReader(args[1])
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	command := "PATH=" + path + ":$PATH; "
+	for i, arg := range args {
+		if i > 0 {
+			command += " "
+		}
+		command += "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	}
+	cmd := exec.Command(shell, "-c", command)
+	cmd.Env = os.Environ()
+	return cmd
+}
+
 // frames runs the tester a few frames, so state set in one shows.
 func frames(tt *ui.Tester) {
 	for range 3 {
@@ -330,9 +369,127 @@ func frames(tt *ui.Tester) {
 	}
 }
 
+var windowsHotkeyExpectation = strings.NewReplacer(
+	"Optional for a server on this Mac. Saved in this Mac's Keychain.", "Optional for a server on this PC. Saved in this PC's Credential Manager.",
+	"Saved in this Mac's Keychain.", "Saved in this PC's Credential Manager.",
+	"The sign-in is kept only in this Mac's Keychain. Signing out deletes it.", "The sign-in is kept only in this PC's Credential Manager. Signing out deletes it.",
+	"this Mac's", "this PC's",
+	"this Mac", "this PC",
+	"这台 Mac", "这台电脑",
+	"Right ⌥ ⇧", "Right Alt Shift",
+	"⌃ Right ⌥", "Ctrl Right Alt",
+	"⇧ Right ⌘", "Shift Right Win",
+	"⌥ Right ⌘", "Alt Right Win",
+	"⇧ 右 ⌘", "Shift 右 Win",
+	"⌥ 右 ⌘", "Alt 右 Win",
+	"⌃ 右 ⌥", "Ctrl 右 Alt",
+	"⌃⌥Space", "Ctrl Alt Space",
+	"⌃⌥V", "Ctrl Alt V",
+	"⌃⌘V", "Ctrl Win V",
+	"⌃⇧⌘K", "Ctrl Shift Win K",
+	"⌃⇧Return", "Ctrl Shift Return",
+	"⇧Return", "Shift Return",
+	"⌃Return", "Ctrl Return",
+	"⌥Return", "Alt Return",
+	"⌘Return", "Win Return",
+	"⌃⇧回车", "Ctrl Shift 回车",
+	"⇧回车", "Shift 回车",
+	"⌃回车", "Ctrl 回车",
+	"⌥回车", "Alt 回车",
+	"⌘回车", "Win 回车",
+	"⇧⌘L", "Shift Win L",
+	"⌘,", "Win ,",
+	"⌘[", "Win [",
+	"⌘]", "Win ]",
+	"⌘1", "Win 1",
+	"⌘2", "Win 2",
+	"⌘3", "Win 3",
+	"⌘4", "Win 4",
+	"⌘5", "Win 5",
+	"⌘6", "Win 6",
+	"⌃⌥K", "Ctrl Alt K",
+	"⌃⌥A", "Ctrl Alt A",
+	"macOS 已把这组按键用于", "Windows 已把这组按键用于",
+	`testdata\\`, "testdata/",
+	`\\data`, `/data`,
+	`\\models`, `/models`,
+	`\\recordings`, `/recordings`,
+	"⌘Space", "Win Space",
+	"macOS uses these keys", "Windows uses these keys",
+	"macOS asks for the microphone", "Windows asks for the microphone",
+	"⇧⌘K", "Shift Win K",
+	"Right ⌥", "Right Alt",
+	"Right ⇧", "Right Shift",
+	"Left ⌘", "Left Win",
+	"Left ⌥", "Left Alt",
+	"Left ⇧", "Left Shift",
+	"Left ⌃", "Left Ctrl",
+	"⌘C", "Win C",
+	"⌘V", "Win V",
+	"⌘K", "Win K",
+	"⌘Tab", "Win Tab",
+	"⌘`", "Win `",
+	"⌃Space", "Ctrl Space",
+	"⌃C", "Ctrl C",
+	"⌃空格", "Ctrl 空格",
+	"⌃⌥空格", "Ctrl Alt 空格",
+	"⌘空格", "Win 空格",
+	"⌥⌘Space", "Alt Win Space",
+	"⌥⌘空格", "Alt Win 空格",
+	"Right ⌘", "Right Win",
+	"⌥Tab", "Alt Tab",
+	"⌥Space", "Alt Space",
+	"⌥ Mouse button 4", "Alt Mouse button 4",
+	"⌥⇧", "Alt Shift",
+	"fn ⇧", "fn Shift",
+	"fn ⌃", "fn Ctrl",
+	"右 ⌘", "右 Win",
+	"右 ⌥ ⇧", "右 Alt Shift",
+	"右 ⌥", "右 Alt",
+	"右 ⇧", "右 Shift",
+	"登录信息只保存在这台 Mac 的钥匙串里，退出登录会删除它。", "登录信息只保存在这台电脑的凭据管理器中，退出登录即删除。",
+	"保存在这台 Mac 的钥匙串里。", "保存在本机的凭据管理器中。",
+	"密码保存在钥匙串里。", "密码保存在凭据管理器中。",
+	"macOS 会请求麦克风权限", "Windows 会请求麦克风权限",
+	"⌥空格", "Alt 空格",
+	"stay on this Mac.", "stay on this PC.",
+	"already on this Mac", "already on this PC",
+	"this Mac's network settings", "this PC's network settings",
+	"this Mac's Keychain.", "this PC's Credential Manager.",
+	"this Mac", "this PC",
+	"the Keychain.", "the Credential Manager.",
+)
+
+func platformText(text string) string {
+	if runtime.GOOS == "windows" {
+		// The replacer makes one pass, so the space a zh-Hans "Mac" left
+		// behind (这台 Mac 上 → 这台电脑 上) is cleaned in a second one;
+		// no real zh-Hans text has a space after 电脑.
+		return strings.ReplaceAll(windowsHotkeyExpectation.Replace(text), "电脑 ", "电脑")
+	}
+	return text
+}
+
+// privacyDeepLinkJSON matches a macOS privacy deep link baked into a
+// fixture; other platforms have no such links (permissions_privacy_other.go).
+var privacyDeepLinkJSON = regexp.MustCompile(`"x-apple\.systempreferences[^"]*"`)
+
+// adaptMeetingFixtureTestdata rewrites the checked-in macOS fixture
+// captures for the platform the tests run on: no privacy deep links, and
+// the platform's own glyphs and system names. Set as meetingFixtureAdapt
+// in TestMain, so both the demo host and the fixture readers see it.
+func adaptMeetingFixtureTestdata(data []byte) []byte {
+	if runtime.GOOS != "windows" {
+		return data
+	}
+	data = privacyDeepLinkJSON.ReplaceAll(data, []byte(`""`))
+	return []byte(platformText(string(data)))
+}
+
 // click clicks a label and runs the frames after it.
 func click(t *testing.T, tt *ui.Tester, label string) {
 	t.Helper()
+	label = platformText(label)
 	frames(tt)
 	if err := tt.Click(label); err != nil {
 		t.Fatalf("click %q: %v (texts: %q)", label, err, firstTexts(tt))
@@ -347,18 +504,21 @@ func firstTexts(tt *ui.Tester) []string {
 
 // has reports whether the view shows s.
 func has(tt *ui.Tester, s string) bool {
+	s = platformText(s)
 	frames(tt)
 	return tt.HasText(s) || slices.Contains(tt.Texts(), s)
 }
 
 // hasExact reports whether the view shows a text that is s.
 func hasExact(tt *ui.Tester, s string) bool {
+	s = platformText(s)
 	frames(tt)
 	return slices.Contains(tt.Texts(), s)
 }
 
 // hasPrefix reports whether a text on screen starts with s.
 func hasPrefix(tt *ui.Tester, s string) bool {
+	s = platformText(s)
 	for _, x := range tt.Texts() {
 		if strings.HasPrefix(x, s) {
 			return true

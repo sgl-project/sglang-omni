@@ -20,7 +20,7 @@ func TestModelsDemoActionControls(t *testing.T) {
 		{name: "network open", fixture: "en/models-page-normal", steps: historySteps("Network…"), want: []string{"openNetwork"}},
 		{name: "network cancel", fixture: "en/models-network-automatic", steps: historySteps("Cancel"), want: []string{"closeNetwork"}},
 		{name: "network save", fixture: "en/models-network-no-proxy", steps: historySteps("Save"), want: []string{"saveNetwork", "closeNetwork"}},
-		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), wantText: "The password is kept in the Keychain.", check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), wantText: platformText("The password is kept in the Keychain."), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.modelsUI.netForm.proxyMode != proxyCustom {
 				t.Fatalf("proxy mode %d", host.modelsUI.netForm.proxyMode)
 			}
@@ -128,6 +128,7 @@ func TestModelsDemoActionControls(t *testing.T) {
 			tester.SetSize(1000, 6000)
 			frames(tester)
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				var err error
 				switch {
 				case step.text != "":

@@ -43,6 +43,14 @@ fail() {
   exit 2
 }
 
+json_python() {
+  if python3 -c 'pass' >/dev/null 2>&1; then
+    python3 "$@"
+  else
+    python "$@"
+  fi
+}
+
 # Voxt 1.x's build number of a version: major×10⁸ + minor×10⁵ + patch×100
 # + 99, or + 0 for a pre-release (X.Y.Z-nightly.…), which comes before its
 # release.
@@ -155,7 +163,13 @@ case "${1:-}" in
     rendered="$(items)"
     if grep -xF "$2 $hardware" <<< "$rendered" >/dev/null; then
       echo "The appcast's item of build $2 has sparkle:hardwareRequirements $hardware"
-    elif jq -e --arg hw "$hardware" '.ok == true and .data.hardwareRequirements == $hw' <<< "$3" >/dev/null 2>&1 \
+    elif json_python -c 'import json, sys
+try:
+    reply = json.loads(sys.argv[1])
+except (ValueError, TypeError):
+    sys.exit(1)
+data = reply.get("data") if isinstance(reply, dict) else None
+sys.exit(0 if isinstance(reply, dict) and reply.get("ok") is True and isinstance(data, dict) and data.get("hardwareRequirements") == sys.argv[2] else 1)' "$3" "$hardware" >/dev/null 2>&1 \
       && grep -E " $hardware\$" <<< "$rendered" >/dev/null; then
       echo "The update service kept hardwareRequirements $hardware and its appcast renders it"
     else
@@ -179,11 +193,15 @@ case "${1:-}" in
     (($# == 3)) || usage
     build_number "$2" >/dev/null
     [[ "$3" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$3' is not OWNER/REPO"
-    jq --arg version "$2" --arg base "https://github.com/$3/releases/download/voxt-v$2/" \
-      'if .version != $version or .url == "" or .signature == "" or .size <= 0
-       then error("not a signed update manifest of " + $version) else . end
-       | .url = ($base + (.url | split("/") | last))
-       | if .deltas then .deltas |= map(.url = ($base + (.url | split("/") | last))) else . end'
+    json_python -c 'import json, sys, os
+m = json.load(sys.stdin)
+version, base = sys.argv[1], sys.argv[2]
+if m.get("version") != version or not m.get("url") or not m.get("signature") or not (m.get("size", 0) > 0):
+    raise SystemExit("not a signed update manifest of " + version)
+m["url"] = base + m["url"].rsplit("/", 1)[-1]
+for d in m.get("deltas") or []:
+    d["url"] = base + d["url"].rsplit("/", 1)[-1]
+print(json.dumps(m, indent=2))' "$2" "https://github.com/$3/releases/download/voxt-v$2/"
     ;;
   beta-changelog)
     # MyGo signs an update only with notes under the exact version's heading, and a beta's version exists only in CI:
@@ -210,8 +228,11 @@ case "${1:-}" in
     english_notes="$(notes_html en <<< "$release_body")"
     [[ -n "$english_notes" ]] || fail "release notes must include English content before the first level-two heading"
     chinese_notes="$(notes_html zh-Hans <<< "$release_body")"
-    jq -cn --arg en "$english_notes" --arg zh "$chinese_notes" \
-      '{en: $en} + (if $zh == "" then {} else {"zh-Hans": $zh} end)'
+    ENGLISH_NOTES="$english_notes" CHINESE_NOTES="$chinese_notes" json_python -c 'import json, os
+payload = {"en": os.environ["ENGLISH_NOTES"]}
+if os.environ["CHINESE_NOTES"]:
+    payload["zh-Hans"] = os.environ["CHINESE_NOTES"]
+print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))'
     ;;
   cask)
     (($# == 4)) || usage

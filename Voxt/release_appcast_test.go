@@ -6,7 +6,7 @@ package main
 // own CFBundleVersion is not below it (else Sparkle refuses a downgrade) and
 // whose Info.plist has an EdDSA key, and the files the release uploads; and
 // that Voxt 1.x on an Intel Mac, where Voxt 2 does not open, is not offered it.
-// Runs on Linux: the script is plain bash and awk.
+// Runs on Linux: the script is plain bash, awk and Python 3 for JSON.
 
 import (
 	"encoding/json"
@@ -231,7 +231,7 @@ func TestNightlyVulnerabilityScanUsesDarwin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := string(data)
+	workflow := strings.ReplaceAll(string(data), "\r\n", "\n")
 	start := strings.Index(workflow, "  vulnerabilities:\n")
 	end := strings.Index(workflow, "\n  nightly:\n")
 	if start < 0 || end < 0 || end <= start {

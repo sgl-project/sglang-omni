@@ -1,0 +1,21 @@
+{
+  "schema": "actnow.models.claims/1",
+  "app": "dicta",
+  "bundleId": "dev.hehehai.dicta",
+  "updated": "2026-10-20T08:00:00Z",
+  "root": "/Users/u/.cache/huggingface/hub",
+  "claims": [
+    {
+      "repo": "mlx-community/Qwen3-ASR-0.6B-4bit",
+      "revision": "313d850181767edf09f00a9c289becca70e58cd0",
+      "model": "qwen3-asr-0.6b-4bit",
+      "family": "qwen3-asr",
+      "role": "asr",
+      "bytes": 712781279,
+      "files": null,
+      "aux": false,
+      "since": "2026-10-20T08:00:00Z",
+      "origin": "reused"
+    }
+  ]
+}

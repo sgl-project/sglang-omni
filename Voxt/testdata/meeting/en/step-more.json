@@ -37,11 +37,11 @@
         },
         {
           "id": "command",
-          "label": "⌘ combination"
+          "label": "Right ⌘ combination"
         },
         {
           "id": "mouseMiddle",
-          "label": "Middle mouse + fn⇧"
+          "label": "Middle mouse + fn ⇧"
         }
       ],
       "preset_selected": "Right ⌥ (default)",

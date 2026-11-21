@@ -48,6 +48,7 @@ func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 }
 
 func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Response, error) {
+	r.usedLLM = true
 	ctx, cancel := context.WithTimeout(parent, req.Timeout)
 	defer cancel()
 	hint := ""
@@ -83,7 +84,8 @@ func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Respo
 	switch {
 	case errors.As(err, &e) && e.Params["wait"] == llm.WaitStall:
 		err = fmt.Errorf("no new token for %v after %s pieces: %w", req.StallTimeout, e.Params["deltas"], err)
-	case ctx.Err() == context.DeadlineExceeded:
+	case ctx.Err() == context.DeadlineExceeded,
+		llm.Code(err) == llm.CodeTimeout && e.Params["wait"] == "" && errors.Is(err, context.DeadlineExceeded):
 		err = fmt.Errorf("no answer within %v: %w", req.Timeout.Round(time.Second/10), err)
 	}
 	return resp, err

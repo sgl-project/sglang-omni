@@ -107,6 +107,7 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 			}
 			tester := newMeetingDemoTester(t, host)
 			for _, step := range test.steps {
+				step.label = platformText(step.label)
 				switch {
 				case step.point:
 					if err := tester.Click(step.label); err != nil {

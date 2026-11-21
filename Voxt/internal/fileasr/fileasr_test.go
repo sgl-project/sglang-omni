@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/historyapi"
 	"time"
 )
 
@@ -107,13 +109,13 @@ func TestWriteSRTAndText(t *testing.T) {
 // (a Unix socket's path is at most 104 bytes on macOS), and returns the path.
 func serve(t *testing.T, s *Server) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "fa")
+	dir, err := os.MkdirTemp(sockTempBase(), "fa")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	path := filepath.Join(dir, SocketName)
-	ln, err := net.Listen("unix", path)
+	ln, err := historyapi.Listen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,12 +174,17 @@ func TestServerRefusesBadOrShortUploads(t *testing.T) {
 		`{"op":"transcribe","bytes":-2}`:  "bad request",
 		`{"op":"transcribe","bytes":100}`: "the audio ended early",
 	} {
-		conn, err := net.Dial("unix", path)
+		conn, err := historyapi.Dial(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		conn.Write([]byte(req + "\n" + "0123456789"))
-		conn.(*net.UnixConn).CloseWrite()
+		switch c := conn.(type) {
+		case *net.UnixConn:
+			c.CloseWrite()
+		case *net.TCPConn: // historyapi's Windows transport
+			c.CloseWrite()
+		}
 		var b bytes.Buffer
 		b.ReadFrom(conn)
 		conn.Close()

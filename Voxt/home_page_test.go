@@ -55,8 +55,8 @@ func TestHomeReadiness(t *testing.T) {
 	for _, s := range []string{
 		"No speech model is installed. Install one to transcribe, translate and rewrite by voice.",
 		"No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.",
-		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
-		"Right ⌥ (once Accessibility is allowed)",
+		platformText("Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work."),
+		platformText("Right ⌥ (once Accessibility is allowed)"),
 		"Try it", "Today", "Recent results", "Results appear here after you use a shortcut.",
 	} {
 		if !has(tt, s) {
@@ -123,7 +123,7 @@ func TestHomeReadinessLive(t *testing.T) {
 	}
 	// Accessibility taken away.
 	a.perms.access = false
-	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
+	if !has(tt, "1 step to go") || !has(tt, platformText("Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.")) {
 		t.Errorf("access revoked: %q", tt.Texts())
 	}
 	a.perms.access = true
@@ -240,12 +240,12 @@ func TestSloganHint(t *testing.T) {
 		{nil, "Add a shortcut to start[]", "先设置一个快捷键[]"},
 	} {
 		i18n.SetLocale("en")
-		if got := join(tc.h); got != tc.en {
-			t.Errorf("en %+v: %q, want %q", tc.h, got, tc.en)
+		if got := join(tc.h); got != platformText(tc.en) {
+			t.Errorf("en %+v: %q, want %q", tc.h, got, platformText(tc.en))
 		}
 		i18n.SetLocale("zh-Hans")
-		if got := join(tc.h); got != tc.zh {
-			t.Errorf("zh %+v: %q, want %q", tc.h, got, tc.zh)
+		if got := join(tc.h); got != platformText(tc.zh) {
+			t.Errorf("zh %+v: %q, want %q", tc.h, got, platformText(tc.zh))
 		}
 	}
 	i18n.SetLocale("en")

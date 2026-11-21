@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 // Headless end-to-end tests on a real Mac (VOXTNEW_MAC_E2E=1), for what

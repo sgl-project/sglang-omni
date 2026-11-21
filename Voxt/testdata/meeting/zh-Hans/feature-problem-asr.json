@@ -9,6 +9,7 @@
     "refresh_recording": false,
     "shortcuts": {
       "prefix": "tr",
+      "no_tap_notice": "没有辅助功能权限时，只能用 ⌃⌥空格 这类组合键。fn、单个修饰键、双击和长按都需要这个权限。",
       "hotkeys_installed": true,
       "helper_records_keys": false,
       "empty_text": "",

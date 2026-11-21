@@ -111,6 +111,12 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 		if created {
 			_ = m.cfg.Store.DeleteMeeting(ctx, id)
 		}
+		m.mu.Lock()
+		archive := m.archive
+		m.mu.Unlock()
+		if archive != nil {
+			_ = archive.Close()
+		}
 		_ = os.RemoveAll(audioDir)
 		m.mu.Lock()
 		m.resetIdle()

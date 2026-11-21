@@ -29,8 +29,7 @@ func featureShortcuts(c *ui.Context, feature string, state *featureShortcutsView
 		actions.addFeatureShortcut(feature)
 	}
 	if !state.HotkeysInstalled {
-		notice(c, prefix+"-no-tap", noticeWarn,
-			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
+		notice(c, prefix+"-no-tap", noticeWarn, state.NoTapNotice,
 			"", func() {
 				if ui.Button(c.Key(prefix+"-open-perms"), i18n.T("Open Permissions")).Clicked() {
 					actions.openFeaturePermissions()

@@ -39,6 +39,7 @@ type shortcutPresetPickerViewState struct {
 
 type settingsShortcutsViewState struct {
 	AccessibilityInstalled bool                           `json:"accessibility_installed"`
+	NoTapNotice            string                         `json:"no_tap_notice"`
 	StrictShortcuts        bool                           `json:"strict_shortcuts"`
 	Preset                 shortcutPresetPickerViewState  `json:"preset"`
 	Rows                   []settingsShortcutRowViewState `json:"rows"`
@@ -53,6 +54,7 @@ type settingsShortcutsStateInput struct {
 func buildSettingsShortcutsViewState(translator *i18n.Translator, input settingsShortcutsStateInput) settingsShortcutsViewState {
 	state := settingsShortcutsViewState{
 		AccessibilityInstalled: input.AccessibilityInstalled,
+		NoTapNotice:            translator.T("Without Accessibility, only shortcuts like %s work. fn, single modifiers, double taps and long presses need it.", uitext.HotkeyText("Control+Option+Space")),
 		StrictShortcuts:        input.Features.StrictShortcuts,
 		Preset:                 buildShortcutPresetPickerViewState(translator, input.Features, input.AccessibilityInstalled, false),
 	}
@@ -111,17 +113,18 @@ func buildSettingsShortcutRow(translator *i18n.Translator, feature string, index
 	return row
 }
 
-// presetTitleFor is a shortcut preset's name ("": custom).
+// presetTitleFor is a shortcut preset's name ("": custom), with the
+// keys written as the platform writes them (uitext.HotkeyText).
 func presetTitleFor(translator *i18n.Translator, preset string) string {
 	switch preset {
 	case settings.PresetOption:
-		return translator.T("Right ⌥ (default)")
+		return translator.T("%s (default)", uitext.HotkeyTextFor(translator, "RightOption"))
 	case settings.PresetFn:
 		return translator.T("fn (Auralink's keys)")
 	case settings.PresetCommand:
-		return translator.T("⌘ combination")
+		return translator.T("%s combination", uitext.HotkeyTextFor(translator, "RightCommand"))
 	case settings.PresetMouseMiddle:
-		return translator.T("Middle mouse + fn⇧")
+		return translator.T("Middle mouse + %s", uitext.HotkeyTextFor(translator, "Fn+Shift"))
 	}
 	return translator.T("Custom")
 }
@@ -130,13 +133,13 @@ func presetTitleFor(translator *i18n.Translator, preset string) string {
 func presetAboutFor(translator *i18n.Translator, preset string) string {
 	switch preset {
 	case settings.PresetOption:
-		return translator.T("Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.")
+		return translator.T("%s: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.", uitext.HotkeyTextFor(translator, "RightOption"))
 	case settings.PresetFn:
 		return translator.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
 	case settings.PresetCommand:
-		return translator.T("⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.")
+		return translator.T("%s combination: %s only, away from the letter keys. Good if you keep Option for typing.", uitext.HotkeyTextFor(translator, "RightCommand"), uitext.HotkeyTextFor(translator, "RightCommand"))
 	case settings.PresetMouseMiddle:
-		return translator.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.")
+		return translator.T("Middle mouse + %s: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.", uitext.HotkeyTextFor(translator, "Fn+Shift"))
 	}
 	return ""
 }

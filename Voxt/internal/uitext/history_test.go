@@ -1,6 +1,7 @@
 package uitext
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -84,7 +85,11 @@ func TestAppEnhancementTextFor(t *testing.T) {
 	if got := PatternErrorTextFor(translator, appctx.ErrPatternSpace); got != "网站规则里不能有空格。" {
 		t.Errorf("PatternErrorTextFor = %q", got)
 	}
-	if got := AutoKeyLabelFor(translator, "Command+Return"); got != "⌘回车" {
-		t.Errorf("AutoKeyLabelFor = %q", got)
+	want := "⌘回车"
+	if runtime.GOOS == "windows" {
+		want = "Win 回车"
+	}
+	if got := AutoKeyLabelFor(translator, "Command+Return"); got != want {
+		t.Errorf("AutoKeyLabelFor = %q, want %q", got, want)
 	}
 }

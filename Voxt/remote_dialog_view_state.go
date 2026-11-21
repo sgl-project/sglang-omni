@@ -174,9 +174,9 @@ func buildRemoteDialogViewState(translator *i18n.Translator, input remoteDialogS
 		state.ChatGPT = &remoteChatGPTViewState{Running: input.ChatLogin.running, SignedIn: input.ChatEmail != "", Email: input.ChatEmail,
 			Error: input.ChatLogin.err, ErrorMore: input.ChatLogin.more, Code: input.ChatLogin.code}
 	} else {
-		keyInfo := translator.T("Saved in this Mac's Keychain.")
+		keyInfo := i18n.PlatformFor(translator, "Saved in this Mac's Keychain.", "Saved in this PC's Credential Manager.")
 		if sv.keyOptional {
-			keyInfo = translator.T("Optional for a server on this Mac. Saved in this Mac's Keychain.")
+			keyInfo = i18n.PlatformFor(translator, "Optional for a server on this Mac. Saved in this Mac's Keychain.", "Optional for a server on this PC. Saved in this PC's Credential Manager.")
 		}
 		placeholder := translator.T("Paste the key")
 		if input.Mask != "" && !d.removeKey {
@@ -195,9 +195,9 @@ func buildRemoteDialogViewState(translator *i18n.Translator, input remoteDialogS
 		endpointInfo := translator.T("The API root, ending in /v1. Leave it empty for the service's own. HTTP sends the API key and text without encryption.")
 		switch {
 		case streams:
-			endpointInfo = translator.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
+			endpointInfo = i18n.PlatformFor(translator, "Leave it empty for the service's own. Only wss://, or ws:// to this Mac.", "Leave it empty for the service's own. Only wss://, or ws:// to this PC.")
 		case d.kind == local.ASR:
-			endpointInfo = translator.T("Leave it empty for the service's own. Only https://, or http:// to this Mac.")
+			endpointInfo = i18n.PlatformFor(translator, "Leave it empty for the service's own. Only https://, or http:// to this Mac.", "Leave it empty for the service's own. Only https://, or http:// to this PC.")
 		case sv.endpoint == "":
 			endpointInfo = translator.T("The API root of any OpenAI-compatible server, ending in /v1. HTTP sends the API key and text without encryption.")
 		}

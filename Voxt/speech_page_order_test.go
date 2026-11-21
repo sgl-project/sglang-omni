@@ -16,7 +16,7 @@ func TestSpeechModelsPageOrder(t *testing.T) {
 	a.navigate(modelsPath)
 	frames(tt)
 	texts := tt.Texts()
-	local, dictation, online := slices.Index(texts, "On this Mac"), slices.Index(texts, "System dictation"), slices.Index(texts, "Online services")
+	local, dictation, online := slices.Index(texts, platformText("On this Mac")), slices.Index(texts, "System dictation"), slices.Index(texts, "Online services")
 	if local < 0 || dictation < 0 || online < 0 || !(local < dictation && dictation < online) {
 		t.Fatalf("On this Mac %d, System dictation %d, Online services %d: %q", local, dictation, online, texts)
 	}

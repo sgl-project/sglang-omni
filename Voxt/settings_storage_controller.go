@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/egoist/mygo"
 	fammodels "github.com/hehehai/actnowkit/models"
@@ -106,19 +105,10 @@ func (a *app) home() string {
 }
 
 // diskFree is the space free for the user on path's disk (a variable:
-// snapshots pin it, snapshot_env_test.go).
-var diskFree = func(path string) int64 {
-	var st syscall.Statfs_t
-	for p := path; p != "" && p != "/" && p != "."; p = filepath.Dir(p) {
-		if syscall.Statfs(p, &st) == nil {
-			return int64(st.Bavail) * int64(st.Bsize)
-		}
-	}
-	if syscall.Statfs("/", &st) == nil {
-		return int64(st.Bavail) * int64(st.Bsize)
-	}
-	return 0
-}
+// snapshots pin it, snapshot_env_test.go). The implementation is
+// per-platform: statfs on unix, GetDiskFreeSpaceEx on Windows
+// (diskfree_unix.go, diskfree_windows.go).
+var diskFree = diskFreeImpl
 
 // loadStorage measures the folders in the background.
 func (a *app) loadStorage() {

@@ -181,7 +181,7 @@ func TestOnboardingSteps(t *testing.T) {
 	}
 	a.obGo(obMore)
 	frames(tt)
-	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Your shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", "⌃⌥V", "Start using Voxt"} {
+	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Your shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", platformText("⌃⌥V"), "Start using Voxt"} {
 		if !has(tt, s) {
 			t.Errorf("more: no %q in %q", s, tt.Texts())
 		}
@@ -428,6 +428,7 @@ func TestOnboardingComesBack(t *testing.T) {
 	a, tt := obTester(t)
 	click(t, tt, "Get started")
 	click(t, tt, "Continue")
+	scrollToText(tt, "Set up a language model")
 	click(t, tt, "Set up a language model")
 	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the Models step.") {
 		t.Fatalf("left: open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())

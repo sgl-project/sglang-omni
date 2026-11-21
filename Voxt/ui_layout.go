@@ -4,6 +4,8 @@ package main
 // sections, form rows, search and filter bars, empty states.
 
 import (
+	"runtime"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
@@ -61,8 +63,17 @@ func pageBody(c *ui.Context) ui.Element {
 // with content at most maxW DIPs wide in the middle of the page.
 func centeredPageHeader(c *ui.Context, maxW float32, title string, trailing func()) {
 	t := c.Theme()
-	ui.Row(c).Height(titleBarHeight).Shrink(0).AlignItems(ui.Stretch).Justify(ui.Center).Padding(0, 0, 0, headerInset).DragWindow().Children(func() {
-		ui.Row(c).Grow(1).MaxWidth(px(t, maxW)).AlignItems(ui.Center).Padding(0, px(t, sp6)).Gap(px(t, sp2)).Children(func() {
+	frame := ui.Row(c).MinHeight(titleBarHeight).Shrink(0).AlignItems(ui.Stretch).Justify(ui.Center).Padding(0, 0, 0, headerInset).DragWindow()
+	if runtime.GOOS != "windows" {
+		frame.Height(titleBarHeight)
+	}
+	frame.Children(func() {
+		row := ui.Row(c).Grow(1).MaxWidth(px(t, maxW)).AlignItems(ui.Center).Padding(0, px(t, sp6)).Gap(px(t, sp2))
+		if runtime.GOOS == "windows" {
+			// Long toolbars can need another line with the wide sidebar or larger text.
+			row.MinWidth(0).Wrap().Justify(ui.End).AlignContent(ui.Center).PaddingY(px(t, sp1))
+		}
+		row.Children(func() {
 			ui.Text(c, title).FontSize(px(t, fsTitle)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 			if trailing != nil {
 				trailing()

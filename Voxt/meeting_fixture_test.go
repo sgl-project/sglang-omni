@@ -89,7 +89,7 @@ func TestMeetingViewStateGolden(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !bytes.Equal(data, want) {
+				if !bytes.Equal(fixturePlatformText(data), fixturePlatformText(want)) {
 					t.Fatalf("fixture differs; regenerate with VOXTNEW_UPDATE_GOLDEN=1 go test -run '^TestMeetingViewStateGolden$' .\n--- want\n%s\n--- got\n%s", want, data)
 				}
 			})
@@ -309,20 +309,18 @@ func readMeetingFixtures(t *testing.T, locale string) map[string]meetingFixtureS
 			continue
 		}
 		name := strings.TrimSuffix(entry.Name(), ".json")
-		file, err := os.Open(filepath.Join(directory, entry.Name()))
+		data, err := os.ReadFile(filepath.Join(directory, entry.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		decoder := json.NewDecoder(file)
+		if meetingFixtureAdapt != nil {
+			data = meetingFixtureAdapt(data)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.DisallowUnknownFields()
 		var fixture meetingFixtureState
-		decodeErr := decoder.Decode(&fixture)
-		closeErr := file.Close()
-		if decodeErr != nil {
-			t.Fatalf("%s/%s: %v", locale, entry.Name(), decodeErr)
-		}
-		if closeErr != nil {
-			t.Fatal(closeErr)
+		if err := decoder.Decode(&fixture); err != nil {
+			t.Fatalf("%s/%s: %v", locale, entry.Name(), err)
 		}
 		fixtures[name] = fixture
 	}
@@ -464,4 +462,12 @@ func meetingConstants(t *testing.T, path string, include func(*ast.ValueSpec) bo
 		t.Fatalf("%s: no constants found", path)
 	}
 	return values
+}
+
+// fixturePlatformText normalizes a fixture's platform-rendered strings
+// (shortcut glyphs, system names, privacy deep links) so macOS-generated
+// fixtures also match a Windows run: the same adaptation the fixtures
+// get at read time.
+func fixturePlatformText(data []byte) []byte {
+	return adaptMeetingFixtureTestdata(data)
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -144,8 +145,13 @@ func withServers(t *testing.T, names ...string) func(*Config) {
 	return func(c *Config) {
 		bin := t.TempDir()
 		for _, name := range append([]string{"qwen3_asr_server"}, names...) {
-			if err := os.Symlink(exe, filepath.Join(bin, name)); err != nil {
+			if err := os.Link(exe, filepath.Join(bin, name)); err != nil {
 				t.Fatal(err)
+			}
+			if runtime.GOOS == "windows" {
+				if err := os.Link(exe, filepath.Join(bin, name+".exe")); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		c.Binary = filepath.Join(bin, "qwen3_asr_server")

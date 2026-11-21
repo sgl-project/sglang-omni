@@ -28,32 +28,22 @@ func exportAll(t *testing.T, path string, req Request) []Row {
 	return got
 }
 
-// TestServeFileMode: Listen makes the socket 0600, and replaces a stale
-// one left by a crash.
-func TestServeFileMode(t *testing.T) {
-	path := socketPath(t)
-	stale, err := net.Listen("unix", path)
-	if err != nil {
+// TestServeFileMode lives in transport_unix_test.go: the Unix transport's
+// socket modes, with no Windows equivalent (the named pipe's access
+// controls are a TODO there).
+
+// TestListenPreservesPlainFile: anything else at the path is not ours to
+// delete.
+func TestListenPreservesPlainFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-an-endpoint")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stale.(*net.UnixListener).SetUnlinkOnClose(false)
-	stale.Close()
-	ln, err := Listen(path)
-	if err != nil {
-		t.Fatalf("stale socket not replaced: %v", err)
-	}
-	defer ln.Close()
-	fi, err := os.Stat(path)
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v, %v", fi, err)
-	}
-	// Anything else at the path is not ours to delete.
-	file := filepath.Join(t.TempDir(), "notasocket")
-	os.WriteFile(file, []byte("x"), 0o600)
-	if _, err := Listen(file); err == nil {
+	if listener, err := Listen(path); err == nil {
+		listener.Close()
 		t.Error("listened over a plain file")
 	}
-	if _, err := os.Stat(file); err != nil {
+	if _, err := os.Stat(path); err != nil {
 		t.Error("deleted a plain file")
 	}
 }
@@ -122,7 +112,7 @@ func TestWalkKeepsPlaceAfterDelete(t *testing.T) {
 		f.list = append(f.list, doneEntry(i))
 	}
 	once := sync.Once{}
-	f.afterPage = func(f *fakeHistory) {
+	f.afterPage = func(_ context.Context, f *fakeHistory) {
 		once.Do(func() {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -143,6 +133,14 @@ func TestCancelMidStream(t *testing.T) {
 	for i := range PageSize + 5 {
 		f.list = append(f.list, doneEntry(i))
 	}
+	// The second page stays in flight until cancellation, however fast the first is sent.
+	pages := 0
+	f.afterPage = func(ctx context.Context, _ *fakeHistory) {
+		pages++
+		if pages == 2 {
+			<-ctx.Done()
+		}
+	}
 	var mu sync.Mutex
 	var reads []Read
 	path, cancel := startServer(t, &Server{History: f, Audit: func(r Read) { mu.Lock(); reads = append(reads, r); mu.Unlock() }})
@@ -152,7 +150,6 @@ func TestCancelMidStream(t *testing.T) {
 	_, err := Export(path, Request{Since: 1}, func(Row) error {
 		if n == 0 {
 			close(first)
-			time.Sleep(50 * time.Millisecond) // let the cancel land
 		}
 		n++
 		return nil
@@ -182,7 +179,7 @@ func TestCancelUnblocksStuckWrite(t *testing.T) {
 		f.list = append(f.list, e)
 	}
 	path, cancel := startServer(t, &Server{History: f, Timeout: 20 * time.Second})
-	stuck, err := net.Dial("unix", path)
+	stuck, err := dial(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +205,7 @@ func TestStuckClientReleased(t *testing.T) {
 		f.list = append(f.list, e)
 	}
 	path, _ := startServer(t, &Server{History: f, Timeout: 150 * time.Millisecond})
-	stuck, err := net.Dial("unix", path)
+	stuck, err := dial(path)
 	if err != nil {
 		t.Fatal(err)
 	}

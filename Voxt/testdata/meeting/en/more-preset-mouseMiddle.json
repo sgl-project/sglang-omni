@@ -37,15 +37,15 @@
         },
         {
           "id": "command",
-          "label": "⌘ combination"
+          "label": "Right ⌘ combination"
         },
         {
           "id": "mouseMiddle",
-          "label": "Middle mouse + fn⇧"
+          "label": "Middle mouse + fn ⇧"
         }
       ],
-      "preset_selected": "Middle mouse + fn⇧",
-      "preset_about": "Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.",
+      "preset_selected": "Middle mouse + fn ⇧",
+      "preset_about": "Middle mouse + fn ⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.",
       "preset_warnings": null,
       "shortcuts": [
         {

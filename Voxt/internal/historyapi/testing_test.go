@@ -19,8 +19,8 @@ type fakeHistory struct {
 	store.History
 	mu   sync.Mutex
 	list []store.Entry
-	// afterPage runs after each List (a deletion between pages).
-	afterPage func(f *fakeHistory)
+	// afterPage runs after each List (a deletion or cancellation between pages).
+	afterPage func(context.Context, *fakeHistory)
 }
 
 func (f *fakeHistory) selected(q store.HistoryQuery) []store.Entry {
@@ -61,7 +61,10 @@ func (f *fakeHistory) List(ctx context.Context, q store.HistoryQuery) ([]store.E
 		out = out[:q.Limit]
 	}
 	if f.afterPage != nil {
-		f.afterPage(f)
+		f.afterPage(ctx, f)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -85,7 +88,7 @@ func entryID(i int) string {
 // be long, and either can overflow the 104-byte socket path limit on macOS.
 func socketPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "vx")
+	dir, err := os.MkdirTemp(sockTempBase(), "vx")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +96,7 @@ func socketPath(t *testing.T) string {
 	return filepath.Join(dir, SocketName)
 }
 
-// startServer serves f on a socket in a new folder; the returned stop
+// startServer serves f on a listener in a new folder; the returned stop
 // waits for it to end.
 func startServer(t *testing.T, s *Server) (path string, cancel func()) {
 	t.Helper()

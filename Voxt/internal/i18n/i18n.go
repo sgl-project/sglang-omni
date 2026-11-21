@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"runtime"
 	"strings"
 	"sync/atomic"
 )
@@ -190,6 +191,15 @@ func T(msg string, args ...any) string {
 	return format(lookup(msg), args)
 }
 
+// Platform translates the Windows source on Windows and the macOS source
+// elsewhere. Both sources must be literals, so key parity checks both.
+func Platform(mac, windows string, args ...any) string {
+	if runtime.GOOS == "windows" {
+		return T(windows, args...)
+	}
+	return T(mac, args...)
+}
+
 // X translates msg in a context, for one English text that needs two
 // translations; the catalog key is "context\x04msg" (gettext's convention).
 func X(context, msg string, args ...any) string {
@@ -208,6 +218,31 @@ func N(n int, one, other string, args ...any) string {
 		msg = one
 	}
 	return format(lookup(msg), args)
+}
+
+// PlatformFor is Platform with an explicit translator (view-state
+// builders: no global locale reads).
+func PlatformFor(translator *Translator, mac, windows string, args ...any) string {
+	if runtime.GOOS == "windows" {
+		return translator.T(windows, args...)
+	}
+	return translator.T(mac, args...)
+}
+
+// PlatformNFor is PlatformN with an explicit translator.
+func PlatformNFor(translator *Translator, n int, macOne, macOther, windowsOne, windowsOther string, args ...any) string {
+	if runtime.GOOS == "windows" {
+		return translator.N(n, windowsOne, windowsOther, args...)
+	}
+	return translator.N(n, macOne, macOther, args...)
+}
+
+// PlatformN is N with platform-specific singular and plural sources.
+func PlatformN(n int, macOne, macOther, windowsOne, windowsOther string, args ...any) string {
+	if runtime.GOOS == "windows" {
+		return N(n, windowsOne, windowsOther, args...)
+	}
+	return N(n, macOne, macOther, args...)
 }
 
 // Source is the English source of s, a translation T or X returned in the

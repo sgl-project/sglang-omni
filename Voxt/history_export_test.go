@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +43,9 @@ func TestHistoryExportText(t *testing.T) {
 			t.Fatal(err)
 		}
 		fi, _ := os.Stat(filepath.Join(dir, name))
-		if fi.Mode().Perm() != 0o600 {
+		if runtime.GOOS == "windows" {
+			t.Log("skipping the export mode assertion: Windows does not expose Unix permission bits")
+		} else if fi.Mode().Perm() != 0o600 {
 			t.Errorf("mode %o", fi.Mode().Perm())
 		}
 		return string(data)

@@ -7,6 +7,7 @@ package uitext
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -17,8 +18,8 @@ import (
 
 // ---- Text of shortcuts and their problems ----
 
-// HotkeyText shows keys as macOS writes them: "fn ⇧", "Right ⌘",
-// "⌃⌥Space", "⌃⌘V". Keys that do not parse show as written.
+// HotkeyText shows keys as the current OS writes them: macOS glyphs, or
+// Ctrl, Alt, Shift and Win on Windows. Keys that do not parse show as written.
 func HotkeyText(keys string) string {
 	return HotkeyTextFor(i18n.CurrentTranslator(), keys)
 }
@@ -29,6 +30,9 @@ func HotkeyTextFor(translator *i18n.Translator, keys string) string {
 		return strings.TrimSpace(keys)
 	}
 	glyph := map[string]string{proto.ModControl: "⌃", proto.ModOption: "⌥", proto.ModShift: "⇧", proto.ModCommand: "⌘"}
+	if runtime.GOOS == "windows" {
+		glyph = map[string]string{proto.ModControl: "Ctrl", proto.ModOption: "Alt", proto.ModShift: "Shift", proto.ModCommand: "Win"}
+	}
 	var parts []string
 	if _, ok := c.Mods[proto.ModFn]; ok {
 		parts = append(parts, "fn")
@@ -105,6 +109,14 @@ func keyGlyphFor(translator *i18n.Translator, k string) string {
 	return k
 }
 
+// SystemName is the operating system's name in user-facing guidance.
+func SystemName() string {
+	if runtime.GOOS == "windows" {
+		return i18n.T("Windows")
+	}
+	return "macOS" // a brand name, not translated (the catalog's is for the sounds source)
+}
+
 // ParseErrorText says why typed keys do not parse.
 func ParseErrorText(err error) string {
 	return ParseErrorTextFor(i18n.CurrentTranslator(), err)
@@ -151,7 +163,7 @@ func HotkeyProblemTextFor(translator *i18n.Translator, p hotkey.Problem) string 
 	case hotkey.ProblemConflict:
 		return translator.T("%s has the same keys and trigger, so only one of them works.", FeatureTitleFor(translator, p.Other))
 	case hotkey.ProblemSystem:
-		return translator.T("macOS uses these keys for %s.", systemShortcutNameFor(translator, p.System))
+		return translator.T("%s uses these keys for %s.", SystemName(), systemShortcutNameFor(translator, p.System))
 	case hotkey.ProblemBareKey:
 		return translator.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.")
 	}
@@ -175,9 +187,8 @@ func HotkeyProblemsFor(translator *i18n.Translator, f settings.Features, feature
 	return out
 }
 
-// HotkeyGlyphs shows a settings.Hotkey's keys as macOS writes them:
-// "Fn+Shift" → "fn ⇧", "Control+Command+V" → "⌃⌘V", "RightCommand" →
-// "Right ⌘" (HotkeyText, feature_keys_text.go); "—" for none.
+// HotkeyGlyphs shows a settings.Hotkey's keys as the current OS writes
+// them (HotkeyText, feature_keys_text.go); "—" for none.
 func HotkeyGlyphs(keys string) string {
 	if strings.TrimSpace(keys) == "" {
 		return "—"

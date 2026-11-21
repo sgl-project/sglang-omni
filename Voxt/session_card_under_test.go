@@ -28,7 +28,9 @@ func startSaying(a *sessionApp, tr *fakeTranscriptions, binding string, app prot
 	first := a.sess.ID
 	tap(a, binding, app)
 	a.pump("recording", func() bool {
-		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
+		// !Before, not After: Windows's coarse clock can give the shortcut
+		// and the first audio the same timestamp.
+		return a.sess.ID != first && a.sess.State == session.Recording && !a.sess.HeardAt.Before(a.sess.StartedAt)
 	})
 	a.pump("audio", func() bool { return len(a.sess.Levels) >= 5 })
 }

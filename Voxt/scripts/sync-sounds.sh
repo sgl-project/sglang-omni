@@ -12,8 +12,9 @@
 #
 # The library: $ACTNOW_SOUNDS, else ../actnow-sounds beside the repository,
 # else a clone in ~/.cache/actnow-sounds (needs access to the private
-# repository). --optional: without access, say so and leave the build
-# without the sounds (it plays macOS's system sounds).
+# repository). ACTNOW_SOUNDS_GIT_URL overrides the clone source, for a
+# mirror or a local fixture. --optional: without access, say so and leave
+# the build without the sounds (it plays macOS's system sounds).
 set -eu
 cd "$(dirname "$0")/.."
 optional=0
@@ -35,7 +36,7 @@ if [ -z "$src" ]; then
 fi
 if [ ! -f "$src/catalog.json" ]; then
 	rm -rf "$src"
-	if ! git clone -q --depth 1 https://github.com/hehehai/actnow-sounds "$src" 2>/dev/null; then
+	if ! git clone -q --depth 1 "${ACTNOW_SOUNDS_GIT_URL:-https://github.com/hehehai/actnow-sounds}" "$src" 2>/dev/null; then
 		if [ $optional = 1 ]; then
 			echo "sync-sounds: no access to hehehai/actnow-sounds: this build plays macOS's system sounds" >&2
 			exit 0

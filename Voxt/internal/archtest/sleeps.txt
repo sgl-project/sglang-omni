@@ -10,7 +10,7 @@ internal/asr/openai/openai_test.go 1
 internal/codexauth/codexauth_test.go 4
 internal/dictation/dictation_test.go 1
 internal/helper/supervisor_test.go 1
-internal/historyapi/server_test.go 3
+internal/historyapi/server_test.go 2
 internal/llm/llm_test.go 1
 internal/meeting/finalize_test.go 1
 internal/meeting/manager_more_test.go 1

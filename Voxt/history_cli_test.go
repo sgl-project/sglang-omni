@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +54,7 @@ func TestHistoryCLIUnavailable(t *testing.T) {
 		if code != exitUnavailable || out.Len() != 0 {
 			t.Errorf("%v: code %d, out %q", args, code, out.String())
 		}
-		for _, s := range []string{"not running", "Settings → Privacy"} {
+		for _, s := range []string{"not running", "Settings → Privacy", platformText("Let programs on this Mac read the history")} {
 			if !strings.Contains(errOut.String(), s) {
 				t.Errorf("%v: stderr %q has no %q", args, errOut.String(), s)
 			}
@@ -167,8 +167,12 @@ esac
 	if !strings.Contains(script, real) {
 		t.Fatalf("the script does not set %s", real)
 	}
-	cmd := exec.Command("bash", "-c", strings.Replace(script, real, "VOXT="+filepath.Join(dir, "voxt"), 1))
-	cmd.Env = append(os.Environ(), "HOME="+dir, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	voxt := filepath.Join(dir, "voxt")
+	if runtime.GOOS == "windows" {
+		voxt = filepath.ToSlash(voxt)
+	}
+	cmd := shellWithFakeBin("bash", dir, "-c", strings.Replace(script, real, "VOXT="+voxt, 1))
+	cmd.Env = append(cmd.Env, "HOME="+dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}

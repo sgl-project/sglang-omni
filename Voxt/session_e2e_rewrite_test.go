@@ -35,7 +35,9 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	tr.setText("shorter")
 	front := helpertest.Apps["com.tinyspeck.slackmacgap"]
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
-	a.pump("the follow-up's recording", func() bool { return a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt) })
+	// !Before, not After: Windows's coarse clock can give the shortcut and
+	// the first audio one timestamp.
+	a.pump("the follow-up's recording", func() bool { return a.sess.State == session.Recording && !a.sess.HeardAt.Before(a.sess.StartedAt) })
 	// It records in the same card, the conversation above the text box.
 	if v := a.boxViewState(); !a.answer.open || !a.answer.conversation || !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
 		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.overlayModeNow(), v)

@@ -72,41 +72,7 @@ func onboardingTimingsText(translator *i18n.Translator, snapshot session.Snapsho
 }
 
 func onboardingHotkeyText(translator *i18n.Translator, keys string) string {
-	chord, err := hotkey.Parse(keys)
-	if err != nil {
-		return strings.TrimSpace(keys)
-	}
-	glyphs := map[string]string{proto.ModControl: "⌃", proto.ModOption: "⌥", proto.ModShift: "⇧", proto.ModCommand: "⌘"}
-	var parts []string
-	if _, ok := chord.Mods[proto.ModFn]; ok {
-		parts = append(parts, "fn")
-	}
-	for _, family := range []string{proto.ModControl, proto.ModOption, proto.ModShift, proto.ModCommand} {
-		side, ok := chord.Mods[family]
-		if !ok {
-			continue
-		}
-		switch side {
-		case proto.SideLeft:
-			parts = append(parts, translator.T("Left %s", glyphs[family]))
-		case proto.SideRight:
-			parts = append(parts, translator.T("Right %s", glyphs[family]))
-		default:
-			parts = append(parts, glyphs[family])
-		}
-	}
-	if chord.Key != "" {
-		parts = append(parts, onboardingKeyGlyph(translator, chord.Key))
-	}
-	var text strings.Builder
-	for index, part := range parts {
-		key := index == len(parts)-1 && chord.Key != "" && !chord.Mouse()
-		if index > 0 && (len([]rune(part)) > 1 && !key || len([]rune(parts[index-1])) > 1) {
-			text.WriteString(" ")
-		}
-		text.WriteString(part)
-	}
-	return text.String()
+	return uitext.HotkeyTextFor(translator, keys)
 }
 
 func onboardingKeyGlyph(translator *i18n.Translator, key string) string {

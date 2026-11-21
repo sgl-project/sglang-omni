@@ -59,8 +59,9 @@ type run struct {
 	onDraft func(string)
 	own     Snapshot
 
-	svc   Services
-	terms []store.Term
+	svc     Services
+	usedLLM bool
+	terms   []store.Term
 	// svcDone gets the services, resolved meanwhile; resolved once r.svc
 	// holds them.
 	svcDone  chan svcResult
@@ -449,7 +450,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 	if r.req.Kind == store.KindRewrite {
 		e.PromptText, e.RawText = s.Raw, "" // the spoken instruction
 	}
-	if s.Timings.LLM == 0 {
+	if !r.usedLLM {
 		e.LLMProvider, e.LLMModel = "", ""
 	}
 	if r.req.Text != nil || s.Timings.Audio == 0 {

@@ -1,0 +1,21 @@
+{
+  "about": "Files of the ActNow family protocol and how a conforming reader treats them (spec §5.1). result: ok = read and writable; readOnly = a newer major: read what is understood, never write back; corrupt = treat as absent, but move aside (<name>.corrupt-<time>) before writing a new one; wrongKind = not this kind of file. expect lists values a reader must find (JSON pointer → value). keep lists members a read-modify-write must preserve.",
+  "cases": [
+    { "file": "family.json", "kind": "family", "result": "ok", "expect": { "/specVersion": 1, "/createdBy": "dev.hehehai.dicta" } },
+    { "file": "app.json", "kind": "app", "result": "ok", "expect": { "/bundleId": "dev.hehehai.audiosmith", "/variant": "release", "/models/root": "/Users/u/.cache/huggingface/hub", "/shortcuts/0/keys": "Shift+Command+Space" } },
+    { "file": "claims.json", "kind": "models.claims", "result": "ok", "expect": { "/claims/0/revision": "313d850181767edf09f00a9c289becca70e58cd0", "/claims/0/files": null, "/root": "/Users/u/.cache/huggingface/hub" } },
+    { "file": "claims-models.json", "kind": "models.claims", "result": "ok", "expect": { "/claims/0/models/0": "whisper-large-v3-4bit", "/claims/0/models/1": "whisper-large-v3-turbo-4bit", "/claims/0/aux": true } },
+    { "file": "settings.json", "kind": "settings", "result": "ok", "expect": { "/rev": 12, "/network/hfEndpoints": "auto", "/general/language": "" } },
+    { "file": "credentials.json", "kind": "credentials", "result": "ok", "expect": { "/vendors/deepseek/account": "vendor.deepseek", "/vendors/volcengine-speech/appId": "123456" } },
+    { "file": "removed.json", "kind": "models.removed", "result": "ok", "expect": { "/removed/0/removedBy": "dev.hehehai.dicta" } },
+    { "file": "licences.json", "kind": "models.licences", "result": "ok", "expect": { "/accepted/0/licence": "CC-BY-NC-4.0" } },
+    { "file": "runtime.json", "kind": "runtime", "result": "ok", "expect": { "/loaded/0/bytes": 1900000000, "/loaded/0/idleSince": null } },
+    { "file": "settings-future.json", "kind": "settings", "result": "ok", "expect": { "/network/proxy": "direct", "/general/language": "zh-Hans" },
+      "keep": ["/general/theme", "/network/timeoutSeconds", "/speech", "/experimental"] },
+    { "file": "settings-v2.json", "kind": "settings", "result": "readOnly", "expect": { "/general/language": "en" } },
+    { "file": "claims-v2.json", "kind": "models.claims", "result": "readOnly", "expect": { "/claims/0/repo": "mlx-community/silero-vad" } },
+    { "file": "settings-corrupt.json", "kind": "settings", "result": "corrupt" },
+    { "file": "settings-noschema.json", "kind": "settings", "result": "corrupt" },
+    { "file": "settings-wrongkind.json", "kind": "settings", "result": "wrongKind" }
+  ]
+}

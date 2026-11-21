@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -137,8 +138,18 @@ func TestSessionOverlayDemoMatchesProduction(t *testing.T) {
 				t.Fatal(err)
 			}
 			selectMeetingDemoFixture(t, host, "en/"+name)
-			if !reflect.DeepEqual(*generated, host.sessionState) {
-				t.Fatal("JSON round trip changed the production DTO")
+			// The fixture was written with macOS-rendered texts; compare
+			// platform-neutralized JSON on every platform.
+			if data, err := json.Marshal(host.sessionState); err != nil {
+				t.Fatal(err)
+			} else {
+				normalized := *generated
+				if err := json.Unmarshal([]byte(platformText(string(data))), &host.sessionState); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(normalized, host.sessionState) {
+					t.Fatal("JSON round trip changed the production DTO")
+				}
 			}
 			a.measureHook = nil
 			a.ov.live.id, a.ov.live.w = "", 0

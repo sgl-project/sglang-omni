@@ -11,7 +11,7 @@ func TestMacCIVendorsMyGoOnMacOS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := string(data)
+	workflow := strings.ReplaceAll(string(data), "\r\n", "\n") // a CRLF checkout on Windows
 	if !strings.Contains(workflow, "run_voxt_helper: ${{") || !strings.Contains(workflow, "steps.pr.outputs.has_voxt_helper_changes") {
 		t.Error("Mac CI does not connect its Voxt-job output to preflight")
 	}

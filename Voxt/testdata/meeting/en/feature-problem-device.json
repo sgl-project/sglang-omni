@@ -9,6 +9,7 @@
     "refresh_recording": false,
     "shortcuts": {
       "prefix": "tr",
+      "no_tap_notice": "Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it.",
       "hotkeys_installed": true,
       "helper_records_keys": false,
       "empty_text": "",

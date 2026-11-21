@@ -177,17 +177,29 @@ func fileSHA256(p string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// linkModelFiles puts mod's files from src into the snapshot folder dst:
-// a hard link, or a copy when the two are on different volumes.
+// linkModelFiles puts mod's files from src into dst's repo as blobs and
+// links them into the snapshot: hard links, or copies across volumes.
 func linkModelFiles(src, dst string, mod models.Model) (bytes int64, err error) {
+	repoDir := filepath.Dir(filepath.Dir(dst))
 	for _, f := range mod.Files {
-		from, to := filepath.Join(src, filepath.FromSlash(f.Path)), filepath.Join(dst, filepath.FromSlash(f.Path))
+		from := filepath.Join(src, filepath.FromSlash(f.Path))
+		blob := filepath.Join(repoDir, "blobs", f.SHA256)
+		if err := os.MkdirAll(filepath.Dir(blob), 0o755); err != nil {
+			return 0, err
+		}
+		os.Remove(blob)
+		if err := os.Link(from, blob); err != nil {
+			if err := copyFile(from, blob); err != nil {
+				return 0, err
+			}
+		}
+		to := filepath.Join(dst, filepath.FromSlash(f.Path))
 		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 			return 0, err
 		}
 		os.Remove(to)
-		if err := os.Link(from, to); err != nil {
-			if err := copyFile(from, to); err != nil {
+		if err := os.Link(blob, to); err != nil {
+			if err := copyFile(blob, to); err != nil {
 				return 0, err
 			}
 		}
