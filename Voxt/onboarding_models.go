@@ -72,7 +72,7 @@ func obReuseCard(c *ui.Context, state onboardingModelsViewState, actions onboard
 			ui.Icon(c, icons.CheckCircle.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Success).Shrink(0)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
 				ui.Column(c).Gap(px(t, 2)).Children(func() {
-					ui.Text(c, i18n.N(len(state.ReuseIDs), "%d model is already on this Mac", "%d models are already on this Mac", len(state.ReuseIDs))).FontWeight(600)
+					ui.Text(c, i18n.PlatformN(len(state.ReuseIDs), "%d model is already on this Mac", "%d models are already on this Mac", "%d model is already on this PC", "%d models are already on this PC", len(state.ReuseIDs))).FontWeight(600)
 					caption(c, state.ReuseSubtitle)
 				})
 				ui.Text(c, state.ReuseNames).FontSize(px(t, fsCaption))

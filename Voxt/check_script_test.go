@@ -15,7 +15,7 @@ func TestCICallsCheckScript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(ci), "run: scripts/check.sh\n") {
+	if !strings.Contains(strings.ReplaceAll(string(ci), "\r\n", "\n"), "run: scripts/check.sh\n") {
 		t.Error("Voxt CI does not run scripts/check.sh")
 	}
 	script, err := os.ReadFile("scripts/check.sh")

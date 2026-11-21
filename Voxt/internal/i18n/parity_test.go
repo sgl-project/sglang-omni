@@ -19,7 +19,7 @@ import (
 const moduleRoot = "../.."
 
 // sourceKeys scans every non-test .go file of the module for calls to
-// i18n.T, i18n.N, i18n.X, i18n.Platform, i18n.PlatformN and an explicit
+// i18n.T, i18n.N, i18n.X, i18n.Platform, i18n.PlatformN, i18n.PlatformFor, i18n.PlatformNFor and an explicit
 // translator's T whose message arguments are string literals,
 // and returns the catalog keys they need, with a position for each.
 // usage maps each key to the sorted module-relative paths of the files
@@ -76,7 +76,7 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage m
 				return true
 			}
 			pos := fset.Position(call.Pos()).String()
-			rel := strings.TrimPrefix(path, moduleRoot+"/")
+			rel := strings.TrimPrefix(filepath.ToSlash(path), moduleRoot+"/")
 			lit := func(i int) (string, bool) {
 				if i >= len(call.Args) {
 					return "", false
@@ -111,6 +111,15 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage m
 				} else {
 					dynamic = append(dynamic, pos)
 				}
+			case "PlatformFor":
+				mac, macOK := lit(1)
+				windows, windowsOK := lit(2)
+				if macOK && windowsOK {
+					add(mac)
+					add(windows)
+				} else {
+					dynamic = append(dynamic, pos)
+				}
 			case "N":
 				one, ok1 := lit(1)
 				other, ok2 := lit(2)
@@ -125,6 +134,19 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage m
 				macOther, macOtherOK := lit(2)
 				windowsOne, windowsOneOK := lit(3)
 				windowsOther, windowsOtherOK := lit(4)
+				if macOneOK && macOtherOK && windowsOneOK && windowsOtherOK {
+					add(macOne)
+					add(macOther)
+					add(windowsOne)
+					add(windowsOther)
+				} else {
+					dynamic = append(dynamic, pos)
+				}
+			case "PlatformNFor":
+				macOne, macOneOK := lit(2)
+				macOther, macOtherOK := lit(3)
+				windowsOne, windowsOneOK := lit(4)
+				windowsOther, windowsOtherOK := lit(5)
 				if macOneOK && macOtherOK && windowsOneOK && windowsOtherOK {
 					add(macOne)
 					add(macOther)

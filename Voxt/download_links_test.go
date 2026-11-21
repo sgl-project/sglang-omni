@@ -13,7 +13,7 @@ func TestStableBehaviorTestsRunBeforeVersionRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := string(b)
+	workflow := strings.ReplaceAll(string(b), "\r\n", "\n")
 	resolveStep := strings.Index(workflow, "      - name: Resolve the version\n")
 	behaviorStep := strings.Index(workflow, "      - name: Stable behavior regression tests\n")
 	if resolveStep < 0 || behaviorStep < 0 {
