@@ -6,6 +6,7 @@ A request's encoder slots lead its req_to_token row, so every draft and verify f
 
 from __future__ import annotations
 
+import bisect
 import copy
 import glob
 import json
@@ -561,8 +562,15 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             else:
                 pass
             capture_stream = torch.cuda.Stream()
+            # note (Haoling Pu): a round holds at most the request pool's rows, so a graph past the first size that holds them all would never replay.
+            graph_batch_sizes = DRAFT_GRAPH_BATCH_SIZES[
+                : bisect.bisect_left(
+                    DRAFT_GRAPH_BATCH_SIZES, self.req_to_token_pool.size
+                )
+                + 1
+            ]
             # note (Haoling Pu): the largest graph is captured first, so the smaller ones reuse its memory in the shared pool.
-            for batch_size in sorted(DRAFT_GRAPH_BATCH_SIZES, reverse=True):
+            for batch_size in sorted(graph_batch_sizes, reverse=True):
                 draft_graph = DraftDecodeGraph(
                     self.draft_runner, self.speculative_num_steps - 1, batch_size
                 )
@@ -571,7 +579,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             free_bytes_after, _ = torch.cuda.mem_get_info()
             logger.info(
                 f"Captured the Whisper draft decode graphs of {self.speculative_num_steps - 1} steps "
-                f"for batch sizes {list(DRAFT_GRAPH_BATCH_SIZES)} "
+                f"for batch sizes {list(graph_batch_sizes)} "
                 f"in {(free_bytes_before - free_bytes_after) / 2**20:.0f} MiB"
             )
         else:

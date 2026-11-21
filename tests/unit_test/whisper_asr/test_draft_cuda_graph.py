@@ -424,22 +424,22 @@ def test_a_draft_graph_refuses_torch_cuda_graphs_default_capture_stream(
         graph.capture((0, 0), default_stream)
 
 
-def test_the_draft_graphs_capture_on_the_pool_stream_after_torch_cuda_graphs_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """torch.cuda.Stream() hands out 32 pool streams in turn, and the encoder's graphs make torch.cuda.graph's default stream only after the draft graphs capture, so a draft stream taken first could later be handed out again as that default."""
+def capture_draft_graphs(
+    monkeypatch: pytest.MonkeyPatch, max_requests: int
+) -> list[tuple[int, object]]:
+    """Run init_cuda_graphs for a request pool of max_requests rows, with a stand-in for PyTorch's 32 pool streams handed out in turn, and return each captured graph's batch size and stream."""
     pool_streams = itertools.cycle([object() for _ in range(32)])
     monkeypatch.setattr(torch.cuda, "Stream", lambda: next(pool_streams))
     monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: (0, 0))
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (0, 0))
     monkeypatch.setattr(torch.cuda.graph, "default_capture_stream", None)
-    capture_streams = []
+    captured = []
     monkeypatch.setattr(
         speculative,
         "DraftDecodeGraph",
         lambda runner, num_decode_steps, batch_size: SimpleNamespace(
-            capture=lambda memory_pool, capture_stream: capture_streams.append(
-                capture_stream
+            capture=lambda memory_pool, capture_stream: captured.append(
+                (batch_size, capture_stream)
             )
         ),
     )
@@ -453,16 +453,35 @@ def test_the_draft_graphs_capture_on_the_pool_stream_after_torch_cuda_graphs_def
         kv_cache_dtype=torch.bfloat16,
         dtype=torch.bfloat16,
     )
+    worker.req_to_token_pool = SimpleNamespace(size=max_requests)
     worker.draft_graphs = []
-
     worker.init_cuda_graphs()
+    return captured
 
+
+def test_the_draft_graphs_capture_on_the_pool_stream_after_torch_cuda_graphs_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """torch.cuda.Stream() hands out 32 pool streams in turn, and the encoder's graphs make torch.cuda.graph's default stream only after the draft graphs capture, so a draft stream taken first could later be handed out again as that default."""
+    captured = capture_draft_graphs(monkeypatch, 64)
     assert torch.cuda.graph.default_capture_stream is not None
-    assert len(capture_streams) == len(speculative.DRAFT_GRAPH_BATCH_SIZES)
     assert all(
-        stream is not torch.cuda.graph.default_capture_stream
-        for stream in capture_streams
+        stream is not torch.cuda.graph.default_capture_stream for _, stream in captured
     )
+
+
+@pytest.mark.parametrize(
+    ("max_requests", "captured_batch_sizes"),
+    [(8, [1, 2, 4, 8]), (10, [1, 2, 4, 8, 16]), (64, [1, 2, 4, 8, 16, 32])],
+)
+def test_the_draft_graphs_stop_at_the_first_size_that_holds_every_running_request(
+    monkeypatch: pytest.MonkeyPatch,
+    max_requests: int,
+    captured_batch_sizes: list[int],
+) -> None:
+    """A round holds at most the request pool's rows, so a larger graph would only take memory."""
+    captured = capture_draft_graphs(monkeypatch, max_requests)
+    assert sorted(batch_size for batch_size, _ in captured) == captured_batch_sizes
 
 
 @pytest.mark.accelerator
@@ -471,17 +490,25 @@ def test_the_draft_graphs_capture_on_the_pool_stream_after_torch_cuda_graphs_def
 def test_replay_decodes_the_loaded_round_as_the_steps_run_eagerly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The graph captured on the padding row reads every round's requests, lengths, first drafts and biases from its inputs."""
+    """Graphs of 4 and 1 requests, captured on the padding row largest first in one pool, read every round's requests, lengths, first drafts and biases from their inputs, replayed in any order."""
     torch.manual_seed(0)
     runner = draft_runner(monkeypatch, "cuda")
     pool = runner.token_to_kv_pool
-    graph = DraftDecodeGraph(runner, NUM_DECODE_STEPS, 4)
-    graph.capture(torch.cuda.graph_pool_handle(), torch.cuda.Stream())
+    graphs = {
+        batch_size: DraftDecodeGraph(runner, NUM_DECODE_STEPS, batch_size)
+        for batch_size in (4, 1)
+    }
+    memory_pool = torch.cuda.graph_pool_handle()
+    capture_stream = torch.cuda.Stream()
+    for graph in graphs.values():
+        graph.capture(memory_pool, capture_stream)
 
-    for rows, encoder_lengths, committed_lengths, first_drafts in (
-        ([1, 2, 3], [5, 8, 3], [4, 9, 2], [7, 20, 11]),
-        ([2], [8], [9], [5]),
+    for graph_batch_size, rows, encoder_lengths, committed_lengths, first_drafts in (
+        (4, [1, 2, 3], [5, 8, 3], [4, 9, 2], [7, 20, 11]),
+        (1, [3], [6], [5], [9]),
+        (4, [2], [8], [9], [5]),
     ):
+        graph = graphs[graph_batch_size]
         round_size = len(rows)
         graph.load_inputs(
             round_batch(rows, encoder_lengths, committed_lengths, "cuda"),

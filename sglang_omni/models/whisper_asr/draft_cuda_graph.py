@@ -199,6 +199,10 @@ class DraftDecodeGraph:
         ):
             self.draft_token_ids = self.run_steps()
         self.graph = graph
+        # note (Haoling Pu): every replay gathers its slots, masks and encoder K/V again, so dropping the ones gathered under capture lets the next, smaller graph reuse their memory in the shared pool.
+        self.attention_backend = DraftDecodeAttention(
+            self.draft_runner.token_to_kv_pool
+        )
 
     def replay(self) -> torch.Tensor:
         """The draft chain of every row from the loaded inputs: the first draft, then num_decode_steps decoded drafts."""
