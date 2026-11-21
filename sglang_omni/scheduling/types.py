@@ -151,6 +151,28 @@ class StreamOutputBuilder(Protocol[RequestDataInput]):
     ) -> Iterable[OutgoingMessage]: ...
 
 
+class PrefillCadence(Protocol):
+    """Dynamic prefill/decode interval policy driven by observed batches."""
+
+    first_audio_budget_ms: float
+
+    def compute_interval(
+        self, *, running_bs: int, cohort_tokens: int, cohort_reqs: int
+    ) -> int: ...
+
+    def age_valve_allows(self, hold_ms: float) -> bool: ...
+
+    def hold_elapsed_ms(self) -> float | None: ...
+
+    def mark_age_valve_intercept(self) -> None: ...
+
+    def observe_extend_launch(
+        self, ts: float, *, cohort_tokens: int, cohort_reqs: int
+    ) -> None: ...
+
+    def observe_extend_done(self, ts: float) -> None: ...
+
+
 def sampled_logprobs_to_list(
     next_token_logprobs: torch.Tensor | None,
 ) -> list[float] | None:

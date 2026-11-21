@@ -56,6 +56,10 @@ from sglang_omni.models.fishaudio_drama3.model_inputs import (
 )
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
 from sglang_omni.models.fishaudio_drama3.moe_configs import install_tuned_moe_configs
+from sglang_omni.models.fishaudio_drama3.prefill_cadence_v3 import (
+    DEFAULT_FIRST_AUDIO_BUDGET_MS,
+    PrefillCadenceV3,
+)
 from sglang_omni.models.fishaudio_drama3.quantization import (
     INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
@@ -91,7 +95,9 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint
 FISH_OMNI_ARCHITECTURE = "FishOmniModel"
 # The tower re-plans this backend's metadata for its first frame.
 ATTENTION_BACKEND = "triton"
-PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
+# Daily cohorts reach ~2250 prompt tokens; a 2048 cap would drop them out of
+# the prefill CUDA graphs.
+PREFILL_CUDA_GRAPH_MAX_TOKENS = 4096
 DECODE_STEPS_BETWEEN_PREFILLS = 4
 
 logger = logging.getLogger(__name__)
@@ -131,6 +137,8 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        dynamic_prefill_interval: bool = False,
+        prefill_first_audio_budget_ms: float = DEFAULT_FIRST_AUDIO_BUDGET_MS,
         tp_rank: int = 0,
         tp_size: int = 1,
         nccl_port: int | None = None,
@@ -151,9 +159,12 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.dynamic_prefill_interval = dynamic_prefill_interval
+        self.prefill_first_audio_budget_ms = prefill_first_audio_budget_ms
         self.tp_rank = tp_rank
         self.tp_size = tp_size
         self.nccl_port = nccl_port
+        self.prefill_graph_max_tokens = PREFILL_CUDA_GRAPH_MAX_TOKENS
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
@@ -207,6 +218,15 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         parallel_sizes = (server_args.tp_size, server_args.pp_size, server_args.dp_size)
         chunked_prefill_size = server_args.chunked_prefill_size or 0
         graph_config = resolved_view(server_args).cuda_graph_config
+        # The cadence's T_P graph/eager boundary follows the resolved prefill
+        # graph token cap, not a hardcoded constant. A disabled prefill graph
+        # means the boundary is 0: every prefill prices as eager.
+        if graph_config.prefill.backend == CudaGraphBackend.DISABLED:
+            self.prefill_graph_max_tokens = 0
+        else:
+            self.prefill_graph_max_tokens = (
+                max(graph_config.prefill.bs or [0]) or PREFILL_CUDA_GRAPH_MAX_TOKENS
+            )
         max_position_embeddings = FishOmniConfig.from_pretrained(
             server_args.model_path
         ).text_config.max_position_embeddings
@@ -491,9 +511,31 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 "Drama 3 async decode: off, "
                 "tts_engine.factory.enable_async_decode is false"
             )
+        prefill_cadence: PrefillCadenceV3 | None = None
+        if self.dynamic_prefill_interval and self.tp_size != 1:
+            logger.warning(
+                "Drama 3 dynamic prefill interval: disabled outside TP1 "
+                "(valve and arming are not rank-synchronized)"
+            )
+        elif self.dynamic_prefill_interval:
+            prefill_cadence = PrefillCadenceV3(
+                fallback_interval=DECODE_STEPS_BETWEEN_PREFILLS,
+                first_audio_budget_ms=self.prefill_first_audio_budget_ms,
+                graph_max_tokens=self.prefill_graph_max_tokens,
+                async_decode=self.enable_async_decode,
+            )
+            logger.info(
+                f"Drama 3 dynamic prefill interval v3: on, first-audio "
+                f"budget {self.prefill_first_audio_budget_ms:g} ms, graph "
+                f"boundary {self.prefill_graph_max_tokens} tokens, "
+                f"async_decode={self.enable_async_decode}"
+            )
+        else:
+            pass
         return {
             "stream_output_builder": self.frame_streamer,
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "async_decode_resolve_before_prefill": True,
+            "prefill_cadence": prefill_cadence,
         }

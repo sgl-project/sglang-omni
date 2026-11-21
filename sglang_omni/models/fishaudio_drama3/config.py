@@ -37,7 +37,10 @@ ReferenceSamplingFallback = Literal["argmax", "ras"]
 DEFAULT_REFERENCE_SAMPLING = False
 DEFAULT_REFERENCE_SAMPLING_FALLBACK: ReferenceSamplingFallback = "argmax"
 DEFAULT_TOWER_FUSED_LAYERS = True
-DEFAULT_ENABLE_ASYNC_DECODE = False
+# note (0xtoward): async decode is on by default. At C16-C64 it lifts
+# throughput ~17% with first-audio and continuity intact (Seed-TTS-Eval EN).
+# At C256 the vocoder serial path binds instead; that regime is untested.
+DEFAULT_ENABLE_ASYNC_DECODE = True
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
@@ -87,6 +90,10 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
     )
+    # None: the factory's defaults (static interval, and the cadence module's
+    # first-audio budget).
+    dynamic_prefill_interval: bool | None = None
+    prefill_first_audio_budget_ms: float | None = Field(default=None, gt=0)
 
 
 class Drama3EngineStageConfig(EngineStageConfig):

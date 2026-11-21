@@ -72,6 +72,9 @@ ALLOWED_DEFS: frozenset[tuple[str, str]] = frozenset(
         ("sglang_omni/model_runner/sglang_model_runner.py", "_profile_available_bytes"),
         ("sglang_omni/scheduling/omni_scheduler.py", "_add_request_to_queue"),
         ("sglang_omni/scheduling/pd_scheduler.py", "_add_request_to_queue"),
+        # SGLang Scheduler prefill/decode interval hooks
+        ("sglang_omni/scheduling/omni_scheduler.py", "_should_defer_prefill"),
+        ("sglang_omni/scheduling/omni_scheduler.py", "_arm_prefill_decode_interval"),
         (
             "sglang_omni/scheduling/sglang_backend/evict_heap_radix_cache.py",
             "_update_leaf_status",
