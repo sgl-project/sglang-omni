@@ -1,145 +1,119 @@
 # MiniCPM-o
 
-[MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) is a Gemini 2.5 Flash level model for vision, speech, and full-duplex live streaming. SGLang-Omni serves it in two ways:
+[MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) accepts text, images, audio, and video, and can respond with text or speech. It also supports live full-duplex conversations:
 
 | Mode | Endpoint | Use it for |
 |---|---|---|
 | Chat | `/v1/chat/completions` | One request, one reply, in text or speech |
+| Text to speech | `/v1/audio/speech` | Generate speech from text |
 | Full duplex | `/v1/realtime` (WebSocket) | A live voice or video call where the model listens and speaks at the same time |
 
-## Prerequisites
+## Quick start
 
-Follow [Installation](../get_started/installation.md), then run from the repository root.
+### Installation requirements
 
-For Intel GPUs, follow the [MiniCPM-o XPU recipe](../other_platforms/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu).
+Follow [Installation](../get_started/installation.md), then run the commands on this page from the repository root. For Intel GPUs, follow the [MiniCPM-o XPU recipe](../other_platforms/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu). For Ascend NPU, see [Installation — NPU](../other_platforms/installation_npu.md#minicpm-o) for the launch command, configuration, and validated versions.
 
-Chat with speech output:
-
-```bash
-python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000
-```
-
-Chat with text output only:
+### Start the server and check readiness
 
 ```bash
-python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --text-only --port 8000
+sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --port 8000
 ```
 
-## Ascend NPU
+This serves chat with speech output. Add `--text-only` to serve text output only.
 
-See [Installation — NPU](../other_platforms/installation_npu.md#minicpm-o)
-for the NPU launch command, configuration, and validated versions.
+In another terminal, check readiness:
 
-## Normal Usage
-
-
-```python
-import base64
-from pathlib import Path
-
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
-reference = base64.b64encode(Path("docs/_static/audio/male-voice.wav").read_bytes()).decode("ascii")
-response = client.chat.completions.create(
-    model="MiniCPM-o-4_5",
-    messages=[{"role": "user", "content": "Please say hello."}],
-    modalities=["text", "audio"],
-    audio={
-        "format": "wav",
-        "ref_audio": f"data:audio/wav;base64,{reference}",
-    },
-)
-message = response.choices[0].message
-Path("reply.wav").write_bytes(base64.b64decode(message.audio.data))
-print(message.audio.transcript or message.content)
+```bash
+curl -fS http://localhost:8000/health
 ```
 
-## Video Chat Inputs
+The server is ready when this returns HTTP 200 with `"status": "healthy"`. During startup, the endpoint may return HTTP 503 or refuse the connection.
 
-Chat accepts inline video_url content and top-level video or videos fields.
-Top-level requests without use_audio_in_video retain the existing shared video
-sampling and resizing policy. They place explicit images, video frames, and
-independent audio before the final user message's text, in that order.
-Predecoded video tensors remain supported, including mixed file/tensor inputs.
+### Send a chat request
 
-Top-level videos without use_audio_in_video decode on parallel decoders. Each of the four preprocessing workers gets min(16, the stage's CPUs divided by four) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+```bash
+curl -fS http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "Please say hello."}],
+    "modalities": ["text"]
+  }'
+```
 
-Inline videos and top-level requests with use_audio_in_video use MiniCPM timed
-video sampling. Set use_audio on an inline video, or use_audio_in_video on a
-top-level request, to include interleaved audio from file or URL sources.
-Top-level interleaved videos follow explicit images and independent audio.
+The answer is in `choices[0].message.content`.
 
-Timed video frames retain native resolution by default; the MiniCPM image processor
-performs the final resize. video_max_frames limits the sampled frame count,
-while video_max_pixels and video_total_pixels resize frames after decoding.
-Those pixel options do not bound the initial native-resolution allocation.
+For a spoken reply, set `modalities` and `audio` in the same request:
 
-## Native Full-Duplex Ability
+```json
+{
+  "messages": [{"role": "user", "content": "Please say hello."}],
+  "modalities": ["text", "audio"],
+  "audio": {"format": "wav"}
+}
+```
 
-MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo, the protocol and benchmarking are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
+The reply contains base64-encoded WAV audio in `message.audio.data` and a transcript in `message.audio.transcript`. To clone a voice, add `audio.ref_audio` as a base64 audio data URI, using a clip such as `docs/_static/audio/male-voice.wav`.
 
-## Realtime-Venus
+For video input, use inline `video_url` content parts or the top-level `videos` field. To include the video's audio, set `use_audio` (inline) or `use_audio_in_video` (top-level). See [Video and Audio Input](../basic_usage/omni.md#video-and-audio-input) for an example and `video_max_frames` for frame limits.
 
-[Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) is a pair of MiniCPM-o 4.5 fine-tunes from inclusionAI: Realtime-Venus-Omni for audio-visual full-duplex calls and Realtime-Venus-Audio for audio-only chat and calls. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
+## Text to speech
 
-The two checkpoints are subdirectories of one repository, and each config.json points at the repository's config.yaml, so download them with the repository's script, which keeps config.yaml beside the model directories:
+Use `/v1/audio/speech` to generate speech from text. In the shared [cURL example](../basic_usage/tts.md#use-curl), omit the Qwen3-TTS-specific `model` and `voice` fields; MiniCPM-o uses the served model and default voice. Set `language` to `Chinese` for Chinese text, or provide a base64 audio data URI as `ref_audio` for voice cloning. Output is non-streaming, and sampling fields such as `temperature`, `top_p`, and `max_new_tokens` apply to the Talker.
+
+## Full duplex
+
+MiniCPM-o 4.5 serves live voice and video calls on `/v1/realtime` with its `session` variant:
+
+```bash
+sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --variant session --enable-realtime --port 8000
+```
+
+The server is ready when `curl --fail http://localhost:8000/v1/realtime/capabilities` returns JSON containing `"native_full_duplex":true`. Then start the browser demo:
+
+```bash
+python playground/realtime/app.py --api-base http://127.0.0.1:8000 --port 8080
+```
+
+Once the terminal prints `Running on`, open <http://localhost:8080> and click **Start talking**; the camera can be turned on during the call. Open the page through `localhost`, or the browser will not grant microphone access. Settings, the protocol, and benchmarking are in the [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
+
+### Realtime-Venus checkpoints
+
+[Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) provides two MiniCPM-o 4.5 fine-tuned checkpoints: Realtime-Venus-Omni for audio-video calls and Realtime-Venus-Audio for audio-only conversations. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
+
+Download them with the repository's script, which keeps the shared `config.yaml` beside the model directories. `--model audio` downloads Realtime-Venus-Audio instead.
 
 ```bash
 hf download inclusionAI/Realtime-Venus download_models.py --local-dir .
 python download_models.py --model omni --local-dir Realtime-Venus
 ```
 
-Pass the model directory, not the repository id, and serve a full-duplex call with the session variant:
+Pass the model directory, not the repository id:
 
 ```bash
-python -m sglang_omni.cli serve --model-path Realtime-Venus/Realtime-Venus-Omni --variant session --enable-realtime --port 8000
+sgl-omni serve --model-path Realtime-Venus/Realtime-Venus-Omni --variant session --enable-realtime --port 8000
 ```
 
-`--model audio` downloads Realtime-Venus-Audio instead; it serves chat, speech and full-duplex calls with the MiniCPM-o 4.5 commands.
+## Speculative decoding
 
-## Text to speech
-
-`/v1/audio/speech` reads the given text aloud. MiniCPM-o prefills the text in one Thinker pass and conditions the Talker on each of its tokens, instead of generating the same words one token at a time. Set `language` to `Chinese` for Chinese text, and pass a base64 audio data URI as `ref_audio` to clone a voice.
-
-```python
-audio = client.audio.speech.create(
-    model="MiniCPM-o-4_5",
-    voice="default",
-    input="Hello!",
-    extra_body={"language": "English"},
-)
-```
-
-The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
-
-
-### HiFT CUDA graphs
-
-Set the Code2Wav factory's `hift_cuda_graph_capture_shapes` to `[batch_size, mel_frames]` buckets, for example `[[1, 64], [2, 64], [1, 128]]`, to capture HiFT's decode body at startup on CUDA. The default empty list disables capture. Inputs use the smallest bucket by batch-times-frames that fits both dimensions; inputs outside all buckets use the original decode body. Non-CUDA devices skip capture.
-
-The graph pads inputs and masks intermediate convolutions at the real frame length, preventing the padded tail from feeding back into valid audio. STFT still sees the unpadded excitation, and spectra are cropped before inverse STFT to preserve the original window envelope. Code2Wav still groups rows by their real length; buckets reuse graphs across these groups rather than combining mixed-length rows. Wider buckets save captures but increase padded computation, so choose nearby lengths for frequent inputs.
-
-Padding can select different convolution algorithms, including different TF32 rounding, so bucketed output is not guaranteed to meet the benchmark's strict pointwise tolerance against an unpadded decode. The benchmark accepts `--capture-shapes` independently of input `--shapes`; use `--deterministic --disable-tf32 --emulate-precision-casts` to reduce convolution and compiler rounding differences when investigating boundaries, and evaluate speech quality under the precision settings used for serving. These diagnostic flags do not guarantee a passing comparison for every batch size and do not change the serving precision settings.
-
-This captures the convolution, upsampling and activation body, including its compiled form when `enable_hift_torch_compile` is enabled. F0 prediction, random excitation, STFT and inverse STFT remain outside the graphs. Graph inputs and outputs consume additional device memory, so select shapes from your workload. Invalid shapes or capture failures fail startup. This setting applies to the chat speech Code2Wav stage, not the separate full-duplex vocoder.
-
-
-## Speculative Decoding
-
-The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, [`Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm`](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
+To enable speculative decoding for the Thinker, use the multimodal [DSpark draft](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
 
 ```bash
-python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
+sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
   --thinker.engine.speculative_algorithm DSPARK \
   --thinker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm
 ```
 
-An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggingface.co/Tengyunw/qwen3_8b_eagle3), runs with `--thinker.engine.speculative_algorithm EAGLE3`, `speculative_num_steps 3`, `speculative_eagle_topk 1` and `speculative_num_draft_tokens 4`.
+On one H100, the draft raised speech throughput 1.26–1.46x at 1 to 32 concurrent requests on Seed-TTS English voice cloning, and text throughput 1.13–1.21x at 1 to 4 concurrent requests on MMSU.
 
-- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now, including on speech responses; a per-stage field can follow once the Talker has a draft too.
-- **Speech output.** The Talker reads one Thinker hidden row per text token, and the draft's layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (`speculative_eagle_topk 1`), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is `<image>` in MiniCPM-o, so they accept almost no tokens here.
-- **Supported settings.** DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.
-- **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
-- **Scheduling.** Speculative decoding runs with async decode overlap enabled, while the stage's own mixed-chunk default is turned off. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
-- **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.
+Add `"return_spec_tokens_details": true` to a chat request to get the acceptance statistics in `sglext.spec_tokens_details`.
+
+## Known limitations
+
+- `/v1/audio/speech` output is non-streaming.
+- With a draft, requests that set `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected.
+- The limits shared by all omni models are in [Known Limitations](../basic_usage/omni.md#known-limitations).
+
+## Next steps
+
+For more request examples, see [Omni Model Usage](../basic_usage/omni.md). Its examples use `qwen3-omni` on port 8008; use port 8000 and omit the optional `model` field for MiniCPM-o.
