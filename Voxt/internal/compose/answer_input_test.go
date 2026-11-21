@@ -103,6 +103,9 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 		{"dictated tool call token", "Use the <|tool_call|> token carefully.", "Use the <|tool_call|> token carefully."},
 		{"Chinese tool call token", "解释 <|tool_call|> 这个标记。", "解释 <|tool_call|> 这个标记。"},
 		{"Chinese tool call token without spaces", "解释<|tool_call|>这个标记。", "解释<|tool_call|>这个标记。"},
+		{"Chinese tool call token with right space", "解释<|tool_call|> 这个标记。", "解释<|tool_call|> 这个标记。"},
+		{"Chinese tool call token with left space", "解释 <|tool_call|>这个标记。", "解释 <|tool_call|>这个标记。"},
+		{"English tool call token at sentence end", "Use the <|tool_call|> token.", "Use the <|tool_call|> token."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Clean(tc.text, tc.input); got != tc.text {
@@ -450,6 +453,7 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 	}
 	for _, tc := range []struct{ text, want string }{
 		{"Visible <|tool_call|> search images now", "Visible"},
+		{"Visible <|tool_call|> search images now. 这个标记会显示。", "Visible"},
 		{"Visible <|tool_call|> token carefully. {\"name\":\"view_image\"}", "Visible"},
 		{"Use the <|tool_call|> token carefully. {\"name\":\"view_image\"}", "Use the"},
 	} {

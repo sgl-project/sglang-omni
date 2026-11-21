@@ -136,18 +136,21 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 		if strings.ContainsAny(rest, "{[") {
 			return false
 		}
-		literalCue := strings.Contains(rest, "标记")
+		literalCue := false
 		if len(fields) > 0 {
-			switch strings.ToLower(fields[0]) {
+			firstField := strings.ToLower(strings.TrimRightFunc(fields[0], unicode.IsPunct))
+			literalCue = strings.Contains(firstField, "标记")
+			switch firstField {
 			case "token", "tag", "marker":
 				literalCue = true
 			}
 		}
 		before, _ := utf8.DecodeLastRuneInString(s[:start])
 		after, _ := utf8.DecodeRuneInString(rest)
-		hanInline := unicode.Is(unicode.Han, before) && unicode.Is(unicode.Han, after)
+		beforeProse := start > 0 && (unicode.Is(unicode.Han, before) || unicode.IsSpace(before))
+		afterProse := unicode.Is(unicode.Han, after) || unicode.IsSpace(after) || unicode.IsPunct(after)
 		// Only explicit marker prose gets the input exemption; tool payloads still go.
-		if literalCue && (inlineLiteral(s, start, token) || hanInline) &&
+		if literalCue && beforeProse && afterProse &&
 			(preservedControlToken(token, input) || previousControlToken(token, previous)) {
 			return true
 		}
