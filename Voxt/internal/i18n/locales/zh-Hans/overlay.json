@@ -1,11 +1,11 @@
 {
+  "%d chars · %d lines": "%d 个字符 · %d 行",
+  "Back to answer": "返回答案",
+  "Images sent with the instruction": "随指令发送的图片",
+  "Inputs sent with the instruction": "随指令发送的内容",
   "Insert": "插入",
   "Preview of the overlay": "浮窗预览",
   "Recording mode: %s": "录音模式：%s",
   "Stop recording the follow-up": "结束追问录音",
-  "Stop writing and keep the text so far": "停止生成，保留已写出的内容",
-  "Images sent with the instruction": "随指令发送的图片",
-  "Inputs sent with the instruction": "随指令发送的内容",
-  "Back to answer": "返回答案",
-  "%d chars · %d lines": "%d 个字符 · %d 行"
+  "Stop writing and keep the text so far": "停止生成，保留已写出的内容"
 }

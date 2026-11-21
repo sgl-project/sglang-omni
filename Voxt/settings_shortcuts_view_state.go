@@ -39,6 +39,7 @@ type shortcutPresetPickerViewState struct {
 
 type settingsShortcutsViewState struct {
 	AccessibilityInstalled bool                           `json:"accessibility_installed"`
+	NoTapNotice            string                         `json:"no_tap_notice"`
 	StrictShortcuts        bool                           `json:"strict_shortcuts"`
 	Preset                 shortcutPresetPickerViewState  `json:"preset"`
 	Rows                   []settingsShortcutRowViewState `json:"rows"`
@@ -53,6 +54,7 @@ type settingsShortcutsStateInput struct {
 func buildSettingsShortcutsViewState(translator *i18n.Translator, input settingsShortcutsStateInput) settingsShortcutsViewState {
 	state := settingsShortcutsViewState{
 		AccessibilityInstalled: input.AccessibilityInstalled,
+		NoTapNotice:            translator.T("Without Accessibility, only shortcuts like %s work. fn, single modifiers, double taps and long presses need it.", uitext.HotkeyText("Control+Option+Space")),
 		StrictShortcuts:        input.Features.StrictShortcuts,
 		Preset:                 buildShortcutPresetPickerViewState(translator, input.Features, input.AccessibilityInstalled, false),
 	}

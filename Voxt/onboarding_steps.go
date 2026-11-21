@@ -114,7 +114,7 @@ func onboardingPermissionRows(c *ui.Context, state onboardingPermissionsViewStat
 	}
 	if state.AskRequired {
 		ui.Row(c).Children(func() {
-			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.T("macOS asks for each in turn: the microphone, then Accessibility.")).Clicked() {
+			if ui.Button(c.Key("perm-ask-required"), i18n.T("Ask for the required permissions")).Tooltip(i18n.Platform("macOS asks for each in turn: the microphone, then Accessibility.", "Windows asks for the microphone the first time you record.")).Clicked() {
 				actions.askRequired()
 			}
 		})
@@ -142,8 +142,8 @@ func onboardingPermissionRows(c *ui.Context, state onboardingPermissionsViewStat
 	row("perm-mic", i18n.T("Microphone"), "", privacyMicrophone, state.Microphone)
 	row("perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results, read the selected text and the browser tab's address, and use single keys like Right ⌥ as shortcuts."), privacyAccessibility, state.Access)
 	sectionTitle(c, i18n.T("Optional"))
-	settingRow(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
-		statusMark(c, icons.InfoCircle, tok(t).Text2, i18n.T("Unknown")).Tooltip(i18n.T("macOS does not let apps read this permission. Check it in System Settings."))
+	settingRow(c, "perm-system-audio", i18n.T("System audio recording"), i18n.Platform("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.", "Lets Voxt record sound from other apps during a meeting. No permission is needed on Windows."), func() {
+		statusMark(c, icons.InfoCircle, tok(t).Text2, i18n.T("Unknown")).Tooltip(i18n.Platform("macOS does not let apps read this permission. Check it in System Settings.", "No permission is needed on Windows."))
 		if ghostButton(c.Key("perm-system-audio-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
 			actions.askPermission("systemAudio", nil)
 		}

@@ -37,6 +37,7 @@ type featureKeyRowViewState struct {
 
 type featureShortcutsViewState struct {
 	Prefix            string                        `json:"prefix"`
+	NoTapNotice       string                        `json:"no_tap_notice"`
 	HotkeysInstalled  bool                          `json:"hotkeys_installed"`
 	HelperRecordsKeys bool                          `json:"helper_records_keys"`
 	EmptyText         string                        `json:"empty_text"`
@@ -68,6 +69,7 @@ func buildFeatureShortcutsViewState(translator *i18n.Translator, input featureSh
 	state := featureShortcutsViewState{
 		Prefix: uitext.FeaturePrefix(feature), HotkeysInstalled: input.HotkeysInstalled,
 		HelperRecordsKeys: input.HelperRecordsKeys, RewriteHint: feature == hotkey.Rewrite,
+		NoTapNotice: translator.T("Without Accessibility, only shortcuts like %s work. fn, single modifiers, double taps and long presses need it.", uitext.HotkeyText("Control+Option+Space")),
 	}
 	local := input.Local
 	if local == nil {

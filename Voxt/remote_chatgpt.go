@@ -9,7 +9,7 @@ import (
 
 func remoteChatGPTFields(c *ui.Context, state *remoteChatGPTViewState, actions remoteDialogActions) {
 	t := c.Theme()
-	info := i18n.T("The sign-in is kept only in this Mac's Keychain. Signing out deletes it.")
+	info := i18n.Platform("The sign-in is kept only in this Mac's Keychain. Signing out deletes it.", "The sign-in is kept only in this PC's Credential Manager. Signing out deletes it.")
 	fieldInfo(c, i18n.T("ChatGPT account"), info, func() {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			switch {
