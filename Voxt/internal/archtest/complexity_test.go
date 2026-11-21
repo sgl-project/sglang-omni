@@ -173,9 +173,7 @@ func (c *cognitive) branch(body *ast.BlockStmt, header ...ast.Node) {
 }
 
 func (c *cognitive) ifStmt(n *ast.IfStmt, chained bool) {
-	if n.Init != nil {
-		c.walk(n.Init)
-	}
+	c.walk(n.Init)
 	c.walk(n.Cond)
 	if chained {
 		c.walk(n.Body)
@@ -199,16 +197,16 @@ func (c *cognitive) Visit(n ast.Node) ast.Visitor {
 		c.ifStmt(n, false)
 		return nil
 	case *ast.SwitchStmt:
-		c.branch(n.Body, stmt(n.Init), expr(n.Tag))
+		c.branch(n.Body, n.Init, n.Tag)
 		return nil
 	case *ast.TypeSwitchStmt:
-		c.branch(n.Body, stmt(n.Init), n.Assign)
+		c.branch(n.Body, n.Init, n.Assign)
 		return nil
 	case *ast.SelectStmt:
 		c.branch(n.Body)
 		return nil
 	case *ast.ForStmt:
-		c.branch(n.Body, stmt(n.Init), expr(n.Cond), stmt(n.Post))
+		c.branch(n.Body, n.Init, n.Cond, n.Post)
 		return nil
 	case *ast.RangeStmt:
 		c.branch(n.Body, n.X)
@@ -251,22 +249,6 @@ func (c *cognitive) logicalOps(e ast.Expr) []token.Token {
 		ops = append(ops, b.Op)
 	}
 	return append(ops, c.logicalOps(b.Y)...)
-}
-
-// stmt and expr turn a nil statement or expression into a nil node, which
-// walk skips, instead of a non-nil interface holding nil.
-func stmt(s ast.Stmt) ast.Node {
-	if s == nil {
-		return nil
-	}
-	return s
-}
-
-func expr(e ast.Expr) ast.Node {
-	if e == nil {
-		return nil
-	}
-	return e
 }
 
 func TestCognitiveComplexity(t *testing.T) {
