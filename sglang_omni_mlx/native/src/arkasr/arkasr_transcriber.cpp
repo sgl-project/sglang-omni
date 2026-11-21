@@ -138,9 +138,9 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
       omni_common::BoundedEnergyCutChunks(
           samples, kWindowSampleCount, kCutSearchSampleCount,
           kCutEnergySampleCount, kMinTailSampleCount);
-  // Note (AzizbekMuminoff): an explicit budget covers the whole request, as
-  // on the other ASR servers; the default applies to each window, as the
-  // checkpoint's processor sees at most one.
+  // Note (AzizbekMuminoff): one budget for the whole request, as on the
+  // other ASR servers; the default is the per-window one scaled to the
+  // request, as the checkpoint's processor sees at most one window.
   const int request_budget = options.max_new_tokens.value_or(0);
   int remaining_tokens =
       request_budget != 0
@@ -155,10 +155,9 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
       break;
     } else {
     }
-    const int window_limit =
-        request_budget != 0 ? remaining_tokens : kDefaultMaxNewTokens;
-    const TranscriptionResult window = TranscribeWindow(
-        {samples.begin() + start, samples.begin() + end}, window_limit, cancel);
+    const TranscriptionResult window =
+        TranscribeWindow({samples.begin() + start, samples.begin() + end},
+                         remaining_tokens, cancel);
     if (window.text.empty()) {
     } else {
       parts.push_back(window.text);
@@ -176,6 +175,10 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
   combined.language = options.language;
   combined.generated_token_count = generated_token_count;
   combined.finish_reason = finish_reason;
+  if (windows.size() > 1) {
+    combined.window_texts = parts;
+  } else {
+  }
   return combined;
 }
 

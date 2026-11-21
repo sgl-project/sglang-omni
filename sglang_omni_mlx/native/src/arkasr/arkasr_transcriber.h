@@ -21,7 +21,7 @@ struct ArkOptions {
   // Reported with the result; the model detects the language itself.
   std::optional<std::string> language;
   // One budget for the whole request; unset or 0 is the default of 256 tokens
-  // per 30 s window.
+  // per 30 s window, scaled to the request's window count.
   std::optional<int> max_new_tokens;
 };
 

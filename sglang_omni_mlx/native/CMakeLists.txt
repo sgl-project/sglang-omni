@@ -494,3 +494,11 @@ target_link_libraries(ming3_mtp_probe PRIVATE ming3_audio)
 target_compile_options(ming3_mtp_probe PRIVATE -Wall -Wextra)
 set_target_properties(ming3_mtp_probe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+# Checks ARK-ASR's request budget and windowing on a small checkpoint
+# (tests/test_arkasr_probe.py); built only on request and never installed.
+add_executable(arkasr_probe EXCLUDE_FROM_ALL tests/arkasr_probe.cpp)
+target_link_libraries(arkasr_probe PRIVATE arkasr)
+target_compile_options(arkasr_probe PRIVATE -Wall -Wextra)
+set_target_properties(arkasr_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
