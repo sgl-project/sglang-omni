@@ -42,7 +42,7 @@ Qwen3-TTS-12Hz-0.6B-Base on Seed-TTS EN (1088 utterances, reference voice clonin
 | Output throughput (tok/s) | 115.4 |
 | Completed / failed requests | 1088 / 0 |
 
-Typical output is clean (0.00% median WER, 9.09% p95). Two utterances (0.2%) ran away into a repetition loop and generated ~164 s of looping audio up to `max_new_tokens`, which alone lifts the raw micro-average to 18.29%; excluding those, corpus WER is 1.07%. These historical measurements counted budget-exhausted audio as completed requests; with missing-codec-EOS error handling, those requests fail. RTF > 1 reflects the 0.6B codec pipeline at concurrency 16, not single-stream latency. The 1.7B checkpoint trades latency for quality.
+Typical output is clean (0.00% median WER, 9.09% p95). Two utterances (0.2%) ran away into a repetition loop and generated ~164 s of looping audio up to `max_new_tokens`, which alone lifts the raw micro-average to 18.29%; excluding those, corpus WER is 1.07%. RTF > 1 reflects the 0.6B codec pipeline at concurrency 16, not single-stream latency. The 1.7B checkpoint trades latency for quality.
 
 ### 1.7B CustomVoice
 
@@ -68,7 +68,7 @@ TTFA measures arrival of the first PCM payload, not the first audible speech; it
 
 ### Runaway Regression
 
-`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. Any request failure or response with `finish_reason=length` fails the probe because generation did not complete naturally.
+`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. The text request fails only when it stops on `length` before its paired baseline stopped naturally.
 
 Create a request template, for example `request.json`:
 
