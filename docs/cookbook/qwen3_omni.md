@@ -318,7 +318,6 @@ sgl-omni serve \
 
 ## Known Limitations
 
-- **Multiple videos must use the same sampled frame rate.** The processor uses one rate for video timestamps; different rates return an invalid-input error.
-
-- **Colocated topology does not support `--thinker.tp_size 2`.** Startup raises a `ValueError`; use disaggregated topology for TP=2.
-- **Context limits apply to prompt and output.** The preprocessor rejects requests when prompt tokens meet or exceed `max_seq_len`, or when prompt tokens plus `max_new_tokens` meet or exceed it. Without both `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's checkpoint context (65,536 tokens for Instruct); setting both lower caps it. The talker uses its checkpoint limit unless `--talker_ar.factory.max_seq_len` sets it. A long spoken prompt may leave too little room for `talker_max_new_tokens`, so audio can end before the text.
+- **Use the same frame sampling rate for videos in one request.** This is how many frames the model reads per second, not the original video frame rate. Different sampling rates in the same request cause an error.
+- **Check the deployment layout when using multiple GPUs.** The colocated layout does not support splitting the text-generation model across two GPUs. If you need that setup, choose the disaggregated layout in [Server Configuration](#server-configuration).
+- **Long inputs leave less room for the answer.** The model has a limit on how much input and output it can handle together. If a request is too long, shorten the input or ask for a shorter answer. A long spoken question can also cause the audio reply to stop before the text reply finishes.
