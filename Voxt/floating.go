@@ -49,6 +49,10 @@ func floatingWindowOptions(title string, width, height int, content mygo.Content
 func cardWindowOptions(title string, width, height int, content mygo.Content) mygo.WindowOptions {
 	options := floatingWindowOptions(title, width, height, content)
 	options.NonActivating = false
+	// Hover follows the pointer while the user works in another app: else
+	// a button hovered while VoxtNew was in front stayed hovered, its
+	// tooltip over the preview's text (MyGo patch 0020).
+	options.HoverWhileInactive = true
 	return options
 }
 
