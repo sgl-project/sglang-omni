@@ -32,7 +32,7 @@ Add the labels that match the change. They combine, and no label runs all of CI.
 | Rust Router | GitHub-hosted | Rust router format, lint, tests and release build | Every pull request except MLX-only ones |
 | Release Docker Images Nightly (NPU) | GitHub-hosted | NPU configuration checks and an ARM64 image build | Pull requests that change its Dockerfile, installer, pyproject files or workflows |
 | Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label except `run-mac-ci`, or a model label |
-| Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` for both jobs, or an ASR model label for the job that tests that model |
+| Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on ARK-ASR-3B, Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` for both jobs, or an ASR model label for the job that tests that model |
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` for every job, or a TTS model label for the jobs that test that model |
 | Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci`, or an Omni model label for that model |
@@ -92,6 +92,7 @@ The two jobs share no data and run side by side. `run-asr-ci` runs both, and See
 | Model label | Job | Checkpoint | In the random pool |
 | --- | --- | --- | --- |
 | `run-moss-transcribe-diarize` | MOSS-TD multi-speaker | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | Its only model |
+| `run-ark-asr-3b` | SeedTTS ASR | `AutoArk-AI/ARK-ASR-3B` with DFlash | Yes |
 | `run-fun-asr-nano-2512` | SeedTTS ASR | `FunAudioLLM/Fun-ASR-Nano-2512-hf` | Yes |
 | `run-qwen3-asr-1.7b` | SeedTTS ASR | `Qwen/Qwen3-ASR-1.7B` | Yes |
 | `run-whisper-large-v3` | SeedTTS ASR | `openai/whisper-large-v3` | Yes |
@@ -256,7 +257,7 @@ Maintainers with CI permissions can comment `/tag-and-rerun-ci` with one or more
 | --- | --- |
 | `lint` | `run-lint-only` |
 | `unit-test`, `asr`, `tts`, `mps`, `omni`, `full-duplex`, `turn-based`, `cascaded`, `intel-cpu`, `intel-xpu`, `mac` | That stage's label |
-| `moss-td-asr`, `fun-asr`, `qwen3-asr`, `whisper-asr` | That ASR model's label |
+| `moss-td-asr`, `ark-asr`, `fun-asr`, `qwen3-asr`, `whisper-asr` | That ASR model's label |
 | `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3` | That TTS model's label |
 | `qwen3-omni`, `minicpmo` | That Omni model's label |
 | `mps-higgs`, `mps-moss` | `run-mps-ci` and the Higgs or MOSS model label |

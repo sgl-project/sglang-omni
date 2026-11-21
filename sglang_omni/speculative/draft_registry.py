@@ -105,6 +105,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wilsonzheng0327/ARK-ASR-3B-dflash",
         draft_model_revision="b0789bb314fab990e0f2377054c4b1947d204273",
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="openai/whisper-large-v3",
