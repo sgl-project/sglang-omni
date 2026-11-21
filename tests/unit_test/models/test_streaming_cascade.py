@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import wave
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -52,7 +53,10 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
-from sglang_omni.models.streaming_cascade.session import ComponentHooks
+from sglang_omni.models.streaming_cascade.session import (
+    ComponentHooks,
+    ComponentSession,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -100,6 +104,7 @@ PROFILE_NAMES = (
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3-tts-vivian-dflash",
     "qwen3-asr-qwen3.8-27b-vivian",
+    "qwen3-asr-qwen3.8-27b-vivian-styles",
     "qwen3-asr-streaming-qwen3-tts-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
@@ -860,6 +865,51 @@ async def test_a_finished_reply_the_model_ends_with_an_ellipsis_does_not_read_as
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("heard_ms", "cut_reply"),
+    [
+        (1000, "That is normal.…"),
+        (2000, "That is normal. [calm] Breathe slowly.…"),
+    ],
+)
+async def test_the_prompt_puts_back_the_style_tags_of_the_reply_the_history_keeps(
+    heard_ms, cut_reply
+):
+    """The prompts after a styled reply showed it without its tags; the history keeps only the reply text, and a style whose text the cut dropped shows no tag."""
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("I passed!", True),
+            text_chunk("Great news! ", 1, style="cheerful"),
+            text_chunk("Well done.", 1, style="cheerful"),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("But I feel nervous.", True),
+            text_chunk("That is normal. ", 2),
+            text_chunk("Breathe slowly.", 2, style="calm"),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=2, text_end=16, audio_ms=1000)
+            ),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=2, text_end=31, audio_ms=2000)
+            ),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(TRUNCATE, t_ms=heard_ms),
+            transcript_chunk("Thanks.", True),
+        ],
+    )
+    assert dialog.messages[2].content == "Great news! Well done."
+    assert prompts(outputs)[-1] == [
+        ("system", f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"),
+        ("user", "I passed!"),
+        ("assistant", "[cheerful] Great news! Well done."),
+        ("user", "But I feel nervous."),
+        ("assistant", cut_reply),
+        ("user", "Thanks."),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_reply_that_finished_stays_whole_without_a_truncate():
     dialog = build({"kind": "dialog"})
     await drain(
@@ -994,6 +1044,15 @@ def test_extra_body_cannot_set_the_fields_the_chat_kind_sets():
         }
     )
     assert config.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+    with pytest.raises(ValueError, match="extra_body cannot set regex"):
+        COMPONENTS.parse(
+            {
+                "kind": "openai_chat",
+                **HTTP_SERVICE,
+                "extra_body": {"regex": ".*"},
+                "constrain_style_tags": True,
+            }
+        )
 
 
 def declared(nodes=None, publish=None, **fields) -> StreamingCascadePipelineConfig:
@@ -1398,6 +1457,61 @@ async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(bac
     assert [point["audio_ms"] for point in progress] == [
         sentence_ms * count for count in (1, 2, 3, 4)
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("drop_spec", "quiet_start_samples", "dropped_samples"),
+    [
+        pytest.param(
+            {"drop_quiet_start": True},
+            3600,
+            2400,
+            id="on-keeps-a-preroll-of-the-quiet-start",
+        ),
+        pytest.param(
+            {"drop_quiet_start": True},
+            600,
+            0,
+            id="on-keeps-a-quiet-start-shorter-than-the-preroll",
+        ),
+        pytest.param({}, 3600, 0, id="off-by-default-plays-quiet-audio-whole"),
+    ],
+)
+async def test_openai_speech_drops_a_sentence_quiet_start_only_when_asked(
+    drop_spec, quiet_start_samples, dropped_samples
+):
+    """A Qwen3-TTS Base clone given its reference transcript opened every sentence with about 0.4 s of room tone, so the listener heard each sentence that much later, but another voice may speak below the onset amplitude."""
+    sample_rate_hz = 24000
+    preroll_samples = 1200  # 50 ms at 24 kHz
+    room_tone = np.full(3 * preroll_samples, 164, dtype="<i2")  # 0.005 of full scale
+    speech = np.full(preroll_samples, 16384, dtype="<i2")
+    samples = np.concatenate(
+        [room_tone[:quiet_start_samples], speech, room_tone, speech]
+    )
+    stream = samples.tobytes()
+
+    async def odd_chunks() -> AsyncIterator[bytes]:
+        for start in range(0, len(stream), 1001):
+            yield stream[start : start + 1001]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=odd_chunks(), headers={"X-Sample-Rate": str(sample_rate_hz)}
+        )
+
+    tts = build({"kind": "openai_speech", **HTTP_SERVICE, **drop_spec})
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        tts, [text_chunk("Hello there.", 1), control_chunk(TURN_DONE, turn=1)]
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    kept = samples[dropped_samples:].tolist()
+    assert (played * 32768).round().tolist() == kept
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    assert progress[-1]["audio_ms"] == pytest.approx(len(kept) * 1000 / sample_rate_hz)
 
 
 @pytest.mark.asyncio
@@ -2376,6 +2490,7 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
         "qwen3-asr-qwen3-tts-vivian",
         "qwen3-asr-qwen3-tts-vivian-dflash",
         "qwen3-asr-qwen3.8-27b-vivian",
+        "qwen3-asr-qwen3.8-27b-vivian-styles",
         "qwen3-asr-qwen3-tts-base-clone",
     ],
 )
@@ -2560,6 +2675,142 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "reply", "recordings"),
+    [
+        pytest.param(
+            "qwen3-asr-qwen3.8-27b-vivian-styles",
+            "Great news! Take a breath. [soon] stays calm. [ca",
+            [
+                "vivian_cheerful.wav",
+                "vivian_calm.wav",
+                "vivian_calm.wav",
+                "vivian_calm.wav",
+            ],
+            id="styles",
+        ),
+        pytest.param(
+            "qwen3-asr-qwen3.8-27b-vivian",
+            "[Cheerful] Great news! [calm] Take a breath. [soon] stays calm. [ca",
+            ["vivian.wav"] * 4,
+            id="no_styles",
+        ),
+    ],
+)
+async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_sentences_after_it(
+    profile, reply, recordings
+):
+    """A tag written as [Cheerful] or split across deltas reached the client, the aligner and the speech service as text; each sentence from a tag on clones that style's recording, and a profile without styles keeps every tag as the model wrote it."""
+    graph = profile_config(profile).component_graph()
+    generator = build(graph.node("llm").component.model_dump())
+    generator.place(graph, "llm")
+
+    async def complete(messages):
+        for content in (
+            "[Che",
+            "erful]",
+            " Great news",
+            "! [calm] Take",
+            " a breath. [soon] stays",
+            " calm. [ca",
+        ):
+            yield ChatDelta(content=content)
+
+    generator.complete = complete
+    outputs = await drain(
+        generator, [messages_chunk([ChatMessage(role="user", content="hi")], 1)]
+    )
+    deltas = [o for o in outputs if o.format == TEXT_DELTA]
+    bodies = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, content=b"\x00\x00" * 4, headers={"X-Sample-Rate": "24000"}
+        )
+
+    tts = build(graph.node("tts").component.model_dump())
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    assert "".join(o.payload["text"] for o in deltas) == reply
+    assert [
+        Path(body["references"][0]["audio_path"]).name for body in bodies
+    ] == recordings
+
+
+def test_the_styles_profile_holds_every_reply_to_a_tag_its_synthesizer_clones():
+    """Without the regex Qwen3.8-27B left the brackets off a tag or named a style the speech node lacks, and the speech service read the word out; a reply of the tag alone would stream no text, so the turn would be silent."""
+    graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
+    regex = str(ComponentSession("llm", graph).component.request_body([])["regex"])
+    for style in graph.node("tts").component.styles:
+        assert re.fullmatch(regex, f"[{style}] Take a slow breath.")
+        assert f"[{style}]" in graph.node("dialog").component.system_prompt
+    for reply in (
+        "sympathetic That sounds hard.",
+        "Cheerful] That is wonderful.",
+        "[surprised] Oh, really?",
+        "[calm] Take a [slow] breath.",
+        "[calm] ",
+        "[calm]  ",
+    ):
+        assert not re.fullmatch(regex, reply)
+
+
+@pytest.mark.asyncio
+async def test_a_configure_that_changes_the_speech_styles_reaches_the_chat_node():
+    """A configure that gave the speech node a style left the chat node's style list and the profile's regex as they were, so the regex still forced a tag the speech node no longer had and it was spoken."""
+    graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
+    session = ComponentSession("llm", graph)
+    session.emit = lambda chunk: None
+    await session.configure(
+        control_chunk(
+            CONFIGURE,
+            nodes={
+                "tts": {"styles": {"whisper": {"audio_path": "w.wav", "text": "Hush."}}}
+            },
+        )
+    )
+    assert session.component.styles == ["whisper"]
+    regex = str(session.component.request_body([])["regex"])
+    assert re.fullmatch(regex, "[whisper] Hush.")
+    assert not re.fullmatch(regex, "[calm] Take a breath.")
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_of_a_style_the_speech_node_lacks_clones_its_own_recording():
+    """A style the speech node lacks, as from a chat node that also feeds a speech node with other styles, raised KeyError and ended the session."""
+    bodies = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, content=b"\x00\x00" * 4, headers={"X-Sample-Rate": "24000"}
+        )
+
+    tts = build(
+        {
+            "kind": "openai_speech",
+            **HTTP_SERVICE,
+            "reference_audio_path": "vivian.wav",
+            "styles": {"calm": {"audio_path": "calm.wav", "text": "Breathe."}},
+        }
+    )
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    await drain(
+        tts,
+        [
+            text_chunk("Hush now. ", 1, style="whisper"),
+            text_chunk("Breathe in.", 1, style="calm"),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert [body["references"][0]["audio_path"] for body in bodies] == [
+        "vivian.wav",
+        "calm.wav",
+    ]
+
+
 async def synthesized(
     spec: dict, deltas: list[TimedChunk]
 ) -> tuple[list[dict], list[TimedChunk]]:
@@ -2661,6 +2912,23 @@ def test_openai_speech_keeps_the_user_language_across_a_replacement():
 def test_profiles_speak_the_user_language(profile):
     config = profile_config(profile)
     assert config.component_graph().node("tts").component.language == "auto"
+
+
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_profiles_cloning_vivian_send_its_transcript_and_drop_the_quiet_start(profile):
+    """Only the profiles that clone vivian.wav send its transcript and drop the quiet start."""
+    tts = profile_config(profile).component_graph().node("tts").component
+    clones_vivian = (
+        tts.reference_audio_path == "examples/streaming_cascade/voices/vivian.wav"
+    )
+    sends_vivian_transcript = (
+        tts.reference_text
+        == "Hi there, it is nice to meet you, and I am happy to help with whatever you need today."
+    )
+    assert (sends_vivian_transcript, tts.drop_quiet_start) == (
+        clones_vivian,
+        clones_vivian,
+    )
 
 
 @pytest.mark.parametrize(

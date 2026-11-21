@@ -14,6 +14,8 @@ import pytest
 import torch
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.dspark_components import dspark_draft as sglang_dspark_draft
+from sglang.srt.utils import DynamicGradMode
+from torch._dynamo.utils import counters
 
 from sglang_omni.models.fun_cosyvoice3 import dspark_draft, dspark_worker
 from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
@@ -28,6 +30,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     EMPTY_HISTORY_TOKEN,
     TOP_K_BOUND,
+    ExactAccept,
     exact_accept,
     rejection_sample,
     sample_draft_block,
@@ -604,6 +607,7 @@ def run_speculative_step(
     markov_head: MirroredMarkovHead,
     base_logits: torch.Tensor,
     target_logits: torch.Tensor,
+    accept_function: ExactAccept = exact_accept,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Draft and verify one block per request, returning drafts, accepts and bonus."""
     device = base_logits.device
@@ -629,11 +633,14 @@ def run_speculative_step(
         batch, sampling_info, RequestHistories(slot_count=4, device=device)
     )
     markov_head.sampling_state = state.draft
-    draft_tokens, shaped_logits = markov_head.draw_block(
-        base_logits,
-        torch.tensor([request.output_ids[-1] for request in requests], device=device),
+    # As in serving, the anchor is a column of the step's token block.
+    token_block = torch.tensor(
+        [[request.output_ids[-1]] * VERIFY_TOKENS_PER_STEP for request in requests],
+        device=device,
     )
+    draft_tokens, shaped_logits = markov_head.draw_block(base_logits, token_block[:, 0])
     executor = object.__new__(ExactVerifyExecutor)
+    executor.accept_function = accept_function
     executor.step_state = state
     executor.gamma = DRAFT_TOKENS_PER_STEP
     executor.verify_num_draft_tokens = VERIFY_TOKENS_PER_STEP
@@ -650,6 +657,51 @@ def run_speculative_step(
         draft_tokens=draft_tokens,
     )
     return draft_tokens, accept.correct_len, accept.bonus
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+def test_the_first_requests_after_the_warm_up_compile_nothing() -> None:
+    """The warm-up traced inputs laid out unlike serving's, so each server's first requests recompiled the draft block and the exact verify for seconds."""
+    device = torch.device("cuda")
+    markov_head = MirroredMarkovHead(vocab_size=TOTAL_VOCAB_SIZE, markov_rank=4).to(
+        device
+    )
+    worker = object.__new__(FunCosyVoice3DSparkWorker)
+    worker.device = device
+    worker.gamma = DRAFT_TOKENS_PER_STEP
+    worker.draft_model = SimpleNamespace(markov_head=markov_head)
+    worker.exact_verify_executor = object.__new__(ExactVerifyExecutor)
+    torch.compiler.reset()
+    accept_function = torch.compile(exact_accept, dynamic=True)
+    worker.exact_verify_executor.accept_function = accept_function
+    markov_head.block_sampler = torch.compile(sample_draft_block, dynamic=True)
+    worker.warm_up_compiled_sampling()
+    compiled_graphs = counters["stats"]["unique_graphs"]
+
+    with DynamicGradMode():
+        for request_count in (1, 3):
+            run_speculative_step(
+                [
+                    seeded_step_request(f"request-{slot}", None, [3, 4], slot=slot)
+                    for slot in range(request_count)
+                ],
+                markov_head,
+                torch.randn(
+                    request_count,
+                    DRAFT_TOKENS_PER_STEP,
+                    TOTAL_VOCAB_SIZE,
+                    device=device,
+                ),
+                torch.randn(
+                    request_count * VERIFY_TOKENS_PER_STEP,
+                    TOTAL_VOCAB_SIZE,
+                    device=device,
+                ),
+                accept_function=accept_function,
+            )
+
+    assert counters["stats"]["unique_graphs"] == compiled_graphs
 
 
 @pytest.mark.accelerator
