@@ -11,8 +11,8 @@ _LETTER_RANGE = "A-J"
 
 # Patterns tried in order: first match wins
 _PATTERNS = [
-    # Bare letter at start: "B", "B.", "B) ..." (not start of a word like "Because")
-    re.compile(rf"^\s*([{_LETTER_RANGE}])(?!\w)(?!\s+[a-z])", re.IGNORECASE),
+    # Bare letter at start: "B", "B.", "B) ..." (not start of a word like "Because" or "I'm")
+    re.compile(rf"^\s*([{_LETTER_RANGE}])(?![\w'])(?!\s+[a-z])", re.IGNORECASE),
     # "The answer is B" / "answer: B"
     re.compile(
         rf"(?:answer|choice)\s*(?:is|:)\s*([{_LETTER_RANGE}])\b",
