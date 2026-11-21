@@ -63,11 +63,15 @@ class ServerLog(BaseModel):
 
 
 class CapacityProbe(BaseModel):
-    """Connections held open together; every one admitted means no slot is still taken."""
+    """One more session than the cap, held open together."""
 
     admitted: int
     denied: int
     errored: int
+
+    def confirms(self, slots: int) -> bool:
+        """Every slot is back and the cap is the server's: the cap admitted and the one above it denied. Without that denial a cap set too low would hide leaked slots behind the room above it."""
+        return self.admitted == slots and self.denied == 1 and self.errored == 0
 
 
 class CycleSample(BaseModel):
@@ -120,4 +124,6 @@ class StressSamples(BaseModel):
     # note (Yi Zhao): empty in the file a run writes after each cycle, so a run that dies keeps the cycles it finished.
     final_session: SessionOutcome | None
     server_log: ServerLog | None
+    # note (Yi Zhao): a last probe after the final session, because a probe shows only the leaks before it and nothing else follows the last cycle's probe and the final session.
+    closing_probe: CapacityProbe | None
     closing: ServerSnapshot | None

@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import socket
+import struct
 import time
 import uuid
 from dataclasses import dataclass
@@ -40,6 +42,8 @@ from benchmarks.duplex.oracle_models import is_admission_rejection
 NORMAL_CLOSE_CODE = 1000
 POLICY_CLOSE_CODE = 1008
 CANCEL_REFUSAL_CODE = "not_supported"
+# note (Yi Zhao): the events that carry a piece of a reply: audio, its transcript or text.
+OUTPUT_DELTA_SUFFIX = ".delta"
 # note (Yi Zhao): a client that leaves early stops reading; past a bounded receive queue the socket is no longer read either, the server's close frame stays unread and the close waits out its whole timeout.
 RECEIVE_QUEUE_FRAMES = None
 # note (Yi Zhao): the recorder's profile for a server that takes turns by its own voice detection, and how such a server marks a reply the user talked over.
@@ -168,6 +172,10 @@ async def await_expiry(connection: ClientConnection, idle_point: IdlePoint) -> O
 async def leave_early(connection: ClientConnection, leave_style: LeaveStyle) -> None:
     """Leave without reading what the server still has to say: a TCP reset or a close frame."""
     if leave_style == "reset":
+        # note (Yi Zhao): closing a socket sends FIN, an orderly end; a linger time of zero makes the close send RST, which is what a client that crashed or lost its network looks like to the server.
+        connection.transport.get_extra_info("socket").setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
         connection.transport.abort()
     else:
         await connection.close()
@@ -279,7 +287,18 @@ async def drive_session(
         if plan.should_cancel_reply:
             await connection.send(client_event("response.cancel", {}))
         else:
-            pass
+            # note (Yi Zhao): response.created only says a reply will come. The client that leaves mid-reply waits for the first output of that reply, so that the server has output in flight when it goes; a reply that ends without any is over, and the leave counts as after it.
+            is_output_seen = False
+            while not is_output_seen and not is_reply_over:
+                event = ServerEvent.model_validate_json(await connection.recv())
+                is_output_seen = (
+                    event.response_id == created.id
+                    and event.type.endswith(OUTPUT_DELTA_SUFFIX)
+                )
+                is_reply_over = (
+                    event.type == "response.done"
+                    and EventResponse.model_validate(event.response).id == created.id
+                )
         reply_started.set()
         if plan.leave_point == "reply":
             # note (Yi Zhao): a reply that is short or quick is over before the client gets to leave, and such a session did not leave mid-reply; reading on until the leave is what tells the two apart. An error event is no end of the reply, so it is read past.
@@ -439,9 +458,17 @@ async def run_recorded_session(
     was_refused = any(record.direction == "admission" for record in records) or any(
         is_admission_rejection(event) for event in received
     )
-    if errors:
+    # note (Yi Zhao): the recorder stops sending at an error event and, unless the event is fatal, still closes the session in good order, so the trace of a session the server gave up on ends like that of one that ran to its end.
+    server_errors = [
+        event
+        for event in received
+        if event["type"] == "error" and not is_admission_rejection(event)
+    ]
+    if errors or server_errors:
         return SessionOutcome(
-            outcome="errored", ended_s=ended_s, error=json.dumps(errors[0])
+            outcome="errored",
+            ended_s=ended_s,
+            error=json.dumps((errors + server_errors)[0]),
         )
     elif "session.updated" not in received_types and was_refused:
         return SessionOutcome(outcome="denied", ended_s=ended_s)
@@ -522,8 +549,10 @@ async def take_slot(
 
 
 async def probe_capacity(url: str, slots: int, timeout_s: float) -> CapacityProbe:
-    """Hold the given number of admitted sessions open together, then release them; a denial means a slot is still taken, whether the server counts slots at the connect or at session.update."""
-    results = await asyncio.gather(*(take_slot(url, timeout_s) for _ in range(slots)))
+    """Open one more session than the cap together, then release them. The cap admitted and one denied means every slot is back; the server may count slots at the connect or at session.update."""
+    results = await asyncio.gather(
+        *(take_slot(url, timeout_s) for _ in range(slots + 1))
+    )
     connections = [result for result in results if isinstance(result, ClientConnection)]
     await asyncio.gather(*(connection.close() for connection in connections))
     return CapacityProbe(

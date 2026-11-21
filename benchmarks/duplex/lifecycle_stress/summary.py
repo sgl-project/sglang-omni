@@ -57,6 +57,8 @@ class StressSummary(BaseModel):
     cleanup_timeouts: int
     capacity_recovery_ms: Distribution
     capacity_unrecovered_cycles: int | None
+    # note (Yi Zhao): probes that got more sessions in than --max-connections: the cap given is not the server's, and such a probe proves nothing about leaked slots.
+    probes_above_cap: int | None
     rss_megabytes_first: float | None
     rss_megabytes_last: float | None
     rss_megabytes_peak: float | None
@@ -155,13 +157,22 @@ def summarize(samples: StressSamples) -> StressSummary:
     ]
 
     capacity_unrecovered_cycles: int | None
+    probes_above_cap: int | None
     if samples.max_connections is None:
         capacity_unrecovered_cycles = None
+        probes_above_cap = None
     else:
+        # note (Yi Zhao): the probe after the final session counts with those of the cycles; a run that has not got to it yet has not shown its slots back.
+        probes = [cycle.capacity_probe for cycle in samples.cycles] + [
+            samples.closing_probe
+        ]
         capacity_unrecovered_cycles = sum(
-            cycle.capacity_probe is None
-            or cycle.capacity_probe.admitted != samples.max_connections
-            for cycle in samples.cycles
+            probe is None or not probe.confirms(samples.max_connections)
+            for probe in probes
+        )
+        probes_above_cap = sum(
+            probe is not None and probe.admitted > samples.max_connections
+            for probe in probes
         )
 
     expire_overshoots_ms: list[float] = []
@@ -258,6 +269,7 @@ def summarize(samples: StressSamples) -> StressSummary:
             ]
         ),
         capacity_unrecovered_cycles=capacity_unrecovered_cycles,
+        probes_above_cap=probes_above_cap,
         rss_megabytes_first=rss_series[0] if rss_series else None,
         rss_megabytes_last=rss_series[-1] if rss_series else None,
         rss_megabytes_peak=max(peaks) if peaks else None,

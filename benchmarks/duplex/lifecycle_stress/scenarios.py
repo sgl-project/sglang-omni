@@ -225,6 +225,28 @@ async def run_client(
     return outcomes
 
 
+async def await_capacity(
+    url: str,
+    slots: int,
+    observer: ServerObserver,
+    deadline_s: float,
+    timeout_s: float,
+) -> tuple[CapacityProbe, float]:
+    """Probe until every slot is back or the deadline has passed; the last probe and when it started."""
+    retry_interval_s = RECOVERY_POLL_INTERVAL_S
+    while True:
+        probe_started_s = time.perf_counter()
+        probe = await probe_capacity(url, slots, timeout_s)
+        # note (Yi Zhao): a probe whose connects failed on the client host admitted fewer than the cap without the one denial; that is not a recovered server.
+        if probe.confirms(slots) or time.perf_counter() >= deadline_s:
+            return probe, probe_started_s
+        else:
+            # note (Yi Zhao): the sessions a failed probe did get in are still closing; a retry that came at once would be denied by them, so each retry waits for them, by the session count where there is one and twice as long as the last time where there is none.
+            await observer.await_no_sessions(time.perf_counter(), deadline_s)
+            await asyncio.sleep(retry_interval_s)
+            retry_interval_s = min(2 * retry_interval_s, MAX_RECOVERY_POLL_INTERVAL_S)
+
+
 async def run_cycle(
     settings: RunSettings,
     plan: SessionPlan,
@@ -277,32 +299,18 @@ async def run_cycle(
     probe: CapacityProbe | None = None
     capacity_recovery_ms: float | None = None
     if settings.max_connections is not None:
-        is_recovered = False
-        retry_interval_s = RECOVERY_POLL_INTERVAL_S
-        while not is_recovered:
-            probe_started_s = time.perf_counter()
-            probe = await probe_capacity(
-                settings.url, settings.max_connections, settings.cleanup_wait_s
-            )
-            # note (Yi Zhao): a probe whose connects failed on the client host admitted fewer than the cap without one denial; that is not a recovered server.
-            if probe.admitted == settings.max_connections:
-                is_recovered = True
-                # note (Yi Zhao): the server frees a slot by removing the session from its table, so with a session count to read this time would repeat the cleanup latency; it is recorded only where the probe is the one view of the server.
-                if observer.has_debug_route:
-                    pass
-                else:
-                    capacity_recovery_ms = (
-                        probe_started_s - last_ended_s
-                    ) * MS_PER_SECOND
-            elif time.perf_counter() >= deadline_s:
-                break
-            else:
-                # note (Yi Zhao): the sessions a failed probe did get in are still closing; a retry that came at once would be denied by them, so each retry waits for them, by the session count where there is one and twice as long as the last time where there is none.
-                await observer.await_no_sessions(time.perf_counter(), deadline_s)
-                await asyncio.sleep(retry_interval_s)
-                retry_interval_s = min(
-                    2 * retry_interval_s, MAX_RECOVERY_POLL_INTERVAL_S
-                )
+        probe, probe_started_s = await await_capacity(
+            settings.url,
+            settings.max_connections,
+            observer,
+            deadline_s,
+            settings.cleanup_wait_s,
+        )
+        # note (Yi Zhao): the server frees a slot by removing the session from its table, so with a session count to read this time would repeat the cleanup latency; it is recorded only where the probe is the one view of the server.
+        if probe.confirms(settings.max_connections) and not observer.has_debug_route:
+            capacity_recovery_ms = (probe_started_s - last_ended_s) * MS_PER_SECOND
+        else:
+            pass
         probe_cleanup_ms, _ = await observer.await_no_sessions(
             time.perf_counter(), time.perf_counter() + settings.cleanup_wait_s
         )
@@ -318,7 +326,7 @@ async def run_cycle(
                 check = await probe_capacity(
                     settings.url, settings.max_connections, settings.cleanup_wait_s
                 )
-                if check.admitted == settings.max_connections:
+                if check.confirms(settings.max_connections):
                     is_released = True
                     await asyncio.sleep(check_started_s - probe_closed_s)
                 else:
@@ -452,6 +460,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
         def record(
             final_session: SessionOutcome | None,
             server_log: ServerLog | None,
+            closing_probe: CapacityProbe | None,
             closing: ServerSnapshot | None,
         ) -> StressSamples:
             """Write everything the run has so far; called after every cycle, so a run that dies keeps its finished cycles."""
@@ -493,6 +502,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                 cycles=cycles,
                 final_session=final_session,
                 server_log=server_log,
+                closing_probe=closing_probe,
                 closing=closing,
             )
             (settings.output / SAMPLES_FILE).write_text(
@@ -504,7 +514,7 @@ async def run_stress(settings: RunSettings) -> StressSamples:
             cycles.append(
                 await run_cycle(settings, plan, turn_detection, observer, cycle_index)
             )
-            record(None, None, None)
+            record(None, None, None, None)
         if settings.protocol == "native":
             final_session = await run_recorded_session(
                 settings.url,
@@ -530,9 +540,20 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                     timeout_s=session_timeout_s,
                 ),
             )
+        closing_probe: CapacityProbe | None = None
+        if settings.max_connections is None:
+            pass
+        else:
+            closing_probe, _ = await await_capacity(
+                settings.url,
+                settings.max_connections,
+                observer,
+                time.perf_counter() + settings.cleanup_wait_s,
+                settings.cleanup_wait_s,
+            )
         # note (Yi Zhao): the last reading of the run, after the last probe and the final session have had their time to leave.
         await observer.await_no_sessions(
-            final_session.ended_s, final_session.ended_s + settings.cleanup_wait_s
+            time.perf_counter(), time.perf_counter() + settings.cleanup_wait_s
         )
         closing = await observer.snapshot(is_required=False)
     server_log: ServerLog | None
@@ -556,4 +577,4 @@ async def run_stress(settings: RunSettings) -> StressSamples:
                 ).most_common(MAX_ERROR_KINDS)
             ),
         )
-    return record(final_session, server_log, closing)
+    return record(final_session, server_log, closing_probe, closing)

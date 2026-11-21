@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -12,14 +13,16 @@ from pathlib import Path
 import pytest
 from pydantic import JsonValue
 from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.server import ServerConnection, serve
 
 from benchmarks.duplex.client import PACKET_BYTES, PACKET_MS
-from benchmarks.duplex.lifecycle_stress import host_metrics, scenarios
+from benchmarks.duplex.lifecycle_stress import host_metrics, scenarios, session_client
 from benchmarks.duplex.lifecycle_stress.mock_server import (
     MockSettings,
     serve_in_process,
 )
 from benchmarks.duplex.lifecycle_stress.records import (
+    CapacityProbe,
     CycleSample,
     IdlePoint,
     LeavePoint,
@@ -36,7 +39,10 @@ from benchmarks.duplex.lifecycle_stress.scenarios import (
     run_stress,
 )
 from benchmarks.duplex.lifecycle_stress.session_client import (
+    SessionPlan,
+    leave_early,
     probe_capacity,
+    run_lifecycle_session,
     run_recorded_session,
     take_slot,
 )
@@ -51,6 +57,9 @@ SHORT_TIMEOUT_S = 0.3
 # note (Yi Zhao): enough packets for several whole units, so a reply has started and ended while packets remain, and the events of one session outnumber a default receive queue.
 MANY_PACKETS = 16
 SLOW_CLOSE_MS = 600.0
+# note (Yi Zhao): longer than the 80 ms between two packets, so a client that leaves at the first delta is gone before the second.
+SLOW_DELTA_MS = 200.0
+OUTPUT_DELAY_S = 0.2
 # note (Yi Zhao): well under the 80 ms between two packets.
 QUICK_DELTA_MS = 20.0
 STAND_IN_PID = 4242
@@ -140,12 +149,13 @@ def test_churn_cycle_completes_and_every_check_passes(tmp_path: Path) -> None:
 def test_a_client_that_leaves_early_is_released_by_the_shared_session(
     tmp_path: Path, leave_point: LeavePoint, leave_style: LeaveStyle
 ) -> None:
-    """Leaving while the server still has a reply to send or to finish leaves no session behind; the mock holds the reply of those two sessions, so the reply point is certain."""
+    """Leaving while the server still has a reply to send or to finish leaves no session behind; the mock spreads the reply over deltas that come slowly, so the client leaves between two of them."""
     samples = asyncio.run(
         stress_against_mock(
             MockSettings(
                 max_connections=2,
-                held_first_replies=2 if leave_point == "reply" else 0,
+                reply_chunks=5,
+                chunk_delay_ms=SLOW_DELTA_MS if leave_point == "reply" else 0.0,
             ),
             tmp_path,
             scenario="drop",
@@ -179,14 +189,18 @@ def test_a_close_frame_after_many_unread_events_still_closes_in_good_order(
     assert [session.close_code for session in sessions] == [1000, 1000]
 
 
-@pytest.mark.parametrize("held_first_replies", [2, 0])
+@pytest.mark.parametrize(
+    ("chunk_delay_ms", "drops_mid_reply"), [(SLOW_DELTA_MS, 2), (0.0, 0)]
+)
 def test_a_leave_at_the_reply_says_whether_the_reply_was_still_in_progress(
-    tmp_path: Path, held_first_replies: int
+    tmp_path: Path, chunk_delay_ms: float, drops_mid_reply: int
 ) -> None:
-    """The mock either holds the first reply, so the client leaves in the middle of it, or ends it at once, so the reply is over by the next packet; turns red if the client stops reading after response.created, which reports both as mid-reply."""
+    """The mock either spreads the reply over slow deltas, so the client leaves in the middle of it, or sends it at once, so the reply is over when the client goes; turns red if the client stops reading once it has decided to leave, which reports both as mid-reply."""
     samples = asyncio.run(
         stress_against_mock(
-            MockSettings(max_connections=2, held_first_replies=held_first_replies),
+            MockSettings(
+                max_connections=2, reply_chunks=5, chunk_delay_ms=chunk_delay_ms
+            ),
             tmp_path,
             scenario="drop",
             leave_point="reply",
@@ -197,8 +211,8 @@ def test_a_leave_at_the_reply_says_whether_the_reply_was_still_in_progress(
     summary = summarize(samples)
     assert summary.session_outcomes == {"dropped": 2}
     assert (summary.drops_mid_reply, summary.drops_after_reply) == (
-        held_first_replies,
-        2 - held_first_replies,
+        drops_mid_reply,
+        2 - drops_mid_reply,
     )
 
 
@@ -332,7 +346,7 @@ def test_a_server_that_keeps_a_closed_session_fails_the_run(
     )
     summary = summarize(samples)
     probe = samples.cycles[0].capacity_probe
-    assert probe is not None and (probe.admitted, probe.denied) == (2, 1)
+    assert probe is not None and (probe.admitted, probe.denied) == (2, 2)
     assert summary.checks["slots_recovered"] is False
     assert summary.checks["final_session_completed"] is True
     if has_debug_route:
@@ -345,7 +359,7 @@ def test_a_server_that_keeps_a_closed_session_fails_the_run(
 def test_a_session_the_probe_leaves_behind_is_not_in_its_cycle_but_fails_the_run(
     tmp_path: Path,
 ) -> None:
-    """With no clients the probe is the only load; the mock keeps one of its sessions, which the cycle's reading taken before the probe must not hold and the closing reading must."""
+    """With no clients the probe is the only load; the mock keeps one of its sessions, which the cycle's reading taken before the probe must not hold, and which the closing reading and the probe after the final session must both show."""
     samples = asyncio.run(
         stress_against_mock(
             MockSettings(max_connections=2, leaked_sessions=1),
@@ -361,7 +375,7 @@ def test_a_session_the_probe_leaves_behind_is_not_in_its_cycle_but_fails_the_run
     assert cycle.snapshot_after.active_sessions == 0
     summary = summarize(samples)
     assert summary.sessions_left == 1
-    assert summary.failed_checks == ["no_sessions_left"]
+    assert summary.failed_checks == ["no_sessions_left", "slots_recovered"]
 
 
 @pytest.mark.parametrize("idle_point", ["created", "open"])
@@ -505,14 +519,17 @@ def test_reconnect_after_a_reset_is_denied_until_the_old_session_is_gone(
     [MockSettings(max_connections=2), MockSettings(max_connections=3, model_slots=2)],
 )
 def test_capacity_probe_reports_a_slot_that_is_still_taken(mock: MockSettings) -> None:
-    """Three sessions held together against two slots: the probe must see the missing one, whether the server refuses the connect or, as a turn-based pipeline does, the session.update."""
+    """A probe of two slots opens three sessions: two admitted and one denied confirms the cap, whether the server refuses the connect or, as a turn-based pipeline does, the session.update. The same answer does not confirm a cap of one; turns red if a probe passes on the admitted sessions alone, because a cap given too low then hides leaked slots behind the room above it."""
 
-    async def probe() -> tuple[int, int]:
+    async def probe() -> CapacityProbe:
         async with serve_in_process(mock, "127.0.0.1", 0) as url:
-            result = await probe_capacity(url, 3, CLEANUP_WAIT_S)
-            return result.admitted, result.denied
+            return await probe_capacity(url, 2, CLEANUP_WAIT_S)
 
-    assert asyncio.run(probe()) == (2, 1)
+    result = asyncio.run(probe())
+    assert (result.admitted, result.denied) == (2, 1)
+    assert result.confirms(2)
+    assert not CapacityProbe(admitted=1, denied=0, errored=0).confirms(1)
+    assert not CapacityProbe(admitted=2, denied=0, errored=0).confirms(1)
 
 
 def test_long_scenario_runs_the_recorder_and_keeps_its_trace(tmp_path: Path) -> None:
@@ -550,6 +567,169 @@ def test_a_recorded_session_the_server_has_no_slot_for_is_denied(
             return outcome
 
     assert asyncio.run(record_against_a_full_server()).outcome == "denied"
+
+
+def test_a_recorded_session_the_server_answers_with_an_error_is_errored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recorder stops sending at a non-fatal error event and still closes the session in good order; its trace is written here as it would be. Turns red if only the recorder's own error lines count, because such a session then reads as completed."""
+
+    async def recorder_met_an_error(
+        url: str, pcm: bytes, *, trace_path: Path, timeout_s: float
+    ) -> None:
+        received = [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            {"type": "error", "error": {"code": "invalid_request", "message": "x"}},
+            {"type": "session.closed"},
+        ]
+        trace_path.write_text(
+            "".join(
+                json.dumps({"direction": "receive", "event": event}) + "\n"
+                for event in received
+            )
+        )
+
+    monkeypatch.setattr(session_client, "run_session", recorder_met_an_error)
+    outcome = asyncio.run(
+        run_recorded_session(
+            "ws://unused", b"", tmp_path / "session" / "trace.jsonl", 1.0, None
+        )
+    )
+    assert outcome.outcome == "errored"
+    assert outcome.error is not None and "invalid_request" in outcome.error
+
+
+def test_without_the_debug_route_a_session_the_last_probe_leaves_behind_fails_the_run(
+    tmp_path: Path,
+) -> None:
+    """With no clients and one cycle, the only session the mock can keep is one of the cycle's probe, and nothing but a probe after the final session can show it; turns red without that probe, because the run then ends with every check passed or unmeasured."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=2, leaked_sessions=1),
+            tmp_path,
+            concurrency=0,
+            max_connections=2,
+            has_debug_route=False,
+            cleanup_wait_s=SHORT_TIMEOUT_S,
+        )
+    )
+    cycle_probe = samples.cycles[0].capacity_probe
+    assert cycle_probe is not None and cycle_probe.confirms(2)
+    assert samples.closing_probe is not None
+    assert (samples.closing_probe.admitted, samples.closing_probe.denied) == (1, 2)
+    assert summarize(samples).failed_checks == ["slots_recovered"]
+
+
+def test_a_cap_given_below_the_server_s_does_not_pass_as_recovered(
+    tmp_path: Path,
+) -> None:
+    """The server has four slots and the run is told two, so the probe's third session is admitted too; turns red if the probe passes without the denial above the cap, because two leaked slots would then pass as well."""
+    samples = asyncio.run(
+        stress_against_mock(
+            MockSettings(max_connections=4),
+            tmp_path,
+            max_connections=2,
+            cleanup_wait_s=SHORT_TIMEOUT_S,
+        )
+    )
+    summary = summarize(samples)
+    assert summary.checks["slots_recovered"] is False
+    assert summary.probes_above_cap == 2
+
+
+def test_a_reset_reaches_the_server_as_a_reset() -> None:
+    """A socket that is just closed ends its stream in good order, which a server reads as the client hanging up; turns red without the zero linger time, because the server then reads the end of the stream and no reset."""
+
+    async def reset_and_read() -> str:
+        seen: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+        async def serve_once(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            try:
+                await reader.read(1)
+                seen.set_result("end of stream")
+            except ConnectionResetError:
+                seen.set_result("reset")
+            writer.close()
+
+        server = await asyncio.start_server(serve_once, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        _, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        class RawConnection:
+            """The part of a client connection that leaving early touches."""
+
+            transport = writer.transport
+
+            async def wait_closed(self) -> None:
+                await writer.wait_closed()
+
+        await leave_early(RawConnection(), "reset")
+        result = await seen
+        server.close()
+        return result
+
+    assert asyncio.run(reset_and_read()) == "reset"
+
+
+def test_a_client_that_leaves_at_the_reply_waits_for_its_first_output() -> None:
+    """The server here announces a reply and sends its first delta a while later; turns red if the client leaves at response.created, because the server then has no output of that reply in flight when the client goes."""
+
+    async def leave_at_the_reply() -> tuple[bool, str]:
+        left_before_output: asyncio.Future[bool] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        async def announce_then_answer(connection: ServerConnection) -> None:
+            await connection.send(json.dumps({"type": "session.created"}))
+            await connection.recv()
+            await connection.send(json.dumps({"type": "session.updated"}))
+            await connection.recv()
+            await connection.send(
+                json.dumps(
+                    {
+                        "type": "response.created",
+                        "response": {"id": "response_0", "status": "in_progress"},
+                    }
+                )
+            )
+            try:
+                await asyncio.wait_for(connection.wait_closed(), OUTPUT_DELAY_S)
+                left_before_output.set_result(True)
+            except TimeoutError:
+                await connection.send(
+                    json.dumps(
+                        {
+                            "type": "response.output_audio.delta",
+                            "response_id": "response_0",
+                        }
+                    )
+                )
+                await connection.wait_closed()
+                left_before_output.set_result(False)
+
+        async with serve(announce_then_answer, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            outcome = await run_lifecycle_session(
+                f"ws://127.0.0.1:{port}",
+                SessionPlan(
+                    protocol="native",
+                    pcm=bytes(MANY_PACKETS * PACKET_BYTES),
+                    packets=MANY_PACKETS,
+                    leave_point="reply",
+                    leave_style="close_frame",
+                    idle_point="none",
+                    should_cancel_reply=False,
+                    supports_cancel=True,
+                    turn_detection=None,
+                    timeout_s=CLEANUP_WAIT_S,
+                ),
+            )
+            return await left_before_output, outcome.outcome
+
+    assert asyncio.run(leave_at_the_reply()) == (False, "dropped")
 
 
 def test_without_the_debug_route_the_session_count_is_unmeasured_not_passed(
@@ -868,6 +1048,7 @@ def test_summary_fails_on_leftover_sessions_and_measures_growth_after_warmup() -
         ],
         final_session=SessionOutcome(outcome="completed", ended_s=0.0),
         server_log=None,
+        closing_probe=None,
         closing=ServerSnapshot(active_sessions=len(resident_megabytes)),
     )
     summary = summarize(samples)
