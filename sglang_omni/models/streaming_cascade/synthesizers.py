@@ -59,6 +59,18 @@ def has_chinese_characters(sentence: str) -> bool:
 
 
 CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
+QWEN3_TTS_LANGUAGES = (
+    "Chinese",
+    "English",
+    "French",
+    "German",
+    "Italian",
+    "Japanese",
+    "Korean",
+    "Portuguese",
+    "Russian",
+    "Spanish",
+)
 KANA = re.compile("[\u3040-\u30ff]")
 HANGUL = re.compile("[\uac00-\ud7af]")
 LATIN_WORD = re.compile(r"[A-Za-z]+")
@@ -84,7 +96,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     it, which is tagged by its script, and any other name tags every sentence
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
-    its numbers read out as words.
+    its numbers read out as words. supported_languages are the tags the
+    service takes, Qwen3-TTS's by default; under language="auto" a dialog's
+    language must be one of them.
     styles maps a style name to the recording a sentence of that style
     clones, and a sentence of a style it lacks clones reference_audio_path;
     the language model names a style with a tag such as [calm].
@@ -98,6 +112,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     reference_text: str = ""
     styles: dict[str, SpeechReference] = Field(default_factory=dict)
     language: str = ""
+    supported_languages: tuple[str, ...] = QWEN3_TTS_LANGUAGES
     max_sentence_words: int = Field(default=24, gt=0)
     drop_quiet_start: bool = False
     api_key_env: str = "OPENAI_API_KEY"
@@ -227,14 +242,10 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
         deltas: AsyncIterator[TimedChunk],
         delta_styles: list[tuple[int, str | None]],
     ) -> AsyncIterator[TimedChunk]:
-        """The reply's deltas, recording the user language they carry and, in delta_styles, the reply offset each delta starts at with its style."""
+        """The reply's deltas, recording the user language they carry (a delta without one means the dialog knows none for this reply, such as after its configured language is cleared) and, in delta_styles, the reply offset each delta starts at with its style."""
         text_start = 0
         async for chunk in deltas:
-            language = chunk_language(chunk)
-            if language is not None:
-                self.session_language = language
-            else:
-                pass
+            self.session_language = chunk_language(chunk)
             delta_styles.append((text_start, chunk_style(chunk)))
             text_start += len(chunk.payload["text"])
             yield chunk
