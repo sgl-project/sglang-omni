@@ -310,6 +310,7 @@ func (host *meetingDemoHost) record(format string, arguments ...any) {
 
 func (host *meetingDemoHost) startMeeting()  { host.record("startMeeting") }
 func (host *meetingDemoHost) meetingFinish() { host.record("meetingFinish") }
+func (host *meetingDemoHost) meetingImport() { host.record("meetingImport") }
 func (host *meetingDemoHost) loadMeetings()  { host.record("loadMeetings") }
 func (host *meetingDemoHost) searchMeetings(query string) {
 	host.pageUI.query, host.pageUI.page = query, 0
@@ -332,6 +333,9 @@ func (host *meetingDemoHost) regenerateMeetingSummary(id string) {
 }
 func (host *meetingDemoHost) openMeetingLanguageModels() { host.record("openMeetingLanguageModels") }
 func (host *meetingDemoHost) openMeetingSpeechModels()   { host.record("openMeetingSpeechModels") }
+func (host *meetingDemoHost) openMeetingPrivacySettings() {
+	host.record("openMeetingPrivacySettings")
+}
 func (host *meetingDemoHost) copyMeetingTranscript(id string) {
 	host.record("copyMeetingTranscript %s", id)
 }
@@ -524,6 +528,7 @@ func (host *meetingDemoHost) onboardingTryLanguage() { host.record("onboardingTr
 func (host *meetingDemoHost) onboardingDownloadAndContinue() {
 	host.record("onboardingDownloadAndContinue")
 }
+func (host *meetingDemoHost) obDownload() { host.record("obDownload") }
 func (host *meetingDemoHost) obUse(ids ...string) {
 	host.record("obUse %s", strings.Join(ids, ","))
 }

@@ -247,12 +247,28 @@ func resolver(lm local.Services) session.Resolver {
 		f := featureOf(s, string(kind))
 		var svc session.Services
 		if speech {
-			p, m, err := lm.ASR(ctx, f.ASR)
-			switch {
-			case err == nil:
-				svc.ASR, svc.ASRInfo = p, sessionModel(m)
-			case !errors.Is(err, local.ErrNotInstalled):
-				return svc, err
+			id := strings.TrimSpace(f.ASR)
+			skip := false
+			if id == "" {
+				// Automatic: only a model that can recognise the main
+				// language (automaticSpeech). Models installed but none
+				// for it is as without one; none installed opens "" and
+				// reports the lack, as before.
+				all := lm.Installed(local.ASR)
+				if m, ok := local.Choose(automaticSpeech(s, all), ""); ok {
+					id = m.ID
+				} else {
+					skip = len(all) > 0
+				}
+			}
+			if !skip {
+				p, m, err := lm.ASR(ctx, id)
+				switch {
+				case err == nil:
+					svc.ASR, svc.ASRInfo = p, sessionModel(m)
+				case !errors.Is(err, local.ErrNotInstalled):
+					return svc, err
+				}
 			}
 		}
 		if va, ok := svc.ASR.(local.VoiceActivity); ok {

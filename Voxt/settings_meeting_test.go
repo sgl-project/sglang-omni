@@ -139,3 +139,20 @@ func TestMeetingSpeechSettingsNoModel(t *testing.T) {
 		t.Fatalf("no Automatic label: %q", tt.Texts())
 	}
 }
+
+// TestMeetingSettingsAutomaticNamesGatedModel: the menu's
+// "Automatic (now: …)" names the model a meeting on Automatic opens —
+// the language gate's first for the meeting's language, not the first
+// installed (#4067).
+func TestMeetingSettingsAutomaticNamesGatedModel(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.local = &meetingGateLocal{}
+	a.prefs.General.MainLanguage = "ja"
+	if got := a.meetingSettingsModel().ASRSelected; got != "Automatic (now: Qwen3-ASR 1.7B (8bit))" {
+		t.Errorf("main ja: %q", got)
+	}
+	a.prefs.Features.Meeting.Lang = "zh"
+	if got := a.meetingSettingsModel().ASRSelected; got != "Automatic (now: MOSS-Transcribe-Diarize)" {
+		t.Errorf("meeting zh: %q", got)
+	}
+}

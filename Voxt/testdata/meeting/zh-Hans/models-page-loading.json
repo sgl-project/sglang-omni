@@ -103,6 +103,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

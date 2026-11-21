@@ -374,9 +374,12 @@ func checkMeetingFixtureValues(t *testing.T, locale string, fixtures map[string]
 		}
 	}
 	delete(states, "")
+	captureModes := meetingTypedConstants(t, "internal/meeting/types.go", "Mode")
+	// Import is a stored meeting's origin, not a live-capture mode.
+	delete(captureModes, string(meeting.ModeImport))
 	assertMeetingFixtureSet(t, locale+" states", meetingTypedConstants(t, "internal/meeting/types.go", "State"), states)
 	assertMeetingFixtureSet(t, locale+" stages", meetingTypedConstants(t, "internal/meeting/types.go", "Stage"), stages)
-	assertMeetingFixtureSet(t, locale+" modes", meetingTypedConstants(t, "internal/meeting/types.go", "Mode"), modes)
+	assertMeetingFixtureSet(t, locale+" modes", captureModes, modes)
 	assertMeetingFixtureSet(t, locale+" sources", meetingTypedConstants(t, "internal/meeting/types.go", "Source"), sources)
 	assertMeetingFixtureSet(t, locale+" store statuses", meetingTypedConstants(t, "internal/store/store.go", "MeetingStatus"), statuses)
 	assertMeetingFixtureSet(t, locale+" store modes", meetingTypedConstants(t, "internal/store/store.go", "MeetingMode"), storeModes)

@@ -179,6 +179,11 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		finish = "length"
 	}
 	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
+	if o.DraftCounters {
+		metadata["verify_round_count"] = 3
+		metadata["proposed_draft_token_count"] = 12
+		metadata["accepted_draft_token_count"] = 8
+	}
 	if o.WindowTexts != nil {
 		metadata["window_texts"] = o.WindowTexts
 	}
@@ -281,13 +286,21 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				segs++
-				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
+				text := fmt.Sprintf("partial %d", samples/1600)
+				if o.LiveMarkup {
+					text = "[S01] " + text + "[2.62]"
+				}
+				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": text, "is_final": false})
 			}
 		case "input_audio_buffer.commit":
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":
 			if !o.LiveDrop {
-				send(map[string]any{"type": "transcription.completed", "text": "live final"})
+				text := "live final"
+				if o.LiveMarkup {
+					text = o.Text
+				}
+				send(map[string]any{"type": "transcription.completed", "text": text})
 			}
 			return
 		}

@@ -20,6 +20,9 @@ const (
 	ModeMeeting   Mode = "meeting"
 	ModeSubtitles Mode = "subtitles"
 	ModeRecording Mode = "recording"
+	// ModeImport is a meeting made of a recording file: one mixed track,
+	// every voice labelled Speaker 1..N (no Me/Others split).
+	ModeImport Mode = "import"
 )
 
 // Source is a recording track within a meeting.
@@ -122,6 +125,21 @@ type Config struct {
 	Diarizer func(ctx context.Context) (asr.Diarizer, error)
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
+	// VADFallback is called only when a configured model's batch actually
+	// falls back to energy analysis, not when a whole-track attempt fails.
+	VADFallback func()
+	// VADStrategy is a profiling-only whole/batched selector. The zero value
+	// preserves the production whole-then-batched fallback behavior.
+	VADStrategy string
+	// DisableVAD sends the whole track through the chunk planner without
+	// speech-region detection. The zero value keeps the normal VAD path.
+	DisableVAD bool
+	// FinalizeChunkParams overrides the final pass's chunk planner for
+	// profiling; nil keeps DefaultChunkParams.
+	FinalizeChunkParams *ChunkParams
+	// DiarizeChunkParams overrides MTD diarization chunking for profiling;
+	// nil keeps the production diarizeChunkMax policy.
+	DiarizeChunkParams *ChunkParams
 	// Context is what the language model corrects a transcript with;
 	// nil for none.
 	Context func(ctx context.Context) TranscriptContext

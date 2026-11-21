@@ -90,12 +90,18 @@ type Opts struct {
 	// NoDraft is a server from before --draft-model-path: it refuses the
 	// flag as an unknown argument.
 	NoDraft bool
+	// DraftCounters adds speculative-decoding counters to every Final answer.
+	DraftCounters bool
 	// Segments adds two speaker segments to every Final answer.
 	Segments bool
 	// SegmentTags puts MOSS timestamp and speaker tags in those segments.
 	SegmentTags bool
 	// TokenLimit ends the Final at the generation budget.
 	TokenLimit bool
+	// LiveMarkup sends MOSS's diarization markup in the live segments and
+	// the completed text, as the real model sometimes does on its
+	// plain-text instruction.
+	LiveMarkup bool
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -110,12 +116,14 @@ func Env(o Opts) []string {
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
 	v.Set("older", strconv.FormatBool(o.Older))
 	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
+	v.Set("draftcounters", strconv.FormatBool(o.DraftCounters))
 	v.Set("segments", strconv.FormatBool(o.Segments))
 	v.Set("segmenttags", strconv.FormatBool(o.SegmentTags))
 	v.Set("tokenlimit", strconv.FormatBool(o.TokenLimit))
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
+	v.Set("livemarkup", strconv.FormatBool(o.LiveMarkup))
 	v.Set("livesegdelay", o.LiveSegDelay.String())
 	v.Set("livestall", strconv.FormatBool(o.LiveStall))
 	return []string{EnvFake + "=" + v.Encode()}
@@ -132,12 +140,14 @@ func opts() Opts {
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
+	o.DraftCounters, _ = strconv.ParseBool(v.Get("draftcounters"))
 	o.Segments, _ = strconv.ParseBool(v.Get("segments"))
 	o.SegmentTags, _ = strconv.ParseBool(v.Get("segmenttags"))
 	o.TokenLimit, _ = strconv.ParseBool(v.Get("tokenlimit"))
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
+	o.LiveMarkup, _ = strconv.ParseBool(v.Get("livemarkup"))
 	o.LiveSegDelay, _ = time.ParseDuration(v.Get("livesegdelay"))
 	o.LiveStall, _ = strconv.ParseBool(v.Get("livestall"))
 	if o.Text == "" {

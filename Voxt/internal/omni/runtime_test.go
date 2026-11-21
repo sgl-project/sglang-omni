@@ -438,6 +438,30 @@ func TestFinalErrors(t *testing.T) {
 	})
 }
 
+func TestProcessesIncludeStartingModel(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Load: 400 * time.Millisecond}, nil)
+	a := f.asr(t, ASRFast)
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm"})
+		done <- err
+	}()
+	var processes []Process
+	eventually(t, "the spawned model PID", func() bool {
+		processes = f.rt.Processes()
+		return len(processes) == 1 && processes[0].PID > 0
+	})
+	if running := f.rt.Running(); len(running) != 0 {
+		t.Fatalf("a model still loading became ready: %v", running)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(f.records("launch")) != 1 || processes[0].PID != f.records("launch")[0].PID {
+		t.Fatalf("sampled %+v, launches %+v", processes, f.records("launch"))
+	}
+}
+
 // TestIdleUnload: a server unused for IdleTimeout stops, and starts
 // again at the next use.
 func TestIdleUnload(t *testing.T) {
@@ -635,7 +659,7 @@ func TestUnload(t *testing.T) {
 	}
 	f.rt.Unload(ASRFast)
 	f.rt.Unload("nothing")
-	if _, _, err := a.final(ctx, l, tone(time.Second, 0.3), "", bias{}); err != nil {
+	if _, _, _, err := a.final(ctx, l, tone(time.Second, 0.3), "", bias{}); err != nil {
 		t.Fatalf("the use in progress failed: %v", err)
 	}
 	l.release()

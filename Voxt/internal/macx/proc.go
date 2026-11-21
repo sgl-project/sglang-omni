@@ -1,6 +1,9 @@
 package macx
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // ProcMemory is a process's memory use, in bytes, as Activity Monitor
 // counts it.
@@ -24,3 +27,12 @@ var ErrUnsupported = errors.New("macx: not supported on this system")
 // user's: proc_pid_rusage). It does not block on the process; call it
 // off the main thread anyway, as any system call.
 func Memory(pid int) (ProcMemory, error) { return procMemory(pid) }
+
+// ProcCPU is a process's accumulated CPU time.
+type ProcCPU struct {
+	User, System time.Duration
+}
+
+// CPUTime reads a process's user and system CPU time. It is cumulative
+// since the process started, not an interval or a percentage.
+func CPUTime(pid int) (ProcCPU, error) { return procCPUTime(pid) }

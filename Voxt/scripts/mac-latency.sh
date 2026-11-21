@@ -29,6 +29,7 @@ others="$(pgrep -fl 'qwen3_asr_server|silero_vad_server' || true)"
 [[ -z "$others" ]] || { echo "note: other model processes are running; the times are skewed:"; echo "$others" | cut -c1-160; }
 mkdir -p build
 export VOXTNEW_LATENCY=1 VOXTNEW_LATENCY_ROUNDS="${3:-3}" VOXTNEW_LATENCY_SETTLE="${4:-3s}" VOXTNEW_OMNI_MODELS="$models"
+export VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?VOXTNEW_MAIN_SHA must name the source commit}"
 export VOXTNEW_OMNI_RUNTIME="${VOXTNEW_OMNI_RUNTIME:-$APP/Contents/Resources/omni}"
 go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . >build/latency.log 2>&1 || { tail -30 build/latency.log; exit 1; }
 grep 'MEASURE latency' build/latency.log | sed 's/^ *[a-z_0-9]*\.go:[0-9]*: //'

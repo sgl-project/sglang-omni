@@ -96,6 +96,12 @@ uitext models
 uitext providers
 eval asr
 omni resident
+profile asr
+profile eval
+profile llm
+profile macx
+profile meeting
+profile vad
 providers asr
 providers asr/aliyun
 providers asr/doubao

@@ -17,7 +17,7 @@ var meetingStatuses = []store.MeetingStatus{
 	store.MeetingRecording, store.MeetingInterrupted, store.MeetingAsking,
 	store.MeetingFinishing, store.MeetingDone, store.MeetingFailed,
 }
-var meetingModes = []store.MeetingMode{store.MeetingModeMeeting, store.MeetingModeSubtitles, store.MeetingModeRecording}
+var meetingModes = []store.MeetingMode{store.MeetingModeMeeting, store.MeetingModeSubtitles, store.MeetingModeRecording, store.MeetingModeImport}
 var segmentSources = []store.SegmentSource{store.SegmentMic, store.SegmentSystem}
 
 type meetingsRepo struct{ db *sqlite.DB }
@@ -202,7 +202,7 @@ func (r *meetingsRepo) Meeting(ctx context.Context, id string) (store.Meeting, [
 		return store.Meeting{}, nil, fmt.Errorf("meeting %s: %w", id, core.ErrNotFound)
 	}
 	m := scanMeeting(rows.Values[0])
-	segRows, err := r.db.Query(ctx, `SELECT `+segmentColumns+` FROM meeting_segments WHERE meeting_seq = ? ORDER BY idx`, m.Seq)
+	segRows, err := r.db.Query(ctx, `SELECT `+segmentColumns+` FROM meeting_segments WHERE meeting_seq = ? ORDER BY start_ms, idx`, m.Seq)
 	if err != nil {
 		return store.Meeting{}, nil, wrap("meeting "+id, err)
 	}

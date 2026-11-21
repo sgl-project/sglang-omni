@@ -51,7 +51,7 @@ func transcribeServerOpen(t *testing.T, open func(context.Context, string) (file
 	return path
 }
 
-func runTranscribe(socket string, decode func(string) ([]byte, error), args ...string) (code int, stdout, stderr string) {
+func runTranscribe(socket string, decode func(context.Context, string) ([]byte, error), args ...string) (code int, stdout, stderr string) {
 	var o, e strings.Builder
 	code = transcribeCLI(args, &o, &e, socket, decode)
 	return code, o.String(), e.String()
@@ -60,7 +60,7 @@ func runTranscribe(socket string, decode func(string) ([]byte, error), args ...s
 func TestTranscribeCLIWritesSRTAndText(t *testing.T) {
 	say := func(context.Context, []byte) (string, error) { return "你好 Voxt", nil }
 	sock := transcribeServer(t, say)
-	decode := func(string) ([]byte, error) { return tone(1.5), nil }
+	decode := func(context.Context, string) ([]byte, error) { return tone(1.5), nil }
 	out := filepath.Join(t.TempDir(), "talk.srt")
 	code, _, stderr := runTranscribe(sock, decode, "-o", out, "talk.mp4")
 	got, _ := os.ReadFile(out)
@@ -79,14 +79,14 @@ func TestTranscribeCLIWritesSRTAndText(t *testing.T) {
 }
 
 func TestTranscribeCLIFailures(t *testing.T) {
-	good := func(string) ([]byte, error) { return tone(1), nil }
+	good := func(context.Context, string) ([]byte, error) { return tone(1), nil }
 	sock := transcribeServer(t, func(context.Context, []byte) (string, error) { return "", errors.New("the model stopped") })
 	silent := transcribeServer(t, func(context.Context, []byte) (string, error) { return "never", nil })
 	out := filepath.Join(t.TempDir(), "out.srt")
 	for _, c := range []struct {
 		name   string
 		socket string
-		decode func(string) ([]byte, error)
+		decode func(context.Context, string) ([]byte, error)
 		args   []string
 		code   int
 		says   string
@@ -95,7 +95,7 @@ func TestTranscribeCLIFailures(t *testing.T) {
 		{"two files", sock, good, []string{"a.mp4", "b.mp4"}, exitUsage, "usage:"},
 		{"two files around an option", sock, good, []string{"a.mp4", "-o", out, "b.mp4"}, exitUsage, "usage:"},
 		{"bad format", sock, good, []string{"--format", "vtt", "a.mp4"}, exitUsage, `unknown format "vtt"`},
-		{"unreadable", sock, func(string) ([]byte, error) { return nil, errors.New("no sound") }, []string{"-o", out, "a.mkv"}, exitUnreadable, "Cannot read the sound of a.mkv: no sound"},
+		{"unreadable", sock, func(context.Context, string) ([]byte, error) { return nil, errors.New("no sound") }, []string{"-o", out, "a.mkv"}, exitUnreadable, "Cannot read the sound of a.mkv: no sound"},
 		{"not running", filepath.Join(t.TempDir(), "none.sock"), good, []string{"-o", out, "a.mp4"}, exitUnavailable, "Voxt is not running"},
 		{"model fails", sock, good, []string{"-o", out, "a.mp4"}, exitInterrupted, "Transcription stopped: the model stopped"},
 	} {
@@ -108,7 +108,7 @@ func TestTranscribeCLIFailures(t *testing.T) {
 		}
 	}
 	// Silence: no speech, an empty file, success.
-	code, _, stderr := runTranscribe(silent, func(string) ([]byte, error) { return make([]byte, 32000), nil }, "-o", out, "quiet.m4a")
+	code, _, stderr := runTranscribe(silent, func(context.Context, string) ([]byte, error) { return make([]byte, 32000), nil }, "-o", out, "quiet.m4a")
 	got, err := os.ReadFile(out)
 	if code != exitOK || err != nil || len(got) != 0 || !strings.Contains(stderr, "No speech was found.") {
 		t.Fatalf("silence: code %d, file %q %v, stderr %q", code, got, err, stderr)
@@ -122,21 +122,21 @@ func TestDecodeAudioReadsWAVAndRefusesText(t *testing.T) {
 	dir := t.TempDir()
 	in := filepath.Join(dir, "a.wav")
 	os.WriteFile(in, asr.WAV(tone(1), 48000), 0o644) // 1/3 s at 48 kHz
-	pcm, err := decodeAudio(in)
+	pcm, err := decodeAudio(context.Background(), in)
 	if err != nil || len(pcm) < 10000 || len(pcm) > 11500 {
 		t.Fatalf("pcm %d bytes, err %v", len(pcm), err)
 	}
 	t.Chdir(dir)
 	os.Rename(in, filepath.Join(dir, "-a.wav"))
-	if pcm, err := decodeAudio("-a.wav"); err != nil || len(pcm) < 10000 {
+	if pcm, err := decodeAudio(context.Background(), "-a.wav"); err != nil || len(pcm) < 10000 {
 		t.Fatalf("-a.wav: %d bytes, err %v", len(pcm), err)
 	}
 	txt := filepath.Join(dir, "notes.txt")
 	os.WriteFile(txt, []byte("hello"), 0o644)
-	if _, err := decodeAudio(txt); err == nil || !strings.Contains(err.Error(), "not an audio or video file") {
+	if _, err := decodeAudio(context.Background(), txt); err == nil || !strings.Contains(err.Error(), "not an audio or video file") {
 		t.Fatalf("text file: %v", err)
 	}
-	if _, err := decodeAudio(filepath.Join(dir, "missing.mp4")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := decodeAudio(context.Background(), filepath.Join(dir, "missing.mp4")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing file: %v", err)
 	}
 }
@@ -146,7 +146,7 @@ func TestDecodeAudioReadsWAVAndRefusesText(t *testing.T) {
 func TestTranscribeUsesTranscribesSpeechModel(t *testing.T) {
 	a, _, tr := retryApp(t, "Hello from the file")
 	sock := transcribeServerOpen(t, a.fileRecognizer)
-	code, stdout, stderr := runTranscribe(sock, func(string) ([]byte, error) { return tone(1), nil }, "--format", "txt", "a.m4a")
+	code, stdout, stderr := runTranscribe(sock, func(context.Context, string) ([]byte, error) { return tone(1), nil }, "--format", "txt", "a.m4a")
 	if code != exitOK || stdout != "Hello from the file\n" || tr.count() != 1 {
 		t.Fatalf("code %d, stdout %q, stderr %q, calls %d", code, stdout, stderr, tr.count())
 	}
@@ -156,7 +156,7 @@ func TestTranscribeUsesTranscribesSpeechModel(t *testing.T) {
 	t.Cleanup(func() { newLocalServices = old })
 	b, _, _ := newTestApp(t)
 	sock = transcribeServerOpen(t, b.fileRecognizer)
-	code, _, stderr = runTranscribe(sock, func(string) ([]byte, error) { return tone(1), nil }, "a.m4a")
+	code, _, stderr = runTranscribe(sock, func(context.Context, string) ([]byte, error) { return tone(1), nil }, "a.m4a")
 	if code != exitInterrupted || !strings.Contains(stderr, "no speech model is installed for Transcribe") {
 		t.Fatalf("no model: code %d, stderr %q", code, stderr)
 	}

@@ -15,6 +15,9 @@ func TestReadSystemMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !m.AvailablePercentValid || !m.SwapValid {
+		t.Errorf("availability flags %+v", m)
+	}
 	if m.Pressure != "normal" && m.Pressure != "warning" && m.Pressure != "critical" || m.AvailablePercent <= 0 || m.AvailablePercent > 100 {
 		t.Errorf("%+v", m)
 	}

@@ -605,3 +605,24 @@ func TestModelCardsLineUp(t *testing.T) {
 		}
 	}
 }
+
+// TestSpeechContextNoteWithoutTaker: with MOSS-Transcribe-Diarize, which
+// takes no context, as every feature's speech model, the Speech context
+// says so and keeps its field, which meeting correction reads; one
+// feature on Qwen3-ASR drops the note (#4067).
+func TestSpeechContextNoteWithoutTaker(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 4800)
+	seedModels(t, a, models.ASRMoss, models.ASRAccurate, models.VADSilero)
+	a.navigate(modelsPath)
+	frames(tt)
+	note := "The speech models in use do not take it while they recognise. The language model still gets it when it corrects a meeting's transcript, and your dictionary still guides its clean-up."
+	if !has(tt, note) || !has(tt, "Tell the speech model who is speaking and about what.") {
+		t.Errorf("MOSS everywhere: no note, or no field: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.ASR = models.ASRAccurate })
+	frames(tt)
+	if has(tt, note) {
+		t.Errorf("Rewrite on Qwen3-ASR still has the note: %q", tt.Texts())
+	}
+}

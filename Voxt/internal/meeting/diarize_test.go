@@ -95,6 +95,21 @@ func TestDiarizeTrackDropsOverlapRepeat(t *testing.T) {
 	}
 }
 
+func TestDiarizeTrackDeduplicatesUnlabeledOverlap(t *testing.T) {
+	d := &seqDiarizer{results: []asr.Result{
+		{Text: "same words"},
+		{Text: "same words next"},
+	}}
+	rate := asr.SampleRate
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, make([]byte, rate*200*2), []vad.Segment{{Start: 0, End: rate * 200}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 2 || segs[0].Text != "same words" || segs[1].Text != "next" {
+		t.Fatalf("unlabeled overlap segments: %+v", segs)
+	}
+}
+
 // The model can number a voice again in a later chunk: the repeated line
 // in the overlap anchors the new number to the earlier speaker instead of
 // merging two voices into one, and the carry shows the earlier numbers.
@@ -147,6 +162,38 @@ func TestDiarizeTrackPacksPausesToTheCap(t *testing.T) {
 	}
 	if len(d.requests) != 3 {
 		t.Errorf("%d requests for 300 s of pause-rich speech, want 3 (one per %v, not one per pause)", len(d.requests), diarizeChunkMax)
+	}
+}
+
+func TestDiarizeTrackSkipsNoSpeech(t *testing.T) {
+	rate := asr.SampleRate
+	d := &seqDiarizer{}
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, make([]byte, rate*1800*2), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.requests) != 0 || len(segs) != 0 {
+		t.Fatalf("a silent track made %d requests and %d segments, want none", len(d.requests), len(segs))
+	}
+}
+
+func TestDiarizeTrackHonorsProfilingChunkParams(t *testing.T) {
+	rate := asr.SampleRate
+	pcm := make([]byte, rate*300*2)
+	speech := []vad.Segment{{Start: 0, End: rate * 300}}
+	d := &seqDiarizer{results: []asr.Result{
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "one"}}},
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "two"}}},
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "three"}}},
+		{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "four"}}},
+	}}
+	params := DefaultChunkParams()
+	params.MaxDur, params.PauseMin = 90*time.Second, 90*time.Second
+	if _, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil, params); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.requests) != 4 {
+		t.Fatalf("%d requests with a 90-second profiling cap, want 4", len(d.requests))
 	}
 }
 

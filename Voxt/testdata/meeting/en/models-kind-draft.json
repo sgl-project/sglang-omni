@@ -10,7 +10,7 @@
             "id": "asr.accurate",
             "kind": "asr",
             "name": "Qwen3-ASR 1.7B (8bit)",
-            "default": true,
+            "default": false,
             "installed": true,
             "size_text": "2.5 GB on disk",
             "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
@@ -125,6 +125,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

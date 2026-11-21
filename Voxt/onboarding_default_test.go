@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,11 +14,13 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/openai"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -51,12 +54,13 @@ func downloadAsked(t *testing.T, a *app, drain func(), id string) {
 	}
 }
 
-// TestGuideDownloadAndContinue: the guide recommends Qwen3-ASR 1.7B
-// (8bit) on every Mac, 8 GB ones included, and downloads only it.
+// TestGuideDownloadAndContinue: the guide recommends MOSS-Transcribe-Diarize
+// on every Mac, 8 GB ones included, and downloads only the pack (it, its
+// catalogue draft and the VAD).
 func TestGuideDownloadAndContinue(t *testing.T) {
-	label := "Download and continue (2.5 GB)"
 	a, tt, asked, drain := guideAt(t)
-	if !has(tt, "Qwen3-ASR 1.7B (8bit)") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
+	label := "Download and continue (" + a.obDownloadLeft() + ")"
+	if !has(tt, "MOSS-Transcribe-Diarize") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
 		t.Fatalf("%q", tt.Texts())
 	}
 	if asked.Load() != 0 {
@@ -66,9 +70,148 @@ func TestGuideDownloadAndContinue(t *testing.T) {
 	if a.ob.step != obTranscribe {
 		t.Fatalf("step %d", a.ob.step)
 	}
-	downloadAsked(t, a, drain, models.ASRAccurate)
-	if s := a.models.Status(models.ASRFast); s.Err != nil || s.Downloading {
-		t.Errorf("%s downloaded too: %+v", models.ASRFast, s)
+	downloadAsked(t, a, drain, models.ASRMoss)
+	for _, id := range []string{models.ASRFast, models.ASRAccurate} {
+		if s := a.models.Status(id); s.Err != nil || s.Downloading {
+			t.Errorf("%s downloaded too: %+v", id, s)
+		}
+	}
+}
+
+// obTestDraft is a draft the tests pair with the recommended speech
+// model, standing in for the catalogue's (MTD's arrives with #3827).
+var obTestDraft = models.Model{
+	ID: "test.moss.draft", Name: "MTD test draft", Kind: models.Draft, Runtime: models.Omni, Family: "test",
+	Repo: "mlx-community/test-moss-draft", Revision: "4444444444444444444444444444444444444444",
+	Files: []models.File{
+		{Path: "config.json", Size: 1888, SHA256: strings.Repeat("4", 64)},
+		{Path: "model.safetensors", Size: 262451248, SHA256: strings.Repeat("5", 64), LFS: true},
+	},
+}
+
+// obCatalog is the catalogue with the recommended speech model's draft
+// as draftID ("": none), plus the draft itself when named.
+func obCatalog(draftID string) []models.Model {
+	cat := slices.Clone(models.Catalog())
+	for i := range cat {
+		if cat[i].ID == models.ASRMoss {
+			cat[i].Draft = draftID
+		}
+	}
+	if draftID != "" {
+		cat = append(cat, obTestDraft)
+	}
+	return cat
+}
+
+// obModelsWith reopens a's models over the catalogue cat.
+func obModelsWith(t *testing.T, a *app, cat []models.Model) {
+	t.Helper()
+	opt := a.managerOptions(func() {})
+	opt.Catalog = cat
+	a.models.Close()
+	a.models = models.Open(opt)
+	a.modelStatus = nil
+	a.readModelStatus()
+}
+
+// TestObPackWithoutDraft: with no draft in the catalogue (today, before
+// #3827), the pack is the speech model and the VAD, and the label is the
+// speech model's size alone.
+func TestObPackWithoutDraft(t *testing.T) {
+	a, _ := obTester(t)
+	reopenModels(a)
+	obModelsWith(t, a, obCatalog(""))
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRMoss, models.VADSilero}) {
+		t.Errorf("pack %v", got)
+	}
+	if got := a.obDownloadLeft(); got != "1.8 GB" {
+		t.Errorf("left %q, want the speech model's size", got)
+	}
+}
+
+// TestObPackWithDraft: with a draft in the catalogue (as #3827 adds
+// MTD's), the pack includes it and the label counts it; with the speech
+// model on this Mac the download is the draft alone, so that Faster
+// transcription is on (#4067, Models.FasterOn's default).
+func TestObPackWithDraft(t *testing.T) {
+	countingHub(t)
+	a, _ := obTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	obModelsWith(t, a, obCatalog(obTestDraft.ID))
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRMoss, obTestDraft.ID, models.VADSilero}) {
+		t.Fatalf("pack %v", got)
+	}
+	if got := a.obDownloadLeft(); got != "2.1 GB" {
+		t.Errorf("left %q, want the speech model and the draft", got)
+	}
+	if err := modelstest.Seed(a.models.Hub(), models.ASRMoss, models.VADSilero); err != nil {
+		t.Fatal(err)
+	}
+	a.models.Refresh()
+	a.modelStatus = nil
+	a.readModelStatus()
+	if got := a.obDownloadLeft(); got != "262.5 MB" {
+		t.Errorf("left %q, want the draft's size", got)
+	}
+	a.obDownload()
+	downloadAsked(t, a, drain, obTestDraft.ID)
+	if !a.settings.Get().Models.FasterOn(models.ASRMoss, true) {
+		t.Error("Faster transcription off with the draft installed and never switched")
+	}
+}
+
+// TestObPackMainLanguageGate: MOSS-Transcribe-Diarize knows Chinese and
+// English only, so a main language it does not know makes the guide's
+// pack Qwen3-ASR 1.7B (8bit) and the VAD, with no MTD in it.
+func TestObPackMainLanguageGate(t *testing.T) {
+	a, _ := obTester(t)
+	a.prefs.General.MainLanguage = "ja"
+	if got := a.obSpeech(); got != models.ASRAccurate {
+		t.Errorf("ja: obSpeech %s, want %s", got, models.ASRAccurate)
+	}
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRAccurate, models.ASRAccurateDraft, models.VADSilero}) {
+		t.Errorf("ja: pack %v, want Qwen3-ASR 1.7B, its draft and the VAD, no MTD", got)
+	}
+	a.prefs.General.MainLanguage = "zh"
+	if got := a.obSpeech(); got != models.ASRMoss {
+		t.Errorf("zh: obSpeech %s, want %s", got, models.ASRMoss)
+	}
+}
+
+// TestGuidePackDraftLeft: with the recommended speech model and the VAD
+// on this Mac but its catalogue draft missing, the guide offers the
+// draft's download — the pack's Faster transcription would never start
+// otherwise (#4067) — and once the models are claimed the click
+// downloads the draft alone.
+func TestGuidePackDraftLeft(t *testing.T) {
+	countingHub(t)
+	a, tt := obTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	a.obGo(obModels)
+	drain()
+	frames(tt)
+	if !has(tt, "Use them") || !has(tt, "Download (262.5 MB)") || hasPrefix(tt, "Download and continue") {
+		t.Fatalf("on disk: %q", tt.Texts())
+	}
+	click(t, tt, "Use them")
+	drain()
+	frames(tt)
+	if !has(tt, "Ready: MOSS-Transcribe-Diarize") || !hasPrefix(tt, "Download and continue (262.5 MB)") {
+		t.Fatalf("claimed: %q", tt.Texts())
+	}
+	click(t, tt, findPrefix(t, tt, "Download and continue"))
+	downloadAsked(t, a, drain, models.ASRMossDraft)
+	for _, m := range models.Catalog() {
+		if m.ID == models.ASRMossDraft {
+			continue
+		}
+		if s := a.models.Status(m.ID); s.Err != nil || s.Downloading {
+			t.Errorf("%s downloaded too: %+v", m.ID, s)
+		}
 	}
 }
 
@@ -94,8 +237,8 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 	a.obGo(obModels)
 	a.closeOnboarding()
 	drain()
-	if asked.Load() != 0 || a.models.Status(models.ASRAccurate).Downloading {
-		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRAccurate))
+	if asked.Load() != 0 || a.models.Status(models.ASRMoss).Downloading {
+		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRMoss))
 	}
 }
 
@@ -104,7 +247,7 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 // Home sends the user to the page that can claim it.
 func TestGuideOnDiskNoDownload(t *testing.T) {
 	a, tt, _, _ := guideAt(t)
-	a.modelStatus[models.ASRAccurate] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
+	a.modelStatus[models.ASRMoss] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
 	frames(tt)
 	if hasPrefix(tt, "Download and continue") {
 		t.Errorf("offers what is on disk: %q", tt.Texts())
@@ -121,24 +264,26 @@ func TestGuideAlternativeNoDownloadButton(t *testing.T) {
 	a, tt, _, _ := guideAt(t)
 	a.ob.found = []models.Found{{ID: models.ASRFast, By: []string{"AudioSmith"}}}
 	frames(tt)
-	if !has(tt, "Download Qwen3-ASR 1.7B (8bit)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
+	if !has(tt, "Download MOSS-Transcribe-Diarize") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("%q", tt.Texts())
 	}
 }
 
 // TestGuideReuseUnchanged: with the recommended model on this Mac the
-// reuse card's Use them stays the step's primary button.
+// reuse card's Use them stays the step's primary button. Its catalogue
+// draft is not on this Mac, so the body offers the draft's download
+// (TestGuidePackDraftLeft drives it).
 func TestGuideReuseUnchanged(t *testing.T) {
 	asked := countingHub(t)
 	a, tt := obTester(t)
 	reopenModels(a)
 	smith := addPeer(t, a, "dev.hehehai.audiosmith", nil)
-	seedModels(t, a, models.ASRAccurate, models.VADSilero)
-	peerClaims(t, smith, models.ASRAccurate, models.VADSilero)
+	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	peerClaims(t, smith, models.ASRMoss, models.VADSilero)
 	a.familyFound(a.fam.Discover())
 	a.models.Refresh()
 	a.obGo(obModels)
-	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || hasPrefix(tt, "Download (") {
+	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || !has(tt, "Download (262.5 MB)") {
 		t.Fatalf("%q", tt.Texts())
 	}
 	click(t, tt, "Continue")
@@ -161,11 +306,11 @@ func TestGuideOnlyVADOnThisMac(t *testing.T) {
 	a.models.Refresh()
 	a.navigate("/history") // not Home, which offers the download too
 	a.obGo(obModels)
-	if !has(tt, "Use them") || !has(tt, "Download (2.5 GB)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
+	if !has(tt, "Use them") || !has(tt, "Download ("+a.obDownloadLeft()+")") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("reuse card: %q", tt.Texts())
 	}
 	click(t, tt, "Use them")
-	if !has(tt, "Download and continue (2.5 GB)") || hasPrefix(tt, "Download (") {
+	if !has(tt, "Download and continue ("+a.obDownloadLeft()+")") || hasPrefix(tt, "Download (") {
 		t.Fatalf("after Use them: %q", tt.Texts())
 	}
 }
@@ -316,7 +461,7 @@ func TestHomeSpeechRow(t *testing.T) {
 	if a.shownPath() == modelsPath {
 		t.Error("the line left Home instead of downloading")
 	}
-	downloadAsked(t, a, drain, models.ASRAccurate)
+	downloadAsked(t, a, drain, models.ASRMoss)
 	if asked.Load() == 0 {
 		t.Error("nothing was asked of the Hub")
 	}
@@ -381,4 +526,143 @@ func TestAutomaticSpeech(t *testing.T) {
 	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast {
 		t.Errorf("the explicit choice became %s", m.ID)
 	}
+
+	// Automatic skips a model that does not know the main language
+	// (#4067): MTD is the catalogue's default and first, but it knows
+	// Chinese and English only, so ja lands on Qwen3-ASR — in the pages
+	// (featureModel) and in the session's resolver alike. An explicit
+	// MTD choice still opens MTD.
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.ASR = ""
+		s.General.MainLanguage = "ja"
+	})
+	seedModels(t, a, models.ASRMoss, models.ASRAccurate, models.VADSilero)
+	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRAccurate {
+		t.Errorf("ja: Transcribe's Automatic uses %+v, want %s", m, models.ASRAccurate)
+	}
+	lm := &automaticGateLocal{}
+	svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.ASRInfo.ID != models.ASRAccurate {
+		t.Errorf("ja: the resolver opened %s, want %s", svc.ASRInfo.ID, models.ASRAccurate)
+	}
+
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = models.ASRMoss })
+	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRMoss {
+		t.Errorf("ja: the explicit MTD choice became %s", m.ID)
+	}
+	lm.opened = ""
+	svc, err = resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.ASRInfo.ID != models.ASRMoss || lm.opened != models.ASRMoss {
+		t.Errorf("ja: the explicit MTD choice opened %s (ASRInfo %s)", lm.opened, svc.ASRInfo.ID)
+	}
+}
+
+// automaticGateLocal is MTD and Qwen3-ASR 1.7B (8bit), MTD first as the
+// catalogue's default, recording what a session's resolver opens.
+type automaticGateLocal struct {
+	local.NotInstalled
+	opened string
+}
+
+func (l *automaticGateLocal) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		return []local.Model{{Kind: local.ASR, ID: models.ASRMoss}, {Kind: local.ASR, ID: models.ASRAccurate}}
+	}
+	return nil
+}
+
+func (l *automaticGateLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	l.opened = id
+	for _, m := range l.Installed(local.ASR) {
+		if m.ID == id {
+			return &fakeTranscriptions{}, m, nil
+		}
+	}
+	return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+}
+
+// TestAutomaticSpeechRemoteGuard: Automatic never promotes a remote
+// speech service over an installed on-device model the language gate
+// removed — a remote service is a feature's explicit choice, or the
+// fallback when no local model is installed (providers.Services,
+// #4067). With MTD (Chinese and English) installed, a ready remote
+// service and the main language ja, the resolver opens nothing, or
+// System dictation when it is there; only with no on-device model at
+// all does Automatic open the remote service.
+func TestAutomaticSpeechRemoteGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		system     bool
+		wantOpened string // "": the resolver opens no speech model
+	}{
+		{"local MTD installed, the remote service stays unopened", false, ""},
+		{"System dictation is the on-device fallback", true, dictation.ModelID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.prefs.General.MainLanguage = "ja"
+			lm := &remoteGateLocal{system: tc.system}
+			svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lm.opened != tc.wantOpened {
+				t.Errorf("opened %q, want %q", lm.opened, tc.wantOpened)
+			}
+			if tc.wantOpened == "" && svc.ASR != nil {
+				t.Errorf("the session got a speech model: %+v", svc.ASRInfo)
+			}
+		})
+	}
+	t.Run("no on-device model: Automatic opens the remote service", func(t *testing.T) {
+		a, _, _ := newTestApp(t)
+		a.prefs.General.MainLanguage = "ja"
+		lm := &remoteGateLocal{remoteOnly: true}
+		svc, err := resolver(lm)(context.Background(), store.KindTranscribe, a.prefs, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lm.opened != openai.ID || svc.ASRInfo.ID != openai.ID {
+			t.Errorf("opened %q (ASRInfo %q), want %s", lm.opened, svc.ASRInfo.ID, openai.ID)
+		}
+	})
+}
+
+// remoteGateLocal is MTD and a ready remote speech service (System
+// dictation with system; the remote service alone with remoteOnly),
+// recording what a session's resolver opens.
+type remoteGateLocal struct {
+	local.NotInstalled
+	opened     string
+	system     bool
+	remoteOnly bool
+}
+
+func (l *remoteGateLocal) Installed(kind local.Kind) []local.Model {
+	if kind != local.ASR {
+		return nil
+	}
+	var out []local.Model
+	if !l.remoteOnly {
+		out = append(out, local.Model{Kind: local.ASR, ID: models.ASRMoss, Name: "MOSS-Transcribe-Diarize", Stream: true})
+	}
+	if l.system {
+		out = append(out, local.Model{Kind: local.ASR, ID: dictation.ModelID, Name: "System dictation", Stream: true})
+	}
+	return append(out, local.Model{Kind: local.ASR, ID: openai.ID, Name: "OpenAI Transcribe", Stream: true})
+}
+
+func (l *remoteGateLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	m, ok := local.Choose(l.Installed(local.ASR), id)
+	if !ok {
+		return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+	}
+	l.opened = m.ID
+	return &fakeTranscriptions{}, m, nil
 }

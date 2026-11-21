@@ -24,6 +24,11 @@ const (
 // ErrFinalizeRetry means the final pass stopped mid-track; live segments stay.
 var ErrFinalizeRetry = errors.New("meeting: final pass incomplete")
 
+// ErrNoDiarizer means an import found no MOSS-Transcribe-Diarize: an
+// imported file is one mixed track, so plain transcription would lose the
+// speakers it was imported for (no silent fallback).
+var ErrNoDiarizer = errors.New("meeting: MOSS-Transcribe-Diarize is not installed")
+
 // FinalizePass reruns file-mode ASR on archived WAVs and replaces live segments (C1-3a).
 func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress func(float64)) error {
 	if cfg.Settings().NoFinalPass {
@@ -54,7 +59,7 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 			holdRelease = nil
 		}
 		base := float64(i) / float64(trackN)
-		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode.Diarize(), func(p float64) {
+		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode, func(p float64) {
 			if onProgress != nil {
 				onProgress(base + p/float64(trackN))
 			}
@@ -91,12 +96,14 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 		_ = markFinalizeFailed(ctx, cfg, mt)
 		return first
 	}
-	if err := applyAudioRetention(ctx, cfg, mt, mode, true); err != nil {
-		return err
-	}
-	if !cfg.Privacy().KeepAudio && !mode.KeepsAudio() {
-		mt.Audio = ""
-		mt.AudioUntil = time.Time{}
+	if mode != ModeImport {
+		if err := applyAudioRetention(ctx, cfg, mt, mode, true); err != nil {
+			return err
+		}
+		if !cfg.Privacy().KeepAudio && !mode.KeepsAudio() {
+			mt.Audio = ""
+			mt.AudioUntil = time.Time{}
+		}
 	}
 	mt.Status = store.MeetingDone
 	return cfg.Store.UpdateMeeting(ctx, mt)
@@ -104,7 +111,8 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 
 // finalizeTrack transcribes one track's WAV again; nil segments mean the
 // track has nothing to replace (no file, or no audio).
-func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diarize bool, onProgress func(float64)) ([]Segment, error) {
+func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode Mode, onProgress func(float64)) ([]Segment, error) {
+	diarize := mode.Diarize()
 	path := filepath.Join(dir, string(src)+".wav")
 	pcm, rate, err := readTrackPCM(path)
 	if err != nil {
@@ -113,38 +121,50 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 		}
 		return nil, err
 	}
-	speech, err := speechRegions(ctx, pcm, rate, cfg.VAD)
-	if err != nil {
-		return nil, err
-	}
 	total := len(pcm) / 2
 	if total == 0 {
 		return nil, nil
 	}
-	chunkP := DefaultChunkParams()
-	chunkP.Rate = rate
-	if cfg.ASR != nil {
-		ta, err := cfg.ASR(ctx, src)
+	var speech []vad.Segment
+	if cfg.DisableVAD {
+		speech = []vad.Segment{{Start: 0, End: total}}
+	} else {
+		speech, err = speechRegions(ctx, pcm, rate, cfg.VAD, cfg.VADFallback, cfg.VADStrategy)
 		if err != nil {
 			return nil, err
 		}
-		if ta.Caps.MaxDuration > 0 {
-			chunkP.CapMaxDur = ta.Caps.MaxDuration
+	}
+	chunkP := DefaultChunkParams()
+	if cfg.FinalizeChunkParams != nil {
+		chunkP = *cfg.FinalizeChunkParams
+	}
+	chunkP.Rate = rate
+	if cfg.ASR != nil {
+		ta, aerr := cfg.ASR(ctx, src)
+		req := asr.FileRequest{SampleRate: rate, Format: "pcm"}
+		if aerr == nil {
+			if ta.Caps.MaxDuration > 0 {
+				chunkP.CapMaxDur = ta.Caps.MaxDuration
+			}
+			req.Lang, req.Prompt, req.Hints = ta.Lang, ta.Prompt, ta.Hints
 		}
-		if ta.File == nil {
-			return nil, fmt.Errorf("meeting: no file ASR for %s", src)
-		}
-		chunks := PlanChunks(speech, total, chunkP)
-		req := asr.FileRequest{
-			SampleRate: rate, Lang: ta.Lang, Prompt: ta.Prompt, Hints: ta.Hints, Format: "pcm",
-		}
-		if diarize && src == SourceSystem && cfg.Diarizer != nil {
-			d, err := cfg.Diarizer(ctx)
-			if err != nil {
-				return nil, err
+		if diarize && src == SourceSystem {
+			var d asr.Diarizer
+			if cfg.Diarizer != nil {
+				var err error
+				d, err = cfg.Diarizer(ctx)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if d != nil {
-				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress)
+				// MTD alone does this track: the selected model's missing
+				// file ASR (aerr) must not stop an import.
+				var diarizeParams []ChunkParams
+				if cfg.DiarizeChunkParams != nil {
+					diarizeParams = append(diarizeParams, *cfg.DiarizeChunkParams)
+				}
+				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress, diarizeParams...)
 				if err != nil {
 					return nil, err
 				}
@@ -153,7 +173,17 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				}
 				return segs, nil
 			}
+			if mode == ModeImport {
+				return nil, ErrNoDiarizer
+			}
 		}
+		if aerr != nil {
+			return nil, aerr
+		}
+		if ta.File == nil {
+			return nil, fmt.Errorf("meeting: no file ASR for %s", src)
+		}
+		chunks := PlanChunks(speech, total, chunkP)
 		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
 		if err != nil {
 			return nil, err
@@ -180,14 +210,18 @@ const mossPrompt = "Transcribe the audio into text. Start each segment with the 
 // after the first carrying the last labeled lines, so a voice keeps its
 // number across the boundaries (the native decoder starts its labels
 // over per chunk).
-func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64)) ([]Segment, error) {
+func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64), overrides ...ChunkParams) ([]Segment, error) {
 	p := DefaultChunkParams()
 	p.Rate = rate
-	p.MaxDur = diarizeChunkMax
-	// Pack speech across pauses up to the chunk cap: with the plain-ASR
-	// pause threshold every pause would start a new request, and the
-	// fixed per-request cost would dominate a pause-rich track.
-	p.PauseMin = diarizeChunkMax
+	if len(overrides) > 0 {
+		p = overrides[0]
+	} else {
+		p.MaxDur = diarizeChunkMax
+		// Pack speech across pauses up to the chunk cap: with the plain-ASR
+		// pause threshold every pause would start a new request, and the
+		// fixed per-request cost would dominate a pause-rich track.
+		p.PauseMin = diarizeChunkMax
+	}
 	chunks := PlanChunks(speech, len(pcm)/2, p)
 	var out []Segment
 	var carry string
@@ -254,8 +288,15 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 				carry += "[" + mtdLabel(speaker) + "] " + text + "\n"
 			}
 		}
-		if marked == 0 && strings.TrimSpace(res.Text) != "" {
-			out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: strings.TrimSpace(res.Text), Final: true})
+		if marked == 0 {
+			text := strings.TrimSpace(res.Text)
+			if needTrim {
+				text = DedupeOverlapText(prevText, text)
+			}
+			if text != "" {
+				out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: text, Final: true})
+				prevText = text
+			}
 		}
 		if runes := []rune(carry); len(runes) > 300 { // the last lines, at most a screen
 			carry = string(runes[len(runes)-300:])
@@ -269,6 +310,8 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 	return out, nil
 }
 
+// mtdSpeaker is MTD's S01 (or S1) as the store's s1; an imported file can
+// have more voices than a call's other side, so any S<number> from 1 maps.
 func mtdSpeaker(speaker string) string {
 	n, ok := strings.CutPrefix(speaker, "S")
 	if !ok {
@@ -394,20 +437,35 @@ func segmentToStore(s Segment, src Source) store.MeetingSegment {
 	}
 }
 
-func speechRegions(ctx context.Context, pcm []byte, rate int, model vad.Model) ([]vad.Segment, error) {
+func speechRegions(ctx context.Context, pcm []byte, rate int, model vad.Model, onEnergyFallback func(), strategy string) ([]vad.Segment, error) {
 	if rate <= 0 {
 		rate = asr.SampleRate
 	}
+	if strategy == "batched" {
+		return batchedSpeechRegions(ctx, pcm, rate, model, onEnergyFallback), nil
+	}
 	if model != nil {
 		segs, err := model.Speech(ctx, pcm, rate)
+		if strategy == "whole" {
+			if err != nil {
+				return nil, err
+			}
+			if len(segs) == 0 {
+				return nil, fmt.Errorf("meeting: no speech regions found")
+			}
+			return segs, nil
+		}
 		if err == nil && len(segs) > 0 {
 			return segs, nil
 		}
 	}
-	return batchedSpeechRegions(ctx, pcm, rate, model), nil
+	if strategy == "whole" {
+		return nil, fmt.Errorf("meeting: no VAD model configured")
+	}
+	return batchedSpeechRegions(ctx, pcm, rate, model, onEnergyFallback), nil
 }
 
-func batchedSpeechRegions(ctx context.Context, pcm []byte, rate int, model vad.Model) []vad.Segment {
+func batchedSpeechRegions(ctx context.Context, pcm []byte, rate int, model vad.Model, onEnergyFallback func()) []vad.Segment {
 	win := int(vadWindowBatch.Seconds() * float64(rate))
 	ovl := int(vadOverlapBatch.Seconds() * float64(rate))
 	samples := len(pcm) / 2
@@ -423,6 +481,9 @@ func batchedSpeechRegions(ctx context.Context, pcm []byte, rate int, model vad.M
 			}
 		}
 		if len(part.Segments) == 0 {
+			if model != nil && onEnergyFallback != nil {
+				onEnergyFallback()
+			}
 			part = vad.Analyze(chunk, rate, vad.Defaults())
 		}
 		for i := range part.Segments {
@@ -454,6 +515,9 @@ func readTrackPCM(path string) ([]byte, int, error) {
 }
 
 func markFinalizeFailed(ctx context.Context, cfg Config, mt store.Meeting) error {
+	// The failure may be the context's own cancel: the interrupted status
+	// must still land, or the meeting stays "finishing" forever.
+	ctx = context.WithoutCancel(ctx)
 	mode := fromStoreMode(mt.Mode)
 	now := time.Now()
 	if cfg.Now != nil {

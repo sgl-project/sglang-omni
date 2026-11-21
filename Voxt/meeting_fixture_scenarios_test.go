@@ -148,6 +148,16 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 			input.Detail = &meetingDetailStateInput{Meeting: stored}
 		}},
 		{"detail-normal", func(input *meetingsViewStateInput) { input.Detail = meetingFixtureDetailInput() }},
+		{"detail-import", func(input *meetingsViewStateInput) {
+			input.Detail = meetingFixtureDetailInput()
+			input.Detail.Meeting.ID = "imported-zoom"
+			input.Detail.Meeting.Title = "zoom-standup"
+			input.Detail.Meeting.Mode = store.MeetingModeImport
+			input.Detail.Meeting.Summary = ""
+			input.Detail.Meeting.Chat = ""
+			input.Detail.Chat = nil
+			input.Detail.Segments = []store.MeetingSegment{{Idx: 0, Source: store.SegmentSystem, Speaker: "s5", Text: "Imported speaker", Final: true}}
+		}},
 		{"detail-speakers-installed", func(input *meetingsViewStateInput) {
 			input.Detail = meetingFixtureDetailInput()
 			input.Detail.MTDInstalled = true // no "Download MOSS-Transcribe-Diarize" hint

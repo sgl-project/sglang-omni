@@ -236,7 +236,7 @@ func spaced(r rune) bool {
 }
 
 // joinParts joins transcript pieces as the server joins segments: each
-// trimmed, a space only between two characters of spaced scripts.
+// trimmed, a space only between two other characters.
 func joinParts(parts []string) string {
 	var b strings.Builder
 	for _, p := range parts {

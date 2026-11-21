@@ -38,17 +38,18 @@ type finalRequest struct {
 
 // finalResult is a request's answer.
 type finalResult struct {
-	text        string
-	tokens      int    // generated
-	language    string // detected (or the hint), "" when none
-	length      bool   // the budget ended it
-	windowTexts []string
-	segments    []struct {
+	text     string
+	tokens   int    // generated
+	language string // detected (or the hint), "" when none
+	length   bool   // the budget ended it
+	draft    *asr.DraftStats
+	segments []struct {
 		Start   float64 `json:"start"`
 		End     float64 `json:"end"`
 		Speaker string  `json:"speaker"`
 		Text    string  `json:"text"`
 	}
+	windowTexts []string
 }
 
 // body is the request's multipart form (Voxt's OmniMultipartBody for
@@ -170,6 +171,9 @@ func parseEvent(payload string) (*finalResult, error) {
 			Tokens      *int     `json:"generated_token_count"`
 			Language    *string  `json:"language"`
 			Finish      string   `json:"finish_reason"`
+			Verify      *int     `json:"verify_round_count"`
+			Proposed    *int     `json:"proposed_draft_token_count"`
+			Accepted    *int     `json:"accepted_draft_token_count"`
 			WindowTexts []string `json:"window_texts"`
 		} `json:"generation_metadata"`
 		Error *struct {
@@ -191,6 +195,9 @@ func parseEvent(payload string) (*finalResult, error) {
 			r.windowTexts = m.WindowTexts
 			if m.Language != nil {
 				r.language = *m.Language
+			}
+			if m.Verify != nil && *m.Verify > 0 && m.Proposed != nil && m.Accepted != nil {
+				r.draft = &asr.DraftStats{VerifyRounds: *m.Verify, Proposed: *m.Proposed, Accepted: *m.Accepted}
 			}
 		}
 		return r, nil

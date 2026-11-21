@@ -35,6 +35,22 @@ func TestMemory(t *testing.T) {
 	}
 }
 
+func TestCPUTime(t *testing.T) {
+	cpu, err := CPUTime(os.Getpid())
+	if runtime.GOOS != "darwin" {
+		if !errors.Is(err, ErrUnsupported) {
+			t.Fatalf("err %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cpu.User <= 0 || cpu.System < 0 {
+		t.Errorf("%+v", cpu)
+	}
+}
+
 func TestInUse(t *testing.T) {
 	if got := (ProcMemory{Footprint: 110, Resident: 1150}).InUse(); got != 1150 {
 		t.Errorf("GGUF: %d", got)

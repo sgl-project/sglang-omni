@@ -4,6 +4,42 @@
   "models": {
     "asr": [
       {
+        "key": "model-asr.moss",
+        "rows": [
+          {
+            "id": "asr.moss",
+            "kind": "asr",
+            "name": "MOSS-Transcribe-Diarize",
+            "default": true,
+            "installed": false,
+            "size_text": "需下载 1.8 GB",
+            "about": "专为多人对话设计，边说边出文字。",
+            "languages": "中文和英语",
+            "tags": [
+              "本地",
+              "实时",
+              "不支持词典",
+              "支持主要语言"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.moss",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.moss",
+                "label": "下载",
+                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+              }
+            ]
+          }
+        ]
+      },
+      {
         "key": "family-qwen3-asr",
         "family_name": "Qwen3-ASR",
         "count_text": "3 个模型 · 已安装 1 个",
@@ -13,7 +49,7 @@
             "id": "asr.accurate",
             "kind": "asr",
             "name": "Qwen3-ASR 1.7B (8bit)",
-            "default": true,
+            "default": false,
             "installed": true,
             "size_text": "占用 2.5 GB",
             "used_by": "用于转录 · 翻译 · 改写 · 会议",
@@ -364,42 +400,6 @@
             ]
           }
         ]
-      },
-      {
-        "key": "model-asr.moss",
-        "rows": [
-          {
-            "id": "asr.moss",
-            "kind": "asr",
-            "name": "MOSS-Transcribe-Diarize",
-            "default": false,
-            "installed": false,
-            "size_text": "需下载 1.8 GB",
-            "about": "专为多人对话设计，边说边出文字。",
-            "languages": "中文和英语",
-            "tags": [
-              "本地",
-              "实时",
-              "不支持词典",
-              "支持主要语言"
-            ],
-            "actions": [
-              {
-                "kind": "hide",
-                "model_id": "asr.moss",
-                "label": "隐藏",
-                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                "tooltip": "不在功能页的模型菜单里列出"
-              },
-              {
-                "kind": "download",
-                "model_id": "asr.moss",
-                "label": "下载",
-                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
-              }
-            ]
-          }
-        ]
       }
     ],
     "dictation": {
@@ -523,6 +523,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

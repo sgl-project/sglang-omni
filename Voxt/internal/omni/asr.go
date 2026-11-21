@@ -15,11 +15,12 @@ import (
 // and an asr.Streamer. It is cheap: the model's server starts on first
 // use (or Warm) and is shared by every ASR of the same model.
 type ASR struct {
-	rt    *Runtime
-	spec  Spec
-	dir   string
-	draft string // the speculative draft's folder, "" none (WithDraft)
-	vad   *VAD   // the voice activity model beside it, nil for none
+	rt        *Runtime
+	spec      Spec
+	dir       string
+	draft     string // the speculative draft's folder, "" none (WithDraft)
+	draftBits int    // 4, 6 or 8; Qwen3-ASR defaults to 8
+	vad       *VAD   // the voice activity model beside it, nil for none
 }
 
 var (
@@ -55,7 +56,54 @@ func checkDir(dir string) error {
 func (a *ASR) WithDraft(dir string) *ASR {
 	c := *a
 	c.draft = dir
+	if c.spec.Kind == kindQwen3ASR {
+		c.draftBits = 8
+	}
 	return &c
+}
+
+// WithDraftBits is WithDraft with the draft's load-time quantisation.
+// Only the native servers' supported 4, 6 and 8 bit drafts are accepted.
+func (a *ASR) WithDraftBits(dir string, bits int) (*ASR, error) {
+	if dir == "" || bits != 4 && bits != 6 && bits != 8 {
+		return nil, &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: "a draft needs a folder and 4, 6 or 8 bits"}
+	}
+	if a.spec.Kind != kindQwen3ASR && a.spec.Kind != kindMoss {
+		return nil, &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: "this speech model has no speculative draft support"}
+	}
+	c := *a
+	c.draft = dir
+	c.draftBits = bits
+	return &c, nil
+}
+
+// Tuning overrides a model's existing request and server parameters.
+// Zero fields keep the model's defaults; a nil CacheLimitMB keeps its
+// cache policy, while a pointer to zero passes --cache-limit-mb 0.
+type Tuning struct {
+	DecodeInterval time.Duration
+	CacheLimitMB   *int
+}
+
+// WithTuning returns a copy with the supported overrides applied. It
+// rejects overrides the model's native server would otherwise ignore.
+func (a *ASR) WithTuning(t Tuning) (*ASR, error) {
+	if t.DecodeInterval < 0 || t.CacheLimitMB != nil && *t.CacheLimitMB < 0 {
+		return nil, &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: "decode interval and cache limit cannot be negative"}
+	}
+	if a.spec.Kind != kindQwen3ASR && (t.DecodeInterval != 0 || t.CacheLimitMB != nil) {
+		return nil, &asr.Error{Kind: asr.KindConfig, Provider: Provider, Detail: "decode interval and cache limit are supported only by Qwen3-ASR"}
+	}
+	c := *a
+	c.spec = a.spec.clone()
+	if t.DecodeInterval != 0 {
+		c.spec.ASR.DecodeInterval = t.DecodeInterval
+	}
+	if t.CacheLimitMB != nil {
+		c.spec.ASR.CacheMB = *t.CacheLimitMB
+		c.spec.ASR.CacheLimitSet = true
+	}
+	return &c, nil
 }
 
 // WithInstruction is a copy of a whose requests and live sessions carry
@@ -119,11 +167,11 @@ func (a *ASR) Spec() Spec { return a.spec.clone() }
 
 // Warm starts the model's server in the background (a session starting:
 // the model loads while the user speaks).
-func (a *ASR) Warm() { a.rt.Warm(a.spec, a.dir, a.draft) }
+func (a *ASR) Warm() { a.rt.warm(a.spec, a.dir, a.draft, a.draftBits) }
 
 // Hold keeps this model's server loaded until release (meeting capture).
 func (a *ASR) Hold(ctx context.Context) (func(), error) {
-	return a.rt.Hold(ctx, HoldTarget{Spec: a.spec, Dir: a.dir, Draft: a.draft})
+	return a.rt.Hold(ctx, HoldTarget{Spec: a.spec, Dir: a.dir, Draft: a.draft, DraftBits: a.draftBits})
 }
 
 // Caps: it streams (a live preview, then the Final) and transcribes
@@ -140,17 +188,19 @@ func (a *ASR) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, 
 	if err != nil {
 		return asr.Result{}, err
 	}
-	l, err := a.rt.acquire(ctx, a.spec, a.dir, a.draft)
+	acquireStart := time.Now()
+	l, err := a.rt.acquireDraft(ctx, a.spec, a.dir, a.draft, a.draftBits)
+	acquire := time.Since(acquireStart)
 	if err != nil {
 		return asr.Result{}, err
 	}
 	defer l.release()
 	start := time.Now()
-	text, language, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.spec.ASR.contextBias(req.Hints, req.Prompt))
+	text, language, draft, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.spec.ASR.contextBias(req.Hints, req.Prompt))
 	if err != nil {
 		return asr.Result{}, err
 	}
-	return asr.Result{Text: text, Lang: language, Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Latency: time.Since(start)}, nil
+	return asr.Result{Text: text, Lang: language, Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Acquire: acquire, Latency: time.Since(start), Draft: draft}, nil
 }
 
 // Diarize transcribes a whole recording with MOSS's default speaker prompt.
@@ -163,14 +213,16 @@ func (a *ASR) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, err
 	if err != nil {
 		return asr.Result{}, err
 	}
-	l, err := a.rt.acquire(ctx, a.spec, a.dir, a.draft)
+	acquireStart := time.Now()
+	l, err := a.rt.acquireDraft(ctx, a.spec, a.dir, a.draft, a.draftBits)
+	acquire := time.Since(acquireStart)
 	if err != nil {
 		return asr.Result{}, err
 	}
 	defer l.release()
 	start := time.Now()
 	if a.noSpeech(ctx, pcm) {
-		return asr.Result{Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Latency: time.Since(start)}, nil
+		return asr.Result{Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Acquire: acquire, Latency: time.Since(start)}, nil
 	}
 	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), context: req.Prompt, layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
 	if err != nil {
@@ -181,7 +233,7 @@ func (a *ASR) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, err
 	}
 	// The tags are in the segments' times and speakers; a text the server
 	// could not split into segments still carries them.
-	res := asr.Result{Text: stripTags(r.text), Lang: r.language, Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Latency: time.Since(start)}
+	res := asr.Result{Text: stripTags(r.text), Lang: r.language, Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Acquire: acquire, Latency: time.Since(start), Draft: r.draft}
 	for _, seg := range r.segments {
 		res.Segments = append(res.Segments, asr.SpeakerSegment{
 			Start: time.Duration(seg.Start * float64(time.Second)), End: time.Duration(seg.End * float64(time.Second)),
@@ -214,8 +266,9 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 
 // final transcribes quiet-cut chunks in order, with a shared token budget
 // for Qwen3-ASR and one budget per Whisper window. The first detected
-// language, when available, is passed to subsequent requests.
-func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, error) {
+// language, when available, is passed to subsequent requests. It also
+// returns the accumulated draft counters.
+func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, *asr.DraftStats, error) {
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
 	shared := t.TokensPerSecond > 0 // else each request has the whole budget
@@ -225,6 +278,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		chunks = trimWhisperSilenceTail(chunks)
 	}
 	var parts []string
+	var draft *asr.DraftStats
 	for len(chunks) > 0 {
 		if shared && budget <= 0 {
 			break
@@ -235,7 +289,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 				req := finalRequest{pcm: batchPCM, language: language, maxTokens: budget}
 				texts, detected, err := a.transcribeWhisperBatch(ctx, l, req, chunkWindows)
 				if err != nil {
-					return "", "", err
+					return "", "", nil, err
 				}
 				if texts != nil {
 					parts = append(parts, texts...)
@@ -259,7 +313,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
 		r, err := transcribe(ctx, l, req, a.rt.cfg.StallTimeout)
 		if err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
 		r.text = a.trimEcho(ctx, l, req, a.plainText(r.text), r.length, b.terms)
 		if shared {
@@ -268,9 +322,17 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		if language == "" {
 			language = r.language
 		}
+		if r.draft != nil {
+			if draft == nil {
+				draft = &asr.DraftStats{}
+			}
+			draft.VerifyRounds += r.draft.VerifyRounds
+			draft.Proposed += r.draft.Proposed
+			draft.Accepted += r.draft.Accepted
+		}
 		parts = append(parts, r.text)
 	}
-	return joinParts(parts), language, nil
+	return joinParts(parts), language, draft, nil
 }
 
 // transcribeWhisperBatch reassembles each quiet-cut chunk before joinParts
@@ -303,7 +365,7 @@ func (a *ASR) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, erro
 	if req.SampleRate != 0 && req.SampleRate != sampleRate {
 		return nil, &asr.Error{Kind: asr.KindAudio, Provider: Provider, Detail: fmt.Sprintf("audio must be 16 kHz, not %d Hz", req.SampleRate)}
 	}
-	l, err := a.rt.acquire(ctx, a.spec, a.dir, a.draft)
+	l, err := a.rt.acquireDraft(ctx, a.spec, a.dir, a.draft, a.draftBits)
 	if err != nil {
 		return nil, err
 	}
