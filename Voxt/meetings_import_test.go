@@ -261,3 +261,26 @@ func TestMeetingImportDecodeCancels(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// An import cannot sit for hours: its whole decode, transcription and summary
+// get at most thirty minutes before the meeting is left for Continue processing.
+func TestMeetingImportBoundsTotalWait(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	saved := decodeRecording
+	t.Cleanup(func() { decodeRecording = saved })
+	deadlines := make(chan time.Duration, 1)
+	decodeRecording = func(ctx context.Context, _ string) ([]byte, error) {
+		deadline, _ := ctx.Deadline()
+		deadlines <- time.Until(deadline)
+		return nil, context.DeadlineExceeded
+	}
+	a.importRecording("long.m4a")
+	select {
+	case remaining := <-deadlines:
+		if remaining <= 29*time.Minute || remaining > 30*time.Minute {
+			t.Fatalf("import deadline is %v away, want at most 30 minutes", remaining)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the decoder did not start")
+	}
+}

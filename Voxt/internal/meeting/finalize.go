@@ -31,6 +31,12 @@ var ErrNoDiarizer = errors.New("meeting: MOSS-Transcribe-Diarize is not installe
 
 // FinalizePass reruns file-mode ASR on archived WAVs and replaces live segments (C1-3a).
 func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress func(float64)) error {
+	return finalizePass(ctx, cfg, mt, nil, 0, onProgress)
+}
+
+// finalizePass lets an import use the PCM it already has instead of reading
+// the same whole track back from its new WAV.
+func finalizePass(ctx context.Context, cfg Config, mt store.Meeting, importPCM []byte, importRate int, onProgress func(float64)) error {
 	if cfg.Settings().NoFinalPass {
 		return nil
 	}
@@ -59,7 +65,11 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 			holdRelease = nil
 		}
 		base := float64(i) / float64(trackN)
-		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode, func(p float64) {
+		trackPCM, trackRate := []byte(nil), 0
+		if mode == ModeImport && src == SourceSystem {
+			trackPCM, trackRate = importPCM, importRate
+		}
+		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode, trackPCM, trackRate, func(p float64) {
 			if onProgress != nil {
 				onProgress(base + p/float64(trackN))
 			}
@@ -111,15 +121,19 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 
 // finalizeTrack transcribes one track's WAV again; nil segments mean the
 // track has nothing to replace (no file, or no audio).
-func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode Mode, onProgress func(float64)) ([]Segment, error) {
+func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode Mode, trackPCM []byte, trackRate int, onProgress func(float64)) ([]Segment, error) {
 	diarize := mode.Diarize()
-	path := filepath.Join(dir, string(src)+".wav")
-	pcm, rate, err := readTrackPCM(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	pcm, rate := trackPCM, trackRate
+	if pcm == nil {
+		path := filepath.Join(dir, string(src)+".wav")
+		var err error
+		pcm, rate, err = readTrackPCM(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 	speech, err := speechRegions(ctx, pcm, rate, cfg.VAD)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -155,6 +156,43 @@ func TestImportDiarizesCorrectsAndSummarizes(t *testing.T) {
 	}
 	if lastP != 1 {
 		t.Errorf("progress ended at %v", lastP)
+	}
+}
+
+// A one-hour import finishes without allocating several whole-track copies,
+// and no MTD request exceeds the two-minute request bound.
+func TestImportOneHourBoundsPCMBufferingAndRequests(t *testing.T) {
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "hi"},
+	}}}
+	m, repo := importFixture(t, &fixingChat{}, diarizer, &importFileASR{})
+	m.cfg.Settings = func() settings.Meeting { return settings.Meeting{NoAutoSummary: true} }
+	pcm := importPCM(3600)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	id, err := m.Import(context.Background(), ImportRequest{Name: "one-hour", CreatedAt: time.Now(), PCM: pcm}, nil)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt, _, err := repo.Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingDone {
+		t.Fatalf("status %s, err %v", mt.Status, err)
+	}
+	requests := diarizer.got()
+	if len(requests) != 31 {
+		t.Fatalf("%d MTD requests, want 30 full chunks and the overlap tail", len(requests))
+	}
+	for i, req := range requests {
+		if len(req.Audio) > int((diarizeChunkMax+vadOverlapBatch).Seconds())*asr.BytesPerSecond {
+			t.Fatalf("request %d holds %d bytes", i, len(req.Audio))
+		}
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("allocated %.1f MiB across %d MTD requests", float64(allocated)/(1<<20), len(requests))
+	if allocated > uint64(len(pcm)*5/4) {
+		t.Fatalf("allocated %.1f MiB for a %.1f MiB track, want at most one full PCM copy plus working memory", float64(allocated)/(1<<20), float64(len(pcm))/(1<<20))
 	}
 }
 

@@ -57,8 +57,20 @@ func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func
 		_ = os.RemoveAll(audioDir)
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(audioDir, string(SourceSystem)+".wav"), asr.WAV(req.PCM, rate), 0o644); err != nil {
+	wav, err := os.Create(filepath.Join(audioDir, string(SourceSystem)+".wav"))
+	if err != nil {
 		return fail(err)
+	}
+	_, writeErr := wav.Write(asr.WAVHeader(len(req.PCM), rate))
+	if writeErr == nil {
+		_, writeErr = wav.Write(req.PCM)
+	}
+	closeErr := wav.Close()
+	if writeErr != nil {
+		return fail(writeErr)
+	}
+	if closeErr != nil {
+		return fail(closeErr)
 	}
 	dur := asr.Duration(req.PCM, rate)
 	mt, err := m.cfg.Store.CreateMeeting(ctx, store.Meeting{
@@ -69,7 +81,7 @@ func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func
 	if err != nil {
 		return fail(err)
 	}
-	if err := FinalizePass(ctx, importPassConfig(m.cfg), mt, onProgress); err != nil {
+	if err := finalizePass(ctx, importPassConfig(m.cfg), mt, req.PCM, rate, onProgress); err != nil {
 		return id, err
 	}
 	return id, m.finishImport(ctx, mt, !m.cfg.Settings().NoAutoSummary)

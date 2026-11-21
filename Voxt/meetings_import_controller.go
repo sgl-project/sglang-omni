@@ -20,6 +20,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 )
 
+// meetingImportTimeout leaves a stalled import for Continue processing
+// instead of keeping the Meetings page busy for hours.
+const meetingImportTimeout = 30 * time.Minute
+
 // meetingImport is the import running from the Meetings page.
 type meetingImport struct {
 	name     string
@@ -70,7 +74,7 @@ func (a *app) importRecording(path string) {
 	if n.importing != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), meetingImportTimeout)
 	imp := &meetingImport{name: filepath.Base(path), cancel: cancel}
 	n.importing = imp
 	a.async(func() {

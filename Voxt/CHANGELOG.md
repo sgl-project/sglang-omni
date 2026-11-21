@@ -8,11 +8,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Import a meeting recording**: the Meetings page can turn an audio file, or the sound of a video, into a meeting. MOSS-Transcribe-Diarize transcribes the mixed track in two-minute requests and labels every voice Speaker 1–N, then the usual correction and summary run. The import keeps the file's name, date and duration, reports progress, and leaves an interrupted meeting with its audio for Continue processing if it is cancelled.
 
+### Fixed
+
+- **Long meeting imports use bounded memory and time**: a one-hour import sends MTD bounded requests without making a whole-track WAV copy or reading the new WAV back, and import processing stops after 30 minutes. An import interrupted after its meeting was created keeps its audio for Continue processing.
+
 ### 中文
 
 #### 新增
 
 - **导入会议录音**：会议页可以把音频文件或视频中的声音导入成会议。MOSS-Transcribe-Diarize 按两分钟一段转写混合音轨，并把每个声音标为说话人 1–N，然后照常校对和生成摘要。导入保留文件名、日期和时长，显示处理进度；取消后会议和音频保留为已中断，可以继续整理。
+
+#### 修复
+
+- **长会议导入限制内存和等待时间**：导入一小时录音时，MTD 请求保持有界，不再复制整段 WAV 或重新读回新 WAV；导入处理最多等待 30 分钟。会议创建后如果导入中断，音频会保留，可以继续整理。
 
 ## [2.1.2] - 2026-11-19
 
