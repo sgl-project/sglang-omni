@@ -2052,10 +2052,11 @@ def apply_sglang_qwen3_tts_result(
     data: Qwen3TTSSGLangRequestData,
 ) -> StagePayload:
     finish_reason = qwen3_tts_finish_reason(data)
+    completion_frames = len(data.output_codes)
     if finish_reason == "length":
-        raise RuntimeError(
-            "Qwen3-TTS reached max_new_tokens without emitting codec EOS; "
-            "the generated audio is incomplete."
+        logger.info(
+            f"qwen3_tts_codec_budget_exhausted request_id={payload.request_id} "
+            f"finish_reason={finish_reason} completion_frames={completion_frames}"
         )
     else:
         pass
@@ -2084,7 +2085,7 @@ def apply_sglang_qwen3_tts_result(
         "audio_codes": codes,
         "ref_code_len": data.ref_code_len,
         "prompt_tokens": data.ref_code_len,
-        "completion_tokens": len(data.output_codes),
+        "completion_tokens": completion_frames,
         "engine_time_s": time.perf_counter() - data.engine_start_s,
         "sample_rate": 24000,
         "finish_reason": finish_reason,
