@@ -519,15 +519,15 @@ func (s *live) emit(ev asr.Event) {
 // end sends the last event (none for a zero Kind), closes the events and
 // releases the server; only the first call counts.
 func (s *live) end(ev asr.Event) {
-	if s.probe != nil {
-		if events := s.probe.Events(); len(events) > 0 {
-			if raw, err := json.Marshal(events); err == nil {
-				s.a.rt.logf("info", "%s: decode_events %s", s.a.spec.ID, raw)
-			}
-		}
-	}
 	s.mu.Lock()
 	if !s.ended {
+		if s.probe != nil {
+			if events := s.probe.Events(); len(events) > 0 {
+				if raw, err := json.Marshal(events); err == nil {
+					s.a.rt.logf("info", "%s: decode_events %s", s.a.spec.ID, raw)
+				}
+			}
+		}
 		if ev.Kind != 0 {
 			s.events <- ev
 		}

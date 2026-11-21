@@ -2,6 +2,7 @@ package omni
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ func TestDecodeProbeTimesPreviewAndFinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	drain(t, st)
+	st.Close() // Close ends the session again; the log line must stay single
 	s := st.(*live)
 	events := s.probe.Events()
 	if len(events) < 2 {
@@ -57,6 +59,15 @@ func TestDecodeProbeTimesPreviewAndFinal(t *testing.T) {
 		if ev.Inflight < 0 {
 			t.Errorf("negative queue: %+v", ev)
 		}
+	}
+	lines := 0
+	for _, l := range f.out {
+		if strings.Contains(l, "decode_events") {
+			lines++
+		}
+	}
+	if lines != 1 {
+		t.Errorf("decode_events logged %d times, want exactly one (r184 logged it twice)", lines)
 	}
 	f.rt.Close()
 }
