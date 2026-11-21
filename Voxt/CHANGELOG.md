@@ -15,6 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A shorter explanation for the model fallback switch** (#4377): the Language models switch is now called Retry with another model on this Mac, and its note says in three short sentences what it does.
 - **Copy on a Rewrite answer is an icon beside it** (#4377): under the pointer, an answer bubble shows only the copy icon, right of the bubble, so it no longer covers the answer's first line; its name is in the tooltip.
 - **Home's recent results drop the "Open in History" tooltip** (#4377): a row still opens History when clicked; its highlight under the pointer and the section's Open History button already say so, and the tooltip covered the row above.
+- **Shorter, plainer explanations** (#4377): Translate's page and target language, the Privacy switches for a screenshot and a copied image, the guide's Rewrite step, the upload size limit, the wait for the language model and the prompt preview say what matters in a sentence or two; the details are in docs/settings.md.
 
 ### Fixed
 
@@ -38,6 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **模型回退开关的说明更简短**（#4377）：语言模型页的开关改名为“出错时改用本机其他模型”，说明改成三句短话。
 - **改写回答的“复制”只剩图标，放在气泡右侧**（#4377）：鼠标移到回答上时，气泡右边只显示复制图标，不再盖住回答的第一行；名称在提示里。
 - **首页“最近结果”去掉“在历史中打开”提示**（#4377）：点一行仍会打开历史；鼠标移上去的高亮和区块的“打开历史页”按钮已经说明了这一点，而这个提示会盖住上一行。
+- **说明更短、更好读**（#4377）：翻译页和目标语言、隐私里的截图和复制图片开关、新手引导的改写一步、上传大小上限、等待语言模型的时间和提示词示例，都只用一两句话说清要点；细节写在 docs/settings.md。
 
 #### 修复
 

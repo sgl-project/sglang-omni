@@ -37,7 +37,7 @@ func remoteOptionValue(options []remoteOptionViewState, title string) (string, b
 // way to the setting (models_keep.go's).
 func llmWaitView(c *ui.Context, state *remoteWaitViewState, actions remoteWaitActions, local *llmWaitLocalUI) {
 	t := c.Theme()
-	help := i18n.T("How long Voxt waits for an answer before it inserts the recognised text instead. Automatic waits 20 seconds to a minute, longer for long text.")
+	help := i18n.T("Without an answer by then, the recognised text is inserted. Automatic waits 20 seconds to a minute, by the text's length.")
 	settingRow(c, "llm-wait", i18n.T("Wait for the language model"), help, func() {
 		if local.llmWaitFor != state.Token {
 			local.llmWaitFor = state.Token

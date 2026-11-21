@@ -23,7 +23,7 @@
       false
     ],
     "title": "Try Rewrite",
-    "subtitle": "Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and ask for something short. Outside this guide, the Rewrite shortcut opens a card with the microphone on: speak what to do, add text or images, then press Enter to send or Esc to close.",
+    "subtitle": "Press the shortcut or Start and ask for something short. Outside this guide, the Rewrite shortcut opens a card with the microphone on: speak what to do, add text or images, then press Enter to send or Esc to close.",
     "recording": false,
     "try": {
       "prefix": "ob-rw",
