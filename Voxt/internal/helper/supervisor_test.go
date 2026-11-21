@@ -453,6 +453,24 @@ func TestTextIO(t *testing.T) {
 	if sel, _ := request[proto.SelectionResult](t, c, proto.MethodTextSelection, proto.SelectionParams{AllowCopy: true}); sel.Text != "line" || sel.Via != proto.ViaCopy {
 		t.Errorf("copy %+v", sel)
 	}
+	// A selection file follows the same hasText rule as selection=:
+	// a U+FFFC-only (image-only) reading is not text and falls to the
+	// copy; an empty file stays no reading.
+	sfpath := filepath.Join(t.TempDir(), "selection")
+	os.WriteFile(sfpath, []byte("\uFFFC"), 0o644)
+	sf := start(t, helpertest.Opt("selection-file", sfpath)+","+helpertest.Opt("copy-selection", "from the copy"))
+	sf.ready(t)
+	if sel, _ := request[proto.SelectionResult](t, sf, proto.MethodTextSelection, proto.SelectionParams{AllowCopy: true}); sel.Text != "from the copy" || sel.Via != proto.ViaCopy {
+		t.Errorf("image-only file %+v", sel)
+	}
+	os.WriteFile(sfpath, []byte("now text"), 0o644)
+	if sel, _ := request[proto.SelectionResult](t, sf, proto.MethodTextSelection, proto.SelectionParams{AllowCopy: true}); sel.Text != "now text" || sel.Via != proto.ViaAX {
+		t.Errorf("file with text %+v", sel)
+	}
+	os.WriteFile(sfpath, nil, 0o644)
+	if sel, _ := request[proto.SelectionResult](t, sf, proto.MethodTextSelection, proto.SelectionParams{AllowCopy: true}); sel.Text != "" || sel.Via != proto.ViaNone {
+		t.Errorf("empty file %+v", sel)
+	}
 }
 
 // TestTrace: every call reports its phases; a slow control request is
