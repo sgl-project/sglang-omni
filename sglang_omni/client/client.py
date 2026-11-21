@@ -16,6 +16,7 @@ import numpy as np
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
+    audio_output_sample_rate_error,
     audio_to_base64,
     encode_audio,
     to_numpy,
@@ -459,7 +460,15 @@ class Client:
 
         Raises:
             ClientError: If the pipeline produces no audio output.
+            ValueError: If the requested sample rate cannot be encoded.
         """
+        sample_rate_error = audio_output_sample_rate_error(
+            response_format.strip().lower(), output_sample_rate
+        )
+        if sample_rate_error is not None:
+            raise ValueError(sample_rate_error)
+        else:
+            pass
         audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None

@@ -323,6 +323,21 @@ def test_output_resampling_rejects_empty_result() -> None:
         )
 
 
+def test_speech_rejects_unsupported_output_rate_before_generation() -> None:
+    """An unsupported rate must not submit a direct Python synthesis request."""
+    speech_client = FixedSpeechClient(np.zeros(2400, dtype=np.float32))
+    with pytest.raises(ValueError, match="sample_rate for FLAC"):
+        asyncio.run(
+            speech_client.speech(
+                GenerateRequest(prompt="Hello."),
+                request_id="unsupported-flac-rate",
+                response_format=" FLAC ",
+                output_sample_rate=65536,
+            )
+        )
+    assert speech_client.requests == []
+
+
 @pytest.mark.parametrize("encoding_backend", ["pyav", "pydub", "wav"])
 @pytest.mark.parametrize(
     (
