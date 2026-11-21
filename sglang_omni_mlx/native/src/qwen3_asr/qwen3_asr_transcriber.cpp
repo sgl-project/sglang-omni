@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/generation.h"
 #include "common/kv_cache.h"
 #include "common/text.h"
@@ -39,6 +40,16 @@ constexpr int kMinDefaultOutputTokens = 128;
 // The last mel frames, whose STFT windows take the reflected tail, change as
 // realtime audio arrives.
 constexpr int kReflectedTailFrames = 2;
+constexpr double kChunkSearchSeconds = 5.0;
+constexpr double kChunkEnergyWindowSeconds = 0.1;
+constexpr double kMinimumTailSeconds = 5.0;
+// Past about 10 minutes a single prompt can loop on its
+// first sentence; 120 s keeps every shorter request in one piece.
+constexpr double kMaxChunkSeconds = 120.0;
+
+size_t MaxChunkSamples() {
+  return static_cast<size_t>(kMaxChunkSeconds * omni_common::kSampleRate);
+}
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -299,7 +310,73 @@ Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
                           : 0};
 }
 
+bool Qwen3ASRTranscriber::ChunksAudio(size_t sample_count,
+                                      const TranscriptionOptions &options) {
+  // A piece would repeat the text already shown and the guesses.
+  return sample_count > MaxChunkSamples() && options.prefix_token_ids.empty() &&
+         options.prefix_text.empty() && options.guessed_token_ids.empty();
+}
+
 TranscriptionResult Qwen3ASRTranscriber::Transcribe(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
+  if (reuse != nullptr || !ChunksAudio(samples.size(), options)) {
+    return TranscribeWindow(samples, options, cancel, reuse);
+  } else {
+  }
+  const size_t max_chunk_samples = MaxChunkSamples();
+  const auto chunks = omni_common::BoundedEnergyCutChunks(
+      samples, max_chunk_samples,
+      static_cast<size_t>(kChunkSearchSeconds * omni_common::kSampleRate),
+      static_cast<size_t>(kChunkEnergyWindowSeconds * omni_common::kSampleRate),
+      static_cast<size_t>(kMinimumTailSeconds * omni_common::kSampleRate));
+  TranscriptionResult merged;
+  merged.finish_reason = FinishReason::kStop;
+  int remaining_tokens = options.max_new_tokens.value_or(0);
+  const bool has_token_budget = remaining_tokens != 0;
+  for (const auto &[start, end] : chunks) {
+    TranscriptionOptions chunk_options = options;
+    if (has_token_budget) {
+      chunk_options.max_new_tokens = remaining_tokens;
+    } else {
+    }
+    const TranscriptionResult chunk = TranscribeWindow(
+        std::vector<float>(samples.begin() + start, samples.begin() + end),
+        chunk_options, cancel, nullptr);
+    // Scripts written with spaces need one between pieces; CJK text does not.
+    if (!merged.text.empty() && !chunk.text.empty() &&
+        static_cast<unsigned char>(merged.text.back()) < 0x80 &&
+        static_cast<unsigned char>(chunk.text.front()) < 0x80 &&
+        !std::isspace(static_cast<unsigned char>(merged.text.back()))) {
+      merged.text += ' ';
+    } else {
+    }
+    merged.text += chunk.text;
+    if (!merged.language.has_value()) {
+      merged.language = chunk.language;
+    } else {
+    }
+    merged.generated_token_count += chunk.generated_token_count;
+    merged.verify_round_count += chunk.verify_round_count;
+    merged.proposed_draft_token_count += chunk.proposed_draft_token_count;
+    merged.accepted_draft_token_count += chunk.accepted_draft_token_count;
+    if (chunk.finish_reason == FinishReason::kLength) {
+      merged.finish_reason = FinishReason::kLength;
+    } else {
+    }
+    if (has_token_budget) {
+      remaining_tokens -= chunk.generated_token_count;
+      if (remaining_tokens <= 0) {
+        break;
+      } else {
+      }
+    } else {
+    }
+  }
+  return merged;
+}
+
+TranscriptionResult Qwen3ASRTranscriber::TranscribeWindow(
     const std::vector<float> &samples, const TranscriptionOptions &options,
     const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
   if (cancel.load()) {

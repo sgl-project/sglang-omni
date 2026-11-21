@@ -71,7 +71,7 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
-    if (transcriber_.CanBatch(options)) {
+    if (transcriber_.CanBatch(options, samples.size())) {
       return qwen3_asr::BatchableTranscription{
           &transcriber_, std::move(samples), std::move(options)};
     } else {
