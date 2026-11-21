@@ -162,6 +162,149 @@ func TestSystemStartFailureBoundsMicStop(t *testing.T) {
 	}
 }
 
+func testManagerStreams(t *testing.T, mic, system session.Audio, micStreamer, systemStreamer asr.Streamer) (*meeting.Manager, context.Context) {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	cfg := meeting.Config{
+		Mic:     mic,
+		System:  system,
+		Store:   s.Meetings(),
+		Dir:     filepath.Join(dir, "meetings"),
+		Privacy: func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		FreeSpace: func(string) (int64, error) {
+			return meeting.DiskMinStartBytes() + 1, nil
+		},
+		ASR: func(_ context.Context, src meeting.Source) (meeting.TrackASR, error) {
+			streamer := micStreamer
+			if src == meeting.SourceSystem {
+				streamer = systemStreamer
+			}
+			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
+		},
+	}
+	return meeting.NewManager(cfg), ctx
+}
+
+type finishGateStreamer struct {
+	first          chan struct{}
+	finishStarted  chan struct{}
+	releaseFinish  chan struct{}
+	finishReturned chan struct{}
+}
+
+func newFinishGateStreamer() *finishGateStreamer {
+	first := make(chan struct{}, 1)
+	first <- struct{}{}
+	return &finishGateStreamer{
+		first:          first,
+		finishStarted:  make(chan struct{}),
+		releaseFinish:  make(chan struct{}),
+		finishReturned: make(chan struct{}),
+	}
+}
+
+func (s *finishGateStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
+
+func (s *finishGateStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
+	select {
+	case <-s.first:
+		return &finishGateStream{streamer: s, events: make(chan asr.Event, 1)}, nil
+	default:
+		return &meetTestStream{events: make(chan asr.Event, 1)}, nil
+	}
+}
+
+type finishGateStream struct {
+	streamer *finishGateStreamer
+	events   chan asr.Event
+}
+
+func (s *finishGateStream) Send([]byte) error { return nil }
+
+func (s *finishGateStream) Finish() error {
+	close(s.streamer.finishStarted)
+	<-s.streamer.releaseFinish
+	close(s.events)
+	close(s.streamer.finishReturned)
+	return nil
+}
+
+func (s *finishGateStream) Close() {}
+
+func (s *finishGateStream) Events() <-chan asr.Event { return s.events }
+
+func (s *finishGateStreamer) release() {
+	select {
+	case <-s.releaseFinish:
+	default:
+		close(s.releaseFinish)
+	}
+}
+
+func TestSystemStartFailureKeepsCaptureErrorDuringSlowFinal(t *testing.T) {
+	system := newFakeAudio(nil)
+	system.startErr = errors.New("permission denied")
+	streamer := newFinishGateStreamer()
+	m, ctx := testManagerStreams(t, newFakeAudio([]byte{9}), system, &meetTestStreamer{}, streamer)
+	t.Cleanup(streamer.release)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeMeeting})
+		errc <- err
+	}()
+	select {
+	case <-streamer.finishStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the system track did not reach its slow Final")
+	}
+	select {
+	case err := <-errc:
+		var startErr *meeting.StartError
+		if !errors.As(err, &startErr) || startErr.Source != meeting.SourceSystem || startErr.Err.Error() != "permission denied" {
+			t.Fatalf("Start replaced the capture error: %v", err)
+		}
+	case <-time.After(12 * time.Second):
+		t.Fatal("Start still hangs behind the slow Final")
+	}
+}
+
+func TestStoppedTrackDoesNotReconnectAfterPauseSetModeResume(t *testing.T) {
+	mic := newFakeAudio([]byte{9})
+	streamer := newFinishGateStreamer()
+	m, ctx := testManagerStreams(t, mic, newFakeAudio([]byte{8}), streamer, &meetTestStreamer{})
+	t.Cleanup(streamer.release)
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Finish(ctx, id)
+	if err := m.Pause(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetMode(ctx, id, meeting.ModeMeeting); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Resume(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	streamer.release()
+	select {
+	case <-streamer.finishReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the replaced track did not finish")
+	}
+	<-time.After(250 * time.Millisecond)
+	if jobs := mic.jobIDs(); len(jobs) != 2 {
+		t.Fatalf("the replaced track reconnected: jobs %v", jobs)
+	}
+}
+
 func TestPCMWrittenToWAV(t *testing.T) {
 	pcm := make([]byte, asr.BytesPerSecond)
 	for i := range pcm {

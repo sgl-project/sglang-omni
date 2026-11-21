@@ -35,7 +35,8 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 	m.timeline.Begin(src, job, m.timeline.Elapsed())
 	done := make(chan struct{})
-	m.tracks[src] = &track{src: src, job: job, audio: audio, done: done}
+	tr := &track{src: src, job: job, audio: audio, done: done}
+	m.tracks[src] = tr
 	m.mu.Unlock()
 
 	tx, err := m.newTrackTranscriber(ctx, src, job)
@@ -47,7 +48,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 	if tx != nil {
 		m.mu.Lock()
-		m.tracks[src].transcribe = tx
+		tr.transcribe = tx
 		m.mu.Unlock()
 	}
 
@@ -109,23 +110,23 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 				m.noteLevel(src, ev.Level.RMS)
 			}
 		})
+		if err != nil {
+			// A slow Final must not hide the capture error behind the startup timeout.
+			select {
+			case started <- err:
+			default:
+			}
+		}
 		pcm.close()
 		<-pumped
 		if tx != nil {
 			_ = tx.finish(context.Background())
 		}
 		close(done)
-		if err != nil {
-			select {
-			case started <- err:
-			default:
-			}
-		}
 		m.mu.Lock()
-		tr := m.tracks[src]
-		intentional := tr != nil && tr.stopping
+		reconnect := m.tracks[src] == tr && !tr.stopping
 		m.mu.Unlock()
-		if !intentional {
+		if reconnect {
 			m.handleTrackLost(ctx, src)
 		}
 	}()
