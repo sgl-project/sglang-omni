@@ -57,8 +57,11 @@ func (a *app) helperPerms(r proto.PermissionsResult, err error) {
 		return // the section keeps what internal/permission read
 	}
 	a.perms.mic, a.perms.access, a.perms.checked = permState(r.Microphone), r.Accessibility, true
-	if r.SpeechRecognition != "" { // else an older helper: keep what internal/permission read
+	if r.SpeechRecognition != "" {
 		a.perms.speech = permState(r.SpeechRecognition)
+	} else {
+		// An older helper does not read it.
+		a.perms.speech = a.permSys.SpeechRecognition()
 	}
 }
 
@@ -82,14 +85,28 @@ func (a *app) permissionsModel() permissionsViewState {
 	return state
 }
 
-// recheckPermissions reads the permissions: at once here (cheap system
-// calls), then as the helper sees them.
+// recheckPermissions shows the permissions as the helper reads them, else
+// as this process reads them. The two can disagree (#4365), so a recheck
+// keeps what is shown until the helper answers.
 func (a *app) recheckPermissions() {
-	a.perms.mic, a.perms.access, a.perms.checked = a.permSys.Microphone(), a.permSys.AccessibilityTrusted(), true
-	a.perms.speech = a.permSys.SpeechRecognition()
-	if a.hstatus.Has(proto.MethodPermissionsStatus) {
-		helperCall(a, proto.MethodPermissionsStatus, nil, 5*time.Second, a.helperPerms)
+	own := func() {
+		a.perms.mic, a.perms.access, a.perms.checked = a.permSys.Microphone(), a.permSys.AccessibilityTrusted(), true
+		a.perms.speech = a.permSys.SpeechRecognition()
 	}
+	if !a.hstatus.Has(proto.MethodPermissionsStatus) {
+		own()
+		return
+	}
+	if !a.perms.checked {
+		own() // something to show until the helper answers
+	}
+	helperCall(a, proto.MethodPermissionsStatus, nil, 5*time.Second, func(r proto.PermissionsResult, err error) {
+		if err != nil {
+			own()
+			return
+		}
+		a.helperPerms(r, nil)
+	})
 }
 
 // askPermission shows macOS's prompt for a permission
