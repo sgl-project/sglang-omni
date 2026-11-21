@@ -162,7 +162,7 @@ Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, t
 | --- | --- | --- |
 | `run-native-duplex` | Full-Duplex-Bench - full duplex | MiniCPM-o 4.5, native full duplex, one server on each of two GPUs |
 | `run-turn-based-duplex` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
-| `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian`) |
+| `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off speaking through a `tts_start` tool, and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool`) |
 
 The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label.
 

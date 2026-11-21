@@ -34,6 +34,7 @@ from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
     REPLY_TRUNCATED,
     SESSION_CONTROL,
+    SPEECH_ERROR,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT,
@@ -510,8 +511,10 @@ class SessionBridge(InteractionAdapter):
         return events
 
     def on_turn_done(self, output: OutputChunk) -> list[OutputEvent]:
-        """A reply the talker stopped at its token budget is incomplete; any other reply completed."""
-        if output.payload.get(REPLY_TRUNCATED) is True:
+        """A speech whose speech service failed has failed and a reply the talker stopped at its token budget is incomplete; any other reply completed."""
+        if output.payload.get(SPEECH_ERROR) is not None:
+            return self.finish_response("failed", "speech_error", output)
+        elif output.payload.get(REPLY_TRUNCATED) is True:
             return self.finish_response("incomplete", "max_output_tokens", output)
         else:
             return self.finish_response("completed", "stop", output)
