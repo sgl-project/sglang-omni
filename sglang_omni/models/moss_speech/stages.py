@@ -28,12 +28,11 @@ def create_preprocessing_executor(
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    resolved_device = resolve_concrete_device(device, gpu_id)
     ensure_moss_speech_config_registered()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
     codec = (
-        MossSpeechCodec(
-            codec_path, resolve_concrete_device(device, gpu_id), load_decoder=False
-        )
+        MossSpeechCodec(codec_path, resolved_device, load_decoder=False)
         if codec_path is not None
         else None
     )
@@ -69,15 +68,16 @@ def create_ar_engine_executor(
 def create_audio_vocoder_executor(
     model_path: str,
     *,
-    codec_path: str | None,
+    codec_path: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    resolved_device = resolve_concrete_device(device, gpu_id)
     if codec_path is None:
         raise ValueError("Set audio_vocoder.factory.codec_path")
     else:
         pass
-    codec = MossSpeechCodec(codec_path, resolve_concrete_device(device, gpu_id))
+    codec = MossSpeechCodec(codec_path, resolved_device)
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
     return SimpleScheduler(
         partial(codec.decode, tokenizer=tokenizer), shutdown_callback=codec.close

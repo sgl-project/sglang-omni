@@ -155,9 +155,16 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
                 else request_data.prompt_rows[-1]
             )
             request_data.mode = next_mode(last_row, request_data.mode)
-            text_history, audio_history = channel_histories(
-                request_data.prompt_rows, request_data.output_rows
-            )
+            text_history = audio_history = None
+            if request_data.params.repetition_penalty != 1.0:
+                text_rows, audio_rows = channel_histories(
+                    request_data.prompt_rows, request_data.output_rows
+                )
+                text_history, audio_history = text_rows.to(
+                    logits_device
+                ), audio_rows.to(logits_device)
+            else:
+                pass
             generator = (
                 self.generator_for(request_data, logits_device)
                 if request_data.params.do_sample
@@ -167,8 +174,8 @@ class MossSpeechModelRunner(ModelRunner[MossSpeechSGLangRequestData]):
                 text_logits,
                 audio_logits,
                 request_data.params,
-                text_history.to(logits_device),
-                audio_history.to(logits_device),
+                text_history,
+                audio_history,
                 generator,
             )
             row = finalize_row(text_token, audio_token, request_data.mode)

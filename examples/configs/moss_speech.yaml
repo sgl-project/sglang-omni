@@ -1,0 +1,9 @@
+config_cls: MossSpeechPipelineConfig
+model_path: ./weights/MOSS-Speech
+stages:
+  preprocessing:
+    factory:
+      codec_path: ./weights/MOSS-Speech-Codec
+  audio_vocoder:
+    factory:
+      codec_path: ./weights/MOSS-Speech-Codec

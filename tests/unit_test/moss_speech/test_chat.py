@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Chat inputs, dual-channel rows and all four output combinations."""
 
+import base64
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -31,7 +32,7 @@ from tests.unit_test.fixtures.moss_speech import (
 
 def test_public_speech_and_chat_return_the_requested_modality() -> None:
     with TestClient(
-        create_app(SpeechClient(make_codec()), model_name="moss-speech")
+        create_app(SpeechClient(make_codec()), architectures=["MossSpeechForCausalLM"])
     ) as http:
         response = http.post(
             "/v1/audio/speech",
@@ -42,8 +43,8 @@ def test_public_speech_and_chat_return_the_requested_modality() -> None:
                 "ref_audio": audio_reference(),
             },
         )
-        assert response.status_code == 200, response.text
-        assert response.content[:4] == b"RIFF" and len(response.content) > 44
+        assert response.status_code == 400, response.text
+        assert "/v1/chat/completions" in response.text
         response = http.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "Hello"}], "stream": False},
@@ -59,7 +60,9 @@ def test_speech_input_keeps_first_channel_and_native_rate(tmp_path: Path) -> Non
     soundfile.write(path, samples, 44100, subtype="FLOAT")
     codec = make_codec()
     codec.encode_tokens = Mock(wraps=codec.encode_tokens)
-    codec.encode_audio(str(path))
+    codec.encode_audio(
+        "data:audio/wav;base64," + base64.b64encode(path.read_bytes()).decode()
+    )
     waveform, sample_rate = codec.encode_tokens.call_args.args
     assert sample_rate == 44100
     torch.testing.assert_close(
@@ -88,7 +91,7 @@ def test_chat_preserves_both_token_channels_and_output_modality(
             metadata=(
                 {
                     "output_modalities": [output_modality],
-                    "audio_config": {"ref_audio": "voice.wav", "format": "wav"},
+                    "audio_config": {"ref_audio": audio_reference(), "format": "wav"},
                 }
                 if output_modality == "audio"
                 else {"output_modalities": ["text"]}
@@ -125,7 +128,10 @@ def test_chat_preserves_both_token_channels_and_output_modality(
         codec.decoder = None
         assert codec.decode(result, tokenizer=TextTokenizer()).data["text"] == "four"
     else:
-        assert MossSpeechState.from_dict(result.data).reference_audio == "voice.wav"
+        assert MossSpeechState.from_dict(result.data).reference_waveform.shape == (
+            1,
+            24000,
+        )
 
 
 @pytest.mark.parametrize("output_modality", ["text", "audio"])
@@ -171,7 +177,7 @@ def test_chat_http_supports_all_four_modalities(
     else:
         pass
     with TestClient(
-        create_app(SpeechClient(make_codec()), model_name="moss-speech")
+        create_app(SpeechClient(make_codec()), architectures=["MossSpeechForCausalLM"])
     ) as http:
         response = http.post("/v1/chat/completions", json=body)
     assert response.status_code == 200, response.text

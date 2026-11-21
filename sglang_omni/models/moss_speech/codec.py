@@ -23,39 +23,17 @@ from transformers import (
 )
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
+from sglang_omni.models.moss_speech.media import (
+    MAX_REFERENCE_SECONDS,
+    decode_chat_audio,
+)
 from sglang_omni.models.moss_speech.request_builders import (
     MossSpeechState,
     RequestValidationError,
 )
-from sglang_omni.preprocessing.base import MediaIO, is_url
-from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.utils.audio import (
-    audio_request_timeout,
-    decode_audio_data_uri,
-    load_audio,
-)
 
 SAMPLE_RATE_HZ = 24000
-MAX_REFERENCE_SECONDS = 30
-
-
-class MossSpeechAudioBytes(MediaIO[bytes]):
-    """Read authorized media without changing HF audio decoding or resampling."""
-
-    def load_bytes(self, data: bytes) -> bytes:
-        return data
-
-    def load_base64(self, media_type: str, data: str) -> bytes:
-        encoded = decode_audio_data_uri(f"data:{media_type};base64,{data}")
-        assert encoded is not None
-        return encoded
-
-    def load_file(self, filepath: Path) -> bytes:
-        try:
-            return filepath.read_bytes()
-        except (FileNotFoundError, IsADirectoryError, PermissionError) as error:
-            raise ValueError(f"Could not read speech input: {filepath}") from error
 
 
 class VoiceConditioning(TypedDict):
@@ -203,57 +181,17 @@ class MossSpeechCodec:
         return torch.cat(tokens)
 
     def encode_audio(self, source: str) -> list[int]:
-        connector = get_global_resource_connector()
-        if source.startswith(("http://", "https://")):
-            connector.assert_url_allowed(source)
-        elif source.startswith("file:") and connector.allowed_local_media_path is None:
-            raise ValueError("Local file loading is disabled.")
-        else:
-            pass
-        media_io = MossSpeechAudioBytes()
-        encoded = (
-            connector.load_resource(source, media_io, timeout=audio_request_timeout())
-            if is_url(source)
-            else connector.load_local_path(source, media_io)
-        )
-        samples, sample_rate = load_audio(
-            encoded,
-            source_name="reference audio",
-            mono=False,
-            preserve_sample_rate=True,
-        )
-        waveform = torch.from_numpy(samples[:1])
+        waveform, sample_rate = decode_chat_audio(source, reference=False)
         return self.encode_tokens(waveform, sample_rate).cpu().tolist()
 
     @torch.inference_mode()
-    def encode_reference(self, reference_audio: str) -> VoiceConditioning:
+    def encode_reference(
+        self, reference_waveform: torch.Tensor, reference_sample_rate: int
+    ) -> VoiceConditioning:
         assert self.encoder is not None and self.decoder is not None
-        samples, reference_sample_rate = load_audio(
-            reference_audio, source_name="reference audio", preserve_sample_rate=True
-        )
-        reference_waveform = torch.from_numpy(samples).unsqueeze(0)
         waveform = torchaudio.transforms.Resample(
             reference_sample_rate, SAMPLE_RATE_HZ
         )(reference_waveform)
-        minimum_reference_samples = (
-            self.feature_frames_per_token
-            * self.feature_extractor.hop_length
-            * SAMPLE_RATE_HZ
-            // self.feature_extractor.sampling_rate
-        )
-        if waveform.shape[-1] < minimum_reference_samples:
-            raise RequestValidationError(
-                "Reference audio is too short for codec conditioning"
-            )
-        elif (
-            waveform.shape[-1] > MAX_REFERENCE_SECONDS * SAMPLE_RATE_HZ
-            or not torch.isfinite(waveform).all()
-        ):
-            raise RequestValidationError(
-                f"Reference audio must contain finite audio of at most {MAX_REFERENCE_SECONDS} seconds"
-            )
-        else:
-            pass
         prompt_tokens = self.encode_tokens(reference_waveform, reference_sample_rate)
         prompt_mel = (
             self.decoder.feat_extractor(waveform)
@@ -330,7 +268,10 @@ class MossSpeechCodec:
                 allow_tf32=torch.backends.cudnn.allow_tf32,
             ),
         ):
-            voice = self.encode_reference(state.reference_audio)
+            assert state.reference_waveform is not None
+            voice = self.encode_reference(
+                state.reference_waveform, state.reference_sample_rate
+            )
             random.seed(state.effective_seed)
             np.random.seed(state.effective_seed % (1 << 32))
             torch.manual_seed(state.effective_seed)

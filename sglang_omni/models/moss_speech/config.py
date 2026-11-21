@@ -32,6 +32,7 @@ class MossSpeechVocoderStage(StageConfig):
 
 class MossSpeechPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "MossSpeechForCausalLM"
+    supported_speech_fields: ClassVar[frozenset[str]] = frozenset()
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "preprocessing": MossSpeechVocoderStage,
         "ar_engine": EngineStageConfig,
@@ -55,7 +56,7 @@ class MossSpeechPipelineConfig(PipelineConfig):
                 max_running_requests=4,
                 max_queued_requests=20,
                 max_total_tokens=MAX_CONTEXT_TOKENS + KV_RESERVE_TOKENS,
-                disable_cuda_graph=False,
+                disable_cuda_graph=True,
             ),
             gpu=0,
             gpu_memory_fraction=0.72,

@@ -21,6 +21,8 @@ from sglang_omni.models.moss_speech.hf_config import MossSpeechConfig
 from sglang_omni.models.moss_speech.model_layers import (
     MossSpeechDecoderLayer,
     MossSpeechRMSNorm,
+    request_linear,
+    request_norm,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,15 +138,16 @@ class MossSpeechSGLangModel(torch.nn.Module):
             hidden_states = self.rows_to_embeddings(rows)
         else:
             raise ValueError("MOSS-Speech prefill requires dual-channel embeddings")
-        if not is_decode:
-            assert forward_batch.extend_seq_lens_cpu is not None
-            assert sum(forward_batch.extend_seq_lens_cpu) == hidden_states.shape[0]
+        if is_decode:
+            token_lengths = [1] * hidden_states.shape[0]
         else:
-            pass
+            assert forward_batch.extend_seq_lens_cpu is not None
+            token_lengths = list(forward_batch.extend_seq_lens_cpu)
+        assert sum(token_lengths) == hidden_states.shape[0]
         residual = None
         for layer in self.layers:
             hidden_states, residual = layer(
-                positions, hidden_states, forward_batch, residual
+                positions, hidden_states, forward_batch, token_lengths, residual
             )
         text_hidden_states, text_residual = hidden_states, residual
         audio_hidden_states = hidden_states.clone()
@@ -154,6 +157,7 @@ class MossSpeechSGLangModel(torch.nn.Module):
                 positions,
                 text_hidden_states,
                 forward_batch,
+                token_lengths,
                 text_residual,
             )
         for layer in self.audio_block:
@@ -161,35 +165,38 @@ class MossSpeechSGLangModel(torch.nn.Module):
                 positions,
                 audio_hidden_states,
                 forward_batch,
+                token_lengths,
                 audio_residual,
             )
         if text_residual is None or audio_residual is None:
             raise RuntimeError("MOSS-Speech requires nonempty modality tails")
         else:
             pass
-        normalized_text_hidden_states, _ = self.text_norm(
-            text_hidden_states, text_residual
+        normalized_text_hidden_states, _ = request_norm(
+            self.text_norm, text_hidden_states, token_lengths, text_residual
         )
-        normalized_audio_hidden_states, _ = self.audio_norm(
-            audio_hidden_states, audio_residual
+        normalized_audio_hidden_states, _ = request_norm(
+            self.audio_norm, audio_hidden_states, token_lengths, audio_residual
         )
         if is_decode:
             last_token_indices = slice(None)
         else:
             last_token_indices = (
                 torch.tensor(
-                    forward_batch.extend_seq_lens_cpu,
-                    device=normalized_text_hidden_states.device,
+                    token_lengths, device=normalized_text_hidden_states.device
                 ).cumsum(0)
                 - 1
             )
-        text_logits = torch.nn.functional.linear(
+        projection_lengths = [1] * len(token_lengths)
+        text_logits = request_linear(
             normalized_text_hidden_states[last_token_indices],
             self.text_lm_head.weight,
+            projection_lengths,
         )[:, : self.text_vocab_size]
-        audio_logits = torch.nn.functional.linear(
+        audio_logits = request_linear(
             normalized_audio_hidden_states[last_token_indices],
             self.audio_lm_head.weight,
+            projection_lengths,
         )[:, : self.audio_vocab_size]
         return MossSpeechModelOutput(
             next_token_logits=text_logits,

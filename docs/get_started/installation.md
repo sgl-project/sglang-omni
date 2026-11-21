@@ -136,9 +136,7 @@ export PYTHONPATH="$moss_speech_sources:$moss_speech_sources/MOSS-Speech:$moss_s
 
 Start `sgl-omni serve` from this shell so its workers inherit `PYTHONPATH`. When starting from a new shell or service, set `moss_speech_sources` and `PYTHONPATH` again. All three source paths are required: the codec configuration imports `Matcha-TTS.matcha`, while its Python modules import `matcha` and `cosyvoice`.
 
-Configure the codec snapshot with `--audio_vocoder.factory.codec_path`. Supply `ref_audio` in each `/v1/audio/speech` request to choose that request's voice; no reference WAV is needed at server startup. Reference audio accepts a data URI, a URL or a server-visible file path permitted by the server's media policy. The codec converts it to 24 kHz mono and accepts up to 30 seconds.
-
-Autoregressive decoding uses BF16, FlashInfer attention and CUDA Graph by default. Set `--ar_engine.engine.disable_cuda_graph true` for eager execution. Prefill and codec decoding remain eager.
+Follow the [MOSS-Speech cookbook](../cookbook/moss_speech.md) to download both checkpoints, launch the three stages, and send a text or spoken question.
 
 ## Next steps
 

@@ -1,21 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Speech input media policies and public input-error classification."""
+"""Exercise the embedded app's media policy before generation."""
 
+import base64
+import ipaddress
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
 import torch
 from fastapi.testclient import TestClient
 
-from sglang_omni.preprocessing.resource_connector import (
-    MultiModalResourceConnector,
-    global_http_connection,
-    resource_connector_scope,
-)
+from sglang_omni.preprocessing.resource_connector import global_http_connection
 from sglang_omni.serve.openai_api import create_app
-from sglang_omni.utils.audio import decode_audio_data_uri
+from sglang_omni.serve.speech_limits import MAX_REFERENCE_AUDIO_BYTES
 from tests.unit_test.fixtures.moss_speech import (
     SpeechClient,
     audio_reference,
@@ -23,128 +21,110 @@ from tests.unit_test.fixtures.moss_speech import (
 )
 
 
-@pytest.mark.parametrize("case", ["allowed", "forbidden", "redirect"])
-def test_speech_input_enforces_domain_policy_and_redirects(
-    monkeypatch: pytest.MonkeyPatch, case: str
-) -> None:
-    monkeypatch.setenv("SGLANG_OMNI_ALLOWED_MEDIA_DOMAINS", "allowed.example")
-    connector = MultiModalResourceConnector()
-    fetched = []
-    encoded = decode_audio_data_uri(audio_reference())
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        fetched.append(str(request.url))
-        if case == "redirect":
-            return httpx.Response(
-                302, headers={"location": "https://forbidden.example/voice.wav"}
-            )
-        return httpx.Response(200, content=encoded)
-
-    codec = make_codec()
-    codec.encode_tokens = Mock(wraps=codec.encode_tokens)
-    source = (
-        f"https://{'forbidden' if case == 'forbidden' else 'allowed'}.example/voice.wav"
+def chat_body(source: str, *, reference: bool) -> dict:
+    content = (
+        "Hello" if reference else [{"type": "audio_url", "audio_url": {"url": source}}]
     )
-    with httpx.Client(
-        transport=httpx.MockTransport(respond), trust_env=False
-    ) as client:
-        monkeypatch.setattr(global_http_connection, "get_sync_client", lambda: client)
-        with resource_connector_scope(connector):
-            if case == "allowed":
-                assert codec.encode_audio(source)
-                codec.encode_tokens.assert_called_once()
-            else:
-                with pytest.raises(
-                    ValueError, match="Domain forbidden.example is not allowed"
-                ):
-                    codec.encode_audio(source)
-                codec.encode_tokens.assert_not_called()
-    assert fetched == ([] if case == "forbidden" else [source])
+    body = {"messages": [{"role": "user", "content": content}]}
+    if reference:
+        body.update(modalities=["audio"], audio={"ref_audio": source})
+    return body
 
 
-@pytest.mark.parametrize("case", ["allowed", "file_uri", "outside", "symlink"])
-def test_speech_input_enforces_local_directory_policy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
-) -> None:
+@pytest.mark.parametrize("reference", [False, True])
+@pytest.mark.parametrize(
+    "case", ["path", "file_uri", "outside", "symlink", "oversize", "disabled"]
+)
+def test_local_media_policy(tmp_path: Path, case: str, reference: bool) -> None:
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     inside = allowed / "voice.wav"
-    outside = tmp_path / "voice.wav"
-    encoded = decode_audio_data_uri(audio_reference())
-    assert encoded is not None
-    inside.write_bytes(encoded)
-    outside.write_bytes(encoded)
-    symlink = allowed / "link.wav"
-    symlink.symlink_to(outside)
-    monkeypatch.setenv("SGLANG_OMNI_ALLOWED_LOCAL_MEDIA_PATH", str(allowed))
-    sources = {
-        "allowed": str(inside),
+    outside = tmp_path / "other.wav"
+    inside.write_bytes(base64.b64decode(audio_reference().split(",")[1]))
+    outside.write_bytes(inside.read_bytes())
+    link = allowed / "link.wav"
+    link.symlink_to(outside)
+    if case == "oversize":
+        with inside.open("ab") as stream:
+            stream.truncate(MAX_REFERENCE_AUDIO_BYTES + 1)
+    source = {
         "file_uri": inside.as_uri(),
         "outside": str(outside),
-        "symlink": str(symlink),
-    }
-    codec = make_codec()
-    codec.encode_tokens = Mock(wraps=codec.encode_tokens)
-    with resource_connector_scope(MultiModalResourceConnector()):
-        if case in ("allowed", "file_uri"):
-            assert codec.encode_audio(sources[case])
-            codec.encode_tokens.assert_called_once()
-        else:
-            with pytest.raises(ValueError, match="not within allowed directory"):
-                codec.encode_audio(sources[case])
-            codec.encode_tokens.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "failure", ["404", "timeout", "missing_file", "oom", "internal"]
-)
-def test_chat_classifies_resource_errors_without_hiding_compute_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
-) -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
-        if failure == "timeout":
-            raise httpx.ReadTimeout("Timed out", request=request)
-        return httpx.Response(404)
-
-    codec = make_codec()
-    if failure in ("oom", "internal"):
-        error = (
-            torch.OutOfMemoryError("test OOM")
-            if failure == "oom"
-            else RuntimeError("test encoder failure")
+        "symlink": str(link),
+    }.get(case, str(inside))
+    with TestClient(
+        create_app(
+            SpeechClient(make_codec()),
+            architectures=["MossSpeechForCausalLM"],
+            allowed_local_media_path=None if case == "disabled" else str(allowed),
         )
-        codec.encode_tokens = Mock(side_effect=error)
-        source = audio_reference()
-    elif failure == "missing_file":
-        source = str(tmp_path / "missing.wav")
-    else:
-        source = "https://voice.example/input.wav"
-    with httpx.Client(
-        transport=httpx.MockTransport(respond), trust_env=False
-    ) as client:
+    ) as http:
+        response = http.post(
+            "/v1/chat/completions", json=chat_body(source, reference=reference)
+        )
+    assert response.status_code == (
+        200 if case in ("path", "file_uri") else 400
+    ), response.text
+
+
+@pytest.mark.parametrize("reference", [True, False])
+@pytest.mark.parametrize("case", ["allowed", "redirect", "404", "timeout", "oversize"])
+def test_remote_media_policy(
+    monkeypatch: pytest.MonkeyPatch, reference: bool, case: str
+) -> None:
+    fetched = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        fetched.append(request.url.host)
+        if case == "redirect":
+            return httpx.Response(
+                302, headers={"location": "https://other.example/voice"}
+            )
+        if case == "timeout":
+            raise httpx.ReadTimeout("timeout", request=request)
+        if case == "oversize":
+            return httpx.Response(
+                200, headers={"content-length": str(MAX_REFERENCE_AUDIO_BYTES + 1)}
+            )
+        return httpx.Response(
+            404 if case == "404" else 200,
+            content=base64.b64decode(audio_reference().split(",")[1]),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(global_http_connection, "get_sync_client", lambda: client)
         with (
-            resource_connector_scope(MultiModalResourceConnector()),
+            patch(
+                "sglang_omni.preprocessing.resource_connector.resolve_remote_addresses",
+                return_value=(ipaddress.ip_address("93.184.216.34"),),
+            ),
             TestClient(
-                create_app(SpeechClient(codec), model_name="moss-speech"),
-                raise_server_exceptions=False,
+                create_app(
+                    SpeechClient(make_codec()),
+                    architectures=["MossSpeechForCausalLM"],
+                    allowed_media_domains=["voice.example"],
+                )
             ) as http,
         ):
             response = http.post(
                 "/v1/chat/completions",
-                json={
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "audio_url", "audio_url": {"url": source}}
-                            ],
-                        }
-                    ],
-                    "modalities": ["text"],
-                    "stream": False,
-                },
+                json=chat_body("https://voice.example/voice", reference=reference),
             )
-    assert response.status_code == (
-        500 if failure in ("oom", "internal") else 400
-    ), response.text
+    assert response.status_code == (200 if case == "allowed" else 400), response.text
+    assert fetched == ["voice.example"]
+
+
+@pytest.mark.parametrize(
+    "error", [torch.OutOfMemoryError("test OOM"), RuntimeError("test encoder failure")]
+)
+def test_compute_error_is_server_error(error: Exception) -> None:
+    codec = make_codec()
+    codec.encode_tokens = Mock(side_effect=error)
+    with TestClient(
+        create_app(SpeechClient(codec), architectures=["MossSpeechForCausalLM"]),
+        raise_server_exceptions=False,
+    ) as http:
+        response = http.post(
+            "/v1/chat/completions", json=chat_body(audio_reference(), reference=False)
+        )
+    assert response.status_code == 500

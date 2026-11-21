@@ -27,11 +27,10 @@ from sglang_omni.models.moss_speech.fsm import (
     initial_mode,
 )
 from sglang_omni.models.moss_speech.hf_config import MAX_CONTEXT_TOKENS
-from sglang_omni.proto.request import StagePayload
+from sglang_omni.models.moss_speech.media import decode_chat_audio
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-
-TTS_SYSTEM_PROMPT = "You are a helpful voice assistant. Answer the user's questions with spoken responses."
 
 
 class RequestValidationError(ValueError):
@@ -68,21 +67,6 @@ class VoiceOptions(BaseModel):
     ref_audio: str | None = Field(default=None, min_length=1)
 
 
-class AudioReference(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    audio_path: str | None = Field(default=None, min_length=1)
-    data: str | None = Field(default=None, min_length=1)
-    media_type: str = "audio/wav"
-
-
-class SpeechPrompt(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    text: str
-    references: list[AudioReference] = Field(min_length=1, max_length=1)
-
-
 @dataclass(kw_only=True)
 class MossSpeechState(DeclarativeStateBase):
     text_token_ids: list[int] = wire(default_factory=list, codec="list")
@@ -98,7 +82,8 @@ class MossSpeechState(DeclarativeStateBase):
     effective_seed: int = wire(0, codec="int")
     max_new_tokens: int = wire(0, codec="int")
     audio_codes: list[int] = wire(default_factory=list, codec="list")
-    reference_audio: str = wire("", codec="str")
+    reference_waveform: torch.Tensor | None = wire(None, codec="tensor_cpu")
+    reference_sample_rate: int = wire(0, codec="int")
 
 
 @dataclass
@@ -117,12 +102,11 @@ def preprocess_request(
     audio_encoder: AudioTokenEncoder | None = None,
 ) -> StagePayload:
     request = payload.request
-    is_chat = isinstance(request.inputs, list)
-    output_modalities = request.metadata.get("output_modalities") or (
-        ["text"] if is_chat else ["audio"]
-    )
-    if request.metadata.get("task") not in (None, "tts"):
-        raise RequestValidationError("unsupported task")
+    output_modalities = request.metadata.get("output_modalities") or ["text"]
+    if request.metadata.get("task") is not None or not isinstance(request.inputs, list):
+        raise RequestValidationError(
+            "Use /v1/chat/completions for MOSS-Speech dialogue"
+        )
     elif output_modalities not in (["audio"], ["text"]):
         raise RequestValidationError("Select one text or audio output modality")
     elif any(request.metadata.get(name) for name in ("audios", "images", "videos")):
@@ -133,9 +117,7 @@ def preprocess_request(
         parameters = SpeechParameters.model_validate(
             {name: value for name, value in request.params.items() if value is not None}
         )
-        voice_config = request.metadata.get(
-            "audio_config", request.metadata.get("tts_params", {})
-        )
+        voice_config = request.metadata.get("audio_config", {})
         if isinstance(voice_config, dict) and "format" in voice_config:
             voice_config = {
                 ("response_format" if name == "format" else name): value
@@ -145,50 +127,10 @@ def preprocess_request(
             pass
         voice_options = VoiceOptions.model_validate(voice_config)
         reference_audio = voice_options.ref_audio
-        if is_chat:
-            conversation = request.inputs
-        elif isinstance(request.inputs, str):
-            text = request.inputs
-        else:
-            prompt = SpeechPrompt.model_validate(request.inputs)
-            text = prompt.text
-            reference = prompt.references[0]
-            if reference.audio_path is not None and reference.data is None:
-                prompt_reference_audio = reference.audio_path
-            elif reference.data is not None and reference.audio_path is None:
-                prompt_reference_audio = (
-                    f"data:{reference.media_type};base64,{reference.data}"
-                )
-            else:
-                raise RequestValidationError("Provide one reference audio source")
-            if (
-                reference_audio is not None
-                and reference_audio != prompt_reference_audio
-            ):
-                raise RequestValidationError("Conflicting reference audio sources")
-            else:
-                reference_audio = prompt_reference_audio
-        if not is_chat:
-            if not text.strip():
-                raise RequestValidationError("TTS requires a non-empty text prompt")
-            else:
-                conversation = [
-                    {
-                        "role": "system",
-                        "content": (
-                            TTS_SYSTEM_PROMPT
-                            if output_modalities == ["audio"]
-                            else "You are a helpful assistant. Respond with text outputs."
-                        ),
-                    },
-                    {"role": "user", "content": text},
-                ]
-        else:
-            pass
         if output_modalities == ["audio"] and (
             reference_audio is None or not reference_audio.strip()
         ):
-            raise ValueError("Provide ref_audio with each TTS request")
+            raise ValueError("Provide ref_audio for audio output")
         else:
             pass
         if (
@@ -199,7 +141,12 @@ def preprocess_request(
             raise ValueError("conflicting speech seeds")
         else:
             pass
-        rows = chat_rows(conversation, tokenizer, audio_encoder, output_modalities[0])
+        reference_waveform, reference_sample_rate = (
+            decode_chat_audio(reference_audio, reference=True)
+            if reference_audio and output_modalities == ["audio"]
+            else (None, 0)
+        )
+        rows = chat_rows(request.inputs, tokenizer, audio_encoder, output_modalities[0])
     except ValueError as error:
         raise RequestValidationError(str(error)) from error
     seed = parameters.seed if parameters.seed is not None else voice_options.seed
@@ -234,9 +181,19 @@ def preprocess_request(
         repetition_penalty=parameters.repetition_penalty,
         effective_seed=seed,
         max_new_tokens=max_new_tokens,
-        reference_audio=reference_audio or "",
+        reference_waveform=reference_waveform,
+        reference_sample_rate=reference_sample_rate,
     )
-    return StagePayload(payload.request_id, request, state.to_dict())
+    handoff = OmniRequest(
+        inputs=None,
+        params=request.params,
+        metadata={
+            name: value
+            for name, value in request.metadata.items()
+            if name != "audio_config"
+        },
+    )
+    return StagePayload(payload.request_id, handoff, state.to_dict())
 
 
 def build_sglang_moss_request(payload: StagePayload) -> MossSpeechSGLangRequestData:

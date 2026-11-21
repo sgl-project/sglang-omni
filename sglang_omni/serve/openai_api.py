@@ -132,7 +132,10 @@ from sglang_omni.serve.speech_limits import (
     MAX_VOICE_UPLOAD_BODY_BYTES,
     MAX_VOICE_UPLOAD_BYTES,
 )
-from sglang_omni.serve.speech_service import SpeechRequestValidator
+from sglang_omni.serve.speech_service import (
+    SpeechRequestValidator,
+    media_reference_from_descriptor,
+)
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
 from sglang_omni.serve.speech_streaming import (
     create_speech_sse_response,
@@ -356,7 +359,11 @@ def create_app(
         ),
         additional_speech_languages=additional_speech_languages,
         max_speech_input_chars=max_speech_input_chars,
-        supported_speech_fields=supported_speech_fields,
+        supported_speech_fields=(
+            frozenset()
+            if "MossSpeechForCausalLM" in app.state.architectures
+            else supported_speech_fields
+        ),
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,
         voice_store=app.state.speaker_sample_store,
@@ -1050,6 +1057,21 @@ def register_chat_completions(app: FastAPI) -> None:
         created = int(time.time())
         model = req.model or default_model
 
+        if "MossSpeechForCausalLM" in app.state.architectures:
+            try:
+                if req.stream:
+                    raise bad_request(
+                        "MOSS-Speech supports non-streaming chat only", param="stream"
+                    )
+                else:
+                    pass
+                await asyncio.to_thread(
+                    resolve_chat_audio, req, app.state.speech_service
+                )
+            except SpeechAPIError as exc:
+                return speech_error_response(exc)
+        else:
+            pass
         gen_req = build_chat_generate_request(req)
 
         # Determine audio format from request
@@ -1382,6 +1404,39 @@ async def chat_stream_events(
         pass
 
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
+
+
+def resolve_chat_audio(
+    req: ChatCompletionRequest, service: SpeechRequestValidator
+) -> None:
+    """Materialize server-authorized audio before sending the chat request to workers."""
+    if req.audio and isinstance(req.audio.get("ref_audio"), str):
+        req.audio["ref_audio"] = media_reference_from_descriptor(
+            service.load_media_reference_descriptor(
+                req.audio["ref_audio"], param="audio.ref_audio", inline_local_file=True
+            )
+        )
+    else:
+        pass
+    for message in req.messages:
+        if not isinstance(message.content, list):
+            continue
+        else:
+            pass
+        for part in message.content:
+            if not isinstance(part, dict) or part.get("type") != "audio_url":
+                continue
+            else:
+                pass
+            audio_url = part.get("audio_url")
+            if isinstance(audio_url, dict) and isinstance(audio_url.get("url"), str):
+                audio_url["url"] = media_reference_from_descriptor(
+                    service.load_media_reference_descriptor(
+                        audio_url["url"], param="audio_url", inline_local_file=True
+                    )
+                )
+            else:
+                pass
 
 
 def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:

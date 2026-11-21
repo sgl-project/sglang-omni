@@ -57,9 +57,9 @@ def next_mode(last_row: tuple[int, int] | torch.Tensor, current_mode: Mode) -> M
 
 
 def repetition_penalty_scores(
-    logits: torch.Tensor, history: torch.Tensor, penalty: float
+    logits: torch.Tensor, history: torch.Tensor | None, penalty: float
 ) -> torch.Tensor:
-    if penalty == 1.0 or history.numel() == 0:
+    if history is None or penalty == 1.0 or history.numel() == 0:
         return logits
     else:
         scores = logits.clone()
@@ -105,8 +105,8 @@ def sample_row(
     text_logits: torch.Tensor,
     audio_logits: torch.Tensor,
     params: MossSamplingParams,
-    text_history: torch.Tensor,
-    audio_history: torch.Tensor,
+    text_history: torch.Tensor | None,
+    audio_history: torch.Tensor | None,
     generator: torch.Generator | None = None,
 ) -> tuple[int, int]:
     """Keep float upcasting, audio constraints, penalties, and RNG draw order."""
