@@ -60,7 +60,7 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 
 ## Environment variables
 
-This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper or `scripts/` reads. `TestDocsEnvironmentVariables` fails when a variable has no row. When the table does not give a default, the variable is unset by default and the feature or test that it controls is off.
+This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper, a native server or `scripts/` reads. `TestDocsEnvironmentVariables` fails when a variable has no row. When the table does not give a default, the variable is unset by default and the feature or test that it controls is off.
 
 | Variable | What it does | Default |
 |---|---|---|
@@ -112,6 +112,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_OVERLAY_SHOTS` | Directory where the overlay snapshot tests write PNGs. | Unset: the tests skip |
 | `VOXTNEW_REAL_CUSTOM` | Custom language model for `TestRealServices`, as `<address>\|<model>`. | Unset: the custom case skips |
 | `VOXTNEW_REAL_SERVICES` | `1` runs `TestRealServices` against the remote services whose keys are in the login Keychain (macOS). | Unset: the test skips |
+| `VOXTNEW_REALTIME_PROFILE` | `1` makes the Qwen realtime server log content-free decode submission, start and finish timestamps for the latency harness. | Unset: no timing events |
 | `VOXTNEW_RUNTIME_DIR` | Directory with the runtimes that `scripts/mac-regress.sh` uses. | `~/voxtnew-runtime` |
 | `VOXTNEW_SHOTS` | Directory where the Transcribe page layout test writes its PNGs. | Unset: no pictures |
 | `VOXTNEW_SHOTS_DRY` | `1` makes `scripts/mac-logs-shots.sh` only open the window, without moving the pointer. | Unset: the full run |

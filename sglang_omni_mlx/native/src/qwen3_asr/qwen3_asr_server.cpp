@@ -18,6 +18,22 @@ namespace {
 using qwen3_asr::AudioLayout;
 using qwen3_asr::TranscriptionOptions;
 
+std::shared_ptr<qwen3_asr::RealtimeDecodeTiming>
+NewHTTPDecodeTiming(const qwen3_asr::RealtimeSettings &settings,
+                    int audio_sample_count) {
+  if (!settings.profile) {
+    return nullptr;
+  }
+  auto timing = std::make_shared<qwen3_asr::RealtimeDecodeTiming>();
+  timing->session_id = qwen3_asr::NextRealtimeProfileSessionId();
+  timing->decode_index = 1;
+  timing->kind = "http_final";
+  timing->audio_sample_count = audio_sample_count;
+  timing->end_sample = audio_sample_count;
+  timing->submitted_at_ms = qwen3_asr::NowRealtimeMilliseconds();
+  return timing;
+}
+
 class Qwen3ASRModel : public asr_service::ServedModel {
 public:
   Qwen3ASRModel(const std::filesystem::path &model_directory,
@@ -71,13 +87,18 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
+    auto timing =
+        NewHTTPDecodeTiming(realtime_, static_cast<int>(samples.size()));
     if (transcriber_.CanBatch(options)) {
       return qwen3_asr::BatchableTranscription{
-          &transcriber_, std::move(samples), std::move(options)};
+          &transcriber_, std::move(samples), std::move(options),
+          std::move(timing)};
     } else {
-      return [this, samples = std::move(samples),
-              options = std::move(options)](const std::atomic<bool> &cancel) {
-        return transcriber_.Transcribe(samples, options, cancel);
+      return [this, samples = std::move(samples), options = std::move(options),
+              timing](const std::atomic<bool> &cancel) {
+        return qwen3_asr::RunRealtimeDecodeTiming(timing, [&] {
+          return transcriber_.Transcribe(samples, options, cancel);
+        });
       };
     }
   }
@@ -155,6 +176,7 @@ private:
 int main(int argc, char **argv) {
   int decode_interval_ms = 1000;
   int first_decode_ms = 100;
+  bool realtime_profile = false;
   double max_segment_seconds = 30.0;
   long long cache_limit_mb = -1;
   int max_batch = 1;
@@ -170,6 +192,10 @@ int main(int argc, char **argv) {
        }},
       {"--first-decode-ms",
        [&](const std::string &value) { first_decode_ms = std::stoi(value); }},
+      {"--realtime-profile",
+       [&](const std::string &value) {
+         realtime_profile = omni_common::FormFlag(value);
+       }},
       {"--max-segment-seconds",
        [&](const std::string &value) {
          max_segment_seconds = std::stod(value);
@@ -216,11 +242,12 @@ int main(int argc, char **argv) {
   qwen3_asr.max_batch = [&]() { return max_batch; };
   qwen3_asr.batch_runner = qwen3_asr::BatchableTranscriptionRunner();
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
+    auto realtime = qwen3_asr::MakeRealtimeSettings(
+        decode_interval_ms, first_decode_ms, max_segment_seconds);
+    realtime.profile = realtime_profile;
     auto model = std::make_unique<Qwen3ASRModel>(
-        model_directory,
-        qwen3_asr::MakeRealtimeSettings(decode_interval_ms, first_decode_ms,
-                                        max_segment_seconds),
-        draft_directory, draft_quantization_bits, draft_policy);
+        model_directory, realtime, draft_directory, draft_quantization_bits,
+        draft_policy);
     // Note (hehehai): within one long Final MLX keeps every freed buffer
     // for reuse (the growing KV cache, the encoder's activations), several
     // GB beside the weights; a client can bound it. Decoding reuses buffers

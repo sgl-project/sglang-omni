@@ -6,6 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Qwen realtime profiling separates queueing from decoding**: setting `VOXTNEW_REALTIME_PROFILE=1` logs content-free submission, execution-start and finish timestamps for preview and Final decodes, with session and segment ids and sample counts. It is off by default and records no audio, prompt or transcript.
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
 
 ### Changed
@@ -23,6 +24,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- **Qwen 实时识别计时区分排队和解码**：设置 `VOXTNEW_REALTIME_PROFILE=1` 后，预览和最终解码会记录提交、开始执行和结束的时间戳，以及会话号、段号和样本数；不含音频、提示词或转写文本。默认关闭。
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
 
 #### 变更
