@@ -225,6 +225,7 @@ class OmniSeedttsBenchmarkConfig:
     warmup_meta: str | None = None
     max_concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
+    arrival_seed: int | None = None
     disable_tqdm: bool = False
     environment_fingerprint: BenchmarkFingerprint | None = None
     # Transcribe phase
@@ -261,6 +262,7 @@ class OmniSeedttsResultsConfig(TypedDict):
     warmup_meta: str | None
     max_concurrency: int
     request_rate: float
+    arrival_seed: int | None
 
 
 class FingerprintedOmniSeedttsResultsConfig(OmniSeedttsResultsConfig):
@@ -307,6 +309,7 @@ def _build_results_config(
         "warmup_meta": config.warmup_meta,
         "max_concurrency": config.max_concurrency,
         "request_rate": config.request_rate,
+        "arrival_seed": config.arrival_seed,
     }
     if config.environment_fingerprint is None:
         return results_config
@@ -553,6 +556,7 @@ async def run_omni_seedtts_benchmark(
         RunConfig(
             max_concurrency=config.max_concurrency,
             request_rate=config.request_rate,
+            arrival_seed=config.arrival_seed,
             warmup=measured_warmup_count,
             disable_tqdm=config.disable_tqdm,
         )
@@ -627,6 +631,7 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         warmup_meta=args.warmup_meta,
         max_concurrency=args.max_concurrency,
         request_rate=args.request_rate,
+        arrival_seed=args.arrival_seed,
         disable_tqdm=args.disable_tqdm,
         device=device,
         asr_model_path=args.asr_model_path,
@@ -845,6 +850,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=float("inf"),
         help="Requests per second (inf = send all at once).",
+    )
+    parser.add_argument(
+        "--arrival-seed",
+        type=int,
+        default=None,
+        help="Seed for the open-loop Poisson arrivals; omit for a fresh sequence.",
     )
     parser.add_argument(
         "--save-audio",
