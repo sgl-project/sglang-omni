@@ -2631,6 +2631,28 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
     asyncio.run(drive())
 
 
+@pytest.mark.asyncio
+async def test_buffered_generate_aborts_its_rollout_on_disconnect() -> None:
+    """An abandoned rollout kept running until the backend completed it."""
+    client, coordinator, control_plane = streaming_client()
+    app = create_app(client, model_name="qwen3-omni")
+    scope = http_scope(path="/generate", spec_version="2.4")
+    scope["headers"] = [(b"content-type", b"application/json")]
+    incoming: asyncio.Queue[Message] = asyncio.Queue()
+    incoming.put_nowait({"type": "http.request", "body": b'{"prompt":"hello"}'})
+    outgoing: asyncio.Queue[Message] = asyncio.Queue()
+
+    async with asyncio.timeout(2), asyncio.TaskGroup() as requests:
+        requests.create_task(app(scope, incoming.get, outgoing.put))
+        while not control_plane.submitted:
+            await asyncio.sleep(0)
+        request_id = control_plane.submitted[0][2].request_id
+        incoming.put_nowait({"type": "http.disconnect"})
+
+    assert [abort.request_id for abort in control_plane.aborts] == [request_id]
+    assert request_id not in coordinator.requests
+
+
 def test_buffered_chat_aborts_its_request_on_client_disconnect() -> None:
     async def drive() -> None:
         client = BlockingCompletionClient()
