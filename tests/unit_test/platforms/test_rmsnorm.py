@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
+import sys
+import types
+
 import pytest
 import torch
 import torch.nn.functional as F
 
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import reference_rmsnorm
+from sglang_omni.platforms.npu import NPUOmniPlatform
 
 HIDDEN_SIZE = 64
 VARIANCE_EPSILON = 1e-6
@@ -30,3 +34,30 @@ def test_cuda_platform_serves_the_aot_rmsnorm_kernel() -> None:
     sgl_kernel = pytest.importorskip("sgl_kernel")
 
     assert CUDAOmniPlatform().get_rmsnorm() is sgl_kernel.rmsnorm
+
+
+def test_the_npu_add_rmsnorm_adapter_returns_the_summed_residual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``torch_npu.npu_add_rms_norm`` returns ``(normalized, rstd, residual)``;
+    the adapter has to surface the last tensor rather than ``rstd``."""
+    normalized = torch.randn(4, HIDDEN_SIZE)
+    rstd = torch.randn(4, 1)
+    residual_sum = torch.randn(4, HIDDEN_SIZE)
+    torch_npu = types.ModuleType("torch_npu")
+    torch_npu.npu_add_rms_norm = lambda hidden_states, residual, weight, eps: (
+        normalized,
+        rstd,
+        residual_sum,
+    )
+    monkeypatch.setitem(sys.modules, "torch_npu", torch_npu)
+
+    added, summed = NPUOmniPlatform().get_add_rmsnorm()(
+        torch.randn(4, HIDDEN_SIZE),
+        torch.randn(4, HIDDEN_SIZE),
+        torch.rand(HIDDEN_SIZE) + 0.5,
+        VARIANCE_EPSILON,
+    )
+
+    assert added is normalized
+    assert summed is residual_sum
