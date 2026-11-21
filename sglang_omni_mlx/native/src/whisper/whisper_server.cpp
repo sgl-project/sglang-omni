@@ -7,9 +7,9 @@
 //   whisper_server --supervised --model-kind whisper --model-directory DIR
 //
 // Request fields beside the audio: language (a code in the checkpoint's
-// tokenizer, or one of the English names Swift's WhisperTokenizer maps; any
-// other value sends no language token), max_new_tokens, temperature, stream
-// and include_generation_metadata.
+// tokenizer, or one of the English names Swift's WhisperTokenizer maps; a
+// missing or unknown value detects the language), max_new_tokens, temperature,
+// stream and include_generation_metadata.
 #include <optional>
 #include <stdexcept>
 
