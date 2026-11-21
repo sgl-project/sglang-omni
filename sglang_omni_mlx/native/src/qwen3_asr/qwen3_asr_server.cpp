@@ -95,7 +95,7 @@ public:
                                             : *final_reuse.reuse;
         return transcriber_.Transcribe(samples, options, cancel, &reuse);
       };
-    } else if (transcriber_.CanBatch(options)) {
+    } else if (transcriber_.CanBatch(options, samples.size())) {
       return qwen3_asr::BatchableTranscription{
           &transcriber_, std::move(samples), std::move(options)};
     } else {
