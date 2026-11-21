@@ -1,0 +1,30 @@
+name: Suggest CI stages
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions: {}
+
+concurrency:
+  group: ci-stage-suggestion-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  suggest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # SECURITY: pull_request_target runs with a write token. The default checkout is
+      # the base branch, so only trusted code runs. Never check out the pull request here.
+      - name: Checkout the base branch
+        uses: actions/checkout@v4
+
+      - name: Update the stage suggestion comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PYTHONPATH: ${{ github.workspace }}/.github/scripts
+        run: python scripts/ci/utils/suggest_ci_stages.py
