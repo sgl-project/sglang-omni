@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TypedDict
 
 ADMIN_MODEL_INFO = "model_info"
+ADMIN_PD_KV_LAYOUT = "pd_kv_layout"
 ADMIN_PAUSE_GENERATION = "pause_generation"
 ADMIN_CONTINUE_GENERATION = "continue_generation"
 ADMIN_UPDATE_WEIGHTS_FROM_DISK = "update_weights_from_disk"
