@@ -181,6 +181,14 @@ class DraftDecodeGraph:
     def capture(
         self, memory_pool: tuple[int, int], capture_stream: torch.cuda.Stream
     ) -> None:
+        # note (Haoling Pu): the encoder's graphs replay from their own thread with the cuBLAS workspace of torch.cuda.graph's default stream, which a graph captured on that stream would write too.
+        if capture_stream == torch.cuda.graph.default_capture_stream:
+            raise RuntimeError(
+                "the Whisper draft graph would capture on torch.cuda.graph's default stream, "
+                "whose cuBLAS workspace the encoder graphs write from another thread"
+            )
+        else:
+            pass
         self.run_steps()
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(

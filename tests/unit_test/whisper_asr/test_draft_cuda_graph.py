@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from types import SimpleNamespace
 
 import pytest
@@ -410,6 +411,58 @@ def test_a_greedy_round_without_timestamps_drafts_through_the_smallest_graph_tha
     assert verified_token_ids[0][:, 1:].tolist() == [
         [eager_draft] + [later_draft] * NUM_DECODE_STEPS
     ] * len(rows)
+
+
+def test_a_draft_graph_refuses_torch_cuda_graphs_default_capture_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The encoder's graphs replay from their own thread with the cuBLAS workspace of torch.cuda.graph's default stream, and a draft graph sharing it hung the server at concurrency 4 (#4395)."""
+    default_stream = object()
+    monkeypatch.setattr(torch.cuda.graph, "default_capture_stream", default_stream)
+    graph = DraftDecodeGraph(draft_runner(monkeypatch, "cpu"), NUM_DECODE_STEPS, 1)
+    with pytest.raises(RuntimeError, match="default stream"):
+        graph.capture((0, 0), default_stream)
+
+
+def test_the_draft_graphs_capture_on_the_pool_stream_after_torch_cuda_graphs_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """torch.cuda.Stream() hands out 32 pool streams in turn, and the encoder's graphs make torch.cuda.graph's default stream only after the draft graphs capture, so a draft stream taken first could later be handed out again as that default."""
+    pool_streams = itertools.cycle([object() for _ in range(32)])
+    monkeypatch.setattr(torch.cuda, "Stream", lambda: next(pool_streams))
+    monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: (0, 0))
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (0, 0))
+    monkeypatch.setattr(torch.cuda.graph, "default_capture_stream", None)
+    capture_streams = []
+    monkeypatch.setattr(
+        speculative,
+        "DraftDecodeGraph",
+        lambda runner, num_decode_steps, batch_size: SimpleNamespace(
+            capture=lambda memory_pool, capture_stream: capture_streams.append(
+                capture_stream
+            )
+        ),
+    )
+    worker = object.__new__(speculative.WhisperSpeculativeWorker)
+    worker._draft_worker = SimpleNamespace(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        init_cuda_graphs=lambda: None
+    )
+    worker.speculative_num_steps = NUM_DECODE_STEPS + 1
+    worker.draft_runner = SimpleNamespace(
+        decode_cuda_graph_runner=object(),
+        kv_cache_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
+    )
+    worker.draft_graphs = []
+
+    worker.init_cuda_graphs()
+
+    assert torch.cuda.graph.default_capture_stream is not None
+    assert len(capture_streams) == len(speculative.DRAFT_GRAPH_BATCH_SIZES)
+    assert all(
+        stream is not torch.cuda.graph.default_capture_stream
+        for stream in capture_streams
+    )
 
 
 @pytest.mark.accelerator

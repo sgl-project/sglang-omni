@@ -555,6 +555,11 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             free_bytes_before, _ = torch.cuda.mem_get_info()
             memory_pool = torch.cuda.graph_pool_handle()
             # note (Haoling Pu): a graph keeps the cuBLAS workspace of the stream it was captured on, and the encoder's graphs, which replay on their own thread, took torch.cuda.graph's shared default stream, so these graphs take their own.
+            # note (Haoling Pu): torch.cuda.Stream() hands out PyTorch's 32 pool streams in turn, and the encoder's graphs make the default stream only after these capture, so it is made here first and these graphs take the next pool stream.
+            if torch.cuda.graph.default_capture_stream is None:
+                torch.cuda.graph.default_capture_stream = torch.cuda.Stream()
+            else:
+                pass
             capture_stream = torch.cuda.Stream()
             # note (Haoling Pu): the largest graph is captured first, so the smaller ones reuse its memory in the shared pool.
             for batch_size in sorted(DRAFT_GRAPH_BATCH_SIZES, reverse=True):
