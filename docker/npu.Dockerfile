@@ -1,8 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Base versions and digests are maintained in pyproject_npu.toml.
-# The selected digest pins the complete Ascend dependency stack.
-# Build from the repository root; source is installed from the build context.
-# Pass SGLANG_IMAGE from scripts/npu/config.py --get base-image-a3 (or 910b).
+# SGLANG_IMAGE selects a pinned A3 or 950 image or the locally built 910B base.
 ARG SGLANG_IMAGE
 FROM ${SGLANG_IMAGE}
 

@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # Python 3.10 source installations
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def read_config(root: Path = ROOT) -> tuple[dict, list[dict]]:
+def read_config(root: Path = ROOT) -> tuple[dict[str, str], list[dict[str, str]]]:
     manifest = tomllib.loads((root / "pyproject_npu.toml").read_text())
     config = manifest["tool"]["sglang-omni"]["npu"]
     version = config["sglang-version"]
@@ -32,17 +32,44 @@ def read_config(root: Path = ROOT) -> tuple[dict, list[dict]]:
             raise ValueError(
                 f"base-image-{device} must pin SGLang {version}, {device} and a digest"
             )
-        matrix.append({"device": device, "cann": match[1]})
-    if matrix[0]["cann"] != matrix[1]["cann"]:
+        else:
+            matrix.append({"device": device, "cann": match[1], "base_image": image})
+    cann_version = matrix[0]["cann"]
+    if cann_version != matrix[1]["cann"]:
         raise ValueError("A3 and 950 must use the same CANN release")
-    return config, matrix
+    elif not re.fullmatch(r"[0-9a-f]{64}", config["sglang-dockerfile-sha256"]):
+        raise ValueError("sglang-dockerfile-sha256 must be a SHA-256 digest")
+    elif not re.fullmatch(
+        rf"quay\.io/ascend/cann:{re.escape(cann_version)}-910b-ubuntu22\.04-py3\.12"
+        r"@sha256:[0-9a-f]{64}",
+        config["cann-image-910b"],
+    ):
+        raise ValueError(f"cann-image-910b must pin the CANN {cann_version} 910B image")
+    else:
+        matrix.append(
+            {
+                "device": "910b",
+                "cann": cann_version,
+                "base_image": "sglang-a2-base",
+                "sglang_tag": f"v{version}",
+                "cann_image": config["cann-image-910b"],
+            }
+        )
+        return config, matrix
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument(
-        "--get", choices=["sglang-version", "base-image-a3", "base-image-950"]
+        "--get",
+        choices=[
+            "sglang-version",
+            "sglang-dockerfile-sha256",
+            "cann-image-910b",
+            "base-image-a3",
+            "base-image-950",
+        ],
     )
     modes.add_argument("--matrix", action="store_true")
     args = parser.parse_args()
