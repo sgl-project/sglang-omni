@@ -21,6 +21,7 @@ from benchmarks.eval import benchmark_asr_seedtts as seedtts_benchmark
 from benchmarks.eval.asr_profiling import (
     UtilizationSampler,
     build_stage_breakdown,
+    event_buffer_capacity_for_samples,
     run_profiled_pass,
     start_request_profile,
     stop_request_profile,
@@ -415,3 +416,39 @@ def test_server_identity_reports_models_best_effort(
     identity = collect_server_identity("http://127.0.0.1:8000")
     assert identity["url"] == "http://127.0.0.1:8000"
     assert identity["models"] is None
+
+
+def test_profile_control_forwards_event_buffer_capacity_when_sized_for_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads: list[dict] = []
+    def fake_post(url, *, json, timeout, proxies, headers):
+        payloads.append(json)
+        return FakeResponse({"run_id": json.get("run_id"), "event_dir": "/tmp/e"})
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
+    monkeypatch.setattr(asr_profiling.requests, "post", fake_post)
+    capacity = event_buffer_capacity_for_samples(1010)
+    assert capacity == 16160
+    assert event_buffer_capacity_for_samples(10) == 1024
+    start_request_profile(
+        "http://127.0.0.1:8000", "run-full", "/tmp/e", event_buffer_capacity=capacity
+    )
+    assert payloads == [
+        {
+            "run_id": "run-full",
+            "event_dir": "/tmp/e",
+            "event_buffer_capacity": 16160,
+        }
+    ]
+@pytest.mark.asyncio
+async def test_wait_for_profile_flush_waits_for_all_status_sidecars(tmp_path) -> None:
+    (tmp_path / "events_asr_101.jsonl").write_text("")
+    (tmp_path / "events_coordinator_102.jsonl").write_text("")
+    (tmp_path / "run_status_101.json").write_text("{}")
+    async def publish_second_status() -> None:
+        await asyncio.sleep(0.03)
+        (tmp_path / "run_status_102.json").write_text("{}")
+    publisher = asyncio.create_task(publish_second_status())
+    await asr_profiling.wait_for_profile_flush(str(tmp_path), timeout_seconds=1.0)
+    await publisher
+    assert (tmp_path / "run_status_102.json").is_file()

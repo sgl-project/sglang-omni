@@ -13,29 +13,87 @@ Small, dependency-light building blocks used by ``benchmark_asr_seedtts``:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
 import subprocess
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TextIO
 
 import requests
 
 from sglang_omni.http.admin_auth import admin_auth_headers
+from sglang_omni.profiler.event_recorder_types import (
+    DEFAULT_EVENT_BUFFER_CAPACITY,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+)
 from sglang_omni.profiler.views import ProfilerReport, build_report
 
 _NO_PROXIES = {"http": None, "https": None}
 _PROFILE_TIMEOUT_S = 30
+EVENTS_PER_REQUEST_HEADROOM = 16
+EVENT_FILENAME_PID_RE = re.compile(r"^events_.*_(?P<pid>[0-9]+)\.jsonl$")
+FLUSH_POLL_INTERVAL_S = 0.05
 
 
-def start_request_profile(base_url: str, run_id: str, event_dir: str) -> dict:
+def event_buffer_capacity_for_samples(sample_count: int) -> int:
+    """Size per-producer event buffers so a profiled pass retains all requests."""
+    return max(
+        DEFAULT_EVENT_BUFFER_CAPACITY,
+        max(0, sample_count) * EVENTS_PER_REQUEST_HEADROOM,
+    )
+
+
+async def wait_for_profile_flush(
+    event_dir: str,
+    *,
+    timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+) -> None:
+    """Wait until each event JSONL writer publishes its run_status sidecar."""
+    directory = Path(event_dir)
+    if not directory.is_dir():
+        return
+    else:
+        pass
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        event_pids: set[str] = set()
+        for event_path in directory.glob("events_*.jsonl"):
+            match = EVENT_FILENAME_PID_RE.match(event_path.name)
+            if match is not None:
+                event_pids.add(match.group("pid"))
+            else:
+                pass
+        if event_pids and all(
+            (directory / f"run_status_{pid}.json").is_file() for pid in event_pids
+        ):
+            return
+        else:
+            pass
+        await asyncio.sleep(FLUSH_POLL_INTERVAL_S)
+
+
+def start_request_profile(
+    base_url: str,
+    run_id: str,
+    event_dir: str,
+    *,
+    event_buffer_capacity: int | None = None,
+) -> dict:
     """Start request-level (JSONL) event profiling on one serve process."""
+    payload: dict[str, object] = {"run_id": run_id, "event_dir": event_dir}
+    if event_buffer_capacity is not None:
+        payload["event_buffer_capacity"] = event_buffer_capacity
+    else:
+        pass
     response = requests.post(
         f"{base_url.rstrip('/')}/start_request_profile",
-        json={"run_id": run_id, "event_dir": event_dir},
+        json=payload,
         timeout=_PROFILE_TIMEOUT_S,
         headers=admin_auth_headers(),
         proxies=_NO_PROXIES,
@@ -80,12 +138,21 @@ async def run_profiled_pass(
     run_pass: Callable[[], Awaitable[dict[str, Any]]],
     log_prefix: str,
     error_stream: TextIO | None = None,
+    event_buffer_capacity: int | None = None,
 ) -> dict[str, Any] | None:
     """Run one pass inside a scoped request-profiling lifecycle."""
     started: list[str] = []
     try:
         for url in profile_urls:
-            start_request_profile(url, run_id, event_dir)
+            if event_buffer_capacity is None:
+                start_request_profile(url, run_id, event_dir)
+            else:
+                start_request_profile(
+                    url,
+                    run_id,
+                    event_dir,
+                    event_buffer_capacity=event_buffer_capacity,
+                )
             started.append(url)
     except requests.RequestException as exc:
         for url in started:
@@ -115,6 +182,8 @@ async def run_profiled_pass(
                     file=error_stream,
                 )
 
+    # note (evanderfff123-boop): /stop_request_profile returns before each process's background writer finishes flushing events_*.jsonl and run_status_<pid>.json.
+    await wait_for_profile_flush(event_dir)
     report = build_stage_breakdown(event_dir)
     return {
         "run_id": run_id,
