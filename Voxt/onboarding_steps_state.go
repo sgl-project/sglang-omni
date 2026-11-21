@@ -38,40 +38,17 @@ func buildOnboardingPermissions(translator *i18n.Translator, input onboardingVie
 	}
 }
 
-func onboardingPresetTitle(translator *i18n.Translator, preset string) string {
-	switch preset {
-	case settings.PresetOption:
-		return translator.T("Right ⌥ (default)")
-	case settings.PresetFn:
-		return translator.T("fn (Auralink's keys)")
-	case settings.PresetCommand:
-		return translator.T("⌘ combination")
-	case settings.PresetMouseMiddle:
-		return translator.T("Middle mouse + fn⇧")
-	}
-	return translator.T("Custom")
-}
-
 func buildOnboardingMore(translator *i18n.Translator, input onboardingViewStateInput) onboardingMoreViewState {
 	state := onboardingMoreViewState{}
 	current := settings.PresetOf(input.Settings.Features)
 	for _, preset := range settings.Presets {
-		state.PresetOptions = append(state.PresetOptions, onboardingOptionViewState{ID: preset, Label: onboardingPresetTitle(translator, preset)})
+		state.PresetOptions = append(state.PresetOptions, onboardingOptionViewState{ID: preset, Label: presetTitleFor(translator, preset)})
 	}
 	if current == "" {
-		state.PresetOptions = append(state.PresetOptions, onboardingOptionViewState{Label: onboardingPresetTitle(translator, current)})
+		state.PresetOptions = append(state.PresetOptions, onboardingOptionViewState{Label: presetTitleFor(translator, current)})
 	}
-	state.PresetSelected = onboardingPresetTitle(translator, current)
-	switch current {
-	case settings.PresetOption:
-		state.PresetAbout = translator.T("Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.")
-	case settings.PresetFn:
-		state.PresetAbout = translator.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
-	case settings.PresetCommand:
-		state.PresetAbout = translator.T("⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.")
-	case settings.PresetMouseMiddle:
-		state.PresetAbout = translator.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.")
-	}
+	state.PresetSelected = presetTitleFor(translator, current)
+	state.PresetAbout = presetAboutFor(translator, current)
 	if current == settings.PresetFn {
 		state.PresetWarnings = []string{
 			translator.T("Auralink uses fn too, so while it runs, both apps react to these keys."),

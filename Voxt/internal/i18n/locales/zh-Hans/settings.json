@@ -277,6 +277,9 @@
   "Your recordings are recognised on this Mac. If a feature uses a speech service you set up in Settings → Speech models, its recordings go to that service. Voxt has no server of its own.": "你的录音在这台 Mac 上识别。如果某个功能用的是你在“设置 → 语音识别模型”里设置的语音识别服务，它的录音会发给那个服务。Voxt 没有自己的服务器。",
   "Your recordings are recognised on this PC. If a feature uses a speech service you set up in Settings → Speech models, its recordings go to that service. Voxt has no server of its own.": "你的录音在这台电脑上识别。如果某个功能用的是你在“设置 → 语音识别模型”里设置的语音识别服务，它的录音会发给那个服务。Voxt 没有自己的服务器。",
   "development build": "开发版",
+  "fn (Auralink's keys)": "fn（和 Auralink 相同）",
+  "fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.": "fn：与 Auralink 和很多 Voxt 1.x 的设置一致。注意可能与地球键或输入法冲突。",
+  "macOS": "系统",
   "min": "分钟",
   "settings section\u0004About": "诊断与关于",
   "sound source\u0004Built-in": "自带"
