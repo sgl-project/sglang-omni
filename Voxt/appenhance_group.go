@@ -56,6 +56,22 @@ func appEnhancementDetail(c *ui.Context, state *appEnhancementGroupDetail, actio
 				})
 			}
 		})
+		if state.TranscribeCleanup != "" {
+			settingRow(c, "ae-cleanup", i18n.T("Transcribe clean-up"),
+				i18n.T("Use default follows the global Transcribe clean-up setting. Off skips the language model."), func() {
+					choices := []string{i18n.X("clean-up override", "Use default"), i18n.T("On"), i18n.T("Off")}
+					values := []string{"default", "on", "off"}
+					selected := choices[0]
+					for i, value := range values {
+						if state.TranscribeCleanup == value {
+							selected = choices[i]
+						}
+					}
+					if ui.Select(c.Key("ae-cleanup-sel"), &selected, choices).Label(i18n.T("Transcribe clean-up")).Width(px(theme, 180)).Changed() {
+						actions.setAppEnhancementGroupTranscribeCleanup(state.ID, values[slices.Index(choices, selected)])
+					}
+				})
+		}
 	})
 	appEnhancementScene(c, state, actions, local)
 	appEnhancementApps(c, state, actions, iconSource)

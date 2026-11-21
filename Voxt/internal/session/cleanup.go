@@ -35,8 +35,8 @@ func (r *run) spoken(raw string) string {
 func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
-	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
-		card := f.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
+	if r.transcribeCleanup() && r.svc.LLM != nil {
+		card := r.settings.Features.Transcribe.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUpFirst(text)

@@ -79,6 +79,9 @@ type appEnhancementGroupDetail struct {
 	URLInput  string                        `json:"url_input"`
 	URLError  string                        `json:"url_error,omitempty"`
 	AutoKey   appEnhancementAutoKey         `json:"auto_key"`
+	// TranscribeCleanup is "default", "on" or "off" when the group applies
+	// to Transcribe; empty hides the clean-up row.
+	TranscribeCleanup string `json:"transcribe_cleanup,omitempty"`
 }
 
 type appEnhancementPreview struct {
@@ -300,6 +303,12 @@ func buildAppEnhancementGroupDetail(translator *i18n.Translator, group appctx.Gr
 		detail.URLs[index] = row
 	}
 	detail.AutoKey = buildAppEnhancementAutoKey(translator, group.AutoKey, input)
+	if group.Features.Transcribe {
+		detail.TranscribeCleanup = string(group.TranscribeCleanup)
+		if detail.TranscribeCleanup == "" {
+			detail.TranscribeCleanup = "default"
+		}
+	}
 	return detail
 }
 

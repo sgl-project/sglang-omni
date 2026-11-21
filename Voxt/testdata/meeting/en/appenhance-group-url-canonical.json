@@ -119,7 +119,8 @@
         "custom_label": "Custom…",
         "custom": false,
         "text": ""
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     "preview": {
       "app": {

@@ -23,6 +23,7 @@ Shortcuts	M	scripts/mac-hotkey-coexist.sh	none
 End word and long press	L	TestTranscribeEndWord	none
 End word and long press	L	TestSessionLongPress	none
 App enhancement	L	TestSessionAppEnhancement	Finding the real front app and browser URL is checked by hand only
+App enhancement: per-app Transcribe clean-up	L	TestAppEnhancementTranscribeCleanup	none
 Dictionary and hot words	L	TestTranscribeDictionaryHighlights	none
 Dictionary and hot words	E	TestEvalDictASR	none
 Dictionary profiles	L	TestDictionaryProfileControls	none

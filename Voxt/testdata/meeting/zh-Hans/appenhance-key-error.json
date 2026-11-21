@@ -131,7 +131,8 @@
         "text": "Shift+Fn",
         "error": "只能填一个按键，可以带修饰键：Return、Command+Return、Tab。",
         "error_code": "autoKey"
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     "preview": {
       "app": {
