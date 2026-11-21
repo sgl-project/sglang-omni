@@ -98,7 +98,8 @@ func TestReleaseAppcastEntryChannels(t *testing.T) {
 
 func TestVoxt2FeedChannels(t *testing.T) {
 	base, err := runReleaseAppcast(t, "", "feed-base")
-	if err != nil || base != "https://voxt.actnow.dev/updates/voxt2\n" {
+	// The manifests of the GitHub releases, which MyGo resolves itself: no update service.
+	if err != nil || base != "https://github.com/sgl-project/sglang-omni/releases/download/voxt-v{version}\n" {
 		t.Fatalf("feed-base: %q, %v", base, err)
 	}
 	for channel, suffix := range map[string]string{"stable": "", "beta": "/beta"} {
