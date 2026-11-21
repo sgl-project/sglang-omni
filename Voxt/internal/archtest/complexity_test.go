@@ -22,11 +22,11 @@ const complexLimit = 25
 
 // TestComplexFuncs keeps functions of code within complexLimit. The score
 // is gocognit's cognitive complexity (golangci-lint's gocognit linter):
-// each if, else, switch, select, for and labelled jump adds one, plus one
-// per level it is nested in; each run of && or || adds one. Functions over
-// the limit today are in complexity.txt with their score, which must match:
-// a listed function may not grow more complex, and one that gets simpler
-// lowers its line.
+// each if, switch, select and for adds one, plus one per level it is nested
+// in; each else, else if, labelled jump, recursive call and run of && or ||
+// adds one. Functions over the limit today are in complexity.txt with their
+// score, which must match: a listed function may not grow more complex, and
+// one that gets simpler lowers its line.
 func TestComplexFuncs(t *testing.T) {
 	data, err := os.ReadFile("complexity.txt")
 	if err != nil {
