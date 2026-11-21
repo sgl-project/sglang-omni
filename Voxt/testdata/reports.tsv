@@ -42,3 +42,4 @@ report	fix	symptom	level	check
 #4421	#4422	Resetting the look or all settings keeps the resized History detail width	L	TestResetRestoresHistoryDetailWidth
 #4421	#4422	Resetting the look or all settings keeps the resized History detail width	L	TestResetInvalidatesHistoryWidthSaves
 #4421	#4422	Resetting the look or all settings keeps the resized History detail width	L	TestResetKeepsHistoryWidthAfterLateNotification
+#4421	#4422	Resetting the look or all settings keeps the resized History detail width	L	TestResetKeepsNewerHistoryWidthSave

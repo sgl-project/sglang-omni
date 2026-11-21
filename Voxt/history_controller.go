@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -190,12 +191,17 @@ func (a *app) openHistoryPrivacy() { a.navigate("/settings/privacy") }
 // saveHistoryDetailWidth keeps the detail width in DIPs at 100 %, 0 for the default.
 func (a *app) saveHistoryDetailWidth(width float64) {
 	revision := a.historyWidthRevision.Add(1)
-	a.updateSettings(func(s *settings.Settings) {
-		// A reset after this save starts wins over its background write.
-		if a.historyWidthRevision.Load() == revision {
+	a.updateSettings(historyWidthUpdate(width, revision, &a.historyWidthRevision))
+}
+
+// historyWidthUpdate writes the detail width, unless a reset stamped a
+// newer generation after the save started.
+func historyWidthUpdate(width float64, revision uint64, current *atomic.Uint64) func(*settings.Settings) {
+	return func(s *settings.Settings) {
+		if current.Load() == revision {
 			s.Appearance.HistoryDetailWidth = width
 		}
-	})
+	}
 }
 
 func (a *app) copyHistoryText(text string) {

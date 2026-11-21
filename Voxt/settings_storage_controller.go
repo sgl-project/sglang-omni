@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/egoist/mygo"
@@ -297,29 +298,52 @@ func (a *app) resetLook() {
 	d := settings.Defaults()
 	a.paletteRevision.Add(1)
 	a.transparencyRevision.Add(1)
-	a.historyWidthRevision.Add(1)
+	revision := a.historyWidthRevision.Add(1)
 	a.paletteSavePending, a.transparencySavePending = false, false
-	a.updateSettings(func(s *settings.Settings) { s.Appearance, s.General.Language = d.Appearance, d.General.Language })
+	a.updateSettings(lookResetUpdate(d, revision, &a.historyWidthRevision))
 	a.loadAppearancePreview()
 	a.navUI.sideW, a.navUI.sections = 0, nil
 	a.histUI.panelWidth = 0
 	a.toast(i18n.T("The look is back to its defaults"))
 }
 
+// lookResetUpdate restores the appearance and the language. A detail-width
+// save that started after the reset stamped revision keeps its width when
+// the reset's background write lands last.
+func lookResetUpdate(d settings.Settings, revision uint64, current *atomic.Uint64) func(*settings.Settings) {
+	return func(s *settings.Settings) {
+		width, keep := s.Appearance.HistoryDetailWidth, current.Load() != revision
+		s.Appearance, s.General.Language = d.Appearance, d.General.Language
+		if keep {
+			s.Appearance.HistoryDetailWidth = width
+		}
+	}
+}
+
 // resetSettings restores every setting (the setup stays done).
 func (a *app) resetSettings() {
 	a.paletteRevision.Add(1)
 	a.transparencyRevision.Add(1)
-	a.historyWidthRevision.Add(1)
+	revision := a.historyWidthRevision.Add(1)
 	a.paletteSavePending, a.transparencySavePending = false, false
-	a.updateSettings(func(s *settings.Settings) {
-		*s = settings.Defaults()
-		s.Setup.Done = true
-	})
+	a.updateSettings(settingsResetUpdate(revision, &a.historyWidthRevision))
 	a.loadAppearancePreview()
 	a.navUI.sideW, a.navUI.sections = 0, nil
 	a.histUI.panelWidth = 0
 	a.toast(i18n.T("Every setting is back to its default"))
+}
+
+// settingsResetUpdate restores every setting but the setup, keeping the
+// width of a detail-width save that started after the reset.
+func settingsResetUpdate(revision uint64, current *atomic.Uint64) func(*settings.Settings) {
+	return func(s *settings.Settings) {
+		width, keep := s.Appearance.HistoryDetailWidth, current.Load() != revision
+		*s = settings.Defaults()
+		if keep {
+			s.Appearance.HistoryDetailWidth = width
+		}
+		s.Setup.Done = true
+	}
 }
 
 func (a *app) storageSettingsModel() settingsStorageViewState {

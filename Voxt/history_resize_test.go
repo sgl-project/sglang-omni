@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,15 +148,37 @@ func TestResetInvalidatesHistoryWidthSaves(t *testing.T) {
 			revision := a.historyWidthRevision.Add(1) // a width save in flight
 			reset.fn(a)
 			// The in-flight save's background write runs only after the reset.
-			if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
-				if a.historyWidthRevision.Load() == revision {
-					s.Appearance.HistoryDetailWidth = settings.MaxHistoryDetailWidth
-				}
-			}); err != nil {
+			if err := a.settings.Update(context.Background(), historyWidthUpdate(settings.MaxHistoryDetailWidth, revision, &a.historyWidthRevision)); err != nil {
 				t.Fatal(err)
 			}
 			if got := a.settings.Get().Appearance.HistoryDetailWidth; got != 0 {
 				t.Errorf("stale width save survived reset: %g", got)
+			}
+		})
+	}
+}
+
+// A width save that starts after a reset must survive the reset's late write.
+func TestResetKeepsNewerHistoryWidthSave(t *testing.T) {
+	for _, reset := range []struct {
+		name string
+		fn   func(uint64, *atomic.Uint64) func(*settings.Settings)
+	}{
+		{"resetLook", func(revision uint64, current *atomic.Uint64) func(*settings.Settings) {
+			return lookResetUpdate(settings.Defaults(), revision, current)
+		}},
+		{"resetSettings", settingsResetUpdate},
+	} {
+		t.Run(reset.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			revision := a.historyWidthRevision.Add(1) // the reset starts; its background write pends
+			a.saveHistoryDetailWidth(settings.MaxHistoryDetailWidth)
+			// The reset's background write lands only after the newer save.
+			if err := a.settings.Update(context.Background(), reset.fn(revision, &a.historyWidthRevision)); err != nil {
+				t.Fatal(err)
+			}
+			if got := a.settings.Get().Appearance.HistoryDetailWidth; got != settings.MaxHistoryDetailWidth {
+				t.Errorf("reset committed over a newer width save: %g", got)
 			}
 		})
 	}
