@@ -14,9 +14,9 @@
 // and chunk_ms, the live latency in milliseconds.
 #include <memory>
 
+#include "common/asr_service.h"
 #include "nemotron/nemotron_realtime.h"
 #include "nemotron/nemotron_transcriber.h"
-#include "qwen3_asr/asr_service.h"
 
 namespace {
 
@@ -37,7 +37,7 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     realtime_sessions_ =
         [this, &worker](nemotron::NemotronRealtimeSession::Sender sender) {
           return std::make_shared<nemotron::NemotronRealtimeSession>(

@@ -103,11 +103,11 @@ func TestWriteSRTAndText(t *testing.T) {
 	}
 }
 
-// serve starts a server at a short socket path (a Unix socket's path is
-// at most 104 bytes on macOS) and returns the path.
+// serve starts a server at a short socket path in /tmp, whatever TMPDIR is
+// (a Unix socket's path is at most 104 bytes on macOS), and returns the path.
 func serve(t *testing.T, s *Server) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "fa")
+	dir, err := os.MkdirTemp("/tmp", "fa")
 	if err != nil {
 		t.Fatal(err)
 	}

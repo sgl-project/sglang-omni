@@ -5,8 +5,10 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 
 namespace fish_s2_pro {
 
@@ -16,6 +18,14 @@ namespace {
 
 constexpr const char *kSlowPrefix = "model";
 constexpr const char *kFastPrefix = "model.fast";
+constexpr const char *kCandidateHead = "model.candidate_head";
+// Note (XXXXRT666): an unquantized checkpoint's layers are quantized at load,
+// the slow transformer's to 8 bits and the fast one's, which a frame runs nine
+// times, to 4; the speech keeps its words. Embeddings and heads stay as
+// stored, and a quantized checkpoint loads as it is.
+constexpr int kSlowQuantizationBits = 8;
+constexpr int kFastQuantizationBits = 4;
+constexpr int kQuantizationGroupSize = 64;
 constexpr const char *kImEndToken = "<|im_end|>";
 constexpr const char *kFirstSemanticToken = "<|semantic:0|>";
 // Note (Jiaxin Deng): the CUDA sampler's constants (sglang_model.py): a fixed
@@ -68,19 +78,88 @@ void Softmax(std::vector<float> &values) {
 
 } // namespace
 
+namespace {
+
+// Unquantized checkpoints keep the reference's names, which map onto the
+// quantized conversions' this way.
+constexpr std::pair<const char *, const char *> kReferenceNames[] = {
+    {"text_model.model.", "model."},
+    {"audio_decoder.layers.", "model.fast_layers."},
+    {"audio_decoder.embeddings.", "model.fast_embeddings."},
+    {"audio_decoder.norm.", "model.fast_norm."},
+    {"audio_decoder.output.", "model.fast_output."},
+    {"audio_decoder.codebook_embeddings.", "model.codebook_embeddings."},
+};
+
+// The model's tensors (model.safetensors, or its shards) under the quantized
+// conversions' names, with the tied projection's candidate rows as a head of
+// their own.
+omni_common::WeightMap CheckpointWeights(const std::filesystem::path &directory,
+                                         const nlohmann::json &config) {
+  omni_common::WeightMap weights;
+  for (const auto &entry : std::filesystem::directory_iterator(directory)) {
+    const std::string file = entry.path().filename().string();
+    if (!file.starts_with("model") || !file.ends_with(".safetensors")) {
+      continue;
+    } else {
+    }
+    auto [loaded, metadata] = mx::load_safetensors(entry.path().string());
+    for (auto &[stored_name, tensor] : loaded) {
+      std::string name = stored_name;
+      for (const auto &[reference, converted] : kReferenceNames) {
+        if (name.starts_with(reference)) {
+          name = converted + name.substr(std::string(reference).size());
+          break;
+        } else {
+        }
+      }
+      weights.insert_or_assign(name, tensor);
+    }
+  }
+  // Note (XXXXRT666): the sampler reads only the semantic tokens and
+  // <|im_end|>, so their rows of the tied embedding table make the frame's
+  // projection, about 4k of its 156k rows.
+  const int semantic_begin = config.at("semantic_start_token_id").get<int>();
+  const int semantic_end = config.at("semantic_end_token_id").get<int>();
+  const int im_end = config.at("eos_token_id").get<int>();
+  for (const char *part : {".weight", ".scales", ".biases"}) {
+    const auto found = weights.find(std::string("model.embeddings") + part);
+    if (found == weights.end()) {
+      continue;
+    } else {
+    }
+    const mx::array &table = found->second;
+    const int width = table.shape(1);
+    weights.insert_or_assign(
+        std::string(kCandidateHead) + part,
+        mx::concatenate(
+            {mx::slice(table, {semantic_begin, 0}, {semantic_end + 1, width}),
+             mx::slice(table, {im_end, 0}, {im_end + 1, width})},
+            0));
+  }
+  return weights;
+}
+
+} // namespace
+
 FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory)
     : FishS2ProModel(model_directory,
                      omni_common::ReadJson(model_directory / "config.json")) {}
 
 FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
                                const nlohmann::json &config)
-    : checkpoint_(
-          [&] {
-            auto [weights, metadata] = mx::load_safetensors(
-                (model_directory / "model.safetensors").string());
-            return omni_common::WeightMap(weights.begin(), weights.end());
-          }(),
-          config),
+    : checkpoint_(omni_common::QuantizedCheckpoint(
+          CheckpointWeights(model_directory, config), config,
+          kQuantizationGroupSize,
+          [](const std::string &name) {
+            if (name.starts_with("model.layers.")) {
+              return kSlowQuantizationBits;
+            } else if (name.starts_with("model.fast_layers.")) {
+              return kFastQuantizationBits;
+            } else {
+              return 0;
+            }
+          })),
       codec_(model_directory), tokenizer_(model_directory) {
   const nlohmann::json &text = config.at("text_config");
   const nlohmann::json &audio = config.at("audio_decoder_config");
@@ -114,13 +193,15 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
       tokenizer_.AddedTokenId(
           "<|semantic:" + std::to_string(codebook_size_ - 1) + "|>") !=
           semantic_end_id_ ||
-      im_end_id_ < 0) {
+      im_end_id_ < 0 || im_end_id_ != config.at("eos_token_id").get<int>()) {
     throw std::runtime_error(
         "the tokenizer's semantic tokens do not match config.json");
   } else {
   }
   // Note (Jiaxin Deng): the codec's raw weight-norm tensors, freed once
   // folded, would otherwise stay in MLX's buffer cache for the process's life.
+  // The checkpoints load asynchronously, so wait for the folds first.
+  mx::synchronize();
   mx::clear_cache();
 }
 
@@ -176,20 +257,20 @@ SpeechPrompt FishS2ProModel::BuildPrompt(
 mx::array FishS2ProModel::Embed(const mx::array &ids,
                                 const mx::array &codebook_rows,
                                 const mx::array &is_audio) const {
-  std::vector<mx::array> codebook_embeddings;
-  for (int codebook = 0; codebook < codebook_count_; ++codebook) {
-    const mx::array row = mx::slice(codebook_rows, {codebook, 0},
-                                    {codebook + 1, codebook_rows.shape(1)});
-    codebook_embeddings.push_back(
-        checkpoint_.Embed(mx::add(row, mx::array(codebook * codebook_size_)),
-                          "model.codebook_embeddings"));
-  }
+  // Every codebook's rows in one lookup, each codebook's ids offset into
+  // its block of the table.
+  const mx::array offsets =
+      mx::reshape(mx::multiply(mx::arange(codebook_count_, mx::int32),
+                               mx::array(codebook_size_)),
+                  {codebook_count_, 1});
+  const mx::array codebook_embeddings = checkpoint_.Embed(
+      mx::add(codebook_rows, offsets), "model.codebook_embeddings");
   const mx::array audio_mask = mx::reshape(is_audio, {1, -1, 1});
   const mx::array token_embeddings = checkpoint_.Embed(ids, "model.embeddings");
-  const mx::array mixed = mx::add(
-      token_embeddings,
-      mx::where(audio_mask, mx::sum(mx::stack(codebook_embeddings, 0), 0),
-                mx::array(0, token_embeddings.dtype())));
+  const mx::array mixed =
+      mx::add(token_embeddings,
+              mx::where(audio_mask, mx::sum(codebook_embeddings, 0, true),
+                        mx::array(0, token_embeddings.dtype())));
   // Note (Jiaxin Deng): a mixed row is scaled as the reference divides it,
   // by sqrt(codebooks + 1) in the embeddings' dtype.
   return mx::where(
@@ -202,7 +283,7 @@ mx::array FishS2ProModel::Embed(const mx::array &ids,
 
 mx::array
 FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
-                        std::vector<qwen3_asr::KVCache> &caches) const {
+                        std::vector<omni_common::KVCache> &caches) const {
   const int batch = x.shape(0);
   const int length = x.shape(1);
   const int query_size = config.head_count * config.head_dim;
@@ -215,10 +296,8 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
   };
   const int offset = caches[0].offset();
   const auto rotate = [&](const mx::array &heads) {
-    return mx::astype(mx::fast::rope(mx::astype(heads, mx::float32),
-                                     config.head_dim, true, config.rope_base,
-                                     1.0f, offset),
-                      heads.dtype());
+    return mx::fast::rope(heads, config.head_dim, true, config.rope_base, 1.0f,
+                          offset);
   };
   const auto split_heads = [&](const mx::array &projection, int start, int size,
                                int head_count) {
@@ -265,12 +344,12 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
         checkpoint_.RmsNorm(hidden, prefix + ".ffn_norm", config.norm_eps);
     hidden = mx::add(
         hidden,
-        checkpoint_.Linear(
-            mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                             feed_forward_input, prefix + ".feed_forward.w1")),
-                         checkpoint_.Linear(feed_forward_input,
-                                            prefix + ".feed_forward.w3")),
-            prefix + ".feed_forward.w2"));
+        checkpoint_.Linear(omni_common::Swiglu(
+                               checkpoint_.Linear(feed_forward_input,
+                                                  prefix + ".feed_forward.w1"),
+                               checkpoint_.Linear(feed_forward_input,
+                                                  prefix + ".feed_forward.w3")),
+                           prefix + ".feed_forward.w2"));
   }
   const int dimension = hidden.shape(2);
   return checkpoint_.RmsNorm(
@@ -283,8 +362,8 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
 std::vector<mx::array>
 FishS2ProModel::ResidualCodes(const mx::array &hidden,
                               const mx::array &semantic_code,
-                              std::vector<qwen3_asr::KVCache> &caches) const {
-  for (qwen3_asr::KVCache &cache : caches) {
+                              std::vector<omni_common::KVCache> &caches) const {
+  for (omni_common::KVCache &cache : caches) {
     cache.Trim(cache.offset());
   }
   // The slow hidden state fills the first position; its logits are unused.
@@ -422,8 +501,8 @@ omni_common::FinishReason FishS2ProModel::Generate(
   }
   std::vector<uint8_t> audio_flags(prompt.is_audio.begin(),
                                    prompt.is_audio.end());
-  std::vector<qwen3_asr::KVCache> caches(slow_.layer_count);
-  std::vector<qwen3_asr::KVCache> fast_caches(fast_.layer_count);
+  std::vector<omni_common::KVCache> caches(slow_.layer_count);
+  std::vector<omni_common::KVCache> fast_caches(fast_.layer_count);
   mx::array hidden = Forward(
       Embed(mx::array(prompt.ids.begin(), {1, length}, mx::int32),
             mx::array(rows.begin(), {codebook_count_, length}, mx::int32),
@@ -431,14 +510,8 @@ omni_common::FinishReason FishS2ProModel::Generate(
                        mx::bool_)),
       slow_, caches);
   const auto candidates = [&](const mx::array &last_hidden) {
-    const mx::array logits =
-        checkpoint_.TiedProjection(last_hidden, "model.embeddings");
     return mx::reshape(
-        mx::astype(mx::concatenate({mx::slice(logits, {0, semantic_begin_id_},
-                                              {1, semantic_end_id_ + 1}),
-                                    mx::slice(logits, {0, im_end_id_},
-                                              {1, im_end_id_ + 1})},
-                                   1),
+        mx::astype(checkpoint_.Linear(last_hidden, kCandidateHead),
                    mx::float32),
         {-1});
   };
@@ -468,6 +541,8 @@ omni_common::FinishReason FishS2ProModel::Generate(
       codes.push_back(code);
     }
     const mx::array frame_codes = mx::concatenate(codes, 0);
+    // Note (XXXXRT666): the fast transformer runs while the slow step builds.
+    mx::async_eval({frame_codes});
     if (frame + 1 < frame_limit) {
       hidden = Forward(Embed(mx::array({token}, {1, 1}, mx::int32),
                              mx::reshape(frame_codes, {codebook_count_, 1}),

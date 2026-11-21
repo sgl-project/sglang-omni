@@ -4,18 +4,20 @@ import (
 	"math"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
+
+// defaultPalette is settings.DefaultPalette: views do not import settings.
+const defaultPalette = "#0d9384"
 
 type paletteColors struct{ accent, background ui.Color }
 
 // The default keeps Voxt's neutral surfaces and original teal accents.
-// Only an explicitly selected custom color tints the window and cards.
-var defaultLightTokens = makeTokens(false, paletteColors{accent: ui.Hex(settings.DefaultPalette)})
+// A custom color tints the accents, and in dark mode the window and cards.
+var defaultLightTokens = makeTokens(false, paletteColors{accent: ui.Hex(defaultPalette)})
 var defaultDarkTokens = makeTokens(true, paletteColors{accent: ui.Hex("#2bb3a3")})
 
 func paletteTokens(hex string, dark bool) *tokens {
-	if hex == "" || hex == settings.DefaultPalette {
+	if hex == "" || hex == defaultPalette {
 		if dark {
 			return defaultDarkTokens
 		}
@@ -84,15 +86,13 @@ func contrastRatio(a, b ui.Color) float64 {
 func derivePaletteTokens(hex string, dark bool) *tokens {
 	lightness, chroma, hue := ui.Hex(hex).Oklch()
 	accentLightness := 0.48 + (lightness-0.55)*0.10
-	surfaceLightness := float32(0.986)
-	surfaceChroma := min(0.025, chroma*0.32)
+	background := lightGreys[0]
 	if dark {
 		accentLightness = max(0.73, 0.76+(lightness-0.55)*0.12)
-		surfaceLightness = 0.228
-		surfaceChroma = min(0.037, chroma*0.46)
+		background = ui.Oklch(0.228, min(0.037, chroma*0.46), hue).SRGB()
 	}
 	return makeTokens(dark, paletteColors{
 		accent:     ui.Oklch(accentLightness, min(0.14, chroma*0.85), hue).SRGB(),
-		background: ui.Oklch(surfaceLightness, surfaceChroma, hue).SRGB(),
+		background: background,
 	})
 }

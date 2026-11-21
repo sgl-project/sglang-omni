@@ -24,9 +24,15 @@ func openPrivacy(t *testing.T, a *app, tt *ui.Tester) {
 	tt.SetSize(windowWidth, 1800)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	// The settings dialog keeps its height: bring the section into it.
-	if r, ok := tt.Find("Other programs"); ok {
-		tt.Scroll(float32(windowWidth)*0.6, 900, 0, r.Y-700)
+	// The settings dialog keeps its height: bring the section into it,
+	// and keep the rows above it (the screenshot and copied-image
+	// switches) inside the viewport too.
+	for range 5 {
+		r, ok := tt.Find("Other programs")
+		if !ok || r.Y >= 1000 && r.Y <= 1060 {
+			break
+		}
+		tt.Scroll(float32(windowWidth)*0.6, 900, 0, (r.Y-1030)/2)
 		frames(tt)
 	}
 }
@@ -60,13 +66,13 @@ func waitFor(t *testing.T, drain func(), ok func() bool) {
 func turnOnAccess(t *testing.T, a *app, tt *ui.Tester, drain func()) {
 	t.Helper()
 	click(t, tt, "Allow reading")
-	if !a.histAccess.ask {
+	if !a.histAccessUI.ask {
 		t.Fatalf("no question: %q", firstTexts(tt))
 	}
 	click(t, tt, "Turn on")
 	drain()
-	if a.histAccess.ask || !a.settings.Get().Privacy.HistoryAccess || socketGone(a) {
-		t.Fatalf("not on: ask %v, setting %v, gone %v", a.histAccess.ask, a.settings.Get().Privacy.HistoryAccess, socketGone(a))
+	if a.histAccessUI.ask || !a.settings.Get().Privacy.HistoryAccess || socketGone(a) {
+		t.Fatalf("not on: ask %v, setting %v, gone %v", a.histAccessUI.ask, a.settings.Get().Privacy.HistoryAccess, socketGone(a))
 	}
 }
 
@@ -98,14 +104,14 @@ func TestHistoryAccessConfirm(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	openPrivacy(t, a, tt)
 	click(t, tt, "Allow reading")
-	if !a.histAccess.ask || !has(tt, "Let programs on this Mac read the history?") {
+	if !a.histAccessUI.ask || !has(tt, "Let programs on this Mac read the history?") {
 		t.Fatalf("no question: %q", firstTexts(tt))
 	}
-	if a.settingsForm.historyAccess {
+	if a.histAccessUI.historyAccess {
 		t.Error("the switch shows on before the answer")
 	}
 	click(t, tt, "Cancel")
-	if a.settings.Get().Privacy.HistoryAccess || !socketGone(a) || a.settingsForm.historyAccess {
+	if a.settings.Get().Privacy.HistoryAccess || !socketGone(a) || a.histAccessUI.historyAccess {
 		t.Errorf("cancelled: %+v gone %v", a.settings.Get().Privacy, socketGone(a))
 	}
 }
@@ -145,10 +151,10 @@ func TestHistoryAccessFlow(t *testing.T) {
 	read("daily-obsidian")
 	waitFor(t, drain, func() bool { return len(a.histAccess.reads) == 1 && a.noticeCount("daily-obsidian") == 1 })
 	drain()
-	if line := readLine(a.histAccess.reads[0]); !strings.Contains(line, "1 entry") || !strings.Contains(line, "daily-obsidian") {
+	if line := historyReadLineFor(i18n.CurrentTranslator(), a.histAccess.reads[0], time.Now()); !strings.Contains(line, "1 entry") || !strings.Contains(line, "daily-obsidian") {
 		t.Errorf("line %q", line)
 	}
-	if !has(tt, readLine(a.histAccess.reads[0])) {
+	if !has(tt, historyReadLineFor(i18n.CurrentTranslator(), a.histAccess.reads[0], time.Now())) {
 		t.Errorf("Last read does not show: %q", tt.Texts())
 	}
 	read("daily-obsidian")
@@ -174,11 +180,11 @@ func TestHistoryAccessFlow(t *testing.T) {
 	}
 
 	// Read log dialog lists them.
-	a.histAccess.listOpen = true
+	a.histAccessUI.listOpen = true
 	if !has(tt, "Read log") {
 		t.Errorf("no dialog: %q", firstTexts(tt))
 	}
-	a.histAccess.listOpen = false
+	a.histAccessUI.listOpen = false
 
 	// Off: the socket goes and reading is unavailable.
 	frames(tt)
@@ -337,8 +343,8 @@ func historyAccessShots(a *app, tt *ui.Tester, save func(string)) {
 	tt.Scroll(x, y, 0, dy)
 	defer tt.Scroll(x, y, 0, -dy) // the settings' own snapshots start at the top
 	save("settings-privacy-access")
-	a.histAccess.ask = true
+	a.histAccessUI.ask = true
 	save("settings-privacy-access-ask")
-	a.histAccess.ask = false
+	a.histAccessUI.ask = false
 	frames(tt)
 }

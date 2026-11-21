@@ -61,7 +61,7 @@ Tap **right ⌥ Option**. What you say is typed where your cursor is. The text s
 
 - **App enhancement**: groups of apps and websites with their own prompt and a key pressed after inserting, such as a casual tone in chats and Return to send.
 - **Dictionary**: names and jargon that the speech model expects and the language model writes as you spell them. Voxt suggests new terms from your history and from the corrections you make.
-- **Meetings**: choose Start meeting in the menu bar menu or on the Meetings page. Voxt records your microphone, the other side's audio, or both, and shows live captions. After the meeting, a language model corrects the transcript with your dictionary and writes a summary you can ask follow-up questions about. Recording the other side needs System Audio Recording permission.
+- **Meetings**: choose Start meeting in the menu bar menu or on the Meetings page. Voxt records your microphone, the other side's audio, or both, and shows live captions. With MOSS-Transcribe-Diarize installed, the finished transcript labels the other side as Speaker 1–4 while your lines stay Me. After the meeting, a language model corrects the transcript with your dictionary and writes a summary you can ask follow-up questions about. Recording the other side needs System Audio Recording permission.
 - **Notes**: tap right ⌘, speak, and Voxt saves what you said as a note instead of typing it.
 - **History**: every result, with search, **Retry** from the recording, and export.
 
@@ -71,7 +71,7 @@ Every shortcut can be changed on its feature's page, and Settings → Shortcuts 
 
 ### New to Voxt
 
-1. **Download** [`Voxt-2.1.0-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
+1. **Download** [`Voxt-2.1.2-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
 
 2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
@@ -99,7 +99,7 @@ What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-mi
 
 - A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
 - About 280 MB for the app, and 2.5 GB for the recommended speech model.
-- Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About), but does not install it itself. Install a newer version the same way: from its disk image.
+- Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About). Builds with an update feed can also install updates automatically. Builds without one only check GitHub Releases; install newer versions of those builds from a disk image.
 
 ## Your models, your data
 
@@ -119,7 +119,7 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 ### Language models
 
-Clean-up, Translate and Rewrite use the language model you set up on the Language models page, over its OpenAI-compatible API:
+Clean-up, Translate and Rewrite use the language model you set up in Settings → Language models, over its OpenAI-compatible API:
 
 - **On your Mac**, so the text stays here: Ollama, LM Studio, oMLX, SGLang MLX, or any other compatible server.
 - **A service**: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI and OpenRouter.
@@ -129,8 +129,14 @@ Without a language model, Transcribe types the text as recognised; Translate and
 
 ## Privacy
 
-- **Speech stays on your Mac**, unless you set up a cloud speech API for a feature: that feature's recordings then go to that service, and nowhere else.
-- **Text goes only to the language model you set up.** With a server on your Mac, it stays here. Audio is never sent to a language model. Images go to it only when you turn on sending the window or a copied image in Settings → Privacy (both off by default).
+A model on your Mac and an external API are two paths for your data. You choose a speech model and a language model for each feature. Your recordings, text and images stay on your Mac only when the services that handle them run there:
+
+| | With a model on your Mac | With an external API |
+|---|---|---|
+| **Speech recognition** | Your recordings are recognised on your Mac and stay there. This is the default. | The feature sends its recordings to that speech service. When the feature and model support them, Voxt can also send your speech context and recognition prompt. With Speech hints on, supported services can get enabled dictionary terms, not aliases. |
+| **Language model** (clean-up, Translate, Rewrite, meeting correction and summaries) | Requests to a server on your Mac (Ollama, LM Studio, oMLX, SGLang MLX) stay on your Mac. | The provider handling each request gets its contents. Depending on the feature and your settings, a request can include recognised, selected or typed text, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content, and the app name from a matching app enhancement rule. Transcribe, Translate and Rewrite can include the target window's screenshot when Send a screenshot is on. Rewrite can include a copied image instead when Send a copied image is on. Both switches are off by default. If Translate uses your fallback model, that provider gets the same request too. |
+
+- **Audio is never sent to a language model.** It gets text, and images only with the two switches above.
 - **API keys stay in the macOS Keychain**, never in Voxt's settings or logs.
 - **No account and no analytics.** Voxt has no server that receives your audio or your text. Otherwise it goes online only to download the models you choose, to read Voxt's announcements and to ask GitHub for the newest version, requests that send nothing about you but Voxt's version.
 - **Your data is in two folders**: the history, its optional recordings, the dictionary and the settings in `~/Library/Application Support/VoxtNew/`, and the models in `~/Library/Application Support/SGLang Omni/models`.
@@ -141,6 +147,7 @@ Without a language model, Transcribe types the text as recognised; Translate and
 - **Something is wrong**: Settings → About → **Report a problem** opens a GitHub issue with the diagnostics filled in. Or [open an issue][issues] with "[Voxt]" in its title.
 - **Questions and ideas**: join the SGLang [Slack][slack].
 - **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
+- **Change settings with a script or an agent**: [every setting, where it is stored and how to edit it safely](docs/settings.md).
 - **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
 
 ## For developers
@@ -160,7 +167,7 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 
 [![Back to top][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/Voxt-2.1.0-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.2/Voxt-2.1.2-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

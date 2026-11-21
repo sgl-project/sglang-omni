@@ -9,6 +9,10 @@ final class Writer: @unchecked Sendable {
     private let lock = NSLock()
     private let encoder = makeEncoder()
 
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
     init() {
         let fd = dup(STDOUT_FILENO)
         dup2(STDERR_FILENO, STDOUT_FILENO)
@@ -110,7 +114,6 @@ final class Server: @unchecked Sendable {
     let speech: SpeechJobs
     private let lock = NSLock()
     private var ready = false
-    private var debug = false
 
     /// Requests slower than this are logged on stderr with where they waited.
     static let slowMs = 250.0
@@ -306,10 +309,7 @@ final class Server: @unchecked Sendable {
             return out.fail(id, RPCError(Code.protocolMismatch, "This helper speaks protocol \(protocolVersion)",
                                          data: .object(["supported": .array([.int(Int64(protocolVersion))])])))
         }
-        lock.withLock {
-            ready = true
-            debug = p.logLevel == "debug"
-        }
+        lock.withLock { ready = true }
         front.start()
         output.start(exiting: { [self] why in exiting(why) })
         let version = helperVersion()

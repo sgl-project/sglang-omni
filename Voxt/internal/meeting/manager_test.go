@@ -297,11 +297,19 @@ func TestSnapshotKeepsLevelHistory(t *testing.T) {
 	}
 	defer m.Finish(ctx, id)
 	// A full buffer can still contain the first levels. Wait for the
-	// complete sequence before checking which levels were retained.
+	// complete sequence, then for the manager to take in the last level.
 	select {
 	case <-mic.levelsSent:
 	case <-time.After(2 * time.Second):
 		t.Fatal("microphone did not finish sending its level events")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		levels := m.Current().Levels[meeting.SourceMic]
+		if len(levels) > 0 && levels[len(levels)-1] == session.Level(-3) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	got := m.Current().Levels
 	if h := got[meeting.SourceMic]; len(h) != session.Bars || h[0] != session.Level(-48) || h[len(h)-1] != session.Level(-3) {

@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -132,12 +133,16 @@ func TestLiveLoopRestartsStream(t *testing.T) {
 // Final heard.
 func TestLiveRotateKeepsUserHint(t *testing.T) {
 	f := &loopStreamer{lang: "Japanese", final: "x", partial: func(int) string { return "x" }}
-	l, _ := newLoopLive(t, f, asr.StreamRequest{SampleRate: 16000, Lang: "zh"})
+	hints := []string{"SGLang", "Voxt"}
+	l, _ := newLoopLive(t, f, asr.StreamRequest{SampleRate: 16000, Lang: "zh", Hints: hints})
 	if err := l.rotate(context.Background(), false, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.reqs[1].Lang; got != "zh" {
 		t.Errorf("hint after rotation = %q, want the user's %q", got, "zh")
+	}
+	if !slices.Equal(f.reqs[1].Hints, hints) {
+		t.Errorf("hot words after rotation = %q, want %q", f.reqs[1].Hints, hints)
 	}
 }
 
@@ -145,7 +150,8 @@ func TestLiveRotateKeepsUserHint(t *testing.T) {
 // live: the next Push opens a stream and sends to it.
 func TestLiveRotateRetriesOpen(t *testing.T) {
 	f := &loopStreamer{final: "a", openErrs: 1, partial: func(int) string { return "b" }}
-	l, _ := newLoopLive(t, f, asr.StreamRequest{SampleRate: 16000})
+	hints := []string{"SGLang", "Voxt"}
+	l, _ := newLoopLive(t, f, asr.StreamRequest{SampleRate: 16000, Hints: hints})
 	ctx := context.Background()
 	if err := l.rotate(ctx, false, true); err == nil {
 		t.Fatal("want the Open's error")
@@ -155,5 +161,8 @@ func TestLiveRotateRetriesOpen(t *testing.T) {
 	}
 	if len(f.reqs) != 2 || l.LiveText() != "b" {
 		t.Fatalf("streams = %d, live text %q: want a reopened stream with its partial", len(f.reqs), l.LiveText())
+	}
+	if !slices.Equal(f.reqs[1].Hints, hints) {
+		t.Errorf("hot words after reopening = %q, want %q", f.reqs[1].Hints, hints)
 	}
 }

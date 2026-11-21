@@ -1,0 +1,262 @@
+{
+  "name": "card-copied",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 3,
+    "session_id": "t2",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "t2",
+      "kind": "translate",
+      "title": "翻译",
+      "why": "Arc 里选中的文字不能编辑。可以复制结果，或者点一下要放的位置再插入。",
+      "target_name": "Arc",
+      "language": "ja",
+      "language_label": "日语",
+      "thinking": {},
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "insert_tooltip": "Arc 里选中的文字不能编辑。可以复制结果，或者点一下要放的位置再插入。",
+      "copy_tooltip": "复制（C）",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "answer",
+          "kind": "body",
+          "turn": 0,
+          "text": "goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": false,
+      "copied": true,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": true,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    },
+    "language_menu": {
+      "kind": "language",
+      "label": "翻译成",
+      "options": [
+        {
+          "language": "en",
+          "thinking": {},
+          "label": "英语",
+          "selected": false
+        },
+        {
+          "language": "zh-Hans",
+          "thinking": {},
+          "label": "简体中文",
+          "selected": false
+        },
+        {
+          "language": "zh-Hant",
+          "thinking": {},
+          "label": "繁体中文",
+          "selected": false
+        },
+        {
+          "language": "ja",
+          "thinking": {},
+          "label": "日语",
+          "selected": true
+        },
+        {
+          "language": "ko",
+          "thinking": {},
+          "label": "韩语",
+          "selected": false
+        },
+        {
+          "language": "es",
+          "thinking": {},
+          "label": "西班牙语",
+          "selected": false
+        },
+        {
+          "language": "fr",
+          "thinking": {},
+          "label": "法语",
+          "selected": false
+        },
+        {
+          "language": "de",
+          "thinking": {},
+          "label": "德语",
+          "selected": false
+        },
+        {
+          "language": "it",
+          "thinking": {},
+          "label": "意大利语",
+          "selected": false
+        },
+        {
+          "language": "pt",
+          "thinking": {},
+          "label": "葡萄牙语",
+          "selected": false
+        },
+        {
+          "language": "ru",
+          "thinking": {},
+          "label": "俄语",
+          "selected": false
+        },
+        {
+          "language": "nl",
+          "thinking": {},
+          "label": "荷兰语",
+          "selected": false
+        },
+        {
+          "language": "tr",
+          "thinking": {},
+          "label": "土耳其语",
+          "selected": false
+        },
+        {
+          "language": "pl",
+          "thinking": {},
+          "label": "波兰语",
+          "selected": false
+        },
+        {
+          "language": "uk",
+          "thinking": {},
+          "label": "乌克兰语",
+          "selected": false
+        },
+        {
+          "language": "ar",
+          "thinking": {},
+          "label": "阿拉伯语",
+          "selected": false
+        },
+        {
+          "language": "he",
+          "thinking": {},
+          "label": "希伯来语",
+          "selected": false
+        },
+        {
+          "language": "hi",
+          "thinking": {},
+          "label": "印地语",
+          "selected": false
+        },
+        {
+          "language": "th",
+          "thinking": {},
+          "label": "泰语",
+          "selected": false
+        },
+        {
+          "language": "vi",
+          "thinking": {},
+          "label": "越南语",
+          "selected": false
+        },
+        {
+          "language": "id",
+          "thinking": {},
+          "label": "印度尼西亚语",
+          "selected": false
+        },
+        {
+          "language": "ms",
+          "thinking": {},
+          "label": "马来语",
+          "selected": false
+        }
+      ],
+      "selected_index": 3
+    }
+  }
+}

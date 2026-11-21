@@ -74,7 +74,7 @@ func snapshotsShortcuts(t *testing.T, out string) {
 			a.setRules(sampleRules())
 			a.navigate("/app-enhancement")
 			for _, g := range []struct{ id, name string }{{"g-chat", "ae-apps"}, {"g-code", "ae-apps-none"}} {
-				a.aePage.sel = g.id
+				a.aeUI.sel = g.id
 				frames(tt)
 				if r, ok := tt.Find(i18n.T("Apps")); ok {
 					tt.Scroll(float32(size[0])*0.6, float32(size[1])*0.5, 0, r.Y-float32(size[1])*0.3)

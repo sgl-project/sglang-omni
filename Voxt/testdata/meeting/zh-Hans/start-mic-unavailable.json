@@ -1,0 +1,8 @@
+{
+  "name": "start-mic-unavailable",
+  "kind": "start",
+  "start": {
+    "code": "meeting.mic.unavailable",
+    "text": "没能录制麦克风。请检查输入设备后重试。"
+  }
+}

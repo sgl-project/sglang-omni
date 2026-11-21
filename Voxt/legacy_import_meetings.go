@@ -97,7 +97,7 @@ func mergeLegacyMeetings(ctx context.Context, repo store.Meetings, dataDir, voxt
 		if entry.AudioDurationSeconds == nil && row.audioDuration > 0 {
 			entry.AudioDurationSeconds = &row.audioDuration
 		}
-		audioRel := cmpNonEmpty(entry.TranscriptAudioRelativePath, entry.AudioRelativePath, row.transcriptAudioRel, row.audioRel)
+		audioRel := firstNonEmpty(entry.TranscriptAudioRelativePath, entry.AudioRelativePath, row.transcriptAudioRel, row.audioRel)
 		if legacyIsFileTranscript(entry, row.displayTitle) {
 			stats.fileSkipped++
 			continue
@@ -409,5 +409,3 @@ func firstNonEmpty(parts ...string) string {
 	}
 	return ""
 }
-
-func cmpNonEmpty(parts ...string) string { return firstNonEmpty(parts...) }

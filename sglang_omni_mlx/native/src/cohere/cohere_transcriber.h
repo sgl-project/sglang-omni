@@ -48,17 +48,17 @@ public:
 
 private:
   struct ChunkResult {
-    std::string text;
-    int generated_token_count = 0;
+    std::vector<int> token_ids;
     bool reached_token_limit = false;
   };
 
   // Text of generated ids: special ids dropped, SentencePiece pieces joined.
   std::string DecodeText(const std::vector<int> &token_ids) const;
-  ChunkResult TranscribeChunk(const std::vector<float> &samples,
-                              const std::vector<int> &prompt_ids,
-                              int max_new_tokens, float temperature,
-                              const std::atomic<bool> &cancel) const;
+  // Each chunk's generated ids, the chunks decoded as rows of one batch.
+  std::vector<ChunkResult>
+  TranscribeChunks(const std::vector<std::vector<float>> &chunks,
+                   const std::vector<int> &prompt_ids, int max_new_tokens,
+                   float temperature, const std::atomic<bool> &cancel) const;
 
   CohereModel model_;
   swift_port::SentencePieceVocabulary vocabulary_;

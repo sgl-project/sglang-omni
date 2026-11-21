@@ -66,6 +66,7 @@ from sglang_omni.sampling.speculative_noise import (
     seeded_exponential_noise,
     seeded_uniform_noise,
 )
+from sglang_omni.sampling.speculative_noise_kernel import draw_seeded_noise
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 
@@ -165,15 +166,13 @@ def build_step_sampling_state(
             row_seeds.append(0)
     # note (YifanLi3): one host-to-device copy carries the four per-request values;
     # a masked seed fits in 31 bits, so float64 holds it exactly.
+    # note (wilsonzheng0327): one row per value keeps a lone request's values at stride 1, the layout the compiled sampling's warm-up traced; a column of one request kept stride 4 and recompiled it.
     request_values = torch.tensor(
         [
-            [
-                request.sampling_params.repetition_penalty,
-                len(request.output_ids),
-                request.sampling_params.min_new_tokens,
-                seed & SAMPLING_SEED_MASK,
-            ]
-            for request, seed in zip(batch.reqs, row_seeds, strict=True)
+            [request.sampling_params.repetition_penalty for request in batch.reqs],
+            [len(request.output_ids) for request in batch.reqs],
+            [request.sampling_params.min_new_tokens for request in batch.reqs],
+            [seed & SAMPLING_SEED_MASK for seed in row_seeds],
         ],
         dtype=torch.float64,
     ).to(device)
@@ -187,12 +186,12 @@ def build_step_sampling_state(
     return StepSamplingState(
         draft=DraftSamplingState(
             presence_mask=histories.presence_mask(batch),
-            repetition_penalties=request_values[:, 0].float(),
-            output_lengths=request_values[:, 1].long(),
-            min_new_tokens=request_values[:, 2].long(),
+            repetition_penalties=request_values[0].float(),
+            output_lengths=request_values[1].long(),
+            min_new_tokens=request_values[2].long(),
             temperatures=sampling_info.temperatures.view(-1).float(),
             greedy=top_ks == 1,
-            seeds=request_values[:, 3].long() if is_seeded else None,
+            seeds=request_values[3].long() if is_seeded else None,
         ),
         recent_tokens=recent_tokens.to(device),
         top_ks=top_ks,
@@ -240,6 +239,15 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
             exponential_noise = torch.empty(
                 (bs, TOTAL_VOCAB_SIZE), device=draft_tokens.device
             ).exponential_()
+        elif draft_state.seeds.device.type == "cuda":
+            exponential_noise, uniform_noise = draw_seeded_noise(
+                draft_state.seeds,
+                draft_state.output_lengths,
+                exponential_columns=TOTAL_VOCAB_SIZE,
+                exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+                acceptance_columns=draft_tokens.shape[1],
+                acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
+            )
         else:
             uniform_noise = (
                 seeded_uniform_noise(
@@ -441,16 +449,19 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
 
         Dynamic shapes still specialize a single running request, so both one and two
         requests, each on both top-k paths, are traced here instead of on the serving
-        thread.
+        thread. Each argument gets its own tensor, since the graphs also guard on which
+        inputs alias.
         """
         markov_head = self.draft_model.markov_head
         draft_count = self.gamma
         for batch_size in (1, 2):
-            zero_per_request = torch.zeros(
-                batch_size, dtype=torch.long, device=self.device
+            previous_tokens, output_lengths, min_new_tokens = (
+                torch.zeros(batch_size, dtype=torch.long, device=self.device)
+                for _ in range(3)
             )
-            one_per_request = torch.ones(
-                batch_size, dtype=torch.float32, device=self.device
+            repetition_penalties, temperatures, top_ps = (
+                torch.ones(batch_size, dtype=torch.float32, device=self.device)
+                for _ in range(3)
             )
             presence_mask = torch.zeros(
                 (batch_size, TOTAL_VOCAB_SIZE), dtype=torch.bool, device=self.device
@@ -461,15 +472,15 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
             )
             draft_tokens, shaped_logits = markov_head.block_sampler(
                 base_logits,
-                zero_per_request,
+                previous_tokens,
                 torch.ones_like(base_logits),
                 markov_head.markov_w1.weight,
                 markov_head.markov_w2.weight,
                 presence_mask,
-                one_per_request,
-                zero_per_request,
-                zero_per_request,
-                one_per_request,
+                repetition_penalties,
+                output_lengths,
+                min_new_tokens,
+                temperatures,
                 greedy,
             )
             for is_top_k_bounded in (False, True):
@@ -481,10 +492,10 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
                     shaped_logits,
                     draft_tokens,
                     presence_mask,
-                    one_per_request,
-                    zero_per_request,
-                    zero_per_request,
-                    one_per_request,
+                    repetition_penalties,
+                    output_lengths,
+                    min_new_tokens,
+                    temperatures,
                     greedy,
                     torch.full(
                         (batch_size,),
@@ -492,7 +503,7 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
                         dtype=torch.int32,
                         device=self.device,
                     ),
-                    one_per_request,
+                    top_ps,
                     torch.full(
                         (batch_size, COSYVOICE3_RAS_WINDOW_SIZE),
                         EMPTY_HISTORY_TOKEN,

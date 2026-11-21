@@ -19,6 +19,7 @@ import (
 	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/trayicon"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -30,6 +31,9 @@ type trayState struct {
 	trayLive bool     // the icon shows the recording one
 	quitting bool     // Quit was chosen: closing the window must not hide it
 	recent   []string // the last results, newest first (trayRecentN at most)
+	// seq numbers the reads, so that only the last one lands: a stale
+	// read finishing later must not revive deleted entries.
+	seq int
 	// copyText puts text on the clipboard (mygo.Clipboard); tests record.
 	copyText func(string) error
 	// life is the main window as the window life uses it: a.win, or a fake in tests.
@@ -54,8 +58,11 @@ func (a *app) applyTray() {
 	}
 	if !a.prefs.General.MenuBar {
 		a.closeTray()
+		a.buildTrayMenu() // the Dock menu uses the conversations already read
+		a.loadTrayRecent()
 		return
 	}
+	setDockMenu(nil) // the Dock fallback belongs only to the iconless mode
 	if a.tray != nil {
 		return
 	}
@@ -82,9 +89,16 @@ func (a *app) closeTray() {
 // loadTrayRecent reads the last results from the history for the menu,
 // then builds it again; at start and after the history changed.
 func (a *app) loadTrayRecent() {
-	if a.tray == nil && a.win != nil {
-		return // no menu to show them in
+	if a.tray == nil && a.win != nil && (a.prefs.General.MenuBar || !a.hasMenu) {
+		return // neither a menu bar menu nor the Dock fallback can show them
 	}
+	keepHistory, now := a.prefs.Privacy.KeepHistory, time.Now()
+	if !keepHistory {
+		a.reopen = nil
+		a.buildTrayMenu()
+	}
+	a.trayState.seq++
+	seq := a.trayState.seq
 	h := a.lib.store.History()
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -93,8 +107,19 @@ func (a *app) loadTrayRecent() {
 		if err != nil {
 			return
 		}
+		var reopen []reopenConversation
+		if keepHistory {
+			entries, err := h.List(ctx, store.HistoryQuery{Finished: true, After: now.Add(-reopenCardMaxAge)})
+			if err == nil {
+				reopen = reopenConversations(entries, now)
+			}
+		}
 		a.post(func() {
+			if seq != a.trayState.seq {
+				return // a newer read is on its way
+			}
 			a.recent = uitext.RecentResults(es, trayRecentN)
+			a.reopen = reopen
 			a.buildTrayMenu()
 		})
 	})
@@ -110,9 +135,22 @@ func trayTip(text string) string {
 	return text
 }
 
+// setDockMenu is MyGo's; tests replace it (it waits for the main loop).
+var setDockMenu = mygo.App.Dock.SetMenu
+
 // buildTrayMenu builds the icon's menu in the current language, and
 // shows the recording icon while a session runs.
 func (a *app) buildTrayMenu() {
+	if a.hasMenu && !a.prefs.General.MenuBar {
+		items := a.reopenMenu(func(fn func()) func(*mygo.MenuItem, *mygo.Window) {
+			return func(*mygo.MenuItem, *mygo.Window) { a.post(fn) }
+		})
+		var menu *mygo.Menu
+		if len(items) > 0 {
+			menu = mygo.NewMenu(items)
+		}
+		setDockMenu(menu)
+	}
 	if a.tray == nil {
 		return
 	}
@@ -162,17 +200,23 @@ func (a *app) trayItems() []*mygo.MenuItem {
 		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
 		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
 	}
-	mt := i18n.T("Start meeting")
-	if a.meetingActive() {
-		mt = i18n.T("End meeting")
+	if reopen := a.reopenMenu(act); len(reopen) > 0 {
+		items = append(items, mygo.Separator())
+		items = append(items, reopen...)
 	}
-	items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
+	if !f.IsHidden(settings.HideMeetings) || a.meetingActive() {
+		mt := i18n.T("Start meeting")
 		if a.meetingActive() {
-			a.meetingFinish()
-		} else {
-			a.startMeeting()
+			mt = i18n.T("End meeting")
 		}
-	})})
+		items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
+			if a.meetingActive() {
+				a.meetingFinish()
+			} else {
+				a.startMeeting()
+			}
+		})})
+	}
 	if len(a.recent) > 0 {
 		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
 		for _, text := range a.recent {

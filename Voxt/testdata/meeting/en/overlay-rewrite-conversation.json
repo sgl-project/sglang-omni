@@ -1,0 +1,149 @@
+{
+  "name": "overlay-rewrite-conversation",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot41",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "shot41",
+      "kind": "rewrite",
+      "title": "晚到说明",
+      "target_name": "Slack",
+      "thinking": {},
+      "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "insert_tooltip": "Insert into Slack (R)",
+      "copy_tooltip": "Copy (C)",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "turn-0-user",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "You",
+          "text": "写一句话告诉同事我会晚到十分钟",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-0-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "晚到通知",
+          "text": "大家好，我这边路上有点堵，大概会晚到十分钟，会议请先开始，不用等我。",
+          "selectable": true,
+          "markdown": true
+        },
+        {
+          "key": "turn-1-user",
+          "kind": "bubble",
+          "turn": 1,
+          "title": "You",
+          "text": "再正式一点",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-1-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "晚到说明",
+          "text": "各位好：因交通拥堵，我预计将晚到约十分钟。会议请按时开始，无需等候，抱歉给大家带来不便。",
+          "selectable": true,
+          "markdown": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": true,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

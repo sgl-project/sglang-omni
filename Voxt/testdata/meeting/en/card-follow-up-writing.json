@@ -1,0 +1,137 @@
+{
+  "name": "card-follow-up-writing",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 9,
+    "session_id": "r2",
+    "state": "composing",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "r1",
+      "kind": "rewrite",
+      "title": "Running late",
+      "target_name": "Slack",
+      "thinking": {},
+      "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "insert_tooltip": "Insert into Slack (R)",
+      "copy_tooltip": "Copy (C)",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "turn-0-user",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "You",
+          "text": "write that I am late",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-0-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "Running late",
+          "text": "Sorry, I am running about ten minutes late: please start without me.",
+          "selectable": true,
+          "markdown": true
+        }
+      ],
+      "live": [
+        {
+          "key": "turn-1-user",
+          "kind": "bubble",
+          "turn": 1,
+          "title": "You",
+          "text": "shorter",
+          "live": true,
+          "user": true,
+          "selectable": false
+        },
+        {
+          "key": "live-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "Late",
+          "text": "Ten minutes late",
+          "live": true,
+          "selectable": false,
+          "markdown": true
+        }
+      ],
+      "live_count": 2,
+      "busy": true,
+      "recording": false,
+      "writing": false,
+      "conversation": true,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": false,
+      "can_copy": true,
+      "can_follow_up": false,
+      "can_stop": false,
+      "can_stop_answer": true,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}
