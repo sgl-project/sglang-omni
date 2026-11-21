@@ -230,6 +230,26 @@ class EnvironmentProbeTests(unittest.TestCase):
         self.assertIn("456", str(detail["unavailable_reason"]))
         self.assertIn("Operation not permitted", str(detail["unavailable_reason"]))
 
+    def test_rss_detail_rejects_partial_pid_timeout(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="123\n456\n", stderr=""
+                )
+            if arguments == ["ps", "-o", "rss=", "-p", "123"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=0, stdout="2048\n", stderr=""
+                )
+            if arguments == ["ps", "-o", "rss=", "-p", "456"]:
+                raise subprocess.TimeoutExpired(arguments, 5)
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            detail = loop.process_rss_detail("sensevoice_server")
+        self.assertIsNone(detail["value"])
+        self.assertIn("456", str(detail["unavailable_reason"]))
+        self.assertIn("timed out", str(detail["unavailable_reason"]))
+
     def test_scoped_processes_rejects_partial_rss_failure(self):
         def output(arguments, **kwargs):
             if arguments[:2] == ["pgrep", "-x"]:
@@ -288,17 +308,38 @@ class EnvironmentProbeTests(unittest.TestCase):
     def test_scoped_processes_without_scope_records_null_reasons(self):
         def output(arguments, **kwargs):
             if arguments[:2] == ["pgrep", "-x"]:
-                return subprocess.CompletedProcess(
-                    args=arguments, returncode=0, stdout="300\n", stderr=""
-                )
+                raise OSError(1, "Operation not permitted")
             raise AssertionError(arguments)
 
         with mock.patch("profile_loop.subprocess.run", side_effect=output):
             scoped = loop.scoped_processes(
                 "sensevoice_server", None, None, "no test process found"
             )
+        self.assertEqual(scoped["pids"], [])
+        self.assertEqual(scoped["argv"], [])
+        self.assertIsNone(scoped["footprint_bytes"])
+        self.assertIsNone(scoped["rss_bytes"])
         self.assertIn("no test process found", str(scoped["unavailable_reason"]))
         self.assertIn("no test process found", str(scoped["rss_unavailable_reason"]))
+        self.assertIn("Operation not permitted", str(scoped["unavailable_reason"]))
+
+    def test_process_discovery_failure_is_not_process_absence(self):
+        def output(arguments, **kwargs):
+            if arguments[:2] == ["pgrep", "-x"]:
+                return subprocess.CompletedProcess(
+                    args=arguments, returncode=2, stdout="", stderr="pgrep failed"
+                )
+            raise AssertionError(arguments)
+
+        with mock.patch("profile_loop.subprocess.run", side_effect=output):
+            detail = loop.process_rss_detail("sensevoice_server")
+            scoped = loop.scoped_processes("sensevoice_server", {999}, 999, None)
+        self.assertIsNone(detail["value"])
+        self.assertIn("pgrep exited 2", str(detail["unavailable_reason"]))
+        self.assertNotIn("no process named", str(detail["unavailable_reason"]))
+        self.assertIsNone(scoped["footprint_bytes"])
+        self.assertIn("pgrep exited 2", str(scoped["unavailable_reason"]))
+        self.assertNotIn("no target process", str(scoped["unavailable_reason"]))
 
     def test_scoped_processes_rejects_partial_footprint_failure(self):
         def output(arguments, **kwargs):
@@ -318,9 +359,7 @@ class EnvironmentProbeTests(unittest.TestCase):
                     stderr="",
                 )
             if arguments == ["footprint", "-p", "200"]:
-                return subprocess.CompletedProcess(
-                    args=arguments, returncode=1, stdout="", stderr="denied"
-                )
+                raise subprocess.TimeoutExpired(arguments, 20)
             if arguments[0] == "ps":
                 return subprocess.CompletedProcess(
                     args=arguments, returncode=0, stdout="2048\n", stderr=""
@@ -345,7 +384,10 @@ class EnvironmentProbeTests(unittest.TestCase):
                 )
             if arguments[0] == "footprint":
                 return subprocess.CompletedProcess(
-                    args=arguments, returncode=1, stdout="", stderr="denied"
+                    args=arguments,
+                    returncode=1,
+                    stdout="Footprint: 100 MB\n",
+                    stderr="denied",
                 )
             if arguments[0] == "ps":
                 return subprocess.CompletedProcess(

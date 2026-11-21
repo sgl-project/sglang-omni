@@ -163,6 +163,10 @@ def process_pids(name: str) -> set[int]:
     result = subprocess.run(
         ["pgrep", "-x", name], capture_output=True, text=True, timeout=5
     )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(
+            f"pgrep exited {result.returncode} for {name}: {result.stderr.strip()}"
+        )
     return {int(pid) for pid in result.stdout.split()}
 
 
@@ -174,7 +178,7 @@ def process_rss_detail(name: str, pids: set[int] | None = None) -> dict[str, obj
     """
     try:
         target_pids = process_pids(name) if pids is None else pids
-    except OSError as error:
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         return {"value": None, "unavailable_reason": f"pgrep failed: {error}"}
     if not target_pids:
         reason = (
@@ -193,9 +197,9 @@ def process_rss_detail(name: str, pids: set[int] | None = None) -> dict[str, obj
                 text=True,
                 timeout=5,
             )
-        except OSError as error:
+        except (OSError, subprocess.TimeoutExpired) as error:
             if first_error is None:
-                first_error = f"ps denied for pid {pid}: {error}"
+                first_error = f"ps failed for pid {pid}: {error}"
             continue
         if result.returncode == 0 and result.stdout.strip().isdigit():
             largest = max(largest, int(result.stdout.strip()) * 1024)
@@ -224,7 +228,9 @@ def process_footprint_bytes(pid: int) -> int | None:
             text=True,
             timeout=20,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
         return None
     match = FOOTPRINT_RE.search(result.stdout)
     if not match:
@@ -255,9 +261,19 @@ def scoped_processes(
     scope_reason: str | None,
 ) -> dict[str, object]:
     """Memory and argv evidence limited to processes owned by one measurement run."""
-    global_pids = process_pids(name)
-    if scope is None:
-        reason = f"cannot attribute processes to this group: {scope_reason}"
+    discovery_error = None
+    try:
+        global_pids = process_pids(name)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        global_pids = set()
+        discovery_error = f"pgrep failed for {name}: {error}"
+    if discovery_error is not None or scope is None:
+        reasons = []
+        if scope is None:
+            reasons.append(f"cannot attribute processes to this group: {scope_reason}")
+        if discovery_error is not None:
+            reasons.append(discovery_error)
+        reason = "; ".join(reasons)
         return {
             "root_pid": root,
             "pids": [],
@@ -266,7 +282,7 @@ def scoped_processes(
             "rss_unavailable_reason": reason,
             "argv": [],
             "unavailable_reason": reason,
-            "outside_count": len(global_pids),
+            "outside_count": len(global_pids) if discovery_error is None else None,
         }
     attributed = global_pids & scope
     rss_detail = process_rss_detail(name, attributed)
