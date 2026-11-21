@@ -65,19 +65,7 @@ def score_session(
             "appends"
         ]
     }
-    records = [
-        TraceRecord.model_validate(json.loads(line))
-        for line in (variant_dir / "continuous.jsonl").read_text().splitlines()
-    ]
-    input_end_s = next(
-        (
-            record.time_s
-            for record in records
-            if record.direction == "send"
-            and record.event["type"] == "sglang.input_audio.end"
-        ),
-        None,
-    )
+    input_end_s: float | None = None
 
     def unit_media_time(event: WireEvent) -> MediaTime:
         if event.sglang.media_time is None:
@@ -98,43 +86,56 @@ def score_session(
         else:
             return max(packet_ready_s, input_end_s)
 
-    unit_lags_s: list[float] = []
+    completed_units: list[tuple[float, MediaTime]] = []
     reply_created_s: dict[str, float] = {}
     reply_opening_unit: dict[str, MediaTime] = {}
     reply_first_audio_unit: dict[str, MediaTime] = {}
     reply_chunks: dict[str, list[tuple[float, float]]] = {}
-    for record in (record for record in records if record.direction == "receive"):
-        event = WireEvent.model_validate(record.event)
-        if event.type == "sglang.unit.done" and is_native:
-            media_time = unit_media_time(event)
-            if media_time.duration_ms > 0:
-                unit_lags_s.append(record.time_s - ready_s(media_time))
-            else:
-                pass
-        elif event.type == "response.created":
-            assert event.response is not None
-            reply_created_s[event.response.id] = record.time_s
-            if is_native:
-                reply_opening_unit[event.response.id] = unit_media_time(event)
-            else:
-                pass
-        elif event.type in (AUDIO_DELTA, LEGACY_AUDIO_DELTA):
-            assert event.response_id is not None and event.delta is not None
-            if is_native:
-                reply_first_audio_unit.setdefault(
-                    event.response_id, unit_media_time(event)
+    with (variant_dir / "continuous.jsonl").open(encoding="utf-8") as trace:
+        for line in trace:
+            record = TraceRecord.model_validate(json.loads(line))
+            if (
+                record.direction == "send"
+                and input_end_s is None
+                and record.event["type"] == "sglang.input_audio.end"
+            ):
+                input_end_s = record.time_s
+            if record.direction != "receive":
+                continue
+            event = WireEvent.model_validate(record.event)
+            if event.type == "sglang.unit.done" and is_native:
+                media_time = unit_media_time(event)
+                if media_time.duration_ms > 0:
+                    completed_units.append((record.time_s, media_time))
+                else:
+                    pass
+            elif event.type == "response.created":
+                assert event.response is not None
+                reply_created_s[event.response.id] = record.time_s
+                if is_native:
+                    reply_opening_unit[event.response.id] = unit_media_time(event)
+                else:
+                    pass
+            elif event.type in (AUDIO_DELTA, LEGACY_AUDIO_DELTA):
+                assert event.response_id is not None and event.delta is not None
+                if is_native:
+                    reply_first_audio_unit.setdefault(
+                        event.response_id, unit_media_time(event)
+                    )
+                else:
+                    pass
+                reply_chunks.setdefault(event.response_id, []).append(
+                    (
+                        record.time_s,
+                        len(base64.b64decode(event.delta)) / 2 / output_sample_rate,
+                    )
                 )
             else:
                 pass
-            reply_chunks.setdefault(event.response_id, []).append(
-                (
-                    record.time_s,
-                    len(base64.b64decode(event.delta)) / 2 / output_sample_rate,
-                )
-            )
-        else:
-            pass
 
+    unit_lags_s = [
+        completed_s - ready_s(media_time) for completed_s, media_time in completed_units
+    ]
     replies: list[dict[str, JsonValue]] = []
     for response_id, chunks in reply_chunks.items():
         # note (jeffro): the simulated player starts a reply playback_reserve_s after
