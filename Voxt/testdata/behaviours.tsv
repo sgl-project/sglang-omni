@@ -76,3 +76,4 @@ Paste a copied picture into the Rewrite card	L	TestRewriteBoxPastesCopiedPicture
 Home activity calendar and its numbers	L	TestHomeActivityShows	The light-up and the look are checked by hand only
 Hover a preview's buttons while another app is in front	L	TestFloatingWindowOptions	That AppKit tracks the pointer over the window while another app is active (MyGo patch 0020) is seen on a Mac only
 Return finishes a recording of any feature, switched in Settings → Shortcuts	L	TestReturnFinishPlanScope	The helper's event tap consuming Return in another app is seen on a Mac only
+Home mascot and its holiday outfits	L	TestMascotOutfitOn	The moves and how the outfits look are checked by hand only
