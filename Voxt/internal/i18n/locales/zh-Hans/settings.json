@@ -242,7 +242,7 @@
   "If you let programs on this Mac read the history (below), where that text goes next is up to them.": "如果你允许这台 Mac 上的程序读取历史（见下方），这些文字之后去哪里就由它们决定。",
   "With ChatGPT (Codex), that text goes to OpenAI under your account and its terms.": "使用 ChatGPT (Codex) 时，这些文字会通过你的账号发给 OpenAI，适用 OpenAI 的条款。",
   "Send a screenshot": "发送截图",
-  "When you start speaking, Voxt takes a screenshot of the window and sends it to the language model with the text, so names on screen come out right. Needs Screen Recording permission.": "开始说话时，Voxt 截取当前窗口，和文字一起发给语言模型，让屏幕上的名字写对。需要“屏幕录制”权限。",
+  "When you start speaking, Voxt sends a screenshot of the window with the text, so the language model can spell names and terms as they appear on screen. Needs Screen Recording permission and a model that reads images.": "开始说话时，Voxt 截取当前窗口一起发给语言模型，参照屏幕上的内容写对人名和术语。需要“屏幕录制”权限，模型也要能看图。",
   "Send the window to the language model": "把窗口截图发给语言模型",
   "Send a copied image": "发送复制的图片",
   "With Rewrite, sends the image you copied with what you said. Copied text, and copied files that are not images, are not sent.": "改写时，把你复制的图片和说的话一起发出去。复制的文字、不是图片的文件不会发送。",

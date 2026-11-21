@@ -37,7 +37,7 @@ func remoteOptionValue(options []remoteOptionViewState, title string) (string, b
 // way to the setting (models_keep.go's).
 func llmWaitView(c *ui.Context, state *remoteWaitViewState, actions remoteWaitActions, local *llmWaitLocalUI) {
 	t := c.Theme()
-	help := i18n.T("Without an answer by then, the recognised text is inserted. Automatic waits 20 seconds to a minute, by the text's length.")
+	help := i18n.T("If the language model does not answer by then, the recognised text is inserted without the clean-up. Automatic waits 20 seconds to a minute, by the text's length.")
 	settingRow(c, "llm-wait", i18n.T("Wait for the language model"), help, func() {
 		if local.llmWaitFor != state.Token {
 			local.llmWaitFor = state.Token

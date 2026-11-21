@@ -21,7 +21,7 @@ func TestPrivacySendWindow(t *testing.T) {
 	openPrivacy(t, a, tt)
 	tt.Scroll(float32(windowWidth)*0.6, 900, 0, -10000)
 	frames(tt)
-	if !has(tt, "sends it to the language model with the text") {
+	if !has(tt, "sends a screenshot of the window with the text") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Send the window to the language model")

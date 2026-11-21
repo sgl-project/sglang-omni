@@ -40,7 +40,7 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 			ui.Text(c, "• "+s).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 		}
 	})
-	settingRow(c, "priv-window", i18n.T("Send a screenshot"), i18n.T("When you start speaking, Voxt takes a screenshot of the window and sends it to the language model with the text, so names on screen come out right. Needs Screen Recording permission."), func() {
+	settingRow(c, "priv-window", i18n.T("Send a screenshot"), i18n.T("When you start speaking, Voxt sends a screenshot of the window with the text, so the language model can spell names and terms as they appear on screen. Needs Screen Recording permission and a model that reads images."), func() {
 		if ui.Switch(c.Key("priv-window"), &local.sendWindow).Label(i18n.T("Send the window to the language model")).Changed() {
 			actions.setSendWindow(local.sendWindow)
 		}
