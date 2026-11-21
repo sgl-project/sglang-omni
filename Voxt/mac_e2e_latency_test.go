@@ -124,9 +124,13 @@ type latencyLog struct {
 // line: kind, submit/finish times and the queue ahead of it. No text.
 type latencyDecode struct {
 	Kind        string `json:"kind"`
+	RequestID   int    `json:"request_id,omitempty"`
 	SubmittedMS int64  `json:"submitted_ms"`
 	FinishedMS  int64  `json:"finished_ms"`
 	Inflight    int    `json:"inflight"`
+	TailSamples int    `json:"tail_samples,omitempty"`
+	EmittedAtMS int64  `json:"emitted_at_ms,omitempty"`
+	Changed     *bool  `json:"changed,omitempty"`
 }
 
 type readyAt struct {

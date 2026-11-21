@@ -3,6 +3,7 @@ package omni
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 )
@@ -58,8 +59,12 @@ func (s *live) previewBatch(ctx context.Context) {
 			if changed {
 				lastText = text
 			}
+			var emittedAt int64
+			if ok {
+				emittedAt = time.Now().UnixMilli()
+			}
 			if s.probe != nil {
-				s.probe.MarkLastPreview(changed)
+				s.probe.MarkLastPreview(changed, emittedAt)
 			}
 			if ok {
 				s.previewed = shown

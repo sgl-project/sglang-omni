@@ -97,7 +97,14 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 		res, err := transcribeRound(ctx, l, r, stall)
 		finished := time.Now()
 		p.inflight.Add(-1)
-		ev := decodeEvent{Kind: kind, SubmittedMS: submitted.UnixMilli(), FinishedMS: finished.UnixMilli(), Inflight: ahead}
+		ev := decodeEvent{
+			Kind:        kind,
+			RequestID:   int(p.nextID.Add(1)),
+			SubmittedMS: submitted.UnixMilli(),
+			FinishedMS:  finished.UnixMilli(),
+			Inflight:    ahead,
+			TailSamples: len(r.pcm) / 2,
+		}
 		p.record(ev)
 		return res, err
 	}

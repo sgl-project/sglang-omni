@@ -52,12 +52,27 @@ func TestDecodeProbeTimesPreviewAndFinal(t *testing.T) {
 	if events[len(events)-1].Kind != "final" {
 		t.Errorf("last event %+v, want the Final", events[len(events)-1])
 	}
-	for _, ev := range events {
+	for i, ev := range events {
 		if ev.FinishedMS < ev.SubmittedMS {
 			t.Errorf("finished before submitted: %+v", ev)
 		}
 		if ev.Inflight < 0 {
 			t.Errorf("negative queue: %+v", ev)
+		}
+		if ev.RequestID != i+1 {
+			t.Errorf("request ids not in order from 1: %+v", events)
+			break
+		}
+		if ev.TailSamples <= 0 {
+			t.Errorf("a request without its audio length: %+v", ev)
+		}
+	}
+	for _, ev := range events {
+		if ev.Kind != "preview" {
+			continue
+		}
+		if ev.EmittedAtMS < ev.FinishedMS {
+			t.Errorf("emitted before the request ended: %+v", ev)
 		}
 	}
 	lines := 0

@@ -11,18 +11,25 @@ import (
 // the session's requests were still in flight ahead of it (the queue).
 type decodeEvent struct {
 	Kind        string `json:"kind"`
+	RequestID   int    `json:"request_id"`
 	SubmittedMS int64  `json:"submitted_ms"`
 	FinishedMS  int64  `json:"finished_ms"`
 	Inflight    int    `json:"inflight"`
-	// Changed, for a preview, is whether it produced a visible text
-	// update (nil for other kinds): pauses show as runs of false.
-	Changed *bool `json:"changed,omitempty"`
+	// TailSamples is the request's audio length in samples: where in the
+	// session's audio this request sits. EmittedAtMS, for a preview, is
+	// when its text reached the user (0 when it never did). Changed,
+	// for a preview, is whether it produced a visible text update (nil
+	// for other kinds): pauses show as runs of false.
+	TailSamples int   `json:"tail_samples,omitempty"`
+	EmittedAtMS int64 `json:"emitted_at_ms,omitempty"`
+	Changed     *bool `json:"changed,omitempty"`
 }
 
 // decodeProbe collects a live session's request timings. Measurement
 // only: it changes no request, response or timing of the session.
 type decodeProbe struct {
 	inflight atomic.Int64
+	nextID   atomic.Int64
 	mu       sync.Mutex
 	events   []decodeEvent
 }
@@ -49,12 +56,14 @@ func (p *decodeProbe) record(ev decodeEvent) {
 }
 
 // MarkLastPreview sets whether the newest preview request produced a
-// visible update; the caller learns that only after the assembler ran.
-func (p *decodeProbe) MarkLastPreview(changed bool) {
+// visible update and when its text reached the user (0: it never did);
+// the caller learns both only after the assembler ran.
+func (p *decodeProbe) MarkLastPreview(changed bool, emittedAtMS int64) {
 	p.mu.Lock()
 	for i := len(p.events) - 1; i >= 0; i-- {
 		if p.events[i].Kind == "preview" {
 			p.events[i].Changed = &changed
+			p.events[i].EmittedAtMS = emittedAtMS
 			break
 		}
 	}
