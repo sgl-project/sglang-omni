@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **The model-switch setting is easier to understand**: the Language models page now says in two sentences that Voxt retries once with another model you set up, never uses an external API you did not choose for that feature, and does not switch after a plan is used up.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 
 ### Fixed
@@ -27,6 +28,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **自动切换语言模型的说明更清楚**：语言模型页用两句话说明，Voxt 会改用你设置的另一个语言模型重试一次，不会使用你没有为这个功能选择的外部 API，套餐额度用完时也不会切换。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 
 #### 修复

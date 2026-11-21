@@ -41,6 +41,7 @@
       "selected": "60 分钟",
       "token": "60m\u0000zh-Hans"
     },
+    "switch_description": "某个功能用的语言模型出错时，Voxt 会改用你设置的另一个语言模型（比如这台 Mac 上的 Ollama），重试一次。Voxt 不会使用你没有为这个功能选择的外部 API，套餐额度用完时也不会切换。",
     "cards": {
       "kind": "llm",
       "groups": [

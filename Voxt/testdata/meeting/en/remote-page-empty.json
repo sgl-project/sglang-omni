@@ -41,6 +41,7 @@
       "selected": "Automatic",
       "token": "\u0000en"
     },
+    "switch_description": "When a feature's language model fails, Voxt retries once with another model you set up, such as Ollama on this Mac. Voxt never uses an external API you did not choose for that feature, and a used-up plan does not trigger a switch.",
     "cards": {
       "kind": "llm",
       "groups": null
