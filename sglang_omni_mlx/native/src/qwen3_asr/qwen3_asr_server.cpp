@@ -155,6 +155,7 @@ private:
 int main(int argc, char **argv) {
   int decode_interval_ms = 1000;
   int first_decode_ms = 100;
+  bool realtime_profile = false;
   double max_segment_seconds = 30.0;
   long long cache_limit_mb = -1;
   int max_batch = 1;
@@ -170,6 +171,10 @@ int main(int argc, char **argv) {
        }},
       {"--first-decode-ms",
        [&](const std::string &value) { first_decode_ms = std::stoi(value); }},
+      {"--realtime-profile",
+       [&](const std::string &value) {
+         realtime_profile = omni_common::FormFlag(value);
+       }},
       {"--max-segment-seconds",
        [&](const std::string &value) {
          max_segment_seconds = std::stod(value);
@@ -216,11 +221,12 @@ int main(int argc, char **argv) {
   qwen3_asr.max_batch = [&]() { return max_batch; };
   qwen3_asr.batch_runner = qwen3_asr::BatchableTranscriptionRunner();
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
+    auto realtime = qwen3_asr::MakeRealtimeSettings(
+        decode_interval_ms, first_decode_ms, max_segment_seconds);
+    realtime.profile = realtime_profile;
     auto model = std::make_unique<Qwen3ASRModel>(
-        model_directory,
-        qwen3_asr::MakeRealtimeSettings(decode_interval_ms, first_decode_ms,
-                                        max_segment_seconds),
-        draft_directory, draft_quantization_bits, draft_policy);
+        model_directory, realtime, draft_directory, draft_quantization_bits,
+        draft_policy);
     // Note (hehehai): within one long Final MLX keeps every freed buffer
     // for reuse (the growing KV cache, the encoder's activations), several
     // GB beside the weights; a client can bound it. Decoding reuses buffers

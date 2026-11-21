@@ -471,6 +471,15 @@ target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+# The real realtime session uses a checkpoint-free transcriber double here.
+add_executable(qwen_realtime_timing_test EXCLUDE_FROM_ALL
+  tests/qwen_realtime_timing_test.cpp src/qwen3_asr/realtime.cpp)
+target_include_directories(qwen_realtime_timing_test PRIVATE tests/doubles)
+target_link_libraries(qwen_realtime_timing_test PRIVATE common)
+target_compile_options(qwen_realtime_timing_test PRIVATE -Wall -Wextra)
+set_target_properties(qwen_realtime_timing_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # Compares NEXTN with plain decoding on a small checkpoint
 # (tests/test_ming3_mtp.py); built only on request and never installed.
 add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)

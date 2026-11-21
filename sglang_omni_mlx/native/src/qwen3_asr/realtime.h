@@ -25,7 +25,25 @@ struct RealtimeSettings {
   int decode_interval_samples = 0;
   int first_decode_samples = 0;
   int max_segment_samples = 0;
+  // Content-free decode timings are opt-in for the profiling harness.
+  bool profile = false;
 };
+
+struct RealtimeDecodeTiming {
+  uint64_t session_id = 0;
+  int segment_id = 0;
+  int decode_index = 0;
+  std::string kind;
+  int audio_sample_count = 0;
+  long end_sample = 0;
+  int64_t submitted_at_ms = 0;
+  int64_t started_at_ms = 0;
+  int64_t finished_at_ms = 0;
+  bool succeeded = false;
+};
+
+nlohmann::ordered_json
+RealtimeDecodeTimingJson(const RealtimeDecodeTiming &timing);
 
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
@@ -74,10 +92,14 @@ private:
   // or its final decode, and counts it.
   TranscriptionOptions DecodeOptions(Segment &segment, bool is_refresh,
                                      long end_sample);
+  std::shared_ptr<RealtimeDecodeTiming>
+  NewDecodeTiming(const Segment &segment, std::string kind, long end_sample,
+                  int audio_sample_count) const;
   // A refresh passes its segment's reuse; the final decode passes none.
-  omni_server::Transcription Decode(std::vector<float> samples,
-                                    TranscriptionOptions options,
-                                    std::shared_ptr<RefreshReuse> reuse) const;
+  omni_server::Transcription
+  Decode(std::vector<float> samples, TranscriptionOptions options,
+         std::shared_ptr<RefreshReuse> reuse,
+         std::shared_ptr<RealtimeDecodeTiming> timing = nullptr) const;
   void ApplyResult(Segment &segment,
                    const omni_common::TranscriptionResult &result,
                    long end_sample);
@@ -87,6 +109,7 @@ private:
   omni_server::TranscriptionWorker &worker_;
   const Qwen3ASRTranscriber &transcriber_;
   const RealtimeSettings settings_;
+  const uint64_t profile_session_id_ = 0;
 
   // Session state; refreshes finish on the worker thread.
   std::mutex mutex_;

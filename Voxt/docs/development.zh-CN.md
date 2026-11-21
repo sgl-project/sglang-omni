@@ -60,7 +60,7 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 
 ## 环境变量
 
-Go 代码、Swift helper 和 `scripts/` 读取的每个 `VOXTNEW_*` 变量，用途和默认值都列在[英文版的环境变量表](development.md#environment-variables)里。哪个变量没有对应的行，`TestDocsEnvironmentVariables` 就失败。
+Go 代码、Swift helper、原生服务器和 `scripts/` 读取的每个 `VOXTNEW_*` 变量，用途和默认值都列在[英文版的环境变量表](development.md#environment-variables)里。哪个变量没有对应的行，`TestDocsEnvironmentVariables` 就失败。
 
 ## 修改 fixture 驱动的 view state 和 actions
 

@@ -2,6 +2,8 @@
 #include "qwen3_asr/realtime.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 
@@ -21,7 +23,40 @@ using omni_common::TranscriptionResult;
 using omni_server::Transcription;
 using omni_server::TranscriptionWorker;
 
+nlohmann::ordered_json
+RealtimeDecodeTimingJson(const RealtimeDecodeTiming &timing) {
+  return {{"event", "qwen_realtime_timing"},
+          {"session_id", timing.session_id},
+          {"segment_id", timing.segment_id},
+          {"decode_index", timing.decode_index},
+          {"kind", timing.kind},
+          {"audio_sample_count", timing.audio_sample_count},
+          {"end_sample", timing.end_sample},
+          {"submitted_at_ms", timing.submitted_at_ms},
+          {"started_at_ms", timing.started_at_ms},
+          {"finished_at_ms", timing.finished_at_ms},
+          {"succeeded", timing.succeeded}};
+}
+
 namespace {
+
+int64_t NowMilliseconds() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+uint64_t NextProfileSessionId() {
+  static std::atomic<uint64_t> next_id{0};
+  return next_id.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+void LogDecodeTiming(const RealtimeDecodeTiming &timing) {
+  static std::mutex log_mutex;
+  const std::string line = RealtimeDecodeTimingJson(timing).dump();
+  std::lock_guard<std::mutex> lock(log_mutex);
+  std::cerr << line << "\n";
+}
 
 // Note (Jiaxin Deng): after two full re-decodes a refresh continues from the
 // shown text minus its last tokens, which may still change.
@@ -84,7 +119,8 @@ RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
                                  const Qwen3ASRTranscriber &transcriber,
                                  RealtimeSettings settings, Sender sender)
     : RealtimeConnection(std::move(sender)), worker_(worker),
-      transcriber_(transcriber), settings_(settings) {}
+      transcriber_(transcriber), settings_(settings),
+      profile_session_id_(settings.profile ? NextProfileSessionId() : 0) {}
 
 bool RealtimeSession::Handle(const nlohmann::json &message) {
   const nlohmann::json type = message.value("type", nlohmann::json());
@@ -220,14 +256,54 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
   return options;
 }
 
+std::shared_ptr<RealtimeDecodeTiming>
+RealtimeSession::NewDecodeTiming(const Segment &segment, std::string kind,
+                                 long end_sample,
+                                 int audio_sample_count) const {
+  if (!settings_.profile) {
+    return nullptr;
+  }
+  auto timing = std::make_shared<RealtimeDecodeTiming>();
+  timing->session_id = profile_session_id_;
+  timing->segment_id = segment.segment_id;
+  timing->decode_index = segment.decode_count;
+  timing->kind = std::move(kind);
+  timing->audio_sample_count = audio_sample_count;
+  timing->end_sample = end_sample;
+  timing->submitted_at_ms = NowMilliseconds();
+  return timing;
+}
+
 Transcription
 RealtimeSession::Decode(std::vector<float> samples,
                         TranscriptionOptions options,
-                        std::shared_ptr<RefreshReuse> reuse) const {
+                        std::shared_ptr<RefreshReuse> reuse,
+                        std::shared_ptr<RealtimeDecodeTiming> timing) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
-          options = std::move(options),
-          reuse = std::move(reuse)](const std::atomic<bool> &cancel) {
-    return transcriber.Transcribe(samples, options, cancel, reuse.get());
+          options = std::move(options), reuse = std::move(reuse),
+          timing](const std::atomic<bool> &cancel) {
+    if (timing) {
+      timing->started_at_ms = NowMilliseconds();
+    } else {
+    }
+    try {
+      TranscriptionResult result =
+          transcriber.Transcribe(samples, options, cancel, reuse.get());
+      if (timing) {
+        timing->finished_at_ms = NowMilliseconds();
+        timing->succeeded = true;
+        LogDecodeTiming(*timing);
+      } else {
+      }
+      return result;
+    } catch (...) {
+      if (timing) {
+        timing->finished_at_ms = NowMilliseconds();
+        LogDecodeTiming(*timing);
+      } else {
+      }
+      throw;
+    }
   };
 }
 
@@ -252,6 +328,7 @@ void RealtimeSession::MaybeStartRefresh() {
   std::vector<float> samples;
   TranscriptionOptions options;
   std::shared_ptr<RefreshReuse> reuse;
+  std::shared_ptr<RealtimeDecodeTiming> timing;
   int segment_id = 0;
   long end_sample = 0;
   {
@@ -281,11 +358,15 @@ void RealtimeSession::MaybeStartRefresh() {
     reuse = segment.reuse;
     segment_id = segment.segment_id;
     refreshing_ = true;
+    timing = NewDecodeTiming(segment, "preview", end_sample,
+                             static_cast<int>(samples.size()));
   }
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      Decode(std::move(samples), std::move(options), std::move(reuse)), cancel_,
+      Decode(std::move(samples), std::move(options), std::move(reuse),
+             std::move(timing)),
+      cancel_,
       [weak_self, segment_id, end_sample](
           std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -361,8 +442,10 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         options = DecodeOptions(segment, false, cut_sample);
       }
       try {
-        TranscriptionResult result =
-            worker_.Transcribe(Decode(samples, options, nullptr), cancel_);
+        auto timing = NewDecodeTiming(segment, "final", cut_sample,
+                                      static_cast<int>(samples.size()));
+        TranscriptionResult result = worker_.Transcribe(
+            Decode(samples, options, nullptr, std::move(timing)), cancel_);
         // A final that ran out of tokens on the prefix decodes the segment
         // again without it, as the next refresh would have.
         if (result.finish_reason == FinishReason::kLength &&
@@ -370,8 +453,12 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
           options.prefix_token_ids.clear();
           options.prefix_text.clear();
           options.max_new_tokens.reset();
-          result = worker_.Transcribe(
-              Decode(std::move(samples), std::move(options), nullptr), cancel_);
+          timing = NewDecodeTiming(segment, "final_retry", cut_sample,
+                                   static_cast<int>(samples.size()));
+          result =
+              worker_.Transcribe(Decode(std::move(samples), std::move(options),
+                                        nullptr, std::move(timing)),
+                                 cancel_);
         } else {
         }
         ApplyResult(segment, result, cut_sample);
