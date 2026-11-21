@@ -76,7 +76,7 @@
     .status-line { min-height: 1.3em; color: var(--muted); font-size: .9rem; text-align: center; }
     .caption {
       width: min(560px, 100%); min-height: 3.3em; margin: -12px 0 0; color: var(--text); font-size: 1.05rem; line-height: 1.65; text-align: center;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; transition: opacity 500ms ease;
+      max-height: 3.3em; overflow: hidden; transition: opacity 500ms ease;
     }
     .caption[data-fade="true"] { opacity: .3; }
     .warning {

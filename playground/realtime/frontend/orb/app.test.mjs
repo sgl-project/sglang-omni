@@ -40,6 +40,7 @@ function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptio
     clearTimeout() {},
     setInterval() {},
     requestAnimationFrame() {},
+    ResizeObserver: class { observe() {} },
     Camera: class { stop() {} },
     Orb: class {},
     Settings: class {
