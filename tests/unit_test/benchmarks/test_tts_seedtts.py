@@ -57,7 +57,11 @@ from benchmarks.tasks.tts import (
     stream_outcome_collector,
 )
 from sglang_omni.admission import QueueFullError
-from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
+from tests.utils import (
+    QWEN3_ASR_WER_CONCURRENCY,
+    assert_wer_partitioned,
+    assert_wer_results,
+)
 
 SEEDTTS_SAMPLE = SampleInput(
     sample_id="sample-1",
@@ -159,6 +163,16 @@ def test_filtered_wer_mean_keeps_exactly_50_percent_and_excludes_failures():
     assert metrics["n_above_50_pct_wer"] == 1
     assert metrics["evaluated"] == 3
     assert metrics["skipped"] == 1
+
+
+def test_corpus_wer_gate_rejects_a_run_without_scored_samples() -> None:
+    """A failed transcription run passed the corpus gate with a reported WER of zero."""
+    results = {
+        "summary": calculate_wer_metrics([SampleOutput(error="HTTP 503")], "en"),
+        "per_sample": [{"id": "failed", "wer": None, "is_success": False}],
+    }
+    with pytest.raises(AssertionError, match="no evaluated samples"):
+        assert_wer_results(results, max_corpus_wer=0.02)
 
 
 def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
