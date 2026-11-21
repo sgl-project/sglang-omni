@@ -7,7 +7,7 @@ import base64
 import hashlib
 import io
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 
 import torch
@@ -308,6 +308,33 @@ def create_image_decode_executor(
             pass
         raise
 
+    def decode_png(
+        tokens: list[int], height: int, width: int, params: dict[str, int | DecoderMode]
+    ) -> bytes:
+        with runtime.compute_context() if runtime else nullcontext():
+            image = decoder.decode(tokens, height, width, **params)
+        image_buffer = io.BytesIO()
+        image.save(image_buffer, format="PNG")
+        return image_buffer.getvalue()
+
+    if runtime is None:
+        return SimpleScheduler(build_image_decode_step(decode_png))
+    else:
+        pass
+
+    class ImageDecoderScheduler(SimpleScheduler[StagePayload, StagePayload]):
+        def start(self) -> None:
+            try:
+                super().start()
+            finally:
+                runtime.close()
+
+    return ImageDecoderScheduler(build_image_decode_step(decode_png))
+
+
+def build_image_decode_step(
+    decode_png: Callable[[list[int], int, int, dict[str, int | DecoderMode]], bytes],
+) -> Callable[[StagePayload], StagePayload]:
     def decode_image(payload: StagePayload) -> StagePayload:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
         result = extract_image_vq_tokens(state)
@@ -340,14 +367,10 @@ def create_image_decode_executor(
             call_kwargs["num_steps"] = 8
         else:
             pass
-        with runtime.compute_context() if runtime else nullcontext():
-            image = decoder.decode(vq_tokens, grid_height, grid_width, **call_kwargs)
-        image_buffer = io.BytesIO()
-        image.save(image_buffer, format="PNG")
-        image_b64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+        png = decode_png(vq_tokens, grid_height, grid_width, call_kwargs)
+        image_b64 = base64.b64encode(png).decode("ascii")
         if state.task_kind == "interleaved":
             # One inline image segment for the UMM controller.
-            png = image_buffer.getvalue()
             payload.data = {
                 "kind": "image",
                 "mime_type": "image/png",
@@ -371,17 +394,4 @@ def create_image_decode_executor(
         }
         return payload
 
-    if runtime is None:
-        return SimpleScheduler(decode_image)
-    else:
-        pass
-
-    class ImageDecoderScheduler(SimpleScheduler[StagePayload, StagePayload]):
-        def start(self) -> None:
-            try:
-                super().start()
-            finally:
-                # Shutdown callbacks run before the compute thread has exited.
-                runtime.close()
-
-    return ImageDecoderScheduler(decode_image)
+    return decode_image

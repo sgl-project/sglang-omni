@@ -180,6 +180,10 @@ class LLaDA2ImageDecoder:
         else:
             pass
 
+    @property
+    def is_leader(self) -> bool:
+        return self.runtime is None or self.runtime.is_leader
+
     def ensure_sigvq(self) -> None:
         if self.sigvq is not None:
             return
@@ -267,10 +271,10 @@ class LLaDA2ImageDecoder:
         num_steps: int | None = None,
         resolution_multiplier: int | None = None,
         seed: int | None = None,
-    ) -> Image:
+    ) -> Image | None:
         """Decode unoffset VQ IDs on an h-by-w semantic grid into a PIL image.
 
-        Switching decode_mode reloads weights; seed=None uses the global RNG.
+        Only the leader returns an image. SP peers share the noise seed.
         """
         mode: DecoderMode = decode_mode if decode_mode is not None else self.decode_mode
         steps = num_steps if num_steps is not None else self.num_steps
@@ -297,17 +301,31 @@ class LLaDA2ImageDecoder:
 
         image_height = h * 16 * output_resolution_multiplier
         image_width = w * 16 * output_resolution_multiplier
-        self.ensure_sigvq()
-        token_grid = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
-        upsampled_tokens = (
-            F.interpolate(token_grid, scale_factor=2, mode="nearest").long().view(1, -1)
-        )
-        positive_caption_features = [
-            self.sigvq(upsampled_tokens).squeeze(0).contiguous()
-        ]
-        negative_caption_features = [torch.zeros_like(positive_caption_features[0])]
-
         self.ensure_diff_model(mode)
+        if self.is_leader:
+            self.ensure_sigvq()
+            token_grid = (
+                torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+            )
+            upsampled_tokens = (
+                F.interpolate(token_grid, scale_factor=2, mode="nearest")
+                .long()
+                .view(1, -1)
+            )
+            features = self.sigvq(upsampled_tokens).squeeze(0).contiguous()
+        else:
+            features = torch.empty(
+                (4 * h * w, self.diff_config["cap_feat_dim"]),
+                device=self.device,
+                dtype=self.dtype,
+            )
+        if self.runtime:
+            features = self.runtime.broadcast_features(features)
+        else:
+            pass
+        positive_caption_features = [features]
+        negative_caption_features = [torch.zeros_like(features)]
+
         decoder_config = self.diff_config
         noise_shape = [1, 16, 1, 2 * (image_height // 16), 2 * (image_width // 16)]
         if seed is not None:
@@ -336,12 +354,17 @@ class LLaDA2ImageDecoder:
             generator=generator,
         ).squeeze(2)
 
-        self.ensure_vae()
-        vae_latents = samples.to(self.dtype)
-        vae_latents = (
-            vae_latents / self.vae.config.scaling_factor
-        ) + self.vae.config.shift_factor
-        pixels = ((self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2).clamp_(
-            0, 1
-        )
-        return to_pil_image(pixels[0].float())
+        image = None
+        if self.is_leader:
+            self.ensure_vae()
+            vae_latents = samples.to(self.dtype)
+            vae_latents = (
+                vae_latents / self.vae.config.scaling_factor
+            ) + self.vae.config.shift_factor
+            pixels = (
+                (self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2
+            ).clamp_(0, 1)
+            image = to_pil_image(pixels[0].float())
+        else:
+            pass
+        return image

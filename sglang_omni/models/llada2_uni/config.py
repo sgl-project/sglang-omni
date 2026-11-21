@@ -110,7 +110,7 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
         IMAGE_DECODE_STAGE: LLaDA2ImageDecoderStageConfig,
     }
 
-    stages: list[StageConfig] = [
+    shared_stages: ClassVar[list[StageConfig]] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
             process="pipeline",
@@ -144,12 +144,49 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
             factory_path=f"{_PKG}.stages.create_decode_executor",
             terminal=True,
         ),
+    ]
+    stages: list[StageConfig] = [
+        *shared_stages,
         LLaDA2ImageDecoderStageConfig(
             name=IMAGE_DECODE_STAGE,
             process=IMAGE_DECODE_STAGE,
             factory_path=f"{_PKG}.stages.create_image_decode_executor",
             gpu=0,
             gpu_memory_fraction=0.20,
+            terminal=True,
+        ),
+    ]
+
+
+class NativeDecoderFactoryArgs(LLaDA2ImageDecoderFactoryArgs):
+    ring_degree: int = Field(default=1, ge=1)
+
+
+class NativeDecoderStageConfig(LLaDA2ImageDecoderStageConfig):
+    factory: NativeDecoderFactoryArgs = Field(default_factory=NativeDecoderFactoryArgs)
+
+
+class LLaDA2UniNativeSP2PipelineConfig(LLaDA2UniOmniPipelineConfig):
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        **LLaDA2UniOmniPipelineConfig.stage_config_types,
+        IMAGE_DECODE_STAGE: NativeDecoderStageConfig,
+    }
+    stages: list[StageConfig] = [
+        *LLaDA2UniOmniPipelineConfig.shared_stages,
+        NativeDecoderStageConfig(
+            name=IMAGE_DECODE_STAGE,
+            process=IMAGE_DECODE_STAGE,
+            factory_path=f"{_PKG}.native_sp_host.create_native_decoder",
+            factory=NativeDecoderFactoryArgs(
+                backend="sglang",
+                attention_backend="fa",
+                decode_mode="decoder-turbo",
+                num_steps=8,
+            ),
+            gpu=1,
+            runtime_gpu_ids=[1, 2],
+            allow_child_processes=True,
+            env={"SGLANG_EXTERNAL_MODEL_PACKAGE": f"{_PKG}.native_sp"},
             terminal=True,
         ),
     ]
@@ -244,5 +281,6 @@ EntryClass = LLaDA2UniOmniPipelineConfig
 Variants = {
     "text": LLaDA2UniPipelineConfig,
     "omni": LLaDA2UniOmniPipelineConfig,
+    "omni-sp2": LLaDA2UniNativeSP2PipelineConfig,
     "interleaved": LLaDA2UniInterleavedPipelineConfig,
 }
