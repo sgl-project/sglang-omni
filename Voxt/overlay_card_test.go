@@ -417,7 +417,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// the card staying with its answer; a second Escape closes it.
 	steps[7].apply(a) // its follow-up, recording
 	frames(tt)
-	if !has(tt, "Done") || !has(tt, "shorter") || !has(tt, "You") || has(tt, "Continue") {
+	if !has(tt, "Done") || !has(tt, "shorter") || has(tt, "You") || has(tt, "Continue") {
 		t.Errorf("recording: %q", firstTexts(tt))
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
@@ -471,17 +471,17 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 	for _, tc := range inputs {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
-			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Title: "You", Text: tc.text}}}
+			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Text: tc.text}}}
 			local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 			tt := hudTester(func(c *ui.Context) {
 				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, "", card, card.Blocks[0], 0, layout.AnswerW, a, local, nil) })
 			}, layout.AnswerW, 500)
 			frames(tt)
-			title, ok := tt.Find("You")
+			said, ok := tt.Find(tc.text)
 			if !ok {
-				t.Fatalf("no input heading in %q", firstTexts(tt))
+				t.Fatalf("no input text in %q", firstTexts(tt))
 			}
-			img, y, left, right := tt.Image(), int(title.Y)/2, -1, -1
+			img, y, left, right := tt.Image(), int(said.Y)/2, -1, -1
 			background := img.RGBAAt(0, y)
 			for x := range img.Bounds().Dx() {
 				if img.RGBAAt(x, y) == background {
@@ -493,7 +493,7 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 				right = x
 			}
 			if left < 0 {
-				t.Fatal("no bubble pixels above its heading")
+				t.Fatal("no bubble pixels beside its text")
 			}
 			widths[tc.name] = right - left + 1
 			if tc.name != "long" {

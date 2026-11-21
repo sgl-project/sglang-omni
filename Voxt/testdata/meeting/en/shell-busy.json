@@ -145,24 +145,21 @@
         "severity": "error",
         "title": "Third card",
         "body": "Before both.",
-        "action_label": "Open",
-        "time_hint": "Jan 2 07:04"
+        "action_label": "Open"
       },
       {
         "id": "fixture-2",
         "severity": "warning",
         "title": "Second card",
         "body": "Before that.",
-        "action_label": "Open",
-        "time_hint": "Jan 2 07:04"
+        "action_label": "Open"
       },
       {
         "id": "fixture-1",
         "severity": "info",
         "title": "First card",
         "body": "The newest thing that happened.",
-        "action_label": "Open",
-        "time_hint": "Jan 2 07:04"
+        "action_label": "Open"
       }
     ],
     "logs": {
