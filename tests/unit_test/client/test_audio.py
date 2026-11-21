@@ -338,20 +338,21 @@ def test_speech_rejects_unsupported_output_rate_before_generation() -> None:
     assert speech_client.requests == []
 
 
-@pytest.mark.parametrize("encoding_backend", ["pyav", "pydub", "wav"])
 @pytest.mark.parametrize(
     (
+        "encoding_backend",
         "response_format",
         "source_sample_rate",
         "output_sample_rate",
         "expected_sample_rate",
     ),
     [
-        ("mp3", 96000, None, 48000),
-        ("mp3", 12345, None, 12000),
-        ("aac", 20000, None, 22050),
-        ("aac", 12345, None, 12000),
-        ("opus", 44100, None, 48000),
+        ("pyav", "mp3", 96000, None, 48000),
+        ("pyav", "opus", 16000, None, 48000),
+        ("pydub", "aac", 20000, None, 22050),
+        ("pydub", "opus", 24000, 48000, 48000),
+        ("wav", "mp3", 96000, None, 96000),
+        ("wav", "aac", 24000, 22050, 22050),
     ],
 )
 def test_speech_sample_rate_metadata_matches_encoded_audio(
@@ -371,20 +372,19 @@ def test_speech_sample_rate_metadata_matches_encoded_audio(
         )
     else:
         pass
-    if encoding_backend == "wav":
+    if encoding_backend in ("pyav", "wav"):
         monkeypatch.setitem(sys.modules, "pydub", None)
-        expected_sample_rate = source_sample_rate
-    elif encoding_backend == "pydub":
+    else:
         pytest.importorskip("pydub")
         if shutil.which("ffmpeg") is None:
             pytest.skip("ffmpeg is required for pydub encoding")
         else:
             pass
-    else:
-        pass
-    speech_client = FixedSpeechClient(
-        np.zeros(source_sample_rate // 2, dtype=np.float32), source_sample_rate
+    time_seconds = (
+        np.arange(source_sample_rate // 2, dtype=np.float32) / source_sample_rate
     )
+    waveform = 0.2 * np.sin(2 * np.pi * 440 * time_seconds)
+    speech_client = FixedSpeechClient(waveform, source_sample_rate)
     result = asyncio.run(
         speech_client.speech(
             GenerateRequest(prompt="Hello."),
@@ -394,8 +394,11 @@ def test_speech_sample_rate_metadata_matches_encoded_audio(
             allow_format_fallback=encoding_backend == "wav",
         )
     )
-    decoded_sample_rate, _ = decode_audio(result.audio_bytes)
+    decoded_sample_rate, decoded = decode_audio(result.audio_bytes)
     assert result.sample_rate == decoded_sample_rate == expected_sample_rate
+    assert dominant_frequency(
+        decoded.reshape(-1), decoded_sample_rate
+    ) == pytest.approx(440, abs=3)
     expected_format = "wav" if encoding_backend == "wav" else response_format
     assert result.format == expected_format
     assert result.mime_type == FORMAT_MIME_TYPES[expected_format]

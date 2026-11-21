@@ -526,10 +526,8 @@ def encode_audio(
         try:
             from pydub import AudioSegment
 
-            wav_bytes = encode_wav(arr, sample_rate)
-            seg = AudioSegment.from_wav(io.BytesIO(wav_bytes)).set_frame_rate(
-                encoder_sample_rate
-            )
+            wav_bytes = encode_wav(encoder_audio, encoder_sample_rate)
+            seg = AudioSegment.from_wav(io.BytesIO(wav_bytes))
             buf = io.BytesIO()
             export_fmt = {"aac": "adts", "opus": "opus"}.get(fmt, fmt)
             seg.export(
