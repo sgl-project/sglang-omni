@@ -65,6 +65,12 @@ def backends(request, backend_requests):
                 reference = {"audio_path": "/tmp/ref.wav", "text": "ref"}
                 assert request["references"] == [reference]
                 received_words.append(request["input"])
+                if scenario == "speech_tool_failed_speech" and len(received_words) == 1:
+                    self.send_response(500)
+                    self.end_headers()
+                    return
+                else:
+                    pass
                 if scenario == "english_tts":
                     spoken_chinese = any(
                         "\u4e00" <= char <= "\u9fff" for char in request["input"]
@@ -117,6 +123,11 @@ def backends(request, backend_requests):
                 return
             else:
                 received_messages.append(request["messages"])
+            if scenario.startswith("speech_tool"):
+                self.call_speech_tool(request["messages"])
+                return
+            else:
+                pass
             deltas = [{"content": text} for text in ("Hel", "lo ", "world.")]
             finish_reason = {"failed_chat": "abort", "length_chat": "length"}.get(
                 scenario, "stop"
@@ -136,6 +147,23 @@ def backends(request, backend_requests):
             self.event({"delta": {}, "finish_reason": finish_reason})
             self.wfile.write(b"data: [DONE]\n\n")
 
+        def call_speech_tool(self, messages: list[dict]) -> None:
+            """Speak through tts_start in two fragments."""
+            for fragment in (
+                {
+                    "index": 0,
+                    "id": f"call_{len(received_messages)}",
+                    "function": {
+                        "name": "tts_start",
+                        "arguments": '{"text": "Hel',
+                    },
+                },
+                {"index": 0, "function": {"arguments": 'lo world."}'}},
+            ):
+                self.event({"delta": {"tool_calls": [fragment]}, "finish_reason": None})
+            self.event({"delta": {}, "finish_reason": "tool_calls"})
+            self.wfile.write(b"data: [DONE]\n\n")
+
         def event(self, choice: dict) -> None:
             data = json.dumps({"choices": [choice]})
             self.wfile.write(f"data: {data}\n\n".encode())
@@ -147,7 +175,12 @@ def backends(request, backend_requests):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
-    settings = loopback_graph(f"http://127.0.0.1:{server.server_port}/v1")
+    base_url = f"http://127.0.0.1:{server.server_port}/v1"
+    settings = (
+        loopback_speech_tool_graph(base_url)
+        if scenario.startswith("speech_tool")
+        else loopback_graph(base_url)
+    )
     try:
         yield settings, received_audio, received_words, received_messages
     finally:
@@ -303,6 +336,37 @@ session_nodes:
 session_publish:
   {asr: [transcript], dialog: [session], llm: [text_delta], tts: [pcm_f32le, session]}
 """
+
+
+def loopback_speech_tool_graph(base_url: str) -> StreamingCascadePipelineConfig:
+    """The loopback cascade with the model speaking through tts_start."""
+    declaration = yaml.safe_load(LOOPBACK_GRAPH.replace("URL", base_url))
+    nodes = declaration["session_nodes"]
+    nodes["dialog"]["speech_tool"] = "tts_start"
+    nodes["dialog"]["inputs"] += [
+        {
+            "source": "llm:tool_call",
+            "feedback": True,
+            "overflow": "drop_oldest",
+            "capacity": 1024,
+        },
+        {
+            "source": "llm:session",
+            "feedback": True,
+            "overflow": "drop_oldest",
+            "capacity": 1024,
+        },
+    ]
+    nodes["llm"]["tools"] = [{"name": "tts_start"}]
+    nodes["tts"]["inputs"][0] = "dialog:tool_call"
+    declaration["session_publish"] = {
+        "asr": ["transcript"],
+        "dialog": ["session"],
+        "tts": ["text_delta", "pcm_f32le", "session"],
+    }
+    return StreamingCascadePipelineConfig(
+        model_path="loopback", timeout_s=5, **declaration
+    )
 
 
 def loopback_graph(base_url: str) -> StreamingCascadePipelineConfig:

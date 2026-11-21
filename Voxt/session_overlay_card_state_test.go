@@ -83,7 +83,7 @@ func TestSessionCardRedoStreamsOnlyNewAnswerAndTitle(t *testing.T) {
 	projection.translator = i18n.NewTranslator("en")
 	var next sessionOverlayViewState
 	a.refreshSessionCardProjection(projection, &next)
-	if projection.card.Title != "AI answer" {
+	if projection.card.Title != "Rewrite" {
 		t.Fatalf("initial redo title %q", projection.card.Title)
 	}
 	a.sess.Title = "Streamed title"
@@ -206,7 +206,7 @@ func TestSessionOverlayProjectionUpdatesWritingTitle(t *testing.T) {
 	projection.translator = i18n.NewTranslator("en")
 	var next sessionOverlayViewState
 	a.refreshSessionCardProjection(projection, &next)
-	if projection.card.Title != "AI answer" {
+	if projection.card.Title != "Rewrite" {
 		t.Fatalf("initial writing title: %q", projection.card.Title)
 	}
 	a.sess.Title = "Streamed title"

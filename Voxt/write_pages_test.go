@@ -150,7 +150,7 @@ func TestOverlayWriting(t *testing.T) {
 	}
 	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"AI answer", "Try again", "shorter", "a long text"} {
+	for _, s := range []string{"Rewrite", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {
 			t.Errorf("failure card: no %q in %q", s, firstTexts(tt))
 		}
