@@ -113,8 +113,10 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 			return "", nil
 		}
 	}
-	if a.box.open && !req.Box {
-		a.closeBox() // a session that is not the box's replaces it
+	if a.box.open && !req.Box && !(req.Kind == store.KindTranscribe && !req.Try && a.boxAnswered()) {
+		// A session that is not the box's replaces it; a Transcribe
+		// leaves the card with its answer alone (wall 116).
+		a.closeBox()
 	}
 	// A Transcribe leaves the answer card alone: it stays where it is
 	// (wall 116); any other new session sets it aside (#4013), and a try
