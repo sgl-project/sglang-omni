@@ -104,8 +104,10 @@ func TestRewriteBoxSurfaceMatchesAnswer(t *testing.T) {
 	if options.Frameless != shared.Frameless || options.Transparent != shared.Transparent || options.DisableShadow != shared.DisableShadow || options.AlwaysOnTop != shared.AlwaysOnTop || options.SkipTaskbar != shared.SkipTaskbar {
 		t.Fatalf("box options differ from the answer window: %+v", options)
 	}
-	if options.Vibrancy != mygo.VibrancyHUD || !options.Panel || options.NonActivating || !options.DisableClose {
-		t.Fatalf("box vibrancy or keyboard options are wrong: %+v", options)
+	// An ordinary window, as any app's: a click on it brings VoxtNew in
+	// front, so a window manager such as Rectangle acts on it.
+	if options.Vibrancy != mygo.VibrancyHUD || options.Panel || options.NonActivating || !options.DisableClose {
+		t.Fatalf("box vibrancy or window options are wrong: %+v", options)
 	}
 }
 

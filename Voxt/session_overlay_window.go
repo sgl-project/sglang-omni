@@ -33,7 +33,7 @@ type overlayState struct {
 		fade        int
 		epoch       time.Time
 		native      bool
-		level       cardLevel // the answer card's window is not on top
+		front       overlayFront // a preview floats; the answer card takes the front
 		stream      streamReveal
 		projection  sessionOverlayProjection
 		layout      sessionOverlayLayout
@@ -203,7 +203,7 @@ func (a *app) overlaySync() {
 			a.postSessionOverlayMeasurements,
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
 		)
-		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
+		opts := cardWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
 		opts.Vibrancy = mygo.VibrancyHUD
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
@@ -228,7 +228,7 @@ func (a *app) overlaySync() {
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
 	}
-	a.ov.level.sync(a.ov.win, mode == ovAnswer, a.answer.id)
+	a.ov.front.sync(a.ov.win, mode == ovAnswer, !was, a.answer.id, func() cardMay { return a.cardMayTake(a.answer.target.PID) })
 }
 
 func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
@@ -390,7 +390,7 @@ func (a *app) closeOverlay() {
 	if a.ov.win != nil {
 		a.ov.win.Destroy()
 		a.ov.win = nil
-		a.ov.level = cardLevel{} // a new window starts above the others
+		a.ov.front = overlayFront{} // a new window starts above the others
 	}
 	a.overlayTranscript = transcriptPreview{}
 	a.bubbleTranscripts = nil

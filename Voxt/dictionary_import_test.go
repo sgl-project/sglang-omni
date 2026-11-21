@@ -123,6 +123,29 @@ func TestImportDataConcurrent(t *testing.T) {
 	}
 }
 
+func TestImportDataSerializesConcurrentImports(t *testing.T) {
+	_, repo, _ := importRace(t)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "same.csv", []byte("term,aliases\nselected,import alias\n"), false)
+		firstDone <- err
+	}()
+	<-repo.putStarted
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "same.csv", []byte("term,aliases\nselected,import alias\n"), false)
+		secondDone <- err
+	}()
+	locked := writerIsLocked(repo, repo.otherPut)
+	finishImportRace(t, repo, firstDone, repo.secondList, locked)
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := termsByName(t, repo)["selected"].Aliases; !slices.Contains(got, "import alias") {
+		t.Fatalf("concurrent imports lost the alias: %v", got)
+	}
+}
+
 type importRaceStore struct {
 	libraryStore
 	dictionary store.Dictionary
@@ -135,6 +158,7 @@ type importRaceRepo struct {
 	mu                   sync.Mutex
 	metaMu               sync.Mutex
 	lockCount            int
+	listCount            int
 	firstPut             sync.Once
 	putStarted           chan struct{}
 	allowPut             chan struct{}
@@ -147,6 +171,18 @@ type importRaceRepo struct {
 	activateDone         chan struct{}
 	deleteProfileDone    chan struct{}
 	secondLock           chan struct{}
+	secondList           chan struct{}
+}
+
+func (r *importRaceRepo) List(ctx context.Context, query string) ([]store.Term, error) {
+	terms, err := r.Dictionary.List(ctx, query)
+	r.metaMu.Lock()
+	r.listCount++
+	if r.listCount == 2 {
+		close(r.secondList)
+	}
+	r.metaMu.Unlock()
+	return terms, err
 }
 
 func (r *importRaceRepo) Lock() {
@@ -212,7 +248,7 @@ func importRace(t *testing.T) (*app, *importRaceRepo, store.Term) {
 	repo := &importRaceRepo{
 		Dictionary: a.lib.store.Dictionary(), putStarted: make(chan struct{}), allowPut: make(chan struct{}),
 		otherPut: make(chan struct{}), deleteStarted: make(chan struct{}), activateStarted: make(chan struct{}), deleteProfileStarted: make(chan struct{}),
-		deleteDone: make(chan struct{}), writeDone: make(chan struct{}), activateDone: make(chan struct{}), deleteProfileDone: make(chan struct{}), secondLock: make(chan struct{}),
+		deleteDone: make(chan struct{}), writeDone: make(chan struct{}), activateDone: make(chan struct{}), deleteProfileDone: make(chan struct{}), secondLock: make(chan struct{}), secondList: make(chan struct{}),
 	}
 	a.lib.store = importRaceStore{libraryStore: a.lib.store, dictionary: repo}
 	return a, repo, term
@@ -290,6 +326,31 @@ func TestImportDataDoesNotOverwriteAPageEdit(t *testing.T) {
 	waitImportRace(t, controllerDone)
 	if got := termsByName(t, repo)["llm"].Note; got != "edited by the user" {
 		t.Fatalf("the import replaced the page edit with %q", got)
+	}
+}
+
+func TestImportDataDoesNotOverwriteASelectedTerm(t *testing.T) {
+	a, repo, _ := importRace(t)
+	importDone := make(chan error, 1)
+	go func() {
+		_, err := importData(context.Background(), repo, "race.csv", []byte("term,aliases\nselected,import alias\n"), false)
+		importDone <- err
+	}()
+	<-repo.putStarted
+	selectionDone := make(chan struct{})
+	go func() {
+		a.addSelectedTerm("selected")
+		close(selectionDone)
+	}()
+	selectedLocked := writerIsLocked(repo, repo.otherPut)
+	if !selectedLocked {
+		waitImportRace(t, repo.writeDone)
+		waitImportRace(t, selectionDone)
+	}
+	finishImportRace(t, repo, importDone, repo.secondList, selectedLocked)
+	waitImportRace(t, selectionDone)
+	if got := termsByName(t, repo)["selected"].Aliases; !slices.Contains(got, "import alias") {
+		t.Fatalf("the selection and import lost the alias: %v", got)
 	}
 }
 

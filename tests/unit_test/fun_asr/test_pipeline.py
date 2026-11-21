@@ -640,3 +640,24 @@ def test_dflash_worker_reaches_the_decoder_through_the_outer_model() -> None:
     assert model.get_input_embeddings() is decoder_embedding
     assert model.lm_head is decoder_head
     assert captured_layer_ids == [[1, 13, 24]]
+
+
+@pytest.mark.parametrize("is_cuda", [False, True])
+def test_verify_applies_repetition_penalty_where_the_draft_runs(
+    monkeypatch, is_cuda: bool
+) -> None:
+    """Realtime requests set repetition_penalty once a session carries a transcript prefix, so the draft must not refuse it on CUDA."""
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
+    builder = capture_builder(monkeypatch)
+
+    model_runner = builder.make_model_runner(
+        SimpleNamespace(gpu_id=0, model_runner=SimpleNamespace(model=object())),
+        SimpleNamespace(),
+    )
+
+    assert model_runner.speculative_repetition_penalty_owner == (
+        "verify_logits" if is_cuda else None
+    )

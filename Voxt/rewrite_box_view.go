@@ -60,22 +60,18 @@ type boxDropWindow interface {
 	boxWindow
 	OnFileDrop(func(*mygo.FileDropEvent)) func()
 	OnMove(func()) func()
-	SetAlwaysOnTop(bool)
 }
 
 var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
 
-// newBoxWindow creates the input box's native panel.
+// newBoxWindow creates the input box's window: an ordinary one, above
+// every window until it takes the front (cardFront).
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI, options mygo.WindowOptions) boxWindow {
 	options.Content = hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) })
 	options.Vibrancy = mygo.VibrancyHUD
-	options.Panel = true
-	options.NonActivating = false
+	options.Panel, options.NonActivating = false, false // an ordinary window: it takes typing, and a click brings VoxtNew in front
 	options.DisableClose = true
 	window := newBoxNativeWindow(options)
-	// A panel floats over every app's windows; the card stays at the
-	// windows' level, so the user can put another window over it.
-	window.SetAlwaysOnTop(false)
 	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
 	window.OnMove(actions.moved)
 	return window

@@ -212,27 +212,56 @@ func TestRewriteCardDrags(t *testing.T) {
 	}
 }
 
-// TestRewriteCardIsNotAlwaysOnTop: the card stays at the windows' level,
-// so the user can put another window over it; the Rewrite shortcut
-// brings it back in front, and a refresh of what it shows does not.
-func TestRewriteCardIsNotAlwaysOnTop(t *testing.T) {
+// TestRewriteCardTakesTheFront: each press of the Rewrite shortcut on the
+// card is a click on it. Pressed in WeChat, the card showed under WeChat's
+// window: macOS keeps an ordinary window of an app that is not in front
+// under the front app's. The card now floats above every window at once,
+// and VoxtNew comes in front with it once the selection of the app in
+// front is read (it may get a ⌘C); the card is at the windows' level then,
+// where the user's next app covers it and a window manager moves it. A
+// refresh does not raise it, and a user who went to another app while the
+// selection was read keeps the front.
+func TestRewriteCardTakesTheFront(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.ov.native = true
 	native := &fakeBoxDropWindow{onTop: true}
-	previous := newBoxNativeWindow
+	previous, front := newBoxNativeWindow, frontmostPID
 	newBoxNativeWindow = func(mygo.WindowOptions) boxDropWindow { return native }
-	t.Cleanup(func() { newBoxNativeWindow = previous })
+	frontmostPID = func() int { return 42 } // the user is in WeChat
+	t.Cleanup(func() { newBoxNativeWindow, frontmostPID = previous, front })
 	a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea} // already placed: no screen to ask in a test
 	a.boxSync()
-	if native.onTop || native.raised != 0 {
-		t.Fatalf("the new card: always on top %v, raised %d times", native.onTop, native.raised)
+	if !native.onTop || native.raised != 0 || native.focused != 0 {
+		t.Fatalf("the new card: on top %v, raised %d, focused %d", native.onTop, native.raised, native.focused)
 	}
-	a.showBox(proto.App{PID: 42}, "r2") // the Rewrite shortcut asks in the card
-	if native.raised != 1 {
-		t.Errorf("the shortcut raised the card %d times, want 1", native.raised)
+
+	a.sess = session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Recording, ReadingSelection: true}
+	a.showBox(proto.App{PID: 42}, "r2") // the shortcut, while the selection is read
+	if !native.onTop || native.raised != 1 || native.focused != 0 {
+		t.Fatalf("while the selection is read: on top %v, raised %d, focused %d", native.onTop, native.raised, native.focused)
+	}
+	a.sess.ReadingSelection = false
+	a.boxSync()
+	if native.onTop || native.focused != 1 {
+		t.Fatalf("once it is read: on top %v, focused %d", native.onTop, native.focused)
 	}
 	a.boxSync()
-	if native.raised != 1 {
-		t.Errorf("a refresh raised the card: %d times", native.raised)
+	if native.raised != 1 || native.focused != 1 {
+		t.Errorf("a refresh raised the card: raised %d, focused %d", native.raised, native.focused)
+	}
+
+	a.sess = session.Snapshot{}
+	a.boxShortcutSend() // the shortcut again (or its hold let go): it sends
+	if native.onTop || native.raised != 2 || native.focused != 2 {
+		t.Errorf("the shortcut's send: on top %v, raised %d, focused %d", native.onTop, native.raised, native.focused)
+	}
+
+	a.sess = session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording, ReadingSelection: true}
+	a.showBox(proto.App{PID: 42}, "r3")
+	frontmostPID = func() int { return 77 } // the user went to another app
+	a.sess.ReadingSelection = false
+	a.boxSync()
+	if native.onTop || native.focused != 2 {
+		t.Errorf("the user went elsewhere: on top %v, focused %d", native.onTop, native.focused)
 	}
 }
