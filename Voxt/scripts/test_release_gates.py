@@ -341,6 +341,43 @@ class EnvironmentProbeTests(unittest.TestCase):
         self.assertIn("pgrep exited 2", str(scoped["unavailable_reason"]))
         self.assertNotIn("no target process", str(scoped["unavailable_reason"]))
 
+    def test_scoped_processes_preserves_memory_when_argv_probe_fails(self):
+        for failure in ("eperm", "status"):
+            with self.subTest(failure=failure):
+
+                def output(arguments, **kwargs):
+                    if arguments[:2] == ["pgrep", "-x"]:
+                        return subprocess.CompletedProcess(
+                            args=arguments, returncode=0, stdout="100\n", stderr=""
+                        )
+                    if arguments[:2] == ["pgrep", "-fl"]:
+                        if failure == "eperm":
+                            raise OSError(1, "Operation not permitted")
+                        return subprocess.CompletedProcess(
+                            args=arguments, returncode=2, stdout="", stderr="denied"
+                        )
+                    if arguments[0] == "footprint":
+                        return subprocess.CompletedProcess(
+                            args=arguments,
+                            returncode=0,
+                            stdout="Footprint: 100 MB\n",
+                            stderr="",
+                        )
+                    if arguments[0] == "ps":
+                        return subprocess.CompletedProcess(
+                            args=arguments, returncode=0, stdout="2048\n", stderr=""
+                        )
+                    raise AssertionError(arguments)
+
+                with mock.patch("profile_loop.subprocess.run", side_effect=output):
+                    scoped = loop.scoped_processes(
+                        "sensevoice_server", {100}, 999, None
+                    )
+                self.assertEqual(scoped["footprint_bytes"], 100 * 1024**2)
+                self.assertEqual(scoped["rss_bytes"], 2048 * 1024)
+                self.assertEqual(scoped["argv"], [])
+                self.assertIn("argv", str(scoped["argv_unavailable_reason"]))
+
     def test_scoped_processes_rejects_partial_footprint_failure(self):
         def output(arguments, **kwargs):
             if arguments[:2] == ["pgrep", "-x"]:

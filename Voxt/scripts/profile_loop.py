@@ -244,6 +244,10 @@ def process_argv(name: str, pids: set[int]) -> list[str]:
     result = subprocess.run(
         ["pgrep", "-fl", name], capture_output=True, text=True, timeout=5
     )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(
+            f"pgrep exited {result.returncode} for {name} argv: {result.stderr.strip()}"
+        )
     lines = []
     for line in result.stdout.splitlines():
         pid_text, _, command = line.partition(" ")
@@ -281,6 +285,7 @@ def scoped_processes(
             "rss_bytes": None,
             "rss_unavailable_reason": reason,
             "argv": [],
+            "argv_unavailable_reason": reason,
             "unavailable_reason": reason,
             "outside_count": len(global_pids) if discovery_error is None else None,
         }
@@ -301,6 +306,12 @@ def scoped_processes(
         footprint_reason = (
             f"incomplete footprint evidence; failed pids: {failed_footprint_pids}"
         )
+    argv = []
+    argv_reason = None
+    try:
+        argv = process_argv(name, attributed)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        argv_reason = f"argv unavailable for {name}: {error}"
     return {
         "root_pid": root,
         "pids": sorted(attributed),
@@ -311,7 +322,8 @@ def scoped_processes(
         ),
         "rss_bytes": rss_detail["value"],
         "rss_unavailable_reason": rss_detail["unavailable_reason"],
-        "argv": process_argv(name, attributed),
+        "argv": argv,
+        "argv_unavailable_reason": argv_reason,
         "unavailable_reason": footprint_reason,
         "outside_count": len(global_pids - attributed),
     }
