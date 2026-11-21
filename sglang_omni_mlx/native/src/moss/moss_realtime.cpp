@@ -109,11 +109,9 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
   const std::optional<std::vector<float>> appended = AppendedSamples(audio);
   if (!appended.has_value()) {
     return;
-  } else {
   }
   std::optional<Decode> decode;
   MossOptions options;
-  auto timing = std::make_shared<::omni_common::MossPreviewTiming>();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_samples_.insert(pending_samples_.end(), appended->begin(),
@@ -125,6 +123,7 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
       return;
     }
   }
+  auto timing = std::make_shared<::omni_common::MossPreviewTiming>();
   const auto decision_started = std::chrono::steady_clock::now();
   timing->window_id = decode->window_id;
   timing->kind = decode->kind == DecodeKind::kPreview ? "preview" : "final";
