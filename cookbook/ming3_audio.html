@@ -706,7 +706,7 @@
 </table>
 </div>
 <p>The draft accepts about 6.8 tokens per step on transcripts but only 1.3-2.5 on chat answers, so it slows chat down; MTP accepts 2.4-2.8 on every workload. Each server takes one algorithm, so pick the one that matches most of its traffic.</p>
-<p>More running requests on two GPUs, transcribing held-out clips with the load equal to <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code>:</p>
+<p>More running requests on two GPUs, transcribing SeedTTS English and Chinese (3,106 clips) with the load equal to <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code>:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Running requests</p></th>
@@ -716,33 +716,28 @@
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>8</p></td>
-<td class="text-right"><p>8.46 clips/s</p></td>
-<td class="text-right"><p>10.24 (1.21x)</p></td>
-<td class="text-right"><p>12.36 (1.46x)</p></td>
+<tr class="row-even"><td><p>16</p></td>
+<td class="text-right"><p>15.95 clips/s</p></td>
+<td class="text-right"><p>20.82 (1.31x)</p></td>
+<td class="text-right"><p>22.84 (1.43x)</p></td>
 </tr>
-<tr class="row-odd"><td><p>16</p></td>
-<td class="text-right"><p>10.59 clips/s</p></td>
-<td class="text-right"><p>13.36 (1.26x)</p></td>
+<tr class="row-odd"><td><p>32</p></td>
+<td class="text-right"><p>21.92 clips/s</p></td>
 <td class="text-right"><p>Does not start</p></td>
+<td class="text-right"><p>34.20 (1.56x)</p></td>
 </tr>
-<tr class="row-even"><td><p>32</p></td>
-<td class="text-right"><p>13.46 clips/s</p></td>
-<td class="text-right"><p>16.63 (1.24x)</p></td>
+<tr class="row-even"><td><p>64</p></td>
+<td class="text-right"><p>29.46 clips/s</p></td>
 <td class="text-right"><p>Does not start</p></td>
-</tr>
-<tr class="row-odd"><td><p>64</p></td>
-<td class="text-right"><p>16.40 clips/s</p></td>
-<td class="text-right"><p>Does not start</p></td>
-<td class="text-right"><p>Does not start</p></td>
+<td class="text-right"><p>38.71 (1.31x)</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>MTP at 32 starts only when the thinker loads before the other stages on its GPUs.</p>
 <p>Usage notes:</p>
 <ul class="simple">
-<li><p>Verifying on the Kimi delta attention layers keeps one state per proposed token per running request, about 4.9 GB per GPU for the draft at 8 requests. Where a table says the server does not start, it stops at startup with <code class="docutils literal notranslate"><span class="pre">Loaded</span> <span class="pre">weights</span> <span class="pre">leave</span> <span class="pre">no</span> <span class="pre">GPU</span> <span class="pre">memory</span> <span class="pre">for</span> <span class="pre">the</span> <span class="pre">KV</span> <span class="pre">cache</span></code>, and raising <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> does not help.</p></li>
-<li><p>On four GPUs (<code class="docutils literal notranslate"><span class="pre">--thinker.tp_size</span> <span class="pre">4</span></code>) the draft starts with 32 running requests and served 18.33 held-out clips/s, against 16.13 with MTP and 13.96 without a draft at the same cap.</p></li>
+<li><p>Verifying on the Kimi delta attention layers records each proposed token’s inputs in a ring buffer and folds the accepted prefix into the state (<code class="docutils literal notranslate"><span class="pre">--thinker.engine.enable_linear_replayssm_spec</span></code>, on by default with the draft).</p></li>
 <li><p>SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft’s is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.</p></li>
 <li><p>The draft decodes synchronously. Keep <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>. The draft rejects a request <code class="docutils literal notranslate"><span class="pre">seed</span></code> when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.</p></li>
 </ul>
