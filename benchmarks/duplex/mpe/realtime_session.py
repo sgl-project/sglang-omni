@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import inspect
 import json
 import logging
 import math
@@ -31,14 +32,6 @@ from benchmarks.dataset.duplex_mpe import (
     compute_file_sha256,
     resolve_dataset_audio_path,
 )
-from benchmarks.duplex.client import (
-    ADMISSION_BACKOFF_S,
-    ADMISSION_RETRIES,
-    SERVER_EVENT_DECODER,
-    AdmissionState,
-    connect_realtime_websocket,
-    negotiate_session_admission,
-)
 from benchmarks.duplex.mpe.protocol import (
     N4_PAUSE_SECONDS,
     ORDINARY_GAP_SECONDS,
@@ -52,7 +45,6 @@ from benchmarks.duplex.mpe.protocol import (
     resolve_scenario_seed,
 )
 from benchmarks.duplex.mpe.vad import SileroActivityConfig, SileroVadModel
-from benchmarks.duplex.oracle_models import is_admission_rejection, turn_detection_type
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +54,13 @@ RealtimeProtocolSelection = Literal["auto", "native", "turn_based", "legacy"]
 DEFAULT_INPUT_SAMPLE_RATE_HZ = 16000
 DEFAULT_OUTPUT_SAMPLE_RATE_HZ = 24000
 PACKET_DURATION_MILLISECONDS = 80.0
+MAX_WEBSOCKET_MESSAGE_BYTES = 8 * 1024 * 1024
+ADMISSION_DENIED_STATUS = 503
+ADMISSION_RETRIES = 3
+ADMISSION_BACKOFF_S = 0.25
+WEBSOCKET_SUPPORTS_PROXY: bool = (
+    "proxy" in inspect.signature(websockets.connect).parameters
+)
 LEGACY_TAIL_WAIT_SECONDS = 1.0
 DEFAULT_SESSION_TIMEOUT_SECONDS = 420.0
 DEFAULT_MAX_PACING_LAG_SECONDS = 0.5
@@ -90,6 +89,115 @@ class ProtocolSessionError(RuntimeError):
 
 class MonotonicClock(TypingProtocol):
     def __call__(self) -> float: ...
+
+
+class SessionSender(TypingProtocol):
+    async def __call__(self) -> None: ...
+
+
+class SessionSettler(TypingProtocol):
+    async def __call__(self) -> bool: ...
+
+
+@dataclass
+class AdmissionState:
+    denials: int = 0
+
+
+def reject_json_constant(constant: str) -> float:
+    raise ValueError(f"Out of range float values are not JSON compliant: {constant}")
+
+
+SERVER_EVENT_DECODER = json.JSONDecoder(parse_constant=reject_json_constant)
+
+
+def is_admission_rejection(event: dict[str, JsonValue]) -> bool:
+    """Detect a non-fatal admission_rejected error frame that keeps the session open for retry."""
+    sglang_metadata = event.get("sglang")
+    error = event.get("error")
+    return (
+        isinstance(error, dict)
+        and error.get("code") == "admission_rejected"
+        and isinstance(sglang_metadata, dict)
+        and sglang_metadata.get("fatal") is False
+    )
+
+
+def turn_detection_type(
+    session: JsonValue, protocol: RealtimeProtocolMode
+) -> JsonValue:
+    """Extract turn_detection.type from top-level legacy session or turn-based audio.input."""
+    fields = session if isinstance(session, dict) else {}
+    if protocol == "turn_based":
+        audio = fields.get("audio")
+        audio_input = audio.get("input") if isinstance(audio, dict) else None
+        fields = audio_input if isinstance(audio_input, dict) else {}
+    else:
+        pass
+    turn = fields.get("turn_detection")
+    return turn.get("type") if isinstance(turn, dict) else None
+
+
+async def connect_realtime_websocket(
+    url: str,
+    *,
+    admission_state: AdmissionState,
+    max_retries: int = ADMISSION_RETRIES,
+    backoff_seconds: float = ADMISSION_BACKOFF_S,
+    trust_env: bool | None = None,
+) -> websockets.ClientConnection | None:
+    """Connect to /v1/realtime while charging HTTP 503 denials against admission_state."""
+    while True:
+        try:
+            if trust_env is not None and WEBSOCKET_SUPPORTS_PROXY:
+                return await websockets.connect(
+                    url,
+                    max_size=MAX_WEBSOCKET_MESSAGE_BYTES,
+                    compression=None,
+                    ping_interval=None,
+                    proxy=True if trust_env else None,
+                )
+            else:
+                return await websockets.connect(
+                    url,
+                    max_size=MAX_WEBSOCKET_MESSAGE_BYTES,
+                    compression=None,
+                    ping_interval=None,
+                )
+        except websockets.InvalidStatus as exc:
+            if exc.response.status_code != ADMISSION_DENIED_STATUS:
+                raise
+            else:
+                admission_state.denials += 1
+                if admission_state.denials > max_retries:
+                    return None
+                else:
+                    await asyncio.sleep(backoff_seconds)
+
+
+async def negotiate_session_admission(
+    *,
+    send_session_update: SessionSender,
+    settle_session_updated: SessionSettler,
+    rejected: asyncio.Event,
+    aborted: asyncio.Event,
+    admission_state: AdmissionState,
+    max_retries: int = ADMISSION_RETRIES,
+    backoff_seconds: float = ADMISSION_BACKOFF_S,
+) -> bool:
+    """Send session.update and retry non-fatal session admission rejections under one shared budget."""
+    await send_session_update()
+    admitted = await settle_session_updated()
+    while rejected.is_set() and admission_state.denials <= max_retries:
+        rejected.clear()
+        try:
+            await asyncio.wait_for(aborted.wait(), backoff_seconds)
+        except asyncio.TimeoutError:
+            await send_session_update()
+            admitted = await settle_session_updated()
+        else:
+            break
+    return admitted
 
 
 DEFAULT_TURN_DETECTION: dict[str, JsonValue] = {

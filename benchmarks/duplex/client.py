@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import inspect
 import io
 import json
 import queue
@@ -16,9 +15,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
-from typing import Protocol as TypingProtocol
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import websockets
 from pydantic import BaseModel, ConfigDict, JsonValue
@@ -40,97 +37,6 @@ FRAME_EXCERPT_CHARS = 200
 ADMISSION_DENIED_STATUS = 503
 ADMISSION_RETRIES = 3
 ADMISSION_BACKOFF_S = 0.25
-WEBSOCKET_SUPPORTS_PROXY: bool = (
-    "proxy" in inspect.signature(websockets.connect).parameters
-)
-
-
-class ConnectionDeniedObserver(TypingProtocol):
-    def __call__(self, http_status: int, attempt: int) -> None: ...
-
-
-class SessionSender(TypingProtocol):
-    async def __call__(self) -> None: ...
-
-
-class SessionSettler(TypingProtocol):
-    async def __call__(self) -> bool: ...
-
-
-@dataclass
-class AdmissionState:
-    denials: int = 0
-
-
-async def connect_realtime_websocket(
-    url: str,
-    *,
-    admission_state: AdmissionState,
-    max_retries: int = ADMISSION_RETRIES,
-    backoff_seconds: float = ADMISSION_BACKOFF_S,
-    trust_env: bool | None = None,
-    on_denied: ConnectionDeniedObserver | None = None,
-) -> websockets.ClientConnection | None:
-    """Connect to /v1/realtime while charging HTTP 503 denials against admission_state."""
-    while True:
-        try:
-            if trust_env is not None and WEBSOCKET_SUPPORTS_PROXY:
-                return await websockets.connect(
-                    url,
-                    max_size=MAX_MESSAGE_BYTES,
-                    compression=None,
-                    ping_interval=None,
-                    proxy=True if trust_env else None,
-                )
-            else:
-                return await websockets.connect(
-                    url,
-                    max_size=MAX_MESSAGE_BYTES,
-                    compression=None,
-                    ping_interval=None,
-                )
-        except websockets.InvalidStatus as exc:
-            if exc.response.status_code != ADMISSION_DENIED_STATUS:
-                raise
-            else:
-                admission_state.denials += 1
-                if on_denied is not None:
-                    on_denied(exc.response.status_code, admission_state.denials)
-                else:
-                    pass
-                if admission_state.denials > max_retries:
-                    return None
-                else:
-                    await asyncio.sleep(backoff_seconds)
-
-
-async def negotiate_session_admission(
-    *,
-    send_session_update: SessionSender,
-    settle_session_updated: SessionSettler,
-    rejected: asyncio.Event,
-    aborted: asyncio.Event,
-    admission_state: AdmissionState,
-    max_retries: int = ADMISSION_RETRIES,
-    backoff_seconds: float = ADMISSION_BACKOFF_S,
-) -> bool:
-    """Send session.update and retry non-fatal session admission rejections under one shared budget."""
-    await send_session_update()
-    admitted = await settle_session_updated()
-    # note (IcyDesert): The manifest retry limit now spans HTTP and session rejections; older recordings used separate budgets.
-    while rejected.is_set() and admission_state.denials <= max_retries:
-        rejected.clear()
-        # note (Yucheng Hu): The server's session_update_timeout waits behind a slow open, so it can fail the session right after a rejection; the backoff ends on that abort.
-        try:
-            await asyncio.wait_for(aborted.wait(), backoff_seconds)
-        except asyncio.TimeoutError:
-            await send_session_update()
-            admitted = await settle_session_updated()
-        else:
-            break
-    return admitted
-
-
 SEND_RECEIPTS_FILE = "input-send-receipts.json"
 # Trace lines reach the disk in batches at most this far apart.
 TRACE_FLUSH_INTERVAL_S = 0.5
@@ -447,24 +353,38 @@ async def run_session(
                 )
             TRACE_WRITER.write_line(trace_file, line + "\n")
 
-        admission_state = AdmissionState()
+        admission_denials = 0
 
-        def on_connection_denied(http_status: int, attempt: int) -> None:
-            record(
-                "admission",
-                {
-                    "type": "connection_denied",
-                    "http_status": http_status,
-                    "attempt": attempt,
-                },
-            )
+        async def admit() -> websockets.ClientConnection | None:
+            nonlocal admission_denials
+            while True:
+                try:
+                    return await websockets.connect(
+                        url,
+                        max_size=MAX_MESSAGE_BYTES,
+                        compression=None,
+                        ping_interval=None,
+                    )
+                except websockets.InvalidStatus as exc:
+                    if exc.response.status_code != ADMISSION_DENIED_STATUS:
+                        raise
+                    else:
+                        admission_denials += 1
+                        record(
+                            "admission",
+                            {
+                                "type": "connection_denied",
+                                "http_status": exc.response.status_code,
+                                "attempt": admission_denials,
+                            },
+                        )
+                        if admission_denials > ADMISSION_RETRIES:
+                            return None
+                        else:
+                            await asyncio.sleep(ADMISSION_BACKOFF_S)
 
         async def exchange() -> None:
-            connection = await connect_realtime_websocket(
-                url,
-                admission_state=admission_state,
-                on_denied=on_connection_denied,
-            )
+            connection = await admit()
             if connection is None:
                 return
             else:
@@ -538,7 +458,7 @@ async def run_session(
                     return receipt.is_set()
 
                 async def receive() -> None:
-                    nonlocal fatal
+                    nonlocal fatal, admission_denials
                     async for frame in websocket:
                         received_s = time.perf_counter()
                         try:
@@ -563,7 +483,7 @@ async def run_session(
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
                         if is_admission_rejection(event):
-                            admission_state.denials += 1
+                            admission_denials += 1
                             rejected.set()
                         elif event_type == "error":
                             # note (wenyao): Close waits for adapter teardown.
@@ -581,25 +501,22 @@ async def run_session(
 
                 async def drive() -> None:
                     streamed = False
-                    admitted = False
-
-                    async def send_update() -> None:
-                        seen.setdefault("session.updated", asyncio.Event()).clear()
-                        await send("session.update", session=configure)
-
-                    async def settle_updated() -> bool:
-                        return await settle("session.updated")
-
                     if await settle("session.created"):
-                        admitted = await negotiate_session_admission(
-                            send_session_update=send_update,
-                            settle_session_updated=settle_updated,
-                            rejected=rejected,
-                            aborted=aborted,
-                            admission_state=admission_state,
-                        )
+                        await send("session.update", session=configure)
                     else:
                         pass
+                    admitted = await settle("session.updated")
+                    # note (IcyDesert): The manifest retry limit now spans HTTP and session rejections; older recordings used separate budgets.
+                    while rejected.is_set() and admission_denials <= ADMISSION_RETRIES:
+                        rejected.clear()
+                        # note (Yucheng Hu): The server's session_update_timeout waits behind a slow open, so it can fail the session right after a rejection; the backoff ends on that abort.
+                        try:
+                            await asyncio.wait_for(aborted.wait(), ADMISSION_BACKOFF_S)
+                        except asyncio.TimeoutError:
+                            await send("session.update", session=configure)
+                            admitted = await settle("session.updated")
+                        else:
+                            break
                     if admitted:
                         # note (luojiaxuan): The legacy facade substitutes server_vad
                         # when no Smart Turn model is loaded, so the echo is the only
