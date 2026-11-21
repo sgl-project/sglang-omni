@@ -85,6 +85,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         pre_lm_max_batch_wait_ms: int,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        early_request_builds: bool | None,
         stream_emit_interval_s: float,
     ) -> None:
         self.max_running_requests = max_running_requests
@@ -113,6 +114,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.early_request_builds = early_request_builds
         self.stream_emit_interval_s = stream_emit_interval_s
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.feature_extractor: FunAsrNanoFeatureExtractor | None = None
@@ -283,7 +285,12 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             return self.torch_mps_model_runner
         else:
             pass
-        return super().make_model_runner(model_worker, output_proc)
+        model_runner = super().make_model_runner(model_worker, output_proc)
+        # note (wilsonzheng0327): the shared verify penalty is validated on CUDA only, where Fun-ASR's draft runs; realtime requests with a prefix set repetition_penalty.
+        model_runner.speculative_repetition_penalty_owner = (
+            "verify_logits" if current_platform.is_cuda() else None
+        )
+        return model_runner
 
     def setup_model(
         self,
@@ -494,4 +501,10 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
                 1 if self.uses_torch_mps() else self.request_build_max_workers
             ),
             "request_build_max_pending": self.request_build_max_pending,
+            # note (wilsonzheng0327): only with the draft by default, where a request would otherwise wait for the rest of a verify round before its build starts; without it, early builds made Fun-ASR's first output later.
+            "early_request_builds": (
+                self.speculative_worker_class is not None
+                if self.early_request_builds is None
+                else self.early_request_builds
+            ),
         }

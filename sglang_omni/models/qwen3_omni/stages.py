@@ -1315,13 +1315,14 @@ def create_sglang_thinker_executor_from_config(
             raise ValueError(
                 "speculative thinker decoding needs enable_mixed_chunk off"
             )
-        elif speech_enabled:
+        elif speech_enabled and execution_mode == "request":
             # note (wilsonzheng0327): with speech output the thinker captures the
             # talker's accept layer through the same layers_to_capture a draft sets,
             # and sets it after the draft is built, so the draft would read the wrong
             # hidden states. The speculative prefill also skips post_prefill, which
             # stores the talker's multimodal prompt rows. Lifting this needs both
             # captures side by side and the rows stored on the speculative prefill.
+            # note (evanderfan): a session thinker neither captures the talker's layer nor stores prompt rows; it streams only token ids to the talker.
             raise ValueError(
                 "speculative thinker decoding does not support speech output yet; "
                 "serve the thinker with --text-only"

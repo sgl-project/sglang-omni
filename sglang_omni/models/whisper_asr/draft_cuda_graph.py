@@ -170,7 +170,10 @@ class DraftDecodeGraph:
         free_bytes_before, _ = torch.cuda.mem_get_info()
         self.run_steps()
         graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+        # note (Haoling Pu): a graph keeps the cuBLAS workspace of the stream it was captured on, and the encoder's graphs, which replay on their own thread, took torch.cuda.graph's shared default stream, so this graph takes its own.
+        with torch.cuda.graph(
+            graph, stream=torch.cuda.Stream(), capture_error_mode="thread_local"
+        ):
             self.draft_token_ids = self.run_steps()
         self.graph = graph
         free_bytes_after, _ = torch.cuda.mem_get_info()

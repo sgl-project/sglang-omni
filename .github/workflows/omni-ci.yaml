@@ -77,6 +77,7 @@ jobs:
       run_asr_multi_speaker: ${{ steps.plan.outputs.run_asr_multi_speaker }}
       run_asr_seedtts: ${{ steps.plan.outputs.run_asr_seedtts }}
       run_tts: ${{ steps.plan.outputs.run_tts }}
+      run_tts_serving: ${{ steps.plan.outputs.run_tts_serving }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
       run_omni: ${{ steps.plan.outputs.run_omni }}
       run_full_duplex: ${{ steps.plan.outputs.run_full_duplex }}
@@ -204,13 +205,14 @@ jobs:
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
-          # Qwen3-ASR-1.7B serves its DFlash draft by default, at the revision sglang_omni/speculative/draft_registry.py pins.
+          # Qwen3-ASR-1.7B and MOSS-TD serve their DFlash drafts by default, at the revisions sglang_omni/speculative/draft_registry.py pins.
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
             "${QWEN3_ASR_MODEL_PATH}" \
             wilsonzheng0327/Qwen3-ASR-1.7B-dflash@d62bd4051e68282e02f93de774036a35f22f1373 \
             "${MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH}" \
+            wilsonzheng0327/MOSS-Transcribe-Diarize-dflash@2e3f00b0932112e4f92a4ef67a4cd60ee855056c \
             "${TTS_MODEL_PATH}" \
             "${MOSS_TTS_MODEL_PATH}" \
             "${QWEN3_TTS_MODEL_PATH}" \
@@ -266,6 +268,7 @@ jobs:
       needs.preflight.outputs.run_tts == 'true'
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
+      run_serving: ${{ needs.preflight.outputs.run_tts_serving == 'true' }}
       tts_ci_model: ${{ needs.preflight.outputs.tts_ci_model }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'

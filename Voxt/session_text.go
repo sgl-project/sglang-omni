@@ -53,6 +53,9 @@ func sessionProblemTextFor(translator *i18n.Translator, p *session.Problem) (tex
 	case session.ProblemTruncated:
 		return translator.T("The model hit its length limit, so the answer may be incomplete."), "", actionNone
 	case session.ProblemLLM:
+		if errors.Is(p.Err, session.ErrNotTranslated) {
+			return translator.T("The language model did not translate the text. Try again."), "", actionNone
+		}
 		if !p.Degraded {
 			msg, more := uitext.ModelErrorTextFor(translator, p.Err)
 			return translator.T("The language model failed: %s", msg), more, llmAction(p.Err, actionLanguage)

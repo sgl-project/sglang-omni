@@ -47,6 +47,14 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
     PinnedDraft(
         model_path="inclusionAI/Ming-3.0-asr-tiny",
         stage="thinker",
+        algorithm="NEXTN",
+        draft_model_path="wirybeaver/Ming-3.0-asr-tiny-mtp",
+        draft_model_revision="5d6dabd0ba4c739c011951f8982d9d75077ab0e4",
+        license="mit",
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-asr-tiny",
+        stage="thinker",
         algorithm="DSPARK",
         draft_model_path="wirybeaver/Ming-3.0-asr-tiny-dspark",
         draft_model_revision="3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
@@ -70,6 +78,15 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_revision="2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
         # note (wilsonzheng0327): the 5-layer draft adds 18% to each token's KV; fp8 halves that, which long meetings on 80 GB cards need to fit.
         engine_settings={"speculative_draft_kv_cache_dtype": "fp8_e4m3"},
+        license="apache-2.0",
+        is_default_on=True,
+    ),
+    PinnedDraft(
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2",
+        draft_model_revision="201410d4b9c89e86d97af160658766206959ad40",
         license="apache-2.0",
     ),
     PinnedDraft(

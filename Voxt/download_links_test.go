@@ -4,8 +4,33 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
+
+func TestStableBehaviorTestsRunBeforeVersionRewrite(t *testing.T) {
+	b, err := os.ReadFile("../.github/workflows/voxt-release.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(b)
+	resolveStep := strings.Index(workflow, "      - name: Resolve the version\n")
+	behaviorStep := strings.Index(workflow, "      - name: Stable behavior regression tests\n")
+	if resolveStep < 0 || behaviorStep < 0 {
+		t.Fatal("stable release workflow must keep its version and behavior test steps")
+	}
+	if behaviorStep > resolveStep {
+		t.Error("stable behavior tests must run before Resolve the version rewrites mygo.json")
+	}
+	behavior := workflow[behaviorStep:]
+	behavior = behavior[:strings.Index(behavior[1:], "      - name: ")+1]
+	if !strings.Contains(behavior, "TMPDIR: ${{ runner.temp }}") {
+		t.Error("stable behavior tests must run with a short TMPDIR: the runner's leaves the socket tests' paths a few bytes under macOS's limit")
+	}
+	if !strings.Contains(behavior, "github.event_name == 'pull_request'") {
+		t.Error("release pull requests must run the behavior tests before their first unsigned build")
+	}
+}
 
 // TestDownloadLinks: every Voxt 2 download link in the docs downloads the
 // disk image of the version in mygo.json in one click, not a release page or
@@ -31,6 +56,14 @@ func TestDownloadLinks(t *testing.T) {
 	}{
 		{"../README.md", false}, {"README.md", false}, {"README.zh-CN.md", false}, {"../docs/get_started/voxt.md", false},
 		{"../docs/get_started/voxt-tutorials/start.md", true}, {"../docs/get_started/voxt-tutorials/en/start.md", true},
+	}
+	// A pull request that changes only a tutorial page still runs this test.
+	ci, err := os.ReadFile("../.github/workflows/voxtnew-ci.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ci), `- "docs/get_started/voxt-tutorials/**"`) {
+		t.Error("Voxt CI does not run for docs/get_started/voxt-tutorials/**")
 	}
 	for _, f := range files {
 		file := f.path
