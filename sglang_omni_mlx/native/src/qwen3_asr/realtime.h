@@ -31,9 +31,6 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds);
 
-// Join segment texts, with a space only between two spaced scripts.
-std::string JoinTranscriptParts(const std::vector<std::string> &parts);
-
 // Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
 // segment length, with preview decodes on a cadence.
 class RealtimeSession : public omni_server::RealtimeConnection {

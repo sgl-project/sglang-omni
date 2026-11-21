@@ -12,11 +12,8 @@
 
 namespace qwen3_asr {
 
-using omni_common::CodePoints;
 using omni_common::FinishReason;
 using omni_common::GenerationCancelled;
-using omni_common::IsUnicodeSpace;
-using omni_common::StripUnicodeWhitespace;
 using omni_common::TranscriptionResult;
 using omni_server::Transcription;
 using omni_server::TranscriptionWorker;
@@ -34,26 +31,6 @@ constexpr double kPrefixedTokensPerNewSecond = 10.0;
 constexpr int kPrefixedTokenSlack = 8;
 constexpr float kSilentPeak = 1e-3f;
 
-constexpr std::pair<uint32_t, uint32_t> kUnspacedScriptRanges[] = {
-    {0x0E00, 0x0EFF}, {0x1000, 0x109F}, {0x1780, 0x17FF},
-    {0x2E80, 0x303F}, {0x3040, 0x30FF}, {0x3400, 0x9FFF},
-    {0xF900, 0xFAFF}, {0xFF00, 0xFFEF}, {0x20000, 0x2FA1F},
-};
-
-bool IsSpacedScript(uint32_t code_point) {
-  if (IsUnicodeSpace(code_point)) {
-    return false;
-  } else {
-  }
-  for (const auto &[low, high] : kUnspacedScriptRanges) {
-    if (code_point >= low && code_point <= high) {
-      return false;
-    } else {
-    }
-  }
-  return true;
-}
-
 } // namespace
 
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
@@ -62,22 +39,6 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
   return {decode_interval_ms * omni_common::kSampleRate / 1000,
           first_decode_ms * omni_common::kSampleRate / 1000,
           static_cast<int>(max_segment_seconds * omni_common::kSampleRate)};
-}
-
-std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
-  std::string joined;
-  for (const std::string &raw_part : parts) {
-    const std::string part = StripUnicodeWhitespace(raw_part);
-    if (part.empty()) {
-      continue;
-    } else if (!joined.empty() && IsSpacedScript(CodePoints(joined).back()) &&
-               IsSpacedScript(CodePoints(part).front())) {
-      joined += " " + part;
-    } else {
-      joined += part;
-    }
-  }
-  return joined;
 }
 
 RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
@@ -121,7 +82,7 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
     for (const auto &[segment_id, text] : committed)
       texts.push_back(text);
     Send({{"type", "transcription.completed"},
-          {"text", JoinTranscriptParts(texts)}});
+          {"text", omni_common::JoinTranscriptParts(texts)}});
     return false;
   } else {
     SendError("invalid_request_error", "invalid_event", "Unknown event type.");
