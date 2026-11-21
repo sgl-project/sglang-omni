@@ -21,9 +21,16 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_scheduler_adapters,
 )
 from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
-from sglang_omni.serve.openai_api import build_chat_generate_request
+from sglang_omni.serve.openai_api import (
+    build_chat_generate_request,
+    build_rollout_generate_request,
+)
 from sglang_omni.serve.openai_errors import is_bad_request_error
-from sglang_omni.serve.protocol import ChatCompletionRequest
+from sglang_omni.serve.protocol import (
+    ChatCompletionRequest,
+    RolloutGenerateRequest,
+    RolloutSamplingParams,
+)
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -161,6 +168,59 @@ def test_chat_request_without_a_temperature_reaches_the_thinker_greedy(monkeypat
 
     assert request.temperature == 0.0
     assert request.req.sampling_params.top_k == 1
+
+
+@pytest.mark.parametrize(
+    ("build_generate_request", "api_request"),
+    [
+        pytest.param(
+            build_chat_generate_request,
+            ChatCompletionRequest(
+                model="qwen3-omni",
+                messages=[{"role": "user", "content": "hello"}],
+                stop=["X"],
+                stage_sampling={
+                    "thinker": {"temperature": 0.8, "max_new_tokens": 64, "seed": 7}
+                },
+            ),
+            id="chat",
+        ),
+        pytest.param(
+            build_rollout_generate_request,
+            RolloutGenerateRequest(
+                prompt="hello",
+                sampling_params=RolloutSamplingParams(stop=["X"]),
+                stage_sampling={
+                    "thinker": RolloutSamplingParams(
+                        temperature=0.8, max_new_tokens=64, seed=7
+                    )
+                },
+            ),
+            id="generate",
+        ),
+    ],
+)
+def test_thinker_stage_sampling_overrides_reach_the_thinker(
+    monkeypatch, build_generate_request, api_request
+):
+    """stage_sampling.thinker sets the thinker's sampling and keeps a top-level stop it leaves unset."""
+    patch_sampling_validation(monkeypatch)
+    request_builder, _ = make_thinker_scheduler_adapters(
+        tokenizer=FakeQwenTokenizer(),
+        vocab_size=256,
+        capture_prompt_hidden_states=False,
+        speech_enabled=False,
+    )
+    payload = make_qwen_payload(
+        params=Client.build_omni_request(build_generate_request(api_request)).params
+    )
+
+    sampling_params = request_builder(payload).req.sampling_params
+
+    assert sampling_params.temperature == 0.8
+    assert sampling_params.max_new_tokens == 64
+    assert sampling_params.sampling_seed == 7
+    assert sampling_params.stop_strs == ["X"]
 
 
 def test_legacy_flat_payloads_still_reach_the_model_input_field():
