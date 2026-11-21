@@ -38,11 +38,6 @@ from sglang_omni.scheduling.types import (
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
-# note (Xuanfei): trtllm_mha builds CUDA graph metadata only for decode, target verify and draft extend, so the FlashInfer backend it subclasses, which reads the same KV layout, runs the full prefill graph.
-FULL_PREFILL_ATTENTION_SUBSTITUTES: Mapping[str, str] = MappingProxyType(
-    {"trtllm_mha": "flashinfer"}
-)
-
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
@@ -58,6 +53,11 @@ else:
     pass
 
 logger = logging.getLogger(__name__)
+
+# note (Xuanfei): trtllm_mha builds CUDA graph metadata only for decode, target verify and draft extend, so the FlashInfer backend it subclasses, which reads the same KV layout, runs the full prefill graph.
+FULL_PREFILL_ATTENTION_SUBSTITUTES: Mapping[str, str] = MappingProxyType(
+    {"trtllm_mha": "flashinfer"}
+)
 
 
 def normalize_context_length(value: object, *, model_name: str) -> int:
