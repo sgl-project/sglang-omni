@@ -22,11 +22,9 @@
 package secrets
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os/exec"
-	"runtime"
 	"strings"
 	"unicode/utf8"
 )
@@ -57,25 +55,10 @@ func (k Item) with(args ...string) []string {
 	return args
 }
 
-// security runs /usr/bin/security with args, feeding it stdin; swapped in
-// tests.
-var security = func(stdin string, args ...string) ([]byte, error) {
-	if runtime.GOOS != "darwin" {
-		return nil, ErrNoKeychain
-	}
-	cmd := exec.Command("/usr/bin/security", args...)
-	cmd.Stdin = strings.NewReader(stdin)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return out, fmt.Errorf("security: %s", msg)
-		}
-		return out, err
-	}
-	return out, nil
-}
+// security runs the platform's secret store with args, feeding it stdin;
+// swapped in tests (secrets_darwin.go, secrets_windows.go,
+// secrets_other.go).
+var security = platformSecurity
 
 // missing reports an error that means the item is not there.
 func missing(err error) bool {

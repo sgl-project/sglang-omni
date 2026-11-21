@@ -83,6 +83,7 @@
   "Supports your main language": "支持主要语言",
   "Tell the speech model who is speaking and about what.": "告诉语音识别模型谁在说话、在说什么。",
   "The password cannot have quotes, backslashes or line breaks.": "密码里不能有引号、反斜杠或换行。",
+  "The password is kept in the Credential Manager.": "密码保存在凭据管理器中。",
   "The password is kept in the Keychain.": "密码保存在钥匙串里。",
   "The proxy in this Mac's network settings, or one set by an environment variable.": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
   "This frees %s. You can download it again later.": "会释放 %s，之后可以重新下载。",
