@@ -86,6 +86,7 @@
   "The password is kept in the Credential Manager.": "密码保存在凭据管理器中。",
   "The password is kept in the Keychain.": "密码保存在钥匙串里。",
   "The proxy in this Mac's network settings, or one set by an environment variable.": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
+  "The proxy in this PC's network settings, or one set by an environment variable.": "使用这台电脑网络设置里的代理，或环境变量指定的代理。",
   "This frees %s. You can download it again later.": "会释放 %s，之后可以重新下载。",
   "This model does not support this feature.": "此模型不支持该功能。",
   "This model is no longer available. Close this dialog and set it up again.": "此模型已不可用，请关闭对话框并重新设置。",

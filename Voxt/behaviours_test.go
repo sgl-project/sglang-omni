@@ -89,6 +89,7 @@ func testNames(t *testing.T) map[string]bool {
 	goTest := regexp.MustCompile(`(?m)^func (Test\w*)\(`)
 	swiftTest := regexp.MustCompile(`(?m)^\s*func (test\w*)\(\)`)
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		path = filepath.ToSlash(path) // helper/Tests/... on every platform
 		fn := goTest
 		switch {
 		case err != nil:

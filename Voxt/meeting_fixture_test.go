@@ -89,7 +89,7 @@ func TestMeetingViewStateGolden(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !bytes.Equal(data, want) {
+				if !bytes.Equal(fixturePlatformText(data), fixturePlatformText(want)) {
 					t.Fatalf("fixture differs; regenerate with VOXTNEW_UPDATE_GOLDEN=1 go test -run '^TestMeetingViewStateGolden$' .\n--- want\n%s\n--- got\n%s", want, data)
 				}
 			})
@@ -464,4 +464,11 @@ func meetingConstants(t *testing.T, path string, include func(*ast.ValueSpec) bo
 		t.Fatalf("%s: no constants found", path)
 	}
 	return values
+}
+
+// fixturePlatformText normalizes a fixture's platform-rendered strings
+// (shortcut glyphs, system names) so macOS-generated fixtures also match
+// a Windows run.
+func fixturePlatformText(data []byte) []byte {
+	return []byte(platformText(string(data)))
 }

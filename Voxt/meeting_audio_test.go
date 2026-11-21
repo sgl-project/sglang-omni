@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -69,11 +70,22 @@ func TestSweepMeetingAudioKeepsARecordingItCannotDelete(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "stuck", "system.wav"), []byte("wav"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The meetings folder read-only: the recording's folder cannot go.
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatal(err)
+	// The recording cannot be deleted: a read-only folder on unix, a
+	// shareless handle on Windows (its chmod bits do not stop deletes).
+	var hold *os.File
+	if runtime.GOOS == "windows" {
+		var err error
+		hold, err = os.OpenFile(filepath.Join(dir, "stuck", "system.wav"), os.O_RDWR, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer hold.Close()
+	} else {
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Chmod(dir, 0o755) }()
 	}
-	defer func() { _ = os.Chmod(dir, 0o755) }()
 	n, err := a.sweepMeetingAudio(dir)
 	if err == nil || n != 0 {
 		t.Fatalf("swept %d, err %v", n, err)

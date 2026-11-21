@@ -52,7 +52,7 @@ func TestDictionaryFixtureCoverage(t *testing.T) {
 					if state.Shortcut.Keys == "" {
 						wantSelection = translator.T("Off")
 					}
-					if state.Shortcut.Selection != wantSelection || state.Shortcut.Text != state.Shortcut.Keys {
+					if platformText(state.Shortcut.Selection) != platformText(wantSelection) || state.Shortcut.Text != state.Shortcut.Keys {
 						t.Errorf("%s: shortcut selection %q and text %q do not match keys %q", locale, state.Shortcut.Selection, state.Shortcut.Text, state.Shortcut.Keys)
 					}
 				}
