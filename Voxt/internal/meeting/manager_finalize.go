@@ -30,9 +30,22 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		m.notify(m.Current())
 	}
-	err = FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(id))
+	cfg := m.cfg
+	if fromStoreMode(mt.Mode) == ModeImport {
+		cfg = importPassConfig(cfg)
+	}
+	err = FinalizePass(ctx, cfg, mt, m.finalizeProgress(id))
 	if err != nil {
 		return err
+	}
+	if fromStoreMode(mt.Mode) == ModeImport {
+		return m.finishImport(ctx, mt, !m.cfg.Settings().NoAutoSummary)
+	}
+	// The correction and the summary run as after a live finalize; a
+	// failure surfaces to the caller (the meeting menu corrects again).
+	var cerr error
+	if !m.cfg.Settings().NoAutoSummary {
+		cerr = m.correctAndSummarize(ctx, id)
 	}
 	if m.id == id {
 		m.mu.Lock()
@@ -42,7 +55,7 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		m.notify(m.Current())
 	}
-	return nil
+	return cerr
 }
 
 func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
@@ -91,17 +104,24 @@ func (m *Manager) finalizeProgress(id string) func(float64) {
 }
 
 // correctAndSummarize corrects the transcript, then summarizes it; a
-// correction that fails leaves the summary to the recognised text.
-func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
+// correction that fails leaves the summary to the recognised text, and
+// the caller hears of it.
+func (m *Manager) correctAndSummarize(ctx context.Context, id string) error {
+	var first error
 	if err := m.CorrectTranscript(ctx, id); err != nil {
 		m.warn("correct: " + err.Error())
+		first = err
 	}
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
+		if first == nil {
+			first = err
+		}
 	}
 	if m.cfg.Updated != nil {
 		m.cfg.Updated(id)
 	}
+	return first
 }
 
 func (m *Manager) warn(msg string) {

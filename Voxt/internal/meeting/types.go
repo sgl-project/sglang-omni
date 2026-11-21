@@ -20,6 +20,9 @@ const (
 	ModeMeeting   Mode = "meeting"
 	ModeSubtitles Mode = "subtitles"
 	ModeRecording Mode = "recording"
+	// ModeImport is a meeting made of a recording file: one mixed track,
+	// every voice labelled Speaker 1..N (no Me/Others split).
+	ModeImport Mode = "import"
 )
 
 // Source is a recording track within a meeting.

@@ -257,6 +257,8 @@ func meetingMeta(translator *i18n.Translator, stored store.Meeting) string {
 		parts = append(parts, translator.T("System audio only"))
 	case store.MeetingModeRecording:
 		parts = append(parts, translator.T("Microphone only"))
+	case store.MeetingModeImport:
+		parts = append(parts, translator.T("Imported recording"))
 	default:
 		parts = append(parts, translator.T("Microphone and system audio"))
 	}
@@ -301,6 +303,8 @@ func meetingSnippet(translator *i18n.Translator, stored store.Meeting) string {
 		return translator.T("System audio only")
 	case store.MeetingModeRecording:
 		return translator.T("Microphone only")
+	case store.MeetingModeImport:
+		return translator.T("Imported recording")
 	default:
 		return translator.T("Microphone and system audio")
 	}

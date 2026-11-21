@@ -89,5 +89,19 @@
   "Could not record system audio. Allow system audio recording for Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.": "没能录制系统音频。请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 Voxt 录制系统音频，或者只录制麦克风。",
   "Could not record system audio. Try again, or record the microphone only.": "没能录制系统音频。请重试，或只录制麦克风。",
   "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4.": "在语音识别模型页下载 MOSS-Transcribe-Diarize，把对方的话按说话人 1–4 分开。",
-  "Could not record the microphone. Check your input device and try again.": "没能录制麦克风。请检查输入设备后重试。"
+  "Could not record the microphone. Check your input device and try again.": "没能录制麦克风。请检查输入设备后重试。",
+  "Imported recording": "导入的录音",
+  "Import recording": "导入录音",
+  "Import recording…": "导入录音…",
+  "Importing %s…": "正在导入 %s…",
+  "Audio or video": "音频或视频",
+  "Could not import the recording: %v": "无法导入录音：%v",
+  "MOSS-Transcribe-Diarize is not downloaded": "MOSS-Transcribe-Diarize 还没有下载",
+  "Importing a recording needs MOSS-Transcribe-Diarize to label its speakers. Download it on the Speech models page, then import again.": "导入录音需要 MOSS-Transcribe-Diarize 来区分说话人。请在语音识别模型页下载，然后再导入。",
+  "Choose the recording's language": "选择录音的语言",
+  "MOSS-Transcribe-Diarize labels speakers only in Chinese or English. Choose Chinese or English as the spoken language in Meeting settings, then import again.": "MOSS-Transcribe-Diarize 只能区分中文或英语录音中的说话人。请在会议设置里把说话语言选为中文或英语，然后再导入。",
+  "Open Meeting settings": "打开会议设置",
+  "Keep a history is off": "保留历史记录已关闭",
+  "Importing a recording saves it with its whole transcript and summary. Turn on Keep a history in Settings → Privacy to import one.": "导入录音会保存完整转录稿和摘要。请先在“设置 → 隐私”里打开“保留历史记录”，然后再导入。",
+  "Open Privacy settings": "打开隐私设置"
 }

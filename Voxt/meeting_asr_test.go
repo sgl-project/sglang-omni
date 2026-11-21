@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -11,13 +13,17 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-type meetingDiarizerFake struct{ fakeTranscriptions }
+type meetingDiarizerFake struct {
+	fakeTranscriptions
+	result asr.Result
+}
 
 func (f *meetingDiarizerFake) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
-	return asr.Result{}, nil
+	return f.result, nil
 }
 
 type meetingMTDLocal struct {
@@ -115,6 +121,71 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 		if !strings.Contains(ta.Prompt, "A Zoom call about Voxt") || ta.StreamReq.Prompt != ta.Prompt {
 			t.Errorf("%s: file Prompt %q, stream Prompt %q; want the speech context", tc.name, ta.Prompt, ta.StreamReq.Prompt)
 		}
+	}
+}
+
+func TestRecordedMeetingDiarizesWithInstalledMTD(t *testing.T) {
+	for _, language := range []string{"en", "zh-Hans"} {
+		t.Run(language, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.prefs.General.MainLanguage = language
+			provider := &meetingDiarizerFake{result: asr.Result{Segments: []asr.SpeakerSegment{
+				{End: time.Second, Speaker: "S01", Text: "labeled"},
+			}}}
+			a.local = &meetingMTDLocal{provider: provider}
+			plain := &fakeTranscriptions{text: "plain"}
+			root := t.TempDir()
+			meetDir := filepath.Join(root, "recorded")
+			if err := os.MkdirAll(meetDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			pcm := tone(1)
+			if err := os.WriteFile(filepath.Join(meetDir, "system.wav"), asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mt, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+				ID: "recorded", CreatedAt: time.Now(), Status: store.MeetingDone,
+				Mode: store.MeetingModeMeeting, Audio: "recorded", DurationMS: 1000,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := meeting.Config{
+				Store:    a.lib.store.Meetings(),
+				Dir:      root,
+				Settings: func() settings.Meeting { return settings.Meeting{} },
+				Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+				ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+					return meeting.TrackASR{Caps: plain.Caps(), File: plain}, nil
+				},
+				Diarizer: a.meetingDiarizer,
+			}
+			if err := meeting.FinalizePass(context.Background(), cfg, mt, nil); err != nil {
+				t.Fatal(err)
+			}
+			_, segments, err := a.lib.store.Meetings().Meeting(context.Background(), "recorded")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plain.count() != 0 || len(segments) != 1 || segments[0].Speaker != "s1" || segments[0].Text != "labeled" {
+				t.Fatalf("language %q: segments %+v, plain calls %d", language, segments, plain.count())
+			}
+		})
+	}
+}
+
+func TestMeetingImportDiarizerLanguage(t *testing.T) {
+	for _, test := range []struct {
+		language string
+		want     bool
+	}{{"", false}, {"en", true}, {"zh-Hans", true}, {"ko", false}} {
+		t.Run(test.language, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.prefs.General.MainLanguage = test.language
+			if got := a.meetingDiarizerLanguage(); got != test.want {
+				t.Fatalf("language %q: got %v, want %v", test.language, got, test.want)
+			}
+		})
 	}
 }
 

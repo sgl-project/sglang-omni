@@ -23,6 +23,12 @@ type meetingsLocalUI struct {
 	setOpen bool
 	delID   string
 	detail  *meetingDetailLocalUI
+	// importing is the recording file being imported (meetings_import.go).
+	// The importNo fields open the matching import prerequisite dialog.
+	importing        *meetingImport
+	importNoMTD      bool
+	importNoHistory  bool
+	importNoLanguage bool
 }
 
 func meetingsPage(c *ui.Context, state *meetingsViewState, actions meetingsActions, local *meetingsLocalUI, pageWidth float32) {
@@ -54,6 +60,9 @@ func meetingsPage(c *ui.Context, state *meetingsViewState, actions meetingsActio
 				local.find.count(c, query, hits[len(state.Items)])
 			}
 		}
+		if ui.Button(c.Key("mt-import"), i18n.T("Import recording…")).Shrink(0).Disabled(state.Active || local.importing != nil).Clicked() {
+			actions.meetingImport()
+		}
 		if state.SettingsAvailable && iconButton(c.Key("mt-settings"), icons.Tuning2, i18n.T("Meeting settings")).Shrink(0).Clicked() {
 			local.setOpen = true
 		}
@@ -73,6 +82,11 @@ func meetingsPage(c *ui.Context, state *meetingsViewState, actions meetingsActio
 						actions.loadMeetings()
 					}
 				}, nil)
+			})
+		}
+		if local.importing != nil {
+			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
+				meetingImportRow(c, local.importing)
 			})
 		}
 		split := pageWidth-px(t, meetingListW) >= px(t, meetingDetailMinW)
