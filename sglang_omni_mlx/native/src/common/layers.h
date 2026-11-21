@@ -4,6 +4,7 @@
 // and LSTM step that several models share.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -120,6 +121,11 @@ using ExpertRunner = std::function<mlx::core::array(
 mlx::core::array RouteToExperts(const mlx::core::array &hidden,
                                 const mlx::core::array &indices,
                                 const ExpertRunner &run_experts);
+
+// Evaluate bounded preview encoder blocks so cancellation can stop GPU work;
+// nullptr keeps final requests lazy.
+void EncoderCheckpoint(const mlx::core::array &hidden,
+                       const std::atomic<bool> *cancel, int completed_layers);
 
 // Transformer-XL's relative shift of position scores [batch, heads, queries,
 // positions] to [batch, heads, queries, key_count]: each row's columns line up

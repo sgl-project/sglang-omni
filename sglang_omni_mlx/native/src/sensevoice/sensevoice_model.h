@@ -4,6 +4,7 @@
 // port computes them in float32.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -48,7 +49,8 @@ public:
   // input_size]: the language, emotion, event and text normalization query
   // frames first, then the speech.
   mlx::core::array Logits(const mlx::core::array &features, int language_id,
-                          bool use_itn) const;
+                          bool use_itn,
+                          const std::atomic<bool> *cancel = nullptr) const;
 
   const SenseVoiceConfig &config() const { return config_; }
 

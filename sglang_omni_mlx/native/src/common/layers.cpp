@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "yaml-cpp/yaml.h"
 
 namespace omni_common {
@@ -581,6 +582,23 @@ LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
                            state->cell})
           : compiled_first({gates});
   return {next[0], next[1]};
+}
+
+void EncoderCheckpoint(const mx::array &hidden, const std::atomic<bool> *cancel,
+                       int completed_layers) {
+  constexpr int kCancellationIntervalLayers = 4;
+  if (cancel == nullptr) {
+    return;
+  } else if (cancel->load()) {
+    throw GenerationCancelled();
+  } else if (completed_layers % kCancellationIntervalLayers == 0) {
+    mx::eval(hidden);
+    if (cancel->load()) {
+      throw GenerationCancelled();
+    } else {
+    }
+  } else {
+  }
 }
 
 } // namespace omni_common

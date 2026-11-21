@@ -322,13 +322,16 @@ def cohere_server() -> Iterator[ModelServer]:
     running.stop()
 
 
+@pytest.mark.parametrize("preview", [False, True])
 def test_cohere_final_request_streams_text_and_generation_metadata(
     cohere_server: ModelServer,
+    preview: bool,
 ) -> None:
     assert cohere_server.ready["model_name"].startswith("voxt-cohere_transcribe-")
     status, body = cohere_server.post_form(
         {
             "stream": "true",
+            "preview": str(preview).lower(),
             "language": "zh",
             "use_punctuation": "true",
             "max_new_tokens": "1024",
@@ -792,12 +795,15 @@ def sensevoice_server() -> Iterator[ModelServer]:
     running.stop()
 
 
+@pytest.mark.parametrize("preview", [False, True])
 def test_sensevoice_final_request_returns_text_and_its_metadata(
     sensevoice_server: ModelServer,
+    preview: bool,
 ) -> None:
     assert sensevoice_server.ready["model_name"].startswith("voxt-sensevoice-")
     status, body = sensevoice_server.post_form(
-        {"language": "zh", "use_itn": "false"}, clip("0152_zh_short")
+        {"language": "zh", "use_itn": "false", "preview": str(preview).lower()},
+        clip("0152_zh_short"),
     )
     assert status == 200
     result = json.loads(body)

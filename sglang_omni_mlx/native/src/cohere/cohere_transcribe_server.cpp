@@ -33,6 +33,8 @@ public:
   Prepare(std::vector<float> samples,
           const asr_service::FormFields &form) const override {
     cohere_transcribe::CohereOptions options;
+    options.preview =
+        omni_common::FormFlag(asr_service::TextField(form, "preview"));
     options.language =
         asr_service::TextField(form, "language").value_or(options.language);
     const auto use_punctuation =

@@ -368,7 +368,8 @@ mx::array SenseVoiceModel::EncoderLayer(const mx::array &x,
 }
 
 mx::array SenseVoiceModel::Logits(const mx::array &features, int language_id,
-                                  bool use_itn) const {
+                                  bool use_itn,
+                                  const std::atomic<bool> *cancel) const {
   const auto query = [&](std::vector<int32_t> ids) {
     return checkpoint_.Embed(
         mx::array(ids.data(), {1, static_cast<int>(ids.size())}, mx::int32),
@@ -405,12 +406,15 @@ mx::array SenseVoiceModel::Logits(const mx::array &features, int language_id,
 
   x = EncoderLayer(x, "encoder.encoders0.0",
                    config_.input_size == config_.model_width);
+  omni_common::EncoderCheckpoint(x, cancel, 1);
   for (int layer = 0; layer < config_.block_count - 1; ++layer) {
     x = EncoderLayer(x, "encoder.encoders." + std::to_string(layer), true);
+    omni_common::EncoderCheckpoint(x, cancel, layer + 2);
   }
   x = checkpoint_.LayerNorm(x, "encoder.after_norm", kLayerNormEps);
   for (int layer = 0; layer < config_.tp_block_count; ++layer) {
     x = EncoderLayer(x, "encoder.tp_encoders." + std::to_string(layer), true);
+    omni_common::EncoderCheckpoint(x, cancel, config_.block_count + layer + 1);
   }
   x = checkpoint_.LayerNorm(x, "encoder.tp_norm", kLayerNormEps);
   const mx::array logits = checkpoint_.Linear(x, "ctc.ctc_lo");

@@ -246,7 +246,8 @@ SenseVoiceTranscriber::SenseVoiceTranscriber(
 
 SenseVoiceTranscriber::Pass
 SenseVoiceTranscriber::TranscribePass(const std::vector<float> &samples,
-                                      int language_id, bool use_itn) const {
+                                      int language_id, bool use_itn,
+                                      const std::atomic<bool> *cancel) const {
   static const std::map<int, std::string> kLanguages = {
       {24884, "zh"}, {24885, "en"}, {24888, "yue"},
       {24892, "ja"}, {24896, "ko"}, {24992, "nospeech"}};
@@ -258,10 +259,11 @@ SenseVoiceTranscriber::TranscribePass(const std::vector<float> &samples,
                                                      {24995, "BGM"},
                                                      {24997, "Laughter"},
                                                      {24999, "Applause"}};
-  const mx::array predictions = mx::astype(
-      mx::argmax(model_.Logits(model_.Features(samples), language_id, use_itn),
-                 -1),
-      mx::int32);
+  const mx::array predictions =
+      mx::astype(mx::argmax(model_.Logits(model_.Features(samples), language_id,
+                                          use_itn, cancel),
+                            -1),
+                 mx::int32);
   mx::eval(predictions);
   const int32_t *ids = predictions.data<int32_t>();
   const int frame_count = static_cast<int>(predictions.size());
@@ -313,7 +315,8 @@ SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
       throw omni_common::GenerationCancelled();
     } else {
     }
-    const Pass pass = TranscribePass(samples, language_id, options.use_itn);
+    const Pass pass = TranscribePass(samples, language_id, options.use_itn,
+                                     options.preview ? &cancel : nullptr);
     result.text = pass.text;
     result.language = pass.language;
     add_segment(pass, 0, samples.size());
@@ -340,10 +343,10 @@ SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
         throw omni_common::GenerationCancelled();
       } else {
       }
-      const Pass pass =
-          TranscribePass(std::vector<float>(samples.begin() + chunk_start,
-                                            samples.begin() + chunk_end),
-                         language_id, options.use_itn);
+      const Pass pass = TranscribePass(
+          std::vector<float>(samples.begin() + chunk_start,
+                             samples.begin() + chunk_end),
+          language_id, options.use_itn, options.preview ? &cancel : nullptr);
       result.text = MergeSequentialTranscript(result.text, pass.text);
       if (!swift_port::TrimWhitespace(pass.text, true).empty() &&
           language_counts[pass.language]++ == 0) {

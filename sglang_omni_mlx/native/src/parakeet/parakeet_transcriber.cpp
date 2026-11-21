@@ -264,7 +264,8 @@ ParakeetTranscriber::ParakeetTranscriber(
 
 std::vector<std::vector<AlignedToken>>
 ParakeetTranscriber::DecodeChunks(const std::vector<std::vector<float>> &chunks,
-                                  const std::atomic<bool> &cancel) const {
+                                  const std::atomic<bool> &cancel,
+                                  bool preview) const {
   if (cancel.load()) {
     throw omni_common::GenerationCancelled();
   } else {
@@ -276,8 +277,8 @@ ParakeetTranscriber::DecodeChunks(const std::vector<std::vector<float>> &chunks,
   // Note (XXXXRT666): one chunk's encoder is queued while the one before it
   // finishes, so a cancel waits for at most one more chunk.
   for (const std::vector<float> &samples : chunks) {
-    projected.push_back(
-        model_.ProjectFrames(model_.Encode(model_.Features(samples))));
+    projected.push_back(model_.ProjectFrames(
+        model_.Encode(model_.Features(samples), preview ? &cancel : nullptr)));
     mx::async_eval(projected.back());
     frame_counts.push_back(projected.back().shape(1));
     if (projected.size() > 1) {
@@ -416,7 +417,7 @@ ParakeetTranscriber::DecodeChunks(const std::vector<std::vector<float>> &chunks,
 void ParakeetTranscriber::RecoverBlankTails(
     const std::vector<std::vector<float>> &chunks,
     std::vector<std::vector<AlignedToken>> &tokens, size_t max_chunk_samples,
-    const std::atomic<bool> &cancel) const {
+    const std::atomic<bool> &cancel, bool preview) const {
   const size_t sample_rate_hertz = omni_common::kSampleRate;
   const size_t padding_samples =
       static_cast<size_t>(kRecoveryPaddingSeconds * sample_rate_hertz);
@@ -504,7 +505,7 @@ void ParakeetTranscriber::RecoverBlankTails(
     } else {
     }
     std::vector<std::vector<AlignedToken>> retry_tokens =
-        DecodeChunks(retry_samples, cancel);
+        DecodeChunks(retry_samples, cancel, preview);
     for (size_t index = 0; index < retries.size(); ++index) {
       const Retry &retry = retries[index];
       const double shift_seconds =
@@ -594,9 +595,10 @@ ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
     } else {
     }
     std::vector<std::vector<AlignedToken>> group_tokens =
-        DecodeChunks(group_samples, cancel);
+        DecodeChunks(group_samples, cancel, options.preview);
     if (automatic) {
-      RecoverBlankTails(group_samples, group_tokens, chunk_samples, cancel);
+      RecoverBlankTails(group_samples, group_tokens, chunk_samples, cancel,
+                        options.preview);
     } else {
     }
     for (size_t position = 0; position < indices.size(); ++position) {

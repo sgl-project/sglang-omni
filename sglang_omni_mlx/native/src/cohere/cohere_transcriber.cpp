@@ -112,7 +112,7 @@ CohereTranscriber::DecodeText(const std::vector<int> &token_ids) const {
 std::vector<CohereTranscriber::ChunkResult> CohereTranscriber::TranscribeChunks(
     const std::vector<std::vector<float>> &chunks,
     const std::vector<int> &prompt_ids, int max_new_tokens, float temperature,
-    const std::atomic<bool> &cancel) const {
+    const std::atomic<bool> &cancel, bool preview) const {
   const int rows = static_cast<int>(chunks.size());
   std::vector<ChunkResult> results(rows);
   const int prompt_length = static_cast<int>(prompt_ids.size());
@@ -128,7 +128,7 @@ std::vector<CohereTranscriber::ChunkResult> CohereTranscriber::TranscribeChunks(
   std::vector<mx::array> states;
   std::vector<int> frame_counts;
   for (const std::vector<float> &samples : chunks) {
-    states.push_back(model_.Encode(samples));
+    states.push_back(model_.Encode(samples, preview ? &cancel : nullptr));
     mx::async_eval(states.back());
     frame_counts.push_back(states.back().shape(1));
     if (states.size() > 1) {
@@ -312,7 +312,7 @@ CohereTranscriber::Transcribe(const std::vector<float> &samples,
     }
     for (ChunkResult &chunk_result :
          TranscribeChunks(batch, prompt_ids, remaining_tokens,
-                          options.temperature, cancel)) {
+                          options.temperature, cancel, options.preview)) {
       if (remaining_tokens <= 0) {
         break;
       } else {

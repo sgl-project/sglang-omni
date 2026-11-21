@@ -177,7 +177,8 @@ mx::array ParakeetModel::Conv2d(const mx::array &x, const std::string &prefix,
                  checkpoint_.Weight(prefix + ".bias"));
 }
 
-mx::array ParakeetModel::Encode(const mx::array &features) const {
+mx::array ParakeetModel::Encode(const mx::array &features,
+                                const std::atomic<bool> *cancel) const {
   const std::string pre_encode = "encoder.pre_encode";
   mx::array x = mx::expand_dims(mx::astype(features, mx::bfloat16), 3);
   x = swift_port::Relu(Conv2d(x, pre_encode + ".conv.0", 1));
@@ -217,6 +218,7 @@ mx::array ParakeetModel::Encode(const mx::array &features) const {
                                   checkpoint_, norm(x, "norm_feed_forward2"),
                                   prefix + ".feed_forward2")));
     x = norm(x, "norm_out");
+    omni_common::EncoderCheckpoint(x, cancel, layer + 1);
   }
   return x;
 }

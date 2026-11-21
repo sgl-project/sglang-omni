@@ -35,6 +35,8 @@ struct SenseVoiceOptions {
   // overlap of 0.35 s truncates to one sample short of Voxt's 5600.
   double max_chunk_seconds = 0.0;
   double chunk_overlap_seconds = 0.0;
+  // Bounded encoder evaluation for disposable live previews.
+  bool preview = false;
 };
 
 // The chunk length and overlap in samples, truncated as Voxt truncates them;
@@ -66,7 +68,7 @@ private:
   };
 
   Pass TranscribePass(const std::vector<float> &samples, int language_id,
-                      bool use_itn) const;
+                      bool use_itn, const std::atomic<bool> *cancel) const;
 
   SenseVoiceModel model_;
   swift_port::SentencePieceVocabulary vocabulary_;
