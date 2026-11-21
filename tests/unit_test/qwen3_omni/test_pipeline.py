@@ -6,8 +6,9 @@ import asyncio
 import base64
 import inspect
 import threading
+import wave
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
@@ -71,9 +72,13 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages,
     resolve_preprocessing_next_stages_speech,
 )
-from sglang_omni.preprocessing.audio import decode_audio_bytes
-from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing.audio import decode_audio_bytes, ensure_audio_list_async
+from sglang_omni.preprocessing.resource_connector import (
+    FramePool,
+    MultiModalResourceConnector,
+)
 from sglang_omni.preprocessing.text import split_content_parts
+from sglang_omni.profiler.event_recorder import get_active_stage, set_active_stage
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
@@ -368,7 +373,7 @@ def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None
         data=None,
     )
 
-    out = asyncio.run(pre.call_impl(payload))
+    out = asyncio.run(pre(payload))
 
     state = Qwen3OmniPipelineState.from_dict(out.data)
     assert state.prompt["input_ids"].tolist() == [5, 6, 7]
@@ -468,10 +473,10 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
     )
     if sampled_fps[0] != sampled_fps[1]:
         with pytest.raises(ValueError, match="same sampled FPS"):
-            asyncio.run(pre.call_impl(payload))
+            asyncio.run(pre(payload))
         return
 
-    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre.call_impl(payload)).data)
+    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre(payload)).data)
     assert state.mm_inputs["video"]["video_second_per_grid"].tolist() == [1.0, 1.0]
     assert state.mm_inputs["video"]["video_grid_thw"].shape[0] == 2
     mask = state.encoder_inputs["audio_encoder"]["feature_attention_mask"]
@@ -561,7 +566,7 @@ def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
         data={},
     )
 
-    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre.call_impl(payload)).data)
+    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre(payload)).data)
 
     assert processor_calls[0]["audio"] == expected_audio
     assert (
@@ -610,9 +615,7 @@ def test_qwen_accepts_miles_audio_video_processor_tensors() -> None:
             request=Client.build_omni_request(build_rollout_generate_request(request)),
             data={},
         )
-        return Qwen3OmniPipelineState.from_dict(
-            asyncio.run(pre.call_impl(payload)).data
-        )
+        return Qwen3OmniPipelineState.from_dict(asyncio.run(pre(payload)).data)
 
     state = preprocess(processor_tensors)
 
@@ -793,11 +796,11 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
     )
 
     if rejection is None:
-        asyncio.run(pre.call_impl(payload))
+        asyncio.run(pre(payload))
         assert tokenized_prompts == [prompt_text]
     else:
         with pytest.raises(ValueError) as exc_info:
-            asyncio.run(pre.call_impl(payload))
+            asyncio.run(pre(payload))
         assert str(exc_info.value).startswith(rejection)
         assert is_bad_request_error(exc_info.value)
         assert tokenized_prompts == []
@@ -854,7 +857,7 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_loading_media(
     )
 
     with pytest.raises(ValueError) as exc_info:
-        asyncio.run(pre.call_impl(payload))
+        asyncio.run(pre(payload))
 
     assert str(exc_info.value).startswith(
         "The input (at least 6250 tokens) is longer than the model's "
@@ -2260,7 +2263,7 @@ def processed_bundle_state(
         request=Client.build_omni_request(build_rollout_generate_request(request)),
         data={},
     )
-    return Qwen3OmniPipelineState.from_dict(asyncio.run(pre.call_impl(payload)).data)
+    return Qwen3OmniPipelineState.from_dict(asyncio.run(pre(payload)).data)
 
 
 def test_qwen_accepts_miles_image_processor_tensors() -> None:
@@ -2345,9 +2348,7 @@ def decoded_audio_preprocessor(monkeypatch):
         payload = StagePayload(
             request_id="cache-key", request=OmniRequest(inputs=inputs), data={}
         )
-        state = Qwen3OmniPipelineState.from_dict(
-            asyncio.run(pre.call_impl(payload)).data
-        )
+        state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre(payload)).data)
         return state.encoder_inputs["audio_encoder"].get("cache_key")
 
     return pre, loaded, run
@@ -2450,9 +2451,7 @@ def test_qwen_visual_cache_key_tracks_decoded_content(
         payload = StagePayload(
             request_id="visual-cache", request=OmniRequest(inputs=inputs), data={}
         )
-        state = Qwen3OmniPipelineState.from_dict(
-            asyncio.run(pre.call_impl(payload)).data
-        )
+        state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre(payload)).data)
         return state.encoder_inputs["image_encoder"]["cache_key"]
 
     before = run()
@@ -2487,12 +2486,25 @@ class VideoCacheKeyProtocol(Protocol):
     def __call__(self, videos: list[torch.Tensor]) -> str | None: ...
 
 
+def single_thread_video_lane(
+    lane_executor: ThreadPoolExecutor,
+) -> preprocessor_mod.VideoLane:
+    return preprocessor_mod.VideoLane(
+        media_executor=lane_executor,
+        frame_pool=FramePool(
+            decode_executor=lane_executor, frame_executor=lane_executor, frame_workers=1
+        ),
+        decode_threads=16,
+    )
+
+
 def run_video_request(
     pre: preprocessor_mod.Qwen3OmniPreprocessor,
     monkeypatch: pytest.MonkeyPatch,
     frames: torch.Tensor,
     process: VideoProcessorProtocol,
     video_cache_key: VideoCacheKeyProtocol,
+    video_lane: preprocessor_mod.VideoLane | None,
 ) -> StagePayload:
     class Processor:
         def apply_chat_template(
@@ -2518,6 +2530,7 @@ def run_video_request(
         audio_target_sr: int,
         resource_connector: MultiModalResourceConnector,
         video_decode_threads: int,
+        video_frame_pool: FramePool | None,
     ) -> tuple[list[torch.Tensor], list[float], None]:
         return [frames], [2.0], None
 
@@ -2534,11 +2547,14 @@ def run_video_request(
         ),
         data={},
     )
-    return asyncio.run(pre.call_impl(payload))
+    return asyncio.run(
+        pre.process(payload, preprocessor_mod.read_request_inputs(payload), video_lane)
+    )
 
 
+@pytest.mark.parametrize("on_video_lane", [False, True])
 def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
-    decoded_audio_preprocessor, monkeypatch
+    decoded_audio_preprocessor, monkeypatch, on_video_lane: bool
 ):
     pre, _, _ = decoded_audio_preprocessor
     frames = torch.zeros(4, 3, 2, 2)
@@ -2546,6 +2562,7 @@ def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
     hash_finished = threading.Event()
     hash_saw_processor: list[bool] = []
     processor_saw_hash: list[bool] = []
+    processor_threads: list[str] = []
     compute_video_cache_key = preprocessor_mod.compute_video_cache_key
 
     def video_cache_key(videos: list[torch.Tensor]) -> str | None:
@@ -2564,6 +2581,7 @@ def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
         return_tensors: str,
         videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
     ) -> dict[str, torch.Tensor]:
+        processor_threads.append(threading.current_thread().name)
         processor_entered.set()
         processor_saw_hash.append(hash_finished.wait(timeout=5))
         return {
@@ -2571,12 +2589,25 @@ def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
             "pixel_values_videos": torch.ones(1, 3),
         }
 
-    state = Qwen3OmniPipelineState.from_dict(
-        run_video_request(pre, monkeypatch, frames, process, video_cache_key).data
-    )
+    with ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="video-lane"
+    ) as lane_executor:
+        state = Qwen3OmniPipelineState.from_dict(
+            run_video_request(
+                pre,
+                monkeypatch,
+                frames,
+                process,
+                video_cache_key,
+                single_thread_video_lane(lane_executor) if on_video_lane else None,
+            ).data
+        )
 
     assert hash_saw_processor == [True]
     assert processor_saw_hash == [True]
+    assert [name.startswith("video-lane") for name in processor_threads] == [
+        on_video_lane
+    ]
     assert state.encoder_inputs["image_encoder"]["cache_key"].startswith(
         compute_video_cache_key([frames])
     )
@@ -2622,7 +2653,7 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
     monkeypatch.setattr(preprocessor_mod, "ThreadPoolExecutor", RequestExecutor)
     with pytest.raises(RuntimeError, match="processor failed"):
         run_video_request(
-            pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key
+            pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key, None
         )
     trace.append("request failed")
 
@@ -2634,31 +2665,357 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
     ]
 
 
-def test_preprocessing_executor_defaults_to_serial_dispatch(monkeypatch):
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+def test_qwen_video_lane_request_fails_after_its_processor_stops_reading_frames(
+    decoded_audio_preprocessor, monkeypatch
+):
+    """A video lane request whose frame hash failed surfaced its error while the HF processor still read its frames on a frame thread."""
+    pre, _, _ = decoded_audio_preprocessor
+    trace: list[str] = []
+    request_waits = threading.Event()
+    wait_for_futures = preprocessor_mod.wait
 
-    monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: object())
-    default = qwen_stages.create_preprocessing_executor("model")
-    assert type(default) is SimpleScheduler
-    one = qwen_stages.create_preprocessing_executor("model", max_concurrency=1)
-    assert type(one) is SimpleScheduler
-    threaded = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
-    assert type(threaded) is ThreadedSimpleScheduler
+    def wait_for_processor(futures: list[Future[dict[str, torch.Tensor]]]) -> None:
+        request_waits.set()
+        wait_for_futures(futures)
+
+    def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        trace.append("hash failed")
+        raise RuntimeError("hash failed")
+
+    def process(
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]:
+        request_waits.wait(timeout=5)
+        trace.append("processor finished")
+        return {
+            "input_ids": torch.tensor([[1, 2]]),
+            "pixel_values_videos": torch.ones(1, 3),
+        }
+
+    monkeypatch.setattr(preprocessor_mod, "wait", wait_for_processor)
+    with ThreadPoolExecutor(max_workers=1) as lane_executor:
+        with pytest.raises(RuntimeError, match="hash failed"):
+            run_video_request(
+                pre,
+                monkeypatch,
+                torch.zeros(4, 3, 2, 2),
+                process,
+                video_cache_key,
+                single_thread_video_lane(lane_executor),
+            )
+        trace.append("request failed")
+
+    assert trace == ["hash failed", "processor finished", "request failed"]
 
 
-def test_preprocessing_dispatch_preserves_results_errors_and_running_abort(monkeypatch):
-    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+RequestInputs = preprocessor_mod.TrainRequestInputs | preprocessor_mod.ChatRequestInputs
+
+
+class RequestBuilder(Protocol):
+    def __call__(self, request_id: str) -> IncomingMessage: ...
+
+
+def text_request(request_id: str) -> IncomingMessage:
+    return IncomingMessage(
+        request_id=request_id,
+        type="new_request",
+        data=make_qwen_payload(
+            request_id=request_id,
+            inputs={"messages": [{"role": "user", "content": "hello"}]},
+        ),
+    )
+
+
+def video_request(request_id: str) -> IncomingMessage:
+    return IncomingMessage(
+        request_id=request_id,
+        type="new_request",
+        data=make_qwen_payload(
+            request_id=request_id,
+            inputs={
+                "messages": [{"role": "user", "content": "describe"}],
+                "videos": ["https://media.invalid/clip.mp4"],
+            },
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"messages": [], "videos": ["clip.mp4"]},
+        {"messages": [], "video": "clip.mp4"},
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video_url", "video_url": {"url": "file:///clip.mp4"}}
+                ],
+            }
+        ],
+    ],
+)
+def test_read_request_inputs_finds_every_form_of_video(
+    inputs: dict[str, object] | list[dict[str, object]],
+) -> None:
+    request_inputs = preprocessor_mod.read_request_inputs(
+        make_qwen_payload(inputs=inputs)
+    )
+    assert isinstance(request_inputs, preprocessor_mod.ChatRequestInputs)
+    assert request_inputs.has_video
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"messages": [{"role": "user", "content": "hello"}]},
+        {"messages": [], "videos": []},
+        {"messages": [], "videos": [], "video": "clip.mp4"},
+        {"messages": [], "audio": ["voice.wav"]},
+    ],
+)
+def test_read_request_inputs_finds_no_video_where_preprocessing_reads_none(
+    inputs: dict[str, object],
+) -> None:
+    request_inputs = preprocessor_mod.read_request_inputs(
+        make_qwen_payload(inputs=inputs)
+    )
+    assert isinstance(request_inputs, preprocessor_mod.ChatRequestInputs)
+    assert not request_inputs.has_video
+
+
+def test_read_request_inputs_reads_token_ids_and_rejects_malformed_messages() -> None:
+    assert isinstance(
+        preprocessor_mod.read_request_inputs(make_qwen_payload(inputs=[1, 2, 3])),
+        preprocessor_mod.TrainRequestInputs,
+    )
+    with pytest.raises(ValueError):
+        preprocessor_mod.read_request_inputs(
+            make_qwen_payload(
+                inputs={
+                    "messages": [{"role": "user", "content": [{"type": "unknown"}]}]
+                }
+            )
+        )
+
+
+def test_preprocessing_video_holds_up_no_request_behind_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    video_entered, video_release = threading.Event(), threading.Event()
 
     class Preprocessor:
-        async def __call__(self, payload):
-            if payload == "slow":
-                entered.set()
-                assert release.wait(timeout=3)
-                finished.set()
-            if payload == "error":
-                raise ValueError("invalid preprocessing input")
-            return {"input": payload}
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            if payload.request_id == "video":
+                video_entered.set()
+                assert video_release.wait(timeout=5)
+            else:
+                pass
+            return payload.request_id
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="model")
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model",
+        max_concurrency=config.stage_named("preprocessing").factory.max_concurrency,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("video"))
+        assert video_entered.wait(timeout=5)
+        scheduler.inbox.put(text_request("text"))
+        assert scheduler.outbox.get(timeout=5).data == "text"
+        video_release.set()
+        assert scheduler.outbox.get(timeout=5).data == "video"
+    finally:
+        video_release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
+def test_preprocessing_audio_request_decodes_while_a_video_holds_its_media_threads(
+    decoded_audio_preprocessor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A video's loads ran on the media decode pool requests without video share, so held video loads kept an audio data URL request, and every request behind it, waiting for the video."""
+    pre, _, _ = decoded_audio_preprocessor
+    held_video_loads = 16
+    video_loads_submitted = threading.Event()
+    video_loads_release = threading.Event()
+    wav_bytes = BytesIO()
+    with wave.open(wav_bytes, "wb") as wav:
+        wav.setparams((1, 2, 16000, 1600, "NONE", "not compressed"))
+        wav.writeframes(np.zeros(1600, dtype=np.int16).tobytes())
+    wav_url = "data:audio/wav;base64," + base64.b64encode(wav_bytes.getvalue()).decode()
+
+    class HeldVideoMediaIO:
+        def load_base64(
+            self, media_type: str, data: str
+        ) -> tuple[torch.Tensor, float, None]:
+            assert video_loads_release.wait(timeout=5)
+            return torch.zeros(1, 3, 2, 2), 2.0, None
+
+    async def video_loader(
+        videos: list[str],
+        *,
+        fps: float | None,
+        max_frames: int | None,
+        min_pixels: int | None,
+        max_pixels: int | None,
+        total_pixels: int | None,
+        extract_audio: bool,
+        audio_target_sr: int,
+        resource_connector: MultiModalResourceConnector,
+        video_decode_threads: int,
+        video_frame_pool: FramePool | None,
+    ) -> tuple[list[torch.Tensor], list[float] | None, None]:
+        if not videos:
+            return [], None, None
+        else:
+            pass
+        video_loads = [
+            asyncio.ensure_future(
+                resource_connector.load_resource_async(
+                    "data:video/mp4;base64,AAAA", HeldVideoMediaIO()
+                )
+            )
+            for _ in range(held_video_loads)
+        ]
+        await asyncio.sleep(0)
+        video_loads_submitted.set()
+        loaded_videos = await asyncio.gather(*video_loads)
+        return [loaded_videos[0][0]], [2.0], None
+
+    monkeypatch.setattr(
+        preprocessor_mod, "ensure_audio_list_async", ensure_audio_list_async
+    )
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
+    scheduler = qwen_stages.PreprocessingScheduler(
+        pre,
+        video_request_worker_count=2,
+        stage_intraop_threads=torch.get_num_threads(),
+        stage_cpu_count=2,
+        video_decode_threads=None,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("video"))
+        assert video_loads_submitted.wait(timeout=5)
+        scheduler.inbox.put(
+            IncomingMessage(
+                request_id="audio",
+                type="new_request",
+                data=make_qwen_payload(
+                    request_id="audio",
+                    inputs={
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "audio": [wav_url],
+                    },
+                ),
+            )
+        )
+        scheduler.inbox.put(text_request("text"))
+        answered = [scheduler.outbox.get(timeout=5) for _ in range(2)]
+        video_loads_release.set()
+        answered.append(scheduler.outbox.get(timeout=5))
+    finally:
+        video_loads_release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert [(message.request_id, message.type) for message in answered] == [
+        ("audio", "result"),
+        ("text", "result"),
+        ("video", "result"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("max_concurrency", "build_request"),
+    [(2, text_request), (1, video_request)],
+)
+def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    max_concurrency: int,
+    build_request: RequestBuilder,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class Preprocessor:
+        async def __call__(self, payload: StagePayload) -> str:
+            return await self.process(
+                payload, preprocessor_mod.read_request_inputs(payload), None
+            )
+
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            calls.append((payload.request_id, threading.get_ident()))
+            return payload.request_id
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor(
+        "model", max_concurrency=max_concurrency
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        for request_id in ("first", "second", "third"):
+            scheduler.inbox.put(build_request(request_id))
+        results = [scheduler.outbox.get(timeout=5).data for _ in range(3)]
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert results == ["first", "second", "third"]
+    assert [call[0] for call in calls] == results
+    assert {call[1] for call in calls} == {worker.ident}
+
+
+def test_preprocessing_runs_no_more_videos_than_its_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    both_running = threading.Barrier(2, timeout=5)
+    running_lock = threading.Lock()
+    running = 0
+    most_running = 0
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            nonlocal running, most_running
+            with running_lock:
+                running += 1
+                most_running = max(most_running, running)
+            both_running.wait()
+            with running_lock:
+                running -= 1
+            return payload.request_id
 
     monkeypatch.setattr(
         qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
@@ -2666,36 +3023,359 @@ def test_preprocessing_dispatch_preserves_results_errors_and_running_abort(monke
     scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
     worker = threading.Thread(target=scheduler.start, daemon=True)
     worker.start()
-
-    def submit(request_id):
-        scheduler.inbox.put(
-            IncomingMessage(request_id=request_id, type="new_request", data=request_id)
-        )
-
     try:
-        submit("slow")
-        assert entered.wait(timeout=3)
-        submit("fast")
-        result = scheduler.outbox.get(timeout=3)
-        assert (result.request_id, result.type, result.data) == (
-            "fast",
-            "result",
-            {"input": "fast"},
-        )
-        scheduler.abort("slow")
-        release.set()
-        assert finished.wait(timeout=3)
-        submit("error")
-        error = scheduler.outbox.get(timeout=3)
-        assert error.request_id == "error" and error.type == "error"
-        assert isinstance(error.data, ValueError)
-        submit("after")
-        result = scheduler.outbox.get(timeout=3)
-        assert (result.request_id, result.data) == ("after", {"input": "after"})
+        for index in range(4):
+            scheduler.inbox.put(video_request(f"video-{index}"))
+        results = {scheduler.outbox.get(timeout=5).data for _ in range(4)}
     finally:
-        release.set()
         scheduler.stop()
         worker.join(timeout=3)
+
+    assert results == {f"video-{index}" for index in range(4)}
+    assert most_running == 2
+
+
+@pytest.mark.parametrize(
+    (
+        "stage_intraop_threads",
+        "stage_cpu_count",
+        "video_decode_threads",
+        "decode_threads",
+        "frame_workers",
+        "lane_intraop_threads",
+    ),
+    [
+        (8, 6, None, (6, 3), 2, 3),
+        (2, 64, 5, (5, 5), 2, 2),
+        (8, 1, None, (1, 1), 1, 1),
+    ],
+)
+def test_preprocessing_video_lane_splits_the_stage_cpus_among_its_threads(
+    stage_intraop_threads: int,
+    stage_cpu_count: int,
+    video_decode_threads: int | None,
+    decode_threads: tuple[int, int],
+    frame_workers: int,
+    lane_intraop_threads: int,
+) -> None:
+    first_entered, first_release = threading.Event(), threading.Event()
+    lanes: dict[str, tuple[int, int, int, int]] = {}
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            assert video_lane is not None
+            lanes[payload.request_id] = (
+                video_lane.decode_threads,
+                video_lane.frame_pool.frame_workers,
+                video_lane.frame_pool.frame_executor.submit(
+                    torch.get_num_threads
+                ).result(),
+                video_lane.media_executor.submit(torch.get_num_threads).result(),
+            )
+            if payload.request_id == "first":
+                first_entered.set()
+                assert first_release.wait(timeout=5)
+            else:
+                pass
+            return payload.request_id
+
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_request_worker_count=2,
+        stage_intraop_threads=stage_intraop_threads,
+        stage_cpu_count=stage_cpu_count,
+        video_decode_threads=video_decode_threads,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("first"))
+        assert first_entered.wait(timeout=5)
+        scheduler.inbox.put(video_request("second"))
+        assert scheduler.outbox.get(timeout=5).data == "second"
+        first_release.set()
+        assert scheduler.outbox.get(timeout=5).data == "first"
+    finally:
+        first_release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert lanes == {
+        request_id: (
+            request_decode_threads,
+            frame_workers,
+            lane_intraop_threads,
+            lane_intraop_threads,
+        )
+        for request_id, request_decode_threads in zip(
+            ("first", "second"), decode_threads
+        )
+    }
+
+
+def test_preprocessing_video_lane_leaves_later_threads_the_process_intraop_threads() -> (
+    None
+):
+    """Video requests set the process-wide intra-op thread count, so a thread started after them took a video's count instead of the stage's."""
+    with ThreadPoolExecutor(max_workers=1) as earlier_executor:
+        process_intraop_threads = earlier_executor.submit(
+            torch.get_num_threads
+        ).result()
+    lane_intraop_threads = process_intraop_threads + 1
+    intraop_threads_seen: dict[str, int] = {}
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            if video_lane is None:
+                intraop_threads_seen["scheduler"] = torch.get_num_threads()
+            else:
+                intraop_threads_seen["frames"] = (
+                    video_lane.frame_pool.frame_executor.submit(
+                        torch.get_num_threads
+                    ).result()
+                )
+                intraop_threads_seen["decode"] = (
+                    video_lane.frame_pool.decode_executor.submit(
+                        torch.get_num_threads
+                    ).result()
+                )
+                intraop_threads_seen["media"] = video_lane.media_executor.submit(
+                    torch.get_num_threads
+                ).result()
+            return payload.request_id
+
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_request_worker_count=2,
+        stage_intraop_threads=lane_intraop_threads,
+        stage_cpu_count=2 * lane_intraop_threads,
+        video_decode_threads=None,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("video"))
+        assert scheduler.outbox.get(timeout=5).data == "video"
+        scheduler.inbox.put(text_request("text"))
+        assert scheduler.outbox.get(timeout=5).data == "text"
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+    with ThreadPoolExecutor(max_workers=1) as later_executor:
+        intraop_threads_seen["later"] = later_executor.submit(
+            torch.get_num_threads
+        ).result()
+
+    assert intraop_threads_seen == {
+        "frames": lane_intraop_threads,
+        "decode": 1,
+        "media": lane_intraop_threads,
+        "scheduler": process_intraop_threads,
+        "later": process_intraop_threads,
+    }
+
+
+def test_preprocessing_video_answers_a_failure_outside_its_preprocessing_and_frees_its_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lanes: dict[str, int] = {}
+    lanes_built: list[int] = []
+    video_lane_type = preprocessor_mod.VideoLane
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            assert video_lane is not None
+            lanes[payload.request_id] = video_lane.decode_threads
+            return payload.request_id
+
+    def build_video_lane(
+        *,
+        media_executor: ThreadPoolExecutor,
+        frame_pool: FramePool,
+        decode_threads: int,
+    ) -> preprocessor_mod.VideoLane:
+        lanes_built.append(decode_threads)
+        if len(lanes_built) == 1:
+            raise RuntimeError("lane failed")
+        else:
+            pass
+        return video_lane_type(
+            media_executor=media_executor,
+            frame_pool=frame_pool,
+            decode_threads=decode_threads,
+        )
+
+    monkeypatch.setattr(qwen_stages, "VideoLane", build_video_lane)
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_request_worker_count=2,
+        stage_intraop_threads=8,
+        stage_cpu_count=6,
+        video_decode_threads=None,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("broken"))
+        error = scheduler.outbox.get(timeout=5)
+        scheduler.inbox.put(video_request("after"))
+        result = scheduler.outbox.get(timeout=5)
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert (error.request_id, error.type) == ("broken", "error")
+    assert isinstance(error.data, RuntimeError)
+    assert (result.request_id, result.data) == ("after", "after")
+    assert lanes == {"after": 6}
+
+
+def test_preprocessing_video_threads_see_the_stage_bound_to_the_scheduler_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str | None:
+            return get_active_stage()
+
+    def run_scheduler() -> None:
+        set_active_stage("preprocessing")
+        scheduler.start()
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=run_scheduler, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("video"))
+        result = scheduler.outbox.get(timeout=5)
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert (result.type, result.data) == ("result", "preprocessing")
+
+
+def test_preprocessing_video_reports_errors_and_drops_aborted_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Semaphore(0)
+    running_release = threading.Event()
+    started: list[str] = []
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            started.append(payload.request_id)
+            if payload.request_id.startswith("running"):
+                entered.release()
+                assert running_release.wait(timeout=5)
+            elif payload.request_id == "error":
+                raise ValueError("invalid preprocessing input")
+            else:
+                pass
+            return payload.request_id
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("running-kept"))
+        scheduler.inbox.put(video_request("running-aborted"))
+        assert entered.acquire(timeout=5) and entered.acquire(timeout=5)
+        scheduler.inbox.put(video_request("queued"))
+        scheduler.inbox.put(text_request("text"))
+        assert scheduler.outbox.get(timeout=5).data == "text"
+        scheduler.abort("queued")
+        scheduler.abort("running-aborted")
+        running_release.set()
+        assert scheduler.outbox.get(timeout=5).data == "running-kept"
+        scheduler.inbox.put(video_request("error"))
+        error = scheduler.outbox.get(timeout=5)
+        assert (error.request_id, error.type) == ("error", "error")
+        assert isinstance(error.data, ValueError)
+        scheduler.inbox.put(video_request("after"))
+        result = scheduler.outbox.get(timeout=5)
+        assert (result.request_id, result.data) == ("after", "after")
+    finally:
+        running_release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert "queued" not in started
+    assert not worker.is_alive()
+
+
+def test_preprocessing_stop_drops_videos_still_waiting_for_a_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Semaphore(0)
+    running_release = threading.Event()
+    started: list[str] = []
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_lane: preprocessor_mod.VideoLane | None,
+        ) -> str:
+            started.append(payload.request_id)
+            if payload.request_id.startswith("running"):
+                entered.release()
+                assert running_release.wait(timeout=5)
+            else:
+                pass
+            return payload.request_id
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("running-first"))
+        scheduler.inbox.put(video_request("running-second"))
+        assert entered.acquire(timeout=5) and entered.acquire(timeout=5)
+        scheduler.inbox.put(video_request("queued"))
+        scheduler.inbox.put(text_request("text"))
+        assert scheduler.outbox.get(timeout=5).data == "text"
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+        running_release.set()
+    scheduler.video_executor.shutdown(wait=True)
+
+    assert sorted(started) == ["running-first", "running-second", "text"]
     assert not worker.is_alive()
 
 
@@ -2913,6 +3593,9 @@ def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
         setattr(pre, "default_video_" + name, None)
     pre.video_decode_threads = 16
     monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: pre)
+    monkeypatch.setattr(
+        mod.ChatRequestInputs, "has_video", property(lambda request_inputs: True)
+    )
     # Isolate the old global client so this catches cross-request loop reuse.
     monkeypatch.setattr(
         resources,
@@ -3209,7 +3892,7 @@ def test_image_parts_reach_processor_in_conversation_order(
         data={},
     )
 
-    asyncio.run(bare_preprocessor(processor).call_impl(payload))
+    asyncio.run(bare_preprocessor(processor)(payload))
 
     expected_images = ["first.png", "second.png", "third.png"]
     if top_level is not None:
@@ -3281,7 +3964,7 @@ def test_audio_and_video_parts_reach_processor_in_placeholder_order(
     )
 
     with pytest.raises(ProcessorCalled):
-        asyncio.run(bare_preprocessor(processor).call_impl(payload))
+        asyncio.run(bare_preprocessor(processor)(payload))
 
     assert video_loader.await_args.args == (["clip.mp4"],)
     assert audio_loader.await_args.args == (["question.wav", "top.wav"],)
@@ -3323,7 +4006,7 @@ def test_unknown_chat_content_parts_are_rejected_before_any_media_loads(
     )
 
     with pytest.raises(ValueError, match="Unsupported chat content part type"):
-        asyncio.run(bare_preprocessor(Mock()).call_impl(payload))
+        asyncio.run(bare_preprocessor(Mock())(payload))
     loader.assert_not_awaited()
 
 
