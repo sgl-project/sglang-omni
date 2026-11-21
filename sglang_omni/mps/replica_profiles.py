@@ -11,8 +11,14 @@ from pathlib import Path
 
 from sglang_omni.config.patch import ConfigPatch
 from sglang_omni.config.path import ConfigPath
-from sglang_omni.config.schema import PipelineConfig, stage_process_name
-from sglang_omni.mps.runtime import UNSUPPORTED_PROCESS_ENV, MpsDeviceInfo
+from sglang_omni.config.schema import PipelineConfig, StageConfig, stage_process_name
+from sglang_omni.mps.manager import MpsControlClient, MpsManager
+from sglang_omni.mps.runtime import (
+    UNSUPPORTED_PROCESS_ENV,
+    MpsDeviceInfo,
+    default_state_root,
+)
+from sglang_omni.mps.state import MpsGpuPaths
 from sglang_omni.platforms import current_platform
 
 ProfileValue = int | float | str | list[int]
@@ -219,13 +225,25 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
             "stages.asr.gpu_memory_fraction": 0.0623,
             "stages.asr.factory.max_batch_size": 16,
             "stages.asr.factory.session_max_concurrency": 16,
-            # note (Yuanfan Chen): with host-sized math thread pools, 12 replicas served 31 requests/s against 239 with these caps.
+            # note (Yuanfan Chen): under the runtime's default thread plan, which sets only OMP_NUM_THREADS, 12 replicas served 31 requests/s against 239 with these caps.
             "stages.asr.env.OMP_NUM_THREADS": "4",
             "stages.asr.env.MKL_NUM_THREADS": "4",
             "stages.asr.env.OPENBLAS_NUM_THREADS": "4",
         },
     ),
 )
+
+
+def placed_gpu_ids(stage: StageConfig) -> list[int]:
+    """Every GPU a stage occupies: its scalar or list placement, or the runtime GPUs it owns."""
+    if stage.runtime_gpu_ids is not None:
+        return list(stage.runtime_gpu_ids)
+    elif isinstance(stage.gpu, int):
+        return [stage.gpu]
+    elif stage.gpu is None:
+        return []
+    else:
+        return list(stage.gpu)
 
 
 def not_applied(config: PipelineConfig, reason: str) -> ReplicaProfileDecision:
@@ -241,10 +259,11 @@ def decide_replica_profile(
     *,
     user_patches: Iterable[ConfigPatch],
     device_info: MpsDeviceInfo,
+    mps_client: MpsControlClient,
 ) -> ReplicaProfileDecision:
     """Return the writes of this model's profile for the detected GPU, or why the launch keeps its own config.
 
-    It applies when no source sizes or places the replicas, the pipeline sits on one idle GPU of the measured model, and MPS can start.
+    It applies when no source sizes or places the replicas, the pipeline sits on one idle GPU of the measured model, and MPS can start there: no state left by an earlier run blocks a new launch from joining the GPU's daemon.
     """
     model_path_parts = Path(config.model_path).parts
     candidates = [
@@ -293,7 +312,7 @@ def decide_replica_profile(
             pass
 
     gpu_ids = sorted(
-        {stage.gpu for stage in config.stages if isinstance(stage.gpu, int)}
+        {gpu_id for stage in config.stages for gpu_id in placed_gpu_ids(stage)}
     )
     weight_share_env = os.environ.get("SGLANG_OMNI_WEIGHT_SHARE", "").strip()
     stage_env_overrides = sorted(
@@ -330,10 +349,11 @@ def decide_replica_profile(
     else:
         pass
     assert (
-        device.name is not None
+        device.gpu_uuid is not None
+        and device.name is not None
         and device.total_memory_bytes is not None
         and device.free_memory_bytes is not None
-    ), f"GPU {gpu_id} passed the MPS checks without an NVML name and memory"
+    ), f"GPU {gpu_id} passed the MPS checks without a UUID, an NVML name and memory"
     total_memory_mib = device.total_memory_bytes // BYTES_PER_MIB
     matching = [
         profile
@@ -364,14 +384,48 @@ def decide_replica_profile(
         f"{profile.model_path} profile replicates {profile.replicated_processes}, "
         f"but the pipeline's processes are {sorted(process_names)}"
     )
+    gpu_process_names = {
+        stage_process_name(stage) for stage in profiled.stages if stage.gpu is not None
+    }
+    cpu_only_processes = [
+        name for name in profile.replicated_processes if name not in gpu_process_names
+    ]
+    if cpu_only_processes:
+        return not_applied(
+            config,
+            f"the profile replicates processes without a GPU stage: {cpu_only_processes}",
+        )
+    else:
+        pass
+    # note (Yuanfan Chen): a serve killed with SIGKILL leaves owner leases no join accepts; probe the state the same way the launch would join it.
+    state_paths = MpsGpuPaths(
+        state_root=default_state_root([device.gpu_uuid]), gpu_uuid=device.gpu_uuid
+    )
+    if (
+        state_paths.state_dir.exists()
+        and not MpsManager(
+            paths=state_paths, gpu_uuid=device.gpu_uuid, client=mps_client
+        )
+        .inspect_existing_state()
+        .joinable
+    ):
+        return not_applied(
+            config,
+            f"GPU {gpu_id} holds MPS state from an earlier run that a new launch "
+            f"cannot join, in {state_paths.state_dir}",
+        )
+    else:
+        pass
     reserved_bytes = sum(
-        (stage.gpu_memory_fraction or 0.0)
+        (
+            (stage.gpu_memory_fraction or 0.0) * device.total_memory_bytes
+            + (stage.total_reserve_bytes or 0)
+        )
         * (
             profile.num_replicas
             if stage_process_name(stage) in profile.replicated_processes
             else 1
         )
-        * device.total_memory_bytes
         for stage in profiled.stages
         if stage.gpu is not None
     )

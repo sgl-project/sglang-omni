@@ -26,6 +26,7 @@ from sglang_omni.config.sources import (
 )
 from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
+from sglang_omni.mps.control import SubprocessMpsControlClient
 from sglang_omni.mps.devices import NvmlDeviceInfo
 from sglang_omni.mps.replica_profiles import decide_replica_profile
 from sglang_omni.platforms import current_platform
@@ -714,6 +715,7 @@ def serve(
         merged_config,
         user_patches=[*config_manager.source_patches, *cli_patches],
         device_info=NvmlDeviceInfo(),
+        mps_client=SubprocessMpsControlClient(),
     )
     if replica_profile.message is not None:
         logger.info(replica_profile.message)

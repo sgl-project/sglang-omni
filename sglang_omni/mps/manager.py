@@ -94,6 +94,18 @@ class ExistingState:
     clients: set[MpsClientRef] | None = None
     errors: list[str] = field(default_factory=list)
 
+    @property
+    def joinable(self) -> bool:
+        """A daemon of proven identity that answers, with every published owner lease held and active."""
+        return (
+            not self.errors
+            and self.daemon_pid is not None
+            and self.clients is not None
+            and bool(self.owners)
+            and all(self.owners.values())
+            and set(self.owner_statuses.values()) == {_OWNER_ACTIVE}
+        )
+
 
 @dataclass
 class MpsManager:
@@ -204,14 +216,7 @@ class MpsManager:
 
     def join_locked(self, client_tokens: dict[str, str]) -> MpsLease:
         state = self.inspect_existing_state()
-        if (
-            not state.errors
-            and state.daemon_pid is not None
-            and state.clients is not None
-            and state.owners
-            and all(state.owners.values())
-            and set(state.owner_statuses.values()) == {_OWNER_ACTIVE}
-        ):
+        if state.joinable:
             owner_fd = self.publish_owner()
             logger.info(
                 "Joining shared MPS daemon pid %d on %s (owners: %s)",

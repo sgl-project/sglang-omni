@@ -22,6 +22,7 @@ from sglang_omni.models.ming3_tts import config as ming3_tts_config
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.mps import replica_profiles
 from sglang_omni.mps.devices import MpsPhysicalDevice
+from sglang_omni.mps.manager import MpsClientRef
 from sglang_omni.mps.replica_profiles import (
     B200,
     REPLICA_PROFILES,
@@ -33,6 +34,24 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 B200_EXAMPLES = sorted((REPO_ROOT / "examples" / "mps_dp" / "b200").glob("*.yaml"))
 MIB = 1 << 20
 WHISPER = "openai/whisper-large-v3"
+
+
+class FakeMpsClient:
+    """Control I/O of a live daemon: its owner leases are still held, or were left by a serve killed with SIGKILL."""
+
+    def __init__(self, *, owner_leases_held: bool = True):
+        self.owner_leases_held = owner_leases_held
+        self.queried: list[Path] = []
+
+    def read_daemon_identity(self, pipe_dir: Path) -> int:
+        self.queried.append(pipe_dir)
+        return 4242
+
+    def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
+        return set()
+
+    def owner_lease_held(self, lease_file: Path) -> bool:
+        return self.owner_leases_held
 
 
 class FakeDeviceInfo:
@@ -74,8 +93,8 @@ def cli_patches(config: PipelineConfig, argv: list[str]) -> list[ConfigPatch]:
 
 
 @pytest.fixture
-def mps_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A CUDA host with the MPS control binary and no inherited MPS settings."""
+def mps_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A CUDA host with the MPS control binary, no inherited MPS settings and an empty MPS state root, which it returns."""
     monkeypatch.setattr(
         replica_profiles,
         "current_platform",
@@ -88,6 +107,9 @@ def mps_host(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
     monkeypatch.delenv("SGLANG_OMNI_WEIGHT_SHARE", raising=False)
+    state_root = tmp_path / "mps-state"
+    monkeypatch.setenv("SGLANG_OMNI_MPS_STATE_ROOT", str(state_root))
+    return state_root
 
 
 def test_every_b200_example_is_a_profile_at_its_replica_count(monkeypatch) -> None:
@@ -147,13 +169,18 @@ def test_detected_b200_serves_the_measured_replicas_on_the_stage_gpu(
     config = manager.merge_config(manager.parse_extra_args(gpu_argv))
     user_patches = cli_patches(manager.config, gpu_argv)
     device_info = FakeDeviceInfo(idle_b200())
+    mps_client = FakeMpsClient()
 
     decision = decide_replica_profile(
-        config, user_patches=user_patches, device_info=device_info
+        config,
+        user_patches=user_patches,
+        device_info=device_info,
+        mps_client=mps_client,
     )
 
     gpu_id = 2 if gpu_argv else 0
     assert device_info.inspected == [gpu_id]
+    assert mps_client.queried == []
     assert decision.profile is profile
     assert decision.writes == {
         **profile.settings,
@@ -239,7 +266,10 @@ def test_launch_keeps_its_own_config_when_the_profile_cannot_hold(
     user_patches = cli_patches(config, argv)
 
     decision = decide_replica_profile(
-        config, user_patches=user_patches, device_info=FakeDeviceInfo(device)
+        config,
+        user_patches=user_patches,
+        device_info=FakeDeviceInfo(device),
+        mps_client=FakeMpsClient(),
     )
 
     assert decision.writes == {}
@@ -253,7 +283,10 @@ def test_broadcast_memory_flag_keeps_the_launch_config(mps_host) -> None:
     user_patches = list(patches_from_broadcast_flags(config, mem_fraction_static=0.5))
 
     decision = decide_replica_profile(
-        config, user_patches=user_patches, device_info=FakeDeviceInfo(idle_b200())
+        config,
+        user_patches=user_patches,
+        device_info=FakeDeviceInfo(idle_b200()),
+        mps_client=FakeMpsClient(),
     )
 
     assert decision.writes == {}
@@ -265,7 +298,10 @@ def test_platform_without_mps_never_inspects_the_gpu(mps_host, monkeypatch) -> N
     device_info = FakeDeviceInfo(idle_b200())
 
     decision = decide_replica_profile(
-        model_default(profile_for(WHISPER)), user_patches=[], device_info=device_info
+        model_default(profile_for(WHISPER)),
+        user_patches=[],
+        device_info=device_info,
+        mps_client=FakeMpsClient(),
     )
 
     assert decision.writes == {}
@@ -298,4 +334,97 @@ def test_config_resolve_previews_the_profile_and_names_it(
     assert resolution.resolved.config.mps == "on"
     assert "replica profile measured on this GPU" in (
         resolution.resolved.provenance.explain("processes.asr.num_replicas")
+    )
+
+
+def leave_owner_lease(state_root: Path, gpu_uuid: str) -> Path:
+    """The state a serve publishes for one GPU: a pipe directory and an active owner lease."""
+    state_dir = state_root / gpu_uuid
+    (state_dir / "pipe").mkdir(parents=True)
+    (state_dir / "owners").mkdir()
+    (state_dir / "owners" / "4242").write_text("active\n")
+    return state_dir
+
+
+def test_state_left_by_a_killed_serve_keeps_the_launch_config(mps_host) -> None:
+    """A serve killed with SIGKILL leaves an owner lease no join accepts; the launch serves its own config instead of failing in MPS setup."""
+    state_dir = leave_owner_lease(mps_host, "GPU-b200")
+    mps_client = FakeMpsClient(owner_leases_held=False)
+
+    decision = decide_replica_profile(
+        model_default(profile_for(WHISPER)),
+        user_patches=[],
+        device_info=FakeDeviceInfo(idle_b200()),
+        mps_client=mps_client,
+    )
+
+    assert mps_client.queried == [state_dir / "pipe"]
+    assert decision.writes == {}
+    assert decision.message.endswith(
+        "GPU 0 holds MPS state from an earlier run that a new launch cannot "
+        f"join, in {state_dir}"
+    )
+
+
+def test_live_daemon_of_another_serve_is_joined_with_the_profile(mps_host) -> None:
+    leave_owner_lease(mps_host, "GPU-b200")
+
+    decision = decide_replica_profile(
+        model_default(profile_for(WHISPER)),
+        user_patches=[],
+        device_info=FakeDeviceInfo(idle_b200()),
+        mps_client=FakeMpsClient(owner_leases_held=True),
+    )
+
+    assert decision.profile is profile_for(WHISPER)
+
+
+@pytest.mark.parametrize(
+    "argv, reason",
+    [
+        (["--vocoder.gpu", "[1]"], "its GPU stages run on GPUs [0, 1]"),
+        (
+            ["--vocoder.gpu", "null"],
+            "the profile replicates processes without a GPU stage: ['vocoder']",
+        ),
+    ],
+)
+def test_stage_placement_the_profile_cannot_replicate_keeps_the_launch_config(
+    mps_host, argv, reason
+) -> None:
+    """A list placement counts as a GPU, and a replicated process left without a GPU stage would fail topology validation."""
+    model_path = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    manager = ConfigManager(model_default(profile_for(model_path)))
+    config = manager.merge_config(manager.parse_extra_args(argv))
+
+    decision = decide_replica_profile(
+        config,
+        user_patches=cli_patches(manager.config, argv),
+        device_info=FakeDeviceInfo(idle_b200()),
+        mps_client=FakeMpsClient(),
+    )
+
+    assert decision.writes == {}
+    assert decision.message.endswith(f"{model_path} not applied: {reason}")
+
+
+def test_byte_reserves_count_toward_the_memory_the_replicas_need(mps_host) -> None:
+    """Drama 3's preprocessing reserves 6 GiB in bytes, once per replica, on top of the fractions."""
+    device = MpsPhysicalDevice(
+        "GPU-b200",
+        name=B200.name,
+        total_memory_bytes=B200.total_memory_mib * MIB,
+        free_memory_bytes=130 << 30,
+    )
+
+    decision = decide_replica_profile(
+        model_default(profile_for("fishaudio/drama-3")),
+        user_patches=[],
+        device_info=FakeDeviceInfo(device),
+        mps_client=FakeMpsClient(),
+    )
+
+    assert decision.writes == {}
+    assert decision.message.endswith(
+        "GPU 0 has 130.0 GiB free and 2 replicas reserve 139.4 GiB"
     )

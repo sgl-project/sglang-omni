@@ -202,11 +202,11 @@ sgl-omni serve --model-path openai/whisper-large-v3
 Serving 6 replicas of openai/whisper-large-v3 on GPU 0 (NVIDIA B200) under MPS, the count measured for this GPU; --mps off serves one replica
 ```
 
-The measured settings apply only when all of the following hold. Otherwise the launch serves the model's own config, one replica without MPS as before, and the log line names the reason.
+The measured settings apply only when all of the following hold. Otherwise the launch serves the model's own config, as before, and the log line names the reason.
 
 * The GPU is the measured model: NVML reports `NVIDIA B200` with 183,359 MiB of memory, within 2%.
-* Native MPS can start on it: the platform is NVIDIA CUDA, `nvidia-cuda-mps-control` is on `PATH`, MIG mode is off, and the environment sets neither `CUDA_MPS_PIPE_DIRECTORY` nor `SGLANG_OMNI_WEIGHT_SHARE`.
-* The pipeline runs on that one GPU without tensor parallelism, and the GPU has the memory the replicas reserve free.
+* Native MPS can start on it: the platform is NVIDIA CUDA, `nvidia-cuda-mps-control` is on `PATH`, MIG mode is off, the environment sets neither `CUDA_MPS_PIPE_DIRECTORY` nor `SGLANG_OMNI_WEIGHT_SHARE`, and no earlier run left MPS state on the GPU that a new launch cannot join, as a serve killed with SIGKILL does. The section on native runtime support says how to inspect and clean that state.
+* The pipeline runs on that one GPU without tensor parallelism, every process the profile replicates has a stage on that GPU, and the memory the replicas reserve, as fractions or as `total_reserve_bytes`, is free.
 * No config file or flag sizes or places the replicas itself: nothing under `processes`, no `--mps off`, no stage `process`, `tp_size`, `gpu_memory_fraction` or `total_reserve_bytes`, no engine `mem_fraction_static` (including `--mem-fraction-static`), `max_total_tokens` or `kv_cache_bytes`, and none of the settings the profile writes. Moving the pipeline to another GPU with `--<stage>.gpu` keeps the profile, and the replicas follow it.
 
 `sgl-omni config resolve --model-path <model>` prints the config a launch on the same host would use, and `sgl-omni config explain processes.<process>.num_replicas --model-path <model>` names the measured profile as the source of the count. The profiles live in `sglang_omni/mps/replica_profiles.py`.

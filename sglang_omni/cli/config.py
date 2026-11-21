@@ -32,6 +32,7 @@ from sglang_omni.config.sources import (
     sources_from_config_file,
 )
 from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.mps.control import SubprocessMpsControlClient
 from sglang_omni.mps.devices import NvmlDeviceInfo
 from sglang_omni.mps.replica_profiles import decide_replica_profile
 from sglang_omni.pipeline.replicas import warn_replica_device_overrides
@@ -179,7 +180,10 @@ def resolve_sources(
         # The same post-merge derivations serve runs; they only fill keys no
         # source set, so the previewed config is the launched one.
         replica_profile = decide_replica_profile(
-            resolved.config, user_patches=patches, device_info=NvmlDeviceInfo()
+            resolved.config,
+            user_patches=patches,
+            device_info=NvmlDeviceInfo(),
+            mps_client=SubprocessMpsControlClient(),
         )
         profiled = apply_engine_writes(resolved.config, replica_profile.writes)
         logical_plan, logical_stages = compile_logical_processes(profiled)
