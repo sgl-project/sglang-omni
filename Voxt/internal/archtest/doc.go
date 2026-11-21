@@ -16,6 +16,9 @@
 //     start no goroutines and take no app. Existing violations are in
 //     view-allowlist.txt, one per file, and each migration removes its files.
 //   - TestLongFuncs: reports (t.Log, go test -v) functions over 150 lines.
+//   - TestComplexFuncs: a function of code has a cognitive complexity
+//     (gocognit's score) of at most 25. Functions over it today are in
+//     complexity.txt with their score, which must match (a ratchet).
 //   - TestNotice: every module go.mod requires is named in NOTICE with its
 //     version and has its licence text in LICENSES/ (AGENTS.md, "Licence").
 //
