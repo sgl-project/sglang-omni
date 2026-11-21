@@ -511,7 +511,7 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
-| `sample_rate` | int | `null` | Output sample rate from `1` to `192000` Hz, for example `8000`, `16000`, `22050`, `44100`, or `48000`. Omit it to preserve the model's native rate. WAV and PCM accept custom rates; compressed formats require a rate supported by their encoder. Explicit Opus output rates must be `48000` |
+| `sample_rate` | int | `null` | Requested output rate in Hz for the Python server, from `7350` to `192000` subject to the format's encoder limits. For example, pass `8000` for 8 kHz |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
 | `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |
@@ -537,7 +537,9 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `stage_params` | object | `null` | Model-specific stage overrides; see the model cookbook |
 | `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw audio outcome |
 
-Batch defaults, individual batch items, and WebSocket session configuration also accept `sample_rate`. WAV headers, HTTP `X-Sample-Rate`, batch result `sample_rate`, and WebSocket `audio.start.sample_rate` report the output rate. Unsupported encoder rates return HTTP 400 instead of silently choosing a nearby rate.
+The Python server also accepts `sample_rate` in batch defaults, batch items, and WebSocket session configuration. WAV and PCM accept any rate in the supported range. FLAC rates above `65535` Hz must be divisible by 10. AAC and MP3 accept rates supported by their encoders, and explicit Opus output uses `48000` Hz. The server rejects unsupported explicit rates before synthesis.
+
+Omitting `sample_rate` uses the model's native rate where the encoder supports it. Compressed encoders may adapt that rate, such as Opus playback at 48 kHz. WAV headers, HTTP `X-Sample-Rate`, batch result `sample_rate`, and WebSocket `audio.start.sample_rate` report the delivered rate.
 
 ## Error Handling
 
