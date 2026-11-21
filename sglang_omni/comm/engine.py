@@ -43,6 +43,7 @@ from sglang_omni.proto import (
     KVTransferReadyMessage,
     StagePayload,
 )
+from sglang_omni.proto.session import SessionIdentityDict
 from sglang_omni.relay.base import Relay, RelayOperation
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ class StreamSendJob(msgspec.Struct, frozen=True):
     ready: asyncio.Future[DataRef]
     enqueued_ns: int
     replica_bindings: dict[str, int] | None = None
+    session_sampling_identity: SessionIdentityDict | None = None
 
 
 class CommEngine:
@@ -338,6 +340,7 @@ class CommEngine:
         metadata: dict[str, object] | None,
         transport: TransportKind,
         replica_bindings: dict[str, int] | None = None,
+        session_sampling_identity: SessionIdentityDict | None = None,
     ) -> None:
         queue = self.send_queue_for(target_stage)
         loop = asyncio.get_running_loop()
@@ -358,6 +361,7 @@ class CommEngine:
                 ready=ready,
                 enqueued_ns=enqueue_start,
                 replica_bindings=replica_bindings,
+                session_sampling_identity=session_sampling_identity,
             )
         )
         _comm_trace(
@@ -1095,6 +1099,7 @@ class CommEngine:
                 ops=ops,
                 chunk_id=job.chunk_id,
                 replica_bindings=job.replica_bindings,
+                session_sampling_identity=job.session_sampling_identity,
             )
             control_ms = _comm_elapsed_ms(control_start)
             _comm_trace(
@@ -1134,6 +1139,7 @@ class CommEngine:
         ops: list[RelayOperation],
         chunk_id: int | None = None,
         replica_bindings: dict[str, int] | None = None,
+        session_sampling_identity: SessionIdentityDict | None = None,
     ) -> asyncio.Task[bool]:
         """Publish a relay object and arm its existing ACK lifecycle."""
 
@@ -1148,6 +1154,7 @@ class CommEngine:
             data_ref=data_ref,
             chunk_id=chunk_id,
             replica_bindings=replica_bindings,
+            session_sampling_identity=session_sampling_identity,
         )
 
     async def publish_registered_data_ready(
@@ -1161,6 +1168,7 @@ class CommEngine:
         data_ref: DataRef,
         chunk_id: int | None = None,
         replica_bindings: dict[str, int] | None = None,
+        session_sampling_identity: SessionIdentityDict | None = None,
     ) -> asyncio.Task[bool]:
         object_id = data_ref.object_id
         try:
@@ -1174,6 +1182,7 @@ class CommEngine:
                     data_ref=data_ref.to_dict(),
                     chunk_id=chunk_id,
                     replica_bindings=replica_bindings,
+                    session_sampling_identity=session_sampling_identity,
                 ),
             )
         except BaseException as exc:

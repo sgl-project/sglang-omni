@@ -44,7 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         completeness = report["completeness"]
         reasons = ", ".join(completeness["incomplete_reasons"])
-        completeness_line = f"# Completeness: {completeness['state']}"
+        completeness_line = (
+            f"# Completeness: {completeness['state']} "
+            f"(scope: {completeness['scope']})"
+        )
         if reasons:
             completeness_line += f" ({reasons})"
         else:

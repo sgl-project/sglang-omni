@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import pickle
 import queue
+from collections.abc import Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,14 +18,18 @@ from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher, LocalStreamChunk
+from sglang_omni.pipeline.stage import runtime as stage_runtime_module
 from sglang_omni.pipeline.stage.runtime import BATCHED_STREAM_CHUNK_BYTES_LIMIT, Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
+from sglang_omni.profiler.event_recorder import RequestEventRecorder
+from sglang_omni.profiler.event_recorder_types import RecorderRunState
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
 from tests.unit_test.pipeline.helpers import make_stage
+from tests.unit_test.profiler.event_recorder_test_utils import read_events, read_status
 
 
 class FakeControlPlane:
@@ -565,6 +571,9 @@ def test_stream_chunk_batch_round_trips_through_the_control_plane(
             chunk_id=index,
             data=tensor,
             metadata=None if index == 0 else {"token_id": index, "span": (index, 1)},
+            session_sampling_identity=(
+                {"id": "session-roundtrip", "open_index": 2} if index == 1 else None
+            ),
         )
         for index, tensor in enumerate(tensors)
     ]
@@ -592,12 +601,70 @@ def test_stream_chunk_batch_round_trips_through_the_control_plane(
     assert cloned_shapes == [(1,), (2,), (1,)]
     assert message.replica_bindings == {"req-1": {"talker_ar": 1}}
     assert [
-        (chunk.request_id, chunk.chunk_id, chunk.metadata) for chunk in restored
-    ] == [(chunk.request_id, chunk.chunk_id, chunk.metadata) for chunk in chunks]
+        (
+            chunk.request_id,
+            chunk.chunk_id,
+            chunk.metadata,
+            chunk.session_sampling_identity,
+        )
+        for chunk in restored
+    ] == [
+        (
+            chunk.request_id,
+            chunk.chunk_id,
+            chunk.metadata,
+            chunk.session_sampling_identity,
+        )
+        for chunk in chunks
+    ]
     for original, received in zip(chunks, restored, strict=True):
         assert received.data.dtype == original.data.dtype
         assert torch.equal(received.data, original.data)
         assert received.data.untyped_storage().nbytes() == received.data.nbytes
+
+
+def test_data_ready_stream_session_identity_is_optional_and_round_trips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disabled_recorder = RequestEventRecorder()
+    monkeypatch.setattr(
+        stage_runtime_module, "_get_recorder", lambda: disabled_recorder
+    )
+    assert Stage.stream_session_sampling_identity("request") is None
+
+    disabled_message = DataReadyMessage(
+        request_id="request",
+        from_stage="thinker",
+        to_stage="talker",
+        data_ref={"_type": "stream"},
+        chunk_id=0,
+        session_sampling_identity=Stage.stream_session_sampling_identity("request"),
+    )
+    assert "session_sampling_identity" not in disabled_message.to_dict()
+
+    identity = {"id": "session-ready", "open_index": 3}
+    message = DataReadyMessage(
+        request_id="request",
+        from_stage="thinker",
+        to_stage="talker",
+        data_ref={"_type": "stream"},
+        chunk_id=0,
+        session_sampling_identity=identity,
+    )
+    restored = deserialize_message(serialize_message(message))
+    assert restored.session_sampling_identity == identity
+
+    older_message = DataReadyMessage.from_dict(
+        {
+            "request_id": "request",
+            "from_stage": "thinker",
+            "to_stage": "talker",
+            "data_ref": {"_type": "stream"},
+            "chunk_id": 0,
+        }
+    )
+    assert older_message.session_sampling_identity is None
+    assert "session_sampling_identity" not in older_message.to_dict()
 
 
 class GatedRelay(FakeRelay):
@@ -1263,6 +1330,7 @@ class RecordingLocalDispatcher(LocalStageDispatcher):
     def __init__(self) -> None:
         super().__init__()
         self.chunk_batches: list[tuple[str, list[tuple[str, int]]]] = []
+        self.stream_chunks: list[tuple[str, str, LocalStreamChunk]] = []
 
     async def send_stream_chunks(
         self, *, from_stage: str, to_stage: str, chunks: list[LocalStreamChunk]
@@ -1270,6 +1338,7 @@ class RecordingLocalDispatcher(LocalStageDispatcher):
         self.chunk_batches.append(
             (to_stage, [(chunk.request_id, chunk.chunk_id) for chunk in chunks])
         )
+        self.stream_chunks.extend((from_stage, to_stage, chunk) for chunk in chunks)
         await super().send_stream_chunks(
             from_stage=from_stage, to_stage=to_stage, chunks=chunks
         )
@@ -1296,6 +1365,240 @@ def make_local_stream_pair(
         receiver.stream_queue = StreamQueue()
     dispatcher.register_many([sender, *receivers.values()])
     return dispatcher, sender, receivers
+
+
+def test_local_pre_payload_stream_uses_transported_session_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run() -> None:
+        run_id = "pre-payload-session-sampling"
+        recorder_by_stage = {
+            stage_name: RequestEventRecorder()
+            for stage_name in ("thinker", "talker", "speech")
+        }
+        event_paths: dict[str, str] = {}
+
+        def use_idle_priority(run_state: RecorderRunState) -> None:
+            run_state.writer_scheduling = "SCHED_IDLE"
+
+        for stage_name, recorder in recorder_by_stage.items():
+            monkeypatch.setattr(recorder, "set_writer_scheduling", use_idle_priority)
+            event_paths[stage_name] = recorder.start(
+                run_id,
+                str(tmp_path / stage_name),
+                stage_name,
+                mode="runtime",
+                sampling_unit="session",
+                sample_rate=0.5,
+            )
+
+        source_recorder = recorder_by_stage["thinker"]
+        receiver_recorder = recorder_by_stage["talker"]
+        downstream_recorder = recorder_by_stage["speech"]
+        assert source_recorder.active_state is not None
+        session_decisions: dict[str, bool] = {}
+        for session_number in range(100):
+            session_id = f"session-{session_number}"
+            session_decisions[session_id] = (
+                source_recorder.deterministic_sampling_decision(
+                    source_recorder.active_state, (session_id, 1)
+                )
+            )
+            if set(session_decisions.values()) == {False, True}:
+                break
+        assert set(session_decisions.values()) == {False, True}
+        request_sessions = {
+            "selected-request": next(
+                session_id
+                for session_id, selected in session_decisions.items()
+                if selected
+            ),
+            "unselected-request": next(
+                session_id
+                for session_id, selected in session_decisions.items()
+                if not selected
+            ),
+        }
+        for request_id, session_id in request_sessions.items():
+            source_recorder.record_request_admission(
+                request_id,
+                {
+                    "omni_session": {
+                        "operation": "close",
+                        "session_identity": {"id": session_id, "open_index": 1},
+                        "stages": ["thinker", "talker", "speech"],
+                    }
+                },
+                stage_name="thinker",
+            )
+
+        dispatcher = RecordingLocalDispatcher()
+        stage_a = make_stage(
+            name="thinker",
+            endpoints={"talker": "inproc://talker"},
+            stream_targets=["talker"],
+            same_process_targets={"talker"},
+            local_dispatcher=dispatcher,
+        )
+        stage_b = make_stage(
+            name="talker",
+            endpoints={"speech": "inproc://speech"},
+            stream_targets=["speech"],
+            same_process_targets={"speech"},
+            local_dispatcher=dispatcher,
+            can_accept_stream_before_payload=True,
+        )
+        stage_c = make_stage(name="speech", can_accept_stream_before_payload=True)
+        stage_b.stream_queue = StreamQueue()
+        stage_c.stream_queue = StreamQueue()
+        dispatcher.register_many([stage_a, stage_b, stage_c])
+        active_recorder: list[RequestEventRecorder] = [source_recorder]
+
+        def get_active_recorder() -> RequestEventRecorder:
+            return active_recorder[0]
+
+        def emit_event(
+            *,
+            request_id: str,
+            stage: str | None,
+            event_name: str,
+            metadata: Mapping[str, object] | None = None,
+            timestamp_ns: int | None = None,
+            sampling_session_identity: tuple[str, int] | None = None,
+        ) -> None:
+            assert stage is not None
+            recorder_by_stage[stage].emit(
+                request_id=request_id,
+                stage=stage,
+                event_name=event_name,
+                metadata=metadata,
+                timestamp_ns=timestamp_ns,
+                sampling_session_identity=sampling_session_identity,
+            )
+
+        send_stream_chunks = dispatcher.send_stream_chunks
+
+        async def route_stream_chunks(
+            *,
+            from_stage: str,
+            to_stage: str,
+            chunks: list[LocalStreamChunk],
+        ) -> None:
+            previous_recorder = active_recorder[0]
+            active_recorder[0] = recorder_by_stage[to_stage]
+            try:
+                await send_stream_chunks(
+                    from_stage=from_stage, to_stage=to_stage, chunks=chunks
+                )
+            finally:
+                active_recorder[0] = previous_recorder
+
+        monkeypatch.setattr(stage_runtime_module, "_get_recorder", get_active_recorder)
+        monkeypatch.setattr(stage_runtime_module, "_emit_event", emit_event)
+        monkeypatch.setattr(dispatcher, "send_stream_chunks", route_stream_chunks)
+        stage_a.active_requests.update(request_sessions)
+        for request_id in request_sessions:
+            await stage_a.send_stream_to_target(
+                request_id,
+                torch.tensor([1], dtype=torch.int64),
+                "talker",
+                {"modality": "audio"},
+            )
+            active_recorder[0] = receiver_recorder
+            await stage_b.send_stream_to_target(
+                request_id,
+                torch.tensor([2], dtype=torch.int64),
+                "speech",
+                {"modality": "audio"},
+            )
+            active_recorder[0] = source_recorder
+
+        selected_request_id = "selected-request"
+        selected_session_id = request_sessions[selected_request_id]
+        expected_transported_identities = {
+            selected_request_id: {
+                "id": selected_session_id,
+                "open_index": 1,
+            },
+            "unselected-request": None,
+        }
+        for from_stage, to_stage in (("thinker", "talker"), ("talker", "speech")):
+            assert {
+                chunk.request_id: chunk.session_sampling_identity
+                for chunk_from_stage, chunk_to_stage, chunk in dispatcher.stream_chunks
+                if chunk_from_stage == from_stage and chunk_to_stage == to_stage
+            } == expected_transported_identities
+
+        for request_id, session_id in request_sessions.items():
+            payload = StagePayload(
+                request_id=request_id,
+                request=OmniRequest(
+                    inputs="text",
+                    metadata={
+                        "omni_session": {
+                            "operation": "close",
+                            "session_identity": {"id": session_id, "open_index": 1},
+                            "stages": ["thinker", "talker", "speech"],
+                        }
+                    },
+                ),
+                data={},
+            )
+            active_recorder[0] = receiver_recorder
+            await stage_b.receive_local_payload(request_id, "thinker", payload)
+            active_recorder[0] = downstream_recorder
+            await stage_c.receive_local_payload(request_id, "talker", payload)
+
+        for stage_name, stage in (
+            ("thinker", stage_a),
+            ("talker", stage_b),
+            ("speech", stage_c),
+        ):
+            recorder = recorder_by_stage[stage_name]
+            active_recorder[0] = recorder
+            stage.clear_request_state(selected_request_id)
+            stage.on_abort("unselected-request")
+
+        assert all(
+            recorder.active_state is not None
+            and recorder.active_state.request_sampling_decisions == {}
+            and recorder.active_state.request_session_identities == {}
+            for recorder in recorder_by_stage.values()
+        )
+        for recorder in recorder_by_stage.values():
+            recorder.stop(wait=True)
+
+        events_by_stage = {
+            stage_name: read_events(path) for stage_name, path in event_paths.items()
+        }
+        expected_events = {
+            ("thinker", "stage_stream_chunk_sent"),
+            ("talker", "stage_stream_chunk_received"),
+            ("talker", "stage_stream_chunk_sent"),
+            ("talker", "stage_input_received"),
+            ("speech", "stage_stream_chunk_received"),
+            ("speech", "stage_input_received"),
+        }
+        for stage_name, event_name in expected_events:
+            assert {
+                event["request_id"]
+                for event in events_by_stage[stage_name]
+                if event["event_name"] == event_name
+            } == {selected_request_id}
+        assert all(
+            event["request_id"] != "unselected-request"
+            for events in events_by_stage.values()
+            for event in events
+        )
+        statuses = [read_status(path) for path in event_paths.values()]
+        assert all(
+            status["complete"] is True
+            and status["dropped_events"] == 0
+            and status["unwritten_events"] == 0
+            for status in statuses
+        )
+
+    asyncio.run(run())
 
 
 def frame_message(
