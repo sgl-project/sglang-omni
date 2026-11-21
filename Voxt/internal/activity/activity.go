@@ -1,6 +1,5 @@
 // Package activity counts the finished results of each day, for Home's
-// activity calendar: the days Voxt was used, the current and longest run
-// of such days, and how much each day had. It keeps counts only, no text,
+// activity calendar: the days Voxt was used and how much each day had. It keeps counts only, no text,
 // in a document of its own (Key), so the history's clean-up does not take
 // the older days with it.
 package activity
@@ -48,48 +47,6 @@ func Unmarshal(data []byte) (Log, error) {
 	var l Log
 	err := json.Unmarshal(data, &l)
 	return l, err
-}
-
-// Stats are the calendar's three numbers.
-type Stats struct {
-	// Active is how many days had a result; Current the run of such days
-	// that ends today, or yesterday while today has none yet; Longest the
-	// longest run.
-	Active, Current, Longest int
-}
-
-// Stats counts the log's days up to today.
-func (l Log) Stats(today time.Time) Stats {
-	var s Stats
-	for _, day := range l.Days {
-		if day.Count > 0 {
-			s.Active++
-		}
-	}
-	if s.Active == 0 {
-		return s
-	}
-	day := midnight(today)
-	if l.Get(day).Count == 0 {
-		day = day.AddDate(0, 0, -1) // today is not over: the run may go on
-	}
-	for l.Get(day).Count > 0 {
-		s.Current++
-		day = day.AddDate(0, 0, -1)
-	}
-	// The longest run: walk each run from its first day.
-	for key, d := range l.Days {
-		start, err := time.ParseInLocation("2006-01-02", key, today.Location())
-		if err != nil || d.Count == 0 || l.Get(start.AddDate(0, 0, -1)).Count > 0 {
-			continue
-		}
-		run := 0
-		for day := start; l.Get(day).Count > 0; day = day.AddDate(0, 0, 1) {
-			run++
-		}
-		s.Longest = max(s.Longest, run)
-	}
-	return s
 }
 
 // Levels is how many shades the calendar has for a day with results.

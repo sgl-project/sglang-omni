@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/activity"
@@ -11,12 +10,6 @@ import (
 
 // homeActivityWeeks is how many weeks a calendar page shows: half a year.
 const homeActivityWeeks = 26
-
-type homeActivityStatViewState struct {
-	Value string `json:"value"`
-	Unit  string `json:"unit"`
-	Label string `json:"label"`
-}
 
 type homeActivityDayViewState struct {
 	// Level is the square's shade (activity.Level); Future a day after
@@ -32,7 +25,6 @@ type homeActivityMonthViewState struct {
 }
 
 type homeActivityViewState struct {
-	Stats    []homeActivityStatViewState   `json:"stats"`
 	Weekdays [7]string                     `json:"weekdays"`
 	Weeks    [][7]homeActivityDayViewState `json:"weeks"`
 	Months   []homeActivityMonthViewState  `json:"months"`
@@ -44,19 +36,9 @@ type homeActivityViewState struct {
 }
 
 // buildHomeActivityViewState lays out page (0: the weeks up to today) of
-// the log's calendar, and its numbers as of now.
+// the log's calendar.
 func buildHomeActivityViewState(translator *i18n.Translator, log activity.Log, page int, now time.Time) homeActivityViewState {
-	stats := log.Stats(now)
-	stat := func(n int, label string) homeActivityStatViewState {
-		return homeActivityStatViewState{Value: strconv.Itoa(n), Unit: translator.N(n, "day", "days"), Label: label}
-	}
-	state := homeActivityViewState{
-		Stats: []homeActivityStatViewState{
-			stat(stats.Active, translator.T("Active days")), stat(stats.Current, translator.T("Current streak")),
-			stat(stats.Longest, translator.T("Longest streak")),
-		},
-		CanForward: page > 0, Levels: activity.Levels,
-	}
+	state := homeActivityViewState{CanForward: page > 0, Levels: activity.Levels}
 	names := []rune("SMTWTFS")
 	if translator.Locale() == "zh-Hans" {
 		names = []rune("日一二三四五六")

@@ -7,7 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
-- **An activity calendar on Home** (#4360): under Today, the days you used Voxt over the last half year, shaded by how many results each had, with the number of active days, your current streak and your longest one. Hover a day for its date and count; the arrows go back by half a year. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
+- **An activity calendar on Home** (#4360): under Today, the days you used Voxt over the last half year, shaded by how many results each had. Hover a day for its date and count; the arrows go back by half a year. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
 
 ### Changed
 
@@ -25,7 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
-- **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近半年使用 Voxt 的情况，颜色越深表示当天结果越多，并显示活跃天数、当前连续天数和最长连续天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻半年。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
+- **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近半年使用 Voxt 的情况，颜色越深表示当天结果越多。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻半年。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
 
 #### 变更
 

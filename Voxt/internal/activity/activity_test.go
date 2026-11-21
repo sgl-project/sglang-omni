@@ -13,36 +13,6 @@ func day(s string) time.Time {
 	return t
 }
 
-func logOf(days ...string) Log {
-	var l Log
-	for _, d := range days {
-		l.Add(day(d))
-	}
-	return l
-}
-
-func TestStats(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		log   Log
-		today string
-		want  Stats
-	}{
-		{name: "empty", log: Log{}, today: "2026-11-20", want: Stats{}},
-		{name: "today only", log: logOf("2026-11-20"), today: "2026-11-20", want: Stats{1, 1, 1}},
-		{name: "run up to yesterday stays current", log: logOf("2026-11-18", "2026-11-19"), today: "2026-11-20", want: Stats{2, 2, 2}},
-		{name: "a missed day ends the run", log: logOf("2026-11-17", "2026-11-18"), today: "2026-11-20", want: Stats{2, 0, 2}},
-		{name: "longest is an older run", log: logOf("2026-10-01", "2026-10-02", "2026-10-03", "2026-11-19", "2026-11-20"), today: "2026-11-20", want: Stats{5, 2, 3}},
-		{name: "across a month and a year", log: logOf("2025-12-31", "2026-01-01", "2026-01-02"), today: "2026-01-02", want: Stats{3, 3, 3}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.log.Stats(day(tc.today)); got != tc.want {
-				t.Fatalf("got %+v, want %+v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestAddAndStore(t *testing.T) {
 	var l Log
 	l.Add(day("2026-11-07"))

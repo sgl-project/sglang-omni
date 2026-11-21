@@ -2,8 +2,7 @@ package main
 
 // Home's activity calendar: the days Voxt gave a result, as squares by
 // week (a column a week, Sunday on top) over half a year, shaded by how
-// many results each day had; above them the active days, the current
-// run of them and the longest. The arrows page through earlier halves.
+// many results each day had. The arrows page through earlier halves.
 
 import (
 	"strconv"
@@ -29,18 +28,6 @@ func homeActivitySection(c *ui.Context, state *homeViewState, actions homeAction
 	}
 	sectionTitle(c, i18n.T("Activity"))
 	fillCard(c.Key("home-activity")).Gap(px(t, sp3)).Children(func() {
-		ui.Row(c.Key("activity-stats")).Wrap().Gap(px(t, sp4)).Children(func() {
-			for index, stat := range act.Stats {
-				ui.Column(c.Key("stat-" + strconv.Itoa(index))).Gap(px(t, 2)).Grow(1).Basis(px(t, 120)).MinWidth(px(t, 96)).
-					Label(stat.Label + " " + stat.Value + " " + stat.Unit).Children(func() {
-					ui.Row(c).Gap(px(t, 4)).AlignItems(ui.End).Children(func() {
-						ui.Text(c, stat.Value).FontSize(px(t, fsTitle)).FontWeight(600).SingleLine()
-						ui.Text(c, stat.Unit).FontSize(px(t, fsCaption)).FontWeight(600).SingleLine().Margin(0, 0, px(t, 3), 0)
-					})
-					ui.Text(c, stat.Label).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
-				})
-			}
-		})
 		homeActivityGrid(c, act)
 		ui.Row(c.Key("activity-foot")).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 			if activityArrow(c.Key("activity-back"), icons.AltArrowLeft, i18n.T("Earlier weeks"), act.CanBack) {

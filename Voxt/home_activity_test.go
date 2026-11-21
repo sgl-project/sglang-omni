@@ -54,8 +54,8 @@ func TestActivityCountsHistoryThenSessions(t *testing.T) {
 	a.act = homeActivity{}
 	a.loadActivity()
 	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
-	if got := a.act.log.Stats(now); got != (activity.Stats{Active: 2, Current: 2, Longest: 2}) {
-		t.Fatalf("from the history: %+v", got)
+	if got := activeDays(a.act.log); got != 2 {
+		t.Fatalf("from the history: %d active days", got)
 	}
 
 	rev := func() uint64 { return a.sess.Rev + 1 }
@@ -103,8 +103,8 @@ func TestActivityPendingBeforeRead(t *testing.T) {
 	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "p", Kind: store.KindTranscribe, State: session.Recording})
 	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "p", Kind: store.KindTranscribe, State: session.Done, Result: "Hi."})
 	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
-	if got := a.act.log.Stats(time.Now()); got.Active != 2 || got.Current != 2 {
-		t.Fatalf("stored day and the pending result: %+v", got)
+	if got := activeDays(a.act.log); got != 2 {
+		t.Fatalf("stored day and the pending result: %d active days", got)
 	}
 }
 
@@ -120,12 +120,6 @@ func TestHomeActivityViewState(t *testing.T) {
 	log.Add(now.AddDate(0, -9, 0)) // before this page
 	tr := i18n.NewTranslator("en")
 	state := buildHomeActivityViewState(tr, log, 0, now)
-	if got := []string{state.Stats[0].Value, state.Stats[1].Value, state.Stats[2].Value}; got[0] != "4" || got[1] != "2" || got[2] != "2" {
-		t.Fatalf("stats %q", got)
-	}
-	if state.Stats[0].Unit != "days" || state.Stats[1].Label != "Current streak" {
-		t.Fatalf("stat words %+v", state.Stats)
-	}
 	if len(state.Weeks) != homeActivityWeeks || !state.CanBack || state.CanForward || state.Levels != activity.Levels {
 		t.Fatalf("%d weeks, back %v forward %v", len(state.Weeks), state.CanBack, state.CanForward)
 	}
@@ -146,8 +140,8 @@ func TestHomeActivityViewState(t *testing.T) {
 		t.Fatalf("months %+v", state.Months)
 	}
 	zh := buildHomeActivityViewState(i18n.NewTranslator("zh-Hans"), log, 0, now)
-	if tip := zh.Weeks[len(zh.Weeks)-1][5].Tip; tip != "2026年11月20日：1 次" || zh.Stats[0].Unit != "天" || zh.Weekdays[1] != "一" {
-		t.Fatalf("zh-Hans: %q %q %q", tip, zh.Stats[0].Unit, zh.Weekdays)
+	if tip := zh.Weeks[len(zh.Weeks)-1][5].Tip; tip != "2026年11月20日：1 次" || zh.Weekdays[1] != "一" {
+		t.Fatalf("zh-Hans: %q %q", tip, zh.Weekdays)
 	}
 	older := buildHomeActivityViewState(tr, log, 1, now)
 	if !older.CanForward || older.Weeks[len(older.Weeks)-1][5].Tip != "May 22, 2026: no results" {
@@ -163,7 +157,7 @@ func TestHomeActivityShows(t *testing.T) {
 	a.act.log.Add(time.Now())
 	a.act.gen++
 	frames(tt)
-	for _, s := range []string{"Activity", "Active days", "Current streak", "Longest streak", "Less often", "More often"} {
+	for _, s := range []string{"Activity", "Less often", "More often"} {
 		if !hasExact(tt, s) {
 			t.Errorf("no %q: %q", s, firstTexts(tt))
 		}
@@ -208,4 +202,15 @@ func TestActivityPendingSeenByTheCount(t *testing.T) {
 	if got := a.act.log.Get(now).Count; got != 2 {
 		t.Fatalf("today counted %d, want the history's entry once and the missed result", got)
 	}
+}
+
+// activeDays is how many days of the log had a result.
+func activeDays(log activity.Log) int {
+	n := 0
+	for _, day := range log.Days {
+		if day.Count > 0 {
+			n++
+		}
+	}
+	return n
 }
