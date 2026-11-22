@@ -220,7 +220,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 		marked := 0
 		carry = ""
 		for _, part := range res.Segments {
-			text := strings.TrimSpace(part.Text)
+			text := sanitizeSegmentText(part.Text, req, false)
 			if text == "" {
 				continue
 			}
@@ -255,7 +255,10 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 			}
 		}
 		if marked == 0 && strings.TrimSpace(res.Text) != "" {
-			out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: strings.TrimSpace(res.Text), Final: true})
+			text := sanitizeSegmentText(res.Text, req, false)
+			if text != "" {
+				out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: text, Final: true})
+			}
 		}
 		if runes := []rune(carry); len(runes) > 300 { // the last lines, at most a screen
 			carry = string(runes[len(runes)-300:])
@@ -360,7 +363,7 @@ func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, r
 		if err != nil {
 			return out, fmt.Errorf("chunk %d: %w", i, err)
 		}
-		text := res.Text
+		text := sanitizeSegmentText(res.Text, req, true)
 		if i > 0 {
 			text = DedupeOverlapText(prevText, text)
 		}

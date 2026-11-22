@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"unicode"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 )
 
 // listMarks may stand between the terms of an echoed list; sentenceEnds
@@ -119,6 +121,7 @@ var fillers = map[string]bool{"嗯": true, "呃": true, "啊": true, "额": true
 
 // foldRune folds case and full width.
 func foldRune(r rune) rune {
+	r = lang.CanonicalChineseRune(r)
 	if r >= 0xFF01 && r <= 0xFF5E {
 		r -= 0xFEE0
 	}

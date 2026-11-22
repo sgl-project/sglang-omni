@@ -4,6 +4,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 )
 
 const (
@@ -63,6 +65,7 @@ func echoWords(text string) []string {
 		}
 	}
 	for _, r := range strings.ToLower(text) {
+		r = lang.CanonicalChineseRune(r)
 		switch {
 		case unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul):
 			flush()

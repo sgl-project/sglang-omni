@@ -44,6 +44,7 @@ meeting core
 meeting helper/proto
 meeting llm
 meeting local
+meeting lang
 meeting session
 meeting settings
 meeting store

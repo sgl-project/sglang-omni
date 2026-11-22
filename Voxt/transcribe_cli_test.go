@@ -15,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/fileasr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // tone is s seconds of a 440 Hz tone (speech to the cutter's level).
@@ -149,6 +150,13 @@ func TestTranscribeUsesTranscribesSpeechModel(t *testing.T) {
 	code, stdout, stderr := runTranscribe(sock, func(string) ([]byte, error) { return tone(1), nil }, "--format", "txt", "a.m4a")
 	if code != exitOK || stdout != "Hello from the file\n" || tr.count() != 1 {
 		t.Fatalf("code %d, stdout %q, stderr %q, calls %d", code, stdout, stderr, tr.count())
+	}
+
+	tr.text = "我們今天討論會議轉寫。"
+	a.updateSettings(func(s *settings.Settings) { s.General.MainLanguage = "zh-Hans" })
+	code, stdout, stderr = runTranscribe(sock, func(string) ([]byte, error) { return tone(1), nil }, "--format", "txt", "a.m4a")
+	if code != exitOK || stdout != "我们今天讨论会议转写。\n" || tr.count() != 2 {
+		t.Fatalf("Chinese script: code %d, stdout %q, stderr %q, calls %d", code, stdout, stderr, tr.count())
 	}
 
 	old := newLocalServices

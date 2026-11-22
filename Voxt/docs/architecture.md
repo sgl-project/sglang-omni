@@ -26,7 +26,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── logs/             log ring + rotated files
 │   ├── notify/           the notification centre (kept in the store's documents)
 │   ├── activity/         Home's activity calendar: results, characters and speech time per day (document activity:days)  (leaf)
-│   ├── lang/             the language table, 652 languages                                     (leaf)
+│   ├── lang/             the language table and Simplified/Traditional Chinese conversion       (leaf)
 │   ├── permission/       Microphone, Accessibility and Speech Recognition (purego on darwin;
 │   │                     Fake for tests); system audio is asked for through the helper    (leaf)
 │   ├── macx/             activating an app again before a paste (purego on darwin); the       (leaf)

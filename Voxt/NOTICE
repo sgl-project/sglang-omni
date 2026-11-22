@@ -148,6 +148,11 @@ React Bits Sound Lab (the recording's cues, in official builds only)
   (scripts/sync-sounds.sh) into Contents/Resources/sounds. A build from
   this source without them plays macOS's system sounds.
 
+Chinese character conversion data
+  The Simplified/Traditional character dictionaries in internal/lang,
+  distributed with github.com/liuzl/gocc, are OpenCC data licensed under
+  Apache License 2.0 (LICENSES/Apache-2.0.txt).
+
 Go modules compiled into VoxtNew
   Their licence files are copied unchanged into LICENSES/go/.
   - github.com/coder/websocket v1.8.15, Copyright (c) 2025 Coder, ISC

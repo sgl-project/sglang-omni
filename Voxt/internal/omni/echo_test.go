@@ -51,6 +51,18 @@ func TestEchoTail(t *testing.T) {
 	}
 }
 
+func TestEchoTailAcrossChineseScripts(t *testing.T) {
+	terms := []string{"语音识别", "会议转写"}
+	text := "好的。語音識別，會議轉寫。"
+	cut, found, certain := echoTail(text, terms, false)
+	if cut < 0 || text[:cut] != "好的。" || !slices.Equal(found, terms) || !certain {
+		t.Fatalf("cut %d, found %q, certain %v", cut, found, certain)
+	}
+	if !heardAgain("语音识别，会议转写", "好的。", terms) {
+		t.Fatal("plain recognition in another script was not found")
+	}
+}
+
 func TestEchoTailCutOff(t *testing.T) {
 	terms := []string{"Voxt", "Omni", "SGLang", "Kubernetes"}
 	text := "好的。Voxt\nOmni\nSGLang\nKubern"
