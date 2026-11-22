@@ -1078,7 +1078,7 @@
 <td><p>Qwen3-ASR-1.7B on 8002</p></td>
 <td><p>Qwen3.8-27B on 8003, thinking off, speaking through <code class="docutils literal notranslate"><span class="pre">tts_start</span></code> (speaking through a tool)</p></td>
 <td><p>Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning <code class="docutils literal notranslate"><span class="pre">voices/vivian.wav</span></code> with its transcript</p></td>
-<td><p>2: the language model on GPU 0, both speech models on GPU 1</p></td>
+<td><p>2: the language model on GPU 0, both speech models on GPU 1; one H200 with <a class="reference internal" href="#a-live-demo-of-the-reference-profile"><span class="std std-ref">other memory fractions</span></a></p></td>
 <td><p>Alignment worker on 8010</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">qwen3-asr-qwen3.8-27b-vivian-screen</span></code></p></td>
@@ -1157,6 +1157,107 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </div>
 <p>The server starts the profile’s <code class="docutils literal notranslate"><span class="pre">services</span></code> in order and waits for each, reuses a service already answering on its port, and starts the cascade once every service and the worker answer; stopping the server stops the services it started. The cascade listens on 8765 because the profile’s language model takes 8000. The server is ready when the capabilities on port 8765 contain <code class="docutils literal notranslate"><span class="pre">&quot;interaction&quot;:&quot;turn_based&quot;</span></code>.</p>
 <p>To run without the worker, switch the aligner on the command line: <code class="docutils literal notranslate"><span class="pre">--session_nodes.aligner.method</span> <span class="pre">asr</span> <span class="pre">--session_nodes.aligner.alignment_url</span> <span class="pre">&quot;&quot;</span></code> for a Qwen3-ASR profile, <code class="docutils literal notranslate"><span class="pre">--session_nodes.aligner.method</span> <span class="pre">sentence</span> <span class="pre">--session_nodes.aligner.alignment_url</span> <span class="pre">&quot;&quot;</span></code> for a Nemotron profile. Any other profile field is overridden the same way. To use a language model you already run, remove the <code class="docutils literal notranslate"><span class="pre">chat</span></code> entry from the profile’s <code class="docutils literal notranslate"><span class="pre">services</span></code> and set both <code class="docutils literal notranslate"><span class="pre">--session_nodes.llm.base_url</span></code> (such as <code class="docutils literal notranslate"><span class="pre">http://127.0.0.1:9000/v1</span></code>) and <code class="docutils literal notranslate"><span class="pre">--session_nodes.llm.model</span></code>; with only <code class="docutils literal notranslate"><span class="pre">base_url</span></code>, the server still starts the profile’s chat service and the node still asks for the profile’s model. <a class="reference internal" href="#services-you-run-elsewhere"><span class="std std-ref">Services you run elsewhere</span></a> has the details; <a class="reference internal" href="#streaming-cascade-reference"><span class="std std-ref">Streaming Cascade Reference</span></a> lists every setting, the cascade protocol and the settings that cannot be combined.</p>
+<p id="a-live-demo-of-the-reference-profile"><strong>A live demo of the reference profile</strong></p>
+<p>These steps run <code class="docutils literal notranslate"><span class="pre">qwen3-asr-qwen3.8-27b-vivian-tts-tool</span></code>, the reference cascade in the strategy table, as a browser demo that people talk to. Install the cascade and build the aligner venv as above, then download the profile’s models. Also download the ASR DFlash draft at the revision that <code class="docutils literal notranslate"><span class="pre">sglang_omni/speculative/draft_registry.py</span></code> pins, because a server started with <code class="docutils literal notranslate"><span class="pre">HF_HUB_OFFLINE=1</span></code> cannot fetch it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>Qwen/Qwen3-ASR-1.7B
+hf<span class="w"> </span>download<span class="w"> </span>wilsonzheng0327/Qwen3-ASR-1.7B-dflash<span class="w"> </span>--revision<span class="w"> </span>d62bd4051e68282e02f93de774036a35f22f1373
+hf<span class="w"> </span>download<span class="w"> </span>Qwen/Qwen3.8-27B
+hf<span class="w"> </span>download<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-Base
+hf<span class="w"> </span>download<span class="w"> </span>Qwen/Qwen3-ForcedAligner-0.6B
+</pre></div>
+</div>
+<p>The profile runs on two GPUs. To run it on one H200, write a copy that puts every service on GPU 0 with these memory fractions:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Service</p></th>
+<th class="head"><p>Two GPUs, as shipped</p></th>
+<th class="head"><p>One H200</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">chat</span></code>, Qwen3.8-27B</p></td>
+<td><p>GPU 0, <code class="docutils literal notranslate"><span class="pre">--mem-fraction-static</span> <span class="pre">0.85</span></code></p></td>
+<td><p>GPU 0, 0.60</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">asr</span></code>, Qwen3-ASR-1.7B</p></td>
+<td><p>GPU 1, 0.08</p></td>
+<td><p>GPU 0, 0.22</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tts</span></code>, Qwen3-TTS-12Hz-1.7B-Base</p></td>
+<td><p>GPU 1, 0.12</p></td>
+<td><p>GPU 0, 0.40</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sed<span class="w"> </span>-e<span class="w"> </span><span class="s1">'s/"0.85"/"0.60"/'</span><span class="w"> </span>-e<span class="w"> </span><span class="s1">'s/"0.08"/"0.22"/'</span><span class="w"> </span>-e<span class="w"> </span><span class="s1">'s/"0.12"/"0.40"/'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="s1">'s/CUDA_VISIBLE_DEVICES: "1"/CUDA_VISIBLE_DEVICES: "0"/'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml<span class="w"> </span>&gt;<span class="w"> </span>/tmp/tts-tool-one-gpu.yaml
+</pre></div>
+</div>
+<p>Each fraction is a share of the GPU memory that is still free when its service starts, and the server starts the services in the order of the table. On one GPU, the later services therefore need larger shares than on a GPU of their own. With the shipped 0.08, the recognizer ran out of KV cache on one H200.</p>
+<p>Start the alignment worker beside the speech models, with <code class="docutils literal notranslate"><span class="pre">--device</span> <span class="pre">cuda:1</span></code> on two GPUs or <code class="docutils literal notranslate"><span class="pre">--device</span> <span class="pre">cuda:0</span></code> on one H200, and wait until its <code class="docutils literal notranslate"><span class="pre">/health</span></code> answers <code class="docutils literal notranslate"><span class="pre">{&quot;status&quot;:&quot;ready&quot;}</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">PYTHONPATH</span><span class="o">=</span>.<span class="w"> </span>aligner-venv/bin/python<span class="w"> </span>examples/streaming_cascade/alignment_worker.py<span class="w"> </span>--model<span class="w"> </span>Qwen/Qwen3-ForcedAligner-0.6B<span class="w"> </span>--device<span class="w"> </span>cuda:1<span class="w"> </span>--language<span class="w"> </span>English<span class="w"> </span>--port<span class="w"> </span><span class="m">8010</span>
+</pre></div>
+</div>
+<p>Start the cascade with the profile, or with <code class="docutils literal notranslate"><span class="pre">/tmp/tts-tool-one-gpu.yaml</span></code> on one H200. Once its capabilities report <code class="docutils literal notranslate"><span class="pre">&quot;interaction&quot;:&quot;turn_based&quot;</span></code>, start the <a class="reference internal" href="#browser-demo"><span class="std std-ref">browser demo</span></a> against it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml<span class="w"> </span>--enable-realtime<span class="w"> </span>--port<span class="w"> </span><span class="m">8765</span>
+python<span class="w"> </span>playground/cascade/app.py<span class="w"> </span>--api-base<span class="w"> </span>http://127.0.0.1:8765<span class="w"> </span>--port<span class="w"> </span><span class="m">8090</span>
+</pre></div>
+</div>
+<p>Have one conversation yourself before others use the demo. Ask a question, then speak over a long answer. The reply stops, and the page shows the part of it that the history kept.</p>
+<p>To use another language model, run it as its own server and point the <code class="docutils literal notranslate"><span class="pre">llm</span></code> node at it, as <a class="reference internal" href="#services-you-run-elsewhere"><span class="std std-ref">Services you run elsewhere</span></a> describes. For example, Inkling-2-Mini runs from the <code class="docutils literal notranslate"><span class="pre">lmsysorg/sglang:inkling-2-mini</span></code> image on a GPU of its own, such as the GPU that the profile gives <code class="docutils literal notranslate"><span class="pre">chat</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>sglang.launch_server<span class="w"> </span>--model-path<span class="w"> </span>thinkingmachines/Inkling-2-Mini<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tool-call-parser<span class="w"> </span>inkling2<span class="w"> </span>--reasoning-parser<span class="w"> </span>inkling<span class="w"> </span>--tp<span class="w"> </span><span class="m">1</span><span class="w"> </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.85<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cuda-graph-bs-prefill<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="m">32</span><span class="w"> </span><span class="m">64</span><span class="w"> </span><span class="m">128</span><span class="w"> </span><span class="m">256</span><span class="w"> </span><span class="m">512</span><span class="w"> </span>--cuda-graph-bs-decode<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="m">4</span><span class="w"> </span>--port<span class="w"> </span><span class="m">9000</span>
+</pre></div>
+</div>
+<p>This writes a copy of the profile that has no <code class="docutils literal notranslate"><span class="pre">chat</span></code> service and sends the <code class="docutils literal notranslate"><span class="pre">llm</span></code> node to that server:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-<span class="w"> </span><span class="s">&lt;&lt;'EOF'</span>
+<span class="s">import yaml</span>
+
+<span class="s">with open("examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml") as f:</span>
+<span class="s">    profile = yaml.safe_load(f)</span>
+<span class="s">profile["model_path"] = "qwen3-asr-inkling-2-mini-vivian-tts-tool"</span>
+<span class="s">profile["services"] = [s for s in profile["services"] if s["name"] != "chat"]</span>
+<span class="s">profile["session_nodes"]["llm"].update(</span>
+<span class="s">    base_url="http://127.0.0.1:9000/v1",</span>
+<span class="s">    model="thinkingmachines/Inkling-2-Mini",</span>
+<span class="s">    max_tokens=1024,</span>
+<span class="s">    extra_body={"reasoning_effort": 0.1},</span>
+<span class="s">)</span>
+<span class="s">with open("/tmp/tts-tool-inkling.yaml", "w") as f:</span>
+<span class="s">    yaml.safe_dump(profile, f, sort_keys=False)</span>
+<span class="s">EOF</span>
+</pre></div>
+</div>
+<p>Inkling cannot turn its reasoning off. Its reasoning parser keeps the reasoning out of the reply that the cascade speaks. <code class="docutils literal notranslate"><span class="pre">reasoning_effort</span></code> 0.1 lowers the effort from the server’s default of 0.9, and <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code> 1024 leaves room for the reasoning, which counts toward the limit.</p>
+<p>Speech starts later than with Qwen3.8-27B. <code class="docutils literal notranslate"><span class="pre">chat_service</span></code> streams the text of a <code class="docutils literal notranslate"><span class="pre">tts_start</span></code> call while the model writes it, but SGLang’s Inkling tool parser releases a call only once the call is complete, so the first sentence waits for the whole reply.</p>
+<p>The command captures prefill CUDA graphs only for 16 to 512 new tokens. That covers a cascade turn: the prefix cache holds the system prompt and the earlier turns, so a turn adds about 30 tokens. Without prefill CUDA graphs, the server compiles Triton kernels the first time a request brings a new number of prompt tokens, and its log reports each compile, such as <code class="docutils literal notranslate"><span class="pre">Triton</span> <span class="pre">kernel</span> <span class="pre">'_marlin_route'</span> <span class="pre">took</span> <span class="pre">6.26</span> <span class="pre">s</span> <span class="pre">to</span> <span class="pre">compile</span> <span class="pre">after</span> <span class="pre">serving</span> <span class="pre">started</span></code>. On one H100, with no warm-up requests:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Inkling server</p></th>
+<th class="head"><p>Ready after</p></th>
+<th class="head"><p>Cascade-sized requests that stalled over 3 s</p></th>
+<th class="head"><p>Median time to the first streamed token</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--disable-prefill-cuda-graph</span></code></p></td>
+<td><p>6 min 54 s</p></td>
+<td><p>6 of 20, for 7 to 24 s</p></td>
+<td><p>124 ms</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--cuda-graph-bs-prefill</span> <span class="pre">16</span> <span class="pre">32</span> <span class="pre">64</span> <span class="pre">128</span> <span class="pre">256</span> <span class="pre">512</span></code></p></td>
+<td><p>7 min 32 s</p></td>
+<td><p>0 of 19</p></td>
+<td><p>43 ms</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Most of the startup is a one-time compile on the first captured size, 255 s, after which the other five sizes took 27 s together. The server reports ready with <code class="docutils literal notranslate"><span class="pre">The</span> <span class="pre">server</span> <span class="pre">is</span> <span class="pre">fired</span> <span class="pre">up</span> <span class="pre">and</span> <span class="pre">ready</span> <span class="pre">to</span> <span class="pre">roll!</span></code> about 10 s after <code class="docutils literal notranslate"><span class="pre">/v1/models</span></code> first answers, so wait for that line before the first conversation. A request that adds more than 512 tokens runs without a graph and stalled for about 4 s the first time. To keep those kernels across restarts, mount a directory for Triton’s cache and set <code class="docutils literal notranslate"><span class="pre">TRITON_CACHE_DIR</span></code> to it and <code class="docutils literal notranslate"><span class="pre">TRITON_CACHE_AUTOTUNING=1</span></code>. On a restart with that cache, none of 36 requests stalled, including four with 1,000 to 3,200 prompt tokens.</p>
+<p>Then start the cascade with <code class="docutils literal notranslate"><span class="pre">--config</span> <span class="pre">/tmp/tts-tool-inkling.yaml</span></code> and talk to it once yourself, as above. To run both cascades side by side, for example on two H200s with the one-H200 copy on the first and Inkling-2-Mini on the second, give this cascade another <code class="docutils literal notranslate"><span class="pre">--port</span></code>. It reuses the ASR and TTS services that the other cascade started.</p>
 </section>
 </section>
 <section id="connect-a-client">
