@@ -151,7 +151,7 @@ std::vector<float> StreamResampler::Convert() {
 HaruRealtimeSession::HaruRealtimeSession(
     HaruModel &model, VibeVoiceCodec &codec, MeanFlowHead &head,
     const omni_common::Tokenizer &tokenizer, const DuplexConfig &config,
-    qwen3_asr::TranscriptionWorker &worker, std::string system_prompt,
+    omni_server::TranscriptionWorker &worker, std::string system_prompt,
     std::vector<float> reference, int input_sample_rate, Sender sender)
     : RealtimeConnection(std::move(sender)), model_(model), codec_(codec),
       head_(head), tokenizer_(tokenizer), config_(config), worker_(worker),
@@ -166,7 +166,7 @@ HaruRealtimeSession::HaruRealtimeSession(
 void HaruRealtimeSession::RunOnWorker(std::function<void()> fn) {
   worker_.Transcribe(
       [fn = std::move(fn)](
-          const std::atomic<bool> &) -> qwen3_asr::TranscriptionResult {
+          const std::atomic<bool> &) -> omni_common::TranscriptionResult {
         fn();
         return {};
       },

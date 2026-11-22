@@ -109,9 +109,8 @@ add_library(haru STATIC
   src/haru/haru_audio.cpp
   src/haru/haru_realtime.cpp)
 target_include_directories(haru PUBLIC src)
-# KVCache comes from qwen3_asr, which in turn links common; the reference
-# preparation resamples through audio_resample.
-target_link_libraries(haru PUBLIC qwen3_asr audio_resample)
+# The reference preparation resamples through audio_resample.
+target_link_libraries(haru PUBLIC common audio_resample)
 target_compile_options(haru PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_executable(haru_session_probe tools/haru_session_probe.cpp)

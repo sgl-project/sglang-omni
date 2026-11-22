@@ -10,6 +10,7 @@
 #include <string>
 
 #include "civetweb.h"
+#include "common/asr_service.h"
 #include "common/tokenizer.h"
 #include "haru/haru_audio.h"
 #include "haru/haru_codec.h"
@@ -18,7 +19,6 @@
 #include "haru/haru_model.h"
 #include "haru/haru_realtime.h"
 #include "haru/haru_session.h"
-#include "qwen3_asr/asr_service.h"
 
 namespace {
 
@@ -58,8 +58,9 @@ public:
   }
   bool Transcribes() const override { return false; }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
-    realtime_ = [this, &worker](qwen3_asr::RealtimeConnection::Sender sender) {
+                   omni_server::TranscriptionWorker &worker) override {
+    realtime_ = [this,
+                 &worker](omni_server::RealtimeConnection::Sender sender) {
       return std::make_shared<haru::HaruRealtimeSession>(
           model_, codec_, head_, tokenizer_, session_config_, worker,
           instructions_, reference_, input_sample_rate_, std::move(sender));
@@ -77,13 +78,14 @@ private:
   // First sessions pay for Metal kernel compilation inside Start(), which
   // showed up as an 8-12 s first-frame delay, so compile it at load time on the
   // worker thread that owns the MLX stream.
-  void Warmup(qwen3_asr::TranscriptionWorker &worker) {
+  void Warmup(omni_server::TranscriptionWorker &worker) {
     if (warmup_frames_ <= 0) {
       return;
     }
     try {
       worker.Transcribe(
-          [this](const std::atomic<bool> &) -> qwen3_asr::TranscriptionResult {
+          [this](
+              const std::atomic<bool> &) -> omni_common::TranscriptionResult {
             haru::DuplexSession session(model_, codec_, head_, tokenizer_,
                                         session_config_);
             (void)session.Start(instructions_, reference_);
@@ -101,7 +103,7 @@ private:
             }
             return {};
           },
-          qwen3_asr::NewCancelFlag());
+          omni_server::NewCancelFlag());
     } catch (const std::exception &error) {
       std::fprintf(stderr, "haru: warm-up failed: %s\n", error.what());
     }

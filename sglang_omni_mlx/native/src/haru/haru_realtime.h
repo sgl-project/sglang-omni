@@ -12,14 +12,14 @@
 #include <string>
 #include <vector>
 
+#include "common/realtime_connection.h"
 #include "common/tokenizer.h"
+#include "common/worker.h"
 #include "haru/haru_codec.h"
 #include "haru/haru_head.h"
 #include "haru/haru_model.h"
 #include "haru/haru_session.h"
 #include "nlohmann/json.hpp"
-#include "qwen3_asr/realtime.h"
-#include "qwen3_asr/worker.h"
 
 namespace haru {
 
@@ -51,13 +51,13 @@ private:
 };
 
 // One /v1/realtime socket's full-duplex conversation.
-class HaruRealtimeSession : public qwen3_asr::RealtimeConnection {
+class HaruRealtimeSession : public omni_server::RealtimeConnection {
 public:
   HaruRealtimeSession(HaruModel &model, VibeVoiceCodec &codec,
                       MeanFlowHead &head,
                       const omni_common::Tokenizer &tokenizer,
                       const DuplexConfig &config,
-                      qwen3_asr::TranscriptionWorker &worker,
+                      omni_server::TranscriptionWorker &worker,
                       std::string system_prompt, std::vector<float> reference,
                       int input_sample_rate, Sender sender);
 
@@ -86,7 +86,7 @@ private:
   MeanFlowHead &head_;
   const omni_common::Tokenizer &tokenizer_;
   DuplexConfig config_;
-  qwen3_asr::TranscriptionWorker &worker_;
+  omni_server::TranscriptionWorker &worker_;
   std::string system_prompt_;
   std::vector<float> reference_;
   std::unique_ptr<DuplexSession> session_;

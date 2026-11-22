@@ -9,10 +9,10 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "haru/haru_config.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace haru {
 
@@ -23,7 +23,7 @@ namespace mx = mlx::core;
 struct LayerCache {
   std::optional<mx::array> convolution_state; // [B, kernel - 1, conv_dim]
   std::optional<mx::array> recurrent_state;   // [B, Hv, Dv, Dk] float32
-  qwen3_asr::KVCache attention;
+  omni_common::KVCache attention;
 };
 
 class HaruModel {
@@ -69,7 +69,7 @@ private:
   mx::array GatedDeltaLayer(const mx::array &x, const std::string &prefix,
                             LayerCache &cache) const;
   mx::array AttentionLayer(const mx::array &x, const std::string &prefix,
-                           qwen3_asr::KVCache &cache) const;
+                           omni_common::KVCache &cache) const;
   // Dense SwiGLU feed-forward.
   mx::array MLP(const mx::array &x, const std::string &prefix) const;
   // Codec latents -> LM embedding space: fc1, RMS norm, fc2.

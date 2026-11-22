@@ -243,7 +243,7 @@ mx::array HaruModel::GatedDeltaLayer(const mx::array &x,
 
 mx::array HaruModel::AttentionLayer(const mx::array &x,
                                     const std::string &prefix,
-                                    qwen3_asr::KVCache &cache) const {
+                                    omni_common::KVCache &cache) const {
   const int batch = x.shape(0);
   const int time = x.shape(1);
   const int heads = config_.lm.num_attention_heads;
@@ -275,7 +275,7 @@ mx::array HaruModel::AttentionLayer(const mx::array &x,
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-      time > 1 ? "causal" : "");
+      /*window_size=*/-1, time > 1 ? "causal" : "");
   const mx::array output =
       mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, time, -1});
   return checkpoint_.Linear(mx::multiply(output, mx::sigmoid(gate)),
