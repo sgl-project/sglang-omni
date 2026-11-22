@@ -384,7 +384,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		return
 	}
 	if a.prefs.General.CopyResult && s.Card && s.Result != "" && s.State != session.Failed {
-		a.copyRecent(s.Result) // tray.go: the clipboard keeps each result
+		a.copyRecent(s.Result, false) // tray.go: the clipboard keeps each result
 	}
 	switch {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
@@ -434,7 +434,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	var copied *sessionNotice
 	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
 		// Not inserted and the card is off: the clipboard has it (Voxt 1.x).
-		a.copyRecent(s.Result)
+		a.copyRecent(s.Result, false)
 		// One short line: a notice is one line, cut past NoticeW2.
 		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true, over: back}
 	}

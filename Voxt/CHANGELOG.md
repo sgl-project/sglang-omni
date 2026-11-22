@@ -17,6 +17,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Copy on a Rewrite answer is an icon beside it** (#4377): under the pointer, an answer bubble shows only the copy icon, right of the bubble, so it no longer covers the answer's first line; its name is in the tooltip.
 - **Home's recent results drop the "Open in History" tooltip** (#4377): a row still opens History when clicked; its highlight under the pointer and the section's Open History button already say so, and the tooltip covered the row above.
 - **Shorter, plainer explanations** (#4377): Translate's page and target language, the Privacy switches for a screenshot and a copied image, the guide's Rewrite step, the upload size limit, the wait for the language model and the prompt preview say what matters in a sentence or two; the details are in docs/settings.md.
+- **The menu bar's recent results say Copy and confirm it** (#2967): the items under Recent results now read "Copy: …", so it is clear that a click copies that result, and a click toasts Copied; a failed copy already said so. The copy a session makes itself stays silent.
 
 ### Fixed
 
@@ -43,6 +44,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **改写回答的“复制”只剩图标，放在气泡右侧**（#4377）：鼠标移到回答上时，气泡右边只显示复制图标，不再盖住回答的第一行；名称在提示里。
 - **首页“最近结果”去掉“在历史中打开”提示**（#4377）：点一行仍会打开历史；鼠标移上去的高亮和区块的“打开历史页”按钮已经说明了这一点，而这个提示会盖住上一行。
 - **说明更短、更好读**（#4377）：翻译页和目标语言、隐私里的截图和复制图片开关、新手引导的改写一步、上传大小上限、等待语言模型的时间和提示词示例，都只用一两句话说清要点；细节写在 docs/settings.md。
+- **菜单栏的最近结果标明“复制”，点击后提示**（#2967）：“最近结果”下的条目现在显示“复制：…”，一看就知道点击会复制这条结果，点击后提示“已复制”；复制失败此前已有提示。会话结束时的自动复制不提示。
 
 #### 修复
 
