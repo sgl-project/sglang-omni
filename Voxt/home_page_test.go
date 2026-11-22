@@ -219,6 +219,7 @@ func TestReadHomeUsagePagesAndMidnight(t *testing.T) {
 	}
 	boundary.navigate("/home")
 	frames(tt)
+	tt.Advance(time.Second) // finish the calendar's entrance animation first
 	boundary.hm.read, boundary.hm.usageDay = true, "2000-01-01"
 	gen := boundary.hm.gen
 	tt.Advance(time.Minute)
