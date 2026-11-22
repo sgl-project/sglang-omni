@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import MultimodalDataItem
 
 import sglang_omni.models.fun_asr.request_builders as request_builders
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.fun_asr.configuration_fun_asr import FunAsrNanoFeatureExtractor
+from sglang_omni.models.fun_asr.encoder_service import FunASRPreLMEncoderService
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio import audio_fingerprint
 
@@ -18,6 +23,11 @@ AUDIO_PAD_ID = 42  # arbitrary sentinel distinct from vocabulary ids below
 
 
 class UnexpectedEncoderService:
+    def get_cached_embedding(
+        self, audio_fingerprint: str, expected_tokens: int
+    ) -> None:
+        return None
+
     def encode_item(self, item: object) -> None:
         pytest.fail("invalid requests must not be encoded")
 
@@ -81,6 +91,7 @@ def feature_extractor(num_lfr_frames: int):
             "attention_mask": torch.ones((1, num_lfr_frames), dtype=torch.long),
         }
 
+    call.num_lfr_frames = lambda num_samples: num_lfr_frames
     return call
 
 
@@ -142,6 +153,11 @@ def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) ->
     observed: dict[str, object] = {}
 
     class EncoderService:
+        def get_cached_embedding(
+            self, audio_fingerprint: str, expected_tokens: int
+        ) -> None:
+            return None
+
         def encode_item(self, item) -> None:
             observed["offsets"] = item.offsets
             observed["num_audio_tokens"] = item.num_audio_tokens
@@ -542,3 +558,324 @@ def test_audio_decode_error_survives_pipeline_error_serialization(model):
 
     assert is_bad_request_error(RuntimeError(f"Could not decode {model} audio input"))
     assert not is_bad_request_error(RuntimeError("Could not decode model weights"))
+
+
+class FrontendTestEncoder(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.audio_tower = torch.nn.Linear(1, 1)
+        self.config = SimpleNamespace(text_config=SimpleNamespace(hidden_size=4))
+
+    def get_audio_feature(self, items: list[MultimodalDataItem]) -> torch.Tensor:
+        return torch.cat(
+            [
+                item.feature.mean(dim=(0, 2))[:4].repeat(item.num_audio_tokens, 1)
+                for item in items
+            ]
+        )
+
+
+class CacheTestTokenizer(FakeTokenizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompts: list[str] = []
+
+    def __call__(
+        self,
+        text: str,
+        *,
+        add_special_tokens: bool = False,
+        return_offsets_mapping: bool = False,
+    ) -> SimpleNamespace:
+        self.prompts.append(text)
+        if return_offsets_mapping or AUDIO_PAD not in text:
+            return SimpleNamespace(
+                input_ids=list(range(100, 100 + len(text))),
+                offset_mapping=[(i, i + 1) for i in range(len(text))],
+            )
+        else:
+            return super().__call__(text, add_special_tokens=add_special_tokens)
+
+
+@pytest.fixture
+def cached_frontend(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> Iterator[tuple[Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray]]:
+    num_samples, frame_length, frame_shift = getattr(request, "param", (8080, 25, 10))
+    audio = np.random.default_rng(7).normal(0, 0.01, num_samples).astype(np.float32)
+    monkeypatch.setattr(transcription, "load_audio", lambda source, **kwargs: audio)
+    extractor = Mock(
+        wraps=FunAsrNanoFeatureExtractor(
+            frame_length=frame_length, frame_shift=frame_shift
+        )
+    )
+    service = FunASRPreLMEncoderService(
+        FrontendTestEncoder(), cache_namespace="frontend-test", cache_max_entries=1
+    )
+    try:
+        yield extractor, service, CacheTestTokenizer(), audio
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize(
+    "cached_frontend",
+    [(8080, 25, 10), (6161, 25.1, 7.55)],
+    ids=["default", "fractional-kaldi-window"],
+    indirect=True,
+)
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {
+            "language": "en",
+            "hotwords": ["SGLang"],
+            "itn": False,
+            "temperature": 0.7,
+            "max_new_tokens": 24,
+        },
+        {
+            "language": "zh",
+            "_asr_streaming": True,
+            "_asr_streaming_prefix_text": "你好世界",
+            "_asr_streaming_rollback_chars": 1,
+        },
+    ],
+)
+def test_encoder_cache_hit_skips_frontend_and_preserves_request(
+    cached_frontend: tuple[
+        Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray
+    ],
+    params: dict[str, str | bool | float | int | list[str]],
+) -> None:
+    """Warm requests used to recompute fbank/LFR despite an embedding hit."""
+    extractor, service, tokenizer, audio = cached_frontend
+    build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=extractor,
+        audio_encoder_service=service,
+    )
+    payload = StagePayload(
+        request_id="cold",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+    cold = build(payload)
+    cold_prompts = list(tokenizer.prompts)
+    tokenizer.prompts.clear()
+    extractor.side_effect = AssertionError("cache hit recomputed audio features")
+    warm = build(
+        StagePayload(
+            request_id="warm",
+            request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+            data={},
+        )
+    )
+    assert extractor.call_count == 1
+    assert tokenizer.prompts == cold_prompts
+    assert torch.equal(cold.input_ids, warm.input_ids)
+    assert cold.prompt_token_ids == warm.prompt_token_ids
+    assert cold.num_audio_tokens == warm.num_audio_tokens == 2
+    assert cold.audio_duration_s == warm.audio_duration_s
+    assert cold.max_new_tokens == warm.max_new_tokens
+    assert cold.temperature == warm.temperature
+    assert cold.streaming_prefix_text == warm.streaming_prefix_text
+    assert cold.req.sampling_params == warm.req.sampling_params
+    assert cold.req.extra_key == warm.req.extra_key == audio_fingerprint(audio)
+    for name in ("mrope_positions", "mrope_position_delta"):
+        assert torch.equal(
+            getattr(cold.req.multimodal_inputs, name),
+            getattr(warm.req.multimodal_inputs, name),
+        )
+    cold_item = cold.req.multimodal_inputs.mm_items[0]
+    warm_item = warm.req.multimodal_inputs.mm_items[0]
+    assert cold_item.offsets == warm_item.offsets
+    assert cold_item.pad_value == warm_item.pad_value
+    assert cold_item.format == warm_item.format
+    assert torch.equal(
+        cold_item.feature_attention_mask, warm_item.feature_attention_mask
+    )
+    assert torch.equal(
+        cold_item.precomputed_embeddings, warm_item.precomputed_embeddings
+    )
+    assert cold_item.feature is warm_item.feature is None
+    assert service.stats()["hits"] == 1
+    assert service.stats()["misses"] == 1
+
+
+@pytest.mark.parametrize(
+    "invalid", ["tokens", "hidden", "dtype", "namespace", "evicted", "disabled"]
+)
+def test_early_cache_miss_runs_original_frontend(
+    cached_frontend: tuple[
+        Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray
+    ],
+    invalid: str,
+) -> None:
+    """Invalid or unavailable embeddings must recompute the original features."""
+    extractor, service, tokenizer, audio = cached_frontend
+    build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=extractor,
+        audio_encoder_service=service,
+    )
+    payload = StagePayload(
+        request_id="first", request=OmniRequest(inputs={"audio_bytes": b"wav"}), data={}
+    )
+    cold = build(payload)
+    original = cold.req.multimodal_inputs.mm_items[0].precomputed_embeddings.clone()
+    cache_key = f"{service.namespace}:{audio_fingerprint(audio)}"
+    if invalid == "tokens":
+        service.cache.put(cache_key, torch.zeros(cold.num_audio_tokens + 1, 4))
+    elif invalid == "hidden":
+        service.cache.put(cache_key, torch.zeros(cold.num_audio_tokens, 5))
+    elif invalid == "dtype":
+        service.cache.put(cache_key, original.double())
+    elif invalid == "namespace":
+        service.namespace = "changed-model"
+    else:
+        service.cache.put("other-audio", original)
+        if invalid == "disabled":
+            service.cache.max_size = 0
+        else:
+            pass
+    rebuilt = build(payload)
+    assert extractor.call_count == 2
+    assert torch.equal(
+        rebuilt.req.multimodal_inputs.mm_items[0].precomputed_embeddings, original
+    )
+    assert service.stats()["misses"] == 2
+    assert service.stats()["hits"] == 0
+
+
+@pytest.mark.parametrize(
+    "params,context_length,error",
+    [
+        ({"max_new_tokens": 33}, None, "max_new_tokens"),
+        ({"max_new_tokens": 32}, 10, "context length"),
+    ],
+)
+def test_warm_cache_preserves_request_validation(
+    cached_frontend: tuple[
+        Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray
+    ],
+    params: dict[str, int],
+    context_length: int | None,
+    error: str,
+) -> None:
+    """A cache hit must not admit an invalid generation request or count a consumed hit."""
+    extractor, service, tokenizer, audio = cached_frontend
+    build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=extractor,
+        audio_encoder_service=service,
+    )
+    build(
+        StagePayload(
+            request_id="prime",
+            request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+            data={},
+        )
+    )
+    checked_build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        context_length=context_length,
+        feature_extractor=extractor,
+        audio_encoder_service=service,
+    )
+    extractor.side_effect = AssertionError("warm validation recomputed frontend")
+    with pytest.raises(ValueError, match=error):
+        checked_build(
+            StagePayload(
+                request_id="invalid",
+                request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+                data={},
+            )
+        )
+    assert service.stats()["hits"] == 0
+    assert service.stats()["misses"] == 1
+
+
+def test_warm_audio_does_not_reuse_request_specific_prompt(
+    cached_frontend: tuple[
+        Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray
+    ],
+) -> None:
+    """Embedding reuse must not reuse another request's language or vocabulary."""
+    extractor, service, tokenizer, audio = cached_frontend
+    build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=extractor,
+        audio_encoder_service=service,
+    )
+    first = build(
+        StagePayload(
+            request_id="zh",
+            request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+            data={},
+        )
+    )
+    original_prompt = tokenizer.prompts[-1]
+    extractor.side_effect = AssertionError("warm audio recomputed features")
+    second = build(
+        StagePayload(
+            request_id="en",
+            request=OmniRequest(
+                inputs={"audio_bytes": b"wav"},
+                params={"language": "en", "hotwords": ["SGLang"], "max_new_tokens": 24},
+            ),
+            data={},
+        )
+    )
+    assert tokenizer.prompts[-1] != original_prompt
+    assert "语音转写成英文" in tokenizer.prompts[-1]
+    assert "SGLang" in tokenizer.prompts[-1]
+    assert second.language == "en"
+    assert second.max_new_tokens == 24
+    assert first.req.rid != second.req.rid
+    assert torch.equal(
+        first.req.multimodal_inputs.mm_items[0].precomputed_embeddings,
+        second.req.multimodal_inputs.mm_items[0].precomputed_embeddings,
+    )
+    assert service.stats()["hits"] == 1
+
+
+@pytest.mark.parametrize("num_samples", [0, 1, 480001])
+def test_invalid_audio_still_fails_before_cache_can_bypass_it(
+    cached_frontend: tuple[
+        Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+    num_samples: int,
+) -> None:
+    """Cached embeddings cannot turn invalid or overlong audio into a request."""
+    extractor, service, tokenizer, audio = cached_frontend
+    invalid_audio = np.zeros(num_samples, dtype=np.float32)
+    monkeypatch.setattr(
+        transcription, "load_audio", lambda source, **kwargs: invalid_audio
+    )
+    service.cache.put(
+        f"{service.namespace}:{audio_fingerprint(invalid_audio)}", torch.ones(1, 4)
+    )
+    build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=extractor,
+        audio_encoder_service=service,
+    )
+    with pytest.raises((AssertionError, ValueError)):
+        build(
+            StagePayload(
+                request_id="invalid",
+                request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+                data={},
+            )
+        )
+    assert service.stats()["hits"] == 0

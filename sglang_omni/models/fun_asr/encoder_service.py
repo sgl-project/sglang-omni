@@ -195,22 +195,10 @@ class FunASRPreLMEncoderService(
         else:
             pass
 
-        cached = self.cache.get(key)
+        cached = self.get_cached_embedding(item.audio_fingerprint, expected_tokens)
         if cached is not None:
-            if self.is_valid(cached, expected_tokens):
-                with self.lock:
-                    self.hits += 1
-                self.attach_embedding(item, cached)
-                return
-            else:
-                pass
-            logger.warning(
-                f"Fun-ASR pre-LM cache entry {key} failed validation "
-                f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"discarding it if unchanged before re-encoding"
-            )
-            self.cache.remove_if_same(key, cached)
-            cached = None
+            self.attach_embedding(item, cached, cache_hit=True)
+            return
         else:
             pass
 
@@ -221,9 +209,7 @@ class FunASRPreLMEncoderService(
                 # Note (Akazaakane): Re-check under the single-flight lock so a
                 # stale miss cannot start work after the prior leader cached.
                 cached = self.cache.get(key)
-                if cached is not None and self.is_valid(cached, expected_tokens):
-                    self.hits += 1
-                else:
+                if cached is None or not self.is_valid(cached, expected_tokens):
                     cached = None
                     future = concurrent.futures.Future()
                     self.inflight[key] = future
@@ -237,7 +223,7 @@ class FunASRPreLMEncoderService(
             else:
                 self.merged += 1
         if cached is not None:
-            self.attach_embedding(item, cached)
+            self.attach_embedding(item, cached, cache_hit=True)
             return
         else:
             pass
@@ -313,14 +299,39 @@ class FunASRPreLMEncoderService(
             and embedding.dtype == self.dtype
         )
 
+    def get_cached_embedding(
+        self, audio_fingerprint: str, expected_tokens: int
+    ) -> torch.Tensor | None:
+        """Return a validated embedding without counting an unconsumed hit."""
+        cache_key = f"{self.namespace}:{audio_fingerprint}"
+        embedding = self.cache.get(cache_key)
+        if embedding is None:
+            return None
+        elif self.is_valid(embedding, expected_tokens):
+            return embedding
+        else:
+            logger.warning(
+                f"Fun-ASR pre-LM cache entry {cache_key} failed validation; "
+                f"discarding it if unchanged before re-encoding"
+            )
+            self.cache.remove_if_same(cache_key, embedding)
+            return None
+
     def attach_embedding(
-        self, item: MultimodalDataItem, embedding: torch.Tensor
+        self,
+        item: MultimodalDataItem,
+        embedding: torch.Tensor,
+        *,
+        cache_hit: bool = False,
     ) -> None:
         item.precomputed_embeddings = embedding.to(
             self.device, non_blocking=self.device.type != "npu"
         )
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
+        if cache_hit:
+            with self.lock:
+                self.hits += 1
 
     def drain_batch(
         self,

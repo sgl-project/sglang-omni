@@ -303,6 +303,75 @@ def test_cache_hit_skips_reencode() -> None:
     assert service.stats()["hits"] == 1
 
 
+def test_early_cache_lookup_retains_embedding_across_eviction() -> None:
+    """A hit between validation and admission must survive another request's eviction."""
+    model = StubModel()
+    service = make_service(model, cache_max_entries=1)
+    original = make_item(11, 3)
+    service.encode_item(original)
+    cached = service.get_cached_embedding("11", 3)
+    assert cached is not None
+    assert service.stats()["hits"] == 0
+    service.encode_item(make_item(12, 3))
+    assert service.get_cached_embedding("11", 3) is None
+    resumed = make_item(11, 3, with_feature=False)
+    service.attach_embedding(resumed, cached, cache_hit=True)
+    assert torch.equal(resumed.precomputed_embeddings, original.precomputed_embeddings)
+    assert resumed.format == MultimodalInputFormat.PRECOMPUTED_EMBEDDING
+    assert model.encode_calls == 2
+    assert service.stats()["hits"] == 1
+    assert service.stats()["misses"] == 2
+
+
+def test_early_cache_lookup_uses_namespace_and_validates_shape() -> None:
+    """A waveform match alone must not bypass namespace or embedding validation."""
+    service = make_service()
+    service.cache.put("other:11", torch.ones(3, HIDDEN_SIZE))
+    assert service.get_cached_embedding("11", 3) is None
+    for invalid in (
+        torch.zeros(4, HIDDEN_SIZE),
+        torch.zeros(3, HIDDEN_SIZE + 1),
+        torch.zeros(3, HIDDEN_SIZE, dtype=torch.float64),
+        torch.zeros(HIDDEN_SIZE),
+    ):
+        service.cache.put(f"{NAMESPACE}:11", invalid)
+        assert service.get_cached_embedding("11", 3) is None
+        assert service.cache.get(f"{NAMESPACE}:11") is None
+    assert service.stats()["hits"] == service.stats()["misses"] == 0
+
+
+def test_concurrent_early_hits_count_once_per_consuming_request() -> None:
+    """Concurrent early lookups must neither reencode nor double-count hits."""
+    service = make_service()
+    original = make_item(11, 3)
+    service.encode_item(original)
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+    outputs = [make_item(11, 3, with_feature=False) for _ in range(4)]
+
+    def consume(item: MultimodalDataItem) -> None:
+        try:
+            cached = service.get_cached_embedding("11", 3)
+            assert cached is not None
+            barrier.wait(timeout=10)
+            service.attach_embedding(item, cached, cache_hit=True)
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=consume, args=(item,)) for item in outputs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    assert not errors
+    assert service.stats()["hits"] == 4
+    assert service.stats()["misses"] == 1
+    assert service.stats()["merged"] == 0
+    for item in outputs:
+        assert torch.equal(item.precomputed_embeddings, original.precomputed_embeddings)
+
+
 def test_cache_key_prefers_full_waveform_fingerprint() -> None:
     model = StubModel()
     service = make_service(model)
