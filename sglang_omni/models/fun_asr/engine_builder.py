@@ -49,6 +49,7 @@ from sglang_omni.scheduling.pd_scheduler import (
     OmniPrefillScheduler,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
@@ -141,6 +142,12 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.speculative_reserve_tokens = 0
         self.engine_context_padding = 0
         self.context_length = 0
+
+    def resolve_checkpoint(self, model_path: str) -> str:
+        if self.pd_role is not None and "@" in model_path:
+            return resolve_checkpoint(model_path)
+        else:
+            return super().resolve_checkpoint(model_path)
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(

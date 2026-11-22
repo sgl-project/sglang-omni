@@ -25,6 +25,7 @@ from sglang_omni.scheduling.pd_utils import (
     continuation_from_req,
     req_from_continuation,
 )
+from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.utils.audio import audio_fingerprint
 
 AUDIO_PAD = "<|object_ref_start|>"
@@ -573,7 +574,9 @@ def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
         request_builder(payload)
 
 
-def test_apple_rejects_sampling_before_preprocessing(monkeypatch):
+def test_greedy_only_sampling_is_a_bad_request_before_preprocessing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def unexpected(*args, **kwargs):
         pytest.fail("sampling rejection must precede audio loading")
 
@@ -591,17 +594,9 @@ def test_apple_rejects_sampling_before_preprocessing(monkeypatch):
         ),
         data={},
     )
-    with pytest.raises(ValueError, match="greedy"):
+    with pytest.raises(ValueError, match="greedy") as rejection:
         build(payload)
-
-
-def test_apple_sampling_error_is_an_http_bad_request():
-    from sglang_omni.serve.openai_errors import is_bad_request_error
-
-    assert is_bad_request_error(
-        RuntimeError("Fun-ASR Apple currently requires temperature=0 (greedy decoding)")
-    )
-    assert not is_bad_request_error(RuntimeError("Fun-ASR model execution failed"))
+    assert generation_error_status_code(RuntimeError(str(rejection.value))) == 400
 
 
 @pytest.mark.parametrize("model", ["Fun-ASR", "Qwen3-ASR"])
