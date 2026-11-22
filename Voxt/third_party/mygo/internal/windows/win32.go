@@ -120,6 +120,8 @@ var (
 	procSetForegroundWindow           = user32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow           = user32.NewProc("GetForegroundWindow")
 	procNotifyWinEvent                = user32.NewProc("NotifyWinEvent")
+	procGetWindowThreadProcessId      = user32.NewProc("GetWindowThreadProcessId")
+	procAttachThreadInput             = user32.NewProc("AttachThreadInput")
 	procSetFocus                      = user32.NewProc("SetFocus")
 	procEnableWindow                  = user32.NewProc("EnableWindow")
 	procGetWindowPlacement            = user32.NewProc("GetWindowPlacement")

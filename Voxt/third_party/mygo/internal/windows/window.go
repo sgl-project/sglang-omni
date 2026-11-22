@@ -738,7 +738,30 @@ func (w *window) Show() {
 	} else {
 		procShowWindow.Call(w.hwnd, swShow)
 	}
-	procSetForegroundWindow.Call(w.hwnd)
+	takeForeground(w.hwnd)
+}
+
+// takeForeground raises hwnd to the foreground. Windows grants that only
+// to the foreground process; a background app's bare SetForegroundWindow
+// is refused (the taskbar button flashes instead). Attaching to the
+// foreground thread's input queue first lets the call through, as the
+// hotkey that summoned the window is that thread's input then.
+func takeForeground(hwnd uintptr) {
+	fg, _, _ := procGetForegroundWindow.Call()
+	if fg == 0 || fg == hwnd {
+		procSetForegroundWindow.Call(hwnd)
+		return
+	}
+	cur, _, _ := procGetCurrentThreadId.Call()
+	other, _, _ := procGetWindowThreadProcessId.Call(fg, 0)
+	attached := uintptr(0)
+	if other != 0 && other != cur {
+		attached, _, _ = procAttachThreadInput.Call(cur, other, 1)
+	}
+	procSetForegroundWindow.Call(hwnd)
+	if attached != 0 {
+		procAttachThreadInput.Call(cur, other, 0)
+	}
 }
 
 func (w *window) ShowInactive() {
@@ -769,7 +792,7 @@ func (w *window) Focus() {
 	if w.IsMinimized() {
 		procShowWindow.Call(w.hwnd, swRestore)
 	}
-	procSetForegroundWindow.Call(w.hwnd)
+	takeForeground(w.hwnd)
 	w.focusWebView()
 }
 
