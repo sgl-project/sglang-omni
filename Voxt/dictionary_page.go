@@ -52,19 +52,28 @@ func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionar
 		if state.CountLabel != "" {
 			caption(c, state.CountLabel).SingleLine()
 		}
-		on := state.Enabled
 		status := i18n.T("Off")
-		if on {
+		if state.Enabled {
 			status = i18n.T("On")
 		}
 		caption(c, status).SingleLine()
-		if ui.Switch(c.Key("dict-on"), &on).Label(i18n.T("Use the dictionary")).Tooltip(i18n.T("Use the dictionary")).Changed() {
-			actions.setDictionaryEnabled(on)
-		}
-		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!state.CanScan).Clicked() {
-			actions.openDictionaryScan()
-		}
 		moreMenu(c.Key("dict-more"), "", func(menu *ui.Menu) {
+			if menu.Item(i18n.T("Use the dictionary")).Checked(state.Enabled).Chosen() {
+				actions.setDictionaryEnabled(!state.Enabled)
+			}
+			off := !state.Enabled
+			toggle := func(label string, on bool, set func(bool)) {
+				if menu.Item(label).Checked(on).Disabled(off).Chosen() {
+					set(!on)
+				}
+			}
+			toggle(i18n.T("Speech hints"), state.ASRHints, actions.setDictionaryASRHints)
+			toggle(i18n.T("Glossary for the language model"), state.Glossary, actions.setDictionaryGlossary)
+			toggle(i18n.T("Learn from my corrections"), state.Learn, actions.setDictionaryLearn)
+			menu.Separator()
+			if menu.Item(i18n.T("Scan history…")).Disabled(!state.CanScan).Chosen() {
+				actions.openDictionaryScan()
+			}
 			if menu.Item(i18n.T("Import…")).Chosen() {
 				actions.importTerms()
 			}
@@ -102,7 +111,6 @@ func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionar
 					actions.searchDictionary(local.query)
 				}
 				local.find.count(c, state.ListFor, hits[len(state.Terms)])
-				dictSwitches(c, state, actions)
 			})
 			if !state.CanScan {
 				ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
@@ -146,28 +154,6 @@ func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionar
 	termDialog(c, actions, local)
 	scanDialog(c, &state.Scan, actions, local)
 	dictionaryProfileDialogs(c, state, actions, local)
-}
-
-func dictSwitches(c *ui.Context, state *dictionaryViewState, actions dictionaryActions) {
-	t := c.Theme()
-	off := !state.Enabled
-	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
-		hints := state.ASRHints
-		if ui.Checkbox(c.Key("dict-hints"), &hints, i18n.T("Speech hints")).Disabled(off).
-			Tooltip(i18n.T("Terms go to the speech model as words to expect.")).Changed() {
-			actions.setDictionaryASRHints(hints)
-		}
-		glossary := state.Glossary
-		if ui.Checkbox(c.Key("dict-glossary"), &glossary, i18n.T("Glossary for the language model")).Disabled(off).
-			Tooltip(i18n.T("The language model writes terms as spelled here.")).Changed() {
-			actions.setDictionaryGlossary(glossary)
-		}
-		learnOn := state.Learn
-		if ui.Checkbox(c.Key("dict-learn"), &learnOn, i18n.T("Learn from my corrections")).Disabled(off).
-			Tooltip(i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", state.LearnWatchSeconds)).Changed() {
-			actions.setDictionaryLearn(learnOn)
-		}
-	})
 }
 
 func dictEmpty(c *ui.Context, state *dictionaryViewState, actions dictionaryActions) {

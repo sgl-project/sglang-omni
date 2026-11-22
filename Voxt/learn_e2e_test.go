@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,7 +17,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -276,8 +274,7 @@ func TestLearnNeverLogsTheEdit(t *testing.T) {
 	}
 }
 
-// TestLearnSwitch: the page's switch is off at first, saves the setting,
-// and its tip says how long the field is read, from the watch's constant.
+// TestLearnSwitch: the page's menu item is off at first and saves the setting.
 func TestLearnSwitch(t *testing.T) {
 	a, _, tt := newTestAppIn(t, testDir(t))
 	a.navigate("/dictionary")
@@ -285,19 +282,7 @@ func TestLearnSwitch(t *testing.T) {
 	if a.prefs.Dictionary.Learn {
 		t.Fatal("learning is on by default")
 	}
-	const name = "Learn from my corrections"
-	r, ok := tt.Find(name)
-	if !ok {
-		t.Fatalf("no switch: %q", tt.AccessLabels())
-	}
-	tt.Move(r.X+r.W/2, r.Y+r.H/2)
-	frames(tt)
-	tt.Advance(time.Second)
-	frames(tt)
-	if want := i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds); !hasExact(tt, want) || !strings.Contains(want, fmt.Sprintf("For %d seconds", learn.WatchSeconds)) {
-		t.Fatalf("no tip %q in %q", want, firstTexts(tt))
-	}
-	clickControl(t, tt, name)
+	chooseDictionaryMenuItem(t, tt, "Learn from my corrections")
 	if !a.prefs.Dictionary.Learn || !a.settings.Get().Dictionary.Learn {
 		t.Fatalf("the switch saved nothing: %+v", a.settings.Get().Dictionary)
 	}

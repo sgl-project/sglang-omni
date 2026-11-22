@@ -57,6 +57,15 @@ func dictTester(t *testing.T) (*app, *ui.Tester) {
 	return a, tt
 }
 
+func chooseDictionaryMenuItem(t *testing.T, tester *ui.Tester, label string) {
+	t.Helper()
+	clickControl(t, tester, i18n.T("More actions"))
+	if err := tester.ChooseMenuItem(label); err != nil {
+		t.Fatal(err)
+	}
+	frames(tester)
+}
+
 func terms(t *testing.T, a *app) []store.Term {
 	t.Helper()
 	ts, err := a.lib.store.Dictionary().List(context.Background(), "")
@@ -172,12 +181,13 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	if !has(tt, "No term matches “nothing”") {
 		t.Errorf("no empty search state %q", firstTexts(tt))
 	}
-	click(t, tt, "Speech hints")
-	click(t, tt, "Glossary for the language model")
+	for _, label := range []string{"Speech hints", "Glossary for the language model"} {
+		chooseDictionaryMenuItem(t, tt, label)
+	}
 	if d := a.lib.settings.Get().Dictionary; d.ASRHints || d.Glossary || !d.Enabled {
 		t.Errorf("settings %+v", d)
 	}
-	click(t, tt, "Use the dictionary")
+	chooseDictionaryMenuItem(t, tt, "Use the dictionary")
 	if a.lib.settings.Get().Dictionary.Enabled || !has(tt, "The dictionary is off, so its terms are not used.") {
 		t.Error("dictionary still on")
 	}
