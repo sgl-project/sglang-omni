@@ -392,22 +392,9 @@ class RealtimeTranscriptionSession:
         else:
             pass
 
-        if "language" in update:
-            language = update["language"]
-            self.settings.language = language.strip() if language else None
-        else:
-            pass
-        if "decode_interval_ms" in update:
-            decode_interval_ms = update["decode_interval_ms"]
-            self.settings.decode_interval_ms = (
-                decode_interval_ms
-                if decode_interval_ms is not None
-                else self.transcription_config.decode_interval_ms
-            )
-        else:
-            pass
+        turn_detection = event.session.turn_detection
+        replacement_vad: StatelessVAD | None = None
         if "turn_detection" in update:
-            turn_detection = event.session.turn_detection
             if (
                 turn_detection is not None
                 and turn_detection.type != TurnDetectionType.SERVER_VAD
@@ -440,12 +427,32 @@ class RealtimeTranscriptionSession:
                     pass
             else:
                 pass
+            replacement_vad = self.new_vad(turn_detection)
+        else:
+            pass
+
+        # note (Xuanfei): clients read an error event as "nothing changed".
+        if "language" in update:
+            language = update["language"]
+            self.settings.language = language.strip() if language else None
+        else:
+            pass
+        if "decode_interval_ms" in update:
+            decode_interval_ms = update["decode_interval_ms"]
+            self.settings.decode_interval_ms = (
+                decode_interval_ms
+                if decode_interval_ms is not None
+                else self.transcription_config.decode_interval_ms
+            )
+        else:
+            pass
+        if "turn_detection" in update:
             if self.vad is not None:
                 self.vad.reset()
             else:
                 pass
             self.settings.turn_detection = turn_detection
-            self.vad = self.new_vad(turn_detection)
+            self.vad = replacement_vad
         else:
             pass
         await self.send(TranscriptionSessionUpdated(session=self.session_object()))
