@@ -90,12 +90,24 @@ final class TextIO: @unchecked Sendable {
     }
 
     func selection(_ p: SelectionParams) async throws -> SelectionResult {
-        let t0 = monotonicMs()
         try requireTrust()
-        var steps: [String] = []
         let pid = await front.current().pid
+        let world = SelectionWorld(
+            read: { await self.readSelectionOnce(pid: pid) },
+            now: { monotonicMs() },
+            sleep: { ns in try? await Task.sleep(nanoseconds: ns) }
+        )
+        return try await Self.selection(p, world: world)
+    }
+
+    /// One reading of the focused element for textio.selection: every
+    /// fact the loop's decisions use (readSelectionOnce on the live
+    /// element, a script in the tests).
+    static func selection(_ p: SelectionParams, world: SelectionWorld, copyWorld: CopyWorld = .live) async throws -> SelectionResult {
+        let t0 = world.now()
+        var steps: [String] = []
         func done(_ text: String?, _ via: String) -> SelectionResult {
-            SelectionResult(text: text, via: via, ms: round1(monotonicMs() - t0), steps: steps)
+            SelectionResult(text: text, via: via, ms: round1(world.now() - t0), steps: steps)
         }
         // A web editor's block selection reads as one blank space from
         // every AX attribute (Lark docs in Chrome): not text, but a sign
@@ -104,41 +116,27 @@ final class TextIO: @unchecked Sendable {
         var caretOnly = false
         var settling = false
         while true {
-            if let e = focusedElement(pid: pid_t(pid)) {
-                let role = string(e, kAXRoleAttribute)
-                steps.append("focus=\(role ?? "?")")
-                if let s = string(e, kAXSelectedTextAttribute), !s.isEmpty {
+            if let r = await world.read() {
+                steps.append("focus=\(r.role ?? "?")")
+                if let s = r.selected, !s.isEmpty {
                     if SelectionRead.hasText(s) { return done(s, SelectionVia.ax) }
                     blankAX = true
                 }
-                let r = range(e)
-                steps.append("range=\(r.map { "\($0.location),\($0.length)" } ?? "nil")")
-                if let r, r.length > 0 {
-                    var rr = r
-                    var v: CFTypeRef?
-                    if let axr = AXValueCreate(.cfRange, &rr),
-                       AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
-                       let s = v as? String, !s.isEmpty {
-                        if SelectionRead.hasText(s) { return done(s, SelectionVia.axRange) }
-                        blankAX = true
-                    }
+                steps.append("range=\(r.range.map { "\($0.location),\($0.length)" } ?? "nil")")
+                if let rr = r.range, rr.length > 0, let s = r.ranged, !s.isEmpty {
+                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axRange) }
+                    blankAX = true
                 }
-                // WebKit's and Chromium's text markers.
-                var marker: CFTypeRef?
-                if AXUIElementCopyAttributeValue(e, "AXSelectedTextMarkerRange" as CFString, &marker) == .success, let marker {
-                    var v: CFTypeRef?
-                    if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
-                       let s = v as? String, !s.isEmpty {
-                        if SelectionRead.hasText(s) { return done(s, SelectionVia.axMarker) }
+                if let marker = r.marker {
+                    if !marker.isEmpty {
+                        if SelectionRead.hasText(marker) { return done(marker, SelectionVia.axMarker) }
                         blankAX = true
                     } else {
                         steps.append("marker=empty")
                     }
                 }
-                var settable = DarwinBoolean(false)
-                AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
-                caretOnly = SelectionRead.endsAtCaret(range: r.map { TextRange(location: $0.location, length: $0.length) },
-                                                      editable: settable.boolValue || inEditableRegion(e), blankSelection: blankAX)
+                caretOnly = SelectionRead.endsAtCaret(range: r.range.map { TextRange(location: $0.location, length: $0.length) },
+                                                      editable: r.editable, blankSelection: blankAX)
             } else {
                 steps.append("focus=nil")
                 caretOnly = false
@@ -148,10 +146,10 @@ final class TextIO: @unchecked Sendable {
             // reading lags the keys. Read again for a moment before
             // concluding that nothing is selected (#4467).
             let settleMs = Double(p.caretSettleMs ?? Int(SelectionRead.defaultCaretSettleMs))
-            guard caretOnly, SelectionRead.caretPending(elapsedMs: monotonicMs() - t0, settleMs: settleMs) else { break }
+            guard caretOnly, SelectionRead.caretPending(elapsedMs: world.now() - t0, settleMs: settleMs) else { break }
             if !settling { steps.append("caret-settle"); settling = true }
             let pollMs = p.caretPollMs ?? Int(SelectionRead.defaultCaretPollMs)
-            try? await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
+            await world.sleep(UInt64(pollMs) * 1_000_000)
         }
         if caretOnly {
             steps.append("caret-only")
@@ -159,10 +157,44 @@ final class TextIO: @unchecked Sendable {
         }
         guard p.allowCopy ?? false else { return done(nil, SelectionVia.none) }
         let copied = await Self.copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300),
-                                              modifierWaitMs: Double(p.modifierWaitMs ?? Int(SelectionRead.defaultModifierWaitMs)))
+                                              modifierWaitMs: Double(p.modifierWaitMs ?? Int(SelectionRead.defaultModifierWaitMs)),
+                                              world: copyWorld)
         steps.append(copied.note)
         return SelectionResult(text: copied.text, image: copied.image, via: copied.text != nil ? SelectionVia.copy : SelectionVia.none,
-                               ms: round1(monotonicMs() - t0), steps: steps)
+                               ms: round1(world.now() - t0), steps: steps)
+    }
+
+    /// The focused element's facts for one selection reading; nil when
+    /// nothing is focused.
+    private func readSelectionOnce(pid: Int) async -> SelectionReading? {
+        guard let e = focusedElement(pid: pid_t(pid)) else { return nil }
+        var r = SelectionReading(role: string(e, kAXRoleAttribute), selected: string(e, kAXSelectedTextAttribute),
+                                 range: range(e), ranged: nil, marker: nil, editable: false)
+        if let cr = r.range, cr.length > 0 {
+            var rr = cr
+            var v: CFTypeRef?
+            if let axr = AXValueCreate(.cfRange, &rr),
+               AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
+               let s = v as? String, !s.isEmpty {
+                r.ranged = s
+            }
+        }
+        // WebKit's and Chromium's text markers: "" when reading the range
+        // failed or it is empty ("marker=empty" in the steps).
+        var marker: CFTypeRef?
+        if AXUIElementCopyAttributeValue(e, "AXSelectedTextMarkerRange" as CFString, &marker) == .success, let marker {
+            var v: CFTypeRef?
+            if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
+               let s = v as? String, !s.isEmpty {
+                r.marker = s
+            } else {
+                r.marker = ""
+            }
+        }
+        var settable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
+        r.editable = settable.boolValue || inEditableRegion(e)
+        return r
     }
 
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
@@ -439,6 +471,27 @@ func postKey(_ key: UInt16, flags: CGEventFlags) {
         e.setIntegerValueField(.eventSourceUserData, value: InjectedEvent.marker)
         e.post(tap: .cghidEventTap)
     }
+}
+
+/// One reading of the focused element for textio.selection: every fact
+/// the loop's decisions use. marker is nil when the element has no text
+/// marker range, "" when reading it failed or it is empty.
+struct SelectionReading: Sendable {
+    var role: String?
+    var selected: String?
+    var range: CFRange?
+    var ranged: String?
+    var marker: String?
+    var editable: Bool
+}
+
+/// What TextIO.selection runs against: one reading of the focused
+/// element per poll, the clock and the sleep. The tests script the
+/// readings; the helper runs the live one.
+struct SelectionWorld: Sendable {
+    var read: @Sendable () async -> SelectionReading?
+    var now: @Sendable () -> Double
+    var sleep: @Sendable (UInt64) async -> Void
 }
 
 /// What TextIO.copySelection runs against: the clipboard, the keys
