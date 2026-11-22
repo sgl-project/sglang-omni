@@ -19,6 +19,7 @@ from sglang_omni.models.streaming_cascade.base import (
     StreamComponent,
     audio_chunk,
     bearer_headers,
+    blank_screen_blocks,
     control_chunk,
     iterate,
     replying,
@@ -104,6 +105,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     styles maps a style name to the recording a sentence of that style
     clones, and a sentence of a style it lacks clones reference_audio_path;
     the language model names a style with a tag such as [calm].
+    skip_screen_blocks leaves out of every request what the reply writes
+    between <screen> and </screen>, a block still open included, and a
+    stray </screen>.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -117,6 +121,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     max_sentence_words: int = Field(default=24, gt=0)
     drop_quiet_start: bool = False
     sentence_pause_ms: float = Field(default=0, ge=0)
+    skip_screen_blocks: bool = False
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -426,6 +431,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
     ) -> None:
+        reply_text = ""
         text_end = 0
         audio_ms = 0.0
         pause_samples = round(
@@ -436,7 +442,13 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
         async for span, ends_sentence in sentences(
             self.follow_deltas(deltas, delta_styles), self.config.max_sentence_words
         ):
-            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
+            reply_text += span
+            if self.config.skip_screen_blocks:
+                # note (Haoling Pu): a span can start inside a block an earlier span opened, so the reply so far is blanked before the span is cut from it.
+                spoken = blank_screen_blocks(reply_text)[text_end:]
+            else:
+                spoken = span
+            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", spoken))
             text = TABLE_PIPE.sub(
                 ", ",
                 TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),
