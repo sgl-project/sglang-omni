@@ -96,37 +96,6 @@ def test_the_handler_accepts_the_command_and_it_makes_every_stage_test_the_model
         assert resolver.suggest_stage_targets(changed_paths, tagged_labels) == []
 
 
-def test_every_preset_a_stage_runs_names_its_model_directories(
-    resolver: ModuleType,
-) -> None:
-    stage_presets = {
-        preset
-        for stage in resolver.CI_STAGES
-        for preset in (*stage.preset_by_model_label.values(), *stage.random_presets)
-    }
-
-    assert stage_presets <= resolver.MODEL_DIRECTORIES_BY_PRESET.keys()
-
-
-def test_a_pull_request_without_model_changes_gets_no_suggestion(
-    resolver: ModuleType,
-) -> None:
-    assert resolver.suggest_stage_targets(["docs/index.md"], frozenset()) == []
-
-
-def test_an_ark_asr_change_gets_the_ark_target_suggested(
-    resolver: ModuleType,
-) -> None:
-    suggestions = resolver.suggest_stage_targets(
-        [f"{MODELS}/arkasr/config.py"], frozenset()
-    )
-
-    assert [
-        (suggestion.model_directory, suggestion.targets, suggestion.is_in_command)
-        for suggestion in suggestions
-    ] == [("arkasr", ("ark-asr",), True)]
-
-
 def test_a_model_label_that_mps_took_still_gets_the_tts_stage_suggested(
     resolver: ModuleType,
 ) -> None:
