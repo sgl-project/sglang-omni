@@ -130,6 +130,8 @@ sgl-omni serve \
   --mem-fraction-static 0.80
 ```
 
+On one CUDA GPU this serves the DFlash draft by default; see [Speculative Decoding](#speculative-decoding).
+
 **Intel GPU**
 
 MOSS-TD with LLM and Whisper encoder XPUGraph capture has been validated in
@@ -220,14 +222,12 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ### Speculative Decoding
 
-The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash) on one CUDA GPU.
+On one CUDA GPU, MOSS-TD serves with its DFlash draft, [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `OpenMOSS-Team/MOSS-Transcribe-Diarize`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Intel GPUs and other platforms serve without the draft, and so do a stage with `tp_size` above 1 and a copy outside the Hugging Face cache. The [two-replica H100 MPS profile](../basic_usage/mps_dp.md) turns it off, since it was validated without it. To serve without the draft, add `--asr.engine.disable_speculative_decoding true`:
 
 ```bash
 sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
-  --asr.engine.speculative_algorithm DFLASH \
-  --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
-  --asr.engine.speculative_draft_kv_cache_dtype fp8_e4m3 \
+  --asr.engine.disable_speculative_decoding true \
   --port 8000
 ```
 
@@ -339,7 +339,7 @@ pass every worker serve URL with a comma-separated `--profile-urls` value.
 
 ## Benchmark Results
 
-Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`.
+Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server without the draft, with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`; the draft's gains are under [Speculative Decoding](#speculative-decoding).
 
 ### movies800times
 
