@@ -13,6 +13,7 @@ from sglang_omni.models.dots_tts.patch_graph import (
     GraphedDiTSolver,
     PatchSolveGraph,
     PersistentCacheDiTRunner,
+    apply_rotary_embedding,
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
@@ -29,6 +30,7 @@ from dots_tts.modules.backbone.dit_inference import (  # noqa: E402
     DiTSolver,
     DiTSolverState,
 )
+from dots_tts.modules.backbone.layers import rotate_half  # noqa: E402
 
 LLM_HIDDEN = 48
 FM_HIDDEN = 32
@@ -186,6 +188,36 @@ def test_flow_head_keeps_the_eager_solver_without_optimize(
     flow.optimize = False
 
     assert type(flow.solver()) is DiTSolver
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_the_concat_free_rotation_matches_rotate_half_bit_for_bit(
+    dtype: torch.dtype,
+) -> None:
+    generator = torch.Generator(device="cpu").manual_seed(3)
+    values = torch.randn((2, 4, 10, 64), generator=generator).to(dtype)
+    angles = torch.randn((1, 1, 10, 64), generator=generator) * 30.0
+    cos, sin = angles.cos(), angles.sin()
+
+    expected = (values * cos + rotate_half(values) * sin).to(dtype=values.dtype)
+
+    assert torch.equal(apply_rotary_embedding(values, cos, sin), expected)
+
+
+def test_the_persistent_runner_refuses_the_flex_backend(tmp_path: Path) -> None:
+    flow = flow_head(tmp_path, meanflow=False)
+
+    with pytest.raises(ValueError, match="sdpa"):
+        PersistentCacheDiTRunner(
+            context=DiTInferenceContext.from_core(flow),
+            capacity_patches=64,
+            capacity_tokens=64 * UNIT_TOKENS,
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+            attn_backend="flex",
+            compile_step=False,
+            branch_multiplier=2,
+        )
 
 
 def test_a_reused_cache_starts_zeroed_like_a_fresh_one(tmp_path: Path) -> None:
