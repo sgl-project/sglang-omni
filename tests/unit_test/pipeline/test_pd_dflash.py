@@ -12,7 +12,6 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from huggingface_hub import constants as hub_constants
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.managers.overlap_utils import FutureMap
 from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -201,12 +200,12 @@ def test_pd_dflash_validates_the_initialized_worker(
 
 
 def test_dflash_identity_uses_the_loaded_target_revision(tmp_path: Path) -> None:
-    weight = tmp_path / "draft.safetensors"
+    weight = tmp_path / "draft.bin"
     weight.touch()
     loader = LoadConfig(load_format="auto")
     target = SimpleNamespace(
         model_path="target/checkpoint",
-        revision="first",
+        revision="a" * 40,
         hf_config=SimpleNamespace(),
         dtype=torch.bfloat16,
         quantization=None,
@@ -217,7 +216,7 @@ def test_dflash_identity_uses_the_loaded_target_revision(tmp_path: Path) -> None
         directory = tmp_path / stage
         directory.mkdir()
         (directory / "config.json").write_text("{}")
-        (directory / "model.safetensors").symlink_to(weight)
+        (directory / "model.bin").symlink_to(weight)
         draft = SimpleNamespace(
             model_path=str(directory),
             dtype=torch.bfloat16,
@@ -231,17 +230,23 @@ def test_dflash_identity_uses_the_loaded_target_revision(tmp_path: Path) -> None
         dflash_checkpoint_identity(target, loader, draft, safetensors_loader)
         != identities[0]
     )
-    target.revision = "second"
+    target.revision = "b" * 40
+    assert dflash_checkpoint_identity(target, loader, draft, loader) != identities[0]
+    target.revision = "a" * 40
+    other_weight = tmp_path / "other-draft.bin"
+    other_weight.touch()
+    decode_weight = tmp_path / "decode" / "model.bin"
+    decode_weight.unlink()
+    decode_weight.symlink_to(other_weight)
     assert dflash_checkpoint_identity(target, loader, draft, loader) != identities[0]
 
 
-def test_dflash_identity_distinguishes_cached_hub_draft_commits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_dflash_identity_requires_pinned_hub_checkpoints() -> None:
+    """A mutable Hub reference cannot establish the identity of loaded weights."""
     loader = LoadConfig(load_format="auto")
     target = SimpleNamespace(
         model_path="target/checkpoint",
-        revision="main",
+        revision="a" * 40,
         hf_config=PretrainedConfig(),
         dtype=torch.bfloat16,
         quantization=None,
@@ -249,20 +254,17 @@ def test_dflash_identity_distinguishes_cached_hub_draft_commits(
     )
     draft = SimpleNamespace(**vars(target))
     draft.model_path = "draft/checkpoint"
-    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
-    repo = tmp_path / "models--draft--checkpoint"
-    reference = repo / "refs" / "main"
-    reference.parent.mkdir(parents=True)
-    first_commit, second_commit = "a" * 40, "b" * 40
-    for commit in (first_commit, second_commit):
-        cached_config = repo / "snapshots" / commit / "config.json"
-        cached_config.parent.mkdir(parents=True)
-        cached_config.write_text("{}")
-    reference.write_text(first_commit)
+    draft.revision = None
+    with pytest.raises(ValueError, match="speculative_draft_model_revision"):
+        dflash_checkpoint_identity(target, loader, draft, loader)
+    draft.revision = "b" * 40
     identity = dflash_checkpoint_identity(target, loader, draft, loader)
     assert dflash_checkpoint_identity(target, loader, draft, loader) == identity
-    reference.write_text(second_commit)
+    draft.revision = "c" * 40
     assert dflash_checkpoint_identity(target, loader, draft, loader) != identity
+    target.revision = "main"
+    with pytest.raises(ValueError, match="Set revision"):
+        dflash_checkpoint_identity(target, loader, draft, loader)
 
 
 @pytest.mark.parametrize("overlap", [False, True])
