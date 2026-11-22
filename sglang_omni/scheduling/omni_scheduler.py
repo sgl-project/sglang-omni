@@ -234,6 +234,10 @@ class SessionRetryPrefillAdder(SessionCapacityPrefillAdder):
             req.kv.mamba_pool_idx = None
         else:
             pass
+        if self.waiting_queue_len == 1 and not self.can_run_list:
+            self.running_batch.batch_is_full = True
+        else:
+            pass
         return AddReqResult.CONTINUE
 
 
@@ -2923,8 +2927,11 @@ class OmniScheduler(Generic[RequestDataT]):
                 if batch.is_empty():
                     self.new_token_ratio_tracker.reset()
                 else:
-                    self.new_token_ratio_tracker.current = self.new_token_ratio_tracker.estimate_new_token_ratio_after_retract(
-                        batch.reqs
+                    self.new_token_ratio_tracker.current = max(
+                        self.new_token_ratio_tracker.current,
+                        self.new_token_ratio_tracker.estimate_new_token_ratio_after_retract(
+                            batch.reqs
+                        ),
                     )
             batch.batch_is_full = False
         return True

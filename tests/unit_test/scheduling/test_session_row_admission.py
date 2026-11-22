@@ -462,7 +462,9 @@ def test_native_prefill_bypasses_first_turn_when_only_retained_rows_remain(
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("continuation_aware_admission", [True, False])
 def test_native_prefill_probes_single_untried_waiter_after_full_batch(
-    native_runtime_context: None, continuation_aware_admission: bool
+    native_runtime_context: None,
+    continuation_aware_admission: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A full batch must not strand an eligible session that was not tried."""
     with get_context().override_server_args(page_size=4):
@@ -518,9 +520,24 @@ def test_native_prefill_probes_single_untried_waiter_after_full_batch(
         plan.running_batch.reqs.append(first)
         plan = scheduler.get_new_batch_prefill(plan.running_batch)
         assert plan.batch_to_run is None
+        assert plan.running_batch.batch_is_full
         unit = scheduler.session_bridge.units_by_request_id[second.rid]
         assert unit.capacity_wait_started_at is not None
         started_at = unit.capacity_wait_started_at
+
+        attempted = []
+        native_add = PrefillAdder.add_one_req
+
+        def record_add(adder, request, has_chunked_req, truncation_align_size):
+            attempted.append(request.rid)
+            return native_add(adder, request, has_chunked_req, truncation_align_size)
+
+        monkeypatch.setattr(PrefillAdder, "add_one_req", record_add)
+        plan = scheduler.get_new_batch_prefill(plan.running_batch)
+        assert plan.batch_to_run is None
+        assert attempted == [second.rid]
+        assert unit.capacity_wait_started_at == started_at
+
         scheduler.new_token_ratio_tracker.current = 0.0
         plan = scheduler.get_new_batch_prefill(plan.running_batch)
         assert plan.batch_to_run.reqs == [second]
@@ -1111,6 +1128,23 @@ def test_session_capacity_kill_reestimates_running_output_demand(
         )
         == "session KV capacity exhausted"
     )
+
+
+def test_session_capacity_kill_does_not_lower_survivor_output_reservation(
+    pressured_scheduler: OmniScheduler,
+) -> None:
+    """A non-recoverable session kill cannot relax the survivors' reservation."""
+    scheduler = pressured_scheduler
+    batch = scheduler.running_batch
+    survivor = batch.reqs[0]
+    survivor.sampling_params.max_new_tokens = 1024
+    scheduler.new_token_ratio_tracker.current = 0.7
+    assert NewTokenRatioTracker.estimate_new_token_ratio_after_retract([survivor]) < 0.7
+
+    assert scheduler.relieve_session_capacity(batch)
+
+    assert batch.reqs == [survivor]
+    assert scheduler.new_token_ratio_tracker.current == pytest.approx(0.7)
 
 
 def test_last_session_capacity_kill_resets_output_demand_estimate(

@@ -464,6 +464,7 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler.request_build_executor = None
         scheduler.request_admission_lock = threading.RLock()
         scheduler.pending_request_admissions = {}
+        scheduler.pending_session_admissions = {}
         scheduler.shutdown_lock = threading.Lock()
         scheduler.shutdown_callback = None
         scheduler.async_d2h_worker = None

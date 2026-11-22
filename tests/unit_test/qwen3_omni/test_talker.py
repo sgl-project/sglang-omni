@@ -1200,6 +1200,7 @@ def row_readiness_scheduler(
     scheduler.aborted_request_id_order = deque()
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.backlogged_request_build_payloads = deque()
     scheduler.waiting_queue = []
     scheduler.pending_stream_ingress = {}
@@ -1808,6 +1809,7 @@ def build_state_machine_scheduler(
     scheduler.request_build_max_pending = 0
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.backlogged_request_build_payloads = deque()
     scheduler.request_build_max_pending_observed = 0
     scheduler.max_req_len = 8192
