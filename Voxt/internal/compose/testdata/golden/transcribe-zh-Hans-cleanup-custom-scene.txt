@@ -1,5 +1,5 @@
 # profile: custom:cleanup+scene
-# layers: custom cleanup scene
+# layers: custom cleanup scene example
 
 Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
 
@@ -17,6 +17,15 @@ Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
 场景：文字会插入到 Slack。用户为这个场景写的规则：
 Casual chat in Slack: no trailing period.
 场景只用来选择措辞和格式，不要补充没有说过的事实。
+
+示例（只用来说明上面的规则，不是要整理的文字，不要输出它）。用户消息是：
+<input>
+呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。
+</input>
+你应输出：
+<output>
+帮我把周报发给小李，今天下班前。今天下班前一定要发出去。
+</output>
 
 ---- user ----
 <input>

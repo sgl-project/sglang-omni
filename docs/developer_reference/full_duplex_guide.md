@@ -217,7 +217,7 @@ The cascade composes independent speech recognition, language model and speech s
 | Profile | Recognizer | Language model | Speech | GPUs | Start beforehand |
 | --- | --- | --- | --- | --- | --- |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory, with Smart Turn v3.2 turn detection | 1 | Alignment worker on 8010 |
-| `qwen3-asr-qwen3.8-27b-vivian-tts-tool` (benchmark and CI) | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off, speaking through `tts_start` ([speaking through a tool](#speaking-through-a-tool)) | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2: the language model on GPU 0, both speech models on GPU 1 | Alignment worker on 8010 |
+| `qwen3-asr-qwen3.8-27b-vivian-tts-tool` (benchmark and CI) | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off, speaking through `tts_start` ([speaking through a tool](#speaking-through-a-tool)) | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2: the language model on GPU 0, both speech models on GPU 1; one H200 with {ref}`other memory fractions <a-live-demo-of-the-reference-profile>` | Alignment worker on 8010 |
 | `qwen3-asr-qwen3.8-27b-vivian-screen` | As above | Qwen3.8-27B on 8003, thinking off, writing what the user should read between `<screen>` and `</screen>` | As above | 2, as above | Alignment worker on 8010 |
 | `qwen3-asr-qwen3.8-27b-vivian-styles` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off, starting every reply with a style tag such as `[calm]`, held to the styles by a `regex` | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav`, or the Vivian recording of the reply's style, with its transcript ([speaking styles](#speaking-styles)) | 2, as above | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-vivian` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2, as above | Alignment worker on 8010 |
@@ -261,6 +261,95 @@ sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-
 The server starts the profile's `services` in order and waits for each, reuses a service already answering on its port, and starts the cascade once every service and the worker answer; stopping the server stops the services it started. The cascade listens on 8765 because the profile's language model takes 8000. The server is ready when the capabilities on port 8765 contain `"interaction":"turn_based"`.
 
 To run without the worker, switch the aligner on the command line: `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""` for a Qwen3-ASR profile, `--session_nodes.aligner.method sentence --session_nodes.aligner.alignment_url ""` for a Nemotron profile. Any other profile field is overridden the same way. To use a language model you already run, remove the `chat` entry from the profile's `services` and set both `--session_nodes.llm.base_url` (such as `http://127.0.0.1:9000/v1`) and `--session_nodes.llm.model`; with only `base_url`, the server still starts the profile's chat service and the node still asks for the profile's model. {ref}`Services you run elsewhere <services-you-run-elsewhere>` has the details; [Streaming Cascade Reference](#streaming-cascade-reference) lists every setting, the cascade protocol and the settings that cannot be combined.
+
+(a-live-demo-of-the-reference-profile)=
+
+**A live demo of the reference profile**
+
+These steps run `qwen3-asr-qwen3.8-27b-vivian-tts-tool`, the reference cascade in the strategy table, as a browser demo that people talk to. Install the cascade and build the aligner venv as above, then download the profile's models. Also download the ASR DFlash draft at the revision that `sglang_omni/speculative/draft_registry.py` pins, because a server started with `HF_HUB_OFFLINE=1` cannot fetch it:
+
+```bash
+hf download Qwen/Qwen3-ASR-1.7B
+hf download wilsonzheng0327/Qwen3-ASR-1.7B-dflash --revision d62bd4051e68282e02f93de774036a35f22f1373
+hf download Qwen/Qwen3.8-27B
+hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base
+hf download Qwen/Qwen3-ForcedAligner-0.6B
+```
+
+The profile runs on two GPUs. To run it on one H200, write a copy that puts every service on GPU 0 with these memory fractions:
+
+| Service | Two GPUs, as shipped | One H200 |
+| --- | --- | --- |
+| `chat`, Qwen3.8-27B | GPU 0, `--mem-fraction-static 0.85` | GPU 0, 0.60 |
+| `asr`, Qwen3-ASR-1.7B | GPU 1, 0.08 | GPU 0, 0.22 |
+| `tts`, Qwen3-TTS-12Hz-1.7B-Base | GPU 1, 0.12 | GPU 0, 0.40 |
+
+```bash
+sed -e 's/"0.85"/"0.60"/' -e 's/"0.08"/"0.22"/' -e 's/"0.12"/"0.40"/' \
+  -e 's/CUDA_VISIBLE_DEVICES: "1"/CUDA_VISIBLE_DEVICES: "0"/' \
+  examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml > /tmp/tts-tool-one-gpu.yaml
+```
+
+Each fraction is a share of the GPU memory that is still free when its service starts, and the server starts the services in the order of the table. On one GPU, the later services therefore need larger shares than on a GPU of their own. With the shipped 0.08, the recognizer ran out of KV cache on one H200.
+
+Start the alignment worker beside the speech models, with `--device cuda:1` on two GPUs or `--device cuda:0` on one H200, and wait until its `/health` answers `{"status":"ready"}`:
+
+```bash
+PYTHONPATH=. aligner-venv/bin/python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:1 --language English --port 8010
+```
+
+Start the cascade with the profile, or with `/tmp/tts-tool-one-gpu.yaml` on one H200. Once its capabilities report `"interaction":"turn_based"`, start the [browser demo](#browser-demo) against it:
+
+```bash
+sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml --enable-realtime --port 8765
+python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
+```
+
+Have one conversation yourself before others use the demo. Ask a question, then speak over a long answer. The reply stops, and the page shows the part of it that the history kept.
+
+To use another language model, run it as its own server and point the `llm` node at it, as {ref}`Services you run elsewhere <services-you-run-elsewhere>` describes. For example, Inkling-2-Mini runs from the `lmsysorg/sglang:inkling-2-mini` image on a GPU of its own, such as the GPU that the profile gives `chat`:
+
+```bash
+python3 -m sglang.launch_server --model-path thinkingmachines/Inkling-2-Mini \
+  --tool-call-parser inkling2 --reasoning-parser inkling --tp 1 --mem-fraction-static 0.85 \
+  --cuda-graph-bs-prefill 16 32 64 128 256 512 --cuda-graph-bs-decode 1 2 4 --port 9000
+```
+
+This writes a copy of the profile that has no `chat` service and sends the `llm` node to that server:
+
+```bash
+python - <<'EOF'
+import yaml
+
+with open("examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml") as f:
+    profile = yaml.safe_load(f)
+profile["model_path"] = "qwen3-asr-inkling-2-mini-vivian-tts-tool"
+profile["services"] = [s for s in profile["services"] if s["name"] != "chat"]
+profile["session_nodes"]["llm"].update(
+    base_url="http://127.0.0.1:9000/v1",
+    model="thinkingmachines/Inkling-2-Mini",
+    max_tokens=1024,
+    extra_body={"reasoning_effort": 0.1},
+)
+with open("/tmp/tts-tool-inkling.yaml", "w") as f:
+    yaml.safe_dump(profile, f, sort_keys=False)
+EOF
+```
+
+Inkling cannot turn its reasoning off. Its reasoning parser keeps the reasoning out of the reply that the cascade speaks. `reasoning_effort` 0.1 lowers the effort from the server's default of 0.9, and `max_tokens` 1024 leaves room for the reasoning, which counts toward the limit.
+
+Speech starts later than with Qwen3.8-27B. `chat_service` streams the text of a `tts_start` call while the model writes it, but SGLang's Inkling tool parser releases a call only once the call is complete, so the first sentence waits for the whole reply.
+
+The command captures prefill CUDA graphs only for 16 to 512 new tokens. That covers a cascade turn: the prefix cache holds the system prompt and the earlier turns, so a turn adds about 30 tokens. Without prefill CUDA graphs, the server compiles Triton kernels the first time a request brings a new number of prompt tokens, and its log reports each compile, such as `Triton kernel '_marlin_route' took 6.26 s to compile after serving started`. On one H100, with no warm-up requests:
+
+| Inkling server | Ready after | Cascade-sized requests that stalled over 3 s | Median time to the first streamed token |
+| --- | --- | --- | --- |
+| `--disable-prefill-cuda-graph` | 6 min 54 s | 6 of 20, for 7 to 24 s | 124 ms |
+| `--cuda-graph-bs-prefill 16 32 64 128 256 512` | 7 min 32 s | 0 of 19 | 43 ms |
+
+Most of the startup is a one-time compile on the first captured size, 255 s, after which the other five sizes took 27 s together. The server reports ready with `The server is fired up and ready to roll!` about 10 s after `/v1/models` first answers, so wait for that line before the first conversation. A request that adds more than 512 tokens runs without a graph and stalled for about 4 s the first time. To keep those kernels across restarts, mount a directory for Triton's cache and set `TRITON_CACHE_DIR` to it and `TRITON_CACHE_AUTOTUNING=1`. On a restart with that cache, none of 36 requests stalled, including four with 1,000 to 3,200 prompt tokens.
+
+Then start the cascade with `--config /tmp/tts-tool-inkling.yaml` and talk to it once yourself, as above. To run both cascades side by side, for example on two H200s with the one-H200 copy on the first and Inkling-2-Mini on the second, give this cascade another `--port`. It reuses the ASR and TTS services that the other cascade started.
 
 ## Connect a Client
 
@@ -1232,6 +1321,8 @@ A completed speech prompts nothing: the model reads the call's answer in the pro
 
 A speech starts with the first words of its text: the generator passes the call's arguments on as they arrive, the dialog reads the `text` value out of them, and the synthesizer speaks each sentence once it is complete while the model writes the rest. This needs a service that streams a call's arguments, and SGLang 0.5.23's `qwen3_coder` parser releases a parameter only at its closing tag, so the profile starts its language model with `python -m sglang_omni.models.streaming_cascade.chat_service`, which is `sglang.launch_server` with a `qwen3_coder` parser that releases a string argument as the model writes it and gives the same calls. On two H200s and from the end of the user's speech, the first audio of a reply of several sentences took a median of 1.47 s against 2.48 s with SGLang's parser and 1.29 s with the synthesizer reading the model's text directly, as the profile did before it spoke through a tool, and of a one-sentence reply 1.39 s against 1.38 s and 1.14 s, over 15 turns each with the aligner's `asr` method. A one-sentence reply gains nothing, since its first sentence ends where the call does. With thinking on the model calls the tool without `tool_choice`, but the whole text took a median of 3.1 s, so the profile runs with thinking off.
 
+Every call starts with the same 14 tokens of `qwen3_coder` syntax, `<tool_call>\n<function=tts_start>\n<parameter=text>\n`, so the profile's `llm` node sends them as its `required_call_opening`: when a prompt requires a call, the opening goes as an assistant message the model continues, with `continue_final_message: true`, and the model starts decoding at the text. The request asks for `tool_choice: auto`, because the opening already commits to the call and the grammar of a required choice would make the model open a second one. The chat service reads the continued opening in front of the first streamed delta, so the reply still arrives as a streamed `tts_start` call. SGLang's own server returns the rest of the call as content, closing tags included, and the dialog would speak them, so the option needs the chat service; the chat service reads the opening only in streamed completions, the only kind the node requests. On one H200 that served the chat, ASR and TTS models together, Qwen3.8-27B with the opening, at temperature 0 over 12 questions asked twice each, wrote the first character of its text a median 77 ms after the request against 293 ms without it, and its first sentence matched the reply without the opening in 21 of 24 pairs. Over 9 recorded questions asked twice each through `/v1/realtime` with a fresh session per turn, the median time from the end of the user's speech to the first audio went from 1.47 s to 1.26 s, with 15 of 18 paired turns faster.
+
 (scripted-conversation)=
 
 **Scripted Conversation**
@@ -1530,6 +1621,7 @@ Streams one chat completion from `<base_url>/chat/completions` per turn.
 | `temperature` | number 0 to 2, or null | null | The `temperature` field, left out when null; realtime `sampling.temperature` sets it. |
 | `extra_body` | object | `{}` | Further request fields, such as `chat_template_kwargs`. |
 | `constrain_style_tags` | boolean | `false` | Sends a `regex`, an SGLang request field, that holds the reply to one tag naming a style of the `openai_speech` nodes that read it, followed by text without brackets that does not start with whitespace. `extra_body` cannot also set `regex`. |
+| `required_call_opening` | string | `""` | The text the model writes to open a call. When the prompt requires a call, it goes as an assistant message the model continues, with `continue_final_message: true` and `tool_choice: auto`. The service must read the continued opening as the start of the call, as the chat service of [speaking through a tool](#speaking-through-a-tool) does. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
 
@@ -1667,7 +1759,7 @@ Each rule is followed by the error it raises.
 - Only one of `heard_asr_url` and `heard_asr_model` — `heard_asr_url and heard_asr_model go together`.
 - `method: asr` without them — `the asr method needs heard_asr_url and heard_asr_model`.
 - `heard_asr_url` with `method: sentence` — `heard_asr_url belongs to the asr and forced methods`.
-- `extra_body` sets `model`, `messages`, `stream`, `max_tokens` or `temperature` — `extra_body cannot set [...]`.
+- `extra_body` sets `model`, `messages`, `stream`, `max_tokens`, `temperature`, `tools`, `tool_choice` or `continue_final_message` — `extra_body cannot set [...]`.
 - `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` or `sentence_pause_ms` — a pydantic range error naming the field.
 - Two `services` with one name or one port — `services must have distinct names and ports`.
 - An empty `model_path` — `Model path is required`.
