@@ -612,7 +612,11 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#thinker-tensor-parallelism">Thinker Tensor Parallelism</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#image-generation-and-editing">Image Generation and Editing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#image-generation-and-editing">Image Generation and Editing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-cuda-stage-offload">Optional CUDA stage offload</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#requests">Requests</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#thinking-image-generation">Thinking Image Generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interleaved-output">Interleaved Output</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-input">Text Input</a></li>
@@ -684,6 +688,96 @@ generation settings. CUDA Graph execution is controlled separately.</p>
 </section>
 <section id="image-generation-and-editing">
 <h2>Image Generation and Editing<a class="headerlink" href="#image-generation-and-editing" title="Link to this heading">#</a></h2>
+<section id="optional-cuda-stage-offload">
+<h3>Optional CUDA stage offload<a class="headerlink" href="#optional-cuda-stage-offload" title="Link to this heading">#</a></h3>
+<p>The single-image <code class="docutils literal notranslate"><span class="pre">omni</span></code> pipeline supports an opt-in serial GPU residency mode:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/LLaDA2.0-Uni<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stage-offload-components<span class="w"> </span>thinker,decoder,vae
+</pre></div>
+</div>
+<p>This mode colocates the image encoder, thinker, and image decoder in one process on one GPU. The image encoder and decoder components load onto CPU; the thinker loads alone on GPU, then releases its weights before serving begins. During requests, an exclusive residency lock covers each complete encoder, thinker CFG group, SigVQ, diffusion sampling, or VAE phase. Each phase releases its weights before another phase can restore them. Concurrent submissions queue for GPU access; no request owns the lock while its payload is in transit between stages. The normal resident path is unchanged when the flag is absent.</p>
+<p>The thinker uses <code class="docutils literal notranslate"><span class="pre">torch_memory_saver==0.0.10</span></code> with CPU weight backup to preserve tensor addresses. The launcher supplies its CUDA allocator preload library to the worker. The decoder uses whole-module CPU transfers and requires the <code class="docutils literal notranslate"><span class="pre">diffusers</span></code> backend. Both normal and turbo decoding are supported. CUDA graphs, <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code>, and overlap scheduling are disabled for the offloaded thinker. Tensor parallelism, multiple process replicas, the <code class="docutils literal notranslate"><span class="pre">text</span></code> variant, and interleaved generation are outside this mode’s scope.</p>
+<p>KV cache, runtime workspaces, and intermediate tensors remain on GPU. Host memory must accommodate the thinker weight backup and CPU decoder components; this mode does not make a thinker that cannot fit by itself load successfully. Transfers add latency, and logs report <code class="docutils literal notranslate"><span class="pre">restore_seconds</span></code> and <code class="docutils literal notranslate"><span class="pre">release_seconds</span></code> for each component. Cancellation waits for the active compute phase to retire before releasing its weights; it never moves weights from a concurrent abort callback. A failed residency transfer stops further compute in this mode and requires a worker restart.</p>
+<p>Full-checkpoint HTTP validation on one NVIDIA RTX PRO 6000 Blackwell Server Edition (96 GB) passed generation and editing with both normal and turbo decoding. Each server completed 15 requests: three repetitions of each task/decoder combination, two concurrent submissions, and a fresh request after disconnecting an active request. All 15 resident/offload image pairs were pixel-identical (MAE 0). Both servers logged the cancelled request’s abort and successfully completed the next request. The offload log contained 68 matched restore/release pairs with no overlapping component ownership. These are correctness checks on one workload, not a dataset-wide image-quality evaluation.</p>
+<p>The comparison used BF16, TP=1, 1024×1024 outputs, seed 42, 32 dLLM steps, T2I guidance 4.0, and editing guidance 4.0/1.5. Turbo used eight decoder iterations; normal used 50 time points (49 Euler intervals). Both servers used a fixed 16,384-token KV capacity, synchronous eager execution, and eight CPU threads per worker. The runtime was PyTorch 2.14.1+cu130, SGLang 0.5.23, sglang-kernel 0.4.10, FlashInfer 0.7.2, Diffusers 0.37.0, and torch_memory_saver 0.0.10. FlashInfer kernels were compiled before the measured runs.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Measurement</p></th>
+<th class="head text-right"><p>Resident</p></th>
+<th class="head text-right"><p>Serial offload</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Active peak GPU memory</p></td>
+<td class="text-right"><p>54.43 GiB</p></td>
+<td class="text-right"><p>33.49 GiB</p></td>
+</tr>
+<tr class="row-odd"><td><p>Startup peak GPU memory</p></td>
+<td class="text-right"><p>35.67 GiB</p></td>
+<td class="text-right"><p>32.89 GiB</p></td>
+</tr>
+<tr class="row-even"><td><p>GPU memory after final request, server still running</p></td>
+<td class="text-right"><p>53.80 GiB</p></td>
+<td class="text-right"><p>2.88 GiB</p></td>
+</tr>
+<tr class="row-odd"><td><p>Peak server process-tree RSS sum</p></td>
+<td class="text-right"><p>35.31 GiB</p></td>
+<td class="text-right"><p>56.89 GiB</p></td>
+</tr>
+<tr class="row-even"><td><p>Startup to HTTP readiness, without request warmup</p></td>
+<td class="text-right"><p>49.17 s</p></td>
+<td class="text-right"><p>58.19 s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Workload</p></th>
+<th class="head text-right"><p>Resident warm latency</p></th>
+<th class="head text-right"><p>Offload warm latency</p></th>
+<th class="head text-right"><p>Resident / offload throughput</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Turbo generation</p></td>
+<td class="text-right"><p>31.89 s</p></td>
+<td class="text-right"><p>59.27 s</p></td>
+<td class="text-right"><p>1.882 / 1.012 images/min</p></td>
+</tr>
+<tr class="row-odd"><td><p>Turbo editing</p></td>
+<td class="text-right"><p>19.64 s</p></td>
+<td class="text-right"><p>45.60 s</p></td>
+<td class="text-right"><p>3.055 / 1.316 images/min</p></td>
+</tr>
+<tr class="row-even"><td><p>Normal generation</p></td>
+<td class="text-right"><p>97.22 s</p></td>
+<td class="text-right"><p>122.91 s</p></td>
+<td class="text-right"><p>0.617 / 0.488 images/min</p></td>
+</tr>
+<tr class="row-odd"><td><p>Normal editing</p></td>
+<td class="text-right"><p>84.28 s</p></td>
+<td class="text-right"><p>110.92 s</p></td>
+<td class="text-right"><p>0.712 / 0.541 images/min</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Offload reduced the active sampled GPU peak by 38.5%, with higher host memory and latency. Warm latency is the median of the last two of three sequential requests; throughput uses those same requests. Two simultaneous generation/editing submissions completed in 49.46 s resident and 101.80 s offloaded. The fresh request sent immediately after cancellation took 33.31 s and 69.47 s, respectively, including any wait for the cancelled compute phase to retire. These small samples do not establish production tail latency. Median thinker restore/release times were 2.81/11.18 s; semantic decoder restore/release times were 4.69/5.50 s.</p>
+<p>GPU figures are device-used memory sampled through NVML every 50 ms on an otherwise idle GPU, including contexts and allocator reservations; brief spikes can be missed. Host memory is the server process-tree RSS sum sampled every 200 ms, which can count shared mappings more than once. The fixed KV capacity is essential to the comparison: these measurements do not describe the default automatically sized KV cache. Use the following settings on both servers, adding the offload flag only for the offloaded run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">OMP_NUM_THREADS</span><span class="o">=</span><span class="m">8</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="nv">$MODEL_PATH</span><span class="s2">"</span><span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--skip-server-warmup<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.enable_torch_compile<span class="w"> </span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.disable_cuda_graph<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.disable_overlap_schedule<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.60<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.max_total_tokens<span class="w"> </span><span class="m">16384</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.max_running_requests<span class="w"> </span><span class="m">8</span>
+</pre></div>
+</div>
+</section>
+<section id="requests">
+<h3>Requests<a class="headerlink" href="#requests" title="Link to this heading">#</a></h3>
 <p>Use <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/images/generations</span></code> for T2I and <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/images/edits</span></code> for
 editing. These routes use SGLang Diffusion’s image request and response
 schemas while executing Omni’s Thinker and selected image decoder backend.
@@ -757,6 +851,7 @@ then resizes proportionally and center-crops the image to that grid. Small
 images are enlarged without black padding; images already matching the grid
 are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
 Image understanding retains its separate preprocessing and pixel budgets.</p>
+</section>
 </section>
 <section id="thinking-image-generation">
 <h2>Thinking Image Generation<a class="headerlink" href="#thinking-image-generation" title="Link to this heading">#</a></h2>
@@ -1023,7 +1118,11 @@ PNG data URL:</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#thinker-tensor-parallelism">Thinker Tensor Parallelism</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#image-generation-and-editing">Image Generation and Editing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#image-generation-and-editing">Image Generation and Editing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-cuda-stage-offload">Optional CUDA stage offload</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#requests">Requests</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#thinking-image-generation">Thinking Image Generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interleaved-output">Interleaved Output</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-input">Text Input</a></li>
