@@ -4558,21 +4558,26 @@ def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
     assert '"text":"hello world"' in body
 
 
+@pytest.mark.parametrize(
+    "endpoint", ["/v1/audio/transcriptions", "/v1/audio/translations"]
+)
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("return_spec_tokens_details", [False, True])
-def test_transcription_returns_spec_tokens_details_only_when_requested(
-    stream: bool, return_spec_tokens_details: bool
+def test_speech_to_text_returns_spec_tokens_details_only_when_requested(
+    endpoint: str, stream: bool, return_spec_tokens_details: bool
 ) -> None:
     client = TestClient(
         create_app(
             SuccessfulTranscriptionClient(spec_tokens_details=SPEC_TOKENS_DETAILS),
-            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            model_name="openai/whisper-large-v3",
+            supports_audio_translation=True,
         )
     )
 
     response = client.post(
-        "/v1/audio/transcriptions",
+        endpoint,
         data={
+            "language": "en",
             "stream": str(stream).lower(),
             "return_spec_tokens_details": str(return_spec_tokens_details).lower(),
         },
@@ -4590,12 +4595,10 @@ def test_transcription_returns_spec_tokens_details_only_when_requested(
         assert body["type"] == "transcript.text.done"
     else:
         body = response.json()
-    expected = (
-        {"spec_tokens_details": SPEC_TOKENS_DETAILS}
-        if return_spec_tokens_details
-        else None
-    )
-    assert body.get("sglext") == expected
+    if return_spec_tokens_details:
+        assert body["sglext"] == {"spec_tokens_details": SPEC_TOKENS_DETAILS}
+    else:
+        assert "sglext" not in body
 
 
 def test_transcription_stream_maps_input_length_error_to_400() -> None:

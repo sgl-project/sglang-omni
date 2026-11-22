@@ -11,12 +11,14 @@ from pydantic import ValidationError
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import ProcessConfig
-from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.config.topology import (
+    compile_logical_processes,
+    resolve_coordinator_max_in_flight,
+)
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
     Drama3PipelineConfig,
 )
-from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
