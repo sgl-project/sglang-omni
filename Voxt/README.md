@@ -114,7 +114,7 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 - **More local models**: MOSS-Transcribe-Diarize (Chinese and English, live text), Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
 - **Qwen3-ASR** knows 30 languages and 22 Chinese dialects, and uses your dictionary; the other models you download do not.
-- **Faster transcription** is available on the Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit), MOSS-Transcribe-Diarize, and Whisper Large v3 cards. Turn on the switch to download the DFlash draft for Qwen3-ASR or MOSS (726 MB, 262 MB, or 262 MB, respectively), or the Distil draft for Whisper (1.5 GB). Turning off the switch resumes ordinary decoding and keeps the draft on disk.
+- **Faster transcription** is available on the Qwen3-ASR 1.7B (8bit and 6bit), Qwen3-ASR 0.6B (4bit), MOSS-Transcribe-Diarize, and Whisper Large v3 cards. Turn on the switch to download the DFlash draft for Qwen3-ASR (726 MB, downloaded once for the 1.7B's 8bit and 6bit; 262 MB for the 0.6B) or MOSS (262 MB), or the Distil draft for Whisper (1.5 GB). Turning off the switch resumes ordinary decoding and keeps the draft on disk.
 - **Cloud speech APIs**, if you prefer one: OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian, StepFun, Xiaomi MiMo and Google Gemini.
 
 ### Language models
