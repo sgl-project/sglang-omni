@@ -71,3 +71,5 @@ segment timestamps; unsupported models return HTTP 400 before inference.
 Streaming is available with `stream=true` for `json` and `text`, using the same
 SSE lifecycle as transcriptions: `transcript.text.delta` events, one
 `transcript.text.done` event, then `data: [DONE]`.
+
+Set the form field `return_spec_tokens_details=true` to include speculative decoding statistics in `sglext.spec_tokens_details` when the backend reports them. Buffered `json` and `verbose_json` responses include the field in the response body. Streams include it in the `transcript.text.done` event.
