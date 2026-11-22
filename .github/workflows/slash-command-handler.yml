@@ -48,3 +48,10 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/.github/scripts
         run: |
           python scripts/ci/utils/slash_command_handler.py
+
+      # Labels the bot adds raise no event, so the suggestion workflow is started by hand.
+      - name: Refresh the stage suggestion comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run pr-ci-stage-suggestion.yml -f pr_number=${{ github.event.issue.number }}

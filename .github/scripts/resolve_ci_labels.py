@@ -20,6 +20,7 @@ import json
 import random
 import sys
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 
 RUN_LINT_ONLY_LABEL = "run-lint-only"
@@ -39,6 +40,8 @@ class CiStage:
     preset_by_model_label: dict[str, str]
     random_presets: tuple[str, ...]
     is_selected_by_model_label: bool = False
+    # note (0xtoward): directories under sglang_omni/models that a stage with one fixed model loads.
+    model_directories: tuple[str, ...] = ()
 
 
 CI_STAGES: tuple[CiStage, ...] = (
@@ -120,6 +123,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
+        model_directories=("minicpm_o",),
     ),
     CiStage(
         name="turn_based",
@@ -128,6 +132,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
+        model_directories=("qwen3_omni", "vad"),
     ),
     CiStage(
         name="cascaded",
@@ -136,6 +141,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
+        model_directories=("streaming_cascade", "vad"),
     ),
     CiStage(
         name="intel_cpu",
@@ -167,6 +173,24 @@ MPS_CONFIG_BY_PRESET = {
     "moss": "examples/mps_dp/configs/moss_local_h100_dp2.yaml",
 }
 GATED_WORKFLOWS = frozenset(stage.workflow for stage in CI_STAGES)
+SHORT_TARGET_BY_SHARED_STAGE_LABEL = {ASR_STAGE_LABEL: "asr", TTS_STAGE_LABEL: "tts"}
+SOURCE_ROOT = "sglang_omni/"
+MODEL_DIRECTORY_ROOT = "sglang_omni/models/"
+MODEL_DIRECTORIES_BY_PRESET = {
+    "moss-td": ("moss_transcribe_diarize",),
+    "fun": ("fun_asr",),
+    "qwen3": ("qwen3_asr",),
+    "whisper": ("whisper_asr",),
+    "higgs": ("higgs_tts",),
+    # note (0xtoward): MOSS-TTS Local builds on the audio tokenizer and modules of moss_tts.
+    "moss": ("moss_tts_local", "moss_tts"),
+    "qwen3-tts": ("qwen3_tts",),
+    "qwen3-tts-custom-voice": ("qwen3_tts",),
+    "cosyvoice3": ("fun_cosyvoice3",),
+    "qwen3-omni": ("qwen3_omni",),
+    "minicpmo": ("minicpm_o",),
+}
+MAX_TARGETS_PER_SUGGESTION = 2
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -174,6 +198,14 @@ class CiPlan:
     enabled_stage_names: frozenset[str]
     preset_by_stage_name: dict[str, str]
     runs_tts_serving: bool
+
+
+@dataclass(frozen=True, kw_only=True)
+class StageSuggestion:
+    model_directory: str
+    targets: tuple[str, ...]
+    is_in_command: bool
+    stage_model_directories: tuple[str, ...]
 
 
 def select_stage_names(labels: frozenset[str]) -> frozenset[str]:
@@ -213,6 +245,186 @@ def select_workflows(labels: frozenset[str]) -> frozenset[str]:
         return stage_workflows | {OMNI_CI_WORKFLOW}
     else:
         return stage_workflows
+
+
+def build_labels_by_target() -> dict[str, frozenset[str]]:
+    """The labels that each /tag-and-rerun-ci target adds."""
+    labels_by_target: dict[str, frozenset[str]] = {
+        "lint": frozenset({RUN_LINT_ONLY_LABEL}),
+    }
+    for stage in CI_STAGES:
+        if stage.label in SHORT_TARGET_BY_SHARED_STAGE_LABEL:
+            stage_target = SHORT_TARGET_BY_SHARED_STAGE_LABEL[stage.label]
+        else:
+            stage_target = stage.name.replace("_", "-")
+        labels_by_target[stage_target] = frozenset({stage.label})
+        for label, preset in stage.preset_by_model_label.items():
+            if stage.label == ASR_STAGE_LABEL:
+                target = f"{preset}-asr"
+            elif stage.name == "mps":
+                target = f"mps-{preset}"
+            else:
+                target = preset
+            if stage.is_selected_by_model_label:
+                labels_by_target[target] = frozenset({label})
+            else:
+                labels_by_target[target] = frozenset({stage.label, label})
+    return labels_by_target
+
+
+def labels_after_tagging(
+    current_labels: frozenset[str], requested_labels: frozenset[str]
+) -> frozenset[str]:
+    """A requested model label replaces the other model labels of each stage that accepts it."""
+    removed_labels: set[str] = set()
+    for stage in CI_STAGES:
+        model_labels = stage.preset_by_model_label.keys()
+        if requested_labels & model_labels:
+            removed_labels.update((current_labels & model_labels) - requested_labels)
+        else:
+            pass
+    return (current_labels - removed_labels) | requested_labels
+
+
+def is_model_directory_tested(
+    stage: CiStage, model_directory: str, labels: frozenset[str]
+) -> bool:
+    """Whether the stage is selected and the one model it runs lives in the directory."""
+    if stage.name not in select_stage_names(labels):
+        return False
+    elif model_directory in stage.model_directories:
+        return True
+    else:
+        pinned_presets = [
+            preset
+            for label, preset in stage.preset_by_model_label.items()
+            if label in labels
+        ]
+        runnable_presets = pinned_presets or list(stage.random_presets)
+        return bool(runnable_presets) and all(
+            model_directory in MODEL_DIRECTORIES_BY_PRESET[preset]
+            for preset in runnable_presets
+        )
+
+
+def suggest_stage_targets(
+    changed_paths: list[str], labels: frozenset[str]
+) -> list[StageSuggestion]:
+    """The /tag-and-rerun-ci targets that make a stage test each model directory a pull request changes.
+
+    A stage runs one model, so of several changed models the first enters the command and each other one comes with its own targets, whatever the labels select. The stages are the ones a model label selects and the ones with a fixed model. The targets are searched with the label rules of this module, so a rule change needs no edit here.
+    """
+    changed_model_directories = {
+        path.removeprefix(MODEL_DIRECTORY_ROOT).split("/")[0]
+        for path in changed_paths
+        if path.startswith(MODEL_DIRECTORY_ROOT)
+    }
+    labels_by_target = build_labels_by_target()
+    target_sets = [
+        targets
+        for target_count in range(1, MAX_TARGETS_PER_SUGGESTION + 1)
+        for targets in combinations(sorted(labels_by_target), target_count)
+    ]
+    suggestions: list[StageSuggestion] = []
+    command_targets: tuple[str, ...] = ()
+    for stage in CI_STAGES:
+        served_model_directories = set(stage.model_directories)
+        if stage.is_selected_by_model_label:
+            served_model_directories.update(
+                model_directory
+                for preset in (
+                    *stage.preset_by_model_label.values(),
+                    *stage.random_presets,
+                )
+                for model_directory in MODEL_DIRECTORIES_BY_PRESET[preset]
+            )
+        else:
+            pass
+        changed_served_directories = sorted(
+            served_model_directories & changed_model_directories
+        )
+        tagged_labels_by_targets = {
+            targets: labels_after_tagging(
+                labels,
+                frozenset().union(
+                    *(
+                        labels_by_target[target]
+                        for target in (*command_targets, *targets)
+                    )
+                ),
+            )
+            for targets in ([(), *target_sets] if changed_served_directories else [()])
+        }
+        untested_model_directories = [
+            model_directory
+            for model_directory in changed_served_directories
+            if not is_model_directory_tested(
+                stage, model_directory, tagged_labels_by_targets[()]
+            )
+        ]
+        is_command_needed = untested_model_directories == changed_served_directories
+        suggested_target_sets: set[tuple[str, ...]] = set()
+        for model_directory in untested_model_directories:
+            targets = min(
+                (
+                    targets
+                    for targets, tagged_labels in tagged_labels_by_targets.items()
+                    if is_model_directory_tested(stage, model_directory, tagged_labels)
+                ),
+                key=lambda targets: (
+                    len(targets),
+                    len(select_stage_names(tagged_labels_by_targets[targets])),
+                    targets,
+                ),
+            )
+            # note (0xtoward): directories of one preset share its targets, and one run tests them all.
+            if targets in suggested_target_sets:
+                pass
+            else:
+                is_in_command = is_command_needed and not suggested_target_sets
+                suggested_target_sets.add(targets)
+                suggestions.append(
+                    StageSuggestion(
+                        model_directory=model_directory,
+                        targets=targets,
+                        is_in_command=is_in_command,
+                        stage_model_directories=tuple(changed_served_directories),
+                    )
+                )
+                if is_in_command:
+                    command_targets = (*command_targets, *targets)
+                else:
+                    pass
+    return suggestions
+
+
+def suggest_shared_code_targets(
+    changed_paths: list[str], labels: frozenset[str]
+) -> list[str]:
+    """The stage targets for a change to shared code alone, when the labels select no model stage."""
+    source_paths = [path for path in changed_paths if path.startswith(SOURCE_ROOT)]
+    changes_shared_code = bool(source_paths) and not any(
+        "/" in path.removeprefix(MODEL_DIRECTORY_ROOT)
+        for path in source_paths
+        if path.startswith(MODEL_DIRECTORY_ROOT)
+    )
+    selected_stage_names = select_stage_names(labels)
+    is_model_stage_selected = any(
+        stage.name in selected_stage_names
+        and bool(stage.preset_by_model_label or stage.model_directories)
+        for stage in CI_STAGES
+    )
+    if changes_shared_code and not is_model_stage_selected:
+        stage_labels = {
+            stage.label for stage in CI_STAGES if stage.is_selected_by_model_label
+        }
+        return [
+            target
+            for target, target_labels in build_labels_by_target().items()
+            if target_labels <= stage_labels
+        ]
+    else:
+        return []
 
 
 def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
