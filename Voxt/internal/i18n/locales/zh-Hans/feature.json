@@ -85,5 +85,6 @@
   "The whole prompt for a sample input, with the variables filled in from your settings.": "一段示例输入的完整提示词，变量已按当前设置填好。",
   "um so the meeting moves to Thursday at three, no, at four": "嗯那个会议改到周四三点，不对，四点",
   "Clean-up is off, so nothing is sent to a language model.": "整理已关闭，不会把任何内容发给语言模型。",
-  "hey, the release slips to thursday because the tests are still running, sorry!": "大家好，测试还没跑完，发布推迟到周四，抱歉！"
+  "hey, the release slips to thursday because the tests are still running, sorry!": "大家好，测试还没跑完，发布推迟到周四，抱歉！",
+  "Add a prompt to translate or reformat what you said.": "添加提示词，就能翻译或重新整理你说的内容。"
 }

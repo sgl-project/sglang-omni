@@ -51,3 +51,5 @@ report	fix	symptom	level	check
 #4195	#4102	System audio silence padding drops level events, so the meeting waveform stays stale and the silence warning cannot start	L	testIdleSystemCaptureEmitsSilenceLevels
 #4394	#4420	Meeting settings do not say that speaker labels need MOSS-Transcribe-Diarize and an explicit Chinese or English spoken language	L	TestMeetingSpeechSettings
 #4470	#4488	TestSoundPairs fails in CI when a frame takes longer than the 230 ms sound preview	L	TestSoundPairs
+#3875	#4498	The setup guide does not explain language model service choices, API key entry, or connection testing	L	TestOnboardingSteps
+#3875	#4498	Transcribe does not explain that a language model prompt can translate or reformat dictation	L	TestTranscribePageRenders
