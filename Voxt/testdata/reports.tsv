@@ -45,6 +45,7 @@ report	fix	symptom	level	check
 #4421	#4422	A History width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
 #4421	#4422	A width save's change notification delivered after the reset restores the resized width	L	TestResetKeepsHistoryWidthAfterLateNotification
 #4421	#4422	The reset's late background write erases a History width saved after the reset	L	TestResetKeepsNewerHistoryWidthSave
+#3893	#4396	Transcribe clean-up applies to every app, so dictation into a terminal waits on the language model	L	TestSceneTranscribeCleanup
 #4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
 #4429	#4430	The release pre-flight reports no English entry in a long valid CHANGELOG section	L	TestReleasePreflight
 #4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
