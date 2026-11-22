@@ -650,7 +650,11 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
     import sglang_omni.platforms as platforms
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.scheduling.message import OutgoingMessage
-    from tests.unit_test.pipeline.test_kv_transfer import make_pool, start_pair
+    from tests.unit_test.pipeline.test_kv_transfer import (
+        PagedRelay,
+        kv_endpoints,
+        make_pool,
+    )
 
     monkeypatch.setattr(
         platforms.current_platform,
@@ -659,7 +663,6 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
     )
 
     async def run():
-        _, source, destination = await start_pair()
         scheduler = decode_scheduler()
         receiver = DecodeKVReceiver(
             pool_id="decode:kv",
@@ -667,14 +670,28 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
             admissions=scheduler.pd_admissions,
             resume_schema="test-v1",
         )
-        receiver.allocator.next_slot = 0
-        source.register_kv_pool(make_pool("prefill:kv"))
-        destination.register_kv_pool(make_pool("decode:kv"))
-        destination.register_kv_receiver("decode:kv", receiver)
-        topology = {"post": ["post@r0", "post@r1"]}
-        prefill = make_stage(name="source", replica_topology=topology)
-        prefill.comm = source
-        prefill.record_replica_bindings("request-1", {"post": 1})
+        receiver.allocator.next_slot = 1
+        scheduler.kv_registrations = ((make_pool("decode:kv"), receiver),)
+        topology = {
+            "decode": ["decode@r0", "decode@r1"],
+            "post": ["post@r0", "post@r1"],
+        }
+        endpoints = kv_endpoints(1)
+        rank_endpoints = {
+            "source": endpoints["source"],
+            "decode@r1": endpoints["destination"],
+        }
+        relay = PagedRelay()
+        prefill = make_stage(
+            name="source",
+            gpu_id=0,
+            gpu_stage_names=set(rank_endpoints),
+            rank_endpoints=rank_endpoints,
+            replica_topology=topology,
+            relay=relay,
+        )
+        prefill.comm.register_kv_pool(make_pool("prefill:kv"))
+        prefill.record_replica_bindings("request-1", {"decode": 1, "post": 1})
         dispatched = asyncio.Event()
 
         async def send_payload(**kwargs):
@@ -682,8 +699,12 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
 
         dispatcher = SimpleNamespace(send_payload=AsyncMock(side_effect=send_payload))
         decode = make_stage(
-            name="destination",
+            name="decode@r1",
+            gpu_id=0,
+            gpu_stage_names=set(rank_endpoints),
+            rank_endpoints=rank_endpoints,
             scheduler=scheduler,
+            relay=relay,
             replica_topology=topology,
             get_next=lambda *_: "post",
             endpoints={"post@r1": "inproc://post1"},
@@ -692,14 +713,16 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
         )
         drain = None
         try:
+            await prefill.comm.start()
+            await decode.comm.start()
             continuation = make_continuation()
             transfer = make_transfer(
                 transfer_id=continuation.transfer_id,
-                to_stage="destination",
                 metadata={"decode_continuation": continuation.encode()},
             )
             await prefill.send_kv_transfer(transfer)
             transfer.lease.release.assert_called_once()
+            assert relay.get_calls == [("decode:kv", (1, 2, 3), (1, 2, 3))]
             scheduler.drain_decode_admissions()
             scheduler.outbox.put(
                 OutgoingMessage(
@@ -713,14 +736,14 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
             await asyncio.wait_for(dispatched.wait(), 5)
             kwargs = dispatcher.send_payload.call_args.kwargs
             assert kwargs["to_stage"] == "post@r1"
-            assert kwargs["replica_bindings"] == {"post": 1}
+            assert kwargs["replica_bindings"] == {"decode": 1, "post": 1}
         finally:
             decode.running = False
             if drain is not None:
                 drain.cancel()
                 await asyncio.gather(drain, return_exceptions=True)
-            await source.close()
-            await destination.close()
+            await prefill.comm.close()
+            await decode.comm.close()
 
     asyncio.run(run())
 

@@ -7,7 +7,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import count
 from typing import Callable
 from uuid import uuid4
@@ -154,6 +154,7 @@ class CommEngine:
         self.retained_pending_kv_transfers: list[PendingTransfer] = []
         self.kv_pools: dict[str, KVPool] = {}
         self.kv_receivers: dict[str, KVReceiver] = {}
+        self.kv_receiver_aliases: dict[str, str] = {}
         self.kv_ready: dict[str, asyncio.Future[KVTransferReadyMessage]] = {}
         self.outbound_kv_requests: dict[str, str] = {}
         self.inbound_kv: dict[str, InboundKVTransfer] = {}
@@ -395,8 +396,14 @@ class CommEngine:
     def register_kv_pool(self, pool: KVPool) -> None:
         self.kv_pools[pool.pool_id] = pool
 
-    def register_kv_receiver(self, pool_id: str, receiver: KVReceiver) -> None:
+    def register_kv_receiver(
+        self, pool_id: str, receiver: KVReceiver, *, alias: str | None = None
+    ) -> None:
         self.kv_receivers[pool_id] = receiver
+        if alias is not None:
+            self.kv_receiver_aliases[alias] = pool_id
+        else:
+            pass
 
     async def send_kv_pages(
         self,
@@ -693,6 +700,12 @@ class CommEngine:
             pass
         relay = self.relay(transport)
         receiver = self.kv_receivers.get(message.target_pool_id)
+        if receiver is None and message.target_pool_id in self.kv_receiver_aliases:
+            pool_id = self.kv_receiver_aliases[message.target_pool_id]
+            receiver = self.kv_receivers[pool_id]
+            message = replace(message, target_pool_id=pool_id)
+        else:
+            pass
         if receiver is None:
             return self.kv_ready_failure(
                 message,

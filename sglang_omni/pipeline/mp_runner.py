@@ -1002,7 +1002,10 @@ class MultiProcessPipelineRunner:
                     raise RuntimeError(
                         f"PD Prefill stage {stage_name!r} targets missing Decode stage {target_name!r}"
                     )
-                elif target.pool_id != f"{target_name}:kv":
+                elif target.pool_id not in (
+                    f"{target_name}:kv",
+                    f"{replica_topology.logical_name(target_name)}:kv",
+                ):
                     raise RuntimeError(
                         f"PD Decode stage {target_name!r} registered unexpected KV pool {target.pool_id!r}"
                     )

@@ -372,8 +372,9 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
 
 
 @pytest.mark.asyncio
-async def test_mp_runner_rejects_incompatible_pd_pair_at_startup(
-    tmp_path: Path,
+@pytest.mark.parametrize(("decode_replicas", "decode_page_size"), [(1, 2), (2, 1)])
+async def test_mp_runner_validates_pd_pair_at_startup(
+    tmp_path: Path, decode_replicas: int, decode_page_size: int
 ) -> None:
     config = PipelineConfig(
         model_path="model",
@@ -390,20 +391,30 @@ async def test_mp_runner_rejects_incompatible_pd_pair_at_startup(
                 name="decode",
                 process="decode",
                 factory_path=f"{__name__}.PDKVLayoutProbe",
-                factory=FactoryArgs(pd_role="decode", page_size=2),
+                factory=FactoryArgs(pd_role="decode", page_size=decode_page_size),
                 terminal=True,
             ),
         ],
+        processes={"decode": ProcessConfig(num_replicas=decode_replicas)},
         endpoints=EndpointsConfig(base_path=str(tmp_path)),
     )
     runner = mp_runner.MultiProcessPipelineRunner(config)
 
     try:
-        with pytest.raises(
-            RuntimeError, match="KV layouts do not match between 'prefill' and 'decode'"
-        ):
+        if decode_page_size == 1:
             await runner.start(timeout=30.0)
-        assert not runner.started
+            assert set(runner.stage_control_endpoints) == {
+                "prefill",
+                "decode@r0",
+                "decode@r1",
+            }
+        else:
+            with pytest.raises(
+                RuntimeError,
+                match="KV layouts do not match between 'prefill' and 'decode'",
+            ):
+                await runner.start(timeout=30.0)
+            assert not runner.started
     finally:
         await runner.stop()
     assert list(tmp_path.iterdir()) == []

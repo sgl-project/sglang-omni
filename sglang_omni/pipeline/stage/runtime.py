@@ -208,7 +208,13 @@ class Stage:
         for pool, receiver in getattr(scheduler, "kv_registrations", ()):
             self.comm.register_kv_pool(pool)
             if receiver is not None:
-                self.comm.register_kv_receiver(pool.pool_id, receiver)
+                logical_name = self.replica_topology.logical_name(name)
+                alias = (
+                    f"{name}:kv"
+                    if name != logical_name and pool.pool_id == f"{logical_name}:kv"
+                    else None
+                )
+                self.comm.register_kv_receiver(pool.pool_id, receiver, alias=alias)
             else:
                 pass
 
