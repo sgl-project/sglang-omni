@@ -114,6 +114,7 @@ final class TextIO: @unchecked Sendable {
         // that something is selected, so the read goes on to ⌘C.
         var blankAX = false
         var caretOnly = false
+        var emptyRead = false
         var settling = false
         while true {
             if let r = await world.read() {
@@ -137,17 +138,23 @@ final class TextIO: @unchecked Sendable {
                 }
                 caretOnly = SelectionRead.endsAtCaret(range: r.range.map { TextRange(location: $0.location, length: $0.length) },
                                                       editable: r.editable, blankSelection: blankAX)
+                // An empty reading on a non-editable element (a page's AX
+                // or a PDF view lags the ⌘A the same way, #3835) settles
+                // too; after the settle it falls through to ⌘C, while a
+                // real editable caret stays caret-only.
+                emptyRead = !blankAX && r.range?.length == 0
             } else {
                 steps.append("focus=nil")
                 caretOnly = false
+                emptyRead = false
             }
             // A caret can be the reading from before the selection: ⌘A and
             // the shortcut leave in one motion, and the accessibility
             // reading lags the keys. Read again for a moment before
             // concluding that nothing is selected (#4467).
             let settleMs = Double(p.caretSettleMs ?? Int(SelectionRead.defaultCaretSettleMs))
-            guard caretOnly, SelectionRead.caretPending(elapsedMs: world.now() - t0, settleMs: settleMs) else { break }
-            if !settling { steps.append("caret-settle"); settling = true }
+            guard caretOnly || emptyRead, SelectionRead.caretPending(elapsedMs: world.now() - t0, settleMs: settleMs) else { break }
+            if !settling { steps.append(caretOnly ? "caret-settle" : "empty-settle"); settling = true }
             let pollMs = p.caretPollMs ?? Int(SelectionRead.defaultCaretPollMs)
             await world.sleep(UInt64(pollMs) * 1_000_000)
         }
@@ -208,6 +215,11 @@ final class TextIO: @unchecked Sendable {
                 await world.sleep(25_000_000)
                 f = world.heldFlags()
             } while SelectionRead.blocksCopy(f) && world.now() < deadline
+            // Still held (a hold-to-record shortcut keeps its key down
+            // through the dictation): a posted ⌘C would reach the app as
+            // a chord that copies nothing (Chrome reads Control+⌘C as no
+            // copy, #3835). Skip the copy; no contaminated key is posted.
+            guard !SelectionRead.blocksCopy(f) else { return (nil, nil, "copy: skipped" + flags(f)) }
         }
         let held = flags(f)
         // The snapshot comes after the wait: a clipboard change during it

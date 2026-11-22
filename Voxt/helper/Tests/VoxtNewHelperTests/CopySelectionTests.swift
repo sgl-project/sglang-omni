@@ -42,7 +42,10 @@ final class CopySelectionTests: XCTestCase {
                 postCopy: {
                     self.postedWithFlags = self.flags
                     self.nowAtPost = self.now
-                    if let text = self.copyText { self.write(text) }
+                    // As the apps in the reports: a ⌘C posted with a
+                    // blocking modifier still held copies nothing
+                    // (Chrome reads Control+⌘C as no copy, #3835).
+                    if self.flags.isEmpty, let text = self.copyText { self.write(text) }
                 },
                 readAndRestore: { snap in
                     self.readCalls += 1
@@ -106,15 +109,18 @@ final class CopySelectionTests: XCTestCase {
         XCTAssertEqual(r.text, "selected text")
     }
 
-    /// A modifier that never lifts does not block the ⌘C: after
-    /// modifierWaitMs the key is posted anyway, noted as held.
-    func testCopyPostsAnywayAfterTheWait() async {
+    /// A modifier that never lifts (a hold-to-record shortcut keeps its
+    /// key down) blocks the ⌘C: posting it would reach the app as a
+    /// chord that copies nothing (#3835), so after modifierWaitMs the
+    /// copy is skipped and no contaminated key is posted.
+    func testCopySkippedWhileModifierHeld() async {
         let f = Fake()
         f.copyText = "selected text"
         let r = await TextIO.copySelection(timeoutMs: 50, modifierWaitMs: 100, world: f.world())
-        XCTAssertEqual(f.postedWithFlags, .maskControl)
-        XCTAssertEqual(f.nowAtPost, 100, "the wait is modifierWaitMs, no more")
-        XCTAssertEqual(r.note, "copy: changed held=control")
-        XCTAssertEqual(r.text, "selected text")
+        XCTAssertNil(f.postedWithFlags, "no contaminated keystroke")
+        XCTAssertNil(r.text)
+        XCTAssertEqual(r.note, "copy: skipped held=control")
+        XCTAssertEqual(f.now, 100, "the wait is modifierWaitMs, no more")
+        XCTAssertEqual(f.readCalls, 0, "the clipboard is never touched")
     }
 }

@@ -68,6 +68,55 @@ final class CaretSettleTests: XCTestCase {
         XCTAssertEqual(r.steps?.last, "caret-only")
     }
 
+    /// A page's AX lags the ⌘A the same way a field's does (#3835): an
+    /// empty, non-editable AXWebArea reading settles too, and the
+    /// selection that shows up a reading later is the answer.
+    func testEmptyWebAreaSettlesIntoSelection() async throws {
+        let webCaret = SelectionReading(role: "AXWebArea", selected: nil,
+                                        range: CFRange(location: 0, length: 0),
+                                        ranged: nil, marker: nil, editable: false)
+        let page = SelectionReading(role: "AXWebArea", selected: "page text",
+                                    range: CFRange(location: 0, length: 9),
+                                    ranged: "page text", marker: nil, editable: false)
+        let f = Fake([webCaret, page])
+        var p = SelectionParams()
+        p.caretSettleMs = 600
+        p.caretPollMs = 60
+        let r = try await TextIO.selection(p, world: f.world())
+        XCTAssertEqual(r.text, "page text")
+        XCTAssertEqual(r.via, SelectionVia.ax)
+        XCTAssertEqual(f.reads, 2, "the empty page reading polled once more")
+        XCTAssertTrue(r.steps?.contains("empty-settle") ?? false, "steps \(r.steps ?? [])")
+    }
+
+    /// An empty, non-editable reading that stays empty (a PDF view whose
+    /// AX shows nothing of the selection, #3835) goes on to ⌘C after the
+    /// settle — while a genuine editable caret never does.
+    func testEmptyPDFViewSettlesThenCopies() async throws {
+        let pdfCaret = SelectionReading(role: "AXScrollArea", selected: nil,
+                                        range: CFRange(location: 0, length: 0),
+                                        ranged: nil, marker: nil, editable: false)
+        let f = Fake([pdfCaret, pdfCaret, pdfCaret])
+        var p = SelectionParams()
+        p.caretSettleMs = 100
+        p.caretPollMs = 60
+        p.allowCopy = true
+        let copy = CopyWorld(
+            snapshot: { ([], 1) },
+            changeCount: { 2 },
+            heldFlags: { [] },
+            postCopy: {},
+            readAndRestore: { _ in ("copied page", ["public.utf8-plain-text"], [:], nil) },
+            now: { 0 },
+            sleep: { _ in }
+        )
+        let r = try await TextIO.selection(p, world: f.world(), copyWorld: copy)
+        XCTAssertEqual(r.text, "copied page")
+        XCTAssertEqual(r.via, SelectionVia.copy)
+        XCTAssertEqual(f.reads, 3, "the settle ran out before the ⌘C")
+        XCTAssertTrue(r.steps?.contains("empty-settle") ?? false, "steps \(r.steps ?? [])")
+    }
+
     /// A caret that stays a caret is the answer once the app's settle
     /// budget is spent: caret-only, none, no ⌘C.
     func testCaretSettleGivesUpAfterTheBudget() async throws {
