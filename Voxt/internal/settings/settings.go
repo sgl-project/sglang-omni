@@ -86,10 +86,11 @@ type Appearance struct {
 	// user chose names and icons. SidebarWidth is its width in DIPs at
 	// 100 % (0 = the default); ClosedSections the sidebar sections the
 	// user closed.
-	Rail           bool     `json:"rail,omitempty"`
-	RailChosen     bool     `json:"railChosen,omitempty"`
-	SidebarWidth   float64  `json:"sidebarWidth,omitempty"`
-	ClosedSections []string `json:"closedSections,omitempty"`
+	Rail               bool     `json:"rail,omitempty"`
+	RailChosen         bool     `json:"railChosen,omitempty"`
+	SidebarWidth       float64  `json:"sidebarWidth,omitempty"`
+	HistoryDetailWidth float64  `json:"historyDetailWidth,omitempty"` // DIPs at 100 %, 0 = default
+	ClosedSections     []string `json:"closedSections,omitempty"`
 }
 
 // Privacy: what VoxtNew keeps on this Mac and what it logs.

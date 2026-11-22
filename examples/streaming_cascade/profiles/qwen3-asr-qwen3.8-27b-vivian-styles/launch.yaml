@@ -1,4 +1,4 @@
-# The qwen3-asr-qwen3.8-27b-vivian cascade with speaking styles: Qwen3.8-27B starts every reply with a style tag such as [calm], held to the speech node's styles by a regex, and Qwen3-TTS Base speaks it by cloning the Vivian recording of that style with its transcript; [neutral] clones vivian.wav.
+# Qwen3-ASR transcribes each utterance, Qwen3.8-27B answers with thinking off and Qwen3-TTS Base speaks it, each a service of its own, with speaking styles: Qwen3.8-27B starts every reply with a style tag such as [calm], held to the speech node's styles by a regex, and Qwen3-TTS Base speaks it by cloning the Vivian recording of that style with its transcript; [neutral] clones vivian.wav.
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-styles
 
@@ -60,6 +60,7 @@ session_nodes:
     model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
     reference_audio_path: examples/streaming_cascade/voices/vivian.wav
     reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
+    drop_quiet_start: true
     styles:
       neutral:
         audio_path: examples/streaming_cascade/voices/vivian.wav

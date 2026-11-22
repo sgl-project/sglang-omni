@@ -88,6 +88,13 @@ type sessionOverlayLayoutInput struct {
 
 const streamGrowStep = 4 * 19
 
+// streamHeadroom is the room a card keeps under a streaming answer's
+// text: a line of it (14 pt Markdown at 1.5 leading) and a little. The
+// view measures a new text in the frame that first draws it, and the card
+// grows to it a turn of the main loop later, so the frame between draws
+// the next line in this room instead of past the body (#3836 feedback).
+const streamHeadroom = 26
+
 // sessionOverlayLayoutFor computes the native face model without owning an app or a window.
 func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
 	model := sessionOverlayLayout{
@@ -115,6 +122,7 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 		bodyMax := sessionOverlayCardBodyMax(card, input.WorkArea.Height, input.Overlay.Margin)
 		body, streamHeight, exact := sessionOverlayCardBodyHeight(state.SessionID, card, measureHeight, input.PreviewHeights, bodyMax, input.Memory.StreamHeight, width)
 		model.Width, model.Height, model.Exact, model.StreamHeight = width, layout.CardChrome+sessionCardAttachmentHeight(card)+body, exact, streamHeight
+		model.CardScrolls = body >= bodyMax
 		if card.Message != "" {
 			model.Height += layout.CardMsgGap + layout.CardMsgH
 		}
@@ -245,7 +253,7 @@ func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, 
 		exact = exact && ok
 	}
 	if card.Writing || card.Conversation && card.Busy && !card.Recording {
-		height = float32(math.Ceil(float64(height/streamGrowStep))) * streamGrowStep
+		height = float32(math.Ceil(float64((height+streamHeadroom)/streamGrowStep))) * streamGrowStep
 		if exact {
 			streamHeight = height
 		} else if streamHeight > 0 {

@@ -115,7 +115,7 @@ func audioSettings(c *ui.Context, state settingsAudioViewState, actions settings
 			actions.setLiveResult(local.liveResult)
 		}
 	})
-	settingRow(c, "audio-upload", i18n.T("Upload size limit"), i18n.T("For speech services that take the whole recording (OpenAI, Doubao): a longer recording goes in pieces of at most this size. 0 uses the service's own limit: 25 MB for OpenAI, 100 MB for Doubao."), func() {
+	settingRow(c, "audio-upload", i18n.T("Upload size limit"), i18n.T("A longer recording is uploaded in pieces of at most this size. 0 uses the service's own limit."), func() {
 		if numberInput(c.Key("audio-upload-mb"), &local.uploadMB, 0, 100, 1, numOpts{Label: i18n.T("Upload size limit in MB")}) {
 			actions.setUploadMB(local.uploadMB)
 		}

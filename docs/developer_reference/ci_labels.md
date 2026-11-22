@@ -4,7 +4,22 @@ SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for
 
 **A pull request runs none of the self-hosted CI until a maintainer adds CI labels.** Once labeled, every later push re-runs CI for as long as the labels stay. Draft pull requests are blocked from self-hosted CI even when they are labeled.
 
-In this sense, two kinds of labels exist and they combine: a stage label decides whether a part of the self-hosted CI runs, and a model label picks the model. A model label never includes a stage name. An ASR or TTS model label alone also runs the jobs that test its model; MPS and Omni model labels never select a stage. `run-lint-only` is separate: it satisfies the gate and runs no self-hosted job. The full label rules come after the workflows. `.github/scripts/resolve_ci_labels.py` implements them, and every self-hosted workflow resolves its labels through that script.
+Two kinds of labels combine: a stage label runs a part of the self-hosted CI, and a model label picks the model it runs on. An ASR, TTS or Omni model label alone also runs the jobs that test its model. `.github/scripts/resolve_ci_labels.py` implements the [label rules](#label-rules), and every self-hosted workflow resolves its labels through that script.
+
+## Choosing labels
+
+Add the labels that match the change. They combine, and no label runs all of CI.
+
+| The change touches | Add | What runs |
+| --- | --- | --- |
+| One ASR, TTS or Omni model | That model's label, listed under [ASR](#asr), [TTS](#tts) and [Omni](#omni) | PR Test and the jobs that test that model |
+| Several models of one kind, or code they share | `run-asr-ci`, `run-tts-ci` or `run-omni-ci` | PR Test and every job of that stage, on a random model unless a model label pins it |
+| CUDA MPS or weight sharing | `run-mps-ci` | PR Test and MPS |
+| Full duplex or realtime sessions | `run-native-duplex`, `run-turn-based-duplex` or `run-cascaded-duplex` | PR Test and that Full-Duplex-Bench job |
+| Code that only the unit tests cover | `run-unit-test-ci-only` | PR Test on H100. Not `intel-cpu-ci (unit_test/cpu)`. |
+| The Intel CPU or Intel GPU path | `run-intel-cpu-ci` or `run-intel-xpu-ci` | PR Test and that workflow's tests, when its paths match |
+| The MLX path or the Voxt app | `run-mac-ci` | Mac CI. Not PR Test. |
+| Nothing that needs self-hosted CI | `run-lint-only` | No self-hosted job. The gates succeed. |
 
 ## Overview
 
@@ -16,11 +31,11 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Playground Test | GitHub-hosted | The playground frontend tests | Every pull request except MLX-only ones |
 | Rust Router | GitHub-hosted | Rust router format, lint, tests and release build | Every pull request except MLX-only ones |
 | Release Docker Images Nightly (NPU) | GitHub-hosted | NPU configuration checks and an ARM64 image build | Pull requests that change its Dockerfile, installer, pyproject files or workflows |
-| Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label except `run-mac-ci`, or an ASR or TTS model label |
-| Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` for both jobs, or an ASR model label for the job that tests that model |
+| Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label except `run-mac-ci`, or a model label |
+| Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on ARK-ASR-3B, Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` for both jobs, or an ASR model label for the job that tests that model |
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` for every job, or a TTS model label for the jobs that test that model |
 | Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` |
-| Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` |
+| Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci`, or an Omni model label for that model |
 | Omni CI: Duplex | H100 | Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline | `run-native-duplex`, `run-turn-based-duplex` or `run-cascaded-duplex` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` |
@@ -72,11 +87,12 @@ The weights are per-file p90 elapsed estimates from three successful H100 A/B ru
 | MOSS-TD multi-speaker | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, behind a two-worker router: movies800 in offline and streaming mode, AISHELL-4 long-form audio and googletime. It gates character error rate and speed. |
 | SeedTTS ASR | The selected model on the SeedTTS English and Chinese splits. It gates word error rate on both splits, and throughput, latency and real-time factor on the English split. |
 
-The two jobs share no data and run side by side. `run-asr-ci` runs both, and SeedTTS ASR draws its model at random unless a model label pins it. An ASR model label alone runs only the job that tests its model, so a change to one ASR model needs no stage label:
+The two jobs share no data and run side by side. `run-asr-ci` runs both, and SeedTTS ASR draws its model at random unless a model label pins it. An ASR model label alone runs only the job that tests its model:
 
 | Model label | Job | Checkpoint | In the random pool |
 | --- | --- | --- | --- |
 | `run-moss-transcribe-diarize` | MOSS-TD multi-speaker | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | Its only model |
+| `run-ark-asr-3b` | SeedTTS ASR | `AutoArk-AI/ARK-ASR-3B` with DFlash | Yes |
 | `run-fun-asr-nano-2512` | SeedTTS ASR | `FunAudioLLM/Fun-ASR-Nano-2512-hf` | Yes |
 | `run-qwen3-asr-1.7b` | SeedTTS ASR | `Qwen/Qwen3-ASR-1.7B` | Yes |
 | `run-whisper-large-v3` | SeedTTS ASR | `openai/whisper-large-v3` | Yes |
@@ -89,7 +105,7 @@ The two jobs share no data and run side by side. `run-asr-ci` runs both, and See
 | streaming first audio | Median time to first playable audio under Poisson arrivals, with one worker alone on the GPU. Runs only on the two Qwen3-TTS checkpoints. |
 | Higgs serving stress | A mixed production workload over the REST, streaming and WebSocket endpoints through a two-worker router, always on Higgs-TTS. |
 
-The first two jobs, the model jobs, test the selected model. `run-tts-ci` runs all three jobs, and the model jobs draw their model at random unless a model label pins it. A TTS model label alone runs only the jobs that test its model, so a change to one TTS model needs no stage label: the model jobs on that model, plus Higgs serving stress for `run-higgs-tts-3-4b`. A TTS model label never selects MPS (see [MPS](#mps)).
+The first two jobs, the model jobs, test the selected model. `run-tts-ci` runs all three jobs, and the model jobs draw their model at random unless a model label pins it. A TTS model label alone runs the model jobs on its model, and `run-higgs-tts-3-4b` also runs Higgs serving stress. A TTS model label never selects MPS (see [MPS](#mps)).
 
 | Model label | Jobs it runs alone | Checkpoint | In the random pool |
 | --- | --- | --- | --- |
@@ -109,7 +125,7 @@ Qwen3-TTS CustomVoice uses a named voice instead of a reference clip, and its th
 2. Native MPS lifecycle validation uses Higgs-TTS to check daemon sharing, recovery behavior and clean teardown.
 3. Native CUDA IPC weight-sharing lifecycle validation uses MOSS-TTS Local to check shared-weight memory savings, process startup order and leader failure handling.
 
-All three validations run under the existing `run-mps-ci` label. The label accepts `run-higgs-tts-3-4b` and `run-moss-tts-local-transformer-v1.5` for the external CUDA MPS DP2 validation; those labels do not change the fixed models used by the native lifecycle validations. A model label does not run MPS, because MPS tests the CUDA MPS and weight-sharing machinery and these models only carry it: alone, a Higgs or MOSS label runs its TTS jobs, and with `run-mps-ci` it also pins the MPS model. With `run-tts-ci` and `run-mps-ci`, one of these labels selects the external MPS model and the TTS model. With only `run-tts-ci`, MPS does not run. With no Higgs or MOSS label, the external MPS validation draws from its own pool.
+`run-higgs-tts-3-4b` or `run-moss-tts-local-transformer-v1.5` picks the model for the external CUDA MPS DP2 validation; without one, it draws from its own pool. The two native lifecycle validations always use their fixed models. A model label alone does not run MPS, because MPS tests the CUDA MPS and weight-sharing machinery, not the model: alone, a Higgs or MOSS label runs its TTS jobs. With `run-tts-ci` and `run-mps-ci`, one of these labels pins both the TTS model and the external MPS model.
 
 | Model label | Checkpoint | MPS config | In the random pool |
 | --- | --- | --- | --- |
@@ -131,7 +147,7 @@ Every job runs the selected model unless noted otherwise. A job named "Talker" a
 | stage 10 - Video-AMME Talker | Video with audio and spoken answers, with the thinker sharded across two GPUs (tensor parallel size 2). |
 | stage 11 - process replicas | A two-GPU deployment with one code2wav replica on each GPU; checks that both replicas start, register and receive requests. Runs only for Qwen3-Omni. |
 
-The stage label is `run-omni-ci`. A model label does not name the stage. Combine it with `run-omni-ci` to pick the model:
+`run-omni-ci` runs these jobs on a model drawn at random unless a model label pins it. An Omni model label alone runs them on its model. Neither runs Duplex, whose jobs each have their own stage label (see [Duplex](#duplex)).
 
 | Model label | Checkpoint | In the random pool |
 | --- | --- | --- |
@@ -146,7 +162,7 @@ Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, t
 | --- | --- | --- |
 | `run-native-duplex` | Full-Duplex-Bench - full duplex | MiniCPM-o 4.5, native full duplex, one server on each of two GPUs |
 | `run-turn-based-duplex` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
-| `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian`) |
+| `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off speaking through a `tts_start` tool, and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool`) |
 
 The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label.
 
@@ -174,28 +190,15 @@ The stage label is `run-mac-ci`. Use it for any change on the MLX path: the SGLa
 
 ## Label rules
 
-1. A stage runs only when its stage label is on the pull request, or, for the ASR and TTS jobs, a label for the model the job tests. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex turn-based cascaded intel-cpu intel-xpu mac`.
-2. Self-hosted CI needs a stage label, an ASR or TTS model label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`, and so does the Mac CI gate when Mac CI starts; CPU CI and XPU CI skip their tests without failing. An MLX-only pull request does not start Omni CI, so the Mac CI gate is the one that fails: `run-mac-ci` runs its Mac tests, and `run-lint-only` runs none. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
-3. Any stage label except `run-mac-ci`, and any ASR or TTS model label, also runs PR Test. A pull request labeled only `run-mac-ci` runs Mac CI and no H100 job.
-4. A model label picks its model for every selected stage that accepts it. When no stage that accepts it is selected, an ASR or TTS model label selects the jobs that test its model (see [ASR](#asr) and [TTS](#tts)). MPS and Omni model labels never select a stage. Higgs and MOSS labels are accepted by TTS and MPS and select only TTS, so `run-mps-ci` with one of them pins the MPS model and adds no TTS job. If no selected stage accepts an Omni model label, the gate prints a warning.
-5. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
-6. Each stage takes at most one model label. Two model labels for the same stage fail the gate, even when that stage is not selected.
-7. Stage labels combine. `run-tts-ci` together with `run-mps-ci` runs PR Test, TTS and MPS, and nothing else.
-
-| Stage label | Selects |
-| --- | --- |
-| `run-lint-only` | No self-hosted job. The gates succeed. |
-| `run-unit-test-ci-only` | PR Test on H100. Not `intel-cpu-ci (unit_test/cpu)`. |
-| `run-asr-ci` | Both ASR jobs in Omni CI |
-| `run-tts-ci` | Every TTS job in Omni CI |
-| `run-mps-ci` | MPS in Omni CI |
-| `run-omni-ci` | Omni in Omni CI |
-| `run-native-duplex` | Duplex full duplex in Omni CI |
-| `run-turn-based-duplex` | Duplex turn based in Omni CI |
-| `run-cascaded-duplex` | Duplex cascaded in Omni CI |
-| `run-intel-cpu-ci` | Intel Xeon job `intel-cpu-ci (unit_test/cpu)`, when the CPU paths match |
-| `run-intel-xpu-ci` | XPU CI |
-| `run-mac-ci` | Mac CI. Not PR Test. |
+1. A stage runs only when its stage label is on the pull request. The ASR, TTS and Omni jobs also run with a label for the model they test.
+2. No label selects every stage. For a change that really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-turn-based-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex turn-based cascaded intel-cpu intel-xpu mac`.
+3. Self-hosted CI needs a stage label, a model label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`, and so does the Mac CI gate when Mac CI starts; CPU CI and XPU CI skip their tests without failing. An MLX-only pull request does not start Omni CI, so only the Mac CI gate fails.
+4. `run-lint-only` satisfies the gates and runs no self-hosted job. It does not turn off a stage label that is also present.
+5. Any stage label except `run-mac-ci`, and any model label, also runs PR Test.
+6. A model label picks its model for every selected stage that accepts it. When no such stage is selected, it selects the jobs that test its model (see [ASR](#asr), [TTS](#tts) and [Omni](#omni)).
+7. A model label never selects MPS. TTS and MPS both accept the Higgs and MOSS labels: alone, one of them runs its TTS jobs, and with `run-mps-ci` it pins the MPS model and adds no TTS job.
+8. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
+9. Each stage takes at most one model label. Two model labels for the same stage fail the gate, even when that stage is not selected.
 
 ## Examples
 
@@ -219,15 +222,16 @@ The table is for a pull request that is not MLX-only and lists only the self-hos
 | `run-tts-ci`, `run-mps-ci`, `run-higgs-tts-3-4b` | PR Test, then TTS and MPS, both on Higgs-TTS. |
 | `run-tts-ci`, `run-mac-ci` | PR Test and TTS on H100, and Mac CI. |
 | `run-mac-ci` | Mac CI only, once lint passes. Omni CI passes its gate and skips setup and PR Test. |
-| `run-tts-ci`, `run-minicpm-o-4.5` | PR Test and TTS. The Omni model label is ignored with a warning, because Omni is not selected. |
-| `run-minicpm-o-4.5` | Nothing. The gate fails, because outside ASR and TTS a model label does not select a stage. |
+| `run-omni-ci` | PR Test, then Omni on a random model from its pool. |
+| `run-minicpm-o-4.5` | PR Test, then Omni on MiniCPM-o 4.5. Duplex does not run. |
+| `run-tts-ci`, `run-minicpm-o-4.5` | PR Test, then TTS on a random model and Omni on MiniCPM-o 4.5. |
 | `run-tts-ci`, `run-higgs-tts-3-4b`, `run-moss-tts-local-transformer-v1.5` | Nothing. The gate fails, because TTS and MPS accept two model labels. |
 
 ## Label changes, re-runs and manual runs
 
 Adding a label manually, CI or not, starts a new run of Omni CI (unless the pull request is MLX-only), CPU CI, XPU CI and Mac CI (when its paths match) and cancels the run of the same workflow in progress, so the new label set takes effect at once. Models that no label pins are drawn again in the new run.
 
-Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Mac CI and leaves Omni CI running. Removing `run-tts-ci` while `run-mac-ci` stays cancels Omni CI and leaves Mac CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Mac CI, unless an ASR or TTS model label remains: it still selects the jobs that test its model, so Omni CI keeps running. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
+Removing a label cancels only the workflows that the remaining labels no longer select. Removing `run-mac-ci` while `run-tts-ci` stays cancels Mac CI and leaves Omni CI running. Removing `run-tts-ci` while `run-mac-ci` stays cancels Omni CI and leaves Mac CI running. Removing the last stage label cancels Omni CI, CPU CI, XPU CI and Mac CI, unless a model label remains: it still selects the jobs that test its model, so Omni CI keeps running. `run-lint-only` does not keep any of them. A run that is still selected keeps the stages and models it resolved when it started; push again or re-run all jobs to pick up the change.
 
 Re-running jobs reuses the run ID, so every stage keeps the model it drew. The gate reads the live labels from the pull request, so re-running all jobs picks up labels added or removed since the run started.
 
@@ -240,23 +244,33 @@ gh workflow run omni-ci.yaml --ref <branch> \
 
 Manual runs of CPU CI, XPU CI and Mac CI ignore labels and always run their tests, and so does the run of Mac CI that Voxt Nightly starts each night.
 
-Maintainers with CI permissions can use `/tag-and-rerun-ci` with one or more short stage or model targets to re-run completed CI workflows:
+Maintainers with CI permissions can comment `/tag-and-rerun-ci` with one or more short targets. The command adds each target's labels, then re-runs the selected workflows:
 
 ```text
 /tag-and-rerun-ci unit-test
-/tag-and-rerun-ci tts asr
 /tag-and-rerun-ci tts asr omni
-/tag-and-rerun-ci asr qwen3-omni
-/tag-and-rerun-ci qwen3-tts
 /tag-and-rerun-ci qwen3-tts qwen3-asr
 /tag-and-rerun-ci mps-higgs
 ```
 
-Stage targets are `lint`, `unit-test`, `asr`, `tts`, `mps`, `omni`, `full-duplex`, `turn-based`, `cascaded`, `intel-cpu`, `intel-xpu` and `mac`. `lint` adds `run-lint-only`. Model targets are `moss-td-asr`, `fun-asr`, `qwen3-asr`, `whisper-asr`, `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3`, `qwen3-omni`, `minicpmo`, `mps-higgs` and `mps-moss`. An ASR or TTS model target adds only its model label, which runs the jobs for that model: `qwen3-asr` adds `run-qwen3-asr-1.7b` and runs SeedTTS ASR alone, `moss-td-asr` adds `run-moss-transcribe-diarize`, `qwen3-tts` adds `run-qwen3-tts-12hz-1.7b-base` and runs the TTS model jobs, and `higgs` and `moss` add `run-higgs-tts-3-4b` or `run-moss-tts-local-transformer-v1.5`. `mps-higgs` and `mps-moss` add `run-mps-ci` plus that same model label. Omni model targets add their stage label and their model label. The model label itself never includes the stage name.
+| Target | Labels it adds |
+| --- | --- |
+| `lint` | `run-lint-only` |
+| `unit-test`, `asr`, `tts`, `mps`, `omni`, `full-duplex`, `turn-based`, `cascaded`, `intel-cpu`, `intel-xpu`, `mac` | That stage's label |
+| `moss-td-asr`, `ark-asr`, `fun-asr`, `qwen3-asr`, `whisper-asr` | That ASR model's label |
+| `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3` | That TTS model's label |
+| `qwen3-omni`, `minicpmo` | That Omni model's label |
+| `mps-higgs`, `mps-moss` | `run-mps-ci` and the Higgs or MOSS model label |
 
-`higgs` or `mps-higgs` selects Higgs for every selected stage that accepts it, TTS and MPS included. Model choices not specified by the command keep their existing labels or use the normal random selection. Bare `/tag-and-rerun-ci` and full GitHub label arguments, such as `run-tts-ci`, are not accepted. Manual dispatch still accepts full labels through its `ci_labels` input.
+An ASR, TTS or Omni model target adds only its model label, which runs the jobs for that model. The command needs at least one target and does not accept full label names such as `run-tts-ci`; manual dispatch still takes them through its `ci_labels` input.
 
-The command replaces a conflicting Higgs or MOSS label for both TTS and MPS, because those labels are shared. It replaces other model labels only in the requested stages, and keeps other labels. Existing stage labels still apply, so arguments do not narrow an already broader selection. It re-runs all jobs of the newest completed selected parent workflows on the current PR commit, unless GitHub requires workflow approval. If the newest run is active, the command leaves it running rather than retrying an older run. To apply changed labels after preflight has resolved the selection, run the command again after the active workflow finishes. Path filters and PR gates still apply.
+The command treats the labels already on the pull request as follows:
+
+- It keeps the stage labels, so targets never narrow a broader selection.
+- A model target replaces the other model labels of its stage. A Higgs or MOSS target replaces them for both TTS and MPS, because those two stages share the labels.
+- A stage whose model no target names keeps its model label, or draws at random without one.
+
+It then re-runs all jobs of the newest completed run of each selected workflow on the current PR commit, unless GitHub requires workflow approval. If the newest run is still active, the command leaves it running and re-runs nothing older; run the command again once it finishes to apply the changed labels. Path filters and PR gates still apply.
 
 `/tag-run-ci-label` accepts the same short targets but only updates labels; it also requires at least one target. Labels added by the bot do not start workflows; push a commit or use a tag-and-rerun command to start them. `/rerun-failed-ci` retries failed jobs without changing labels or stopping active runs. PR authors can use it on their own PRs.
 
@@ -264,9 +278,8 @@ The command replaces a conflicting Higgs or MOSS label for both TTS and MPS, bec
 
 | Message | Meaning |
 | --- | --- |
-| `No CI label found. Add run-lint-only or a stage label: ...` | The pull request has none of those labels. Add one of them. |
+| `No CI label found. Add run-lint-only, a model label or a stage label: ...` | The pull request has none of those labels. Add one of them. |
 | `Keep only one <stage> model label: ...` | Two model labels name the same stage. Remove one of them. |
-| `Ignoring <label>: its stage label is missing.` | A warning, not a failure. The model label has no effect until its stage is selected. |
 | `'lint' check completed with conclusion=failure; skip staged CI.` | Lint failed on this commit. Fix it and push; self-hosted CI starts once lint passes. |
 | `PR has merge conflicts with the base branch; skip staged CI.` | Merge or rebase onto the current `main` first. |
 

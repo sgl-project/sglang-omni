@@ -182,6 +182,15 @@ func (a *app) redoAnswer(req session.StartRequest) {
 // translation is the conversation's first turn, its source as the
 // selection (#3897).
 func (a *app) followUpAnswer(hold string) bool {
+	return a.followUpWith(hold, "")
+}
+
+// followUpTyped asks the follow-up typed into the card: no recording.
+func (a *app) followUpTyped(typed string) bool {
+	return a.followUpWith("", typed)
+}
+
+func (a *app) followUpWith(hold, typed string) bool {
 	a.closeLangMenu()
 	if !a.canFollowUp() {
 		return false
@@ -193,16 +202,24 @@ func (a *app) followUpAnswer(hold string) bool {
 	}
 	card := a.answer
 	a.followUp = card.id
-	req := session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}
+	// It is asked in the input card, as the first turn was: spoken or
+	// typed, with the answer it changes on top.
+	req := session.StartRequest{Kind: store.KindRewrite, Box: true, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}
 	// The box's pictures go with the follow-up too: the same bytes in
 	// the same position, so the server's prefix cache reuses them.
 	req.Images = card.images
-	if n := a.startSession(req); n != nil {
+	if typed != "" {
+		req.Text = &session.TextInput{Raw: typed}
+		a.box.text, a.box.textSegments = "", nil // it is the instruction now, not text beside one
+		a.boxShare.store("", a.box.images)
+	}
+	if id, n := a.startSessionID(req); n != nil || id == "" {
 		a.followUp = ""
 	} else {
-		// The card turns into a conversation, where the follow-up records
-		// (Voxt's).
+		// The card turns into a conversation, which the follow-up's answer
+		// joins (Voxt's).
 		a.answer.conversation, a.answer.msg = true, ""
+		a.showBox(card.target, id)
 		a.overlaySync()
 	}
 	return true
@@ -225,7 +242,13 @@ func (a *app) closeAnswer() {
 	if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
 		a.cancelCardSession()
 	}
+	target := a.answer.target.PID
+	defer a.giveFrontBack(target) // after the card's window went: VoxtNew in front with no window
 	a.answer, a.followUp = answerCard{}, ""
+	if a.box.open { // the card that showed it
+		a.dropBox()
+		a.boxSync()
+	}
 	a.resurface()
 	a.buildTrayMenu()
 	a.syncHotkeys()
@@ -280,6 +303,7 @@ func (a *app) insertAnswer() {
 	}
 	a.answer.inserting, a.answer.msg = true, ""
 	a.overlaySync()
+	a.boxSync()
 	text := a.textIO() // family_runtime.go: the family's paste rule
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

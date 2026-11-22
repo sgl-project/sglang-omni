@@ -21,7 +21,7 @@ func TestPrivacySendWindow(t *testing.T) {
 	openPrivacy(t, a, tt)
 	tt.Scroll(float32(windowWidth)*0.6, 900, 0, -10000)
 	frames(tt)
-	if !has(tt, "sends it to the language model with the text") {
+	if !has(tt, "sends a screenshot of the window with the text") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Send the window to the language model")
@@ -73,14 +73,14 @@ func TestPrivacyNamesBothDataPaths(t *testing.T) {
 
 // TestPrivacySendClipboardImage: sending the copied image with Rewrite is
 // off by default; the switch saves it, asks for no permission, and its
-// note says what goes and what does not.
+// note says what goes and to whom (docs/settings.md lists what does not).
 func TestPrivacySendClipboardImage(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	if a.settings.Get().Privacy.SendClipboardImage {
 		t.Fatal("on by default")
 	}
 	openPrivacy(t, a, tt)
-	if !has(tt, "Copied text, and copied files that are not images, are not sent") {
+	if !has(tt, "sends the image you copied to the language model") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Send the copied image with Rewrite")

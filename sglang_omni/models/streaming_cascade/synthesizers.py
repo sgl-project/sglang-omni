@@ -2,6 +2,7 @@
 """Synthesizer kinds: reply audio from the reply text."""
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Literal
@@ -22,26 +23,41 @@ from sglang_omni.models.streaming_cascade.base import (
     iterate,
     replying,
     sentences,
+    text_chunk,
     with_language,
 )
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
+    PCM_F32,
     REPLY_PROGRESS,
     REPLY_SENTENCE,
+    REPLY_TRUNCATED,
+    SPEECH_ERROR,
+    SPOKEN_TEXT_END,
     TEXT_DELTA,
+    TOOL_CALL,
     TURN_DONE,
     chunk_language,
     chunk_style,
     control_type,
 )
+from sglang_omni.proto.tools import is_partial_call, tool_calls_of
 from sglang_omni.scheduling.session import ChunkEmitter
+
+logger = logging.getLogger(__name__)
+
+# The error of a speech that ended without audio, which a text with no words to speak leaves and so does a service that answers with none.
+NOTHING_TO_SPEAK = "no audio was produced: the text may have no words to speak"
 
 # Note (ruoyu): Qwen3-TTS reads an emoji as stray syllables or runs on for minutes and spells out a link target.
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 UNSPOKEN_SYMBOLS = re.compile(
     "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
 )
+# note (Haoling Pu): Qwen3-TTS Base cloning with a reference transcript opens each request with about 0.4 s of room tone, so with drop_quiet_start a request's audio starts this pre-roll before its first sample above SPEECH_ONSET_AMPLITUDE, a fraction of full scale.
+SPEECH_ONSET_AMPLITUDE = 0.01
+SPEECH_PREROLL_S = 0.05
 # note (Haoling Pu): Qwen3-TTS reads a heading, list or quote marker as a word, garbles a table row and can run on for 40 s or more after either, and reads a bare URL out symbol by symbol.
 LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
 TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
@@ -96,6 +112,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     styles: dict[str, SpeechReference] = Field(default_factory=dict)
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
+    drop_quiet_start: bool = False
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -104,6 +121,12 @@ class TurnSpeaker(Replier):
 
     `speak_reply` turns one reply's deltas into emitted audio; an `interrupt`
     control of that turn cancels it and the rest of the reply's text is dropped.
+    A tool_call chunk holds one speech of its own turn as a whole: its text is
+    emitted as a text delta for the nodes that follow the spoken words, and a
+    service failure ends the speech with the error and the end of its last
+    spoken sentence on its turn.done, so the model is told instead of the
+    Session failing. A reply or speech whose generation stopped at its token
+    budget ends with REPLY_TRUNCATED on its turn.done.
     """
 
     async def speak_reply(
@@ -125,14 +148,96 @@ class TurnSpeaker(Replier):
         self, inputs: AsyncIterator[TimedChunk], emit: ChunkEmitter
     ) -> None:
         deltas: asyncio.Queue[TimedChunk | None] = asyncio.Queue()
+        # Turns whose generation stopped at its token budget, until the turn.done that repeats it.
+        truncated_turns: set[int] = set()
+
+        def end_turn(turn: int, **fields: object) -> None:
+            if turn in truncated_turns:
+                truncated_turns.discard(turn)
+                fields[REPLY_TRUNCATED] = True
+            else:
+                pass
+            emit(control_chunk(TURN_DONE, turn=turn, **fields))
 
         async def speak_then_end(turn: int) -> None:
             await self.speak_reply(iterate(deltas), turn, emit)
-            emit(control_chunk(TURN_DONE, turn=turn))
+            end_turn(turn)
+
+        # The turn of the call whose text is arriving in pieces, until its complete chunk; a piece for it once its speech ended, cut or failed, is dropped.
+        streamed_turn: int | None = None
+
+        async def published(
+            speech: asyncio.Queue[TimedChunk | None],
+        ) -> AsyncIterator[TimedChunk]:
+            async for text in iterate(speech):
+                emit(text)
+                yield text
+
+        async def speak_call_then_end(
+            turn: int, speech: asyncio.Queue[TimedChunk | None]
+        ) -> None:
+            audio_count = 0
+            spoken_text_end = 0
+
+            def emit_counting(chunk: TimedChunk) -> None:
+                nonlocal audio_count, spoken_text_end
+                if chunk.format == PCM_F32:
+                    audio_count += 1
+                elif control_type(chunk) == REPLY_PROGRESS:
+                    spoken_text_end = int(chunk.payload["text_end"])
+                else:
+                    pass
+                emit(chunk)
+
+            try:
+                await self.speak_reply(published(speech), turn, emit_counting)
+            except httpx.HTTPError as error:
+                logger.error(f"speech of turn {turn} failed: {error!r}")
+                # note (Jingwen): the dialog reads reply.progress through the aligner, which can deliver it after this turn.done and out of order, so the failure carries where the speech stopped.
+                end_turn(
+                    turn,
+                    **{SPEECH_ERROR: repr(error), SPOKEN_TEXT_END: spoken_text_end},
+                )
+            else:
+                if audio_count == 0:
+                    # note (Jinyan Su): a text of only symbols, such as "..." or an emoji, leaves nothing to speak, and the model must not be told it was heard.
+                    logger.warning(f"speech of turn {turn} had nothing to speak")
+                    end_turn(turn, **{SPEECH_ERROR: NOTHING_TO_SPEAK})
+                else:
+                    end_turn(turn)
 
         async def handle(chunk: TimedChunk, replies: Replies) -> None:
-            nonlocal deltas
-            if chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
+            nonlocal deltas, streamed_turn
+            if chunk.format == TOOL_CALL and chunk.turn in replies.interrupted:
+                # note (Jingwen): an interrupt can overtake a piece of its turn on the way here, and a speech started from that piece would wait for text that never arrives and hold every later speech.
+                pass
+            elif chunk.format == TOOL_CALL:
+                [call] = tool_calls_of(chunk)
+                text = text_chunk(
+                    call.arguments["text"], chunk.turn, chunk_language(chunk)
+                )
+                is_streamed = chunk.turn == streamed_turn
+                if not is_streamed:
+                    await replies.finish()
+                    deltas = asyncio.Queue()
+                    replies.start(chunk.turn, speak_call_then_end(chunk.turn, deltas))
+                    deltas.put_nowait(text)
+                elif is_partial_call(chunk) and replies.is_running(chunk.turn):
+                    deltas.put_nowait(text)
+                else:
+                    pass
+                if is_partial_call(chunk):
+                    streamed_turn = chunk.turn
+                else:
+                    streamed_turn = None
+                    if is_streamed and not replies.is_running(chunk.turn):
+                        pass
+                    elif chunk.payload.get(REPLY_TRUNCATED) is True:
+                        truncated_turns.add(chunk.turn)
+                        deltas.put_nowait(None)
+                    else:
+                        deltas.put_nowait(None)
+            elif chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
                 # Note (Junnan Li): The generator may emit a few deltas after the interrupt before it stops.
                 pass
             elif chunk.format == TEXT_DELTA:
@@ -143,13 +248,17 @@ class TurnSpeaker(Replier):
                 else:
                     pass
                 deltas.put_nowait(chunk)
+            elif control_type(chunk) == TURN_DONE and chunk.turn in replies.interrupted:
+                replies.interrupted.discard(chunk.turn)
             elif control_type(chunk) == TURN_DONE:
+                if chunk.payload.get(REPLY_TRUNCATED) is True:
+                    truncated_turns.add(chunk.turn)
+                else:
+                    pass
                 if replies.is_running(chunk.turn):
                     deltas.put_nowait(None)
-                elif chunk.turn in replies.interrupted:
-                    replies.interrupted.discard(chunk.turn)
                 else:
-                    emit(control_chunk(TURN_DONE, turn=chunk.turn))
+                    end_turn(chunk.turn)
             else:
                 pass
 
@@ -284,17 +393,31 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 )
             else:
                 pass
+            preroll_samples = round(SPEECH_PREROLL_S * self.sample_rate_hz)
             carry = b""
+            held_preroll = np.zeros(0, dtype="<f4")
+            is_playing = not self.config.drop_quiet_start
             async for data in response.aiter_bytes():
                 data = carry + data
                 usable = len(data) - len(data) % 2
                 carry = data[usable:]
-                if usable:
-                    yield np.frombuffer(data[:usable], dtype="<i2").astype(
-                        "<f4"
-                    ) / 32768
-                else:
+                samples = (
+                    np.frombuffer(data[:usable], dtype="<i2").astype("<f4") / 32768
+                )
+                if not usable:
                     pass
+                elif is_playing:
+                    yield samples
+                else:
+                    audio = np.concatenate([held_preroll, samples])
+                    loud_indices = np.flatnonzero(
+                        np.abs(audio) > SPEECH_ONSET_AMPLITUDE
+                    )
+                    if loud_indices.size:
+                        is_playing = True
+                        yield audio[max(0, int(loud_indices[0]) - preroll_samples) :]
+                    else:
+                        held_preroll = audio[-preroll_samples:]
 
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
