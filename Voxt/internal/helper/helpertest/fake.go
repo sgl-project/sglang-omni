@@ -96,6 +96,7 @@ package helpertest
 //	                 screen.window fails with permission_denied (else it answers
 //	                 Shot(pid) for any pid but 0)
 //	clipboard-image  clipboard.image answers ClipImage (else no picture)
+//	clipboard-too-large  clipboard.image rejects the source as too large
 //	clipboard-error  clipboard.image fails
 //
 // A capture.start whose first device is "crash" exits 3 after its first
@@ -521,6 +522,7 @@ func (f *fake) serve(m proto.Message) {
 		if f.has("clipboard-image") {
 			r.JPEG = ClipImage
 		}
+		r.TooLarge = f.has("clipboard-too-large")
 		f.result(m.ID, r)
 	case proto.MethodAppIcons:
 		var p proto.AppIconsParams
