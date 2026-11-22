@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Generator kinds: reply text from the conversation."""
+"""Generator kinds: reply text, or the tool calls the model makes, from the conversation."""
 
+import json
 import re
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 import httpx
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -25,7 +26,14 @@ from sglang_omni.models.streaming_cascade.synthesizers import (
     OpenAISpeechSynthesizerConfig,
 )
 from sglang_omni.proto.session import TimedChunk
-from sglang_omni.proto.streams import MESSAGES, TEXT_DELTA, TURN_DONE, chunk_language
+from sglang_omni.proto.streams import (
+    MESSAGES,
+    REPLY_TRUNCATED,
+    TEXT_DELTA,
+    TURN_DONE,
+    chunk_language,
+)
+from sglang_omni.proto.tools import ToolCall, tool_call_chunk
 from sglang_omni.scheduling.session import ChunkEmitter
 
 if TYPE_CHECKING:
@@ -35,12 +43,24 @@ else:
 
 # The request fields this kind sets itself; `extra_body` adds others.
 CHAT_REQUEST_FIELDS = frozenset(
-    {"model", "messages", "stream", "max_tokens", "temperature"}
+    {"model", "messages", "stream", "max_tokens", "temperature", "tools", "tool_choice"}
 )
 WARM_UP_MESSAGES = [ChatMessage(role="user", content="Hi")]
 
 
+class ToolFunction(BaseModel):
+    """One function the model may call, as the chat API's function object."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    parameters: dict[str, object] | None = None
+
+
 class OpenAIChatGeneratorConfig(ComponentConfig):
+    """tools are the functions the model may call; a completion that calls them ends in a tool_call chunk instead of turn.done."""
+
     kind: Literal["openai_chat"] = "openai_chat"
     base_url: str = Field(pattern=r"^https?://[^/]+")
     model: str
@@ -49,6 +69,16 @@ class OpenAIChatGeneratorConfig(ComponentConfig):
     api_key_env: str = "OPENAI_API_KEY"
     extra_body: dict[str, object] = Field(default_factory=dict)
     constrain_style_tags: bool = False
+    tools: list[ToolFunction] = Field(default_factory=list)
+
+    @field_validator("tools")
+    @classmethod
+    def check_tool_names(cls, tools: list[ToolFunction]) -> list[ToolFunction]:
+        names = [tool.name for tool in tools]
+        if len(set(names)) != len(names):
+            raise ValueError(f"tools must have distinct names, got {names}")
+        else:
+            return tools
 
     @field_validator("extra_body")
     @classmethod
@@ -70,8 +100,22 @@ class OpenAIChatGeneratorConfig(ComponentConfig):
             return self
 
 
+class FunctionDelta(BaseModel):
+    name: str | None = None
+    arguments: str | None = None
+
+
+class ToolCallDelta(BaseModel):
+    """One fragment of a streamed tool call; index joins the fragments of one call, whose id and name come first and whose arguments arrive as text pieces."""
+
+    index: int
+    id: str | None = None
+    function: FunctionDelta | None = None
+
+
 class ChatDelta(BaseModel):
     content: str | None = None
+    tool_calls: list[ToolCallDelta] | None = None
 
 
 class ChatChoice(BaseModel):
@@ -83,8 +127,16 @@ class ChatEvent(BaseModel):
     choices: list[ChatChoice]
 
 
+def parse_arguments(text: str) -> object:
+    """The arguments object the model wrote; text that is not JSON, such as a call the token budget cut, stays as it is, so the model is answered with an error instead of the node failing."""
+    try:
+        return json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        return text
+
+
 class OpenAIChatGenerator(Replier):
-    """One streamed completion per messages chunk, closed by turn.done; the deltas carry the messages chunk's language.
+    """One streamed completion per messages chunk, closed by turn.done, or by a tool_call chunk when the model called tools; the deltas carry the messages chunk's language.
 
     A tag such as [calm] naming a style of a synthesizer that reads the
     deltas leaves the reply text, and the deltas after it carry that style.
@@ -119,7 +171,11 @@ class OpenAIChatGenerator(Replier):
                 replies.start(
                     chunk.turn,
                     self.reply(
-                        messages_of(chunk), chunk.turn, chunk_language(chunk), emit
+                        messages_of(chunk),
+                        chunk.turn,
+                        chunk_language(chunk),
+                        emit,
+                        chunk.payload.get("tool_choice"),
                     ),
                 )
             else:
@@ -133,8 +189,9 @@ class OpenAIChatGenerator(Replier):
         turn: int,
         language: str | None,
         emit: ChunkEmitter,
+        tool_choice: str | None = None,
     ) -> None:
-        """Stream the reply's text deltas, each carrying the user's language and the style the last tag named for the synthesizer."""
+        """Stream the reply's text deltas, each carrying the user's language and the style the last tag named for the synthesizer; a completion that called tools ends in their tool_call chunk and leaves the turn to the node that reads it, any other in turn.done. Either end carries REPLY_TRUNCATED when the completion stopped at max_tokens."""
         # note (Haoling Pu): Qwen3.8-27B wrote [Sympathetic] in 6 of 740 replies, which a case-sensitive match left in the text and the speech service spoke.
         style_names = {name.lower(): name for name in self.styles}
         style_tag = re.compile(
@@ -143,7 +200,16 @@ class OpenAIChatGenerator(Replier):
         style: str | None = None
         partial_tag = ""
         is_after_tag = False
-        async for delta in self.complete(messages):
+        ids: dict[int, str] = {}
+        names: dict[int, str] = {}
+        arguments: dict[int, list[str]] = {}
+        is_truncated = False
+        async for choice in self.complete(messages, tool_choice):
+            delta = choice.delta
+            if choice.finish_reason == "length":
+                is_truncated = True
+            else:
+                pass
             received = partial_tag + (delta.content or "")
             tag_start = received.rfind("[")
             tail = received[tag_start:].lower()
@@ -169,13 +235,59 @@ class OpenAIChatGenerator(Replier):
                     emit(text_chunk(piece, turn, language, style))
                 else:
                     pass
+            for fragment in delta.tool_calls or ():
+                function = fragment.function or FunctionDelta()
+                if fragment.id:
+                    ids[fragment.index] = fragment.id
+                else:
+                    pass
+                if function.name:
+                    names[fragment.index] = function.name
+                else:
+                    pass
+                if function.arguments:
+                    arguments.setdefault(fragment.index, []).append(function.arguments)
+                else:
+                    pass
+                # The first call's arguments go out as they arrive, so a dialog that speaks through it can start before the completion ends.
+                if function.arguments and fragment.index == 0 and 0 in names:
+                    emit(
+                        tool_call_chunk(
+                            [
+                                ToolCall(
+                                    id=ids.get(0, f"call_{turn}_0"),
+                                    name=names[0],
+                                    arguments=function.arguments,
+                                )
+                            ],
+                            turn,
+                            is_partial=True,
+                        )
+                    )
+                else:
+                    pass
         if partial_tag:
             emit(text_chunk(partial_tag, turn, language, style))
         else:
             pass
-        emit(control_chunk(TURN_DONE, turn=turn))
+        calls = [
+            ToolCall(
+                id=ids.get(index, f"call_{turn}_{index}"),
+                name=name,
+                arguments=parse_arguments("".join(arguments.get(index, []))),
+            )
+            for index, name in sorted(names.items())
+        ]
+        if calls:
+            emit(tool_call_chunk(calls, turn, is_truncated=is_truncated))
+        elif is_truncated:
+            emit(control_chunk(TURN_DONE, turn=turn, **{REPLY_TRUNCATED: True}))
+        else:
+            emit(control_chunk(TURN_DONE, turn=turn))
 
-    def request_body(self, messages: list[ChatMessage]) -> dict[str, object]:
+    def request_body(
+        self, messages: list[ChatMessage], tool_choice: str | None = None
+    ) -> dict[str, object]:
         body: dict[str, object] = {
             "model": self.config.model,
             "messages": [message_dict(message) for message in messages],
@@ -195,14 +307,30 @@ class OpenAIChatGenerator(Replier):
             )
         else:
             pass
+        if self.config.tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": tool.model_dump(exclude_none=True),
+                }
+                for tool in self.config.tools
+            ]
+        else:
+            pass
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
+        else:
+            pass
         return {**body, **self.config.extra_body}
 
-    async def complete(self, messages: list[ChatMessage]) -> AsyncIterator[ChatDelta]:
+    async def complete(
+        self, messages: list[ChatMessage], tool_choice: str | None = None
+    ) -> AsyncIterator[ChatChoice]:
         finished = False
         async with self.client.stream(
             "POST",
             f"{self.config.base_url.rstrip('/')}/chat/completions",
-            json=self.request_body(messages),
+            json=self.request_body(messages, tool_choice),
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -222,11 +350,11 @@ class OpenAIChatGenerator(Replier):
                 for choice in event.choices:
                     if choice.finish_reason is None:
                         pass
-                    elif choice.finish_reason not in ("stop", "length"):
+                    elif choice.finish_reason not in ("stop", "length", "tool_calls"):
                         raise RuntimeError(f"LLM stopped with {choice.finish_reason}")
                     else:
                         finished = True
-                    yield choice.delta
+                    yield choice
             if not finished:
                 raise RuntimeError("LLM stream ended before completion")
             else:

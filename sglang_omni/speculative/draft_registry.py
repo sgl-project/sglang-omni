@@ -96,6 +96,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wilsonzheng0327/Fun-ASR-Nano-dflash",
         draft_model_revision="b3cb091f554c88274378d549d7e7d3c5a13052e6",
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="AutoArk-AI/ARK-ASR-3B",
@@ -104,6 +105,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wilsonzheng0327/ARK-ASR-3B-dflash",
         draft_model_revision="b0789bb314fab990e0f2377054c4b1947d204273",
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="openai/whisper-large-v3",
@@ -114,6 +116,15 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         engine_settings={"speculative_num_steps": 7},
         license="apache-2.0",
     ),
+    PinnedDraft(
+        model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        stage="tts_engine",
+        algorithm="DSPARK",
+        draft_model_path="wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark",
+        draft_model_revision="695fbc9d88a99389cbe70a26b81c5fc404dcc83a",
+        license="apache-2.0",
+    ),
+    # note (wilsonzheng0327): configs written before the Apache-2.0 draft name only this path, so it keeps the revision they were measured on.
     PinnedDraft(
         model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
         stage="tts_engine",
