@@ -70,6 +70,21 @@ func (r *run) lacks() *Problem {
 	return nil
 }
 
+// selectionSettleMS, selectionPollMS and selectionModifierWaitMS: the
+// helper's waits around a selection read. A caret-only reading waits out
+// a settle for a selection made with ⌘A in the shortcut's motion (#4467);
+// the helper's ⌘C waits for the shortcut's held modifiers to lift, so the
+// app reads ⌘C and not a key that copies nothing (#3835).
+const (
+	selectionSettleMS       = 600
+	selectionPollMS         = 60
+	selectionModifierWaitMS = 800
+)
+
+// intp is v's address: the selection params carry their budgets as
+// pointers, so an explicit 0 reaches the helper (nil is its default).
+func intp(v int) *int { return &v }
+
 // readSelection reads the selected text of the app in front (Translate,
 // Rewrite) and puts it in the snapshot; "" for none, or when it could
 // not be read (the session goes on without one).

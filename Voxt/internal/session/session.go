@@ -468,23 +468,11 @@ const (
 	// 300 ms), in Rewrite (#3644: long selections failed).
 	DefaultRewriteReadTimeout = 6 * time.Second
 	rewriteCopyMS             = 1500
-	// selectionSettleMS, selectionPollMS and selectionModifierWaitMS: the
-	// helper's waits around a selection read. A caret-only reading waits
-	// out a settle for a selection made with ⌘A in the shortcut's motion
-	// (#4467); the helper's ⌘C waits for the shortcut's held modifiers to
-	// lift, so the app reads ⌘C and not a key that copies nothing (#3835).
-	selectionSettleMS       = 600
-	selectionPollMS         = 60
-	selectionModifierWaitMS = 800
-	DefaultDeliverTimeout   = 5 * time.Second
-	DefaultStopGrace        = 3 * time.Second
-	DefaultWaitNote         = 400 * time.Millisecond
-	DefaultEndWordPause     = time.Second // Voxt 1.x's silence after the end word
+	DefaultDeliverTimeout     = 5 * time.Second
+	DefaultStopGrace          = 3 * time.Second
+	DefaultWaitNote           = 400 * time.Millisecond
+	DefaultEndWordPause       = time.Second // Voxt 1.x's silence after the end word
 )
-
-// intp is v's address: the selection params carry their budgets as
-// pointers, so an explicit 0 reaches the helper (nil is its default).
-func intp(v int) *int { return &v }
 
 // StartRequest starts a session.
 type StartRequest struct {
