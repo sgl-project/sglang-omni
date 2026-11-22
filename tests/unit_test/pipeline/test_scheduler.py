@@ -3505,6 +3505,33 @@ def install_tp_broadcast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omni_scheduler_module, "broadcast_pyobj", broadcast_pyobj)
 
 
+def abort_from_stage_thread(scheduler: OmniScheduler, request_id: str) -> None:
+    """Call abort the way the stage's abort listener does: off the scheduler thread."""
+    thread_errors: list[BaseException] = []
+
+    def abort_request() -> None:
+        try:
+            scheduler.abort(request_id)
+        except BaseException as exc:
+            thread_errors.append(exc)
+
+    thread = threading.Thread(target=abort_request)
+    thread.start()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert thread_errors == []
+
+
+def tp1_scheduler_on_this_thread() -> OmniScheduler:
+    """A TP=1 scheduler without a session bridge whose loop runs on this thread."""
+    scheduler = tp_rank_scheduler(0, 1, "waiting")
+    for request in scheduler.waiting_queue:
+        request.omni_data = SimpleNamespace(decode_prep_epoch=None)
+    scheduler.running = True
+    scheduler.scheduler_thread_id = threading.get_ident()
+    return scheduler
+
+
 @pytest.mark.parametrize("tp_size", [1, 2])
 @pytest.mark.parametrize(
     "timeout_env,placement",
@@ -3539,7 +3566,7 @@ def test_request_timeout_fails_only_the_expired_request(
 
 
 @pytest.mark.parametrize(
-    "tp_size,has_session_bridge", [(2, False), (2, True), (1, True)]
+    "tp_size,has_session_bridge", [(2, False), (2, True), (1, True), (1, False)]
 )
 @pytest.mark.parametrize("placement", ["waiting", "running"])
 def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
@@ -3560,26 +3587,11 @@ def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
         else:
             pass
 
-    def abort_from_stage_thread(scheduler: OmniScheduler) -> None:
-        thread_errors: list[BaseException] = []
-
-        def abort_request() -> None:
-            try:
-                scheduler.abort("req-expired")
-            except BaseException as exc:
-                thread_errors.append(exc)
-
-        thread = threading.Thread(target=abort_request)
-        thread.start()
-        thread.join(timeout=1)
-        assert not thread.is_alive()
-        assert thread_errors == []
-
     for follower in ranks[1:]:
-        abort_from_stage_thread(follower)
+        abort_from_stage_thread(follower, "req-expired")
         assert schedulable_request_ids(follower) == ["req-expired", "req-fresh"]
         assert follower.inbox.empty()
-    abort_from_stage_thread(ranks[0])
+    abort_from_stage_thread(ranks[0], "req-expired")
     assert schedulable_request_ids(ranks[0]) == ["req-expired", "req-fresh"]
     for scheduler in ranks:
         assert scheduler.recv_requests() == []
@@ -3587,6 +3599,46 @@ def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
         ["req-fresh"]
     ] * tp_size
     assert all(scheduler.inbox.empty() for scheduler in ranks)
+
+
+def test_off_thread_abort_keeps_the_data_of_a_request_in_a_formed_batch() -> None:
+    """A client disconnect while the scheduler forms a batch must not strip its data."""
+    scheduler = tp1_scheduler_on_this_thread()
+    # The scheduler thread takes both requests into a prefill batch ...
+    can_run = list(scheduler.waiting_queue)
+    # ... while the client of one of them disconnects.
+    abort_from_stage_thread(scheduler, "req-expired")
+    scheduler.waiting_queue = []
+
+    sched_output = scheduler.build_sched_output(SimpleNamespace(reqs=can_run))
+
+    assert [request.data is not None for request in sched_output.requests] == [
+        True,
+        True,
+    ]
+
+
+def test_off_thread_abort_finishes_a_request_held_by_batch_selection() -> None:
+    """A stage thread abort between waiting-queue removal and batch publication lands."""
+    scheduler = tp1_scheduler_on_this_thread()
+    selected = scheduler.waiting_queue[:1]
+    scheduler.waiting_queue = scheduler.waiting_queue[1:]
+
+    abort_from_stage_thread(scheduler, "req-expired")
+    scheduler.running_batch.reqs = selected
+
+    assert scheduler.recv_requests() == []
+    assert schedulable_request_ids(scheduler) == ["req-fresh"]
+
+
+def test_abort_on_the_scheduler_thread_still_applies_at_once() -> None:
+    """Only an off-thread abort is deferred; the scheduler thread's own is inline."""
+    scheduler = tp1_scheduler_on_this_thread()
+
+    scheduler.abort("req-expired")
+
+    assert schedulable_request_ids(scheduler) == ["req-fresh"]
+    assert scheduler.inbox.empty()
 
 
 @pytest.mark.parametrize("late_follower", [False, True])
