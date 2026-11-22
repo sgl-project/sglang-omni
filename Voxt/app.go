@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/egoist/mygo"
 )
 
@@ -52,7 +54,10 @@ type app struct {
 	// goroutines (the helper's supervisor): they pump it on the test's
 	// goroutine. nil: post runs fn at once (other tests).
 	postQueue func(func())
-	events    // events.go: the observers of sessions and the history
+	// now is the clock of the view build and the sound previews; tests
+	// replace it with a fake one (production keeps time.Now).
+	now    func() time.Time
+	events // events.go: the observers of sessions and the history
 
 	shellState
 	settingsState
@@ -91,7 +96,7 @@ type app struct {
 }
 
 func newApp(lib *library, h *helperHost) *app {
-	a := &app{lib: lib, shellState: newShellState()}
+	a := &app{lib: lib, shellState: newShellState(), now: time.Now}
 	a.connectEvents() // events.go: who hears of sessions and the history
 	a.helperLink.host = h
 	a.openShell(lib)

@@ -283,7 +283,7 @@ func (a *app) view(c *uiContext) {
 	a.mainUI = c.Services()
 	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
-	now := time.Now()
+	now := a.now()
 	model := a.shellModel(now)
 	model.Opening = a.openingModel(c.Preferences().ReduceMotion) // opening_controller.go
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {
