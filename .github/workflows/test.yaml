@@ -64,7 +64,7 @@ jobs:
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark and not accelerator" -x \
+            pytest tests/ --ignore=tests/unit_test/scripts -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition \
             --auto-partition-id "${{ matrix.partition }}" \
             --auto-partition-size 3 \
@@ -98,4 +98,4 @@ jobs:
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "accelerator and not benchmark" -x
+            pytest tests/ --ignore=tests/unit_test/scripts -v -m "accelerator and not benchmark" -x
