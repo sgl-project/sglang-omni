@@ -82,6 +82,9 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def enable_auk_dit_graph(self) -> bool:
         return False
 
+    def enable_auk_fused_vae_activations(self) -> bool:
+        return True
+
     def enable_zonos2_torch_compile(self) -> bool:
         return False
 

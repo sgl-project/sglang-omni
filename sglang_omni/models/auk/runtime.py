@@ -18,12 +18,13 @@ from sglang_omni.models.auk.dit import AuKDit, AuKDitConfig
 from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
 from sglang_omni.models.auk.hf_config import make_runtime_config
 from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
-from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE
+from sglang_omni.models.auk.vae import Activation1d, AuKVAEConfig, BigVGANFlowVAE
 from sglang_omni.models.auk.weight_loader import (
     load_dit_weights,
     load_vae_weights,
     resolve_weight_file,
 )
+from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,16 @@ def load_vae(checkpoint: str, device: str) -> BigVGANFlowVAE:
     vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
     load_vae_weights(vae, checkpoint)
     vae = vae.to(device=device).eval().requires_grad_(False)
+    fuse_activations = (
+        torch.device(device).type == current_platform.device_type
+        and current_platform.enable_auk_fused_vae_activations()
+    )
     for module in vae.modules():
         parameters = dict(module.named_parameters(recurse=False))
         if "weight_g" in parameters and "weight_v" in parameters:
             remove_weight_norm(module)
+        elif fuse_activations and isinstance(module, Activation1d):
+            module.enable_fused_kernel()
         else:
             pass
     return vae
