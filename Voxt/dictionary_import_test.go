@@ -97,6 +97,25 @@ func TestImportDataFormats(t *testing.T) {
 	}
 }
 
+func TestPageImportRefusesOversizeFile(t *testing.T) {
+	a, tt := dictTester(t)
+	suffix := "\nat-limit\n"
+	atLimit := "#" + strings.Repeat("x", dictapi.MaxBytes-len("#")-len(suffix)) + suffix
+	a.importFile(writeTermsFile(t, "at-limit.txt", atLimit))
+	frames(tt)
+
+	path := writeTermsFile(t, "oversize.txt", "#"+strings.Repeat("x", dictapi.MaxBytes)+"\nnot-imported\n")
+	a.importFile(path)
+	frames(tt)
+	if got := strings.Join(a.toasts, "\n"); !strings.Contains(got, "larger than 8 MB") && !has(tt, "larger than 8 MB") {
+		t.Fatalf("oversize import toast %q, want the size limit", got)
+	}
+	got := terms(t, a)
+	if len(got) != 1 || got[0].Term != "at-limit" {
+		t.Fatalf("imports at and over the limit saved %v, want only at-limit", got)
+	}
+}
+
 // Imports at once (the page's and the command's) do not add a spelling
 // twice.
 func TestImportDataConcurrent(t *testing.T) {

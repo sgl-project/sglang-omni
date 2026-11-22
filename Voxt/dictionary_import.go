@@ -45,9 +45,22 @@ func (a *app) importFile(path string) {
 	repo := a.lib.store.Dictionary()
 	a.async(func() {
 		msg := func() string {
-			data, err := os.ReadFile(path)
+			file, err := os.Open(path)
 			if err != nil {
 				return i18n.T("Could not import: %v", err)
+			}
+			data, readErr := readDictionaryData(file)
+			closeErr := file.Close()
+			if readErr != nil {
+				err = readErr
+			} else {
+				err = closeErr
+			}
+			if err != nil {
+				return i18n.T("Could not import: %v", err)
+			}
+			if len(data) > dictapi.MaxBytes {
+				return i18n.T("Could not import: %v", fmt.Errorf("the file is larger than %d MB", dictapi.MaxBytes>>20))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()

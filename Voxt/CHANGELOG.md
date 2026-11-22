@@ -7,7 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
-- **Import dictionary terms from the command line**: while Voxt runs, `Voxt dictionary import terms.csv` merges a CSV, text or Voxt 1.x dictionary file into your dictionary the way Dictionary → Import… does: new spellings are added, known ones get the aliases they lacked, nothing is removed. `--dry-run` says how many terms it would add and update without saving, and `--json` prints the counts for a script. The Dictionary page refreshes when the import saves terms. See docs/dictionary-import.md.
+- **Import dictionary terms from the command line**: while Voxt runs, `Voxt dictionary import terms.csv` merges a CSV, text or Voxt 1.x dictionary file into your dictionary the way Dictionary → Import… does: new spellings are added, known ones get the aliases they lacked, nothing is removed. `--dry-run` says how many terms it would add and update without saving, and `--json` prints the counts for a script. The Dictionary page refreshes when the import saves terms. Both the page and the command refuse files over 8 MB. See docs/dictionary-import.md.
 - **An activity calendar on Home** (#4360): under Today, the days you used Voxt over about the last five months, shaded in your accent color by how many results each had, lighting up from left to right. Beside it: the characters Voxt has written for you, how many characters a minute you speak, and your days in a row. Hover a day for its date and count; the arrows go back further. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts (results, characters and speech time, no text) are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
 
 ### Changed
@@ -34,7 +34,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
-- **在命令行里导入词典词条**：Voxt 运行时，`Voxt dictionary import terms.csv` 按“词典 → 导入…”的方式把 CSV、文本或 Voxt 1.x 词典文件合并进词典：新写法新增，已有的词条补上缺的别名，不删除任何词条。`--dry-run` 只报告会新增、更新几条，不保存；`--json` 以 JSON 输出计数，方便脚本使用。导入保存了词条时，词典页会刷新。用法见 docs/dictionary-import.md。
+- **在命令行里导入词典词条**：Voxt 运行时，`Voxt dictionary import terms.csv` 按“词典 → 导入…”的方式把 CSV、文本或 Voxt 1.x 词典文件合并进词典：新写法新增，已有的词条补上缺的别名，不删除任何词条。`--dry-run` 只报告会新增、更新几条，不保存；`--json` 以 JSON 输出计数，方便脚本使用。导入保存了词条时，词典页会刷新。页面和命令行都会拒绝超过 8 MB 的文件。用法见 docs/dictionary-import.md。
 - **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近约五个月使用 Voxt 的情况，用主题色深浅表示当天结果多少，打开时从左到右依次亮起。旁边是 Voxt 一共为你写了多少字、你每分钟说多少字，以及连续使用的天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数、字数和说话时长（不含文字）和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
 
 #### 变更
