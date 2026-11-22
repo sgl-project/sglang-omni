@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 from sglang.srt.managers.schedule_batch import CaptureHiddenMode, Req
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.proto import (
@@ -25,11 +25,39 @@ from sglang_omni.scheduling.pd_utils import (
     DecodeContinuation,
     DecodeKVReceiver,
     ReservedKV,
+    build_kv_pool,
     continuation_from_req,
     defer_first_token_finish,
     req_from_continuation,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+
+
+def test_pd_kv_layout_rejects_equal_size_buffers_with_incompatible_formats() -> None:
+    """A byte-for-byte handoff requires the same dtype and per-token shape."""
+    layouts = []
+    for capacity, dtype, heads, head_width in (
+        (8, torch.bfloat16, 1, 8),
+        (16, torch.bfloat16, 1, 8),
+        (16, torch.float16, 1, 8),
+        (16, torch.bfloat16, 2, 4),
+    ):
+        pool = MHATokenToKVPool(
+            size=capacity,
+            page_size=1,
+            dtype=dtype,
+            head_num=heads,
+            head_dim=head_width,
+            layer_num=1,
+            device="cpu",
+            enable_memory_saver=False,
+        )
+        layouts.append(build_kv_pool(pool, pool_id="test:kv").layout)
+
+    source, compatible, wrong_dtype, wrong_shape = layouts
+    assert source.compatible_with(compatible)
+    assert not source.compatible_with(wrong_dtype)
+    assert not source.compatible_with(wrong_shape)
 
 
 class ReqPool:

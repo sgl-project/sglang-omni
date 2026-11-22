@@ -86,6 +86,8 @@ class KVPool:
                 KVBufferSpec(
                     name=buffer.name,
                     bytes_per_page=buffer.bytes_per_page,
+                    dtype=str(buffer.tensor.dtype),
+                    token_shape=tuple(buffer.tensor.shape[1:]),
                 )
                 for buffer in self.buffers
             ),

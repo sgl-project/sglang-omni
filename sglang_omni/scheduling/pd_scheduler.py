@@ -21,9 +21,9 @@ from sglang.srt.mem_cache.allocator.swa import (
 )
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 
+import sglang_omni.proto.admin as admin_proto
+import sglang_omni.proto.kv_transfer as kv_transfer_proto
 from sglang_omni.comm import KVPageTransfer
-from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
-from sglang_omni.proto.kv_transfer import PDStageKVLayout
 from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
@@ -55,9 +55,9 @@ class PDKVLifecycle(OmniScheduler):
     def run_admin_action(
         self, action: str, payload: dict[str, object] | None = None
     ) -> AdminActionResult:
-        if action == ADMIN_PD_KV_LAYOUT:
+        if action == admin_proto.ADMIN_PD_KV_LAYOUT:
             ((pool, receiver),) = self.kv_registrations
-            layout = PDStageKVLayout(
+            layout = kv_transfer_proto.PDStageKVLayout(
                 role="prefill" if receiver is None else "decode",
                 pool_id=pool.pool_id,
                 layout=pool.layout,

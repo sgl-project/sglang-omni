@@ -16,6 +16,8 @@ class KVBufferSpec:
 
     name: str
     bytes_per_page: int
+    dtype: str | None = None
+    token_shape: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -33,15 +35,7 @@ class KVPoolLayout:
             return False
         else:
             pass
-        if len(self.buffers) != len(other.buffers):
-            return False
-        else:
-            pass
-        return all(
-            source.name == destination.name
-            and source.bytes_per_page == destination.bytes_per_page
-            for source, destination in zip(self.buffers, other.buffers, strict=True)
-        )
+        return self.buffers == other.buffers
 
 
 @dataclass(frozen=True)
