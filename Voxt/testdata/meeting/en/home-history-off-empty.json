@@ -2,93 +2,882 @@
   "name": "home-history-off-empty",
   "kind": "home",
   "home": {
-    "read": true,
-    "loading": false,
-    "error": "",
     "keep_history": false,
     "slogan": {
       "before": "Press ",
       "keys": "Right ⌥",
       "after": " to start"
     },
-    "missing": null,
-    "ready": [
-      {
-        "key": "home-asr",
-        "title": "Speech recognition",
-        "ok": true,
-        "warn": false,
-        "text": "Fixture speech model",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-llm",
-        "title": "Language model",
-        "ok": true,
-        "warn": false,
-        "text": "Fixture language model",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-mic",
-        "title": "Microphone",
-        "ok": true,
-        "warn": false,
-        "text": "Allowed",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-access",
-        "title": "Accessibility",
-        "ok": true,
-        "warn": false,
-        "text": "Allowed",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-keys",
-        "title": "Shortcut",
-        "ok": true,
-        "warn": false,
-        "text": "Right ⌥",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      }
-    ],
-    "show_try": true,
-    "try_recording": false,
-    "today": {
-      "count": "0",
-      "count_label": "results",
-      "characters": "0",
-      "characters_label": "characters",
-      "kinds": [
+    "activity": {
+      "stats": [
         {
-          "kind": "transcribe",
-          "title": "Transcribe",
-          "count": "0"
+          "value": "0",
+          "label": "Today"
         },
         {
-          "kind": "translate",
-          "title": "Translate",
-          "count": "0"
+          "value": "0",
+          "label": "30 days"
         },
         {
-          "kind": "rewrite",
-          "title": "Rewrite",
-          "count": "0"
+          "value": "—",
+          "label": "Per minute"
+        },
+        {
+          "value": "—",
+          "label": "Latency"
         }
-      ]
-    },
-    "recent": []
+      ],
+      "weekdays": [
+        "S",
+        "M",
+        "T",
+        "W",
+        "T",
+        "F",
+        "S"
+      ],
+      "weeks": [
+        [
+          {
+            "level": 0,
+            "date": "Aug 3, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 4, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 5, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 6, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 7, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 8, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 9, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Aug 10, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 11, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 12, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 13, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 14, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 15, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 16, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Aug 17, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 18, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 19, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 20, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 21, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 22, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 23, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Aug 24, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 25, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 26, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 27, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 28, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 29, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Aug 30, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Aug 31, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 1, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 2, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 3, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 4, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 5, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 6, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Sep 7, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 8, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 9, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 10, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 11, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 12, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 13, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Sep 14, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 15, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 16, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 17, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 18, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 19, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 20, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Sep 21, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 22, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 23, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 24, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 25, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 26, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 27, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Sep 28, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 29, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Sep 30, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 1, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 2, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 3, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 4, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Oct 5, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 6, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 7, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 8, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 9, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 10, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 11, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Oct 12, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 13, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 14, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 15, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 16, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 17, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 18, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Oct 19, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 20, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 21, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 22, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 23, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 24, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 25, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Oct 26, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 27, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 28, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 29, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 30, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Oct 31, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 1, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Nov 2, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 3, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 4, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 5, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 6, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 7, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 8, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Nov 9, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 10, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 11, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 12, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 13, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 14, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 15, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Nov 16, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 17, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 18, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 19, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 20, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 21, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 22, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Nov 23, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 24, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 25, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 26, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 27, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 28, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Nov 29, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Nov 30, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 1, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 2, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 3, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 4, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 5, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 6, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Dec 7, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 8, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 9, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 10, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 11, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 12, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 13, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Dec 14, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 15, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 16, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 17, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 18, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 19, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 20, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Dec 21, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 22, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 23, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 24, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 25, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 26, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 27, 2025",
+            "count": "No activity"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "Dec 28, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 29, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 30, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Dec 31, 2025",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Jan 1, 2026",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Jan 2, 2026",
+            "count": "No activity"
+          },
+          {
+            "level": 0,
+            "date": "Jan 3, 2026",
+            "count": "No activity",
+            "future": true
+          }
+        ]
+      ],
+      "months": [
+        {
+          "week": 4,
+          "label": "Sep"
+        },
+        {
+          "week": 8,
+          "label": "Oct"
+        },
+        {
+          "week": 12,
+          "label": "Nov"
+        },
+        {
+          "week": 17,
+          "label": "Dec"
+        },
+        {
+          "week": 21,
+          "label": "Jan"
+        }
+      ],
+      "levels": 4,
+      "can_back": false,
+      "can_forward": false
+    }
   }
 }

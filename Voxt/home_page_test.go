@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -160,6 +161,67 @@ func TestReadHomeUsage(t *testing.T) {
 	}
 	if groupDigits(1234567) != "1,234,567" || groupDigits(999) != "999" {
 		t.Errorf("groupDigits %s %s", groupDigits(1234567), groupDigits(999))
+	}
+}
+
+type countingHistory struct {
+	store.History
+	listCalls int
+}
+
+func (h *countingHistory) List(ctx context.Context, query store.HistoryQuery) ([]store.Entry, error) {
+	h.listCalls++
+	return h.History.List(ctx, query)
+}
+
+func TestReadHomeUsagePagesAndMidnight(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
+	a, _, _ := newTestApp(t)
+	history := &countingHistory{History: a.lib.store.History()}
+	put := func(id, model string, at time.Time, asrMS int64) {
+		t.Helper()
+		if err := history.Put(context.Background(), store.Entry{
+			ID: id, Kind: store.KindTranscribe, CreatedAt: at, Status: store.StatusDone,
+			Result: "spoken", ASRModel: model, ASRMS: asrMS,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := range 500 {
+		put(fmt.Sprintf("recent-%03d", index), "new-model", now, 1000)
+	}
+	for index := range 501 {
+		put(fmt.Sprintf("old-%03d", index), "old-model", now.AddDate(0, 0, -200), 9000)
+	}
+	usage, err := readHomeUsage(context.Background(), history, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history.listCalls != 2 || usage.lastModel != "new-model" || usage.asrCount != 500 {
+		t.Fatalf("paged read made %d calls and returned %+v, want 2 calls and the recent window", history.listCalls, usage)
+	}
+
+	boundary, _, _ := newTestApp(t)
+	boundaryTime := now.AddDate(0, 0, -182)
+	if err := boundary.lib.store.History().Put(context.Background(), store.Entry{
+		ID: "boundary", Kind: store.KindTranscribe, CreatedAt: boundaryTime, Status: store.StatusDone,
+		Result: "boundary", ASRModel: "boundary-model", ASRMS: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	usage, err = readHomeUsage(context.Background(), boundary.lib.store.History(), now)
+	if err != nil || usage.asrCount != 1 {
+		t.Fatalf("the window's first day is excluded: %+v, %v", usage, err)
+	}
+	usage, err = readHomeUsage(context.Background(), boundary.lib.store.History(), now.AddDate(0, 0, 1))
+	if err != nil || usage.asrCount != 0 || usage.lastModel != "boundary-model" {
+		t.Fatalf("the window did not move at midnight: %+v, %v", usage, err)
+	}
+	boundary.hm.read, boundary.hm.usageDay = true, "2000-01-01"
+	gen := boundary.hm.gen
+	boundary.prepareHomePage()
+	if boundary.hm.gen <= gen || boundary.hm.usageDay != time.Now().Format("2006-01-02") {
+		t.Fatalf("Home did not refresh for a new day: gen %d -> %d, day %q", gen, boundary.hm.gen, boundary.hm.usageDay)
 	}
 }
 

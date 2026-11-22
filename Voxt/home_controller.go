@@ -17,6 +17,7 @@ type homeState struct {
 		read, loading, stale bool
 		seq                  int
 		usage                homeUsage
+		usageDay             string
 		err                  string
 		// gen numbers the landed reads; view is the last built state,
 		// viewKey its inputs (homePageModel).
@@ -54,6 +55,9 @@ func readHomeUsage(ctx context.Context, h store.History, now time.Time) (homeUsa
 			return usage, err
 		}
 		for _, entry := range entries {
+			if usage.lastModel != "" && entry.CreatedAt.Before(since) {
+				return usage, nil
+			}
 			if entry.Status != store.StatusDone || strings.TrimSpace(entry.Result) == "" {
 				continue
 			}
@@ -78,10 +82,12 @@ func (a *app) loadHome() {
 	hm.loading, hm.stale = true, false
 	seq := hm.seq
 	h := a.lib.store.History()
+	now := time.Now()
+	hm.usageDay = now.Format("2006-01-02")
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		usage, err := readHomeUsage(ctx, h, time.Now())
+		usage, err := readHomeUsage(ctx, h, now)
 		a.post(func() {
 			if seq != a.hm.seq {
 				return
@@ -109,6 +115,9 @@ func (a *app) homeChanged() {
 }
 
 func (a *app) prepareHomePage() {
+	if a.hm.read && a.hm.usageDay != time.Now().Format("2006-01-02") {
+		a.hm.stale = true // the latency's rolling window moved at local midnight
+	}
 	if !a.hm.loading && (!a.hm.read || a.hm.stale) {
 		a.loadHome()
 	}

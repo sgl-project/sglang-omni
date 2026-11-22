@@ -2,220 +2,883 @@
   "name": "home-shortcut-missing",
   "kind": "home",
   "home": {
-    "read": true,
-    "loading": false,
-    "error": "",
     "keep_history": true,
     "slogan": {
       "before": "先设置一个快捷键",
       "keys": "",
-      "after": ""
+      "after": "",
+      "model": "fixture-speech"
     },
-    "missing": [
-      {
-        "key": "home-keys",
-        "title": "快捷键",
-        "ok": false,
-        "warn": false,
-        "text": "转录还没有快捷键。添加一个，或者从菜单栏开始。",
-        "kind": "warn",
-        "action": "打开转录页",
-        "fix": "transcribe"
-      }
-    ],
-    "ready": [
-      {
-        "key": "home-asr",
-        "title": "语音识别",
-        "ok": true,
-        "warn": false,
-        "text": "Fixture speech model",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-llm",
-        "title": "语言模型",
-        "ok": true,
-        "warn": false,
-        "text": "Fixture language model",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-mic",
-        "title": "麦克风",
-        "ok": true,
-        "warn": false,
-        "text": "已允许",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-access",
-        "title": "辅助功能",
-        "ok": true,
-        "warn": false,
-        "text": "已允许",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      }
-    ],
-    "show_try": false,
-    "try_recording": false,
-    "today": {
-      "count": "7",
-      "count_label": "次",
-      "characters": "12,345",
-      "characters_label": "字",
-      "kinds": [
+    "activity": {
+      "stats": [
         {
-          "kind": "transcribe",
-          "title": "转录",
-          "count": "4"
+          "value": "120",
+          "label": "今天"
         },
         {
-          "kind": "translate",
-          "title": "翻译",
-          "count": "2"
+          "value": "150",
+          "label": "30 天"
         },
         {
-          "kind": "rewrite",
-          "title": "改写",
-          "count": "1"
+          "value": "200",
+          "label": "字/分钟"
+        },
+        {
+          "value": "2.0 秒",
+          "label": "识别耗时"
         }
-      ]
-    },
-    "recent": [
-      {
-        "kind": "transcribe",
-        "kind_title": "转录",
-        "row": {
-          "id": "home-transcribe",
-          "title": "Weekly plan",
-          "failed_title": false,
-          "meta": "5 分钟前 · Notes · 0:08",
-          "selected": false,
-          "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
-          "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
-          "can_reveal": true,
-          "retry": {
-            "available": true,
-            "wanted": false,
-            "active": false,
-            "label": "重新识别",
-            "disabled": false,
-            "stage": "",
-            "stage_text": "",
-            "tooltip": "用保存的录音重新识别，不会插入文字。"
+      ],
+      "weekdays": [
+        "日",
+        "一",
+        "二",
+        "三",
+        "四",
+        "五",
+        "六"
+      ],
+      "weeks": [
+        [
+          {
+            "level": 0,
+            "date": "2025年8月3日",
+            "count": "没有活动"
           },
-          "marks": null
-        }
-      },
-      {
-        "kind": "translate",
-        "kind_title": "翻译",
-        "row": {
-          "id": "home-translate",
-          "title": "晚上好",
-          "failed_title": false,
-          "meta": "5 分钟前 · Notes · → 简体中文 · 0:08",
-          "selected": false,
-          "copy_text": "晚上好",
-          "raw_copy_text": "good evening",
-          "can_reveal": false,
-          "retry": {
-            "available": false,
-            "wanted": false,
-            "active": false,
-            "label": "重新识别",
-            "disabled": false,
-            "stage": "",
-            "stage_text": "",
-            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          {
+            "level": 0,
+            "date": "2025年8月4日",
+            "count": "没有活动"
           },
-          "marks": null
-        }
-      },
-      {
-        "kind": "rewrite",
-        "kind_title": "改写",
-        "row": {
-          "id": "home-rewrite",
-          "title": "A formal answer",
-          "failed_title": false,
-          "meta": "5 分钟前 · Notes · 选中文字 · 0:08",
-          "selected": false,
-          "copy_text": "A formal answer",
-          "raw_copy_text": "Rewrite formally",
-          "can_reveal": true,
-          "retry": {
-            "available": true,
-            "wanted": false,
-            "active": false,
-            "label": "重新识别",
-            "disabled": false,
-            "stage": "",
-            "stage_text": "",
-            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          {
+            "level": 0,
+            "date": "2025年8月5日",
+            "count": "没有活动"
           },
-          "marks": null
-        }
-      },
-      {
-        "kind": "transcribe",
-        "kind_title": "转录",
-        "row": {
-          "id": "home-second",
-          "title": "Second result",
-          "failed_title": false,
-          "meta": "2 小时前 · Notes · 0:08",
-          "selected": false,
-          "copy_text": "Second result",
-          "raw_copy_text": "",
-          "can_reveal": false,
-          "retry": {
-            "available": false,
-            "wanted": false,
-            "active": false,
-            "label": "重新识别",
-            "disabled": false,
-            "stage": "",
-            "stage_text": "",
-            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          {
+            "level": 0,
+            "date": "2025年8月6日",
+            "count": "没有活动"
           },
-          "marks": null
-        }
-      },
-      {
-        "kind": "translate",
-        "kind_title": "翻译",
-        "row": {
-          "id": "home-older",
-          "title": "Older result",
-          "failed_title": false,
-          "meta": "2025年12月31日 15:04 · Notes · → 简体中文 · 0:08",
-          "selected": false,
-          "copy_text": "Older result",
-          "raw_copy_text": "",
-          "can_reveal": false,
-          "retry": {
-            "available": false,
-            "wanted": false,
-            "active": false,
-            "label": "重新识别",
-            "disabled": false,
-            "stage": "",
-            "stage_text": "",
-            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          {
+            "level": 0,
+            "date": "2025年8月7日",
+            "count": "没有活动"
           },
-          "marks": null
+          {
+            "level": 0,
+            "date": "2025年8月8日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月9日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年8月10日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月11日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月12日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月13日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月14日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月15日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月16日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年8月17日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月18日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月19日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月20日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月21日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月22日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月23日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年8月24日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月25日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月26日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月27日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月28日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月29日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年8月30日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年8月31日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月1日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月2日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月3日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月4日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月5日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月6日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年9月7日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月8日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月9日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月10日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月11日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月12日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月13日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年9月14日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月15日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月16日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月17日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月18日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月19日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月20日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年9月21日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月22日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月23日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月24日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月25日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月26日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月27日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年9月28日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月29日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年9月30日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月1日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月2日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月3日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月4日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年10月5日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月6日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月7日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月8日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月9日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月10日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月11日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年10月12日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月13日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月14日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月15日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月16日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月17日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月18日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年10月19日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月20日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月21日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月22日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月23日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月24日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月25日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年10月26日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月27日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月28日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月29日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月30日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年10月31日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月1日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年11月2日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月3日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月4日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月5日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月6日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月7日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月8日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年11月9日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月10日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月11日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月12日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月13日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月14日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月15日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年11月16日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月17日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月18日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月19日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月20日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月21日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月22日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年11月23日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月24日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月25日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月26日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月27日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月28日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年11月29日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年11月30日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月1日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月2日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月3日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月4日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月5日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月6日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年12月7日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月8日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月9日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月10日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月11日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月12日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月13日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年12月14日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月15日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月16日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月17日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月18日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月19日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月20日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年12月21日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月22日",
+            "count": "没有活动"
+          },
+          {
+            "level": 1,
+            "date": "2025年12月23日",
+            "count": "1 次"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月24日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月25日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月26日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月27日",
+            "count": "没有活动"
+          }
+        ],
+        [
+          {
+            "level": 0,
+            "date": "2025年12月28日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月29日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月30日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2025年12月31日",
+            "count": "没有活动"
+          },
+          {
+            "level": 0,
+            "date": "2026年1月1日",
+            "count": "没有活动"
+          },
+          {
+            "level": 1,
+            "date": "2026年1月2日",
+            "count": "1 次"
+          },
+          {
+            "level": 0,
+            "date": "2026年1月3日",
+            "count": "没有活动",
+            "future": true
+          }
+        ]
+      ],
+      "months": [
+        {
+          "week": 4,
+          "label": "9月"
+        },
+        {
+          "week": 8,
+          "label": "10月"
+        },
+        {
+          "week": 12,
+          "label": "11月"
+        },
+        {
+          "week": 17,
+          "label": "12月"
+        },
+        {
+          "week": 21,
+          "label": "1月"
         }
-      }
-    ]
+      ],
+      "levels": 4,
+      "can_back": true,
+      "can_forward": false
+    }
   }
 }
