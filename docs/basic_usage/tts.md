@@ -18,6 +18,7 @@ model you are serving.
 | Model | Incremental audio | Request requirements and model-specific behavior |
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | Yes | Text-only or voice cloning with `references` |
+| [Fish Audio Drama 3](../cookbook/fishaudio_drama3.md) | Yes | Text-only or voice cloning with `references` and their transcripts; `previous_takes` for editing; a request `seed` is refused |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | Yes | Reference audio or a precomputed speaker embedding |
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice) | Yes | Built-in speakers; 1.7B supports instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | Yes | `task_type: "VoiceDesign"` and non-empty `instructions`; checkpoint `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` uses `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` |
@@ -511,6 +512,7 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
+| `sample_rate` | int | `null` | Requested output rate in Hz for the Python server, from `7350` to `192000` subject to the format's encoder limits. For example, pass `8000` for 8 kHz |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
 | `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |
@@ -535,6 +537,10 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
 | `stage_params` | object | `null` | Model-specific stage overrides; see the model cookbook |
 | `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw audio outcome |
+
+The Python server also accepts `sample_rate` in batch defaults, batch items, and WebSocket session configuration. WAV and PCM accept any rate in the supported range. FLAC rates above `65535` Hz must be divisible by 10. AAC and MP3 accept rates supported by their encoders, and explicit Opus output uses `48000` Hz. The server rejects unsupported explicit rates before synthesis.
+
+Omitting `sample_rate` uses the model's native rate where the encoder supports it. Compressed encoders may adapt that rate, such as Opus playback at 48 kHz. WAV headers, HTTP `X-Sample-Rate`, batch result `sample_rate`, and WebSocket `audio.start.sample_rate` report the delivered rate.
 
 ## Error Handling
 

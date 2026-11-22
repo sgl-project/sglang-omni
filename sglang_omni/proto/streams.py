@@ -25,13 +25,13 @@ SESSION_UNIT_MS = 200
 MAX_HISTORY_CHARS = 64 * 1024
 # {"text": str, "language"?: str}, one increment of a reply
 TEXT_DELTA = "text_delta"
-# {"messages": [{"role", "content"}, ...], "language"?: str}
+# {"messages": [{"role", "content"}, ...], "language"?: str, "tool_choice"?: str}
 MESSAGES = "messages"
 # {"text": str, "full_text": str, "is_first_output": bool}; an ASR stage's one running text
 RUNNING_TEXT = "text"
 # {"text": str, "is_final": bool, "language"?: str}
 TRANSCRIPT_FORMAT = "transcript"
-# {"calls": [{"id": str, "name": str, "arguments": object}, ...]}
+# {"calls": [{"id": str, "name": str, "arguments": object}, ...], "language"?: str}
 TOOL_CALL = "tool_call"
 # {"responses": [{"id": str, "name": str, "response": object}, ...]}
 TOOL_RESPONSE = "tool_response"
@@ -50,10 +50,14 @@ SPEECH_STOPPED = "speech.stopped"  # {"t_ms": float}
 TURN_QUEUED = "turn.queued"  # an utterance waits for its reply
 TURN_STARTED = "turn.started"  # a reply begins
 TURN_DONE = "turn.done"  # the reply and its audio are complete
-TURN_EMPTY = "turn.empty"  # the utterance carried no words; no reply
+TURN_EMPTY = "turn.empty"  # the utterance carried no words, or its prompt led to no speech; no reply
 TURN_INTERRUPTED = "turn.interrupted"  # the reply stopped before its end
 # A reply whose generation stopped at the talker's token budget: the talker flags its terminal stream item with this, and the audio owner repeats the flag on the reply's turn.done so the client can report an incomplete response.
 REPLY_TRUNCATED = "reply_truncated"
+# The error a synthesizer speaking a tool call's text flags on that speech's turn.done, so the model is told instead of the Session failing.
+SPEECH_ERROR = "speech_error"
+# Beside SPEECH_ERROR: the characters of the speech's text whose sentences the synthesizer had spoken before it failed.
+SPOKEN_TEXT_END = "spoken_text_end"
 CONFIGURED = "configured"  # {"nodes": {name: kind}}
 # {"text_end": int, "audio_ms": float}; the reply text's first text_end characters have audio, ending audio_ms after the reply's first sample
 REPLY_PROGRESS = "reply.progress"
@@ -70,8 +74,13 @@ REPORT_CONTROLS = frozenset({REPLY_PROGRESS})
 
 
 def chunk_language(chunk: TimedChunk) -> str | None:
-    """The language of the user's speech that a transcript, messages or text delta chunk carries; None while unknown."""
+    """The language of the user's speech that a transcript, messages, text delta or tool call chunk carries; None while unknown."""
     return chunk.payload.get("language")
+
+
+def chunk_style(chunk: TimedChunk) -> str | None:
+    """The speaking style a text delta carries, named by the language model's last tag; None before any tag."""
+    return chunk.payload.get("style")
 
 
 def control_type(chunk: TimedChunk | OutputChunk) -> str | None:
