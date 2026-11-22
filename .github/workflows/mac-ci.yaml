@@ -8,8 +8,11 @@ name: Mac CI
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
 # the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
 # Omni CI skips a pull request that changes only the MLX path, so this gate
-# fails such a pull request without a CI label. A pull request runs only the
-# job whose side it changes, Markdown aside, and both when it changes this file.
+# fails such a pull request without a CI label. A pull request that changes
+# only Voxt's app (Voxt/** outside the helper's code and vendored MyGo) runs no
+# Mac job here, so it passes without a label, draft or not; Voxt CI tests it. A
+# pull request runs only the job whose side it changes, Markdown aside, and
+# both when it changes this file.
 
 on:
   pull_request:
@@ -76,10 +79,22 @@ jobs:
             const hasChangesUnder = (directory) =>
               hasWorkflowChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
             core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
-            core.setOutput("has_voxt_helper_changes", hasChangesUnder("Voxt/helper/"));
+            core.setOutput("has_voxt_helper_changes",
+              hasChangesUnder("Voxt/helper/") ||
+              hasChangesUnder("Voxt/third_party/mygo-patches/") ||
+              changedPaths.includes("Voxt/scripts/vendor-mygo.sh")
+            );
+            // App-only: every path under Voxt/, none an input of the helper job above.
+            const isVoxtHelperInput = (path) =>
+              (path.startsWith("Voxt/helper/") || path.startsWith("Voxt/third_party/mygo-patches/")) && !path.endsWith(".md") ||
+              path === "Voxt/scripts/vendor-mygo.sh";
+            core.setOutput(
+              "voxt_app_only",
+              changedPaths.every((path) => path.startsWith("Voxt/") && !isVoxtHelperInput(path))
+            );
 
       - name: Block draft PR
-        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) && steps.pr.outputs.voxt_app_only != 'true' }}
         run: |
           echo "PR is draft. Blocking Mac CI."
           exit 1
@@ -94,11 +109,21 @@ jobs:
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}
+          VOXT_APP_ONLY: ${{ steps.pr.outputs.voxt_app_only }}
         run: |
-          python .github/scripts/resolve_ci_labels.py resolve \
+          if resolved=$(python .github/scripts/resolve_ci_labels.py resolve \
             --labels-json "${LABELS_JSON}" \
             --seed "${GITHUB_RUN_ID}" \
-            --github-output "${GITHUB_OUTPUT}"
+            --github-output "${GITHUB_OUTPUT}"); then
+            echo "${resolved}"
+            exit 0
+          fi
+          if [ "${VOXT_APP_ONLY}" != "true" ]; then
+            echo "${resolved}"
+            exit 1
+          fi
+          echo "::notice::Only Voxt's app changed: no Mac job runs, so no CI label is needed. Voxt CI tests it."
+          echo "run_mac=false" >> "${GITHUB_OUTPUT}"
 
       - name: Check PR lint and mergeability
         if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_mac == 'true' }}
@@ -173,6 +198,25 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      # -warnings-as-errors leaves Swift 6 concurrency warnings as warnings, so the log is searched instead.
+      - name: Helper builds without warnings
+        run: |
+          set -o pipefail
+          swift build --package-path Voxt/helper 2>&1 | tee helper-build.log
+          if grep -q 'warning:' helper-build.log; then
+            echo "::error::the helper build has compiler warnings"
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - name: Vendored MyGo and native drop regressions
+        working-directory: Voxt
+        run: scripts/vendor-mygo.sh --check
 
       - name: Helper tests
         run: swift test --package-path Voxt/helper

@@ -41,6 +41,7 @@ func TestFeatureDemoActionControls(t *testing.T) {
 			host.feature.local.cancel.text = ""
 		}, steps: []historyDemoStep{{label: "Custom keys to cancel recording", text: "Control+Option+B"}, {key: ui.KeyEnter}}, want: []string{`saveFeatureCancelKeys "Control+Option+B"`}},
 		{name: "end word", fixture: "en/feature-normal", steps: []historyDemoStep{{label: "Word that ends the recording"}, {label: "over", click: true}}, want: []string{`setFeatureEndWord "over"`}},
+		{name: "return finishes", fixture: "en/feature-normal", steps: historySteps("Return finishes dictation"), want: []string{"setFeatureReturnFinish false"}},
 		{name: "custom end word", fixture: "en/feature-end-word-custom", prepare: func(host *meetingDemoHost) {
 			host.feature.local.endWord.text = ""
 			host.feature.local.endWord.edited = false

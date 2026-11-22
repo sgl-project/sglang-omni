@@ -168,8 +168,17 @@ def report(lines: list[str], failures: list[str]) -> None:
     sys.exit(1 if failures else 0)
 
 
+def transcribed_controls(
+    clips: dict, clip_ids: list[str], model_kind: str | None
+) -> int:
+    return sum(
+        any(char.isalnum() for char in spoken_text(clips[clip_id]["text"], model_kind))
+        for clip_id in clip_ids
+    )
+
+
 def check(
-    golden: dict, device: str, results: dict, metrics: dict
+    golden: dict, device: str, results: dict, metrics: dict, manifest: dict[str, dict]
 ) -> tuple[list[str], list[str]]:
     """Returns (report lines, failures)."""
     devices = golden["devices"]
@@ -228,6 +237,38 @@ def check(
             lines.append(
                 f"| {name} | {baseline:.2%} | {value:.2%} | {(value - baseline) * 100:+.2f} pp |"
             )
+    for stratum in ("silence", "noise"):
+        clip_ids = [key for key, clip in manifest.items() if clip["stratum"] == stratum]
+        if not clip_ids:
+            continue
+        else:
+            pass
+        missing = [
+            key
+            for key in clip_ids
+            if key not in results or key not in reference["clips"]
+        ]
+        if missing:
+            failures.append(
+                f"Missing {stratum} controls in runtime or golden: {', '.join(missing)}"
+            )
+            continue
+        else:
+            pass
+        recorded = transcribed_controls(
+            reference["clips"], clip_ids, golden.get("model_kind")
+        )
+        observed = transcribed_controls(results, clip_ids, golden.get("model_kind"))
+        lines.append(
+            f"\n{stratum.capitalize()} clips with transcribed words: {observed}/{len(clip_ids)} "
+            f"({reference_device} golden: {recorded}/{len(clip_ids)})"
+        )
+        if observed > recorded:
+            failures.append(
+                f"More {stratum} clips transcribed than {reference_device}: {observed} > {recorded}"
+            )
+        else:
+            pass
     return lines, failures
 
 
@@ -359,7 +400,7 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
     elif golden.get("kind") == "cosyvoice3":
         report(*cosyvoice3_golden.check(golden, device, results))
     else:
-        report(*check(golden, device, results, metrics))
+        report(*check(golden, device, results, metrics, manifest))
 
 
 def transcribe_qwen3_asr(

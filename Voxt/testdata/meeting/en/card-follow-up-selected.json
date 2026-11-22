@@ -38,11 +38,20 @@
     "card": {
       "id": "r3",
       "kind": "rewrite",
-      "title": "AI answer",
+      "title": "Rewrite",
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
-      "insert_tooltip": "Insert into Slack",
+      "insert_tooltip": "Insert into Slack (R)",
+      "copy_tooltip": "Copy (C)",
+      "inputs": [
+        {
+          "label": "Selected text",
+          "text": "Anna: I can start the meeting.",
+          "chars": 30,
+          "lines": 1
+        }
+      ],
       "size_step": 0,
       "levels": [
         0,

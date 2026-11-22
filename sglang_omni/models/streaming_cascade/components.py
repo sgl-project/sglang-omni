@@ -47,6 +47,7 @@ from sglang_omni.proto.streams import (
     RUNNING_TEXT,
     SESSION_CONTROL,
     TEXT_DELTA,
+    TOOL_CALL,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
 )
@@ -183,25 +184,27 @@ COMPONENTS.register(
 COMPONENTS.register(
     DialogConfig,
     Dialog,
-    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL}),
-    produces=frozenset({MESSAGES, SESSION_CONTROL}),
+    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, TOOL_CALL, SESSION_CONTROL}),
+    produces=frozenset({MESSAGES, TOOL_CALL, SESSION_CONTROL}),
     opens_turns=True,
+    optional=frozenset({TOOL_CALL}),
 )
 COMPONENTS.register(
     OpenAIChatGeneratorConfig,
     OpenAIChatGenerator,
     consumes=frozenset({MESSAGES}),
-    produces=frozenset({TEXT_DELTA, SESSION_CONTROL}),
+    produces=frozenset({TEXT_DELTA, TOOL_CALL, SESSION_CONTROL}),
     ends_turns=True,
     probe=probe_chat_service,
 )
 COMPONENTS.register(
     OpenAISpeechSynthesizerConfig,
     OpenAISpeechSynthesizer,
-    consumes=frozenset({TEXT_DELTA, SESSION_CONTROL}),
-    produces=frozenset({PCM_F32, SESSION_CONTROL}),
+    consumes=frozenset({TEXT_DELTA, TOOL_CALL, SESSION_CONTROL}),
+    produces=frozenset({PCM_F32, TEXT_DELTA, SESSION_CONTROL}),
     sample_rate_hz=SPEECH_SAMPLE_RATE_HZ,
     ends_turns=True,
+    optional=frozenset({TEXT_DELTA, TOOL_CALL}),
     probe=probe_openai_service,
 )
 COMPONENTS.register(

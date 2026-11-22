@@ -141,11 +141,7 @@ func systemShortcutNameFor(translator *i18n.Translator, sys string) string {
 	return translator.T("copy, paste and other editing commands")
 }
 
-// HotkeyProblemText says what is wrong with a binding.
-func HotkeyProblemText(p hotkey.Problem) string {
-	return HotkeyProblemTextFor(i18n.CurrentTranslator(), p)
-}
-
+// HotkeyProblemTextFor says what is wrong with a binding.
 func HotkeyProblemTextFor(translator *i18n.Translator, p hotkey.Problem) string {
 	switch p.Code {
 	case hotkey.ProblemInvalid:
@@ -162,13 +158,9 @@ func HotkeyProblemTextFor(translator *i18n.Translator, p hotkey.Problem) string 
 	return ""
 }
 
-// HotkeyProblems are the problems to show under feature's bindings, by
+// HotkeyProblemsFor are the problems to show under feature's bindings, by
 // index: its own, and the conflicts reported on another feature's
 // binding that clash with it.
-func HotkeyProblems(f settings.Features, feature string) map[int][]string {
-	return HotkeyProblemsFor(i18n.CurrentTranslator(), f, feature)
-}
-
 func HotkeyProblemsFor(translator *i18n.Translator, f settings.Features, feature string) map[int][]string {
 	out := map[int][]string{}
 	for _, p := range hotkey.Check(f) {
@@ -193,11 +185,7 @@ func HotkeyGlyphs(keys string) string {
 	return HotkeyText(keys)
 }
 
-// TriggerText names a trigger.
-func TriggerText(trigger string) string {
-	return TriggerTextFor(i18n.CurrentTranslator(), trigger)
-}
-
+// TriggerTextFor names a trigger.
 func TriggerTextFor(translator *i18n.Translator, trigger string) string {
 	switch trigger {
 	case settings.TriggerDouble:
@@ -206,17 +194,6 @@ func TriggerTextFor(translator *i18n.Translator, trigger string) string {
 		return translator.T("Long press")
 	}
 	return translator.T("Tap")
-}
-
-// TriggerHowText says how a shortcut's trigger is used.
-func TriggerHowText(trigger string) string {
-	switch trigger {
-	case settings.TriggerDouble:
-		return i18n.T("Press twice quickly to start; once more to stop.")
-	case settings.TriggerLong:
-		return i18n.T("Record while you hold the keys; release to stop.")
-	}
-	return i18n.T("Press to start, press again to stop.")
 }
 
 // FeaturePrefix keys a feature page's controls.

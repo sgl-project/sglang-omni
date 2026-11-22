@@ -7,6 +7,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -56,5 +57,14 @@ func TestMeetingSettingsViewState(t *testing.T) {
 	}
 	if empty.SpokenLanguageSelected != "Same as the main language" {
 		t.Fatalf("default spoken language %q", empty.SpokenLanguageSelected)
+	}
+	input.CorrectionText = meeting.DefaultCorrectionStyle
+	input.Meeting.CorrectionStyle = ""
+	if !buildSettingsMeetingViewState(translator, input).CorrectionStyleResetDisabled {
+		t.Fatal("the default correction style should disable Reset")
+	}
+	input.CorrectionText = "Keep the original tone."
+	if buildSettingsMeetingViewState(translator, input).CorrectionStyleResetDisabled {
+		t.Fatal("an edited correction style should enable Reset")
 	}
 }

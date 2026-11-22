@@ -78,7 +78,7 @@ func TestGoldenDictionary(t *testing.T) {
 					}
 					d := slices.Index(on.Layers, "dictionary")
 					if d < 0 || on.Layers[d+1] != "scene" || slices.Index(on.Layers, "glossary") < d ||
-						custom && on.Layers[d-1] != "custom" {
+						custom && on.Layers[0] != "custom" {
 						t.Errorf("layers %v", on.Layers)
 					}
 					if strings.Count(on.System, "幺零幺") != 1 || strings.Contains(on.User, "Correction mapping") ||

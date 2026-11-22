@@ -93,13 +93,6 @@ func modelLabel(ready []local.Model, id, automatic string) string {
 	return automatic
 }
 
-func modelID(options []string, ready []local.Model, label string) string {
-	if index := slices.Index(options, label); index > 0 {
-		return ready[index-1].ID
-	}
-	return ""
-}
-
 func (a *app) syncFeatureModelControls(input featureModelsStateInput) {
 	f := featureOf(input.Settings, input.Feature)
 	optionsA, automaticA := modelOptions(input.ReadyASR, input.ShownASR)
@@ -161,6 +154,10 @@ func (a *app) setFeatureStructure(on bool) {
 
 func (a *app) setFeatureEndWord(word string) {
 	a.setEndWord(normalizeFeatureEndWord(word))
+}
+
+func (a *app) setFeatureReturnFinish(on bool) {
+	a.updateSettings(func(settings *settings.Settings) { settings.Features.Transcribe.ReturnFinishes = on })
 }
 
 func (a *app) setEndWord(word string) {

@@ -1,20 +1,32 @@
-# profile: custom:glossary
-# layers: custom glossary
+# profile: custom:cleanup+glossary
+# layers: custom cleanup glossary example
 
 Write English with full-width punctuation. Keep {{UNKNOWN}} as is.
+
+Basic cleanup:
+- Keep what the speaker meant, in their words: do not translate, summarize, expand, explain or change the style.
+- Remove fillers and hesitations that carry no meaning ("um", "uh", "you know", false starts, stutters).
+- Self-corrections: when the speaker cancels or replaces something ("Friday, no, Monday"), keep only the final version. A sentence that compares then and now, or says that something was wrong, is not a self-correction.
+- When the speaker explains how a word is spelled or written ("Smith, S-M-I-T-H", "Catherine with a C, not a K"), use the explanation to pick the right spelling or characters, then remove the explanation.
+- Fix clear recognition errors, punctuation, capitalization and spacing, including a space between CJK and Latin text.
+- Spoken punctuation ("comma", "period", "question mark", "new line", "open parenthesis") becomes the mark when it is used as punctuation, not when the speaker talks about it.
+- Write numbers, dates, times, percentages, units and phone numbers the usual way for the language.
+- Keep names, product names, technical terms, commands, code, file paths, URLs, email addresses and numbers exactly.
+- Write in the language spoken: if the user speaks Chinese, output Chinese; if English, English; keep a mix as spoken. Never translate, never unify the languages.
 
 Glossary: write these terms exactly as below, also when the recognizer heard them differently.
 - Kubernetes
 - VoxtNew (heard as: aura link, 奥拉链接)
 - DeepSeek (heard as: deep seek)
 
----- user ----
+Example (it only illustrates the rules above; it is not the text to clean, so never output it). The user message is:
 <input>
 Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
 </input>
-
----- assistant ----
+You answer:
+<output>
 Can you send the weekly report to Anna before 5? I really need it before 5.
+</output>
 
 ---- user ----
 <input>

@@ -91,7 +91,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `general.hideDock` | bool | `false` | `true` hides Voxt from the Dock | Show in the Dock (inverted) |
 | `general.closeToTray` | bool | `true` | | Keep running when the window closes |
 | `general.launchAtLogin` | bool | `false` | | Open at login |
-| `features.hidden` | array of strings | `[]` | `translate`, `rewrite`, `app-enhancement` | Shown features (inverted). A hidden feature's shortcuts are off |
+| `features.hidden` | array of strings | `[]` | `translate`, `rewrite`, `app-enhancement`, `notes`, `meetings` | Shown features (inverted). A hidden feature's shortcuts are off |
 
 ### Appearance (Settings → Appearance)
 
@@ -105,6 +105,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `appearance.rail` | bool | `false` | `true` shows the sidebar as icons only | Sidebar |
 | `appearance.railChosen` | bool | `false` | the user chose names and icons | Sidebar |
 | `appearance.sidebarWidth` | number | `0` | 0 (default) or 170–320 (clamped) | Dragging the sidebar's edge |
+| `appearance.historyDetailWidth` | number | `0` | 0 (default) or 290–350 (clamped) | Dragging the edge of History's detail panel |
 | `appearance.closedSections` | array of strings | `[]` | sidebar sections the user closed | The sidebar's section headers |
 
 ### Privacy (Settings → Privacy)
@@ -114,8 +115,9 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `privacy.keepHistory` | bool | `true` | | Keep a history |
 | `privacy.keepAudio` | bool | `false` | | Keep recordings |
 | `privacy.logText` | bool | `false` | | Write text to the log |
-| `privacy.sendWindow` | bool | `false` | | Send a screenshot |
-| `privacy.sendClipboardImage` | bool | `false` | | Send a copied image |
+| `privacy.sendWindow` | bool | `false` | a screenshot of the window you speak into goes with the text to a language model that reads images; needs Screen Recording; a model that takes no images gets the text alone | Send a screenshot |
+| `privacy.sendClipboardImage` | bool | `false` | Rewrite sends the image you copied (⌘C) with what you said; copied text and copied files that are not images are not sent; with text selected only the text goes, unless `sendClipboardImageWithSelection` is on | Send a copied image |
+| `privacy.sendClipboardImageWithSelection` | bool | `false` | off so an image you copied earlier cannot take over a text rewrite | Text and a copied image together |
 | `privacy.historyAccess` | bool | `false` | | Let programs on this Mac read the history ([history-access.md](history-access.md)) |
 | `privacy.historySelection` | bool | `false` | | Also include the text you selected |
 
@@ -141,7 +143,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `audio.liveResult` | bool | `false` | `true` keeps the live text instead of recognising the recording again | Recognise the whole recording again (inverted) |
 | `audio.vad.off` | bool | `false` | | Skip silence (inverted) |
 | `audio.clean.off` | bool | `false` | | Optimise sound (inverted) |
-| `audio.uploadMB` | integer | `0` | MB per upload to a speech service that takes whole files; 0 = the service's limit | Upload size limit |
+| `audio.uploadMB` | integer | `0` | MB per upload to a speech service that takes whole files (OpenAI, Doubao): a longer recording goes in pieces of at most this size; 0 = the service's limit (25 MB for OpenAI, 100 MB for Doubao) | Upload size limit |
 | `audio.maxSeconds` | integer | `0` | seconds; 0 = no limit | Recording length limit (shown in minutes) |
 
 **Silence detection and sound clean-up, for troubleshooting only.** These fields have no UI and are absent from a fresh install's document. Leave them absent: Voxt then uses the effective default in the table. It also uses the effective default for `0` or a value outside the range; a few values are capped instead, as noted.
@@ -213,12 +215,13 @@ And their own fields:
 | `features.transcribe.enhance` | bool | `true` | | Clean up with a language model |
 | `features.transcribe.cleanup` | bool | `true` | | Basic clean-up |
 | `features.transcribe.structure` | bool | `false` | | Structure |
+| `features.transcribe.returnFinishes` | bool | `true` | | Return finishes dictation |
 | `features.endWord` | string | `""` | a word that ends the recording; `""` = off (streaming speech models only) | Transcribe → End with a word |
 | `features.translate.target` | string | `""` | a language code; `""` = English, or Chinese when the main language is English | Target language |
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |
 | `features.translate.fallback` | string | `""` | a language model id; `""` = none | Fallback model |
 | `features.rewrite.cleanup` | bool | `true` | | Clean up the instruction |
-| `features.cardSizes` | object, string → integer | `{}` | `transcribe`/`translate`/`rewrite` → `0` small, `1` medium, `2` large | The answer card's size button |
+| `features.cardSizes` | object, string → integer | `{}` | `transcribe`/`translate`/`rewrite` → `0` small, `1` medium, `2` large, `3` fill (the available work-area width) | The answer card's size button |
 
 ### Meetings (Meetings → settings)
 
@@ -228,6 +231,7 @@ And their own fields:
 |---|---|---|---|---|
 | `features.meeting.mode` | string | `""` | `""` (meeting), `subtitles`, `recording` | Capture mode |
 | `features.meeting.lang` | string | `""` | a language code; `""` = the main language | Spoken language |
+| `features.meeting.correctionStyle` | string | `""` | correction rules for the language model; `""` = the built-in rules | Transcript correction |
 | `features.meeting.hideFromSharing` | bool | `false` | | Hide from screen sharing |
 | `features.meeting.collapsed` | bool | `false` | | The overlay's compact layout |
 | `features.meeting.translateTarget` | string | `""` (= `en`) | a language code | (no settings row) |
@@ -261,7 +265,8 @@ And their own fields:
 | `models.keepLoaded` | string | `""` | `""` (Automatic), `5m`, `15m`, `30m`, `1h`, `quit` | Speech models → Keep models loaded |
 | `models.hidden` | array of strings | `[]` | speech model ids | Speech models → Hide |
 | `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed | Speech models → Faster transcription |
-| `models.llmWait` | string | `""` | `""` (Automatic), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works | Language models → Wait for the language model |
+| `models.llmWait` | string | `""` | `""` (Automatic: 20 s to a minute, longer for long text), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works; after it the recognised text is inserted | Language models → Wait for the language model |
+| `models.llmSwitch` | bool | `false` | | Language models → Retry with another model on this Mac |
 | `providers.llm` | array of providers | `[]` | one entry per language model service | Language models (one card per service set up) |
 | `providers.asr` | array of providers | `[]` | one entry per speech service | Speech models → online services |
 
@@ -323,6 +328,8 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.done` | bool | The setup guide is finished |
 | `setup.openingShown` | bool | The first-use opening was shown |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
+| `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
+| `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
 | `updates.dismissed` | string | The version whose "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |

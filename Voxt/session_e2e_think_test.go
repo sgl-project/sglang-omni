@@ -19,6 +19,8 @@ import (
 func TestCardThinkingLevel(t *testing.T) {
 	chat := &fakeChat{texts: []string{"See you on Thursday.", "See you Thursday!", "", "木曜日に会いましょう。"}}
 	set, keys, _ := fileSetup(t, "周四见", chat)
+	keys.LLMModel = fakeLLMModel
+	keys.LLMModel.ID = "deepseek"
 	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(500, "translate/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, func(s *settings.Settings) {
 		set(s)
@@ -134,7 +136,12 @@ func TestCardThinkingLevel(t *testing.T) {
 // the answer the card shows.
 func TestRewriteCardThinkingLevel(t *testing.T) {
 	chat := &fakeChat{texts: []string{"Docs ready, tests running.", "Docs are ready; the tests still run.", "Shorter."}}
-	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	set, keys, tr := fileSetup(t, "summarize", chat)
+	keys.LLMModel = fakeLLMModel
+	keys.LLMModel.ID = "deepseek"
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) { set(s); s.Features.Rewrite.ShowCard = true }, keys)
+	a.pump("the first answer", func() bool { return a.sess.State.Ended() })
 	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
 	a.answer.llmID = "deepseek"
 	if v := a.cachedCard(); !v.ShowThinking || !v.CanThink {
@@ -159,6 +166,23 @@ func TestRewriteCardThinkingLevel(t *testing.T) {
 	msgs := chatMessages(chat.requests()[2])
 	if !hasAnswer(msgs, "Docs are ready; the tests still run.") || hasAnswer(msgs, "Docs ready, tests running.") {
 		t.Errorf("follow-up messages %q", msgs)
+	}
+}
+
+func TestEndRedoTracksAnsweringProvider(t *testing.T) {
+	for _, tc := range []struct{ from, to string }{{from: "deepseek", to: "ollama"}, {from: "ollama", to: "deepseek"}} {
+		t.Run(tc.from+" to "+tc.to, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}, {ID: "ollama"}} })
+			a.answer = answerCard{open: true, llmID: tc.from, redo: "redo"}
+			a.endRedo(session.Snapshot{ID: "redo", State: session.Done, Result: "New answer", LLM: session.Model{ID: tc.to}})
+			if a.answer.llmID != tc.to {
+				t.Fatalf("answering provider = %q, want %q", a.answer.llmID, tc.to)
+			}
+			if got, want := a.cachedCard().ShowThinking, len(a.llmThinkLevels(tc.to)) > 1; got != want {
+				t.Errorf("thinking controls = %v, want %v for %q", got, want, tc.to)
+			}
+		})
 	}
 }
 
