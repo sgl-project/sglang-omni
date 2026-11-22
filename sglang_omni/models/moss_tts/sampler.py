@@ -354,8 +354,21 @@ class MossTTSDelayMixedGraphSampler(nn.Module):
         text_logits: torch.Tensor,
         audio_logits: torch.Tensor,
         batch: DelayGraphBatch,
+        *,
+        text_rows: torch.Tensor | None = None,
     ) -> DelaySamplingOutput:
-        batch_size = int(text_logits.shape[0])
+        """Static Delay step, optionally sampling text on a row subset.
+
+        ``text_rows`` compacts the full-vocabulary text draw to the rows that
+        can actually consume it: a row with ``delayed <= n_vq`` at this step
+        has its text token fixed by the Delay FSM, so drawing one for it is
+        dead work. The caller proves that property on the host from the Delay
+        countdown (it advances one step per decode step after the first
+        ``delay_slot`` row), so rows omitted here never read ``sampled_text``.
+        Rows listed in ``text_rows`` keep the unmodified checkpoint masking,
+        Hash32 inputs, original token IDs and FP64 Gumbel-max rule.
+        """
+        batch_size = int(batch.delay_state.shape[0])
         seeds = batch.seeds
         generation_steps = batch.generation_steps
         audio_lengths, delayed, is_audio = batch.delay_state.unbind(dim=1)
@@ -381,26 +394,51 @@ class MossTTSDelayMixedGraphSampler(nn.Module):
         is_audio = is_audio & ~is_audio_eos
         sampling_text_mask = delayed > self.n_vq
 
-        text_logits = text_logits.float()
-        text_logits = text_logits.masked_fill(
-            (~is_audio).unsqueeze(1) & self.text_excluded_mask, _NEG_INF
+        if text_rows is None:
+            text_rows = torch.arange(
+                batch_size, dtype=torch.long, device=text_logits.device
+            )
+        else:
+            text_rows = text_rows.to(torch.long)
+        text_rows = text_rows.reshape(-1)
+        if int(text_rows.numel()) != int(text_logits.shape[0]):
+            raise ValueError(
+                "MOSS-TTS mixed sampler text rows must match the text logits "
+                f"rows, got rows={int(text_rows.numel())} "
+                f"logits={int(text_logits.shape[0])}"
+            )
+        else:
+            pass
+        row_is_audio = is_audio[text_rows]
+        row_steps = generation_steps[text_rows]
+        masked_text_logits = text_logits.float().masked_fill(
+            (~row_is_audio).unsqueeze(1) & self.text_excluded_mask, _NEG_INF
         )
-        text_logits = text_logits.masked_fill(
-            is_audio.unsqueeze(1) & self.text_audio_only_mask, _NEG_INF
+        masked_text_logits = masked_text_logits.masked_fill(
+            row_is_audio.unsqueeze(1) & self.text_audio_only_mask, _NEG_INF
         )
-        text_logits = text_logits.masked_fill(
-            (generation_steps == 0).unsqueeze(1) & self.text_delay_slot_mask,
+        masked_text_logits = masked_text_logits.masked_fill(
+            (row_steps == 0).unsqueeze(1) & self.text_delay_slot_mask,
             _NEG_INF,
         )
-        text_logits = text_logits.masked_fill(
-            (generation_steps <= self.n_vq).unsqueeze(1) & self.text_im_end_mask,
+        masked_text_logits = masked_text_logits.masked_fill(
+            (row_steps <= self.n_vq).unsqueeze(1) & self.text_im_end_mask,
             _NEG_INF,
         )
-        sampled_text = sample_default_text_tokens(
-            text_logits,
-            seeds=seeds,
-            positions=generation_steps * self.num_channels,
+        sampled_rows = sample_default_text_tokens(
+            masked_text_logits,
+            seeds=seeds[text_rows],
+            positions=row_steps * self.num_channels,
         )
+        # Duplicate indices only appear for capture padding; they carry the
+        # same state, logits, seed and position, so they store the same token.
+        sampled_text = torch.full(
+            (batch_size,),
+            self.pad_token_id,
+            dtype=torch.long,
+            device=text_logits.device,
+        )
+        sampled_text.index_copy_(0, text_rows, sampled_rows)
         next_text = torch.where(sampling_text_mask, sampled_text, next_text)
         is_audio = (is_audio | (next_text == self.audio_start_token_id)) & (
             next_text != self.im_end_token_id

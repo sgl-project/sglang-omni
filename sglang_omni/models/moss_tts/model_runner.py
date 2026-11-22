@@ -158,8 +158,17 @@ class MossTTSModelRunner(ModelRunner):
         else:
             return self.can_use_mixed_sampling_cuda_graph(datas, is_audio=False)
 
-    def launch_is_audio(self, datas: list[MossTTSSGLangRequestData]) -> bool:
-        """Predict the forced audio_end boundary from the resolved delay countdown."""
+    def refresh_audio_boundaries(
+        self, datas: list[MossTTSSGLangRequestData]
+    ) -> None:
+        """Track the forced ``audio_end`` row of the current delay countdown.
+
+        The first ``delay_slot`` row after an ``audio_start`` starts a run of
+        exactly ``n_vq`` forced audio steps; the row index of the forced
+        ``audio_end`` is that delay row plus ``n_vq``. Row indices and sampling
+        positions coincide, so a later step in ``(delay_row, audio_end_row]``
+        is fixed by the FSM and needs no text draw.
+        """
         config = self.model.config
         n_vq = int(config.n_vq)
         delay_slot = int(config.audio_assistant_delay_slot_token_id)
@@ -174,6 +183,10 @@ class MossTTSModelRunner(ModelRunner):
                 else:
                     pass
             data.audio_end_scanned_rows = len(data.output_rows)
+
+    def launch_is_audio(self, datas: list[MossTTSSGLangRequestData]) -> bool:
+        """Predict the forced audio_end boundary from the resolved delay countdown."""
+        self.refresh_audio_boundaries(datas)
         return all(
             data.is_audio
             and (
@@ -188,6 +201,52 @@ class MossTTSModelRunner(ModelRunner):
         """Sampling position of the next launch; generation_steps lags one
         step behind while a lookahead step is unresolved."""
         return max(int(data.sampling_steps), int(data.generation_steps))
+
+    def needs_full_text_vocabulary(
+        self, data: MossTTSSGLangRequestData, position: int
+    ) -> bool:
+        """Whether ``data`` can still draw a free text token at ``position``.
+
+        Only two things make the full-vocabulary draw dead work: a non-audio row
+        would draw text unconditionally, and an audio row is forced through the
+        delay countdown for positions strictly after the ``delay_slot`` row up to
+        the forced ``audio_end``. In that window the Delay FSM fixes the text
+        token, so the draw is discarded. Anything still ambiguous (no countdown
+        yet, or past ``audio_end``) keeps the draw.
+        """
+        if not data.is_audio:
+            return True
+        else:
+            pass
+        end = data.audio_end_step
+        if end is None:
+            return True
+        else:
+            pass
+        delay_row = int(end) - int(self.model.config.n_vq)
+        return not (delay_row < int(position) <= int(end))
+
+    def text_draw_rows(
+        self,
+        datas: list[MossTTSSGLangRequestData],
+        positions: list[int],
+        device: torch.device,
+    ) -> torch.Tensor | None:
+        """Device tensor of row indices whose text token must be drawn, or
+        ``None`` when compaction would not shrink the draw.
+        """
+        indices = [
+            index
+            for index, (data, position) in enumerate(zip(datas, positions))
+            if self.needs_full_text_vocabulary(data, position)
+        ]
+        if len(indices) == len(datas):
+            return None
+        if not indices:
+            # Every row is inside its forced Delay countdown and discards the
+            # drawn token. Run the narrowest compacted graph on one such row.
+            indices = [0]
+        return torch.tensor(indices, dtype=torch.long, device=device)
 
     def post_decode_launch(
         self,
@@ -208,6 +267,11 @@ class MossTTSModelRunner(ModelRunner):
         delay_states_before = [self.delay_state_tensor(data, device) for data in datas]
         sampling_steps_before = [int(data.sampling_steps) for data in datas]
         positions = [self.lookahead_position(data) for data in datas]
+        text_rows = (
+            None
+            if is_audio
+            else self.text_draw_rows(datas, positions, device)
+        )
         for data, position in zip(datas, positions):
             data.sampling_steps = position + 1
         rows = self.sample_rows_graphed(
@@ -215,6 +279,7 @@ class MossTTSModelRunner(ModelRunner):
             datas,
             positions,
             full_text_vocabulary=not is_audio,
+            text_rows=text_rows,
         )
         result.next_token_ids = rows[:, 0].contiguous()
         embeds = self.model.prepare_multi_modal_inputs(rows)
@@ -394,11 +459,16 @@ class MossTTSModelRunner(ModelRunner):
                 [int(data.generation_steps) for data in datas],
             )
         elif self.can_use_mixed_sampling_cuda_graph(datas, is_audio=is_audio):
+            self.refresh_audio_boundaries(datas)
+            positions = [int(data.generation_steps) for data in datas]
             rows = self.sample_rows_graphed(
                 channel_logits,
                 datas,
-                [int(data.generation_steps) for data in datas],
+                positions,
                 full_text_vocabulary=True,
+                text_rows=self.text_draw_rows(
+                    datas, positions, channel_logits[0].device
+                ),
             )
         else:
             rows = self.sample_rows(
@@ -469,6 +539,7 @@ class MossTTSModelRunner(ModelRunner):
         sampling_positions: list[int],
         *,
         full_text_vocabulary: bool = False,
+        text_rows: torch.Tensor | None = None,
     ) -> torch.Tensor:
         device = channel_logits[0].device
         batch_size = len(datas)
@@ -495,20 +566,31 @@ class MossTTSModelRunner(ModelRunner):
             )
         else:
             pass
-        sample_graphed = (
-            self.model.sample_mixed_graphed
-            if full_text_vocabulary
-            else self.model.sample_delay_graphed
+        batch = DelayGraphBatch(
+            delay_state=delay_state,
+            seeds=seeds,
+            generation_steps=generation_steps,
         )
-        sampled = sample_graphed(
-            channel_logits[0].to(torch.float32),
-            audio_logits,
-            DelayGraphBatch(
-                delay_state=delay_state,
-                seeds=seeds,
-                generation_steps=generation_steps,
-            ),
-        )
+        text_logits = channel_logits[0].to(torch.float32)
+        if full_text_vocabulary:
+            sampled = self.model.sample_mixed_graphed(
+                text_logits,
+                audio_logits,
+                batch,
+                text_rows=text_rows,
+            )
+        else:
+            if text_rows is not None:
+                raise RuntimeError(
+                    "MOSS-TTS Delay audio graph does not draw text rows"
+                )
+            else:
+                pass
+            sampled = self.model.sample_delay_graphed(
+                text_logits,
+                audio_logits,
+                batch,
+            )
         rows = sampled.rows[:batch_size].clone()
         next_state = sampled.next_delay_state[:batch_size].clone()
         for index, data in enumerate(datas):
