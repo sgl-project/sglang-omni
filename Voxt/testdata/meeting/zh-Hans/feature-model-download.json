@@ -309,9 +309,6 @@
             "custom": true
           }
         ]
-      },
-      "return_finish": {
-        "on": true
       }
     },
     "models": {
