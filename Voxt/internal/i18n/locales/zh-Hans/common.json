@@ -15,6 +15,7 @@
   "25 European languages, including English, German, French, Spanish and Russian": "25 种欧洲语言，包括英语、德语、法语、西班牙语和俄语",
   "28 languages, including Chinese, English, Japanese and Korean": "28 种语言，包括中文、英语、日语和韩语",
   "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
+  "30 days": "30 天",
   "5 minutes": "5 分钟",
   "A downloaded file was damaged. Try again.": "下载的文件已损坏，请重试。",
   "A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.": "单独一个键会让所有 App 都用不了这个键，请加上 ⌃、⌥、⇧、⌘ 或 fn。",
@@ -75,7 +76,7 @@
   "Could not export: %v": "无法导出：%v",
   "Could not import: %v": "无法导入：%v",
   "Could not insert: %v": "无法插入：%v",
-  "Could not read the history.": "无法读取历史。",
+
   "Could not save the term: %v": "无法保存词条：%v",
   "Custom": "自定义",
   "Custom (OpenAI-compatible)": "自定义（OpenAI 兼容）",
@@ -94,7 +95,7 @@
   "Double tap": "双击",
   "Download": "下载",
   "Download %s": "下载 %s",
-  "Download (%s)": "下载（%s）",
+
   "Downloading %s": "正在下载 %s",
   "Failed": "失败",
   "Fast": "快速",
@@ -169,7 +170,7 @@
   "Open Permissions": "打开权限页",
   "Open Speech models": "打开语音识别模型页",
   "Open System Settings": "打开系统设置",
-  "Open Transcribe": "打开转录页",
+
   "Open setup guide": "打开设置引导",
   "A quicker OpenAI Whisper, good in many languages. The text shows a moment after you speak.": "OpenAI 的 Whisper 加速版，多种语言都识别得好。说完片刻后出文字。",
   "Optional": "可选",
@@ -190,7 +191,7 @@
   "Qwen (Alibaba Cloud Model Studio)": "通义千问（阿里云百炼）",
   "Reading the selection…": "正在读取选中的文字…",
   "Realtime": "实时",
-  "Recent results": "最近结果",
+
   "Recognised text": "识别原文",
   "Recognising…": "识别中…",
   "Recognition": "识别",
@@ -300,7 +301,7 @@
   "Translation": "翻译",
   "Translation %s": "翻译 %s",
   "Try again": "重试",
-  "Try it": "试一试",
+
   "Type a website, as in github.com.": "请输入网站，例如 github.com。",
   "Type the keys, as in Control+Option+Space.": "请输入按键，例如 Control+Option+Space。",
   "Type the term as it should be written.": "请输入词条的正确写法。",
@@ -417,7 +418,7 @@
   "30 minutes": "30 分钟",
   "Edit…": "编辑…",
   "Name": "名称",
-  "Copy: %s": "复制：%s",
+
   "Thinking level": "思考强度",
   "Edit %s": "编辑 %s",
   "Could not save the settings: %v": "无法保存设置：%v",

@@ -12,7 +12,7 @@
   "1 week": "1 周",
   "1 year": "1 年",
   "3 months": "3 个月",
-  "30 days": "30 天",
+
   "6 months": "6 个月",
   "All recordings": "全部录音",
   "App rule": "应用增强规则",
@@ -32,6 +32,7 @@
   "Could not delete the recordings: %v": "无法删除录音：%v",
   "Could not export the recordings: %v": "无法导出录音：%v",
   "Could not measure them": "无法统计",
+  "Could not read the history.": "无法读取历史。",
   "Could not read the history: %v": "无法读取历史：%v",
   "Delete %d entries now?": "现在删除 %d 条记录？",
   "Delete %d entry now?": "现在删除 %d 条记录？",

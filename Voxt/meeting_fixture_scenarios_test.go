@@ -28,7 +28,6 @@ type meetingFixtureScenario struct {
 	updates                    updatesViewStateInput
 	release                    releaseViewStateInput
 	home                       homeViewStateInput
-	homeReadiness              homeReadinessInput
 	onboarding                 onboardingViewStateInput
 	onboardingBlocker          string
 	onboardingConflict         bool

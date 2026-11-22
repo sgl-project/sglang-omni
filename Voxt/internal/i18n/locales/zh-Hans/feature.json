@@ -52,6 +52,7 @@
   "System prompt for Transcribe": "转录的系统提示词",
   "System prompt for Translate": "翻译的系统提示词",
   "Trigger of shortcut %d": "快捷键 %d 的触发方式",
+  "Try it": "试一试",
   "Variables (click to copy):": "变量（点击复制）：",
   "With an answer in the card, the shortcut asks a follow-up and adds the text you select first.": "卡片里有回答时，再按快捷键可以追问，并带上先选中的文字。",
   "Your rules": "你的规则",

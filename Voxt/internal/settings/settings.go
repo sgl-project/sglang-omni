@@ -304,9 +304,8 @@ type Dictionary struct {
 type Setup struct {
 	Done         bool `json:"done,omitempty"`
 	OpeningShown bool `json:"openingShown,omitempty"`
-	// Tried: a session (a try or a real one, any feature) has given a
-	// result once, or the history had one: Home stops offering its Try
-	// area. It stays when the history is cleared.
+	// Tried is the legacy flag for Home's removed Try area. Keep loading
+	// old settings without changing their meaning.
 	Tried bool `json:"tried,omitempty"`
 	// RewriteBoxOpens counts successful input-box opens, capped at three;
 	// RewriteBoxTipDismissed independently hides the guidance for good.

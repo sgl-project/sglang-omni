@@ -527,20 +527,18 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 			frames(tt)
 			drain(a)
 			frames(tt)
-			if a.hm.today.count != 50 {
-				t.Fatalf("initial today count %d, want 50", a.hm.today.count)
+			if !a.hm.read {
+				t.Fatal("Home did not finish its initial history read")
 			}
 			genBefore := a.hm.gen
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
-			a.pump("Home post-prune refresh", func() bool { return a.hm.gen > genBefore && a.hm.today.count == 49 })
+			a.pump("Home post-prune refresh", func() bool { return a.hm.gen > genBefore })
 			drain(a)
 			frames(tt)
 			if a.hm.gen <= genBefore {
 				t.Fatalf("Home did not refresh after cancel: gen %d -> %d", genBefore, a.hm.gen)
 			}
-			if a.hm.today.count != 49 {
-				t.Errorf("Home today count after pruning cancel: %d, want 49", a.hm.today.count)
-			}
+
 			if !a.hist.stale {
 				t.Error("History was not marked stale while on Home")
 			}

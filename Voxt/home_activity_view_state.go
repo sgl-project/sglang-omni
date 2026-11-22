@@ -36,8 +36,8 @@ type homeActivityMonthViewState struct {
 }
 
 type homeActivityViewState struct {
-	// Stats are every result's characters, how fast speech goes and the
-	// days in a row.
+	// Stats are today's and the last 30 days' characters, speech rate and
+	// average recognition time.
 	Stats    []homeActivityStatViewState   `json:"stats"`
 	Weekdays [7]string                     `json:"weekdays"`
 	Weeks    [][7]homeActivityDayViewState `json:"weeks"`
@@ -51,8 +51,8 @@ type homeActivityViewState struct {
 
 // buildHomeActivityViewState lays out page (0: the weeks up to today) of
 // the log's calendar.
-func buildHomeActivityViewState(translator *i18n.Translator, log activity.Log, page int, now time.Time) homeActivityViewState {
-	state := homeActivityViewState{CanForward: page > 0, Levels: activity.Levels, Stats: homeActivityStats(translator, log.Stats(now))}
+func buildHomeActivityViewState(translator *i18n.Translator, log activity.Log, page int, now time.Time, usage homeUsage) homeActivityViewState {
+	state := homeActivityViewState{CanForward: page > 0, Levels: activity.Levels, Stats: homeActivityStats(translator, log.Stats(now), usage)}
 	names := []rune("SMTWTFS")
 	if translator.Locale() == "zh-Hans" {
 		names = []rune("日一二三四五六")
@@ -110,16 +110,20 @@ func homeActivityMonth(translator *i18n.Translator, month time.Month) string {
 	return month.String()[:3]
 }
 
-// homeActivityStats are the log's numbers as the card shows them; the
-// speed is a dash before any speech was timed.
-func homeActivityStats(translator *i18n.Translator, s activity.Stats) []homeActivityStatViewState {
-	speed := "—"
+// homeActivityStats are Home's four usage numbers. Speed and latency are
+// dashes until their timings exist.
+func homeActivityStats(translator *i18n.Translator, s activity.Stats, usage homeUsage) []homeActivityStatViewState {
+	speed, latency := "—", "—"
 	if s.PerMinute > 0 {
 		speed = groupDigits(s.PerMinute)
 	}
+	if usage.asrCount > 0 {
+		latency = translator.T("%.1f s", float64(usage.asrMS)/float64(usage.asrCount)/1000)
+	}
 	return []homeActivityStatViewState{
-		{Value: groupDigits(s.Chars), Label: translator.N(s.Chars, "character", "characters")},
-		{Value: speed, Label: translator.T("characters a minute")},
-		{Value: groupDigits(s.Streak), Label: translator.T("day streak")},
+		{Value: groupDigits(s.TodayChars), Label: translator.T("Today")},
+		{Value: groupDigits(s.MonthChars), Label: translator.T("30 days")},
+		{Value: speed, Label: translator.T("Per minute")},
+		{Value: latency, Label: translator.T("Latency")},
 	}
 }

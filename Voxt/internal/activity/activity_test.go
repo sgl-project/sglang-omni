@@ -63,7 +63,7 @@ func TestStats(t *testing.T) {
 	l.Add(day("2026-11-18"), Result{Chars: 100, Spoken: 90, Audio: 30 * time.Second})
 	l.Add(day("2026-11-19"), Result{Chars: 40, Spoken: 60, Audio: 30 * time.Second})
 	l.Add(day("2026-11-19"), Result{Chars: 7}) // typed, no speech
-	if got := l.Stats(day("2026-11-20")); got != (Stats{Chars: 147, PerMinute: 150, Streak: 2}) {
+	if got := l.Stats(day("2026-11-20")); got != (Stats{MonthChars: 147, Chars: 147, PerMinute: 150, Streak: 2}) {
 		t.Fatalf("a run up to yesterday: %+v", got)
 	}
 	if got := l.Stats(day("2026-11-21")); got.Streak != 0 {

@@ -9,5 +9,6 @@
   "Could not delete the note: %v": "无法删除笔记：%v",
   "Keys to record a note": "记笔记的快捷键",
   "Custom keys to record a note": "自定义记笔记的快捷键",
-  "Could not save the note: %v": "无法保存笔记：%v"
+  "Could not save the note: %v": "无法保存笔记：%v",
+  "Copy: %s": "复制：%s"
 }

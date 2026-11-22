@@ -108,6 +108,34 @@ func TestActivityPendingBeforeRead(t *testing.T) {
 	}
 }
 
+func TestHomeUsageNumbersAndHeatmap(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
+	var log activity.Log
+	log.Add(now, activity.Result{Chars: 120, Spoken: 120, Audio: 30 * time.Second})
+	log.Add(now.AddDate(0, 0, -10), activity.Result{Chars: 30})
+	log.Add(now.AddDate(0, 0, -30), activity.Result{Chars: 999})
+	state := buildHomeViewState(i18n.NewTranslator("en"), homeViewStateInput{
+		Activity: log, ActivityRead: true, Now: now,
+	})
+	want := []homeActivityStatViewState{
+		{Value: "120", Label: "Today"},
+		{Value: "150", Label: "30 days"},
+		{Value: "240", Label: "Per minute"},
+		{Value: "—", Label: "Latency"},
+	}
+	if state.Activity == nil || len(state.Activity.Stats) != len(want) {
+		t.Fatalf("usage stats %+v, want %+v", state.Activity, want)
+	}
+	for index := range want {
+		if state.Activity.Stats[index] != want[index] {
+			t.Errorf("stat %d = %+v, want %+v", index, state.Activity.Stats[index], want[index])
+		}
+	}
+	if len(state.Activity.Weeks) != homeActivityWeeks {
+		t.Fatalf("the existing heatmap changed: %d weeks", len(state.Activity.Weeks))
+	}
+}
+
 func TestHomeActivityViewState(t *testing.T) {
 	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local) // a Friday
 	var log activity.Log
@@ -119,7 +147,7 @@ func TestHomeActivityViewState(t *testing.T) {
 	}
 	log.Add(now.AddDate(0, -9, 0), activity.Result{}) // before this page
 	tr := i18n.NewTranslator("en")
-	state := buildHomeActivityViewState(tr, log, 0, now)
+	state := buildHomeActivityViewState(tr, log, 0, now, homeUsage{})
 	if len(state.Weeks) != homeActivityWeeks || !state.CanBack || state.CanForward || state.Levels != activity.Levels {
 		t.Fatalf("%d weeks, back %v forward %v", len(state.Weeks), state.CanBack, state.CanForward)
 	}
@@ -139,12 +167,12 @@ func TestHomeActivityViewState(t *testing.T) {
 	if n := len(state.Months); n < 5 || state.Months[n-1].Label != "Nov" {
 		t.Fatalf("months %+v", state.Months)
 	}
-	zh := buildHomeActivityViewState(i18n.NewTranslator("zh-Hans"), log, 0, now)
+	zh := buildHomeActivityViewState(i18n.NewTranslator("zh-Hans"), log, 0, now, homeUsage{})
 	if day := zh.Weeks[len(zh.Weeks)-1][5]; day.Date != "2026年11月20日" || day.Count != "1 次" || zh.Weekdays[1] != "一" {
 		tip := day.Date + " " + day.Count
 		t.Fatalf("zh-Hans: %q %q", tip, zh.Weekdays)
 	}
-	older := buildHomeActivityViewState(tr, log, 1, now)
+	older := buildHomeActivityViewState(tr, log, 1, now, homeUsage{})
 	if !older.CanForward || older.Weeks[len(older.Weeks)-1][5].Date != "Jun 19, 2026" {
 		t.Fatalf("a page back: forward %v, %q", older.CanForward, older.Weeks[len(older.Weeks)-1][5].Date)
 	}

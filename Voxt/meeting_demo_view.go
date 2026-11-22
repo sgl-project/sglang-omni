@@ -70,8 +70,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			case "updates-release":
 				releaseDialog(c, *fixture.state.UpdatesRelease, host, &host.updatesUI)
 			case "home":
-				homePage(c, fixture.state.Home, host, &host.historyUI, nil)
-				historyDeleteDialog(c, &host.historyUI, host)
+				homePage(c, fixture.state.Home, host)
 			case "onboarding":
 				onboardingView(c, *fixture.state.Onboarding, host, &host.onboardingUI)
 			case "appenhance":

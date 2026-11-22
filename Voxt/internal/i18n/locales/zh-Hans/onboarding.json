@@ -13,6 +13,7 @@
   "Close guide": "关闭引导",
   "Close guide (Settings → General opens it again)": "关闭引导（以后可以在“设置 → 通用”里重新打开）",
   "Could not use the models: %v": "无法使用这些模型：%v",
+  "Download (%s)": "下载（%s）",
   "Finish or cancel the test first.": "请先完成或取消这次试用。",
   "Get started": "开始设置",
   "History stays on this Mac": "历史只保存在这台 Mac 上",

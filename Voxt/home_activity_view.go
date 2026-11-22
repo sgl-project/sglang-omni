@@ -32,10 +32,14 @@ const (
 func homeActivitySection(c *ui.Context, state *homeViewState, actions homeActions) {
 	t := c.Theme()
 	act := state.Activity
-	if !state.KeepHistory || act == nil {
-		return // Today already says the history is off; the log is on its way
+	if act == nil {
+		return // the log is on its way
 	}
 	sectionTitle(c, i18n.T("Activity"))
+	if !state.KeepHistory {
+		caption(c, i18n.T("History is off, so nothing is counted."))
+		return
+	}
 	fillCard(c.Key("home-activity")).Children(func() {
 		// The numbers sit on the calendar's middle line: the legend over the
 		// squares is as tall as the months under them.
@@ -74,8 +78,8 @@ func homeActivityGridW(c *ui.Context, act *homeActivityViewState) float32 {
 	return px(t, activityDayW) + float32(len(act.Weeks))*(px(t, activityCellMax)+px(t, activityGap))
 }
 
-// homeActivityNumbers is the numbers beside the calendar, after a
-// hairline: each figure as Today's are, its words after it.
+// homeActivityNumbers is the four usage numbers beside the calendar,
+// after a hairline.
 func homeActivityNumbers(c *ui.Context, stats []homeActivityStatViewState) {
 	t := c.Theme()
 	k := tok(t)

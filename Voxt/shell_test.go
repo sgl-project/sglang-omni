@@ -431,8 +431,8 @@ func TestPermissionsAskRequired(t *testing.T) {
 	}
 }
 
-// TestPermissionsMoved: the old page's path, its deep link and the Home
-// page's button open the settings section; the sidebar has no such page.
+// TestPermissionsMoved: the old page's path and deep links open the
+// settings section; the sidebar has no such page.
 func TestPermissionsMoved(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	if slices.ContainsFunc(pages, func(p navPage) bool { return p.path == "/permissions" }) {
@@ -442,7 +442,6 @@ func TestPermissionsMoved(t *testing.T) {
 		func() { a.navigate("/permissions") },
 		func() { a.openURL("voxtnew://permissions") },
 		func() { a.openURL("voxtnew://settings/permissions") },
-		func() { a.navigate("/home"); frames(tt); click(t, tt, "Accessibility: Open Permissions") },
 	} {
 		a.settingsOpen = false
 		a.navigate("/home")

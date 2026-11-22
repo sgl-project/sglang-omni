@@ -7,7 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
-- **An activity calendar on Home** (#4360): under Today, the days you used Voxt over about the last five months, shaded in your accent color by how many results each had, lighting up from left to right. Beside it: the characters Voxt has written for you, how many characters a minute you speak, and your days in a row. Hover a day for its date and count; the arrows go back further. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts (results, characters and speech time, no text) are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
+- **Home shows four usage numbers and an activity calendar** (#4360, #3856): characters today and over the last 30 days, characters a minute, and average recognition time over the last 26 weeks. The speech model used by the newest spoken result appears beside the shortcut. The calendar keeps the days you used Voxt over about the last five months, shaded in your accent color by how many results each had, with date and count tooltips and arrows for earlier weeks. The setup checklist, Home Try area and recent-results list are gone; shortcuts on Home now always start normal, visible, persisted sessions. Only finished results count, and nothing is counted while the history is off. The per-day counts (results, characters and speech time, no text) are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
 
 ### Changed
 
@@ -16,7 +16,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **A shorter explanation for the model fallback switch** (#4377): the Language models switch is now called Retry with another model on this Mac, and its note says in three short sentences what it does.
 - **Copy on a Rewrite answer is an icon beside it** (#4377): under the pointer, an answer bubble shows only the copy icon, right of the bubble, so it no longer covers the answer's first line; its name is in the tooltip.
-- **Home's recent results drop the "Open in History" tooltip** (#4377): a row still opens History when clicked; its highlight under the pointer and the section's Open History button already say so, and the tooltip covered the row above.
+
 - **Shorter, plainer explanations** (#4377): Translate's page and target language, the Privacy switches for a screenshot and a copied image, the guide's Rewrite step, the upload size limit, the wait for the language model and the prompt preview say what matters in a sentence or two; the details are in docs/settings.md.
 
 ### Fixed
@@ -34,7 +34,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
-- **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近约五个月使用 Voxt 的情况，用主题色深浅表示当天结果多少，打开时从左到右依次亮起。旁边是 Voxt 一共为你写了多少字、你每分钟说多少字，以及连续使用的天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数、字数和说话时长（不含文字）和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
+- **首页显示四项用量和活跃日历**（#4360、#3856）：今天和最近 30 天的字数、每分钟说话字数，以及最近 26 周的平均识别耗时。最近一次语音结果使用的语音识别模型显示在快捷键旁边。活跃日历按天显示最近约五个月的结果，用主题色深浅表示当天结果多少；鼠标移到某一天上可以看到日期和次数，箭头可以往前翻。首页不再显示设置清单、“试一试”和最近结果；在首页按快捷键始终走正常会话，结果可见并写入历史。只统计完成的结果，关闭历史时不计数。每天的次数、字数和说话时长（不含文字）和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
 
 #### 变更
 
@@ -43,7 +43,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **模型回退开关的说明更简短**（#4377）：语言模型页的开关改名为“出错时改用本机其他模型”，说明改成三句短话。
 - **改写回答的“复制”只剩图标，放在气泡右侧**（#4377）：鼠标移到回答上时，气泡右边只显示复制图标，不再盖住回答的第一行；名称在提示里。
-- **首页“最近结果”去掉“在历史中打开”提示**（#4377）：点一行仍会打开历史；鼠标移上去的高亮和区块的“打开历史页”按钮已经说明了这一点，而这个提示会盖住上一行。
+
 - **说明更短、更好读**（#4377）：翻译页和目标语言、隐私里的截图和复制图片开关、新手引导的改写一步、上传大小上限、等待语言模型的时间和提示词示例，都只用一两句话说清要点；细节写在 docs/settings.md。
 
 #### 修复

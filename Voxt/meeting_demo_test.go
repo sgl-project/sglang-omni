@@ -251,25 +251,11 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		return state.UpdatesRelease.Title
 	case "home":
 		home := state.Home
-		if home.Error != "" {
-			return home.Error
-		}
 		if !home.KeepHistory {
 			return i18n.T("History is off, so nothing is counted.")
 		}
-		for _, readiness := range home.Ready {
-			if readiness.Warn {
-				return readiness.Text
-			}
-		}
-		for _, readiness := range home.Missing {
-			return readiness.Text
-		}
-		if len(home.Recent) > 0 {
-			return home.Recent[0].Row.Title
-		}
-		if home.Read {
-			return i18n.T("Results appear here after you use a shortcut.")
+		if home.Activity != nil {
+			return i18n.T("Activity")
 		}
 		return i18n.T("Home")
 	case "appenhance":

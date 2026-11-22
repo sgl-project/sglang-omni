@@ -23,6 +23,7 @@
   "Exported %d term to %s": "已导出 %d 个词条到 %s",
   "Exported %d terms to %s": "已导出 %d 个词条到 %s",
   "Only for you, never sent.": "只给你看，不会发送。",
+  "Open Transcribe": "打开转录页",
   "Glossary for the language model": "语言模型术语表",
   "Import terms": "导入词条",
   "Imported: %d new, %d updated, %d rows skipped.": "已导入：新增 %d 个，更新 %d 个，跳过 %d 行。",
