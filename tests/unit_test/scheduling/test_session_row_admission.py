@@ -9,8 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.beam_search.beam_group import BeamGroup
 from sglang.srt.beam_search.coordinator import BeamCoordinator
 from sglang.srt.disaggregation.utils import DisaggregationMode
+from sglang.srt.environ import envs
 from sglang.srt.managers import scheduler as upstream_scheduler
 from sglang.srt.managers.schedule_batch import (
     NextBatchPlan,
@@ -83,6 +85,9 @@ class KVAllocator:
 class AdmissionScheduler:
     enable_plain_fallback = False
     session_prefill_row_cache = None
+    running_request_count_for_admission = (
+        OmniScheduler.running_request_count_for_admission
+    )
     get_num_allocatable_reqs = OmniScheduler.get_num_allocatable_reqs
 
     def __init__(
@@ -390,6 +395,175 @@ def native_prefill_scheduler(pool_state: AdmissionScheduler) -> OmniScheduler:
     return scheduler
 
 
+@pytest.mark.parametrize("continuation_aware_admission", [True, False])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available(), reason="CUDA is required"
+                ),
+            ],
+        ),
+    ],
+)
+def test_native_batch_slot_pressure_starts_session_capacity_deadline(
+    native_runtime_context: None,
+    continuation_aware_admission: bool,
+    device: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full native batch cannot leave a session waiting without a deadline."""
+    parallel = SimpleNamespace(pp_max_micro_batch_size=1)
+    monkeypatch.setattr(omni_scheduler, "get_parallel", lambda: parallel)
+    monkeypatch.setattr(upstream_scheduler, "get_parallel", lambda: parallel)
+    with get_context().override_server_args(page_size=1):
+        pool = AdmissionScheduler(
+            request_rows=4,
+            kv_pool_tokens=128,
+            device=device,
+            continuation_aware_admission=continuation_aware_admission,
+        )
+        pool.open_session("waiting-session", holds_row=False)
+        waiting = pool.append_unit("waiting-unit", "waiting-session", is_enqueued=True)
+        waiting.sampling_params.normalize(None)
+        (row,) = pool.req_to_token_pool.alloc_rows(1)
+        positions = pool.token_to_kv_pool_allocator.alloc(1)
+        assert positions is not None
+        pool.req_to_token_pool.write((row, slice(0, 1)), positions)
+        running = Req(
+            rid="running",
+            origin_input_text="",
+            origin_input_ids=array("q", [1]),
+            sampling_params=SamplingParams(max_new_tokens=20),
+        )
+        running.kv = ReqKvInfo(req_pool_idx=row, kv_committed_len=1, kv_allocated_len=1)
+        pool.running_batch.reqs.append(running)
+        scheduler = native_prefill_scheduler(pool)
+        scheduler.session_admission_timeout_seconds = 30.0
+        assert scheduler.req_to_token_pool.available_size() == 3
+        assert scheduler.session_bridge.check_session_capacity(waiting.rid) is None
+        monkeypatch.setattr(omni_scheduler.time, "perf_counter", lambda: 10.0)
+
+        plan = scheduler.get_new_batch_prefill(scheduler.running_batch)
+        assert plan.batch_to_run is None
+        unit = scheduler.session_bridge.units_by_request_id[waiting.rid]
+        assert unit.capacity_wait_started_at == 10.0
+        if device == "cuda":
+            parallel.pp_max_micro_batch_size = 2
+            monkeypatch.setattr(omni_scheduler.time, "perf_counter", lambda: 11.0)
+            plan = scheduler.get_new_batch_prefill(plan.running_batch)
+            assert plan.batch_to_run.reqs == [waiting]
+            assert unit.capacity_wait_started_at == 10.0
+        else:
+            monkeypatch.setattr(omni_scheduler.time, "perf_counter", lambda: 41.0)
+            with envs.SGLANG_REQ_WAITING_TIMEOUT.override(-1):
+                expirations = scheduler.poll_request_timeout_aborts()
+            assert [expiration.rid for expiration in expirations] == [waiting.rid]
+            assert expirations[0].is_session_capacity
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_native_prefill_reuses_held_row_when_beam_reserves_free_rows(
+    native_runtime_context: None,
+) -> None:
+    """A fresh unit cannot block a held row when beam members reserve free rows."""
+    with get_context().override_server_args(page_size=1):
+        pool = AdmissionScheduler(request_rows=4, kv_pool_tokens=128, device="cuda")
+        pool.open_session("held", holds_row=True)
+        pool.open_session("fresh", holds_row=False)
+        fresh = pool.append_unit("fresh-unit", "fresh", is_enqueued=True)
+        held = pool.append_unit("held-unit", "held", is_enqueued=True, prompt_tokens=11)
+        for request in (fresh, held):
+            request.sampling_params.normalize(None)
+        (beam_row,) = pool.req_to_token_pool.alloc_rows(1)
+        positions = pool.token_to_kv_pool_allocator.alloc(1)
+        assert positions is not None
+        pool.req_to_token_pool.write((beam_row, slice(0, 1)), positions)
+        beam = Req(
+            rid="beam-leader",
+            origin_input_text="",
+            origin_input_ids=array("q", [1]),
+            sampling_params=SamplingParams(max_new_tokens=8),
+        )
+        beam.sampling_params.normalize(None)
+        beam.kv = ReqKvInfo(
+            req_pool_idx=beam_row, kv_committed_len=1, kv_allocated_len=1
+        )
+        beam.beam_group = BeamGroup(beam_width=3, max_new_tokens=8, device="cuda")
+        beam.beam_group.leader = beam
+        pool.running_batch.reqs.append(beam)
+        scheduler = native_prefill_scheduler(pool)
+        scheduler.beam_coordinator = BeamCoordinator(
+            model_config=scheduler.model_config,
+            spec_algorithm=SpeculativeAlgorithm.NONE,
+            dllm_enabled=False,
+            max_req_len=64,
+            req_to_token_pool=scheduler.req_to_token_pool,
+            token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
+            tree_cache=scheduler.tree_cache,
+            future_map=None,
+            _num_live_groups=1,
+        )
+        assert scheduler.req_to_token_pool.available_size() == 2
+        assert (
+            scheduler.beam_coordinator.pending_member_rows(scheduler.running_batch) == 2
+        )
+
+        plan = scheduler.get_new_batch_prefill(scheduler.running_batch)
+        assert plan.batch_to_run.reqs == [held]
+        assert scheduler.waiting_queue == [fresh]
+        assert (
+            scheduler.session_bridge.units_by_request_id[
+                fresh.rid
+            ].capacity_wait_started_at
+            is not None
+        )
+        assert (
+            scheduler.session_bridge.units_by_request_id[
+                held.rid
+            ].capacity_wait_started_at
+            is None
+        )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_new_prefill_fills_batch_and_starts_next_session_deadline(
+    native_runtime_context: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selected prefill counts against the batch limit before it runs."""
+    parallel = SimpleNamespace(pp_max_micro_batch_size=1)
+    monkeypatch.setattr(omni_scheduler, "get_parallel", lambda: parallel)
+    monkeypatch.setattr(upstream_scheduler, "get_parallel", lambda: parallel)
+    with get_context().override_server_args(page_size=1):
+        pool = AdmissionScheduler(request_rows=4, kv_pool_tokens=128, device="cuda")
+        for name in ("first", "second"):
+            pool.open_session(name, holds_row=False)
+        first = pool.append_unit("first", "first", is_enqueued=True)
+        second = pool.append_unit("second", "second", is_enqueued=True)
+        for request in (first, second):
+            request.sampling_params.normalize(None)
+        scheduler = native_prefill_scheduler(pool)
+        monkeypatch.setattr(omni_scheduler.time, "perf_counter", lambda: 10.0)
+
+        plan = scheduler.get_new_batch_prefill(scheduler.running_batch)
+        assert plan.batch_to_run.reqs == [first]
+        assert scheduler.waiting_queue == [second]
+        assert scheduler.req_to_token_pool.available_size() > 0
+        assert (
+            scheduler.session_bridge.units_by_request_id[
+                second.rid
+            ].capacity_wait_started_at
+            == 10.0
+        )
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("priority_scheduling", [False, True])
@@ -461,9 +635,13 @@ def test_native_prefill_bypasses_first_turn_when_only_retained_rows_remain(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("continuation_aware_admission", [True, False])
+@pytest.mark.parametrize("priority_preemption", [True, False])
+@pytest.mark.parametrize("initial_full", [True, False])
 def test_native_prefill_probes_single_untried_waiter_after_full_batch(
     native_runtime_context: None,
     continuation_aware_admission: bool,
+    priority_preemption: bool,
+    initial_full: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A full batch must not strand an eligible session that was not tried."""
@@ -499,6 +677,7 @@ def test_native_prefill_probes_single_untried_waiter_after_full_batch(
         for request in (first, second):
             request.sampling_params.normalize(None)
         scheduler = native_prefill_scheduler(pool)
+        scheduler.enable_priority_preemption = priority_preemption
         scheduler.new_token_ratio_tracker.current = 1.0
         scheduler.session_admission_timeout_seconds = 30.0
         assert (
@@ -518,21 +697,29 @@ def test_native_prefill_probes_single_untried_waiter_after_full_batch(
 
         first.output_ids.append(1)
         plan.running_batch.reqs.append(first)
-        plan = scheduler.get_new_batch_prefill(plan.running_batch)
-        assert plan.batch_to_run is None
-        assert plan.running_batch.batch_is_full
-        unit = scheduler.session_bridge.units_by_request_id[second.rid]
-        assert unit.capacity_wait_started_at is not None
-        started_at = unit.capacity_wait_started_at
-
-        attempted = []
+        attempted: list[str] = []
         native_add = PrefillAdder.add_one_req
 
-        def record_add(adder, request, has_chunked_req, truncation_align_size):
+        def record_add(
+            adder: PrefillAdder,
+            request: Req,
+            has_chunked_req: bool,
+            truncation_align_size: int | None,
+        ) -> AddReqResult:
             attempted.append(request.rid)
             return native_add(adder, request, has_chunked_req, truncation_align_size)
 
         monkeypatch.setattr(PrefillAdder, "add_one_req", record_add)
+        plan.running_batch.batch_is_full = initial_full
+        plan = scheduler.get_new_batch_prefill(plan.running_batch)
+        assert plan.batch_to_run is None
+        assert plan.running_batch.batch_is_full
+        assert attempted == [second.rid]
+        unit = scheduler.session_bridge.units_by_request_id[second.rid]
+        assert unit.capacity_wait_started_at is not None
+        started_at = unit.capacity_wait_started_at
+
+        attempted.clear()
         plan = scheduler.get_new_batch_prefill(plan.running_batch)
         assert plan.batch_to_run is None
         assert attempted == [second.rid]
@@ -645,7 +832,9 @@ def test_retry_prefill_discards_rejected_ignore_eos_budget(
 
 @pytest.mark.parametrize("raise_on_retry", [False, True])
 def test_native_prefill_retry_restores_queued_and_requeued_requests(
-    monkeypatch: pytest.MonkeyPatch, raise_on_retry: bool
+    native_runtime_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+    raise_on_retry: bool,
 ) -> None:
     """Native requeues survive the retry once, including when selection raises."""
     scheduler = object.__new__(OmniScheduler)
@@ -659,7 +848,8 @@ def test_native_prefill_retry_restores_queued_and_requeued_requests(
     scheduler.is_retrying_session_prefill = False
     scheduler.session_prefill_row_cache = None
     scheduler.req_to_token_pool = SimpleNamespace(available_size=lambda: 1)
-    running_batch = SimpleNamespace(batch_is_full=False)
+    scheduler.beam_coordinator = SimpleNamespace(pending_member_rows=lambda batch: 0)
+    running_batch = SimpleNamespace(batch_is_full=False, reqs=[])
     calls = []
 
     def native_prefill(scheduler: OmniScheduler, batch: ScheduleBatch) -> NextBatchPlan:
@@ -1070,6 +1260,7 @@ def test_real_decode_shortage_releases_one_session_and_preserves_the_survivor(
     error = scheduler.outbox.get_nowait()
     assert error.request_id == "victim"
     assert isinstance(error.data, SessionCapacityExhaustedError)
+    assert SessionCapacityExhaustedError.matches(RuntimeError(str(error.data)))
     assert scheduler.relieve_session_capacity(batch)
     assert scheduler.outbox.empty()
     survivor_next_position = scheduler.token_to_kv_pool_allocator.alloc(1)

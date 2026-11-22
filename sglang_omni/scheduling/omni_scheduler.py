@@ -438,6 +438,7 @@ class OmniScheduler(Generic[RequestDataT]):
     speculative_steps_since_plain: int = 0
     decode_batch_states: dict[Literal["plain", "spec"], DecodeBatchState] | None = None
     session_prefill_row_cache: tuple[int, int, int] | None = None
+    session_prefill_refusals: set[str] | None = None
 
     def __init__(
         self,
@@ -1490,7 +1491,9 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.emit_request_error(
                     timeout_abort.rid,
                     (
-                        SessionCapacityExhaustedError(timeout_abort.abort_message)
+                        SessionCapacityExhaustedError(
+                            f"{SessionCapacityExhaustedError.CODE}: {timeout_abort.abort_message}"
+                        )
                         if timeout_abort.is_session_capacity
                         else RuntimeError(timeout_abort.abort_message)
                     ),
@@ -2904,6 +2907,7 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 session_id = unit.session_identity.id
                 error = SessionCapacityExhaustedError(
+                    f"{SessionCapacityExhaustedError.CODE}: "
                     "the next decode step cannot fit in the KV pool"
                 )
                 self.emit_request_error(request.rid, error)
@@ -3017,13 +3021,7 @@ class OmniScheduler(Generic[RequestDataT]):
             else self.speculative_future_map
         )
 
-    def get_num_allocatable_reqs(
-        self,
-        running_bs: int,
-        beam_width: int | None = None,
-        running_batch: ScheduleBatch | None = None,
-        num_held_rows: int = 0,
-    ) -> int:
+    def running_request_count_for_admission(self, running_request_count: int) -> int:
         if self.enable_plain_fallback:
             other_request_identities = {
                 id(request)
@@ -3031,9 +3029,18 @@ class OmniScheduler(Generic[RequestDataT]):
                 for request in batch.reqs
                 if not request.finished()
             }
-            running_bs += len(other_request_identities)
+            return running_request_count + len(other_request_identities)
         else:
-            pass
+            return running_request_count
+
+    def get_num_allocatable_reqs(
+        self,
+        running_bs: int,
+        beam_width: int | None = None,
+        running_batch: ScheduleBatch | None = None,
+        num_held_rows: int = 0,
+    ) -> int:
+        running_bs = self.running_request_count_for_admission(running_bs)
         bridge = self.session_bridge
         if (
             bridge is None
@@ -3216,14 +3223,45 @@ class OmniScheduler(Generic[RequestDataT]):
         class BoundSessionPrefillAdder(adder_class):
             def on_capacity_wait(self, request_id: str) -> None:
                 scheduler.start_session_capacity_wait(request_id)
+                if scheduler.session_prefill_refusals is not None:
+                    scheduler.session_prefill_refusals.add(request_id)
+                else:
+                    pass
 
         return BoundSessionPrefillAdder
 
     def get_native_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
-        plan = _Upstream.get_new_batch_prefill(self, running_batch)
         bridge = self.session_bridge
-        if bridge is not None and plan.running_batch.batch_is_full:
-            if self.req_to_token_pool.available_size() == 0:
+        if bridge is None:
+            return _Upstream.get_new_batch_prefill(self, running_batch)
+        else:
+            pass
+        refused_request_ids: set[str] = set()
+        self.session_prefill_refusals = refused_request_ids
+        try:
+            plan = _Upstream.get_new_batch_prefill(self, running_batch)
+        finally:
+            self.session_prefill_refusals = None
+        if plan.running_batch.batch_is_full and self.waiting_queue:
+            active_request_ids = {id(request) for request in plan.running_batch.reqs}
+            if plan.batch_to_run is not None:
+                active_request_ids.update(
+                    id(request) for request in plan.batch_to_run.reqs
+                )
+            else:
+                pass
+            running_request_count = self.running_request_count_for_admission(
+                len(active_request_ids)
+            )
+            if running_request_count >= get_parallel().pp_max_micro_batch_size:
+                for request in self.waiting_queue:
+                    self.start_session_capacity_wait(request.rid)
+            elif (
+                _Upstream.get_num_allocatable_reqs(
+                    self, running_request_count, running_batch=plan.running_batch
+                )
+                <= 0
+            ):
                 records = self.tree_cache.session_records()
                 for request in self.waiting_queue:
                     session = request.session
@@ -3245,18 +3283,18 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         retry_single_session = False
         if (
-            bridge is not None
-            and plan.batch_to_run is None
+            plan.batch_to_run is None
             and plan.running_batch.batch_is_full
             and len(self.waiting_queue) == 1
         ):
             unit = self.active_session_unit(self.waiting_queue[0].rid)
-            retry_single_session = unit is not None
+            retry_single_session = (
+                unit is not None and unit.request_id not in refused_request_ids
+            )
         else:
             pass
         if (
             plan.batch_to_run is not None
-            or bridge is None
             or (not self.continuation_aware_admission and not retry_single_session)
             or (len(self.waiting_queue) < 2 and not retry_single_session)
             or not any(
@@ -3269,7 +3307,15 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
 
         waiting_requests = list(self.waiting_queue)
-        if self.req_to_token_pool.available_size() == 0:
+        running_request_count = self.running_request_count_for_admission(
+            len(plan.running_batch.reqs)
+        )
+        if (
+            _Upstream.get_num_allocatable_reqs(
+                self, running_request_count, running_batch=plan.running_batch
+            )
+            <= 0
+        ):
             if not self.continuation_aware_admission:
                 return plan
             else:

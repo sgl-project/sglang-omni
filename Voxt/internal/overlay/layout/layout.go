@@ -171,8 +171,11 @@ const (
 	// CardBodyMax is the least text a card shows before it scrolls, on a
 	// work area too short to hold more (Voxt's).
 	CardBodyMax = 220
-	CardInset   = 10 // the text's right inset: the scroller's room
-	CardBodyW   = AnswerW - 2*CardPadX - CardInset
+	// CardInset is the scroller's room right of the card's text, in the
+	// card's padding: the text keeps CardPadX on both sides (it had
+	// CardInset more on its right, which looked off centre).
+	CardInset = 10
+	CardBodyW = AnswerW - 2*CardPadX
 	// CardChrome is the card's height without its text.
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
 	CardMsgGap = 8

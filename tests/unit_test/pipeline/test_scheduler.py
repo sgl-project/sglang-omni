@@ -1148,7 +1148,16 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     ]
 
 
-def test_session_capacity_wait_retries_the_prepared_request(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "capacity_message",
+    [
+        "session KV capacity exhausted",
+        "session request-to-token slots exhausted (one slot kept for a session that already holds KV)",
+    ],
+)
+def test_session_capacity_wait_retries_the_prepared_request(
+    monkeypatch, capacity_message: str
+) -> None:
     """A transient capacity refusal used to abort the session's next turn."""
     scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
     init_sync_request_build_state(scheduler)
@@ -1168,7 +1177,7 @@ def test_session_capacity_wait_retries_the_prepared_request(monkeypatch) -> None
         request_data.req = request
 
     def check_capacity(request_id, **kwargs):
-        return None if capacity_available else "session KV capacity exhausted"
+        return None if capacity_available else capacity_message
 
     scheduler.session_bridge = SimpleNamespace(
         units_by_request_id={request.rid: unit},
@@ -3751,6 +3760,9 @@ def test_session_capacity_deadline_survives_native_queue_admission(
     failure = ranks[0].outbox.get_nowait()
     assert failure.request_id == "req-expired"
     assert isinstance(failure.data, omni_scheduler_module.SessionCapacityExhaustedError)
+    assert omni_scheduler_module.SessionCapacityExhaustedError.matches(
+        RuntimeError(str(failure.data))
+    )
     assert all(scheduler.outbox.empty() for scheduler in ranks)
     assert all(scheduler.pending_session_admissions == {} for scheduler in ranks)
     assert [schedulable_request_ids(scheduler) for scheduler in ranks] == [

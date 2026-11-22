@@ -58,6 +58,7 @@ POLICY_CLOSE_REASONS = frozenset(
         ContextExhaustedError.CODE,
     }
 )
+RETRY_LATER_CLOSE_REASONS = frozenset({SessionCapacityExhaustedError.CODE})
 
 
 def reject_nonfinite_number(constant: str) -> float:
@@ -148,7 +149,7 @@ class SharedRealtimeSession:
             close_code = WS_1000_NORMAL_CLOSURE
         elif close_reason in POLICY_CLOSE_REASONS:
             close_code = WS_1008_POLICY_VIOLATION
-        elif close_reason == SessionCapacityExhaustedError.CODE:
+        elif close_reason in RETRY_LATER_CLOSE_REASONS:
             close_code = WS_1013_TRY_AGAIN_LATER
         else:
             close_code = WS_1011_INTERNAL_ERROR

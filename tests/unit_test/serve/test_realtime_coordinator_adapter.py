@@ -257,7 +257,9 @@ async def test_unexpected_output_stream_end_fails_the_session(
     [
         (RuntimeError(CONTEXT_EXHAUSTED_MESSAGE), "context_exhausted"),
         (
-            SessionCapacityExhaustedError("KV budget exhausted"),
+            SessionCapacityExhaustedError(
+                "session_capacity_exhausted: KV budget exhausted"
+            ),
             "session_capacity_exhausted",
         ),
         (
@@ -297,7 +299,9 @@ async def test_context_exhaustion_without_pending_unit_fails_the_session_without
     [
         (RuntimeError(CONTEXT_EXHAUSTED_MESSAGE), "context_exhausted"),
         (
-            SessionCapacityExhaustedError("KV budget exhausted"),
+            SessionCapacityExhaustedError(
+                "session_capacity_exhausted: KV budget exhausted"
+            ),
             "session_capacity_exhausted",
         ),
         (
@@ -318,7 +322,7 @@ async def test_context_exhaustion_with_pending_unit_fails_the_unit_without_loggi
     with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER_NAME):
         await adapter.open("sess_1", SESSION_CONFIG, sink)
 
-        with pytest.raises(RuntimeError, match=expected_match):
+        with pytest.raises(type(error), match=expected_match):
             await asyncio.wait_for(adapter.process(build_unit(0)), PROCESS_TIMEOUT_S)
         await adapter.close()
 
@@ -332,6 +336,10 @@ async def test_context_exhaustion_with_pending_unit_fails_the_unit_without_loggi
     [
         (SessionIdleTimeoutError(300), "session_idle_timeout"),
         (SessionOutputBudgetError(), "output_budget_exhausted"),
+        (
+            RuntimeError("session_capacity_exhausted: session KV capacity exhausted"),
+            "session_capacity_exhausted",
+        ),
     ],
 )
 async def test_coordinator_failure_without_pending_unit_fails_the_session_without_logging(

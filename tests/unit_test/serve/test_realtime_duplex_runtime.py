@@ -487,9 +487,9 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
             False,
         ),
         (
-            ValueError("session_capacity_exhausted: wrong exception type"),
-            "internal",
-            True,
+            ValueError("session_capacity_exhausted: KV cache exhausted"),
+            "session_capacity_exhausted",
+            False,
         ),
         (RuntimeError("CUDA out of memory"), "internal", True),
         (QueueFullError(), "internal", True),

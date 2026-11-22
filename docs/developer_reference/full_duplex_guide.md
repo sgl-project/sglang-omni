@@ -217,7 +217,7 @@ The cascade composes independent speech recognition, language model and speech s
 | Profile | Recognizer | Language model | Speech | GPUs | Start beforehand |
 | --- | --- | --- | --- | --- | --- |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory, with Smart Turn v3.2 turn detection | 1 | Alignment worker on 8010 |
-| `qwen3-asr-qwen3.8-27b-vivian` (benchmark and CI) | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2: the language model on GPU 0, both speech models on GPU 1 | Alignment worker on 8010 |
+| `qwen3-asr-qwen3.8-27b-vivian-tts-tool` (benchmark and CI) | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off, speaking through `tts_start` ([speaking through a tool](#speaking-through-a-tool)) | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2: the language model on GPU 0, both speech models on GPU 1 | Alignment worker on 8010 |
 | `qwen3-asr-qwen3.8-27b-vivian-styles` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off, starting every reply with a style tag such as `[calm]`, held to the styles by a `regex` | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav`, or the Vivian recording of the reply's style, with its transcript ([speaking styles](#speaking-styles)) | 2, as above | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-vivian` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2, as above | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-vivian-dflash` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B with DFlash on 8000, thinking off | As above | 2, as above | Alignment worker on 8010 |
@@ -303,6 +303,9 @@ When the session ends, the server closes the WebSocket with one of these codes:
 | `1000` | Normal close | `client_closed`, `disconnect` |
 | `1008` | A server limit was reached | `session_update_timeout`, `idle_timeout`, `session_idle_timeout`, `context_exhausted`, `context_limit`, `output_budget_exhausted` |
 | `1011` | Server error | For example `internal`, `session_open_timeout` or `cleanup_timeout` |
+| `1013` | The server is full; try again later | `session_capacity_exhausted` |
+
+The server may close a session with `session_capacity_exhausted` when the shared KV cache or request slots cannot accommodate its next unit. AR stages can first wait for temporary capacity; see the admission deadline below. This depends on the load, not on the session, so a new session may succeed once other sessions finish.
 
 If a session has no input and no output for `realtime_idle_timeout_s`, the server closes it with `idle_timeout`. The pipeline configuration defaults to 300 seconds for native sessions and 6 hours for audio Session graphs, including the streaming cascade. WebSocket pings do not count as activity. Set `realtime_idle_timeout_s` in the pipeline YAML or override it with `--realtime-idle-timeout-s`. The server also waits for the first `session.update` up to `realtime_session_update_timeout_s` (default 60 seconds), which can be overridden with `--realtime-session-update-timeout-s`.
 
@@ -390,7 +393,7 @@ The metrics move for their own defects. On 24 MiniCPM-o replies, removing the mi
 
 ### Setup
 
-You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter). `ENGINE` picks the strategy and defaults to `minicpmo` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`); for Qwen3-Omni or the cascade, export it first, so that setup, the preflight and the runs below all use it:
+You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. The two CANDOR subsets of v1.0 come only from the gated [`betterup/candor-full-duplex-bench`](https://huggingface.co/datasets/betterup/candor-full-duplex-bench): accept its license on that page and export `HF_TOKEN` for the same account before `setup`. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter). `ENGINE` picks the strategy and defaults to `minicpmo` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`); for Qwen3-Omni or the cascade, export it first, so that setup, the preflight and the runs below all use it:
 
 ```bash
 export ENGINE=minicpmo   # or qwen3-omni, cascade; these two also need CUDA_VISIBLE_DEVICES with two GPUs
@@ -402,7 +405,7 @@ python -m benchmarks.duplex.fdb setup
 | Path | Content |
 |---|---|
 | `Full-Duplex-Bench/` | Official scoring code at the pinned revision `3e799c4`; file hashes are checked |
-| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets from the official Google Drive; `dataset/v1.0.revision` and `dataset/v1.5.revision` hold the archive hashes |
+| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets: the CANDOR subsets from `betterup/candor-full-duplex-bench`, every other subset from [`zhaochenyang20/full-duplex-bench`](https://huggingface.co/datasets/zhaochenyang20/full-duplex-bench), which holds byte-identical copies of the official Google Drive archives. `dataset/v1.0.revision` and `dataset/v1.5.revision` hash the archives and the CANDOR revision |
 | `scoring-venv/` | Python 3.12 with NeMo, torch, Silero VAD and torchcodec for ASR, timing and the official evaluators. torchcodec loads FFmpeg, and `setup` checks that it can |
 | `models/parakeet-tdt-0.6b-v2/` | ASR checkpoint, SHA-256 checked |
 | `models/MiniCPM-o-4_5/` | Model under test at revision `503e754`, with `ENGINE=minicpmo`. To reuse an existing copy, symlink it here or set `MODEL_PATH`. The other engines' models go to the Hugging Face cache |
@@ -436,7 +439,7 @@ A judge starts only when the step has a request for it: the v1.5 pairs and the v
 | --- | --- | --- | --- |
 | `minicpmo` (default) | MiniCPM-o 4.5 at revision `503e754`, native | `--model-path $MODEL_PATH --variant session --max_sessions 8` | 1 per server; `--gpus` starts one per listed GPU |
 | `qwen3-omni` | Qwen3-Omni-30B-A3B-Instruct, turn-based | `--config examples/qwen3_omni/session_h100.yaml` | 2 |
-| `cascade` | Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning Vivian | `--config examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian/launch.yaml`, plus the forced-alignment worker, which `setup` installs into `$FDB_WORK/aligner-venv` | 2 |
+| `cascade` | Qwen3-ASR-1.7B, Qwen3.8-27B speaking through a `tts_start` tool and Qwen3-TTS Base cloning Vivian | `--config examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml`, plus the forced-alignment worker, which `setup` installs into `$FDB_WORK/aligner-venv` | 2 |
 
 A two-GPU engine needs `CUDA_VISIBLE_DEVICES` to list exactly two GPUs; ASR and the judge run on the first. A run remembers its engine, and a later step with a different `ENGINE` stops with an error.
 
@@ -742,6 +745,7 @@ python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime
 | `model_mismatch` with `JUDGE=gpt` | The endpoint answered with a model other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
 | `No module named 'onnx'` (or `einops`) in `model-server-gpu<N>.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
 | `setup` stops with `torchcodec cannot load its FFmpeg libraries` | Install the FFmpeg shared libraries (version 4 to 8) and rerun `setup` |
+| `ERROR: betterup/candor-full-duplex-bench is gated` | Accept the CANDOR license on that dataset's Hugging Face page, export `HF_TOKEN` for the same account and rerun `setup` |
 
 ### Scoring CLI reference
 
@@ -1213,6 +1217,18 @@ Qwen3-TTS Base ignores instructions and copies the timbre, pitch and pace of the
 - The tags are explained only in the system prompt. Instructions a client sets in `session.update` replace it, so they must explain the tags too; the regex still makes every reply start with one, which the model then picks without guidance. A configure that changes the `tts` node's styles changes the regex with them, but not the system prompt.
 - `regex` is an SGLang request field. Without such a constraint, a tag in another form, such as `(calm)`, or a bracketed word that names no style, such as `[casual]`, is spoken as text.
 
+(speaking-through-a-tool)=
+
+**Speaking Through a Tool**
+
+In `qwen3-asr-qwen3.8-27b-vivian-tts-tool` speech is a tool the language model calls instead of a fixed step after its text. The dialog's `speech_tool` names the tool and the generator's `tools` offers it; the synthesizer reads `dialog:tool_call` rather than the generator's text, and publishes each speech's text as `text_delta`, so captions and the aligner (`tts:text_delta`) follow what is spoken. A graph that would speak twice or not at all fails at load. The tool takes one argument, the complete `text`, and the dialog is the only node that starts or stops it: the model only calls it, and an interrupt stops it as it stops any reply. Once a speech was cut, a system note tells the model what `heard_prefix` means, whatever `instructions` the client set. The dialog adds no other rules to the prompt, because a longer note on every prompt made Qwen3.8-27B follow a client's new `instructions` half as often. New `instructions` are also repeated beside the next utterance, in that prompt only: with a long past speech in the history and a call required, the model followed them in 3 of 12 samples, and in 10 of 12 with the repeat.
+
+Every prompt asks for a call with `tool_choice: required`, so the model speaks once for each utterance and cannot choose silence. The dialog speaks the first valid call and answers every other one at once with `{"status": "failed", "error": ...}`, the error `BUSY` for a second call in the same message. Each speech is a turn of its own, so the turn fence, the paced `turn.done`, the reply's audio timeline and the client's `truncate` apply to it as to any reply. Its one tool response is `{"status": "completed"}` once the paced `turn.done` arrives, with `"truncated": true` when `max_tokens` cut the call, `{"status": "interrupted", "heard_prefix": ...}` when the listener cut it, or `{"status": "failed", "error": ...}` when the speech service failed or the text held no words to speak, such as `...` or an emoji, which does not fail the Session; a speech that failed after some of its sentences had audio adds their text as `heard_prefix`, with a system note that tells the model to say only the rest. A failed speech reaches the client as `response.done` with the status `failed` and the reason `speech_error`. The synthesizer puts the end of its last spoken sentence on the failed speech's `turn.done`, since `reply.progress` reaches the dialog through the aligner, after that `turn.done` and with a sentence's word ends after the sentence's end. The profile gives its synthesizer a `timeout_s` of 10, so a speech service that sends nothing for that long counts as failed. Reports of what was heard that arrive later rewrite `heard_prefix`, so the next prompt holds the latest position. The tool call keeps the whole text in the history.
+
+A completed speech prompts nothing: the model reads the call's answer in the prompt for the next utterance. Given a `silent` tool or a `silent` action to end with instead, Qwen3.8-27B repeated its answer after a completed speech in 10 of 49 and 22 of 50 samples, and with the `silent` tool offered on a Session's first utterance it chose silence for 34 of 50 plain questions. The model is prompted again only when its call was refused or the speech service failed, up to `max_inferences_per_utterance` prompts for one utterance, unless the user is speaking or an utterance waits. That prompt announces no turn: `turn.queued` and `turn.started` go out only if the model speaks, and speech over it stops the model without a `turn.interrupted`. Text the model writes without a call, as a service that ignores `tool_choice` lets it, is recorded and spoken as a `tts_start` call, so its speech is answered, cut and followed up as any call's is.
+
+A speech starts with the first words of its text: the generator passes the call's arguments on as they arrive, the dialog reads the `text` value out of them, and the synthesizer speaks each sentence once it is complete while the model writes the rest. This needs a service that streams a call's arguments, and SGLang 0.5.23's `qwen3_coder` parser releases a parameter only at its closing tag, so the profile starts its language model with `python -m sglang_omni.models.streaming_cascade.chat_service`, which is `sglang.launch_server` with a `qwen3_coder` parser that releases a string argument as the model writes it and gives the same calls. On two H200s and from the end of the user's speech, the first audio of a reply of several sentences took a median of 1.47 s against 2.48 s with SGLang's parser and 1.29 s with the synthesizer reading the model's text directly, as the profile did before it spoke through a tool, and of a one-sentence reply 1.39 s against 1.38 s and 1.14 s, over 15 turns each with the aligner's `asr` method. A one-sentence reply gains nothing, since its first sentence ends where the call does. With thinking on the model calls the tool without `tool_choice`, but the whole text took a median of 3.1 s, so the profile runs with thinking off.
+
 (scripted-conversation)=
 
 **Scripted Conversation**
@@ -1276,7 +1292,7 @@ session_nodes:
 **Several GPUs**
 
 
-Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-vivian` does with `env: {CUDA_VISIBLE_DEVICES: "0"}` for the language model and `"1"` for the two speech models; a stage picks its GPU with `gpu`. A service's memory share is the `--mem-fraction-static` inside its own `command`. The cascade server has no SGLang engine stage, so `sgl-omni serve --mem-fraction-static` on a cascade profile fails with `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
+Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-vivian-tts-tool` does with `env: {CUDA_VISIBLE_DEVICES: "0"}` for the language model and `"1"` for the two speech models; a stage picks its GPU with `gpu`. A service's memory share is the `--mem-fraction-static` inside its own `command`. The cascade server has no SGLang engine stage, so `sgl-omni serve --mem-fraction-static` on a cascade profile fails with `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
 
 (the-forced-alignment-worker)=
 
@@ -1666,7 +1682,7 @@ Each rule is followed by the error it raises.
 
 During initial session opening, only a capacity rejection is reported as `admission_rejected` with `sglang.fatal: false`; the client may retry `session.update` on the same WebSocket before sending audio, within the admission deadline. If opening exceeds its own deadline, the server sends fatal `session_open_timeout` and closes the session. This differs from `session_update_timeout`, which limits the wait for an initial update or retryable admission; an admission already in progress may finish after that deadline. The separate pipeline idle fallback reports `session_idle_timeout`. Other initialization failures close the session with their known error code, or `internal` when no specific code is available. Configuration negotiation errors below retain their existing request-error behavior.
 
-After opening, an AR session unit waits when KV or request-row capacity temporarily prevents admission. Its waiting deadline starts at the first capacity refusal and follows the unit into the native prefill queue; ordinary prefill batching does not start it. The default is 30 seconds; a shorter configured SGLang waiting timeout also applies. The separate session operation timeout can expire first, producing its existing operation-timeout error instead of the capacity error. Qwen3-Omni thinker and talker stage factories expose `session_admission_timeout_seconds`, a positive finite value in seconds:
+After opening, an AR session unit waits when KV, request-row or native batch-slot capacity temporarily prevents admission. Its waiting deadline starts at the first capacity refusal and follows the unit into the native prefill queue; ordinary prefill batching does not start it. The default is 30 seconds; a shorter configured SGLang waiting timeout also applies. The separate session operation timeout can expire first, producing its existing operation-timeout error instead of the capacity error. Qwen3-Omni thinker and talker stage factories expose `session_admission_timeout_seconds`, a positive finite value in seconds:
 
 ```yaml
 stages:
@@ -1734,7 +1750,7 @@ Every failure ends the realtime session with an `error` event.
 - `input_audio_buffer.commit` is granted in every profile (`client_commit: true`); with the VAD on, it also ends an open utterance.
 - `max_text_chars` at or above `max_history_chars` loads, and then every turn fails with `conversation exceeds max_history_chars`.
 - A reasoning language model can still open a think block of its own with `chat_template_kwargs: {enable_thinking: false}`. With `--reasoning-parser` on its server the block goes to `reasoning_content`, which the cascade never reads; without it the block is spoken and kept in the history.
-- A reply cut by `max_tokens` (finish reason `length`) is spoken and kept as it is.
+- A reply cut by `max_tokens` (finish reason `length`) is spoken and kept as it is. Its `turn.done` carries `reply_truncated`, so `response.done` reports `incomplete` with the reason `max_output_tokens`.
 - Speech always interrupts a running reply; `interrupt_response` does not change that.
 
 (verifying-a-deployment)=
@@ -1776,7 +1792,7 @@ with further fields omitted here. `turn_control` is `[null]` for a profile witho
 ### Known Limitations
 
 
-- **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content. A model that thinks by default needs `enable_thinking: false` in the node's `extra_body` and a reasoning parser on its server (`--reasoning-parser qwen3` for Qwen3.8, as in `qwen3-asr-qwen3.8-27b-vivian`), or its reasoning is synthesized.
+- **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content. A model that thinks by default needs `enable_thinking: false` in the node's `extra_body` and a reasoning parser on its server (`--reasoning-parser qwen3` for Qwen3.8, as in `qwen3-asr-qwen3.8-27b-vivian-tts-tool`), or its reasoning is synthesized.
 - **History is bounded.** A conversation whose history exceeds `max_history_chars` fails its next turn; open a new session.
 - **Audio only.** The cascade takes audio input and produces text and audio; image input is not supported.
 
@@ -1818,7 +1834,7 @@ The Session opens its nodes upstream first and closes them downstream first. A c
 | `tool_response` | `tool` | `{"responses": [{"id", "name", "response"}, ...]}`; one response per call, in call order |
 | `session` | `control` | `{"type", ...}` |
 
-Control types sent into a Session are `commit` (the utterance ends here), `configure` (settings change) and `truncate` (the listener heard the reply of the chunk's turn up to `t_ms`; without a turn, the latest reply). Control types a Session emits are `speech.started` and `speech.stopped` with `t_ms` on the input timeline, `turn.queued` when an utterance waits for its reply, `turn.started` when the reply begins, `turn.done` after the reply's audio, `turn.empty` for an utterance without words, `reply.heard` with `text_end` when a truncate cuts the reply the history keeps, and `configured` with `{"nodes": {name: kind}}`. Every chunk of a reply carries its turn number in the chunk's `turn` field, numbered from 1 per Session in utterance order: the turn controls, the `messages`, `text_delta`, `tool_call` and `tool_response` chunks and the reply audio; every turn opens with `turn.queued` and closes with `turn.done` or `turn.empty`.
+Control types sent into a Session are `commit` (the utterance ends here), `configure` (settings change) and `truncate` (the listener heard the reply of the chunk's turn up to `t_ms`; without a turn, the latest reply). Control types a Session emits are `speech.started` and `speech.stopped` with `t_ms` on the input timeline, `turn.queued` when an utterance waits for its reply, `turn.started` when the reply begins, `turn.done` after the reply's audio, `turn.empty` for an utterance without words or a prompt that led to no speech, `reply.heard` with `text_end` when a truncate cuts the reply the history keeps, and `configured` with `{"nodes": {name: kind}}`. Every chunk of a reply carries its turn number in the chunk's `turn` field, numbered from 1 per Session in utterance order, with [a prompt after a speech](#speaking-through-a-tool) taking a number of its own that the client only hears of if the model speaks: the turn controls, the `messages`, `text_delta`, `tool_call` and `tool_response` chunks and the reply audio; every turn opens with `turn.queued` and closes with `turn.done` or `turn.empty`.
 
 (vad-node)=
 

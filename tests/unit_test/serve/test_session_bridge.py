@@ -274,6 +274,21 @@ async def test_a_reply_the_talker_cut_at_its_token_budget_ends_incomplete():
 
 
 @pytest.mark.asyncio
+async def test_a_speech_the_speech_service_failed_ends_failed():
+    """A speech the speech service failed ended as a completed response, so the client could not tell it from one that was spoken."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=0)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Hello."})
+    h.client.control(TURN_DONE, speech_error="ReadTimeout('')")
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseFinished)] == [
+        ResponseFinished("resp_0", "item_0", "Hello.", False, "failed", "speech_error")
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     h = Harness()
     await h.open()
@@ -412,23 +427,16 @@ async def test_reader_failure_reports_turn_failure_and_fails_the_next_unit():
 
 
 def test_session_capacity_exhausted_error_contract() -> None:
-    """SessionCapacityExhaustedError ensures its CODE prefix once and matches only typed or stringified RuntimeErrors."""
+    """Capacity errors retain the upstream type and survive IPC stringification."""
     assert SessionCapacityExhaustedError.CODE == "session_capacity_exhausted"
-    prefixed = SessionCapacityExhaustedError("KV budget exhausted")
-    already_prefixed = SessionCapacityExhaustedError(
+    prefixed = SessionCapacityExhaustedError(
         "session_capacity_exhausted: KV budget exhausted"
     )
-    empty_message = SessionCapacityExhaustedError("")
-    assert isinstance(prefixed, RuntimeError)
+    assert isinstance(prefixed, ValueError)
     assert str(prefixed) == "session_capacity_exhausted: KV budget exhausted"
-    assert str(already_prefixed) == "session_capacity_exhausted: KV budget exhausted"
-    assert str(empty_message) == "session_capacity_exhausted:"
     assert SessionCapacityExhaustedError.matches(prefixed)
-    assert SessionCapacityExhaustedError.matches(empty_message)
     assert SessionCapacityExhaustedError.matches(RuntimeError(str(prefixed)))
-    assert not SessionCapacityExhaustedError.matches(
-        ValueError("session_capacity_exhausted: wrong error class")
-    )
+    assert SessionCapacityExhaustedError.matches(ValueError(str(prefixed)))
     assert not SessionCapacityExhaustedError.matches(RuntimeError("CUDA out of memory"))
     assert not SessionCapacityExhaustedError.matches(QueueFullError())
     assert not SessionCapacityExhaustedError.matches(
@@ -491,7 +499,7 @@ async def test_reader_failure_reaches_the_client_with_its_own_code(
 @pytest.mark.parametrize(
     "error",
     [
-        SessionCapacityExhaustedError("KV cache exhausted"),
+        SessionCapacityExhaustedError("session_capacity_exhausted: KV cache exhausted"),
         RuntimeError("session_capacity_exhausted: KV cache exhausted"),
     ],
 )
@@ -506,7 +514,7 @@ async def test_session_capacity_exhaustion_with_pending_unit_fails_process_witho
         processing = asyncio.create_task(h.bridge.process(unit(0)))
         await settle()
         h.client.outputs.put_nowait(error)
-        with pytest.raises(RuntimeError, match="session_capacity_exhausted"):
+        with pytest.raises(type(error), match="session_capacity_exhausted"):
             await processing
     await h.bridge.close()
 

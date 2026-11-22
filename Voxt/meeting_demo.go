@@ -500,6 +500,9 @@ func (host *meetingDemoHost) fixHomeReadiness(fix string) {
 	host.record("fixHomeReadiness %s", fix)
 }
 
+func (host *meetingDemoHost) activityBack()    { host.record("activityBack") }
+func (host *meetingDemoHost) activityForward() { host.record("activityForward") }
+
 func (host *meetingDemoHost) openOnboarding()  { host.record("openOnboarding") }
 func (host *meetingDemoHost) closeOnboarding() { host.record("closeOnboarding") }
 func (host *meetingDemoHost) finishOnboarding(path string) {

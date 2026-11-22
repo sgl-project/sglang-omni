@@ -81,6 +81,7 @@ jobs:
         env:
           FDB_CI_STRATEGY: full-duplex
           HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OMNI_CI_MAX_ATTEMPTS: "1"
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
@@ -134,6 +135,7 @@ jobs:
         env:
           FDB_CI_STRATEGY: turn-based
           HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OMNI_CI_MAX_ATTEMPTS: "1"
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
@@ -187,6 +189,7 @@ jobs:
         env:
           FDB_CI_STRATEGY: cascaded
           HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OMNI_CI_MAX_ATTEMPTS: "1"
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 

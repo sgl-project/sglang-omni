@@ -44,6 +44,7 @@ from sglang_omni.speculative.dflash_draft import (
     ReducedVocabularyDFlashWorker,
     materialize_draft_checkpoint,
 )
+from sglang_omni.utils import checkpoint
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
@@ -55,6 +56,12 @@ else:
     pass
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PREFILL_COALESCE_WAIT_MILLISECONDS = 32.0
+# note (Ruilin Gao): H100 Chinese c4 misses the first-text gate with either no hold or a 1 ms hold.
+DFLASH_PREFILL_COALESCE_WAIT_MILLISECONDS = 0.5
+DEFAULT_REQUEST_BUILD_WORKERS = 2
+DFLASH_REQUEST_BUILD_WORKERS = 4
 
 
 class ArkasrModelRunner(ModelRunner[ArkASRRequestData]):
@@ -83,10 +90,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool | None,
         mm_attention_backend: str | None,
-        request_build_max_workers: int,
+        request_build_max_workers: int | None,
         request_build_max_pending: int | None,
         prefill_coalesce_requests: int,
-        prefill_coalesce_wait_ms: float,
+        prefill_coalesce_wait_ms: float | None,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
         enable_pre_lm_encoder: bool = True,
@@ -150,6 +157,12 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         self.audio_encoder_service: ArkasrPreLMEncoderService | None = None
         self.speculative_worker_class: type[BaseSpecWorker] | None = None
         self.draft_checkpoint: TemporaryDirectory[str] | None = None
+
+    def resolve_checkpoint(self, model_path: str) -> str:
+        if "@" in model_path:
+            return checkpoint.resolve_checkpoint(model_path)
+        else:
+            return model_path
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -368,6 +381,28 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
             pass
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[ArkASRRequestData]:
+        is_synchronous_dflash = (
+            self.speculative_worker_class is not None and not self.enable_async_decode
+        )
+        # note (Ruilin Gao): H200 c16 traces show DFlash waiting in the build pool and the prefill hold.
+        request_build_max_workers = self.request_build_max_workers
+        if request_build_max_workers is None:
+            request_build_max_workers = (
+                DFLASH_REQUEST_BUILD_WORKERS
+                if is_synchronous_dflash
+                else DEFAULT_REQUEST_BUILD_WORKERS
+            )
+        else:
+            pass
+        prefill_coalesce_wait_ms = self.prefill_coalesce_wait_ms
+        if prefill_coalesce_wait_ms is None:
+            prefill_coalesce_wait_ms = (
+                DFLASH_PREFILL_COALESCE_WAIT_MILLISECONDS
+                if is_synchronous_dflash
+                else DEFAULT_PREFILL_COALESCE_WAIT_MILLISECONDS
+            )
+        else:
+            pass
         return {
             "stream_output_builder": request_builders.make_arkasr_stream_output_builder(
                 tokenizer=self.tokenizer,
@@ -375,10 +410,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
             ),
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
-            "request_build_max_workers": self.request_build_max_workers,
+            "request_build_max_workers": request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
-            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "prefill_coalesce_wait_ms": prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds

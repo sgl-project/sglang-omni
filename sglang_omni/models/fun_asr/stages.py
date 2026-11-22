@@ -124,7 +124,7 @@ def create_sglang_fun_asr_executor(
     prefill_coalesce_wait_ms: float = 24.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
-    prefill_coalesce_after_builds_during_decode: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool | None = None,
     mm_attention_backend: str | None = None,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
