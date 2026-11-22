@@ -262,7 +262,7 @@
   "Your recordings are recognised on this Mac. If a feature uses a speech service you set up in Settings → Speech models, its recordings go to that service. Voxt has no server of its own.": "你的录音在这台 Mac 上识别。如果某个功能用的是你在“设置 → 语音识别模型”里设置的语音识别服务，它的录音会发给那个服务。Voxt 没有自己的服务器。",
   "When off, the menu bar and Dock menus do not list cards to reopen.": "关闭时，菜单栏和程序坞菜单不会列出可重新打开的卡片。",
   "The language model you set up in Settings → Language models can get text Voxt recognised, text you selected or typed, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content. With the switches below on, it can also get a screenshot of the window or an image you copied.": "你在“设置 → 语言模型”里设置的语言模型可能会收到语音识别出的文字、你选中或输入的文字、会议转录稿和之前的对话内容，以及你的识别上下文、你的规则和已启用词典里的内容。打开下面的开关后，它还可能收到窗口截图或你复制的图片。",
-  "A request to a language-model server on this Mac, such as Ollama, stays on this Mac. A request to an external API goes to the provider handling it. If Translate uses your fallback model, that provider gets the same request too.": "请求发给这台 Mac 上的语言模型服务（例如 Ollama）时，内容留在本机；发给外部 API 时，内容由处理这个请求的服务商接收。翻译改用备用模型时，备用模型的服务商也会收到同一个请求。",
+  "A request to a language-model server on this Mac, such as Ollama, stays on this Mac. A request to an external API goes to the provider handling it. If Translate uses your fallback model, or Switch models when one fails picks another configured model, that provider gets the same request too.": "请求发给这台 Mac 上的语言模型服务（例如 Ollama）时，内容留在本机；发给外部 API 时，内容由处理这个请求的服务商接收。翻译改用备用模型，或“模型出错时换一个”选了其他已设置的模型时，备用服务商也会收到同一个请求。",
   "Read": "查看全文",
   "What's new in %s": "%s 更新内容",
   "No model installed. Download one in Settings → Speech models.": "还没安装模型，请在“设置 → 语音识别模型”里下载。",
