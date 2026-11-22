@@ -13,9 +13,11 @@ import io
 import logging
 import shutil
 import struct
+from dataclasses import dataclass
 from functools import cache
 
 import numpy as np
+import soxr
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,14 @@ FORMAT_MIME_TYPES: dict[str, str] = {
 
 # Default sample rate for generated audio
 DEFAULT_SAMPLE_RATE = 24000
+# note (ratish): The speech rate floor preserves the lowest supported AAC rate.
+MIN_AUDIO_OUTPUT_SAMPLE_RATE = 7350
+MAX_AUDIO_OUTPUT_SAMPLE_RATE = 192000
+OPUS_PLAYBACK_SAMPLE_RATE = 48000
+# note (ratish): FLAC's streamable subset uses 10 Hz units above the 16-bit Hz field's limit.
+FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ = 65535
+FLAC_SCALED_SAMPLE_RATE_UNIT_HZ = 10
+
 
 # Configurations for PyAV encoding
 PYAV_ENCODE_CONFIGS = {
@@ -71,12 +81,54 @@ PYAV_ENCODE_CONFIGS = {
             32000,
             44100,
             48000,
-            64000,
-            88200,
-            96000,
         },
     },
 }
+
+
+@dataclass(kw_only=True)
+class EncodedAudio:
+    """Encoded audio and the metadata describing its payload."""
+
+    audio_bytes: bytes
+    mime_type: str
+    sample_rate: int
+
+
+def audio_output_sample_rate_error(
+    response_format: str, output_sample_rate: int | None
+) -> str | None:
+    """Explain why an encoder cannot honor the requested output rate."""
+    if output_sample_rate is None:
+        return None
+    elif isinstance(output_sample_rate, bool) or not isinstance(
+        output_sample_rate, int
+    ):
+        return "sample_rate must be an integer"
+    elif output_sample_rate < MIN_AUDIO_OUTPUT_SAMPLE_RATE:
+        return f"sample_rate must be at least {MIN_AUDIO_OUTPUT_SAMPLE_RATE}"
+    elif output_sample_rate > MAX_AUDIO_OUTPUT_SAMPLE_RATE:
+        return f"sample_rate must be at most {MAX_AUDIO_OUTPUT_SAMPLE_RATE}"
+    elif response_format == "opus" and output_sample_rate != OPUS_PLAYBACK_SAMPLE_RATE:
+        return f"sample_rate must be {OPUS_PLAYBACK_SAMPLE_RATE} for Opus output"
+    elif (
+        response_format == "flac"
+        and output_sample_rate > FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ
+        and output_sample_rate % FLAC_SCALED_SAMPLE_RATE_UNIT_HZ != 0
+    ):
+        return (
+            f"sample_rate for FLAC above {FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ} Hz "
+            f"must be divisible by {FLAC_SCALED_SAMPLE_RATE_UNIT_HZ}"
+        )
+    elif (
+        response_format in PYAV_ENCODE_CONFIGS
+        and output_sample_rate
+        not in PYAV_ENCODE_CONFIGS[response_format]["valid_rates"]
+    ):
+        supported_rates = sorted(PYAV_ENCODE_CONFIGS[response_format]["valid_rates"])
+        return f"sample_rate for {response_format} must be one of: {supported_rates}"
+    else:
+        return None
 
 
 @cache
@@ -257,18 +309,8 @@ def encode_with_pyav(
     sample_rate: int,
     container_format: str,
     codecs: tuple[str, ...],
-    valid_rates: set[int],
 ) -> bytes:
-    import io
-
     import av
-
-    if sample_rate not in valid_rates:
-        nearest_rate = min(valid_rates, key=lambda r: abs(r - sample_rate))
-        audio = resample_linear(audio, sample_rate, nearest_rate)
-        sample_rate = nearest_rate
-    else:
-        pass
 
     buf = io.BytesIO()
     container = av.open(buf, mode="w", format=container_format)
@@ -370,23 +412,30 @@ def encode_audio(
     *,
     response_format: str = "wav",
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    output_sample_rate: int | None = None,
     speed: float = 1.0,
     allow_format_fallback: bool = True,
-) -> tuple[bytes, str]:
+) -> EncodedAudio:
     """Encode audio data to the requested format.
 
     Args:
         audio: Raw audio data (numpy, torch tensor, list, bytes)
         response_format: Target format (wav, mp3, flac, opus, aac, pcm)
         sample_rate: Audio sample rate in Hz
+        output_sample_rate: Requested encoded sample rate in Hz
         speed: Speed adjustment factor (1.0 = normal)
         allow_format_fallback: If True, return WAV when a compressed encoder is
             unavailable or the format is unknown. If False, raise ValueError.
 
     Returns:
-        (encoded_bytes, mime_type)
+        Encoded audio bytes, MIME type, and actual output sample rate in Hz.
     """
     fmt = response_format.lower().strip()
+    sample_rate_error = audio_output_sample_rate_error(fmt, output_sample_rate)
+    if sample_rate_error is not None:
+        raise ValueError(sample_rate_error)
+    else:
+        pass
     arr = to_numpy(audio)
 
     if arr.ndim > 1:
@@ -420,45 +469,78 @@ def encode_audio(
     else:
         pass
 
+    if output_sample_rate is not None and output_sample_rate != sample_rate:
+        arr = soxr.resample(arr.T, sample_rate, output_sample_rate).T
+        sample_rate = output_sample_rate
+    else:
+        pass
+    if output_sample_rate is not None and arr.size == 0:
+        raise ValueError("No audio samples remain at the requested output sample rate")
+    else:
+        pass
+
     mime = FORMAT_MIME_TYPES.get(fmt, "application/octet-stream")
 
     if fmt == "wav":
-        return encode_wav(arr, sample_rate), mime
+        return EncodedAudio(
+            audio_bytes=encode_wav(arr, sample_rate),
+            mime_type=mime,
+            sample_rate=sample_rate,
+        )
     else:
         pass
 
     if fmt == "pcm":
-        return encode_pcm(arr, sample_rate), mime
+        return EncodedAudio(
+            audio_bytes=encode_pcm(arr, sample_rate),
+            mime_type=mime,
+            sample_rate=sample_rate,
+        )
     else:
         pass
 
     if fmt in ("opus", "aac", "mp3"):
+        config = PYAV_ENCODE_CONFIGS[fmt]
+        encoder_sample_rate = min(
+            config["valid_rates"],
+            key=lambda supported_sample_rate: abs(supported_sample_rate - sample_rate),
+        )
+        encoder_audio = resample_linear(arr, sample_rate, encoder_sample_rate)
+        encoded_sample_rate = (
+            OPUS_PLAYBACK_SAMPLE_RATE if fmt == "opus" else encoder_sample_rate
+        )
         try:
-            config = PYAV_ENCODE_CONFIGS[fmt]
             encoded_bytes = encode_with_pyav(
-                arr,
-                sample_rate,
+                encoder_audio,
+                encoder_sample_rate,
                 container_format=config["container"],
                 codecs=config["codecs"],
-                valid_rates=config["valid_rates"],
             )
-            return encoded_bytes, mime
+            return EncodedAudio(
+                audio_bytes=encoded_bytes,
+                mime_type=mime,
+                sample_rate=encoded_sample_rate,
+            )
         except Exception as e:
             logger.warning(
-                "PyAV %s encoding failed (%s); falling back to pydub/WAV",
-                fmt.upper(),
-                str(e),
+                f"PyAV {fmt.upper()} encoding failed ({e}); falling back to pydub/WAV"
             )
 
         try:
             from pydub import AudioSegment
 
-            wav_bytes = encode_wav(arr, sample_rate)
+            wav_bytes = encode_wav(encoder_audio, encoder_sample_rate)
             seg = AudioSegment.from_wav(io.BytesIO(wav_bytes))
             buf = io.BytesIO()
             export_fmt = {"aac": "adts", "opus": "opus"}.get(fmt, fmt)
-            seg.export(buf, format=export_fmt)
-            return buf.getvalue(), mime
+            seg.export(
+                buf, format=export_fmt, parameters=["-ar", str(encoder_sample_rate)]
+            )
+            return EncodedAudio(
+                audio_bytes=buf.getvalue(),
+                mime_type=mime,
+                sample_rate=encoded_sample_rate,
+            )
         except ImportError:
             if not allow_format_fallback:
                 raise ValueError(f"pydub is required to encode response_format={fmt!r}")
@@ -467,7 +549,11 @@ def encode_audio(
             logger.warning(
                 f"pydub not installed; falling back to WAV for {fmt} request"
             )
-            return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
+            return EncodedAudio(
+                audio_bytes=encode_wav(arr, sample_rate),
+                mime_type=FORMAT_MIME_TYPES["wav"],
+                sample_rate=sample_rate,
+            )
         except Exception as exc:
             if not allow_format_fallback:
                 raise ValueError(
@@ -478,7 +564,11 @@ def encode_audio(
             logger.warning(
                 f"Failed to encode {fmt}; falling back to WAV", exc_info=True
             )
-            return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
+            return EncodedAudio(
+                audio_bytes=encode_wav(arr, sample_rate),
+                mime_type=FORMAT_MIME_TYPES["wav"],
+                sample_rate=sample_rate,
+            )
     else:
         pass
 
@@ -494,7 +584,9 @@ def encode_audio(
                 sample_rate,
                 format="FLAC",
             )
-            return buf.getvalue(), mime
+            return EncodedAudio(
+                audio_bytes=buf.getvalue(), mime_type=mime, sample_rate=sample_rate
+            )
         except ImportError:
             if not allow_format_fallback:
                 raise ValueError(
@@ -505,7 +597,11 @@ def encode_audio(
             logger.warning(
                 "soundfile not installed; falling back to WAV for FLAC request"
             )
-            return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
+            return EncodedAudio(
+                audio_bytes=encode_wav(arr, sample_rate),
+                mime_type=FORMAT_MIME_TYPES["wav"],
+                sample_rate=sample_rate,
+            )
     else:
         pass
 
@@ -514,7 +610,11 @@ def encode_audio(
     else:
         pass
     logger.warning(f"Unknown audio format '{fmt}'; falling back to WAV")
-    return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
+    return EncodedAudio(
+        audio_bytes=encode_wav(arr, sample_rate),
+        mime_type=FORMAT_MIME_TYPES["wav"],
+        sample_rate=sample_rate,
+    )
 
 
 def audio_to_base64(
@@ -528,7 +628,7 @@ def audio_to_base64(
     Useful for embedding audio in JSON responses (e.g. chat completions
     with audio modality).
     """
-    audio_bytes, _ = encode_audio(
+    encoded_audio = encode_audio(
         audio, response_format=output_format, sample_rate=sample_rate
     )
-    return base64.b64encode(audio_bytes).decode("ascii")
+    return base64.b64encode(encoded_audio.audio_bytes).decode("ascii")

@@ -107,6 +107,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
+    early_request_builds: bool | None = None,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
@@ -147,6 +148,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         ),
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
+        early_request_builds=early_request_builds,
         stream_emit_interval_s=stream_emit_interval_s,
     )
     try:

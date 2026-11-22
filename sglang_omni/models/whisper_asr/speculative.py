@@ -6,9 +6,11 @@ A request's encoder slots lead its req_to_token row, so every draft and verify f
 
 from __future__ import annotations
 
+import bisect
 import copy
 import glob
 import json
+import logging
 import os
 from collections.abc import Iterable
 from tempfile import TemporaryDirectory
@@ -46,7 +48,10 @@ from sglang.srt.speculative.spec_utils import draft_pp_context
 from torch import nn
 from transformers import WhisperConfig
 
-from sglang_omni.models.whisper_asr.draft_cuda_graph import DraftDecodeGraph
+from sglang_omni.models.whisper_asr.draft_cuda_graph import (
+    DraftDecodeGraph,
+    draft_capture_stream,
+)
 from sglang_omni.models.whisper_asr.sglang_model import (
     LogitsProcessor,
     WhisperDecoderModel,
@@ -58,7 +63,11 @@ from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
 )
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
+logger = logging.getLogger(__name__)
+
 DRAFT_ARCHITECTURE = "WhisperDraftForCausalLM"
+# note (Haoling Pu): these graphs take about 1 GB on an H100, and a round of more requests keeps the step loop.
+DRAFT_GRAPH_BATCH_SIZES = (1, 2, 4, 8, 16, 32)
 SHARED_ENCODER_TENSOR_NAMES = (
     "model.encoder.conv1.weight",
     "model.encoder.layer_norm.weight",
@@ -517,7 +526,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         check_shared_encoder(target_model, get_spec().speculative_draft_model_path)
         draft_model.target_encoder = target_model.run_encoder
         self.previous_token_ids: torch.Tensor | None = None
-        self.draft_graph: DraftDecodeGraph | None = None
+        self.draft_graphs: list[DraftDecodeGraph] = []
 
     def alloc_memory_pool(
         self,
@@ -541,16 +550,36 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
 
     def init_cuda_graphs(self) -> None:
         self.draft_worker.init_cuda_graphs()
-        # note (Haoling Pu): the draft graph follows the draft's decode graphs, so disable_cuda_graph turns it off too, and its attention reads the KV cache without scales, so it needs the model's dtype there.
+        # note (Haoling Pu): the draft graphs follow the draft's decode graphs, so disable_cuda_graph turns them off too, and their attention reads the KV cache without scales, so it needs the model's dtype there.
         if (
             self.speculative_num_steps > 1
             and self.draft_runner.decode_cuda_graph_runner is not None
             and self.draft_runner.kv_cache_dtype == self.draft_runner.dtype
         ):
-            self.draft_graph = DraftDecodeGraph(
-                self.draft_runner, self.speculative_num_steps - 1
+            free_bytes_before, _ = torch.cuda.mem_get_info()
+            memory_pool = torch.cuda.graph_pool_handle()
+            # note (Haoling Pu): a graph keeps the cuBLAS workspace of the stream it was captured on, and the encoder's graphs, which replay on their own thread, took torch.cuda.graph's shared default stream, so these graphs take their own.
+            capture_stream = draft_capture_stream()
+            # note (Haoling Pu): a round holds at most the request pool's rows, so a graph past the first size that holds them all would never replay.
+            graph_batch_sizes = DRAFT_GRAPH_BATCH_SIZES[
+                : bisect.bisect_left(
+                    DRAFT_GRAPH_BATCH_SIZES, self.req_to_token_pool.size
+                )
+                + 1
+            ]
+            # note (Haoling Pu): the largest graph is captured first, so the smaller ones reuse its memory in the shared pool.
+            for batch_size in sorted(graph_batch_sizes, reverse=True):
+                draft_graph = DraftDecodeGraph(
+                    self.draft_runner, self.speculative_num_steps - 1, batch_size
+                )
+                draft_graph.capture(memory_pool, capture_stream)
+                self.draft_graphs.insert(0, draft_graph)
+            free_bytes_after, _ = torch.cuda.mem_get_info()
+            logger.info(
+                f"Captured the Whisper draft decode graphs of {self.speculative_num_steps - 1} steps "
+                f"for batch sizes {list(graph_batch_sizes)} "
+                f"in {(free_bytes_before - free_bytes_after) / 2**20:.0f} MiB"
             )
-            self.draft_graph.capture()
         else:
             pass
 
@@ -606,15 +635,18 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             slots=slots[:, :2],
         )
         drafts = [sampler.draw(logits.view(batch_size, 2, -1)[:, 1])]
-        # note (Haoling Pu): the draft graph is captured for one request and drafts by plain argmax.
+        draft_graph = next(
+            (graph for graph in self.draft_graphs if graph.batch_size >= batch_size),
+            None,
+        )
+        # note (Haoling Pu): the draft graphs draft by plain argmax.
         if (
-            self.draft_graph is not None
-            and batch_size == 1
+            draft_graph is not None
             and sampler.is_all_greedy
             and sampler.timestamp_rows is None
         ):
-            self.draft_graph.load_inputs(batch, drafts[0], sampler.logit_bias)
-            draft_token_ids = self.draft_graph.replay()
+            draft_graph.load_inputs(batch, drafts[0], sampler.logit_bias)
+            draft_token_ids = draft_graph.replay()[:batch_size]
         else:
             for step in range(1, draft_steps):
                 logits = self.decode_forward(

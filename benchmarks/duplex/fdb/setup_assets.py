@@ -13,6 +13,7 @@ from importlib.metadata import PackageNotFoundError, requires, version
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download, model_info, snapshot_download
+from huggingface_hub.errors import GatedRepoError
 from packaging.requirements import Requirement
 
 from benchmarks.duplex.fdb.common import (
@@ -54,26 +55,21 @@ SCORING_PACKAGES = [
     "soundfile",
     "tqdm",
     "websockets",
-    "gdown",
     # note (luojiaxuan): the pinned v1.0 evaluate.py imports dotenv, and its
     # backchannel task reads WAV through torchaudio, which needs torchcodec.
     "python-dotenv",
     "torchcodec==0.11.*",
 ]
 TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu130"
-DATASET_DRIVE_FILE_IDS = {
-    "user_interruption": "1wqYcYS4-30W2YMc3TfeMeoiaW9PLf4yT",
-    "user_backchannel": "1EGwCd9CdGuh8jeqwPENzbBs5FSEgnYL3",
-    "talking_to_other": "1Jh6ER4AUmqGgEZBTV0pcbDaMMQIWA7Kt",
-    "background_speech": "1W63k1BlQ0QCgvYCb_8YJNqFfUhBwI97W",
-}
-V10_DATASET_DRIVE_FILE_IDS = {
-    "synthetic_pause_handling": "1iV0X6z3Z9SrmJvxJ2Hkij3nb8iuWbJyv",
-    "candor_pause_handling": "1uls3atEz7bZ1IkVq3Rw0yQyLAjjVkklc",
-    "candor_turn_taking": "1sb9mwOqDCK9BEpMb6fDVYOJU1vd5RFlb",
-    "synthetic_user_interruption": "1I36wGbPtZObjqI_1h11Rb2s1ulerb65a",
-    "icc_backchannel": "1HttNZbi0bYHe7a-CO_9vg_z7hMM8a5h0",
-}
+# note (zhaochenyang20): byte-identical copies of the official Google Drive
+# archives, which refuse downloads once a file has had too many accesses.
+DATASET_ARCHIVE_REPO_ID = "zhaochenyang20/full-duplex-bench"
+DATASET_ARCHIVE_REVISION = "800e9b2d5493880fdd9e3396e9586344ed707ea8"
+# note (zhaochenyang20): the CANDOR license forbids redistribution, so these clips
+# come only from this gated repository; the HF_TOKEN account must accept it.
+CANDOR_REPO_ID = "betterup/candor-full-duplex-bench"
+CANDOR_REVISION = "e6ad443be50c779edf1900af22bc39687733719a"
+CANDOR_SUBSETS = ("candor_pause_handling", "candor_turn_taking")
 # note (jeffro): qwen-asr pins a transformers release of its own, so the
 # cascade's forced-alignment worker runs from a venv apart from the server's.
 # this need double check.
@@ -235,44 +231,50 @@ def setup_scoring_venv(settings: Settings) -> None:
 
 
 def setup_dataset(
-    step: str,
-    settings: Settings,
-    dataset: Path,
-    revision_file: Path,
-    zip_dir: Path,
-    subsets: tuple[str, ...],
-    drive_file_ids: dict[str, str],
+    step: str, dataset: Path, revision_file: Path, subsets: tuple[str, ...]
 ) -> None:
     log(f"== {step} FDB {dataset.name} dataset at {dataset}")
-    zip_dir.mkdir(parents=True, exist_ok=True)
-    for subset in subsets:
-        zip_path = zip_dir / f"{subset}.zip"
-        if not zip_path.is_file() or zip_path.stat().st_size == 0:
-            subprocess.run(
-                [
-                    str(settings.scoring_venv / "bin" / "gdown"),
-                    "--quiet",
-                    drive_file_ids[subset],
-                    "-O",
-                    str(zip_path),
-                ],
-                check=True,
+    dataset.mkdir(parents=True, exist_ok=True)
+    checksum_lines: list[str] = []
+    for subset in sorted(subsets):
+        if subset in CANDOR_SUBSETS:
+            try:
+                snapshot = Path(
+                    snapshot_download(
+                        CANDOR_REPO_ID,
+                        repo_type="dataset",
+                        revision=CANDOR_REVISION,
+                        allow_patterns=f"{subset}/*",
+                    )
+                )
+            except GatedRepoError as error:
+                raise SystemExit(
+                    f"ERROR: {CANDOR_REPO_ID} is gated; accept its license on the "
+                    "Hugging Face Hub and export HF_TOKEN for that account."
+                ) from error
+            if not (dataset / subset).is_dir():
+                shutil.copytree(snapshot / subset, dataset / subset)
+            else:
+                pass
+            checksum_lines.append(f"{CANDOR_REPO_ID}@{CANDOR_REVISION}  ./{subset}\n")
+        else:
+            archive_path = Path(
+                hf_hub_download(
+                    DATASET_ARCHIVE_REPO_ID,
+                    f"{dataset.name}/{subset}.zip",
+                    repo_type="dataset",
+                    revision=DATASET_ARCHIVE_REVISION,
+                )
             )
-        else:
-            pass
-        if not (dataset / subset).is_dir():
-            with zipfile.ZipFile(zip_path) as archive:
-                archive.extractall(dataset)
-        else:
-            pass
+            if not (dataset / subset).is_dir():
+                with zipfile.ZipFile(archive_path) as archive:
+                    archive.extractall(dataset)
+            else:
+                pass
+            checksum_lines.append(f"{file_sha256(archive_path)}  ./{subset}.zip\n")
     shutil.rmtree(dataset / "__MACOSX", ignore_errors=True)
-    # Same text as `sha256sum ./*.zip`, so the revision matches earlier setups.
-    checksums = "".join(
-        f"{file_sha256(zip_path)}  ./{zip_path.name}\n"
-        for zip_path in sorted(zip_dir.glob("*.zip"))
-    )
-    zip_dir.with_name(f"{zip_dir.name}.sha256").write_text(checksums)
-    revision = hashlib.sha256(checksums.encode()).hexdigest()
+    # An all-archive dataset gets the text of sha256sum ./*.zip, so its revision matches earlier setups.
+    revision = hashlib.sha256("".join(checksum_lines).encode()).hexdigest()
     revision_file.write_text(f"sha256:{revision}\n")
     for subset in subsets:
         sample_count = sum(path.is_dir() for path in (dataset / subset).iterdir())
@@ -369,23 +371,9 @@ def setup(settings: Settings) -> None:
     (settings.fdb_work / "models").mkdir(parents=True, exist_ok=True)
     setup_reference_source(settings)
     setup_scoring_venv(settings)
+    setup_dataset("[4/9]", settings.dataset, settings.dataset_revision_file, SUBSETS)
     setup_dataset(
-        "[4/9]",
-        settings,
-        settings.dataset,
-        settings.dataset_revision_file,
-        settings.dataset_dir / "zips",
-        SUBSETS,
-        DATASET_DRIVE_FILE_IDS,
-    )
-    setup_dataset(
-        "[5/9]",
-        settings,
-        settings.dataset_v10,
-        settings.dataset_v10_revision_file,
-        settings.dataset_dir / "zips-v1.0",
-        V10_SUBSETS,
-        V10_DATASET_DRIVE_FILE_IDS,
+        "[5/9]", settings.dataset_v10, settings.dataset_v10_revision_file, V10_SUBSETS
     )
     setup_parakeet(settings)
     setup_models(settings)

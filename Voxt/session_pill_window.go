@@ -63,7 +63,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 			a.postPillOverlayMeasurements,
 			func() { a.pill.reveal = false; a.post(a.revealPillOverlay) },
 		)
-		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
+		opts := cardWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
 		opts.Vibrancy = mygo.VibrancyHUD
 		a.pill.win = mygo.NewWindow(opts)
 		a.pill.win.OnMove(func() { a.post(a.pillDragged) })

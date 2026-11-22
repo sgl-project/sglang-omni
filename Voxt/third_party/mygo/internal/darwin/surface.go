@@ -157,9 +157,10 @@ func (w *window) createSurface(content NSRect) {
 	send(layer, "setContentsGravity:", uintptr(nsString("resize")))
 	// Tracking for hover, inside the visible part of the view.
 	options := uint(0x01 | 0x02 | 0x04 | 0x40 | 0x200) // entered/exited, moved, cursor update, active app, visible rect
-	if w.opts.Flyout == nil && !w.opts.Focusable {
-		// A non-activating window (WindowOptions.NonActivating) works
-		// while another app is active: hover it all the same.
+	if w.opts.Flyout == nil && (!w.opts.Focusable || w.opts.HoverWhileInactive) {
+		// A non-activating window (WindowOptions.NonActivating), or one
+		// that asks to (HoverWhileInactive), works while another app is
+		// active: hover it all the same.
 		options = options&^0x40 | 0x80 // NSTrackingActiveAlways
 	}
 	s.tracking = msgInitTracking(send(class("NSTrackingArea"), "alloc"), sel("initWithRect:options:owner:userInfo:"), NSRect{}, options, s.view, 0)
