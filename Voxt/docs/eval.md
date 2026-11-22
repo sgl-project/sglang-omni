@@ -158,11 +158,56 @@ The faults without the example were the self-corrections kept and "uh" left in. 
 
 **Decision: the example turn is in.** It applies to Transcribe and spoken Translate, with Cleanup on, for both template sets. For Translate, the example is sent only when the target is English or Simplified Chinese, the two languages the example's answer is written in.
 
-**Update (#4228):** Transcribe no longer sends this example turn. A third-party model treated a short dictation as an instruction to rewrite the example and returned its text instead of the transcript. Transcribe now puts the cleanup rules in the system prompt without an example, in both the built-in and custom prompt paths. Spoken Translate keeps the translated example described here.
+**Update (#4228):** Transcribe no longer sends this example turn. A third-party model treated a short dictation as an instruction to rewrite the example and returned its text instead of the transcript. Transcribe's example now closes the system prompt ("Transcribe's example without the echo" below). Spoken Translate keeps the translated example turn described here.
 - `llm.fast` gains the most: its faultless clean-ups go from 14 to 16 of 20, and its translations from 2 to 6 of 6.
 - `llm.balanced`'s translations go from 4 to 6 of 6. Its clean-ups stay at 18 of 20, a little closer to the expected text.
 - It costs about 80–160 ms more of the first token: the example is about 60 more prompt tokens.
 - compose's golden prompts show the turn (`internal/compose/testdata/golden`).
+
+### Transcribe on AASR-Bench, 917 clips (11-19)
+
+A larger public set, for the clean-up prompts Transcribe has shipped and the rule for spelled-out words.
+
+- **Set**: AASR-Bench (`Andrew0425/AASR-Bench`, revision `802577d`), 917 dictations (510 Chinese, 407 English) in 11 scenes, scored by 6,637 rubric questions on content kept, fillers removed, format, and self-corrections and rewording. In its `explanation` scene (47 Chinese clips) the speaker spells out the names and places they say.
+- **Setup**: one Qwen3-ASR-1.7B transcript per clip, the same for every row. The requests and the final text come from compose itself (`BuildParts`, `CleanOutput`, `JoinParts`, built at each commit) with Transcribe's defaults: Cleanup on, Structure off, the clip's language as the main language. Qwen3-4B-Instruct-2507 and Qwen3-30B-A3B-Instruct-2507 in bf16 with their own sampling defaults (Voxt sends none); GPT through the ChatGPT (Codex) language model at low reasoning. Judge: Gemma-4-31B-IT with the benchmark's scoring code, one verdict per question. Scores out of 100.
+
+| prompt | Qwen3-4B | Qwen3-30B-A3B | GPT |
+|---|---|---|---|
+| 2.1.1: the example turn, no rules | 61.5 | 63.1 | 79.6 |
+| 2.1.1 with the rules added | 72.3 | 71.0 | 79.2 |
+| 2.1.2: the rules, no example turn (#4228) | 66.7 | 64.4 | 79.0 |
+| **2.1.2 with the spelled-out words rule** | **67.5** | **64.9** | **81.5** |
+| the rules, that rule and the example turn | 73.6 | 72.1 | 81.7 |
+
+Paired differences over the same 917 clips, with 95% bootstrap intervals (10,000 resamples of the clips):
+
+- **The spelled-out words rule on 2.1.2**: Qwen3-4B +0.8 (+0.2 to +1.5), Qwen3-30B-A3B +0.5 (−0.2 to +1.2), GPT +2.5 (+1.7 to +3.4). On the `explanation` scene +3.7, +12.5 and +46.1 (GPT 44.3 → 90.4). No category falls by more than 1.1 points. With the example turn the same rule gives +1.4, +1.1 and +2.5. Without the rule, the rules made GPT keep the spelling-out more often: adding them to 2.1.1 took its `explanation` score from 57.1 to 42.7, and 2.1.2 scores 44.3.
+- **The rules**: added to 2.1.1's prompt, +10.8 (+9.7 to +11.9) on Qwen3-4B and +8.0 (+7.0 to +8.9) on Qwen3-30B-A3B, mostly fillers and self-corrections; GPT −0.4 (−1.3 to +0.5).
+- **The example turn**: with the rules and the spelled-out words rule, leaving it out costs Qwen3-4B 6.1 (5.1 to 7.2) and Qwen3-30B-A3B 7.2 (6.2 to 8.3), again on fillers and self-corrections; GPT −0.1 (−0.7 to +0.4). Without it, Qwen3-30B-A3B once answered two dictated requests to optimise a Python loop with an empty text.
+
+**Decision: the spelled-out words rule is in the clean-up rules, for every language model.** It raises the `explanation` scene on all three models, with or without the example turn. The example turn stays out of Transcribe (#4228); the example itself closes the system prompt (below).
+
+### Transcribe's example without the echo (#4228, 11-20)
+
+Without its example, Transcribe's clean-up scores 6 to 7 points lower on the small models (above). The example turn went out because a short dictation could read as an instruction about it. Here the same example moves into the system prompt, and a probe looks for the echo.
+
+- **Probe**: 48 short dictations that read like instructions to the model (24 Chinese, 24 English, such as 简洁一点, 翻译成英文, "be concise", "make it more formal"), cleaned up 10 times each by the Qwen models at their own sampling defaults and twice by GPT. An answer copied the example when it has four Chinese characters or five words of the example that the dictation does not (`eval.CheckClean`'s check).
+- **AASR-Bench**: as above. Every prompt is 2.1.2 with the spelled-out words rule.
+
+| the example | copied: Qwen3-4B | Qwen3-30B-A3B | GPT | AASR-Bench: Qwen3-4B | Qwen3-30B-A3B | GPT |
+|---|---|---|---|---|---|---|
+| none (2.1.2) | 0/480 | 0/480 | 0/96 | 67.5 | 64.9 | 81.5 |
+| an earlier user and assistant turn (as in 2.1.1) | 20/480 | 102/480 | 0/96 | 73.6 | 72.1 | 81.7 |
+| plain text at the end of the clean-up rules | 0/480 | 0/480 | 0/96 | 70.8 | 67.8 | 82.3 |
+| `<input>`/`<output>` form at the end of the clean-up rules | 0/480 | 0/480 | not run | 71.5 | 69.8 | not run |
+| **`<input>`/`<output>` form, closing the system prompt** | **0/480** | **0/480** | **0/96** | **72.3** | **71.3** | **81.9** |
+
+- **The echo**: as an earlier turn, the example came back in 21% of Qwen3-30B-A3B's answers and 4% of Qwen3-4B's, on 11 of the 48 dictations. 改得正式一点 became 请将周报发送给小李，务必于今日下班前完成。 In the system prompt, it never came back.
+- **The score**: closing the system prompt, the example adds +4.8 (+3.8 to +5.8) on Qwen3-4B and +6.4 (+5.4 to +7.4) on Qwen3-30B-A3B, mostly fillers and self-corrections; GPT +0.4 (−0.2 to +0.9). That is 1.3 (0.6 to 2.0) and 0.8 (0.05 to 1.6) below the earlier turn, mostly on fillers.
+- **Short dictations kept as said**: 440 and 410 of 480 answers, against 421 and 334 without an example. The rest are mostly the instruction carried out (翻译成英文 written as "translate into English") or an empty answer.
+- The example makes the system prompt 393 characters longer in English (2,570 → 2,963) and 168 characters longer in Chinese (968 → 1,136).
+
+**Decision: Transcribe's example closes the system prompt, in the request's own `<input>`/`<output>` form, with Cleanup on** (`templates/<set>/example-transcribe.txt`), in the built-in and custom prompt paths. Its first line says it only illustrates the rules and is not to be output.
 
 ### Long dictation (two clips, 95–104 s; M3b, TestEvalLong)
 

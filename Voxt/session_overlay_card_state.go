@@ -255,7 +255,7 @@ func sessionCardTitleFor(translator *i18n.Translator, kind store.Kind, title str
 	case store.KindTranslate:
 		return translator.T("Translation")
 	case store.KindRewrite:
-		return translator.T("AI answer")
+		return translator.T("Rewrite") // the input card's title: one card from the shortcut to the answer
 	}
 	return translator.T("Transcription")
 }

@@ -99,6 +99,7 @@ func TestStore(t *testing.T) {
 		s.Appearance.Palette = " #B25280 "
 		s.Appearance.WindowTransparency = 25
 		s.Appearance.SidebarWidth = 900
+		s.Appearance.HistoryDetailWidth = 900
 		s.General.OtherLanguages = []string{" en ", "en", ""}
 		s.Features.Translate.Hotkeys = append(s.Features.Translate.Hotkeys, Hotkey{Keys: " "}, Hotkey{Keys: "Option+T", Trigger: "weird"})
 		s.Overlay.Opacity = 0.1
@@ -107,7 +108,7 @@ func TestStore(t *testing.T) {
 	}
 	got := s.Get()
 	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != ThemeSystem || got.Appearance.Palette != "#b25280" || got.Appearance.WindowTransparency != MaxWindowTransparency ||
-		got.Appearance.SidebarWidth != MaxSidebarWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
+		got.Appearance.SidebarWidth != MaxSidebarWidth || got.Appearance.HistoryDetailWidth != MaxHistoryDetailWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
 		len(got.Features.Translate.Hotkeys) != 2 || got.Features.Translate.Hotkeys[1].Trigger != TriggerTap || got.Overlay.Opacity != 0.5 {
 		t.Fatalf("normalized: %+v", got)
 	}

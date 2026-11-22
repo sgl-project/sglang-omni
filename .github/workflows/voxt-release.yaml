@@ -310,7 +310,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Voxt-${{ env.VERSION }}-arm64${{ env.IS_SIGNED != 'true' && '-unsigned' || '' }}
-          path: ${{ env.ARTIFACTS_DIR }}
+          # A beta's MyGo update archive and manifest go only to its prerelease.
+          path: |
+            ${{ env.ARTIFACTS_DIR }}/*.dmg
+            ${{ env.ARTIFACTS_DIR }}/*.dmg.sha256
+          if-no-files-found: error
           retention-days: 14
 
       # Beta updates in the app (updates_github.go) offers the newest of these prereleases; never the latest release, and only the last few kept.

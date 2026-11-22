@@ -6,11 +6,12 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
 
 import sglang_omni.platforms as platforms
@@ -30,6 +31,16 @@ CPU_ONLY_GPU_PLACED = {
     ("qwen3_omni", "mm_aggregate"),
     ("zonos2", "preprocessing"),
 }
+
+
+@pytest.fixture(autouse=True)
+def restore_cudnn_switches() -> Iterator[None]:
+    # note (wilsonzheng0327): the MiniMax-Music3 factories turn cuDNN off process-wide, and Inductor's cache key does not record it.
+    is_cudnn_enabled = torch.backends.cudnn.enabled
+    is_cudnn_attention_enabled = torch.backends.cuda.cudnn_sdp_enabled()
+    yield
+    torch.backends.cudnn.enabled = is_cudnn_enabled
+    torch.backends.cuda.enable_cudnn_sdp(is_cudnn_attention_enabled)
 
 
 def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:

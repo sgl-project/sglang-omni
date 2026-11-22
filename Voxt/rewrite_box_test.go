@@ -118,8 +118,8 @@ func TestRewriteBoxEndToEnd(t *testing.T) {
 	}
 
 	a.pump("the answer", func() bool { return a.answer.open })
-	if a.box.open {
-		t.Error("the box stayed open after the answer")
+	if v := a.boxViewState(); !a.box.open || !v.Conversation || len(a.box.images) != 0 {
+		t.Errorf("after the answer: the card open %v, %d images left, %+v", a.box.open, len(a.box.images), v)
 	}
 	reqs := chat.requests()
 	if len(reqs) != 1 {
@@ -513,10 +513,11 @@ func TestAnswerCardAttach(t *testing.T) {
 type fakeBoxWindow struct {
 	hidden, destroyed bool
 	style             mygo.VibrancyStyle
+	bounds            mygo.Rectangle
 }
 
 func (f *fakeBoxWindow) Invalidate()                           {}
-func (f *fakeBoxWindow) Center()                               {}
+func (f *fakeBoxWindow) SetContentBounds(r mygo.Rectangle)     { f.bounds = r }
 func (f *fakeBoxWindow) Show()                                 {}
 func (f *fakeBoxWindow) Focus()                                {}
 func (f *fakeBoxWindow) Hide()                                 { f.hidden = true }

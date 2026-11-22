@@ -21,7 +21,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "screen", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -228,7 +228,8 @@ async function pollStatus() {
 }
 
 function renderTranscript() {
-  const text = session ? session.transcript : "";
+  // The transcript keeps the text of screen blocks, without the tags around them.
+  const text = session ? session.transcript.replace(/<\/?screen>/gi, "") : "";
   const paragraphs = text.split("\n").filter((line) => line.trim());
   // Audio-only models never send text; the transcript control appears with the first words.
   ui.transcriptBtn.hidden = !paragraphs.length;
@@ -236,6 +237,8 @@ function renderTranscript() {
     ui.transcript.innerHTML = '<p class="empty">What the model says will appear here.</p>';
     ui.caption.textContent = "";
     delete ui.caption.dataset.key;
+    ui.screen.hidden = true;
+    ui.screen.textContent = "";
     return;
   }
   ui.transcript.replaceChildren(...paragraphs.map((line) => {
@@ -248,7 +251,11 @@ function renderTranscript() {
 }
 
 // The caption shows the latest reply, the part already heard set apart from the rest; a cut reply keeps only the heard part.
+// The screen shows the blocks a played progress point has passed, so it follows playback too.
 function renderHeard() {
+  const screen = session ? session.screen : "";
+  ui.screen.hidden = !screen;
+  if (ui.screen.textContent !== screen) ui.screen.textContent = screen;
   const id = session && session.lastReplyId;
   const reply = id && session.reply(id);
   if (!reply || !reply.text) return;
