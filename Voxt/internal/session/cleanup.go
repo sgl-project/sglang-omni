@@ -199,14 +199,14 @@ func (d *drafter) add(delta string) {
 func (d *drafter) publish() {
 	part := d.parts[len(d.parts)-1]
 	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
-	draft = d.r.draftSnippets(draft)
+	draft = d.r.draftSnippets(draft, d.parts)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 
 // done puts the answers of the parts so far in the snapshot.
 func (d *drafter) done(answers []string) {
 	draft := compose.JoinParts(d.parts, answers)
-	draft = d.r.draftSnippets(draft)
+	draft = d.r.draftSnippets(draft, d.parts)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 

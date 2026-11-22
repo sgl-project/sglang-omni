@@ -89,3 +89,64 @@ func TestSnippetsMarkedForTheModel(t *testing.T) {
 		}
 	}
 }
+
+// TestRetrySnippets: Retry makes an entry as a session would: a trigger
+// alone is its snippet, a marked trigger the model kept is replaced, and
+// without the model the text as recognised has its snippets.
+func TestRetrySnippets(t *testing.T) {
+	for _, c := range []struct {
+		name, said, cleaned, result string
+		model                       bool
+	}{
+		{"only a trigger", "My email address.", "unused", "ruiling@example.com", true},
+		{"marked", "send it to my email address please", "Send it to ⟦my e-mail⟧, please.", "Send it to ruiling@example.com, please.", true},
+		{"no model", "send it to my email address please", "", "send it to ruiling@example.com please", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var model LLM
+			fake := &fakeLLM{text: c.cleaned}
+			if c.model {
+				model = fake
+			}
+			h, e := retryHarness(t, &fakeFile{text: c.said}, model, false)
+			h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) { return testSnippets, nil }
+			out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Result != c.result || strings.ContainsAny(out.Result, snippet.Open+snippet.Close) {
+				t.Errorf("result %q, want %q", out.Result, c.result)
+			}
+			if c.name == "only a trigger" && len(fake.requests()) != 0 {
+				t.Error("the language model was asked")
+			}
+		})
+	}
+}
+
+// TestSnippetsChangeNothingElse: with snippets saved, a dictation with
+// none of their triggers is cleaned up as without them: the same
+// request, the same text, long speech in pieces too.
+func TestSnippetsChangeNothingElse(t *testing.T) {
+	long := strings.Repeat("this is a long sentence without a trigger and ", 12) + "the end"
+	for _, said := range []string{"hello aura link", "请把文件发给我，谢谢", long} {
+		run := func(cfg func(*Config, *settings.Settings)) (string, []string) {
+			model := &fakeLLM{text: "Cleaned ⟦up⟧."}
+			h := newHarness(t, &fakeFile{text: said}, model, cfg)
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			var msgs []string
+			for _, r := range model.requests() {
+				for _, m := range r.Messages {
+					msgs = append(msgs, string(m.Role)+": "+m.Content)
+				}
+			}
+			return end.Result, msgs
+		}
+		plain, plainReqs := run(nil)
+		with, withReqs := run(withSnippets)
+		if with != plain || strings.Join(withReqs, "\n") != strings.Join(plainReqs, "\n") {
+			t.Errorf("%.20q: with snippets %q, without %q; requests the same: %v", said, with, plain, strings.Join(withReqs, "\n") == strings.Join(plainReqs, "\n"))
+		}
+	}
+}

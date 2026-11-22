@@ -99,17 +99,21 @@ func Expand(text string, snippets []Snippet) string {
 	return rebuild(text, runes, found, func(m match) string { return fit(m.snippet.Text, string(runes[m.end:])) })
 }
 
-// marks are the punctuation fit does not double.
-const marks = "。．！？；，、：.!?;,:"
+// Punctuation fit looks at: a snippet's closing Chinese marks give way
+// to the sentence's own. Latin ones stay ("etc.", "Hold on...").
+const (
+	fullMarks = "。！？；，、：．"
+	anyMarks  = fullMarks + ".!?;,:"
+)
 
-// fit is a snippet's text before rest: without its last punctuation
-// marks when rest starts with one, so that "…优化。" before "，然后" is
-// not "。，".
+// fit is a snippet's text before rest: without its last full-width
+// punctuation marks when rest starts with punctuation, so that "…优化。"
+// before "，然后" is not "。，".
 func fit(text, rest string) string {
-	if rest == "" || !strings.ContainsRune(marks, []rune(rest)[0]) {
+	if rest == "" || !strings.ContainsRune(anyMarks, []rune(rest)[0]) {
 		return text
 	}
-	if t := strings.TrimRight(text, marks); t != "" {
+	if t := strings.TrimRight(text, fullMarks); t != "" {
 		return t
 	}
 	return text

@@ -37,7 +37,7 @@ func Import(data []byte) (out []Snippet, skipped int, err error) {
 	for i, item := range items {
 		s := Snippet{
 			Trigger: strings.TrimSpace(field(item, "trigger", "keyword", "name")),
-			Text:    strings.TrimRight(field(item, "text", "expansion", "content", "snippet"), " \n"),
+			Text:    strings.TrimRight(strings.ReplaceAll(field(item, "text", "expansion", "content", "snippet"), "\r\n", "\n"), " \r\n"),
 		}
 		if i >= MaxImportItems || len(normalize(s.Trigger)) == 0 || strings.TrimSpace(s.Text) == "" ||
 			len([]rune(s.Trigger)) > MaxTrigger || len([]rune(s.Text)) > MaxText {

@@ -1,6 +1,11 @@
 package session
 
-import "github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
+import (
+	"strings"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
+)
 
 // insertSnippet delivers text's snippet when text is only its trigger
 // ("My email address."): as saved, without the language model, which
@@ -21,8 +26,13 @@ func (r *run) insertSnippet(text string) bool {
 // triggers marked (transcribeInput), and a mark it kept is its snippet
 // even where it changed the words inside (snippet.Restore).
 func (r *run) expandSnippets(text, result string) string {
-	_, marked := snippet.Mark(text, r.snippets)
-	expanded := snippet.Restore(result, marked, r.snippets)
+	if len(r.snippets) == 0 {
+		return result
+	}
+	expanded := snippet.Expand(result, r.snippets) // nothing marked: the model's text is its own
+	if _, marked := snippet.Mark(text, r.snippets); len(marked) > 0 {
+		expanded = snippet.Restore(result, marked, r.snippets)
+	}
 	if expanded != result {
 		r.logf("info", "snippets replaced their triggers: %s", r.logText(expanded))
 	}
@@ -30,10 +40,13 @@ func (r *run) expandSnippets(text, result string) string {
 }
 
 // draftSnippets is a clean-up streaming in with its marked triggers as
-// their snippets, so the card shows no marks.
-func (r *run) draftSnippets(draft string) string {
-	if len(r.snippets) == 0 {
-		return draft
+// their snippets, so the card shows no marks; parts are what the model
+// was given (a draft of text without marks is left as it is).
+func (r *run) draftSnippets(draft string, parts []compose.Part) string {
+	for _, p := range parts {
+		if strings.Contains(p.Text, snippet.Open) {
+			return snippet.Restore(draft, nil, r.snippets)
+		}
 	}
-	return snippet.Restore(draft, nil, r.snippets)
+	return draft
 }

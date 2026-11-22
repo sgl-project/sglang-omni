@@ -218,6 +218,9 @@ func units(text string, level int) []Piece {
 	var out []Piece
 	start := 0
 	for _, m := range boundaries[level].FindAllStringIndex(text, -1) {
+		if inMark(text, m[0]) {
+			continue
+		}
 		end := m[1]
 		body := strings.TrimRight(text[start:end], " \t\r\n")
 		if body == "" {
@@ -235,14 +238,29 @@ func units(text string, level int) []Piece {
 	return out
 }
 
-// hardCut cuts text into pieces of equal length, the last resort.
+// hardCut cuts text into pieces of equal length, the last resort, never
+// inside a snippet's mark.
 func hardCut(text string) []Piece {
 	rs := []rune(text)
 	n := (len(rs) + PieceChars - 1) / PieceChars
 	size := (len(rs) + n - 1) / n
 	var out []Piece
-	for i := 0; i < len(rs); i += size {
-		out = append(out, Piece{Text: string(rs[i:min(i+size, len(rs))])})
+	for i := 0; i < len(rs); {
+		j := min(i+size, len(rs))
+		for j < len(rs) && inMark(string(rs[:j]), len(string(rs[:j]))) {
+			j++
+		}
+		out = append(out, Piece{Text: string(rs[i:j])})
+		i = j
 	}
 	return out
+}
+
+// Marks around a snippet's trigger (snippet.Mark), which a piece must
+// not cut: the model would lose the trigger.
+const markOpen, markClose = "⟦", "⟧"
+
+// inMark says whether byte i of text is inside a mark.
+func inMark(text string, i int) bool {
+	return strings.LastIndex(text[:i], markOpen) > strings.LastIndex(text[:i], markClose)
 }

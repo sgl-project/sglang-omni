@@ -36,7 +36,14 @@ func (a *app) importSnippets() {
 
 func (a *app) importSnippetsFile(path string) {
 	a.async(func() {
-		data, err := os.ReadFile(path)
+		var data []byte
+		info, err := os.Stat(path)
+		if err == nil && info.Size() > snippet.MaxImportBytes {
+			err = snippet.ErrNotSnippets
+		}
+		if err == nil {
+			data, err = os.ReadFile(path)
+		}
 		var in []snippet.Snippet
 		var skipped int
 		if err == nil {

@@ -1,6 +1,10 @@
 package snippet
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 var list = []Snippet{
 	{ID: "1", Trigger: "my email address", Text: "ruiling@example.com"},
@@ -130,7 +134,7 @@ func TestFit(t *testing.T) {
 		{"先插入自我介绍。", "先我是睿临，在做语音输入。"},
 		{"插入自我介绍 然后聊项目", "我是睿临，在做语音输入。 然后聊项目"},
 		{"插入自我介绍", "我是睿临，在做语音输入。"},
-		{"thanks, sign off.", "thanks, Best."},
+		{"thanks, sign off.", "thanks, Best,."}, // Latin punctuation stays,
 	} {
 		if got := Expand(tc.text, intro); got != tc.want {
 			t.Errorf("Expand(%q) = %q; want %q", tc.text, got, tc.want)
@@ -146,4 +150,28 @@ func TestFit(t *testing.T) {
 	if got := Restore("先⟦插入的自我介绍⟧，然后聊项目。", m, intro); got != "先我是睿临，在做语音输入，然后聊项目。" {
 		t.Errorf("Restore by place, before a comma: %q", got)
 	}
+}
+
+// FuzzRestore: whatever the model answers, Restore does not panic and
+// leaves no mark behind.
+func FuzzRestore(f *testing.F) {
+	for _, s := range [][2]string{
+		{"请发到我的邮箱，或者 my linked in", "请发到⟦我的邮箱⟧，或者 ⟦领英⟧。"},
+		{"my email address and sig", "⟦⟦my email⟧ address⟧ and ⟧sig⟦"},
+		{"sig", "⟦"},
+	} {
+		f.Add(s[0], s[1])
+	}
+	f.Fuzz(func(t *testing.T, spoken, answer string) {
+		if !utf8.ValidString(spoken) || !utf8.ValidString(answer) {
+			return // a model's answer is text
+		}
+		marked, m := Mark(spoken, list)
+		if Restore(marked, m, list) != Expand(spoken, list) {
+			t.Errorf("Restore(Mark(%q)) is not Expand", spoken)
+		}
+		if got := Restore(answer, m, list); strings.Contains(got, Open) || strings.Contains(got, Close) {
+			t.Errorf("Restore(%q) = %q", answer, got)
+		}
+	})
 }
