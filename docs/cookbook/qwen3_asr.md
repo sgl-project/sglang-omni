@@ -156,6 +156,8 @@ WebSocket session open for new audio.
 }
 ```
 
+`language` takes the hints listed under Language Hints below, ignoring case and surrounding whitespace; `null` or `""` means detect the language. A value Qwen3-ASR cannot take, including a whitespace-only one, is refused with an `error` event of type `invalid_request_error` and code `invalid_language`, and the session keeps its previous settings.
+
 `decode_interval_ms` is how much new audio arrives between partial decodes. It defaults to 2000 ms, must be at least 200 ms, and `null` restores the default. Like `language` and `turn_detection`, it can change only while no uncommitted audio is buffered; with server VAD that means before the first audio packet.
 
 Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio

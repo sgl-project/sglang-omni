@@ -67,7 +67,8 @@ _UNBOUNDED_BUFFER_S = 600.0
 
 
 class StreamingASRStrategy(Protocol):
-    def create_state(self, *, model_name: str, language: str | None) -> object: ...
+    def create_state(self, *, model_name: str, language: str | None) -> object:
+        """Raise ValueError for a language the model cannot take."""
 
     def build_decode_request(
         self,
@@ -393,8 +394,18 @@ class RealtimeTranscriptionSession:
             pass
 
         if "language" in update:
-            language = update["language"]
-            self.settings.language = language.strip() if language else None
+            language = update["language"].strip() if update["language"] else None
+            try:
+                # note (Xuanfei): refuse the update here, not at every decode.
+                self.strategy.create_state(
+                    model_name=self.model_name, language=language
+                )
+            except ValueError as exc:
+                await self.send_error(
+                    "invalid_request_error", "invalid_language", str(exc)
+                )
+                return
+            self.settings.language = language
         else:
             pass
         if "decode_interval_ms" in update:

@@ -11,6 +11,14 @@ from sglang_omni.client.types import GenerateRequest
 from sglang_omni.serve.speech_to_text import build_speech_to_text_generate_request
 
 
+def check_source_language(language: str | None) -> None:
+    """Raise ValueError unless the source language is unset, en or zh."""
+    if language not in (None, "en", "zh"):
+        raise ValueError("Hy-SimulMT supports Chinese (zh) and English (en)")
+    else:
+        pass
+
+
 class TranslationTurn(BaseModel):
     end_sample: int = Field(gt=0)
     text: str
@@ -29,6 +37,7 @@ class HySimulMTStreamingStrategy:
     def create_state(
         self, *, model_name: str, language: str | None
     ) -> HySimulMTStreamingState:
+        check_source_language(language)
         return HySimulMTStreamingState(model_name=model_name, source_language=language)
 
     def build_decode_request(

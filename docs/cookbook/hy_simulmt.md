@@ -50,7 +50,7 @@ Set `stream=true` on either audio endpoint to receive `transcript.text.delta` ev
 
 With `--enable-realtime`, connect to `/v1/realtime?intent=transcription`. The shared ASR WebSocket accepts mono PCM16 at 16 kHz:
 
-1. Send `session.update` with `session.language` set to the source language (`zh` or `en`).
+1. Send `session.update` with `session.language` set to the source language (`zh` or `en`). Surrounding whitespace is stripped, and `null` or `""` sets no source language. Any other value, including a whitespace-only one or `EN` (the check is case-sensitive), is refused with an `error` event of type `invalid_request_error` and code `invalid_language`, and the session keeps its previous settings.
 2. Send base64 PCM chunks with `input_audio_buffer.append`.
 3. Receive `transcription.segment` translation hypotheses, refreshed every 1.6 seconds by default.
 4. Send `input_audio_buffer.commit` to finish a segment or `transcription.done` to finish input.

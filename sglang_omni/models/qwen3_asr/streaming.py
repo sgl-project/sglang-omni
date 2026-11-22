@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sglang_omni.client import GenerateRequest
+from sglang_omni.models.qwen3_asr.languages import resolve_language
 from sglang_omni.serve.speech_to_text import build_speech_to_text_generate_request
 
 _ROLLBACK_TOKENS = 5
@@ -21,6 +22,11 @@ class Qwen3ASRStreamingStrategy:
     def create_state(
         self, *, model_name: str, language: str | None
     ) -> Qwen3ASRStreamingState:
+        if language is not None:
+            # note (Xuanfei): refuse the hints the request builder refuses.
+            resolve_language(language)
+        else:
+            pass
         return Qwen3ASRStreamingState(model_name=model_name, language=language)
 
     @staticmethod
