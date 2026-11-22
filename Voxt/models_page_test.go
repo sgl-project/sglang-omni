@@ -576,10 +576,11 @@ func TestModelsPageWhisperDraft(t *testing.T) {
 	}
 }
 
-// TestModelCardsLineUp: a single model's icon sits beside its name, as
-// System dictation's does; family rows and wrapped long names start one
-// icon width to the left (#3854: single cards used to leave an empty icon
-// column). The same holds for the language models' cards and Chinese.
+// TestModelCardsLineUp: a single model's size starts at the card's edge,
+// as System dictation's and family rows' sizes do. A long name may wrap
+// below its icon without moving the size (#3854: single cards used to
+// leave an empty icon column). The same holds for the language models
+// and Chinese.
 func TestModelCardsLineUp(t *testing.T) {
 	for _, loc := range []string{"en", "zh-Hans"} {
 		for _, w := range []int{windowWidth, windowMinWidth} {
@@ -591,6 +592,16 @@ func TestModelCardsLineUp(t *testing.T) {
 			a.navigate(modelsPath)
 			frames(tt)
 			frames(tt)
+			view := a.modelsPageModel()
+			sizes := map[string]string{}
+			for _, card := range append(append(append([]modelCardViewState{}, view.ASR...), view.LLM...), view.Hidden...) {
+				for _, row := range card.Rows {
+					sizes[row.ID] = row.SizeText
+				}
+			}
+			if view.Dictation != nil {
+				sizes[dictation.ModelID] = view.Dictation.Rows[0].SizeText
+			}
 			ids := []string{dictation.ModelID}
 			for _, m := range models.Catalog() {
 				if (m.Kind == models.ASR || m.Kind == models.LLM) && a.modelShown(m) {
@@ -599,23 +610,19 @@ func TestModelCardsLineUp(t *testing.T) {
 			}
 			var x0 float32
 			for i, id := range ids {
-				r, ok := tt.Find(uitext.ModelName(id))
-				if !ok {
+				if _, ok := tt.Find(uitext.ModelName(id)); !ok {
 					t.Fatalf("%s %d wide: no name for %s in %q", loc, w, id, firstTexts(tt))
+				}
+				r, ok := tt.Find(sizes[id])
+				if !ok {
+					t.Fatalf("%s %d wide: no size for %s in %q", loc, w, id, firstTexts(tt))
 				}
 				if i == 0 {
 					x0 = r.X
 					continue
 				}
-				wantX := x0
-				model, _ := models.Lookup(id)
-				familyRow := model.Kind == models.ASR && (model.Family == "qwen3-asr" || model.Family == "whisper")
-				wrappedLongName := w == windowMinWidth && (id == models.ASRCohere || id == models.ASRNemotron || id == models.ASRMoss && loc == "en")
-				if familyRow || wrappedLongName {
-					wantX -= 28 // the single cards' 20-point icon and its gap
-				}
-				if d := r.X - wantX; d < -1 || d > 1 {
-					t.Errorf("%s %d wide: %s's text at x %.0f, want %.0f", loc, w, id, r.X, wantX)
+				if d := r.X - x0; d < -1 || d > 1 {
+					t.Errorf("%s %d wide: %s's size at x %.0f, System dictation's at %.0f", loc, w, id, r.X, x0)
 				}
 			}
 		}
