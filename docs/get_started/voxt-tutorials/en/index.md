@@ -2,7 +2,7 @@
 
 [中文](../index.md)
 
-For a first install, choose the 2.1.2 release. Once Voxt is installed, open the tutorial you need. Each one has its own link you can share, and each step has a short looping animation; click it to pause.
+For a first install, choose the 2.1.3 release. Once Voxt is installed, open the tutorial you need. Each one has its own link you can share, and each step has a short looping animation; click it to pause.
 
 <div class="vx-anim" data-scene="dictate" data-lang="en"></div>
 
