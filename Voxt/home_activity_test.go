@@ -136,6 +136,25 @@ func TestHomeUsageNumbersAndHeatmap(t *testing.T) {
 	}
 }
 
+func TestHomeActivityShowsCharacters(t *testing.T) {
+	a, tester := homeTester(t)
+	untilActivity(t, tester, "log read", func() bool { return a.act.loaded })
+	a.act.log.Add(time.Now(), activity.Result{Chars: 12})
+	a.act.gen++
+	frames(tester)
+	translator := i18n.CurrentTranslator()
+	tip := homeActivityDate(translator, time.Now()) + " 1 result 12 characters"
+	square, ok := tester.Find(tip)
+	if !ok {
+		t.Fatalf("no square with its date, results and characters (%q): %q", tip, tester.Texts())
+	}
+	tester.Move(square.X+square.W/2, square.Y+square.H/2)
+	tester.Advance(time.Second)
+	if !hasExact(tester, homeActivityDate(translator, time.Now())) || !hasExact(tester, "1 result 12 characters") {
+		t.Fatalf("tooltip does not show its date and characters: %q", tester.Texts())
+	}
+}
+
 func TestHomeActivityViewState(t *testing.T) {
 	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local) // a Friday
 	var log activity.Log

@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 type homeState struct {
@@ -32,14 +34,15 @@ type homeState struct {
 // last build's, homePageModel reuses the state instead of rebuilding it
 // every frame.
 type homeViewCacheKey struct {
-	settings     uint64
-	gen          int
-	minute       int64
-	location     string
-	zoneOffset   int
-	locale       string
-	activityGen  int
-	activityPage int
+	settings      uint64
+	gen           int
+	minute        int64
+	location      string
+	zoneOffset    int
+	locale        string
+	lastModelName string
+	activityGen   int
+	activityPage  int
 }
 
 // readHomeUsage reads the newest speech model and the recognition times of
@@ -55,14 +58,14 @@ func readHomeUsage(ctx context.Context, h store.History, now time.Time) (homeUsa
 			return usage, err
 		}
 		for _, entry := range entries {
-			if usage.lastModel != "" && entry.CreatedAt.Before(since) {
+			if (usage.lastModel != "" || usage.lastProvider != "") && entry.CreatedAt.Before(since) {
 				return usage, nil
 			}
 			if entry.Status != store.StatusDone || strings.TrimSpace(entry.Result) == "" {
 				continue
 			}
-			if usage.lastModel == "" {
-				usage.lastModel = entry.ASRModel
+			if usage.lastModel == "" && usage.lastProvider == "" {
+				usage.lastProvider, usage.lastModel = entry.ASRProvider, entry.ASRModel
 			}
 			if !entry.CreatedAt.Before(since) && entry.ASRMS > 0 {
 				usage.asrMS += entry.ASRMS
@@ -128,16 +131,26 @@ func (a *app) prepareHomePage() {
 }
 
 func (a *app) homePageModel(now time.Time) homeViewState {
+	usage := a.hm.usage
+	if usage.lastProvider != "" {
+		usage.lastModelName = a.entryModel(local.ASR, usage.lastProvider, usage.lastModel)
+		if suffix := " · " + usage.lastModel; strings.HasSuffix(usage.lastModelName, suffix+suffix) {
+			usage.lastModelName = strings.TrimSuffix(usage.lastModelName, suffix)
+		}
+	} else {
+		usage.lastModelName = uitext.ModelNameFor(i18n.CurrentTranslator(), usage.lastModel)
+	}
 	_, zoneOffset := now.Zone()
 	key := homeViewCacheKey{
 		settings: a.settingsRevision, gen: a.hm.gen,
 		minute: now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset, locale: i18n.Locale(),
-		activityGen: a.act.gen, activityPage: a.act.page,
+		lastModelName: usage.lastModelName,
+		activityGen:   a.act.gen, activityPage: a.act.page,
 	}
 	if key != a.hm.viewKey {
 		a.hm.view = buildHomeViewState(i18n.CurrentTranslator(), homeViewStateInput{
 			KeepHistory: a.prefs.Privacy.KeepHistory, Features: a.prefs.Features, Now: now,
-			Activity: a.act.log, ActivityRead: a.act.loaded, ActivityPage: a.act.page, Usage: a.hm.usage,
+			Activity: a.act.log, ActivityRead: a.act.loaded, ActivityPage: a.act.page, Usage: usage,
 		})
 		a.hm.viewKey = key
 	}

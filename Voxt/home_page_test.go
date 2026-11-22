@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -116,6 +118,98 @@ func TestHomeLastSpeechModel(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Hotkeys = nil })
 	if !hasExact(tt, "fixture-speech-model") {
 		t.Fatalf("no shortcut hid the last speech model: %q", tt.Texts())
+	}
+}
+
+type homeUsageLocal struct {
+	fakeLocal
+	remoteName string
+}
+
+func (localServices homeUsageLocal) Installed(kind local.Kind) []local.Model {
+	installed := localServices.fakeLocal.Installed(kind)
+	if kind == local.ASR {
+		name := localServices.remoteName
+		if name == "" {
+			name = "OpenAI Transcribe"
+		}
+		return append(installed, local.Model{Kind: local.ASR, ID: "openai", Name: name})
+	}
+	return installed
+}
+
+func TestHomeRemoteSpeechModel(t *testing.T) {
+	a, tester := homeTester(t)
+	a.local = &homeUsageLocal{fakeLocal: fakeLocal{ASRP: &fakeTranscriptions{}}, remoteName: "OpenAI Transcribe · gpt-4o-mini-transcribe"}
+	entry := store.Entry{ID: "remote", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone, Result: "hello", ASRProvider: "openai", ASRModel: "gpt-4o-mini-transcribe"}
+	if err := a.lib.store.History().Put(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	a.historyChanged()
+	if !hasExact(tester, "OpenAI Transcribe · gpt-4o-mini-transcribe") {
+		t.Fatalf("remote speech model: %q", tester.Texts())
+	}
+	a.local.(*homeUsageLocal).remoteName = "OpenAI Transcribe · gpt-new"
+	if !hasExact(tester, "OpenAI Transcribe · gpt-new · gpt-4o-mini-transcribe") {
+		t.Fatalf("updated remote speech model: %q", tester.Texts())
+	}
+}
+
+func TestHomeModelNameLocale(t *testing.T) {
+	i18n.SetLocale("en")
+	t.Cleanup(func() { i18n.SetLocale("en") })
+	a, tester := homeTester(t)
+	entry := store.Entry{ID: "dictation", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone, Result: "hello", ASRModel: dictation.ModelID}
+	if err := a.lib.store.History().Put(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	a.historyChanged()
+	if !has(tester, "System dictation") {
+		t.Fatalf("English model name: %q", tester.Texts())
+	}
+	i18n.SetLocale("zh-Hans")
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if !has(tester, "系统听写") {
+		t.Fatalf("Chinese model name: %q", tester.Texts())
+	}
+}
+
+func TestReadHomeUsageModelIdentity(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
+	for _, test := range []struct {
+		name         string
+		entries      []store.Entry
+		wantProvider string
+		wantModel    string
+		wantASRCount int
+	}{
+		{name: "empty new entry keeps looking", entries: []store.Entry{
+			{ID: "empty", Kind: store.KindTranscribe, CreatedAt: now, Status: store.StatusDone, Result: "new"},
+			{ID: "old", Kind: store.KindTranscribe, CreatedAt: now.AddDate(0, 0, -200), Status: store.StatusDone, Result: "old", ASRProvider: "openai", ASRModel: "gpt-old"},
+		}, wantProvider: "openai", wantModel: "gpt-old"},
+		{name: "provider-only is not overwritten", entries: []store.Entry{
+			{ID: "provider", Kind: store.KindTranscribe, CreatedAt: now, Status: store.StatusDone, Result: "new", ASRProvider: "openai"},
+			{ID: "model", Kind: store.KindTranscribe, CreatedAt: now.AddDate(0, 0, -10), Status: store.StatusDone, Result: "old", ASRModel: "local-model"},
+		}, wantProvider: "openai"},
+		{name: "provider outside the window", entries: []store.Entry{
+			{ID: "old", Kind: store.KindTranscribe, CreatedAt: now.AddDate(0, 0, -200), Status: store.StatusDone, Result: "old", ASRProvider: "openai", ASRMS: 9000},
+		}, wantProvider: "openai"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			for _, entry := range test.entries {
+				if err := a.lib.store.History().Put(context.Background(), entry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			usage, err := readHomeUsage(context.Background(), a.lib.store.History(), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if usage.lastProvider != test.wantProvider || usage.lastModel != test.wantModel || usage.asrCount != test.wantASRCount {
+				t.Fatalf("usage %+v, want provider %q model %q and %d timed results", usage, test.wantProvider, test.wantModel, test.wantASRCount)
+			}
+		})
 	}
 }
 

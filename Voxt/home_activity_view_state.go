@@ -23,11 +23,12 @@ type homeActivityDayViewState struct {
 	// Level is the square's shade (activity.Level); Future a day after
 	// today, drawn empty.
 	Level int `json:"level"`
-	// Date and Count are the two lines of the square's tooltip: its day,
-	// and its results or that it had none.
-	Date   string `json:"date"`
-	Count  string `json:"count"`
-	Future bool   `json:"future,omitempty"`
+	// Date, Count and Characters are the square's tooltip: its day, its
+	// results or that it had none, and the characters those results wrote.
+	Date       string `json:"date"`
+	Count      string `json:"count"`
+	Characters string `json:"characters,omitempty"`
+	Future     bool   `json:"future,omitempty"`
 }
 
 type homeActivityMonthViewState struct {
@@ -67,11 +68,15 @@ func buildHomeActivityViewState(translator *i18n.Translator, log activity.Log, p
 	for week, days := range weeks {
 		for weekday, day := range days {
 			key := activity.DayKey(day)
-			count := log.Get(day).Count
-			state.Weeks[week][weekday] = homeActivityDayViewState{
-				Level: activity.Level(count), Future: key > today,
-				Date: homeActivityDate(translator, day), Count: homeActivityCount(translator, count),
+			result := log.Get(day)
+			viewDay := homeActivityDayViewState{
+				Level: activity.Level(result.Count), Future: key > today,
+				Date: homeActivityDate(translator, day), Count: homeActivityCount(translator, result.Count),
 			}
+			if result.Chars > 0 {
+				viewDay.Characters = groupDigits(result.Chars) + " " + translator.N(result.Chars, "character", "characters")
+			}
+			state.Weeks[week][weekday] = viewDay
 			if day.Day() == 1 {
 				state.Months = append(state.Months, homeActivityMonthViewState{Week: week, Label: homeActivityMonth(translator, day.Month())})
 			}
@@ -101,6 +106,13 @@ func homeActivityCount(translator *i18n.Translator, count int) string {
 		return translator.T("No activity")
 	}
 	return translator.N(count, "%d result", "%d results", count)
+}
+
+func (day homeActivityDayViewState) summary() string {
+	if day.Characters != "" {
+		return day.Count + " " + day.Characters
+	}
+	return day.Count
 }
 
 func homeActivityMonth(translator *i18n.Translator, month time.Month) string {

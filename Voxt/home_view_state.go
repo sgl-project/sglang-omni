@@ -20,9 +20,11 @@ type homeSloganViewState struct {
 }
 
 type homeUsage struct {
-	asrMS     int64
-	asrCount  int
-	lastModel string
+	asrMS         int64
+	asrCount      int
+	lastProvider  string
+	lastModel     string
+	lastModelName string
 }
 
 type homeViewState struct {
@@ -43,9 +45,13 @@ type homeViewStateInput struct {
 }
 
 func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) homeViewState {
+	lastModelName := input.Usage.lastModelName
+	if lastModelName == "" {
+		lastModelName = uitext.ModelNameFor(translator, input.Usage.lastModel)
+	}
 	state := homeViewState{
 		KeepHistory: input.KeepHistory,
-		Slogan:      buildHomeSloganViewState(translator, input.Features, input.Usage.lastModel),
+		Slogan:      buildHomeSloganViewState(translator, input.Features, lastModelName),
 	}
 	if input.ActivityRead {
 		activity := buildHomeActivityViewState(translator, input.Activity, input.ActivityPage, input.Now, input.Usage)
@@ -62,7 +68,7 @@ func buildHomeSloganViewState(translator *i18n.Translator, features settings.Fea
 	before, keys, after := sloganHintFor(translator, first)
 	state := homeSloganViewState{Before: before, Keys: keys, After: after}
 	if lastModel != "" {
-		state.Model = uitext.ModelNameFor(translator, lastModel)
+		state.Model = lastModel
 	}
 	return state
 }
