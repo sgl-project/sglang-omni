@@ -55,9 +55,75 @@ func requestsInputTemplate(input []string, name string) bool {
 	if len(input) > 1 {
 		request = input[1]
 	}
-	words := strings.FieldsFunc(strings.ToLower(request), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
+	splitWords := func(text string) []string {
+		return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
+		})
+	}
+	hasWord := func(parts []string, targets ...string) bool {
+		for _, part := range parts {
+			for _, target := range targets {
+				if part == target {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	englishActions := []string{"write", "create", "generate", "make", "produce", "use", "turn", "give", "show", "output", "return", "provide", "convert", "rewrite", "wrap", "need", "want"}
+	chineseActions := []string{"写", "生成", "创建", "输出", "返回", "给", "用", "改", "按", "做"}
+	chineseDenials := []string{"不要", "不用", "不需要", "不必", "无需", "无须", "勿"}
+	positiveMention, negatedMention := false, false
+	clauseRequest := strings.NewReplacer(" and ", ", ", " but ", ", ", " so ", ", ").Replace(strings.ToLower(request))
+	clauses := strings.FieldsFunc(clauseRequest, func(r rune) bool {
+		return r == ',' || r == '，' || r == '.' || r == '。' || r == ';' || r == '；' || r == '!' || r == '！' || r == '?' || r == '？' || r == '\n'
 	})
+	for _, clause := range clauses {
+		clauseWords := splitWords(clause)
+		nameIndex := -1
+		for i, word := range clauseWords {
+			if word == name {
+				nameIndex = i
+				break
+			}
+		}
+		if nameIndex < 0 || !hasWord(clauseWords, "tag", "tags", "template", "templates", "prompt", "prompts") && !strings.Contains(clause, "标签") && !strings.Contains(clause, "模板") && !strings.Contains(clause, "提示词") {
+			continue
+		}
+		negated := false
+		nameAt := strings.Index(clause, name)
+		prefix := clause[:nameAt]
+		for _, denial := range chineseDenials {
+			negated = negated || strings.Contains(prefix, denial)
+		}
+		for _, action := range chineseActions {
+			for _, denial := range []string{"不", "别", "勿"} {
+				if strings.Contains(prefix, denial+action) && (denial != "别" || !strings.Contains(prefix, "分别"+action)) {
+					negated = true
+				}
+			}
+		}
+		for i := 1; i < nameIndex; i++ {
+			if !hasWord(clauseWords[i:i+1], englishActions...) {
+				continue
+			}
+			previous := clauseWords[i-1]
+			directNegation := previous == "not" || previous == "never" || previous == "t" && i > 1 && strings.HasSuffix(clauseWords[i-2], "n")
+			contractionWithAdverb := i > 2 && clauseWords[i-2] == "t" && strings.HasSuffix(clauseWords[i-3], "n") && (previous == "really" || previous == "actually")
+			if directNegation || contractionWithAdverb || i > 1 && (clauseWords[i-2] == "not" || clauseWords[i-2] == "never") {
+				negated = true
+			}
+		}
+		if negated {
+			negatedMention = true
+		} else {
+			positiveMention = true
+		}
+	}
+	if negatedMention && !positiveMention {
+		return false
+	}
+	words := splitWords(request)
 	named := false
 	for _, word := range words {
 		if word == name {
@@ -69,13 +135,17 @@ func requestsInputTemplate(input []string, name string) bool {
 		return false
 	}
 	question := strings.ContainsAny(request, "?？")
-	for _, action := range []string{"写", "生成", "创建", "输出", "返回", "给", "用", "改", "按", "做"} {
+	for _, action := range chineseActions {
 		actionAt := strings.Index(request, action)
 		if actionAt < 0 {
 			continue
 		}
 		prefix := strings.TrimSuffix(request[:actionAt], "使")
-		if strings.HasSuffix(prefix, "不要") || strings.HasSuffix(prefix, "不用") || strings.HasSuffix(prefix, "别") || question && action == "用" {
+		negated := strings.HasSuffix(prefix, "不") || strings.HasSuffix(prefix, "别") && !strings.HasSuffix(prefix, "分别")
+		for _, denial := range chineseDenials {
+			negated = negated || strings.HasSuffix(prefix, denial)
+		}
+		if negated || question && action == "用" {
 			continue
 		}
 		rest := request[actionAt+len(action):]
@@ -92,36 +162,24 @@ func requestsInputTemplate(input []string, name string) bool {
 			}
 		}
 	}
-	hasWord := func(parts []string, targets ...string) bool {
-		for _, part := range parts {
-			for _, target := range targets {
-				if part == target {
-					return true
-				}
-			}
-		}
-		return false
-	}
 	hasAction := func(parts []string, targets ...string) bool {
 		for i, part := range parts {
 			if !hasWord(parts[i:i+1], targets...) {
 				continue
 			}
-			if question && (part == "use" || part == "need" || part == "want") {
-				continue
-			}
-			if i > 0 && (parts[i-1] == "not" || parts[i-1] == "never") {
-				continue
-			}
-			if i > 1 && parts[i-1] == "t" && parts[i-2] == "don" {
+			negated := i > 0 && (parts[i-1] == "not" || parts[i-1] == "never") || i > 1 && parts[i-1] == "t" && strings.HasSuffix(parts[i-2], "n")
+			if negated || question && (part == "use" || part == "need" || part == "want") {
 				continue
 			}
 			return true
 		}
 		return false
 	}
-	if hasAction(words, "write", "create", "generate", "make", "produce", "use", "turn", "give", "show", "output", "return", "provide", "convert", "rewrite", "wrap", "need", "want") && hasWord(words, "tag", "tags", "template", "templates") {
+	if hasAction(words, englishActions...) && hasWord(words, "tag", "tags", "template", "templates") {
 		return true
+	}
+	if !hasWord(words, "prompt", "prompts") {
+		return false
 	}
 	// Bare prompt wording counts only for an indefinite request or an explicit transformation.
 	for i, word := range words {
