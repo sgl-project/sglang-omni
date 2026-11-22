@@ -44,3 +44,4 @@ report	fix	symptom	level	check
 #4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
 #4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
 #4195	#4102	System audio silence padding drops level events, so the meeting waveform stays stale and the silence warning cannot start	L	testIdleSystemCaptureEmitsSilenceLevels
+#4394	#4420	Meeting settings do not say that speaker labels need MOSS-Transcribe-Diarize and an explicit Chinese or English spoken language	L	TestMeetingSpeechSettings
