@@ -136,7 +136,7 @@ func (a *app) homePageModel(now time.Time) homeViewState {
 	}
 	if key != a.hm.viewKey {
 		a.hm.view = buildHomeViewState(i18n.CurrentTranslator(), homeViewStateInput{
-			KeepHistory: a.prefs.Privacy.KeepHistory, Features: a.prefs.Features, Now: now,
+			KeepHistory: a.prefs.Privacy.KeepHistory, Error: a.hm.err, Features: a.prefs.Features, Now: now,
 			Activity: a.act.log, ActivityRead: a.act.loaded, ActivityPage: a.act.page, Usage: a.hm.usage,
 		})
 		a.hm.viewKey = key

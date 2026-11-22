@@ -17,7 +17,7 @@ func TestHomeFixtureCoverage(t *testing.T) {
 func checkHomeFixtureValues(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
 	t.Helper()
 	for _, name := range []string{
-		"home-loading", "home-empty", "home-normal", "home-history-off", "home-history-off-empty",
+		"home-loading", "home-empty", "home-normal", "home-error", "home-history-off", "home-history-off-empty",
 		"home-shortcut-missing", "home-shortcut-double", "home-shortcut-long",
 	} {
 		if _, ok := fixtures[name]; !ok {

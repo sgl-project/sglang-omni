@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -28,6 +29,7 @@ type sessionFixtureScenario struct {
 	cardPrefix     int
 	apply          func(*app)
 	after          func(*app)
+	liveLines      bool
 	variant        bool
 }
 
@@ -44,10 +46,11 @@ func appendSessionFixtureScenarios(scenarios []meetingFixtureScenario) []meeting
 func sessionFixtureScenarios() []sessionFixtureScenario {
 	var scenarios []sessionFixtureScenario
 	for index, recipe := range sessionOverlayBenchmarkStates(&app{}, meetingFixtureNow) {
-		scenarios = append(scenarios, sessionFixtureScenario{name: recipe.name, source: sessionFixtureBenchmark, benchmarkIndex: index})
+		liveLines := recipe.liveLines || recipe.snapshot.State == session.Done && strings.TrimSpace(recipe.snapshot.Result) != ""
+		scenarios = append(scenarios, sessionFixtureScenario{name: recipe.name, source: sessionFixtureBenchmark, benchmarkIndex: index, liveLines: liveLines})
 	}
 	for index, step := range cardSteps() {
-		scenarios = append(scenarios, sessionFixtureScenario{name: "card-" + step.name, source: sessionFixtureCardPrefix, cardPrefix: index})
+		scenarios = append(scenarios, sessionFixtureScenario{name: "card-" + step.name, source: sessionFixtureCardPrefix, cardPrefix: index, liveLines: true})
 	}
 
 	scenarios = append(scenarios,
@@ -129,7 +132,7 @@ func sessionFixtureScenarios() []sessionFixtureScenario {
 	)
 
 	scenarios = append(scenarios,
-		sessionFixtureScenario{name: "session-notice-over-card", source: sessionFixtureCustom, apply: func(a *app) {
+		sessionFixtureScenario{name: "session-notice-over-card", source: sessionFixtureCustom, liveLines: true, apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "held-card", State: session.Recording})
 			snap(a, session.Snapshot{ID: "held-card", State: session.Done, Card: true, Delivery: deliver.ReasonNotEditable, Result: "Held answer"})
 			a.setAside(false)
@@ -146,7 +149,7 @@ func sessionFixtureScenarios() []sessionFixtureScenario {
 			snap(a, session.Snapshot{ID: "session-pill-note", State: session.Recording, StartedAt: meetingFixtureNow, HeardAt: meetingFixtureNow, Partial: "original live words"})
 			snap(a, session.Snapshot{ID: "session-pill-note", State: session.Recording, StartedAt: meetingFixtureNow, HeardAt: meetingFixtureNow, Partial: "original live words", Switched: 1, Device: "Fixture microphone"})
 		}},
-		sessionFixtureScenario{name: "session-inserting-hidden", source: sessionFixtureCustom, apply: func(a *app) {
+		sessionFixtureScenario{name: "session-inserting-hidden", source: sessionFixtureCustom, liveLines: true, apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "session-inserting", State: session.Recording})
 			snap(a, session.Snapshot{ID: "session-inserting", State: session.Done, Card: true, Delivery: deliver.ReasonNotEditable, Result: "Insert this answer"})
 			a.answer.inserting = true
@@ -154,7 +157,7 @@ func sessionFixtureScenarios() []sessionFixtureScenario {
 		}},
 		// A conversation whose answers carry Markdown (a bubble renders
 		// it), while the user's own markers stay plain text.
-		sessionFixtureScenario{name: "session-markdown-conversation", source: sessionFixtureCustom, apply: func(a *app) {
+		sessionFixtureScenario{name: "session-markdown-conversation", source: sessionFixtureCustom, liveLines: true, apply: func(a *app) {
 			a.answer = answerCard{open: true, id: "first", kind: store.KindRewrite, conversation: true}
 			a.answer.turns = []compose.Turn{{
 				Instruction: "keep the **stars** and `ticks` as they are",
@@ -180,7 +183,8 @@ func sessionFixtureScenarios() []sessionFixtureScenario {
 func sessionBenchmarkFixture(name string) sessionFixtureScenario {
 	for index, recipe := range sessionOverlayBenchmarkStates(&app{}, meetingFixtureNow) {
 		if recipe.name == name {
-			return sessionFixtureScenario{name: name, source: sessionFixtureBenchmark, benchmarkIndex: index}
+			liveLines := recipe.liveLines || recipe.snapshot.State == session.Done && strings.TrimSpace(recipe.snapshot.Result) != ""
+			return sessionFixtureScenario{name: name, source: sessionFixtureBenchmark, benchmarkIndex: index, liveLines: liveLines}
 		}
 	}
 	panic("unknown session benchmark fixture " + name)
@@ -189,28 +193,29 @@ func sessionBenchmarkFixture(name string) sessionFixtureScenario {
 func sessionCardPrefixFixture(name string) sessionFixtureScenario {
 	for index, step := range cardSteps() {
 		if step.name == name {
-			return sessionFixtureScenario{name: "card-" + name, source: sessionFixtureCardPrefix, cardPrefix: index}
+			return sessionFixtureScenario{name: "card-" + name, source: sessionFixtureCardPrefix, cardPrefix: index, liveLines: true}
 		}
 	}
 	panic("unknown session card fixture " + name)
 }
 
 func sessionProblemFixture(name, code string, configure func(*session.Snapshot)) sessionFixtureScenario {
-	return sessionFixtureScenario{name: name, source: sessionFixtureCustom, apply: func(a *app) {
-		final := session.Snapshot{
-			ID: "session-problem", State: session.Failed,
-			Problem: &session.Problem{Code: code, Err: errors.New("fixture problem detail")},
-		}
-		if configure != nil {
-			configure(&final)
-		}
+	final := session.Snapshot{
+		ID: "session-problem", State: session.Failed,
+		Problem: &session.Problem{Code: code, Err: errors.New("fixture problem detail")},
+	}
+	if configure != nil {
+		configure(&final)
+	}
+	liveLines := final.State == session.Done && strings.TrimSpace(final.Result) != ""
+	return sessionFixtureScenario{name: name, source: sessionFixtureCustom, liveLines: liveLines, apply: func(a *app) {
 		snap(a, session.Snapshot{ID: final.ID, Kind: final.Kind, State: session.Recording, StartedAt: meetingFixtureNow})
 		snap(a, final)
 	}}
 }
 
 func sessionNoticeChainFixture(name string, advance bool) sessionFixtureScenario {
-	return sessionFixtureScenario{name: name, source: sessionFixtureCustom, apply: func(a *app) {
+	return sessionFixtureScenario{name: name, source: sessionFixtureCustom, liveLines: true, apply: func(a *app) {
 		timers := new(fakeTimers).install(a)
 		snap(a, session.Snapshot{ID: "session-notice-chain", State: session.Recording})
 		snap(a, session.Snapshot{

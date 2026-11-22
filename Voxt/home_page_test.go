@@ -119,6 +119,16 @@ func TestHomeLastSpeechModel(t *testing.T) {
 	}
 }
 
+func TestHomeHistoryReadError(t *testing.T) {
+	a, tt := homeTester(t)
+	a.hm.err = "fixture read failed"
+	a.hm.gen++
+	frames(tt)
+	if !hasExact(tt, "Could not read the history.") {
+		t.Fatalf("the history read error is missing: %q", tt.Texts())
+	}
+}
+
 func TestReadHomeUsage(t *testing.T) {
 	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
 	a, _, _ := newTestApp(t)
@@ -294,6 +304,9 @@ func TestHomeShortcutStartsNormalSession(t *testing.T) {
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
 			if a.sess.Try || a.sess.State != session.Done || a.sess.Result != "Hello, Voxt." {
 				t.Fatalf("end %+v", a.sess)
+			}
+			if !a.settings.Get().Setup.Tried {
+				t.Fatal("a successful session did not save the first-result setting")
 			}
 			shown := a.sess.Inserted || a.answer.open || a.notice != nil && a.notice.text == copiedNotice
 			if !shown {
