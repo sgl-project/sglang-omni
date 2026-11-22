@@ -45,6 +45,14 @@ WeightMap LoadedWeights(WeightMap weights) {
     } else {
     }
   }
+  // M1 has no hardware bf16, so the encoder's bf16 GEMMs run at fp32 speed;
+  // fp16 GEMMs measure ~20-25% faster at the encoder's shapes. EncodeAudio
+  // casts its output back to the adaptor's dtype below.
+  for (auto &[name, array] : weights) {
+    if (name.rfind(std::string(kWhisperPrefix) + ".", 0) == 0) {
+      array = mx::astype(array, mx::float16);
+    }
+  }
   return weights;
 }
 
@@ -147,6 +155,10 @@ mx::array MossTranscribeDiarize::EncodeAudio(
     x = WhisperEncoderLayer(x, layer);
   }
   x = checkpoint_.LayerNorm(x, whisper + ".layer_norm", kWhisperLayerNormEps);
+  // The encoder ran in fp16 (see LoadedWeights); the adaptor and everything
+  // downstream keep the checkpoint dtype.
+  x = mx::astype(
+      x, checkpoint_.Weight(std::string(kAdaptorPrefix) + ".0.weight").dtype());
 
   // Note (Dayuxiaoshui): a window keeps a merge-size multiple of the frames its
   // samples cover, so no merged token mixes two windows.
