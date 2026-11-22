@@ -12,7 +12,7 @@ Voxt keeps the texts of every dictation but **no recordings by default**, and re
 2. Settings → Privacy → turn on **Keep recordings** (保存录音).
 3. Dictate with Transcribe as usual, with **Clean up with a language model** (用语言模型整理) on. Translate and Rewrite are left out of the benchmark.
 
-If tapping right Option does nothing, a key remapper such as Karabiner-Elements may be changing that key; record another shortcut on the Transcribe page.
+If tapping right Option does nothing, a key remapper such as Karabiner-Elements may be changing that key; record another shortcut in Settings → Transcribe.
 
 ## 2. Export
 

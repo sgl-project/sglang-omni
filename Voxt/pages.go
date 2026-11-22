@@ -1,10 +1,9 @@
 package main
 
 // The pages of the sidebar: Home (home_page.go), History
-// (history_page.go), Transcribe, Translate and Rewrite
-// (feature_page.go), App enhancement (appenhance_page.go), Dictionary
-// (dictionary_page.go) and Logs (shell_logs.go). Permissions and the
-// model resources are sections of the settings dialog.
+// (history_page.go), App enhancement (appenhance_page.go), Dictionary
+// (dictionary_page.go) and Logs (shell_logs.go). Permissions, the model
+// resources and the three features are sections of the settings dialog.
 
 import (
 	"time"
@@ -75,15 +74,6 @@ func (a *app) page(c *uiContext, p navPage) {
 	case "/logs":
 		logsPage(c, a.logsModel(), a, a.logsLocal())
 		return
-	case "/transcribe":
-		a.transcribePage(c) // feature_page.go
-		return
-	case "/translate":
-		a.translatePage(c) // feature_page.go
-		return
-	case "/rewrite":
-		a.rewritePage(c) // feature_page.go
-		return
 	case "/history":
 		a.prepareHistoryPage()
 		model := a.historyPageModel(time.Now())
@@ -126,15 +116,6 @@ func (a *app) featureShortcuts(c *uiContext, feature string) {
 	state := a.featureShortcutsModel(feature)
 	featureShortcuts(c, feature, &state, a, a.fui(feature))
 }
-
-func (a *app) featurePage(c *uiContext, feature string) {
-	state, tryActions := a.featurePageModel(feature)
-	featurePage(c, &state, a, a.fui(feature), tryActions)
-}
-
-func (a *app) transcribePage(c *uiContext) { a.featurePage(c, hotkey.Transcribe) }
-func (a *app) translatePage(c *uiContext)  { a.featurePage(c, hotkey.Translate) }
-func (a *app) rewritePage(c *uiContext)    { a.featurePage(c, hotkey.Rewrite) }
 
 func (a *app) tryCard(c *uiContext, options tryOpts) {
 	state, actions := a.tryCardState(options)

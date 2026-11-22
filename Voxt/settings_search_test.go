@@ -44,3 +44,13 @@ func TestSettingsSearchFindsRows(t *testing.T) {
 		t.Errorf(`storage "storage": %q`, tt.Texts())
 	}
 }
+
+func TestSettingsSearchFeatureRows(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/translate")
+	frames(tt)
+	a.settingsForm.search = "target"
+	if !has(tt, "Target language for Translate") {
+		t.Errorf("feature row not found: %q", firstTexts(tt))
+	}
+}

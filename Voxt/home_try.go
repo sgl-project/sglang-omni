@@ -43,7 +43,13 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 		}
 		return placeIgnore
 	}
-	if a.settingsOpen || a.textFocused() {
+	if a.textFocused() {
+		return placeNone
+	}
+	if a.settingsOpen {
+		if a.setRouter.Path() == "/"+string(kind) {
+			return placeFeature
+		}
 		return placeNone
 	}
 	switch a.router.Path() {

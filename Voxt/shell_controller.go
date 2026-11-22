@@ -288,12 +288,17 @@ func (a *app) view(c *uiContext) {
 	model.Opening = a.openingModel(c.Preferences().ReduceMotion) // opening_controller.go
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {
 		a.transparencyDragging = false
-		settingsDialog(c, a.settingsDialogModel(now), a, settingsDialogLocalUI{
+		settingsState, featureTryActions := a.settingsDialogModel(now)
+		var featureLocal *featureUI
+		if settingsState.Feature != nil {
+			featureLocal = a.fui(settingsState.Feature.Feature)
+		}
+		settingsDialog(c, settingsState, a, settingsDialogLocalUI{
 			Open: &a.settingsOpen, Router: a.setRouter, Form: &a.settingsForm,
 			HistoryAccess: &a.histAccessUI, Storage: &a.storageState.settingsStorageLocalUI,
-			Updates: &a.updUI, Models: &a.modelsLocalUI,
+			Updates: &a.updUI, Models: &a.modelsLocalUI, Feature: featureLocal,
 			Remote: remoteLocalUI{wait: &a.llmWaitLocalUI, dialog: &a.provDlg.providerDialogLocalUI},
-		})
+		}, featureTryActions)
 		// The transparency slider previews while dragged and saves once it rests.
 		if !a.transparencyDragging && int(a.windowTransparency) != a.prefs.Appearance.WindowTransparency {
 			a.saveWindowTransparency()

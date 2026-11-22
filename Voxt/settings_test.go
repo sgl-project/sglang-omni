@@ -94,12 +94,12 @@ func TestShortcutsSettings(t *testing.T) {
 	// bottom; with taller fonts (Linux CI) it is below the window.
 	scrollToText(tt, "Paste the last result ⌃⌥V")
 	click(t, tt, "Paste the last result ⌃⌥V")
-	if a.settingsOpen || a.shownPath() != "/transcribe" {
+	if !a.settingsOpen || a.shownPath() != "/settings/transcribe" {
 		t.Fatalf("row click: %v %s", a.settingsOpen, a.shownPath())
 	}
 	a.navigate("/settings/shortcuts")
 	click(t, tt, "Translate Right ⌥")
-	if a.shownPath() != "/translate" {
+	if a.shownPath() != "/settings/translate" {
 		t.Fatalf("Translate row: %s", a.shownPath())
 	}
 }
@@ -306,10 +306,9 @@ func TestHideNotesAndMeetings(t *testing.T) {
 }
 
 // TestHideFeatures: unchecking Translate in Settings → General takes its
-// page out of the sidebar and ⌘K and its shortcuts out of the event tap;
-// a hidden App enhancement's scene rules are off; checking them brings
-// everything back. Voxt 1.x could hide unused features; Voxt 2
-// always showed them (#3644).
+// Settings command out of ⌘K and its shortcuts out of the event tap;
+// App enhancement leaves the sidebar and its scene rules turn off;
+// checking them brings everything back. Voxt 1.x could hide unused features.
 func TestHideFeatures(t *testing.T) {
 	if settings.HideTranslate != hotkey.Translate || settings.HideRewrite != hotkey.Rewrite {
 		t.Fatal("Features.Hidden's ids are not internal/hotkey's")
@@ -319,7 +318,7 @@ func TestHideFeatures(t *testing.T) {
 	state := func() (sidebar, palette, keys, scenes bool) {
 		a.navigate("/home")
 		frames(tt)
-		sidebar = hasExact(tt, "Translate")
+		sidebar = hasExact(tt, "App enhancement")
 		defer func() {
 			a.navigate("/settings/general")
 			frames(tt)
@@ -329,7 +328,7 @@ func TestHideFeatures(t *testing.T) {
 			}
 		}()
 		for _, cmd := range a.paletteItems() {
-			palette = palette || cmd.id == "go/translate"
+			palette = palette || cmd.id == "go/settings/translate"
 		}
 		for _, b := range a.hotkeyPlan().Bindings {
 			keys = keys || strings.HasPrefix(b.ID, hotkey.Translate+"/")

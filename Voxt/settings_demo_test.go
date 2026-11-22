@@ -154,6 +154,8 @@ func settingsDemoGeneralCases() []settingsDemoCase {
 
 func settingsDemoExpectedText(dialog *settingsDialogViewState) string {
 	switch {
+	case dialog.Feature != nil:
+		return dialog.Feature.Caption
 	case dialog.Audio != nil:
 		audio := dialog.Audio
 		if audio.DevicesError != "" {

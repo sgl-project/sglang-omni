@@ -14,6 +14,9 @@ func settingsSections() []settingsSectionCatalogEntry {
 func buildSettingsSections(translator *i18n.Translator) []settingsSectionCatalogEntry {
 	return []settingsSectionCatalogEntry{
 		{"general", translator.T("General"), "General language menu bar login"},
+		{"transcribe", translator.T("Transcribe"), "Transcribe dictation clean-up shortcut"},
+		{"translate", translator.T("Translate"), "Translate target language shortcut"},
+		{"rewrite", translator.T("Rewrite"), "Rewrite answer shortcut"},
 		{"models", translator.T("Speech models"), "Speech models download delete install recognition"},
 		{"language-models", translator.T("Language models"), "Language models services providers API"},
 		{"permissions", translator.T("Permissions"), "Permissions microphone accessibility privacy"},
@@ -41,6 +44,7 @@ type settingsDialogViewState struct {
 	ShownPath   string                           `json:"shown_path"`
 	Sections    []settingsDialogSectionViewState `json:"sections"`
 	General     *settingsGeneralViewState        `json:"general,omitempty"`
+	Feature     *featureViewState                `json:"feature,omitempty"`
 	Models      *settingsModelsViewState         `json:"models,omitempty"`
 	Remote      *remoteViewState                 `json:"language_models,omitempty"`
 	Permissions *permissionsViewState            `json:"permissions,omitempty"`

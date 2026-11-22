@@ -16,15 +16,24 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func promptPageTester(t *testing.T, path string) (*app, *ui.Tester) {
+	t.Helper()
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate(path)
+	frames(tt)
+	return a, tt
+}
+
 func TestPromptSaveUsesFullSystem(t *testing.T) {
-	a, tt := pageTester(t, "/translate")
-	click(t, tt, "Your rules")
-	click(t, tt, "System prompt for Translate")
+	a, tt := promptPageTester(t, "/translate")
+	clickPrompt(t, tt, "Your rules")
+	clickPrompt(t, tt, "System prompt for Translate")
 	custom := "CUSTOM PROMPT LINE"
 	a.fui(hotkey.Translate).prompt = custom
 	a.fui(hotkey.Translate).promptDirty = true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "What the language model receives")
+	clickPrompt(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != custom {
 		t.Fatalf("saved %q", p)
 	}
@@ -38,17 +47,17 @@ func TestPromptSaveUsesFullSystem(t *testing.T) {
 }
 
 func TestPromptResetRestoresBuiltin(t *testing.T) {
-	a, tt := pageTester(t, "/translate")
-	click(t, tt, "Your rules")
+	a, tt := promptPageTester(t, "/translate")
+	clickPrompt(t, tt, "Your rules")
 	builtin := a.promptBuiltin(hotkey.Translate)
 	if strings.TrimSpace(builtin) == "" {
 		t.Fatal("no builtin")
 	}
-	click(t, tt, "System prompt for Translate")
+	clickPrompt(t, tt, "System prompt for Translate")
 	a.fui(hotkey.Translate).prompt = "TEMP OVERRIDE"
 	a.fui(hotkey.Translate).promptDirty = true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "Reset to default prompt")
+	clickPrompt(t, tt, "Reset to default prompt")
 	if got := a.lib.settings.Get().Features.Translate.Prompt; got != "" {
 		t.Fatalf("settings %q", got)
 	}
@@ -64,7 +73,7 @@ func TestPromptResetRestoresBuiltin(t *testing.T) {
 func TestRulesFieldGrows(t *testing.T) {
 	a, tt := pageTester(t, "/transcribe")
 	tt.SetSize(windowWidth, 9000) // room for the whole field
-	click(t, tt, "Your rules")
+	clickPrompt(t, tt, "Your rules")
 	const label = "System prompt for Transcribe"
 	u := a.fui(hotkey.Transcribe)
 	u.prompt, u.promptDirty = "x", true
@@ -84,8 +93,21 @@ func TestRulesFieldGrows(t *testing.T) {
 // soon as it reached the pointer); one that starts over the field
 // scrolls the page too, the field having nothing of its own to scroll.
 func TestRulesFieldLetsThePageScroll(t *testing.T) {
-	a, _, tt := newTestApp(t)
+	a, _, _ := newTestApp(t)
 	a.navigate("/transcribe")
+	a.settingsOpen = false
+	tt := ui.NewTester(func(c *ui.Context) {
+		a.mainUI = c.Services()
+		shellView(c, a.shellModel(time.Now()), a, a.shellLocal(), func() {
+			state, tryActions := a.featurePageModel(hotkey.Transcribe)
+			columnPageHeader(c, state.Title, nil)
+			ui.Scroll(c.Key(state.Prefix + "-scroll")).Grow(1).MinHeight(0).Children(func() {
+				pageColumn(c).Gap(px(c.Theme(), sp3)).Children(func() {
+					featureSettings(c, &state, a, a.fui(hotkey.Transcribe), tryActions)
+				})
+			})
+		}, func() {})
+	}, windowWidth, windowHeight)
 	frames(tt)
 	const label = "System prompt for Transcribe"
 	u := a.fui(hotkey.Transcribe)
@@ -97,7 +119,7 @@ func TestRulesFieldLetsThePageScroll(t *testing.T) {
 		frames(tt)
 		tt.Advance(time.Second)
 	}
-	click(t, tt, "Your rules")
+	clickPrompt(t, tt, "Your rules")
 	field, ok := tt.Find(label)
 	if !ok {
 		t.Fatalf("no rules field: %q", firstTexts(tt))
@@ -108,6 +130,7 @@ func TestRulesFieldLetsThePageScroll(t *testing.T) {
 	for range 4 { // the same gesture, the field under the pointer now
 		tt.Scroll(x, y, 0, 60)
 	}
+	tt.Advance(time.Second)
 	frames(tt)
 	after, _ := tt.Find(label)
 	if before.Y-after.Y < 200 {
@@ -146,7 +169,7 @@ func openLongRules(t *testing.T, end string) (*app, *ui.Tester) {
 		frames(tt)
 		tt.Advance(time.Second)
 	}
-	click(t, tt, "Your rules")
+	clickPrompt(t, tt, "Your rules")
 	return a, tt
 }
 
@@ -174,8 +197,7 @@ func TestRulesCaretInView(t *testing.T) {
 // stayed below the window.
 func TestRulesFindShowsMatch(t *testing.T) {
 	_, tt := openLongRules(t, "zebra")
-	tt.Key(ui.Cmd, ui.KeyF)
-	frames(tt)
+	clickPrompt(t, tt, "Find in the prompt")
 	tt.Type("zebra")
 	tt.Key(0, ui.KeyEnter)
 	frames(tt)
@@ -197,17 +219,16 @@ func TestRulesFindShowsMatch(t *testing.T) {
 	}
 }
 
-// TestRulesFind: ⌘F on a feature page opens Your rules with Find
-// focused; Find counts the matches, ignoring case, and Return steps
-// through them, back to the first after the last, Shift+Return back.
+// TestRulesFind: the prompt's Find counts matches, ignoring case, and
+// Return steps through them, back to the first after the last, Shift+Return back.
 func TestRulesFind(t *testing.T) {
-	a, tt := pageTester(t, "/transcribe")
+	a, tt := promptPageTester(t, "/transcribe")
 	u := a.fui(hotkey.Transcribe)
 	u.prompt, u.promptDirty = "Use dLLM terms.\nNever expand DLLM.\nplain line", true
-	tt.Key(ui.Cmd, ui.KeyF)
-	frames(tt)
+	clickPrompt(t, tt, "Your rules")
+	clickPrompt(t, tt, "Find in the prompt")
 	if !u.rules || !tt.Focused("Find in the prompt") {
-		t.Fatalf("after ⌘F: rules open %v, Find focused %v", u.rules, tt.Focused("Find in the prompt"))
+		t.Fatalf("after opening Find: rules open %v, Find focused %v", u.rules, tt.Focused("Find in the prompt"))
 	}
 	tt.Type("dllm")
 	if !has(tt, "2 matches") {
@@ -235,7 +256,7 @@ func TestRulesFind(t *testing.T) {
 // it follows the menu. It had the language's name written in (#3956): the
 // edited prompt kept translating into it whatever the menu said.
 func TestTranslateBuiltinPromptKeepsTarget(t *testing.T) {
-	a, tt := pageTester(t, "/translate")
+	a, tt := promptPageTester(t, "/translate")
 	builtin := a.promptBuiltin(hotkey.Translate)
 	if !strings.Contains(builtin, targetVar) || strings.Contains(builtin, "Simplified Chinese") {
 		t.Fatalf("built-in prompt %q", builtin)
@@ -243,8 +264,8 @@ func TestTranslateBuiltinPromptKeepsTarget(t *testing.T) {
 	u := a.fui(hotkey.Translate)
 	u.prompt, u.promptDirty = builtin+"\nUse British spelling.", true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "Target language for Translate")
-	click(t, tt, "Japanese")
+	clickPrompt(t, tt, "Target language for Translate")
+	clickPrompt(t, tt, "Japanese")
 	out, err := a.composedPreview(hotkey.Translate)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +284,7 @@ func TestTranslateBuiltinPromptKeepsTarget(t *testing.T) {
 // prompt (#3956).
 func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 	const warning = "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."
-	a, tt := pageTester(t, "/translate")
+	a, tt := promptPageTester(t, "/translate")
 	for _, s := range []string{"Target language", "Automatic is English, or Chinese when your main language is English."} {
 		if !has(tt, s) {
 			t.Errorf("no %q", s)
@@ -280,7 +301,7 @@ func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 		if !has(tt, warning) {
 			t.Fatalf("no warning for %q", own)
 		}
-		click(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
+		clickPrompt(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
 		saved := a.lib.settings.Get().Features.Translate.Prompt
 		if want := strings.TrimRight(own, "\n") + "\n\nTranslate the text into {{TARGET_LANGUAGE}}."; saved != want {
 			t.Fatalf("saved %q, want %q", saved, want)
@@ -299,12 +320,12 @@ func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 	a.savePrompt(hotkey.Translate)
 	u.prompt, u.promptDirty = "Into English. Keep it short.", true
 	frames(tt)
-	click(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
+	clickPrompt(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
 	if saved := a.lib.settings.Get().Features.Translate.Prompt; saved != "Into English. Keep it short.\n\nTranslate the text into {{TARGET_LANGUAGE}}." {
 		t.Fatalf("typed text lost: %q", saved)
 	}
-	click(t, tt, "Your rules")
-	click(t, tt, "Reset to default prompt")
+	clickPrompt(t, tt, "Your rules")
+	clickPrompt(t, tt, "Reset to default prompt")
 	if has(tt, warning) {
 		t.Error("warning after the reset")
 	}
@@ -316,9 +337,9 @@ func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 // Translate page showed only the user message and offered
 // {{TARGET_LANGUAGE}} on every page (#4016).
 func TestFeaturePageShowsFilledRequest(t *testing.T) {
-	a, tt := pageTester(t, "/transcribe")
+	a, tt := promptPageTester(t, "/transcribe")
 	tt.SetSize(windowWidth, 9000)
-	click(t, tt, "Your rules")
+	clickPrompt(t, tt, "Your rules")
 	if has(tt, "{{TARGET_LANGUAGE}}") {
 		t.Error("Transcribe offers {{TARGET_LANGUAGE}}")
 	}
@@ -326,9 +347,9 @@ func TestFeaturePageShowsFilledRequest(t *testing.T) {
 		t.Errorf("no note for {{USER_MAIN_LANGUAGE}} in %q", firstTexts(tt))
 	}
 
-	a, tt = pageTester(t, "/translate")
+	a, tt = promptPageTester(t, "/translate")
 	tt.SetSize(windowWidth, 9000)
-	click(t, tt, "Your rules")
+	clickPrompt(t, tt, "Your rules")
 	if !strings.Contains(a.fui(hotkey.Translate).prompt, "{{TARGET_LANGUAGE}}") {
 		t.Fatalf("rules field %q", a.fui(hotkey.Translate).prompt)
 	}
@@ -337,7 +358,7 @@ func TestFeaturePageShowsFilledRequest(t *testing.T) {
 	if !has(tt, "The Target language menu on the Translate page. Translate only. Now: "+target) {
 		t.Errorf("no note for {{TARGET_LANGUAGE}} = %q", target)
 	}
-	click(t, tt, "What the language model receives")
+	clickPrompt(t, tt, "What the language model receives")
 	out, err := a.composedPreview(hotkey.Translate)
 	if err != nil {
 		t.Fatal(err)
@@ -353,17 +374,17 @@ func TestFeaturePageShowsFilledRequest(t *testing.T) {
 // TestFeaturePageFilledRequestEdges: a variable with no value says so,
 // and a prompt of one's own shows filled in as it is sent.
 func TestFeaturePageFilledRequestEdges(t *testing.T) {
-	a, tt := pageTester(t, "/translate")
+	a, tt := promptPageTester(t, "/translate")
 	tt.SetSize(windowWidth, 9000)
 	a.updateSettings(func(s *settings.Settings) {
 		s.General.OtherLanguages = nil
 		s.Features.Translate.Prompt = "把文字翻成 {{TARGET_LANGUAGE}}，不懂的保留 {{USER_OTHER_LANGUAGES}} 原文。"
 	})
-	click(t, tt, "Your rules")
+	clickPrompt(t, tt, "Your rules")
 	if !has(tt, "Your other languages, from General settings. Every feature. Now: (none)") {
 		t.Errorf("empty variable not shown as none in %q", tt.Texts())
 	}
-	click(t, tt, "What the language model receives")
+	clickPrompt(t, tt, "What the language model receives")
 	out, err := a.composedPreview(hotkey.Translate)
 	if err != nil {
 		t.Fatal(err)
@@ -382,15 +403,15 @@ func TestFeaturePageFilledRequestEdges(t *testing.T) {
 // (issue #4032). The request it shows is the one a session sends.
 func TestPreviewIsTheWholePrompt(t *testing.T) {
 	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
-		a, tt := pageTester(t, "/"+feature)
+		a, tt := promptPageTester(t, "/"+feature)
 		tt.SetSize(windowWidth, 9000)
 		notes := "| Roth | `wrath` → Roth | 中文 retirement |"
 		a.updateSettings(func(s *settings.Settings) {
 			s.Dictionary.Enabled, s.Dictionary.Notes = true, notes
 			s.Features.Transcribe.Enhance = true
 		})
-		click(t, tt, "Your rules")
-		click(t, tt, "What the language model receives")
+		clickPrompt(t, tt, "Your rules")
+		clickPrompt(t, tt, "What the language model receives")
 		out, err := a.composedPreview(feature)
 		if err != nil {
 			t.Fatal(err)
@@ -495,7 +516,7 @@ func TestMarkValues(t *testing.T) {
 // once profiles land — is in the whole prompt a session sends, and one
 // that goes away leaves it, with a search active too.
 func TestPreviewFollowsTheDictionary(t *testing.T) {
-	a, _ := pageTester(t, "/transcribe")
+	a, _ := promptPageTester(t, "/transcribe")
 	a.updateSettings(func(s *settings.Settings) {
 		s.Dictionary.Enabled, s.Dictionary.Glossary = true, true
 	})

@@ -182,7 +182,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `overlay.hideLiveText` | bool | `false` | | Show live text (inverted) |
 | `overlay.liveLines` | bool | `true` | `false` = one line that scrolls | Live text layout |
 
-### Shortcuts (each feature's page)
+### Shortcuts (Settings → Shortcuts and each feature's Settings section)
 
 | Path | Type | Default | On the page |
 |---|---|---|---|
@@ -197,7 +197,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 
 Settings → Shortcuts → presets set the four main shortcuts at once; no field stores the preset, Voxt recognises it from the keys.
 
-### Transcribe, Translate and Rewrite (each feature's page)
+### Transcribe, Translate and Rewrite (Settings → Transcribe, Translate or Rewrite)
 
 Each of `features.transcribe`, `features.translate` and `features.rewrite` has:
 

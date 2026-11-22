@@ -4,8 +4,8 @@ package main
 // /settings/{section}, and the theme. The dialog is AudioSmith's, with the sections
 // every app of the family has and VoxtNew's own: Audio
 // (settings_audio.go), Overlay style (settings_overlay.go) and the table
-// of Shortcuts (settings_shortcuts.go). The features' own settings live
-// on their pages (Transcribe, Translate, Rewrite…).
+// of Shortcuts (settings_shortcuts.go) and a section for each feature
+// (feature_page.go).
 
 import (
 	"strings"
@@ -41,6 +41,12 @@ func settingsSectionIcon(id string) icons.Icon {
 	switch id {
 	case "general":
 		return icons.Settings
+	case "transcribe":
+		return transcribeIcon
+	case "translate":
+		return translateIcon
+	case "rewrite":
+		return rewriteIcon
 	case "models":
 		return modelsIcon
 	case "language-models":
@@ -96,12 +102,13 @@ type settingsDialogLocalUI struct {
 	Storage       *settingsStorageLocalUI
 	Updates       *updatesLocalUI
 	Models        *modelsLocalUI
+	Feature       *featureUI
 	Remote        remoteLocalUI
 }
 
 // settingsDialog is Settings (⌘,): a dialog over the page, its sections
 // in a column on the left (AudioSmith 0.3: Typeless-style).
-func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI) {
+func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI, featureTryActions tryCardActions) {
 	if !state.Open {
 		return
 	}
@@ -194,7 +201,7 @@ func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settin
 							settingsSearchQuery, settingsSearchHits = query, 0
 							settingsFind.query, settingsFind.n, settingsFind.cur, settingsFind.reveal = fq, 0, f.find.cur, moved
 							body := ui.Column(c).Gap(px(t, sp4))
-							body.Children(func() { settingsSection(c, r, state, actions, local) })
+							body.Children(func() { settingsSection(c, r, state, actions, local, featureTryActions) })
 							settingsSearchQuery, settingsFind.query = "", ""
 							if settingsFind.n != f.findN {
 								f.findN = settingsFind.n
@@ -231,7 +238,7 @@ func settingsDialogSize(t *ui.Theme, w, h float32) (dw, dh float32) {
 }
 
 // settingsSection builds the section of the settings dialog r shows.
-func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI) {
+func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI, featureTryActions tryCardActions) {
 	// A section action changes the router before the next model rebuild.
 	if state.Path != r.Path() {
 		return
@@ -244,6 +251,8 @@ func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, 
 		switch s.ID {
 		case "general":
 			generalSettings(c, *state.General, actions, &local.Form.settingsGeneralLocalUI)
+		case "transcribe", "translate", "rewrite":
+			featureSettings(c, state.Feature, actions, local.Feature, featureTryActions)
 		case "models":
 			modelsSettingsSection(c, state.Models, actions, local.Models)
 		case "language-models":

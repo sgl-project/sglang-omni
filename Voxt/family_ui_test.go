@@ -290,7 +290,7 @@ func TestShortcutConflicts(t *testing.T) {
 		if has(tt, prompt) || len(a.lib.settings.Get().Family.Prompted) != 1 {
 			t.Errorf("%s: %q %q", answer, a.lib.settings.Get().Family.Prompted, tt.Texts())
 		}
-		if answer == "Change shortcut" && a.shownPath() != "/transcribe" {
+		if answer == "Change shortcut" && a.shownPath() != "/settings/transcribe" {
 			t.Errorf("change: %s", a.shownPath())
 		}
 	}

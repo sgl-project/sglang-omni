@@ -14,6 +14,9 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 	if state := fixture.state.Settings; state != nil {
 		host.settingsOpen = state.Open
 		host.settingsRouter = ui.NewRouter(state.Path)
+		if state.Feature != nil {
+			host.selectFeatureFixture(state.Feature)
+		}
 		if general := state.General; general != nil {
 			host.settingsForm.settingsGeneralLocalUI = settingsGeneralLocalUI{
 				language: general.Language, mainLanguage: general.MainLanguage, copyResult: general.CopyResult,
@@ -70,6 +73,9 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		Open: &host.settingsOpen, Router: host.settingsRouter, Form: &host.settingsForm,
 		HistoryAccess: &host.historyAccessUI, Storage: &host.settingsStorageUI, Updates: &host.updatesUI,
 		Models: &host.modelsUI, Remote: remoteLocalUI{wait: &host.remoteWaitUI, dialog: &host.remoteDialogUI},
+	}
+	if fixture.state.Settings != nil && fixture.state.Settings.Feature != nil {
+		host.settingsDialogUI.Feature = &host.feature.local
 	}
 }
 

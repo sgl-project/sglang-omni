@@ -2,6 +2,7 @@ package main
 
 type settingsDialogActions interface {
 	settingsGeneralActions
+	featureActions
 	modelsActions
 	remoteActions
 	onboardingActions

@@ -25,24 +25,6 @@
         "title": "Features",
         "pages": [
           {
-            "path": "/transcribe",
-            "title": "Transcribe",
-            "keys": "⌘3",
-            "selected": false
-          },
-          {
-            "path": "/translate",
-            "title": "Translate",
-            "keys": "⌘4",
-            "selected": false
-          },
-          {
-            "path": "/rewrite",
-            "title": "Rewrite",
-            "keys": "⌘5",
-            "selected": false
-          },
-          {
             "path": "/notes",
             "title": "Notes",
             "selected": false

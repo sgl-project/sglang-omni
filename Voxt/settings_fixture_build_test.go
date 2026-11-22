@@ -149,7 +149,7 @@ func buildSettingsFixture(t *testing.T, input settingsFixtureInput) settingsDial
 	if input.section == "storage" && input.storage.CanOpen {
 		a.win = new(mygo.Window)
 	}
-	state := a.settingsDialogModel(meetingFixtureNow)
+	state, _ := a.settingsDialogModel(meetingFixtureNow)
 	a.win = previousWindow
 	return state
 }

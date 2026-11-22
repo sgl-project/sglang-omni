@@ -81,6 +81,12 @@ func checkSettingsDialogFixture(t *testing.T, locale, name string, state *settin
 			t.Errorf("%s/%s: %s section present=%t, want %t", locale, name, id, present, want)
 		}
 	}
+	featureSection := sectionID == "transcribe" || sectionID == "translate" || sectionID == "rewrite"
+	if present := state.Feature != nil; present != featureSection {
+		t.Errorf("%s/%s: feature section present=%t, want %t", locale, name, present, featureSection)
+	} else if present && state.Feature.Feature != sectionID {
+		t.Errorf("%s/%s: feature state is %q, want %q", locale, name, state.Feature.Feature, sectionID)
+	}
 	if present := state.Updates != nil; present != (sectionID == "about") {
 		t.Errorf("%s/%s: updates state present=%t, want %t", locale, name, present, sectionID == "about")
 	}

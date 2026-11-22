@@ -133,5 +133,6 @@ func settingsDemoControlCases() []settingsDemoCase {
 				t.Fatal("access cancellation changed local state")
 			}
 		}},
+		{name: "feature prompt find", fixture: "en/settings-transcribe-normal", prepare: func(host *meetingDemoHost) { host.feature.local.find = "VoxtNew" }, scroll: "Your rules", steps: historySteps("Your rules"), wantText: "1 match"},
 	}
 }

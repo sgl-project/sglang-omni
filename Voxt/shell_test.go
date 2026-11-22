@@ -15,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -105,22 +106,30 @@ func TestSidebarAndShortcuts(t *testing.T) {
 			t.Fatalf("clicking %s went to %s", p.title, a.router.Path())
 		}
 	}
-	// ⌘1…⌘6.
+	// ⌘1…⌘6. A moved page opens its Settings section over the current page.
 	for i, path := range shortcutPages {
+		a.settingsOpen = false
+		frames(tt)
 		tt.Key(ui.Cmd, ui.Key1+ui.Key(i))
 		frames(tt)
-		if a.router.Path() != path {
-			t.Errorf("⌘%d went to %s, want %s", i+1, a.router.Path(), path)
+		want := path
+		if moved, ok := movedPaths[path]; ok {
+			want = moved
+		}
+		if a.shownPath() != want {
+			t.Errorf("⌘%d went to %s, want %s", i+1, a.shownPath(), want)
 		}
 	}
+	a.settingsOpen = false
 	if len(shortcutPages) != 6 {
 		t.Errorf("%d shortcut pages", len(shortcutPages))
 	}
 	// Settings, the System section's last item, opens the dialog over the
 	// page, and is the chosen item while it shows.
+	wantSettings := "/settings/" + a.lastSettings
 	click(t, tt, "Settings")
-	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
-		t.Fatalf("settings: %v %s over %s, chosen %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav)
+	if !a.settingsOpen || a.shownPath() != wantSettings || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
+		t.Fatalf("settings: %v %s over %s, chosen %s; want %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav, wantSettings)
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
@@ -210,14 +219,14 @@ func TestPaletteAndDeepLinks(t *testing.T) {
 	// Chinese words find commands too, through their translation.
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	a.paletteQuery = "翻译"
-	if items := a.paletteItems(); len(items) == 0 || items[0].id != "go/translate" {
+	if items := a.paletteItems(); len(items) == 0 || items[0].id != "go/settings/translate" {
 		t.Errorf("zh palette %+v", items)
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
 
 	for link, want := range map[string]string{
 		"voxtnew://history":           "/history",
-		"voxtnew:///translate":        "/translate",
+		"voxtnew:///translate":        "/settings/translate",
 		"voxtnew://settings/audio":    "/settings/audio",
 		"/settings/privacy":           "/settings/privacy",
 		"VOXTNEW://app-enhancement/x": "/app-enhancement",
@@ -508,6 +517,46 @@ func TestModelsMovedToSettings(t *testing.T) {
 	}
 }
 
+// TestFeaturesMovedToSettings: the feature pages have one home in Settings;
+// their old paths, deep links and palette commands open the same sections.
+func TestFeaturesMovedToSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	for _, tc := range []struct {
+		feature, control string
+	}{
+		{"transcribe", "Clean up with a language model"},
+		{"translate", "Target language for Translate"},
+		{"rewrite", "Clean up the instruction"},
+	} {
+		t.Run(tc.feature, func(t *testing.T) {
+			oldPath := "/" + tc.feature
+			newPath := "/settings/" + tc.feature
+			if slices.ContainsFunc(pages, func(p navPage) bool { return p.path == oldPath }) {
+				t.Errorf("%s is still a page of the sidebar", oldPath)
+			}
+			for _, open := range []func(){
+				func() { a.navigate(oldPath) },
+				func() { a.openURL("voxtnew://" + tc.feature) },
+				func() { a.runCommandID("go/settings/" + tc.feature) },
+			} {
+				a.settingsOpen = false
+				a.navigate("/home")
+				open()
+				frames(tt)
+				if got := a.shownPath(); got != newPath {
+					t.Errorf("shown %s, want %s", got, newPath)
+				}
+				if a.router.Path() != "/home" {
+					t.Errorf("page under the dialog %s", a.router.Path())
+				}
+				if !has(tt, tc.control) || has(tt, "There is no page at") {
+					t.Errorf("section does not show %q: %q", tc.control, firstTexts(tt))
+				}
+			}
+		})
+	}
+}
+
 // TestPrivacyGoesOnline: Settings → Privacy says what Voxt goes online
 // for: downloading models, Voxt's announcements, and checking for updates
 // only in a build with an update feed (2.0.0 has none).
@@ -719,6 +768,15 @@ func TestHelperProcess(t *testing.T) {
 // A page that moved into Settings keeps its section's icon in the
 // command palette.
 func TestCommandIconsMovedPages(t *testing.T) {
+	for id, want := range map[string]icons.Icon{
+		"go/settings/transcribe": transcribeIcon,
+		"go/settings/translate":  translateIcon,
+		"go/settings/rewrite":    rewriteIcon,
+	} {
+		if ic := commandIcon(id); ic == nil || *ic != want {
+			t.Errorf("%s lost its feature icon", id)
+		}
+	}
 	if ic := commandIcon("go/models"); ic == nil || *ic != modelsIcon {
 		t.Error("go/models lost the Speech models icon")
 	}

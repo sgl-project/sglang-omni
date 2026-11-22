@@ -132,12 +132,12 @@ func TestLLMDebugCloses(t *testing.T) {
 	a.navigate(llmDebugPath)
 	rewrites := func() int { return strings.Count("\x00"+strings.Join(tt.Texts(), "\x00")+"\x00", "\x00Rewrite\x00") }
 	click(t, tt, "Request")
-	if rewrites() != 2 { // the sidebar's and the menu's
+	if rewrites() != 1 { // the menu's Rewrite; the feature lives in Settings now
 		t.Fatalf("menu not open: %q", tt.Texts())
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if p := a.router.Path(); p != llmDebugPath || rewrites() != 1 {
+	if p := a.router.Path(); p != llmDebugPath || rewrites() != 0 {
 		t.Fatalf("Esc in the menu: at %q, %q", p, tt.Texts())
 	}
 	tt.Key(0, ui.KeyEscape)

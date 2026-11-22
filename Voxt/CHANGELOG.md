@@ -11,6 +11,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Transcribe, Translate and Rewrite are Settings sections**: their shortcuts, models, prompts and Try areas have moved out of the sidebar. Old feature links and the ⌘3–⌘5 shortcuts open the matching section; Speech models and Language models stay in Settings too.
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **A shorter explanation for the model fallback switch** (#4377): the Language models switch is now called Retry with another model on this Mac, and its note says in three short sentences what it does.
@@ -37,6 +38,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **转录、翻译、改写移到“设置”里**：快捷键、模型、提示词和“试一试”都从侧边栏移到对应分节。旧功能链接和 ⌘3–⌘5 会打开对应分节；语音识别模型和语言模型仍在“设置”里。
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **模型回退开关的说明更简短**（#4377）：语言模型页的开关改名为“出错时改用本机其他模型”，说明改成三句短话。

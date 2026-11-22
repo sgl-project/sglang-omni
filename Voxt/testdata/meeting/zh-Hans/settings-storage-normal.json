@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "语音识别模型",
         "english": "Speech models download delete install recognition"

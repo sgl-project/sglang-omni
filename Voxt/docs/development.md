@@ -113,7 +113,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_REAL_CUSTOM` | Custom language model for `TestRealServices`, as `<address>\|<model>`. | Unset: the custom case skips |
 | `VOXTNEW_REAL_SERVICES` | `1` runs `TestRealServices` against the remote services whose keys are in the login Keychain (macOS). | Unset: the test skips |
 | `VOXTNEW_RUNTIME_DIR` | Directory with the runtimes that `scripts/mac-regress.sh` uses. | `~/voxtnew-runtime` |
-| `VOXTNEW_SHOTS` | Directory where the Transcribe page layout test writes its PNGs. | Unset: no pictures |
+| `VOXTNEW_SHOTS` | Directory where the feature-section layout test writes its PNGs. | Unset: no pictures |
 | `VOXTNEW_SHOTS_DRY` | `1` makes `scripts/mac-logs-shots.sh` only open the window, without moving the pointer. | Unset: the full run |
 | `VOXTNEW_SHOTS_IDLE` | Seconds without user input before `scripts/mac-logs-shots.sh` moves the pointer. | `300` |
 | `VOXTNEW_SHOTS_ORDER` | `1` makes `scripts/mac-logs-shots.sh` capture the log order instead. | Unset: the normal captures |

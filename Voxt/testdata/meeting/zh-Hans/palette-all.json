@@ -19,24 +19,6 @@
         "keys": "⌘2"
       },
       {
-        "id": "go/transcribe",
-        "group": "前往",
-        "title": "转录",
-        "keys": "⌘3"
-      },
-      {
-        "id": "go/translate",
-        "group": "前往",
-        "title": "翻译",
-        "keys": "⌘4"
-      },
-      {
-        "id": "go/rewrite",
-        "group": "前往",
-        "title": "改写",
-        "keys": "⌘5"
-      },
-      {
         "id": "go/notes",
         "group": "前往",
         "title": "笔记"
@@ -72,6 +54,24 @@
         "id": "go/settings/general",
         "group": "设置",
         "title": "通用"
+      },
+      {
+        "id": "go/settings/transcribe",
+        "group": "设置",
+        "title": "转录",
+        "keys": "⌘3"
+      },
+      {
+        "id": "go/settings/translate",
+        "group": "设置",
+        "title": "翻译",
+        "keys": "⌘4"
+      },
+      {
+        "id": "go/settings/rewrite",
+        "group": "设置",
+        "title": "改写",
+        "keys": "⌘5"
       },
       {
         "id": "go/models",

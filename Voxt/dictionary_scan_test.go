@@ -122,8 +122,8 @@ func TestScanButtonNeedsTheTranscribeLanguageModel(t *testing.T) {
 				t.Errorf("no explanation: %q", tt.Texts())
 			}
 			clickControl(t, tt, "打开转录页")
-			if a.nav != "/transcribe" {
-				t.Errorf("the link goes to %s", a.nav)
+			if a.shownPath() != "/settings/transcribe" {
+				t.Errorf("the link goes to %s", a.shownPath())
 			}
 		})
 	}

@@ -107,8 +107,8 @@ func TestHomeReadiness(t *testing.T) {
 		t.Errorf("not ready, no ready line: %q", tt.Texts())
 	}
 	click(t, tt, "Shortcut: Open Transcribe")
-	if a.router.Path() != "/transcribe" {
-		t.Errorf("went to %s", a.router.Path())
+	if a.shownPath() != "/settings/transcribe" {
+		t.Errorf("went to %s", a.shownPath())
 	}
 }
 
@@ -271,8 +271,8 @@ func TestHomeSlogan(t *testing.T) {
 		t.Errorf("no shortcut: %q", tt.Texts())
 	}
 	click(t, tt, "Add a shortcut to start")
-	if a.router.Path() != "/transcribe" {
-		t.Errorf("went to %s", a.router.Path())
+	if a.shownPath() != "/settings/transcribe" {
+		t.Errorf("went to %s", a.shownPath())
 	}
 }
 
@@ -500,11 +500,19 @@ func TestHomeShortcutAfterFirstResult(t *testing.T) {
 // app; it is not a try on the page. With a button focused, a try as
 // before.
 func TestShortcutInOwnField(t *testing.T) {
-	a, tt := pageTester(t, "/transcribe")
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/transcribe")
+	frames(tt)
 	readyModels(a)
 	drain := queuePosts(a)
+	scrollSettingsToText(tt, "Your rules")
 	click(t, tt, "Your rules")
+	scrollSettingsToText(tt, "System prompt for Transcribe")
 	click(t, tt, "System prompt for Transcribe")
+	if !tt.Focused("System prompt for Transcribe") {
+		t.Fatal("the prompt field did not take the focus")
+	}
 	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
 		t.Fatalf("rules field focused: %v, want no try", got)
 	}
@@ -517,6 +525,7 @@ func TestShortcutInOwnField(t *testing.T) {
 	a.cancelSession()
 	drain()
 	frames(tt)
+	scrollSettingsToText(tt, "What the language model receives")
 	click(t, tt, "What the language model receives")
 	if !tt.Focused("What the language model receives") {
 		t.Fatal("the button did not take the focus")

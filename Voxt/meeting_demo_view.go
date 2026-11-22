@@ -115,9 +115,19 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				modelAssignmentDialog(c, state.Assignment, host, &host.modelsUI.assign)
 			case "feature":
 				state := host.featureViewState(fixture.state.Feature)
-				featurePage(c, &state, host, &host.feature.local, host)
+				columnPageHeader(c, state.Title, nil)
+				ui.Scroll(c.Key(state.Prefix + "-scroll")).Grow(1).MinHeight(0).Children(func() {
+					pageColumn(c).Gap(px(c.Theme(), sp3)).Children(func() {
+						featureSettings(c, &state, host, &host.feature.local, host)
+					})
+				})
 			case "settings":
-				settingsDialog(c, *fixture.state.Settings, host, host.settingsDialogUI)
+				state := *fixture.state.Settings
+				if state.Feature != nil {
+					feature := host.featureViewState(state.Feature)
+					state.Feature = &feature
+				}
+				settingsDialog(c, state, host, host.settingsDialogUI, host)
 			case "meeting-settings":
 				dialogFrame(c, "mt-set", &host.pageUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
 					state := *fixture.state.MeetingSettings

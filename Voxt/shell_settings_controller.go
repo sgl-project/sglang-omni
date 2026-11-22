@@ -235,7 +235,7 @@ func (a *app) shownPath() string {
 	return a.router.Path()
 }
 
-func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
+func (a *app) settingsDialogModel(now time.Time) (settingsDialogViewState, tryCardActions) {
 	key := settingsDialogCacheKey{open: a.settingsOpen, path: a.setRouter.Path(), shownPath: a.shownPath(), locale: i18n.Locale()}
 	if !a.dialogCache.valid || a.dialogCache.key != key {
 		a.dialogCache.state = buildSettingsDialogViewState(i18n.CurrentTranslator(), key.open, key.path, key.shownPath)
@@ -243,13 +243,20 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 	}
 	state := a.dialogCache.state
 	if !state.Open {
-		return state
+		return state, nil
 	}
+	var featureTryActions tryCardActions
 	switch strings.TrimPrefix(state.Path, "/") {
 	case "general":
 		a.lastSettings = "general"
 		section := a.generalSettingsModel()
 		state.General = &section
+	case "transcribe", "translate", "rewrite":
+		feature := strings.TrimPrefix(state.Path, "/")
+		a.lastSettings = feature
+		section, actions := a.featurePageModel(feature)
+		state.Feature = &section
+		featureTryActions = actions
 	case "models":
 		a.lastSettings = "models"
 		state.Models = &settingsModelsViewState{
@@ -294,5 +301,5 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 		updates := a.updatesSettingsModel(now)
 		state.Updates = &updates
 	}
-	return state
+	return state, featureTryActions
 }

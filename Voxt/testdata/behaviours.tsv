@@ -61,6 +61,7 @@ First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionContr
 First use: opening, setup guide, import from 1.x	L	TestOnboardingWalk	none
 First use: opening, setup guide, import from 1.x	L	TestLegacyImportAsksForOptionalKey	none
 Settings and appearance	L	TestWindowTransparencySettings	none
+Feature settings navigation	L	TestFeaturesMovedToSettings	none
 Announcements and release notes	L	TestAnnouncements	none
 Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
 Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	Only HTTP requests through the default transport are recorded
