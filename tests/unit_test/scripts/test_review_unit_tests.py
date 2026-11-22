@@ -766,6 +766,43 @@ def test_shared_fixture_edit_reviews_direct_and_conftest_consumers(
     )
 
 
+def test_test_local_helper_edit_does_not_inherit_unrelated_fixture_gaps(
+    tmp_path: Path,
+) -> None:
+    """Unrelated fixtures must not make a local helper review incomplete."""
+    git(tmp_path, "init", "-q")
+    test_path = "tests/unit_test/response/test_output.py"
+    source = (
+        "from sglang_omni.api import speak\n\n"
+        "def read_header():\n    return speak()[:1]\n\n"
+        "def test_response():\n    assert read_header() == b'RIFF'\n"
+    )
+    write_file(tmp_path, test_path, source)
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        "tests/unit_test/unrelated/conftest.py",
+        "pytest_plugins = ['unresolved_in_static_analysis']\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/unrelated/test_plugin.py",
+        "def test_plugin(plugin_fixture):\n    assert plugin_fixture\n",
+    )
+    base = commit(tmp_path, "tests with independent fixture scopes")
+    write_file(tmp_path, test_path, source.replace("[:1]", ""))
+    head = commit(tmp_path, "change the local response helper")
+
+    report = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([]), SystemClock()
+    ).report
+
+    assert report.outcome == "no_findings", report.incomplete_reason
+    assert [case.name for case in report.unit_test_cases if case.reviewed] == [
+        "test_response"
+    ]
+
+
 @pytest.mark.parametrize(
     "citation_shape",
     ["flat", "nested", "line", "pinned_repeat", "ambiguous", "out_of_bounds"],

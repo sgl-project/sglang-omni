@@ -232,6 +232,8 @@ def affected_test_cases(
         return {}, limitations
     else:
         pass
+    helper_paths = {helper.file_path for helper in helpers}
+    has_shared_helper = any(not is_unit_test_file(path) for path in helper_paths)
     files = require_git(
         repository,
         ["ls-tree", "-r", "--name-only", "-z", head_commit_sha, "--", UNIT_TEST_ROOT],
@@ -276,7 +278,13 @@ def affected_test_cases(
             limitations.extend(
                 f"{test_path}:{definition.lineno}: {limitation}"
                 for limitation in case_limitations
-                if any(
+                if (
+                    has_shared_helper
+                    or test_path in helper_paths
+                    or citations
+                    or any(path in limitation for path in helper_paths)
+                )
+                and any(
                     marker in limitation
                     for marker in (
                         "dynamic fixture",
