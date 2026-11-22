@@ -154,3 +154,58 @@ def test_whisper_forward_caches_encoder_kv_before_decoder(
     model(input_ids, positions, forward_batch)
 
     assert calls == ["cache", "decoder", "logits"]
+
+
+def test_batch_encoder_helpers_read_encoder_lens_cpu_without_touching_device_lens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading encoder_lens_cpu avoids a GPU->CPU sync between target and draft prefill."""
+
+    class UntouchedDeviceLens:
+        def __getitem__(self, index: int) -> object:
+            raise AssertionError(
+                "device encoder_lens must not be read when encoder_lens_cpu is present"
+            )
+
+    monkeypatch.setattr(sglang_model, "LogitsProcessor", lambda config: None)
+    model = WhisperForConditionalGeneration(tiny_whisper_config())
+    forward_mode = SimpleNamespace(
+        is_decode=lambda: False,
+        is_target_verify=lambda: False,
+    )
+    embeddings = [torch.full((4, 8), 1.0), torch.full((4, 8), 2.0)]
+    features = [torch.full((1, 8, 4), 1.0), torch.full((1, 8, 4), 2.0)]
+    forward_batch = SimpleNamespace(
+        forward_mode=forward_mode,
+        encoder_cached=[False, False],
+        encoder_lens=UntouchedDeviceLens(),
+        encoder_lens_cpu=[3, 2],
+        mm_inputs=[
+            SimpleNamespace(
+                mm_items=[
+                    SimpleNamespace(
+                        precomputed_embeddings=embeddings[0],
+                        feature=features[0],
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                mm_items=[
+                    SimpleNamespace(
+                        precomputed_embeddings=embeddings[1],
+                        feature=features[1],
+                    )
+                ]
+            ),
+        ],
+    )
+
+    states = model.batch_precomputed_encoder_states(forward_batch)
+    batched_features, encoder_lens = model.batch_audio_inputs(forward_batch)
+
+    assert states is not None
+    assert states.shape == (5, 8)
+    assert batched_features is not None
+    assert batched_features.shape == (2, 8, 4)
+    assert encoder_lens == [3, 2]
+
