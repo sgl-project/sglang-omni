@@ -1,19 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """LFM3 text backbone on the SGLang runtime.
 
-Hybrid layers: ``conv`` (gated short convolution, width 7), ``full_attention``
-(GQA, partial zero-tail RoPE) and ``sliding_attention`` (GQA, full RoPE,
-256-token window). Every layer has sandwich norms and every attention layer a
-per-head sigmoid output gate, as in the checkpoint's ``modeling_lfm3.py``.
+Hybrid layers: conv (gated short convolution, width 7), full_attention (GQA, partial zero-tail RoPE) and sliding_attention (GQA, full RoPE, 256-token window). Every layer has sandwich norms and every attention layer a per-head sigmoid output gate.
 
-Conv layers keep their state in SGLang's MambaPool (the config is an LFM2
-config, so the runtime allocates it). The width-7 convolution runs in torch:
-SGLang 0.5.23's causal-conv1d kernels serve widths 2-5 only.
+Conv layers keep their state in SGLang's MambaPool, which the runtime allocates for the LFM2 config. The width-7 convolution runs in torch: the SGLang causal-conv1d kernels serve widths 2 to 5 only.
 """
 
 from __future__ import annotations
-
-from collections.abc import Iterable
 
 import torch
 import torch.nn.functional as F
@@ -40,18 +33,17 @@ from torch import nn
 from sglang_omni.models.lfm3_audio.hf_config import (
     ATTENTION_LAYER_TYPES,
     Lfm3SGLangConfig,
+    RopeParameters,
 )
 
-# Checkpoint prefix of the backbone in the LFM3-Audio export.
+# The backbone's weight prefix in LFM3-Audio's export layout.
 CHECKPOINT_PREFIX = "lfm.model."
 
 
-def rope_kwargs(rope_parameters: dict) -> tuple[dict, float, float]:
-    """(rope_scaling, base, partial_rotary_factor) for ``get_rope``.
+def rope_kwargs(rope_parameters: RopeParameters) -> tuple[RopeParameters, float, float]:
+    """(rope_scaling, base, partial_rotary_factor) for get_rope.
 
-    LFM3's partial RoPE rotates the first ``factor * head_dim / 2`` frequencies
-    of each half and leaves the tail unrotated (zero inverse frequency), which
-    is SGLang's ``proportional`` (Gemma 4) rotary embedding.
+    LFM3's partial RoPE rotates the first factor * head_dim / 2 frequencies of each half and leaves the tail unrotated (zero inverse frequency), which is SGLang's proportional (Gemma 4) rotary embedding.
     """
     base = float(rope_parameters["rope_theta"])
     factor = float(rope_parameters.get("partial_rotary_factor", 1.0))
@@ -190,10 +182,9 @@ class Lfm3Attention(nn.Module):
 
 
 class Lfm3ShortConv(nn.Module):
-    """Gated short convolution: in_proj -> (B, C, x) -> conv(B*x) -> C * out -> out_proj.
+    """Gated short convolution: in_proj -> (B, C, x) -> conv(B * x) -> C * conv -> out_proj.
 
-    The MambaPool conv state of a request holds the last ``K - 1`` values of
-    ``B * x`` per channel, shaped ``(hidden, K - 1)``.
+    A request's MambaPool conv state holds the last kernel - 1 values of B * x per channel, shaped (hidden, kernel - 1).
     """
 
     def __init__(
@@ -236,60 +227,62 @@ class Lfm3ShortConv(nn.Module):
 
     def conv_decode(
         self,
-        bx: torch.Tensor,
+        gated_inputs: torch.Tensor,
         conv_state: torch.Tensor,
         cache_indices: torch.Tensor,
     ) -> torch.Tensor:
         """One token per request: dot the rolling window, then advance the state in place."""
-        state = conv_state[cache_indices].to(bx.dtype)
-        window = torch.cat([state, bx.unsqueeze(-1)], dim=-1)
-        out = (window * self.conv_weight.to(bx.dtype).unsqueeze(0)).sum(dim=-1)
+        state = conv_state[cache_indices].to(gated_inputs.dtype)
+        window = torch.cat([state, gated_inputs.unsqueeze(-1)], dim=-1)
+        conv_outputs = (
+            window * self.conv_weight.to(gated_inputs.dtype).unsqueeze(0)
+        ).sum(dim=-1)
         if self.conv_bias is not None:
-            out = out + self.conv_bias.to(out.dtype)
+            conv_outputs = conv_outputs + self.conv_bias.to(conv_outputs.dtype)
         else:
             pass
         conv_state[cache_indices] = window[:, :, 1:].to(conv_state.dtype)
-        return out
+        return conv_outputs
 
     def conv_prefill(
         self,
-        bx: torch.Tensor,
+        gated_inputs: torch.Tensor,
         conv_state: torch.Tensor,
         cache_indices: torch.Tensor,
         query_start_loc: torch.Tensor,
-        has_initial_state: torch.Tensor | None,
+        has_initial_state: torch.Tensor,
     ) -> torch.Tensor:
-        """Per-request causal depthwise conv over ``state || B*x`` with ``F.conv1d``."""
-        width = self.conv_kernel
+        """Per-request causal depthwise conv over the cached state followed by the request's B * x."""
+        kernel_size = self.conv_kernel
         channels = self.hidden_size_per_partition
-        weight = self.conv_weight.to(bx.dtype).unsqueeze(1)
-        bias = self.conv_bias.to(bx.dtype) if self.conv_bias is not None else None
-        starts = query_start_loc.tolist()
-        slots = cache_indices.tolist()
-        initial = (
-            has_initial_state.tolist()
-            if has_initial_state is not None
-            else [True] * len(slots)
+        weight = self.conv_weight.to(gated_inputs.dtype).unsqueeze(1)
+        bias = (
+            self.conv_bias.to(gated_inputs.dtype)
+            if self.conv_bias is not None
+            else None
         )
-        bx_t = bx.transpose(0, 1)
+        token_starts = query_start_loc.tolist()
+        state_slots = cache_indices.tolist()
+        continues_state = has_initial_state.tolist()
+        channel_major_inputs = gated_inputs.transpose(0, 1)
         outputs: list[torch.Tensor] = []
-        for row, slot in enumerate(slots):
-            start, end = starts[row], starts[row + 1]
+        for row, state_slot in enumerate(state_slots):
+            start, end = token_starts[row], token_starts[row + 1]
             if start == end:
                 continue
+            elif continues_state[row]:
+                state = conv_state[state_slot].to(gated_inputs.dtype)
             else:
-                pass
-            if initial[row]:
-                state = conv_state[slot].to(bx.dtype)
-            else:
-                state = bx.new_zeros(channels, width - 1)
-            window = torch.cat([state, bx_t[:, start:end]], dim=-1)
+                state = gated_inputs.new_zeros(channels, kernel_size - 1)
+            window = torch.cat([state, channel_major_inputs[:, start:end]], dim=-1)
             outputs.append(
                 F.conv1d(window.unsqueeze(0), weight, bias=bias, groups=channels)[0]
             )
-            conv_state[slot] = window[:, -(width - 1) :].to(conv_state.dtype)
+            conv_state[state_slot] = window[:, -(kernel_size - 1) :].to(
+                conv_state.dtype
+            )
         if not outputs:
-            return bx.new_zeros(0, channels)
+            return gated_inputs.new_zeros(0, channels)
         else:
             pass
         return torch.cat(outputs, dim=-1).transpose(0, 1)
@@ -301,22 +294,26 @@ class Lfm3ShortConv(nn.Module):
             return hidden_states
         else:
             pass
-        meta = get_attn_backend().conv_state_metadata(self.layer_idx, forward_batch)
-        conv_state = meta.layer_cache.conv[0]
-        proj, _ = self.in_proj(hidden_states)
-        b_gate, c_gate, x = proj.chunk(3, dim=-1)
-        bx = b_gate * x
+        conv_metadata = get_attn_backend().conv_state_metadata(
+            self.layer_idx, forward_batch
+        )
+        conv_state = conv_metadata.layer_cache.conv[0]
+        projected, _ = self.in_proj(hidden_states)
+        b_gate, c_gate, x = projected.chunk(3, dim=-1)
+        gated_inputs = b_gate * x
         if forward_batch.forward_mode.is_decode():
-            conv_out = self.conv_decode(bx, conv_state, meta.cache_indices)
-        else:
-            conv_out = self.conv_prefill(
-                bx,
-                conv_state,
-                meta.cache_indices,
-                meta.query_start_loc,
-                getattr(meta, "has_initial_state", None),
+            conv_outputs = self.conv_decode(
+                gated_inputs, conv_state, conv_metadata.cache_indices
             )
-        output, _ = self.out_proj(c_gate * conv_out)
+        else:
+            conv_outputs = self.conv_prefill(
+                gated_inputs,
+                conv_state,
+                conv_metadata.cache_indices,
+                conv_metadata.query_start_loc,
+                conv_metadata.has_initial_state,
+            )
+        output, _ = self.out_proj(c_gate * conv_outputs)
         return output
 
 
@@ -396,11 +393,6 @@ class Lfm3TextModel(nn.Module):
             org_num_embeddings=config.vocab_size,
             prefix=add_prefix("embed_tokens", prefix),
         )
-        self.num_attention_layers = sum(
-            1
-            for layer_type in config.layer_types
-            if layer_type in ATTENTION_LAYER_TYPES
-        )
 
         def get_layer(idx: int, prefix: str, **_kwargs: object) -> Lfm3DecoderLayer:
             return Lfm3DecoderLayer(config, idx, prefix=prefix)
@@ -428,9 +420,9 @@ class Lfm3TextModel(nn.Module):
         self,
         name: str,
         loaded_weight: torch.Tensor,
-        params: dict[str, nn.Parameter],
+        parameters: dict[str, nn.Parameter],
     ) -> str | None:
-        """Load one backbone weight, ``name`` relative to the model; returns the parameter name."""
+        """Load one backbone weight, name relative to the model; returns the parameter name, or None for an unknown weight."""
         if ".conv.conv.weight" in name:
             name = name.replace(".conv.conv.weight", ".conv.conv_weight")
             loaded_weight = loaded_weight.squeeze(1)
@@ -443,30 +435,20 @@ class Lfm3TextModel(nn.Module):
             ("qkv_proj", "k_proj", "k"),
             ("qkv_proj", "v_proj", "v"),
         )
-        for param_name, weight_name, shard_id in stacked:
+        for stacked_name, weight_name, shard_id in stacked:
             if f".{weight_name}." in name:
-                mapped = name.replace(weight_name, param_name)
-                param = params[mapped]
-                param.weight_loader(param, loaded_weight, shard_id)
-                return mapped
+                parameter_name = name.replace(weight_name, stacked_name)
+                parameter = parameters[parameter_name]
+                parameter.weight_loader(parameter, loaded_weight, shard_id)
+                return parameter_name
             else:
                 pass
-        param = params.get(name)
-        if param is None:
+        parameter = parameters.get(name)
+        if parameter is None:
             return None
         else:
             pass
-        loader = getattr(param, "weight_loader", default_weight_loader)
-        loader(param, loaded_weight)
+        # note (ruilin): SGLang parameters without a sharded loader take the default one.
+        weight_loader = getattr(parameter, "weight_loader", default_weight_loader)
+        weight_loader(parameter, loaded_weight)
         return name
-
-
-def backbone_weights(
-    weights: Iterable[tuple[str, torch.Tensor]],
-) -> Iterable[tuple[str, torch.Tensor]]:
-    """Strip the export prefix from backbone weights; others pass through unchanged."""
-    for name, tensor in weights:
-        if name.startswith(CHECKPOINT_PREFIX):
-            yield "language_model." + name[len(CHECKPOINT_PREFIX) :], tensor
-        else:
-            yield name, tensor

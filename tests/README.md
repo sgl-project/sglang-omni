@@ -147,6 +147,7 @@ tests/
     ├── lfm3_audio/
     │   ├── test_generation.py
     │   ├── test_hf_config.py
+    │   ├── test_model_runner.py
     │   └── test_stages.py
     ├── minimax_music3/
     │   ├── test_core.py
@@ -954,10 +955,7 @@ that happened to contain an older version of the test.
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
 
-- `unit_test/lfm3_audio/`: LFM3-Audio and LFM3-Omni config parsing for both
-  checkpoint layouts, text/speech state machine, interleaved 6-text/12-frame
-  schedule, end-of-speech frames, speech-frame sampling, prompt and media
-  helpers and pipeline stages.
+- `unit_test/lfm3_audio/`: LFM3-Audio and LFM3-Omni config parsing for both checkpoint layouts, the text/speech state machine, mixed-batch speech steps, retraction replay, refused server settings, speech-frame sampling, and prompt and media helpers.
 
 - `unit_test/minimax_music3/`: MiniMax Music 3 request validation, placement,
   acoustic configuration, hidden-frame buffering, deterministic sampling,

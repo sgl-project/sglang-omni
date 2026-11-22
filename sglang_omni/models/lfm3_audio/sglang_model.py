@@ -6,14 +6,12 @@ tower). The encoders are the checkpoint's own modules (custom code).
 
 One step produces the backbone's last hidden state and text logits. The model
 runner samples a speech frame from the hidden state when the request is
-speaking and feeds the frame back as the next step's input embedding: a decode
-row whose input id is ``<|audio_out|>`` reads its embedding from
-``decode_input_embed_buffer`` instead of the token table.
+speaking and feeds the frame back as the next step's input embedding; every
+decode row reads its input from decode_input_embed_buffer.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 
 import torch
@@ -23,21 +21,20 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.runtime_context import get_schedule
 from torch import nn
+from transformers import AutoConfig
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from sglang_omni.models.lfm3_audio.backbone import CHECKPOINT_PREFIX, Lfm3TextModel
 from sglang_omni.models.lfm3_audio.depth import DEPTH_PREFIXES, Lfm3DepthDecoder
 from sglang_omni.models.lfm3_audio.hf_config import (
-    Lfm3AudioTokens,
     Lfm3SGLangConfig,
     is_export_format,
     lfm3_tokens_from_checkpoint,
     load_checkpoint_config,
 )
 
-logger = logging.getLogger(__name__)
-
-ENCODER_PREFIXES = ("encoder.", "mlp.model.")
-# The export's projector is an nn.Sequential(LayerNorm, Linear, GELU, Linear).
+PROJECTOR_PREFIX = "mlp.model."
+# LFM3-Audio's projector is an nn.Sequential(LayerNorm, Linear, GELU, Linear).
 PROJECTOR_RENAMES = {
     "mlp.model.0.": "layer_norm.",
     "mlp.model.1.": "linear_1.",
@@ -52,54 +49,22 @@ OMNI_RENAMES = (
     ("model.audio_encoder.downsample.", "encoder.downsample."),
     ("model.audio_encoder.lfm.", "encoder.lfm.lfm."),
 )
-# LFM3-Omni modules loaded as they are: checkpoint prefix -> attribute.
-OMNI_MODULES = {
-    "model.audio_projector.": "audio_projector",
-    "model.vision_tower.": "vision_tower",
-    "model.multi_modal_projector.": "multi_modal_projector",
-}
+# LFM3-Omni's checkpoint-code modules whose weights load under their own names.
+OMNI_MODULE_PREFIXES = (
+    "model.audio_projector.",
+    "model.vision_tower.",
+    "model.multi_modal_projector.",
+)
 
 
 def canonical_weight_name(name: str) -> str:
+    """LFM3-Omni's names of the shared parts, as LFM3-Audio's export names them."""
     for old, new in OMNI_RENAMES:
         if name.startswith(old):
             return new + name[len(old) :]
         else:
             pass
     return name
-
-
-def build_media_modules(checkpoint_dir: str) -> dict[str, nn.Module]:
-    """The checkpoint's own audio encoder and projector, plus LFM3-Omni's vision tower and projector."""
-    from transformers import AutoConfig
-    from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
-    def load(name: str) -> type:
-        return get_class_from_dynamic_module(name, checkpoint_dir)
-
-    ref_config = AutoConfig.from_pretrained(checkpoint_dir, trust_remote_code=True)
-    if is_export_format(load_checkpoint_config(checkpoint_dir)):
-        return {
-            "audio_encoder": load("modeling_lfm3_audio.Lfm3AudioEncoder")(
-                ref_config.audio_encoder_config
-            ),
-            "audio_projector": load("modeling_lfm3_audio.Lfm3AudioProjector")(
-                ref_config
-            ),
-        }
-    else:
-        return {
-            "audio_encoder": load("modeling_lfm3_omni.Lfm3OmniEncoder")(
-                ref_config.audio_encoder_config
-            ),
-            "audio_projector": load("modeling_lfm3_omni.Lfm3OmniProjector")(ref_config),
-            "vision_tower": load("modeling_lfm3_vl.Lfm3VlVisionModel")(
-                ref_config.vision_config
-            ),
-            "multi_modal_projector": load(
-                "modeling_lfm3_omni.Lfm3OmniMultiModalProjector"
-            )(ref_config),
-        }
 
 
 class Lfm3AudioSGLangModel(nn.Module):
@@ -112,26 +77,21 @@ class Lfm3AudioSGLangModel(nn.Module):
         del quant_config, prefix
         super().__init__()
         self.config = config
-        checkpoint_dir = getattr(config, "checkpoint_dir", None)
-        if checkpoint_dir:
-            self.tokens = lfm3_tokens_from_checkpoint(checkpoint_dir)
-        else:
-            # Unit tests build the model without a checkpoint.
-            self.tokens = Lfm3AudioTokens(
-                num_codebooks=config.num_codebooks,
-                codebook_size=config.codebook_size,
-                audio_eos_code=config.codebook_size - 1,
-                maskgit_steps=config.maskgit_steps,
-                interleaved_n_text=config.interleaved_n_text,
-                interleaved_n_audio=config.interleaved_n_audio,
-            )
+        checkpoint_dir = config.checkpoint_dir
+        self.tokens = lfm3_tokens_from_checkpoint(checkpoint_dir)
         self.hidden_size = config.hidden_size
         self.language_model = Lfm3TextModel(config, prefix="language_model")
         self.codebook_embedding = nn.Embedding(
             config.num_codebooks * config.codebook_size, config.hidden_size
         )
-        # Built on the CPU as Transformers builds them, so the rotary frequency
-        # buffers match the reference; load_weights moves them to the device.
+        transformers_config = AutoConfig.from_pretrained(
+            checkpoint_dir, trust_remote_code=True
+        )
+
+        def checkpoint_class(class_path: str) -> type[nn.Module]:
+            return get_class_from_dynamic_module(class_path, checkpoint_dir)
+
+        # note (ruilin): built on the CPU as Transformers builds them, so the rotary frequency buffers match the checkpoint's code; load_weights moves them to the device.
         with torch.device("cpu"):
             self.depth_decoder = Lfm3DepthDecoder(
                 config.depth_config,
@@ -139,18 +99,35 @@ class Lfm3AudioSGLangModel(nn.Module):
                 config.num_codebooks,
                 config.codebook_size,
             )
-            media = build_media_modules(checkpoint_dir) if checkpoint_dir else {}
-        self.audio_encoder = media.get("audio_encoder")
-        self.audio_projector = media.get("audio_projector")
-        self.vision_tower = media.get("vision_tower")
-        self.multi_modal_projector = media.get("multi_modal_projector")
+            if is_export_format(load_checkpoint_config(checkpoint_dir)):
+                self.audio_encoder = checkpoint_class(
+                    "modeling_lfm3_audio.Lfm3AudioEncoder"
+                )(transformers_config.audio_encoder_config)
+                self.audio_projector = checkpoint_class(
+                    "modeling_lfm3_audio.Lfm3AudioProjector"
+                )(transformers_config)
+                self.vision_tower = None
+                self.multi_modal_projector = None
+            else:
+                self.audio_encoder = checkpoint_class(
+                    "modeling_lfm3_omni.Lfm3OmniEncoder"
+                )(transformers_config.audio_encoder_config)
+                self.audio_projector = checkpoint_class(
+                    "modeling_lfm3_omni.Lfm3OmniProjector"
+                )(transformers_config)
+                self.vision_tower = checkpoint_class(
+                    "modeling_lfm3_vl.Lfm3VlVisionModel"
+                )(transformers_config.vision_config)
+                self.multi_modal_projector = checkpoint_class(
+                    "modeling_lfm3_omni.Lfm3OmniMultiModalProjector"
+                )(transformers_config)
         max_batch_size = get_schedule().max_running_requests
         self.register_buffer(
             "decode_input_embed_buffer",
             torch.zeros(max_batch_size, config.hidden_size),
             persistent=False,
         )
-        # Rows whose request asked for text only also may not open speech.
+        # A row whose request asked for text only may not open speech.
         self.register_buffer(
             "text_only_buffer",
             torch.zeros(max_batch_size, dtype=torch.bool),
@@ -162,7 +139,7 @@ class Lfm3AudioSGLangModel(nn.Module):
             persistent=False,
         )
         self.register_buffer(
-            "placeholder_ids",
+            "placeholder_token_ids",
             torch.tensor(self.tokens.placeholder_token_ids),
             persistent=False,
         )
@@ -191,10 +168,6 @@ class Lfm3AudioSGLangModel(nn.Module):
         self, features: torch.Tensor, feature_mask: torch.Tensor
     ) -> torch.Tensor:
         """Projected speech features of the clips in order, one row per audio token."""
-        if self.audio_encoder is None:
-            raise RuntimeError("LFM3 was built without its audio encoder")
-        else:
-            pass
         dtype = self.audio_encoder.downsample.conv_in.weight.dtype
         lengths = feature_mask.sum(-1)
         encoded, encoded_lengths = self.audio_encoder(features.to(dtype), lengths)
@@ -209,10 +182,9 @@ class Lfm3AudioSGLangModel(nn.Module):
         self, pixel_values: torch.Tensor, grid_thw: torch.Tensor
     ) -> torch.Tensor:
         """Projected features of the images (or videos) in order, one row per vision token."""
-        if self.vision_tower is None:
-            raise RuntimeError("This LFM3 checkpoint has no vision tower")
-        else:
-            pass
+        assert (
+            self.vision_tower is not None
+        ), "preprocessing admits images and videos for LFM3-Omni only"
         dtype = self.multi_modal_projector.linear_1.weight.dtype
         vision = self.vision_tower(
             pixel_values.to(dtype), grid_thw=grid_thw, return_dict=True
@@ -227,19 +199,13 @@ class Lfm3AudioSGLangModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
     ) -> LogitsProcessorOutput:
-        batch_rows = None
-        if input_embeds is None:
-            input_embeds = self.language_model.embed_tokens(input_ids)
-            if forward_batch.forward_mode.is_decode():
-                batch_rows = input_ids.shape[0]
-                is_frame = (input_ids == self.tokens.audio_out_token_id)[:, None]
-                input_embeds = torch.where(
-                    is_frame,
-                    self.decode_input_embed_buffer[:batch_rows].to(input_embeds.dtype),
-                    input_embeds,
-                )
-            else:
-                pass
+        if forward_batch.forward_mode.is_decode():
+            # The runner writes every decode row's input: a speech frame or a text token embedding.
+            input_embeds = self.decode_input_embed_buffer[: input_ids.shape[0]]
+        elif input_embeds is None:
+            raise RuntimeError(
+                "LFM3 prefill takes its input embeddings from the model runner"
+            )
         else:
             pass
         hidden_states = self.language_model(
@@ -259,7 +225,7 @@ class Lfm3AudioSGLangModel(nn.Module):
             hidden_states, self.language_model.embed_tokens.weight
         ).float()
         # Media placeholders never come out of the text head; text-only rows cannot open speech.
-        logits.index_fill_(1, self.placeholder_ids, float("-inf"))
+        logits.index_fill_(1, self.placeholder_token_ids, float("-inf"))
         rows = logits.shape[0]
         text_only = self.text_only_buffer[:rows, None]
         marker_logits = logits.index_select(1, self.speech_marker_ids)
@@ -275,106 +241,74 @@ class Lfm3AudioSGLangModel(nn.Module):
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        params = dict(self.named_parameters())
-        backbone_params = {
-            key[len("language_model.") :]: value
-            for key, value in params.items()
-            if key.startswith("language_model.")
+        parameters = dict(self.named_parameters())
+        backbone_parameters = {
+            name[len("language_model.") :]: parameter
+            for name, parameter in parameters.items()
+            if name.startswith("language_model.")
         }
         loaded: set[str] = set()
-        skipped: list[str] = []
+        unexpected: list[str] = []
         for checkpoint_name, tensor in weights:
-            module_prefix = next(
-                (
-                    prefix
-                    for prefix in OMNI_MODULES
-                    if checkpoint_name.startswith(prefix)
-                ),
-                None,
-            )
             name = canonical_weight_name(checkpoint_name)
-            if module_prefix is not None:
-                attribute = OMNI_MODULES[module_prefix]
-                module = getattr(self, attribute)
-                if module is None:
-                    continue
-                else:
-                    pass
-                local = checkpoint_name[len(module_prefix) :]
-                copy_into(module, local, tensor)
-                loaded.add(f"{attribute}.{local}")
+            if checkpoint_name.startswith(OMNI_MODULE_PREFIXES):
+                # note (ruilin): LFM3-Omni's checkpoint-code modules sit at the same paths, without the model prefix.
+                target = checkpoint_name[len("model.") :]
             elif name.startswith(CHECKPOINT_PREFIX):
                 target = self.language_model.load_weight(
-                    name[len(CHECKPOINT_PREFIX) :], tensor, backbone_params
+                    name[len(CHECKPOINT_PREFIX) :], tensor, backbone_parameters
                 )
                 if target is None:
-                    skipped.append(checkpoint_name)
+                    unexpected.append(checkpoint_name)
                 else:
                     loaded.add("language_model." + target)
-            elif name == "lfm.lm_head.weight":
-                # Tied to the token embedding.
                 continue
-            elif name == "codebook_embedding.weight":
-                self.codebook_embedding.weight.data.copy_(tensor)
-                loaded.add("codebook_embedding.weight")
+            elif name == "lfm.lm_head.weight":
+                # note (ruilin): LFM3-Audio stores the tied text head; the token embedding is the same tensor.
+                continue
             elif name.startswith(DEPTH_PREFIXES):
-                if not self.depth_decoder.load_weight(name, tensor):
-                    skipped.append(checkpoint_name)
-                else:
+                if self.depth_decoder.load_weight(name, tensor):
                     loaded.add("depth_decoder." + name)
-            elif name.startswith(ENCODER_PREFIXES):
-                if self.audio_encoder is None:
-                    continue
                 else:
-                    pass
-                self.load_encoder_weight(name, tensor)
-                loaded.add(name)
+                    unexpected.append(checkpoint_name)
+                continue
+            elif name.startswith("encoder.downsample."):
+                target = (
+                    "audio_encoder.downsample." + name[len("encoder.downsample.") :]
+                )
+            elif name.startswith("encoder.lfm.lfm."):
+                target = "audio_encoder.lfm." + name[len("encoder.lfm.lfm.") :]
+            elif name.startswith(PROJECTOR_PREFIX):
+                target = "audio_projector." + next(
+                    new + name[len(old) :]
+                    for old, new in PROJECTOR_RENAMES.items()
+                    if name.startswith(old)
+                )
             else:
-                skipped.append(checkpoint_name)
-        if skipped:
-            raise ValueError(f"Unexpected LFM3 weights: {skipped[:8]}")
+                target = name
+            if target in parameters:
+                with torch.no_grad():
+                    parameters[target].copy_(tensor.to(parameters[target].dtype))
+                loaded.add(target)
+            else:
+                unexpected.append(checkpoint_name)
+        if unexpected:
+            raise ValueError(f"Unexpected LFM3 weights: {unexpected[:8]}")
         else:
             pass
         device = self.language_model.embed_tokens.weight.device
-        for module in self.cpu_built_modules():
-            module.to(device)
-        return loaded
-
-    def cpu_built_modules(self) -> list[nn.Module]:
-        modules = (
+        for module in (
             self.depth_decoder,
             self.audio_encoder,
             self.audio_projector,
             self.vision_tower,
             self.multi_modal_projector,
-        )
-        return [module for module in modules if module is not None]
-
-    def load_encoder_weight(self, name: str, tensor: torch.Tensor) -> None:
-        if name.startswith("encoder.downsample."):
-            module, local = (
-                self.audio_encoder,
-                "downsample." + name[len("encoder.downsample.") :],
-            )
-        elif name.startswith("encoder.lfm.lfm."):
-            module, local = self.audio_encoder, "lfm." + name[len("encoder.lfm.lfm.") :]
-        else:
-            module = self.audio_projector
-            local = next(
-                new + name[len(old) :]
-                for old, new in PROJECTOR_RENAMES.items()
-                if name.startswith(old)
-            )
-        copy_into(module, local, tensor)
-
-
-def copy_into(module: nn.Module, name: str, tensor: torch.Tensor) -> None:
-    """Copy a checkpoint tensor into a parameter or buffer of one of the checkpoint's own modules."""
-    targets = dict(module.named_parameters())
-    targets.update(dict(module.named_buffers()))
-    target = targets[name]
-    with torch.no_grad():
-        target.copy_(tensor.to(target.dtype))
+        ):
+            if module is not None:
+                module.to(device)
+            else:
+                pass
+        return loaded
 
 
 EntryClass = Lfm3AudioSGLangModel

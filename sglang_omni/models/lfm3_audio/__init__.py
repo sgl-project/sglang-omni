@@ -1,8 +1,7 @@
-"""LiquidAI LFM3-Audio support for sglang-omni: text and speech in, text and speech out."""
+"""LiquidAI LFM3-Audio and LFM3-Omni: text, speech, image and video in; text and speech out."""
 
+from sglang_omni.models.lfm3_audio import config
 from sglang_omni.models.model_capabilities import ModelCapabilities
-
-from . import config
 
 CAPABILITIES = ModelCapabilities(
     supports_reference_audio=False,

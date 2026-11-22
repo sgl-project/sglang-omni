@@ -1,32 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""LFM3-Audio model runner: audio input embeddings, speech-frame sampling and feedback."""
+"""LFM3 model runner: media input embeddings, speech-frame sampling and feedback."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import torch
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.lfm3_audio.depth import sample_frames
+from sglang_omni.models.lfm3_audio.request_builders import Lfm3AudioRequestData
+from sglang_omni.models.lfm3_audio.sglang_model import Lfm3AudioSGLangModel
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
-
-if TYPE_CHECKING:
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
-    from sglang.srt.managers.scheduler import GenerationBatchResult
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-
-    from sglang_omni.models.lfm3_audio.request_builders import Lfm3AudioRequestData
-    from sglang_omni.models.lfm3_audio.sglang_model import Lfm3AudioSGLangModel
-    from sglang_omni.scheduling.sglang_backend.output_processor import (
-        SGLangOutputProcessor,
-    )
-else:
-    pass
 
 
 class Lfm3AudioModelRunner(ModelRunner):
+    """A request keeps its prompt embeddings and fed frame codes, so a retracted request replays its prompt and output in one prefill."""
+
     model: Lfm3AudioSGLangModel
 
     def __init__(
@@ -34,9 +27,9 @@ class Lfm3AudioModelRunner(ModelRunner):
     ) -> None:
         super().__init__(tp_worker, output_processor)
         self.tokens = self.model.tokens
-        self.stop_id = self.tokens.eos_token_ids[0]
+        self.stop_token_id = self.tokens.eos_token_ids[0]
 
-    # Text sampling must happen before the speech step: the state machine reads the sampled token.
+    # note (ruilin): the speech step reads the sampled text token, so sampling runs before the post hooks.
     def sample_before_post_prefill(
         self,
         forward_batch: ForwardBatch | None,
@@ -70,83 +63,132 @@ class Lfm3AudioModelRunner(ModelRunner):
     ) -> None:
         del schedule_batch
         self.write_text_only_rows(requests)
-        forward_batch.input_embeds = self.build_prefill_input_embeds(
-            forward_batch, requests
-        )
+        embedding_rows = [self.prefill_input_embeds(request) for request in requests]
+        forward_batch.input_embeds = torch.cat(embedding_rows, dim=0)
 
-    def build_prefill_input_embeds(
-        self, forward_batch: ForwardBatch, requests: list[SchedulerRequest]
-    ) -> torch.Tensor:
-        input_embeds = self.model.get_input_embeddings()(forward_batch.input_ids)
-        offset = 0
-        for sched_req in requests:
-            data: Lfm3AudioRequestData = sched_req.data
-            req = data.req
-            extend_len = req.extend_len
-            media = self.encode_media(data, input_embeds.device)
-            if media:
-                if req.prefix_len != 0 or extend_len != len(data.input_ids):
-                    raise RuntimeError(
-                        "LFM3 places a request's media embeddings in one prefill; "
-                        "serve it with chunked prefill and the radix cache off"
-                    )
-                else:
-                    pass
+    def prefill_input_embeds(self, request: SchedulerRequest) -> torch.Tensor:
+        """The prompt's embeddings, followed on a replay by the inputs of the tokens generated before the retraction."""
+        request_data: Lfm3AudioRequestData = request.data
+        sglang_request = request_data.req
+        if sglang_request.prefix_len != 0:
+            raise RuntimeError(
+                "LFM3 prefills a request whole; serve it with the radix cache off"
+            )
+        else:
+            pass
+        if request_data.prefill_input_embeds is None:
+            request_data.prefill_input_embeds = self.prompt_input_embeds(request_data)
+        else:
+            pass
+        prompt_embeds = request_data.prefill_input_embeds
+        output_ids = sglang_request.output_ids
+        if sglang_request.extend_len != prompt_embeds.shape[0] + len(output_ids):
+            raise RuntimeError(
+                f"LFM3 prefill of {request.request_id} covers {sglang_request.extend_len} positions, "
+                f"not its {prompt_embeds.shape[0]} prompt and {len(output_ids)} output tokens; "
+                "serve it with chunked prefill off"
+            )
+        elif not output_ids:
+            return prompt_embeds
+        else:
+            pass
+        # A replay: each output token feeds its frame embedding (audio_out) or its token embedding again.
+        output_id_tensor = torch.tensor(output_ids, device=prompt_embeds.device)
+        output_embeds = self.model.get_input_embeddings()(output_id_tensor)
+        is_frame = output_id_tensor == self.tokens.audio_out_token_id
+        if int(is_frame.sum()) != len(request_data.feedback_frame_codes):
+            raise RuntimeError(
+                f"LFM3 replay of {request.request_id} has {int(is_frame.sum())} frame positions "
+                f"for {len(request_data.feedback_frame_codes)} fed frames"
+            )
+        elif request_data.feedback_frame_codes:
+            output_embeds[is_frame] = self.model.frame_embeddings(
+                torch.stack(request_data.feedback_frame_codes)
+            ).to(output_embeds.dtype)
+        else:
+            pass
+        # The queued embedding of the last frame is in output_embeds now.
+        request_data.pending_feedback_queue.clear()
+        return torch.cat([prompt_embeds, output_embeds], dim=0)
+
+    def prompt_input_embeds(self, request_data: Lfm3AudioRequestData) -> torch.Tensor:
+        """Token embeddings of the prompt with its audio, image and video embeddings at their placeholders."""
+        embed_tokens = self.model.get_input_embeddings()
+        token_ids = request_data.input_ids.to(embed_tokens.weight.device)
+        prompt_embeds = embed_tokens(token_ids)
+        for placeholder_token_id, media_embeds in self.encode_media(
+            request_data, token_ids.device
+        ):
+            positions = (token_ids == placeholder_token_id).nonzero(as_tuple=True)[0]
+            if positions.numel() != media_embeds.shape[0]:
+                raise ValueError(
+                    f"{positions.numel()} placeholders of token {placeholder_token_id} for "
+                    f"{media_embeds.shape[0]} media embeddings"
+                )
             else:
                 pass
-            for token_id, embeds in media:
-                positions = (data.input_ids == token_id).nonzero(as_tuple=True)[0]
-                if positions.numel() != embeds.shape[0]:
-                    raise ValueError(
-                        f"{positions.numel()} placeholders of token {token_id} for "
-                        f"{embeds.shape[0]} media embeddings"
-                    )
-                else:
-                    pass
-                input_embeds[positions.to(input_embeds.device) + offset] = embeds.to(
-                    input_embeds.dtype
-                )
-            offset += extend_len
-        return input_embeds
+            prompt_embeds[positions] = media_embeds.to(prompt_embeds.dtype)
+        return prompt_embeds.detach()
 
     def encode_media(
-        self, data: Lfm3AudioRequestData, device: torch.device
+        self, request_data: Lfm3AudioRequestData, device: torch.device
     ) -> list[tuple[int, torch.Tensor]]:
-        """(placeholder id, embeddings) of the request's audio clips, images and videos; consumes the inputs."""
+        """(placeholder token id, embeddings) of the request's audio clips, images and videos; consumes the inputs."""
         media: list[tuple[int, torch.Tensor]] = []
         tokens = self.tokens
-        if data.input_features is not None and data.input_features.numel():
+        if request_data.input_features is not None:
             media.append(
                 (
                     tokens.audio_token_id,
                     self.model.encode_audio(
-                        data.input_features.to(device),
-                        data.feature_attention_mask.to(device),
+                        request_data.input_features.to(device),
+                        request_data.feature_attention_mask.to(device),
                     ),
                 )
             )
         else:
             pass
-        for token_id, pixels, grid in (
-            (tokens.image_token_id, data.pixel_values, data.image_grid_thw),
-            (tokens.video_token_id, data.pixel_values_videos, data.video_grid_thw),
+        for placeholder_token_id, pixel_values, grid_thw in (
+            (
+                tokens.image_token_id,
+                request_data.pixel_values,
+                request_data.image_grid_thw,
+            ),
+            (
+                tokens.video_token_id,
+                request_data.pixel_values_videos,
+                request_data.video_grid_thw,
+            ),
         ):
-            if pixels is not None and pixels.numel():
+            if pixel_values is not None:
                 media.append(
                     (
-                        token_id,
-                        self.model.encode_vision(pixels.to(device), grid.to(device)),
+                        placeholder_token_id,
+                        self.model.encode_vision(
+                            pixel_values.to(device), grid_thw.to(device)
+                        ),
                     )
                 )
             else:
                 pass
-        data.input_features = None
-        data.feature_attention_mask = None
-        data.pixel_values = None
-        data.image_grid_thw = None
-        data.pixel_values_videos = None
-        data.video_grid_thw = None
+        request_data.input_features = None
+        request_data.feature_attention_mask = None
+        request_data.pixel_values = None
+        request_data.image_grid_thw = None
+        request_data.pixel_values_videos = None
+        request_data.video_grid_thw = None
         return media
+
+    def next_decode_input(self, request_data: Lfm3AudioRequestData) -> torch.Tensor:
+        """The embedding the request's last output feeds back: its speech frame, else its text token."""
+        if request_data.pending_feedback_queue:
+            return request_data.pending_feedback_queue.popleft()
+        else:
+            last_token_id = torch.tensor(
+                [request_data.req.output_ids[-1]],
+                device=self.model.get_input_embeddings().weight.device,
+            )
+            return self.model.get_input_embeddings()(last_token_id)[0].detach()
 
     def before_decode(
         self,
@@ -162,16 +204,9 @@ class Lfm3AudioModelRunner(ModelRunner):
         else:
             pass
         self.write_text_only_rows(requests)
+        decode_inputs = [self.next_decode_input(request.data) for request in requests]
         buffer = self.model.decode_input_embed_buffer
-        rows = []
-        for sched_req in requests:
-            queue = sched_req.data.pending_feedback_queue
-            rows.append(
-                queue.popleft()
-                if queue
-                else torch.zeros(self.model.hidden_size, device=buffer.device)
-            )
-        buffer[: len(rows)].copy_(torch.stack(rows).to(buffer.dtype))
+        buffer[: len(decode_inputs)].copy_(torch.stack(decode_inputs).to(buffer.dtype))
 
     def post_prefill(
         self,
@@ -198,53 +233,57 @@ class Lfm3AudioModelRunner(ModelRunner):
         self, result: GenerationBatchResult, requests: list[SchedulerRequest]
     ) -> None:
         """Advance every row one step: a speech frame or the sampled text token."""
-        hidden = result.logits_output.hidden_states
-        sampled = result.next_token_ids
-        host_ids = sampled.tolist()
+        hidden_states = result.logits_output.hidden_states
+        sampled_token_ids = result.next_token_ids
+        host_token_ids = sampled_token_ids.tolist()
         speeches = [request.data.speech for request in requests]
-        audio_rows = [
+        speaking_rows = [
             row for row, speech in enumerate(speeches) if speech.needs_frame()
         ]
         frames = None
-        if audio_rows:
-            index = torch.tensor(audio_rows, device=hidden.device)
+        if speaking_rows:
             frames = sample_frames(
                 self.model.depth_decoder,
-                hidden.index_select(0, index),
-                [speeches[row].sampling for row in audio_rows],
+                hidden_states.index_select(
+                    0, torch.tensor(speaking_rows, device=hidden_states.device)
+                ),
+                [speeches[row].sampling for row in speaking_rows],
                 self.tokens.maskgit_schedule,
             )
         else:
             pass
-        next_ids = list(host_ids)
-        feed_rows: list[int] = []
-        feed_codes: list[torch.Tensor] = []
-        frame_of_row = {row: slot for slot, row in enumerate(audio_rows)}
+        next_token_ids = list(host_token_ids)
+        feedback_rows: list[int] = []
+        feedback_codes: list[torch.Tensor] = []
+        frame_index_of_row = {row: index for index, row in enumerate(speaking_rows)}
         for row, speech in enumerate(speeches):
             was_interleaving = speech.interleaving
-            slot = frame_of_row.get(row)
-            if slot is not None:
-                feed, _ = speech.apply_frame(frames[slot])
-                next_ids[row] = self.tokens.audio_out_token_id
-                feed_rows.append(row)
-                feed_codes.append(feed)
+            frame_index = frame_index_of_row.get(row)
+            if frame_index is not None:
+                codes = speech.apply_frame(frames[frame_index])
+                next_token_ids[row] = self.tokens.audio_out_token_id
+                feedback_rows.append(row)
+                feedback_codes.append(codes)
+                requests[row].data.feedback_frame_codes.append(codes)
             else:
-                speech.apply_text(int(host_ids[row]), self.tokens.eos_token_ids)
-                if speech.ended_on_text_end:
-                    # The scheduler stops on <|im_end|> only; <|text_end|> ends a text-mode turn.
-                    next_ids[row] = self.stop_id
+                speech.apply_text(int(host_token_ids[row]), self.tokens.eos_token_ids)
+                if speech.finished:
+                    # note (ruilin): the scheduler stops on im_end only; text_end and any other end id finish the turn too.
+                    next_token_ids[row] = self.stop_token_id
                 else:
                     pass
             speech.advance_slot(was_interleaving)
-        if feed_rows:
-            embeds = self.model.frame_embeddings(torch.stack(feed_codes))
-            for row, embed in zip(feed_rows, embeds, strict=True):
-                requests[row].data.pending_feedback_queue.append(embed)
+        if feedback_rows:
+            frame_embeds = self.model.frame_embeddings(torch.stack(feedback_codes))
+            for row, frame_embed in zip(feedback_rows, frame_embeds, strict=True):
+                requests[row].data.pending_feedback_queue.append(frame_embed.detach())
         else:
             pass
-        if next_ids != host_ids:
+        if next_token_ids != host_token_ids:
             result.next_token_ids = torch.tensor(
-                next_ids, dtype=sampled.dtype, device=sampled.device
+                next_token_ids,
+                dtype=sampled_token_ids.dtype,
+                device=sampled_token_ids.device,
             )
         else:
             pass

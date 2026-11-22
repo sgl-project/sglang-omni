@@ -22,6 +22,10 @@ TEXT = {
     "layer_types": ["conv", "full_attention", "conv", "sliding_attention"],
     "sliding_window": 256,
     "use_sandwich_norm": True,
+    "tie_word_embeddings": True,
+    "pad_token_id": 124893,
+    "bos_token_id": 124894,
+    "eos_token_id": 124900,
     "rope_parameters": {
         "full_attention": {
             "rope_type": "default",
@@ -49,6 +53,8 @@ def test_audio_export_layout(tmp_path) -> None:
             "codebooks": 12,
             "audio_vocab_size": 2017,
             "maskgit_steps": 3,
+            "interleaved_n_text": 6,
+            "interleaved_n_audio": 12,
         },
         {
             "eos_token_id": [124900, 125014],
@@ -82,6 +88,8 @@ def test_omni_transformers_layout(tmp_path) -> None:
             "codebook_size": 2017,
             "audio_eos_code": 2016,
             "maskgit_schedule": [4, 4, 4],
+            "interleaved_n_text": 6,
+            "interleaved_n_audio": 12,
             "image_token_id": 125030,
             "video_token_id": 125029,
         },

@@ -1,2 +1,3 @@
 config_cls: Lfm3AudioPipelineConfig
-model_path: LiquidAI/LFM3-Omni-2B
+# Pinned to the validated snapshot: the pipeline runs the checkpoint's own encoder, vision and codec code.
+model_path: LiquidAI/LFM3-Omni-2B@c01718a568e53ae936e6b5e1ff5ab2de7d7f388b

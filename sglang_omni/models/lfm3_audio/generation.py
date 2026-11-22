@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-request text/speech state machine of LFM3-Audio generation.
+"""Per-request text/speech state machine of LFM3 generation.
 
-Mirrors the reference ``generate`` loop: a request is in text, speech
-(``<|audio_start|>``) or interleaved (``<|mixed_start|>``) mode. Interleaved
-blocks alternate 6 text slots and 12 speech frames until the text ends with
-``<|text_end|>``, after which the request speaks until the end-of-speech
-frame. An end-of-speech frame (any code equal to the EOS code) returns the
-request to text mode.
+A request is in text, speech (after audio_start) or interleaved (after mixed_start) mode, as in the checkpoint's own generate. Interleaved blocks alternate 6 text slots and 12 speech frames until the text ends with text_end, after which the request speaks until the end-of-speech frame. An end-of-speech frame, any code equal to the EOS code, returns the request to text mode.
 """
 
 from __future__ import annotations
@@ -26,22 +21,19 @@ class GenerationMode(str, Enum):
     INTERLEAVED = "interleaved"
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SpeechState:
     tokens: Lfm3AudioTokens
+    sampling: FrameSampling
     mode: GenerationMode = GenerationMode.TEXT
     text_only: bool = False
     speaking: bool = False
     text_done: bool = False
     slots_left: int = 6
     finished: bool = False
-    sampling: FrameSampling = field(default_factory=FrameSampling)
-    # Generated ids as the reference returns them: text tokens and one
-    # <|audio_out|> per emitted frame.
+    # The generated ids as the checkpoint's generate returns them: text tokens and one audio_out per emitted frame.
     text_out: list[int] = field(default_factory=list)
     frames: list[torch.Tensor] = field(default_factory=list)
-    # Set by the step that ended the turn on <|text_end|> outside an interleaved block.
-    ended_on_text_end: bool = False
 
     @classmethod
     def from_prompt(
@@ -80,18 +72,18 @@ class SpeechState:
             self.mode is GenerationMode.AUDIO or (self.interleaving and self.speaking)
         )
 
-    def apply_frame(self, codes: torch.Tensor) -> tuple[torch.Tensor, bool]:
-        """Record a sampled frame; returns the codes to feed back and whether a frame was emitted."""
-        eos = self.tokens.audio_eos_code
-        if bool((codes == eos).any()):
+    def apply_frame(self, codes: torch.Tensor) -> torch.Tensor:
+        """Record a sampled frame; returns the codes to feed back, all end-of-speech codes for an end-of-speech frame."""
+        eos_code = self.tokens.audio_eos_code
+        if bool((codes == eos_code).any()):
             self.mode = GenerationMode.TEXT
-            return torch.full_like(codes, eos), False
+            return torch.full_like(codes, eos_code)
         else:
             pass
         self.sampling.append(codes)
         self.frames.append(codes)
         self.text_out.append(self.tokens.audio_out_token_id)
-        return codes, True
+        return codes
 
     def apply_text(self, token_id: int, eos_token_ids: tuple[int, ...]) -> None:
         tokens = self.tokens
@@ -102,7 +94,6 @@ class SpeechState:
                 self.text_done, self.speaking = True, True
             else:
                 self.finished = True
-                self.ended_on_text_end = True
         elif token_id in eos_token_ids:
             self.finished = True
         elif interleaving:

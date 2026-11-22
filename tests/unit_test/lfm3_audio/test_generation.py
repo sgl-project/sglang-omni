@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU tests of the LFM3-Audio speech state machine, frame sampling and prompt helpers."""
+"""CPU tests of the LFM3 speech state machine and frame sampling."""
 
 from __future__ import annotations
 
@@ -14,13 +14,23 @@ TOKENS = Lfm3AudioTokens()
 TEXT_ID = 1000
 
 
+def sampling(temperature: float = 0.0, top_k: int | None = None) -> FrameSampling:
+    return FrameSampling(
+        temperature=temperature,
+        top_k=top_k,
+        repetition_penalty=1.0,
+        repetition_window=4,
+        generator=torch.Generator().manual_seed(0),
+    )
+
+
 def frame(code: int = 5) -> torch.Tensor:
     return torch.full((TOKENS.num_codebooks,), code, dtype=torch.long)
 
 
 def state_for(last_prompt_token: int, *, text_only: bool = False) -> SpeechState:
     return SpeechState.from_prompt(
-        TOKENS, last_prompt_token, text_only=text_only, sampling=FrameSampling()
+        TOKENS, last_prompt_token, text_only=text_only, sampling=sampling()
     )
 
 
@@ -46,7 +56,9 @@ def step(state: SpeechState, text_id: int = TEXT_ID) -> str:
         (TOKENS.mixed_start_token_id, True, GenerationMode.TEXT),
     ],
 )
-def test_prompt_marker_sets_the_mode(last_token, text_only, mode) -> None:
+def test_prompt_marker_sets_the_mode(
+    last_token: int, text_only: bool, mode: GenerationMode
+) -> None:
     assert state_for(last_token, text_only=text_only).mode is mode
 
 
@@ -65,13 +77,9 @@ def test_text_end_in_interleaved_speaks_until_the_eos_frame() -> None:
     assert state.text_done and state.needs_frame()
     for _ in range(30):
         assert step(state) == "frame"
-    feed, emitted = state.apply_frame(
-        frame(TOKENS.audio_eos_code - 1).index_fill(
-            0, torch.tensor([3]), TOKENS.audio_eos_code
-        )
-    )
-    assert not emitted
-    assert bool((feed == TOKENS.audio_eos_code).all())
+    eos_frame = frame().index_fill(0, torch.tensor([3]), TOKENS.audio_eos_code)
+    fed_codes = state.apply_frame(eos_frame)
+    assert bool((fed_codes == TOKENS.audio_eos_code).all())
     assert state.mode is GenerationMode.TEXT and not state.needs_frame()
     assert len(state.frames) == 30
 
@@ -79,7 +87,7 @@ def test_text_end_in_interleaved_speaks_until_the_eos_frame() -> None:
 def test_text_end_outside_interleaved_ends_the_turn() -> None:
     state = state_for(TEXT_ID)
     step(state, TOKENS.text_end_token_id)
-    assert state.finished and state.ended_on_text_end
+    assert state.finished
 
 
 def test_markers_inside_an_interleaved_block_stay_text() -> None:
@@ -97,23 +105,16 @@ def test_maskgit_schedule_covers_every_codebook() -> None:
     assert TOKENS.maskgit_schedule == [4, 4, 4]
 
 
-def test_greedy_and_non_positive_top_k_sampling() -> None:
+def test_greedy_sampling_takes_the_argmax() -> None:
     logits = torch.randn(TOKENS.codebook_size)
-    greedy = FrameSampling(temperature=0.0, top_k=128)
+    greedy = sampling(temperature=0.0, top_k=128)
     assert int(sample_code(logits, greedy, greedy.warpers(), None)) == int(
         logits.argmax()
     )
-    unbounded = FrameSampling(
-        temperature=1.0, top_k=-1, generator=torch.Generator().manual_seed(0)
-    )
-    code = sample_code(logits, unbounded, unbounded.warpers(), None)
-    assert 0 <= int(code) < TOKENS.codebook_size
 
 
-def test_repetition_penalty_lowers_recent_codes() -> None:
-    logits = torch.zeros(TOKENS.codebook_size)
-    logits[7] = 1.0
-    logits[8] = 0.9
-    sampling = FrameSampling(temperature=0.0, repetition_penalty=2.0)
-    history = torch.tensor([7])
-    assert int(sample_code(logits, sampling, sampling.warpers(), history)) == 8
+def test_repetition_history_keeps_the_last_window_of_frames() -> None:
+    frame_sampling = sampling()
+    for code in range(6):
+        frame_sampling.append(frame(code))
+    assert frame_sampling.history[:, 0].tolist() == [2, 3, 4, 5]

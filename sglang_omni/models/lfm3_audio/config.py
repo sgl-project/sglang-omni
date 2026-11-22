@@ -12,7 +12,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 
-PACKAGE = "sglang_omni.models.lfm3_audio.stages"
+PACKAGE = "sglang_omni.models.lfm3_audio"
 PREPROCESSING_STAGE = "preprocessing"
 GENERATION_STAGE = "generation"
 DECODE_STAGE = "decode"
@@ -55,13 +55,13 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
         StageConfig(
             name=PREPROCESSING_STAGE,
             process="pipeline",
-            factory_path=f"{PACKAGE}.create_preprocessing_executor",
+            factory_path=f"{PACKAGE}.stages.create_preprocessing_executor",
             next=GENERATION_STAGE,
         ),
         EngineStageConfig(
             name=GENERATION_STAGE,
             process="pipeline",
-            factory_path=f"{PACKAGE}.create_generation_executor",
+            factory_path=f"{PACKAGE}.engine_builder.create_generation_executor",
             factory=FactoryArgs(),
             gpu=0,
             next=DECODE_STAGE,
@@ -69,7 +69,7 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
         StageConfig(
             name=DECODE_STAGE,
             process="pipeline",
-            factory_path=f"{PACKAGE}.create_decode_executor",
+            factory_path=f"{PACKAGE}.stages.create_decode_executor",
             gpu=0,
             terminal=True,
         ),
