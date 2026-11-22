@@ -25,15 +25,23 @@ from sglang_omni.mps.devices import MpsPhysicalDevice
 from sglang_omni.mps.manager import MpsClientRef
 from sglang_omni.mps.replica_profiles import (
     B200,
+    MeasuredGpu,
     REPLICA_PROFILES,
+    RTX_4090_D,
     ReplicaProfile,
     decide_replica_profile,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-B200_EXAMPLES = sorted((REPO_ROOT / "examples" / "mps_dp" / "b200").glob("*.yaml"))
+EXAMPLE_GPUS = {"b200": B200, "rtx4090d": RTX_4090_D}
+EXAMPLES = sorted(
+    (example, gpu)
+    for directory, gpu in EXAMPLE_GPUS.items()
+    for example in (REPO_ROOT / "examples" / "mps_dp" / directory).glob("*.yaml")
+)
 MIB = 1 << 20
 WHISPER = "openai/whisper-large-v3"
+MOSS_TD = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 
 
 class FakeMpsClient:
@@ -81,8 +89,10 @@ def model_default(
     return config_cls(model_path=model_path or profile.model_path)
 
 
-def profile_for(model_path: str) -> ReplicaProfile:
-    (profile,) = [p for p in REPLICA_PROFILES if p.model_path == model_path]
+def profile_for(model_path: str, gpu: MeasuredGpu = B200) -> ReplicaProfile:
+    (profile,) = [
+        p for p in REPLICA_PROFILES if p.model_path == model_path and p.gpu == gpu
+    ]
     return profile
 
 
@@ -112,7 +122,7 @@ def mps_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return state_root
 
 
-def test_every_b200_example_is_a_profile_at_its_replica_count(monkeypatch) -> None:
+def test_every_example_is_a_profile_at_its_replica_count(monkeypatch) -> None:
     """The example files and the defaults stay one measurement: each file is its model's profile at the file's count."""
     # The 0.5B checkpoint's config.json selects Ming3's dense defaults; these tests read no checkpoint.
     monkeypatch.setattr(
@@ -124,10 +134,10 @@ def test_every_b200_example_is_a_profile_at_its_replica_count(monkeypatch) -> No
             else None
         ),
     )
-    counts_by_model: dict[str, set[int]] = {}
-    for example in B200_EXAMPLES:
+    counts_by_profile: dict[tuple[str, str], set[int]] = {}
+    for example, gpu in EXAMPLES:
         measured = ConfigManager.from_file(str(example)).config
-        profile = profile_for(measured.model_path)
+        profile = profile_for(measured.model_path, gpu)
         num_replicas = int(re.search(r"_dp(\d+)\.yaml$", example.name).group(1))
         writes = {
             **profile.settings,
@@ -143,11 +153,14 @@ def test_every_b200_example_is_a_profile_at_its_replica_count(monkeypatch) -> No
         }
         expected = apply_engine_writes(model_default(profile), writes)
         assert diff_configs(expected, measured) == [], example.name
-        counts_by_model.setdefault(profile.model_path, set()).add(num_replicas)
+        counts_by_profile.setdefault((profile.model_path, gpu.name), set()).add(
+            num_replicas
+        )
     defaults_without_example = [
-        profile.model_path
+        (profile.model_path, profile.gpu.name)
         for profile in REPLICA_PROFILES
-        if profile.num_replicas not in counts_by_model.get(profile.model_path, set())
+        if profile.num_replicas
+        not in counts_by_profile.get((profile.model_path, profile.gpu.name), set())
     ]
     assert defaults_without_example == []
 
@@ -192,6 +205,46 @@ def test_detected_b200_serves_the_measured_replicas_on_the_stage_gpu(
     assert [(process.name, process.num_replicas) for process in plan.processes] == [
         ("asr", 6)
     ]
+
+
+def idle_4090_d() -> MpsPhysicalDevice:
+    return MpsPhysicalDevice(
+        "GPU-4090d",
+        name=RTX_4090_D.name,
+        total_memory_bytes=RTX_4090_D.total_memory_mib * MIB,
+        free_memory_bytes=(RTX_4090_D.total_memory_mib - 600) * MIB,
+    )
+
+
+@pytest.mark.parametrize(
+    "device, gpu", [(idle_b200(), B200), (idle_4090_d(), RTX_4090_D)]
+)
+def test_each_gpu_serves_its_own_measured_count(mps_host, device, gpu) -> None:
+    profile = profile_for(MOSS_TD, gpu)
+
+    decision = decide_replica_profile(
+        model_default(profile),
+        user_patches=[],
+        device_info=FakeDeviceInfo(device),
+        mps_client=FakeMpsClient(),
+    )
+
+    assert decision.profile is profile
+    assert decision.writes["processes.asr.num_replicas"] == profile.num_replicas
+
+
+def test_model_measured_on_another_gpu_keeps_its_config_on_a_4090_d(mps_host) -> None:
+    config = model_default(profile_for("Qwen/Qwen3-ASR-1.7B"))
+
+    decision = decide_replica_profile(
+        config,
+        user_patches=[],
+        device_info=FakeDeviceInfo(idle_4090_d()),
+        mps_client=FakeMpsClient(),
+    )
+
+    assert decision.writes == {}
+    assert "replica counts were measured on NVIDIA B200" in decision.message
 
 
 @pytest.mark.parametrize(
