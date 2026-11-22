@@ -72,6 +72,54 @@ def fixture_module_limitations(file_path: str, module: ast.Module) -> list[str]:
     return limitations
 
 
+def module_fixtures(
+    repository: Path,
+    head_commit_sha: str,
+    file_path: str,
+    module: ast.Module,
+    module_cache: dict[str, ast.Module | None],
+) -> tuple[dict[str, tuple[str, ast.Module, TestFunction]], list[str]]:
+    imports = [
+        statement for statement in module.body if isinstance(statement, ast.ImportFrom)
+    ]
+    imported, import_limitations = imported_test_helpers(
+        repository,
+        head_commit_sha,
+        file_path,
+        ast.Module(body=imports, type_ignores=[]),
+        {
+            alias.asname or alias.name
+            for statement in imports
+            for alias in statement.names
+        },
+        module_cache,
+        resolving_fixtures=True,
+    )
+    bindings = imported | {
+        name: (file_path, module, definition)
+        for name, definition in functions(module).items()
+    }
+    visible: dict[str, tuple[str, ast.Module, TestFunction]] = {}
+    limitations = fixture_module_limitations(file_path, module)
+    if PurePosixPath(file_path).name == "conftest.py":
+        limitations.extend(import_limitations)
+    else:
+        pass
+    for binding_name, (source_path, source_module, fixture) in bindings.items():
+        if has_dynamic_fixture_settings(fixture):
+            limitations.append(
+                f"{source_path}:{fixture.lineno}: dynamic fixture settings could not be resolved statically"
+            )
+        else:
+            pass
+        fixture_name, _autouse = fixture_settings(fixture, binding_name=binding_name)
+        if fixture_name:
+            visible[fixture_name] = (source_path, source_module, fixture)
+        else:
+            pass
+    return visible, limitations
+
+
 def case_dependencies(
     repository: Path,
     head_commit_sha: str,
@@ -110,38 +158,21 @@ def case_dependencies(
             pass
         conftest_module = module_cache[conftest]
         if conftest_module is not None:
-            limitations.extend(fixture_module_limitations(conftest, conftest_module))
-            for fixture in functions(conftest_module).values():
-                fixture_name, _autouse = fixture_settings(fixture)
-                if has_dynamic_fixture_settings(fixture):
-                    limitations.append(
-                        f"{conftest}:{fixture.lineno}: dynamic fixture settings could not be resolved statically"
-                    )
-                else:
-                    pass
-                if fixture_name:
-                    visible[fixture_name] = (conftest, conftest_module, fixture)
-                else:
-                    pass
+            conftest_fixtures, conftest_limitations = module_fixtures(
+                repository, head_commit_sha, conftest, conftest_module, module_cache
+            )
+            visible.update(conftest_fixtures)
+            limitations.extend(conftest_limitations)
         else:
             if git_show(repository, head_commit_sha, conftest) is not None:
                 limitations.append(f"{conftest}: fixture source could not be parsed")
             else:
                 pass
-    for fixture in functions(module).values():
-        fixture_name, _autouse = fixture_settings(fixture)
-        if has_dynamic_fixture_settings(fixture):
-            limitations.append(
-                f"{test_path}:{fixture.lineno}: dynamic fixture settings could not be resolved statically"
-            )
-        else:
-            pass
-        if fixture_name:
-            visible[fixture_name] = (test_path, module, fixture)
-        else:
-            pass
-
-    limitations.extend(fixture_module_limitations(test_path, module))
+    test_fixtures, test_limitations = module_fixtures(
+        repository, head_commit_sha, test_path, module, module_cache
+    )
+    visible.update(test_fixtures)
+    limitations.extend(test_limitations)
     class_helpers: dict[str, TestFunction] = {}
     for test_class in ast.walk(module):
         if (
@@ -246,10 +277,10 @@ def case_dependencies(
                 for argument in fixture_arguments:
                     assert isinstance(argument, ast.Constant)
                     fixture_name = argument.value
-                    if (
-                        fixture_name not in visible
-                        and fixture_name not in PYTEST_FIXTURES
-                    ):
+                    if fixture_name in visible:
+                        fixture_path, fixture_module, fixture = visible[fixture_name]
+                        pending.append((fixture_path, fixture_module, fixture, True))
+                    elif fixture_name not in PYTEST_FIXTURES:
                         limitations.append(
                             f"fixture {fixture_name} could not be resolved statically"
                         )

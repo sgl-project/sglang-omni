@@ -219,7 +219,7 @@ def review_uncached(
         prompt_version=prompt_version,
         input_hash=input_hash,
         model_findings=parsed_findings,
-        model_failed=parsed_findings is None,
+        model_failed=parsed_findings is None or bool(incomplete_reason),
         incomplete_reason=incomplete_reason,
         usage_cost_cents=attempts * request.budget.call_cost_cents,
     )
@@ -278,6 +278,7 @@ def parse_model_findings(
         return None, "Model output did not contain a findings array."
     else:
         findings: list[Finding] = []
+        schema_errors: list[str] = []
         for index, entry in enumerate(payload, 1):
             if bundle.review_scope == "unit_tests" and isinstance(entry, dict):
                 normalize_unit_test_citations(bundle, entry)
@@ -297,11 +298,19 @@ def parse_model_findings(
                     )
                     for issue in issues
                 )
-                return (
-                    None,
-                    f"Model finding {index} failed schema validation for {fields}.",
+                message = (
+                    f"Model finding {index} failed schema validation for {fields}."
                 )
-        return findings, ""
+                if bundle.review_scope == "docs":
+                    return None, message
+                else:
+                    schema_errors.append(message)
+            else:
+                pass
+        if schema_errors:
+            return findings or None, " ".join(schema_errors)
+        else:
+            return findings, ""
 
 
 def assemble_report(

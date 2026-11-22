@@ -17,7 +17,7 @@ from scripts.docs_review.unit_test_ast import (
 from scripts.docs_review.unit_test_dependencies import affected_test_cases
 from scripts.docs_review.unit_test_fixtures import case_dependencies
 
-UNIT_TEST_POLICY_VERSION = "unit-tests-7"
+UNIT_TEST_POLICY_VERSION = "unit-tests-8"
 UNIT_TEST_ROOT = "tests/unit_test/"
 AUTOMATIC_CONTEXT_BYTES = 36_000
 EXPLICIT_CONTEXT_BYTES = 16_000

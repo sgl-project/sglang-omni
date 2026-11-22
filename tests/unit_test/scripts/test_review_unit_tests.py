@@ -391,6 +391,55 @@ def test_incomplete_candidates_stay_out_of_the_review(
         assert result.report.dropped_citation_count == 1
 
 
+def test_malformed_model_finding_does_not_discard_valid_findings(
+    tmp_path: Path, historical_cases: list[HistoricalCase]
+) -> None:
+    """A broken model record must not erase another supported finding."""
+    case = historical_cases[0]
+    base, before, _after = historical_revisions(tmp_path, case)
+    test_quote = "assert yaml.safe_load(result.stdout) == dump_user_config(expected)"
+    contract_quote = (
+        "Takes the same arguments as `sgl-omni serve`, including dotted overrides"
+    )
+    test_line = next(
+        line
+        for line, source in enumerate(case.before.splitlines(), 1)
+        if test_quote in source
+    )
+    contract_line = next(
+        line
+        for line, source in enumerate(case.contract_source.splitlines(), 1)
+        if contract_quote in source
+    )
+    finding = Finding(
+        rule_id="UNIT_TEST_SELF_DERIVED_EXPECTATION",
+        file_path=case.test_path,
+        line_start=test_line,
+        line_end=test_line,
+        quote=test_quote,
+        claim="The test derives the expected YAML using the same parser.",
+        evidence_file_path=case.contract_path,
+        evidence_line_start=contract_line,
+        evidence_line_end=contract_line,
+        evidence_quote=contract_quote,
+        public_contract="config resolve accepts dotted stage overrides.",
+        regression="The command silently ignores a stage override.",
+        impact="The requested stage runs with its default memory fraction.",
+        suggested_fix="Assert the emitted YAML has the requested fraction on that stage.",
+        change_relation="introduced",
+        certainty="supported",
+    )
+    malformed = finding.model_dump(exclude={"rule_id"})
+    reviewer = OfflineReviewer(json.dumps([finding.model_dump(), malformed]))
+    request = request_for(tmp_path, base, before, 1)
+    request.include_paths.append(case.contract_path)
+    report = run_review(request, reviewer, SystemClock()).report
+
+    assert report.execution == report.outcome == "incomplete"
+    assert "Model finding 2 failed schema validation" in report.incomplete_reason
+    assert [item.regression for item in report.findings] == [finding.regression]
+
+
 def test_pure_test_file_rename_does_not_call_the_reviewer(tmp_path: Path) -> None:
     git(tmp_path, "init", "-q")
     original = "tests/unit_test/test_response.py"
@@ -526,7 +575,7 @@ def test_changed_imported_helper_selects_an_unchanged_test(tmp_path: Path) -> No
     write_file(
         tmp_path,
         helper_path,
-        "from sglang_omni.api import speak\n\n" "def audio():\n    return speak()\n",
+        "from sglang_omni.api import speak\n\ndef audio():\n    return speak()\n",
     )
     write_file(
         tmp_path,
@@ -538,8 +587,7 @@ def test_changed_imported_helper_selects_an_unchanged_test(tmp_path: Path) -> No
     write_file(
         tmp_path,
         helper_path,
-        "from sglang_omni.api import speak\n\n"
-        "def audio():\n    return speak()[:1]\n",
+        "from sglang_omni.api import speak\n\ndef audio():\n    return speak()[:1]\n",
     )
     head = commit(tmp_path, "change helper")
     reviewer = OfflineReviewer('{"findings": []}')
@@ -663,6 +711,59 @@ def test_changed_fixture_selects_its_test_even_when_the_body_is_unchanged(
     assert [case.name for case in result.report.unit_test_cases] == ["test_output"]
     assert result.report.unit_test_cases[0].reviewed
     assert len(reviewer.inputs) == 1
+
+
+def test_shared_fixture_edit_reviews_direct_and_conftest_consumers(
+    tmp_path: Path,
+) -> None:
+    """A shared fixture edit must reach tests registered through conftest."""
+    git(tmp_path, "init", "-q")
+    fixture_path = "tests/unit_test/fixtures/shared.py"
+    fixture_source = (
+        "from typing import TypeAlias\n\n"
+        "import pytest\nfrom sglang_omni.api import speak\n\n"
+        "VoicePayload: TypeAlias = bytes\n\n"
+        "@pytest.fixture\ndef voice():\n    return speak()[:1]\n"
+    )
+    write_file(tmp_path, fixture_path, fixture_source)
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        "tests/unit_test/direct/test_output.py",
+        "from tests.unit_test.fixtures.shared import voice\n\n"
+        "def test_direct(voice):\n    assert voice == b'RIFF'\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/registered/conftest.py",
+        "from tests.unit_test.fixtures.shared import VoicePayload, voice as configured_voice\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/registered/test_output.py",
+        "def test_registered(configured_voice):\n"
+        "    assert configured_voice == b'RIFF'\n\n"
+        "def test_lookup(request):\n"
+        "    assert request.getfixturevalue('configured_voice') == b'RIFF'\n",
+    )
+    base = commit(tmp_path, "shared fixture consumers")
+    write_file(tmp_path, fixture_path, fixture_source.replace("speak()[:1]", "speak()"))
+    head = commit(tmp_path, "change shared fixture")
+
+    report = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([]), SystemClock()
+    ).report
+
+    assert {case.name for case in report.unit_test_cases if case.reviewed} == {
+        "test_direct",
+        "test_lookup",
+        "test_registered",
+    }
+    assert report.outcome == "no_findings", report.incomplete_reason
+    assert all(
+        case.change_evidence[0].file_path == fixture_path
+        for case in report.unit_test_cases
+    )
 
 
 @pytest.mark.parametrize(

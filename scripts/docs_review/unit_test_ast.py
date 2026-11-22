@@ -86,7 +86,9 @@ def functions(module: ast.Module) -> dict[str, TestFunction]:
     }
 
 
-def fixture_settings(definition: TestFunction) -> tuple[str, bool]:
+def fixture_settings(
+    definition: TestFunction, *, binding_name: str = ""
+) -> tuple[str, bool]:
     for decorator in definition.decorator_list:
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
         if (
@@ -94,7 +96,7 @@ def fixture_settings(definition: TestFunction) -> tuple[str, bool]:
             and target.id == "fixture"
             or (isinstance(target, ast.Attribute) and target.attr == "fixture")
         ):
-            fixture_name = definition.name
+            fixture_name = binding_name or definition.name
             autouse = False
             if isinstance(decorator, ast.Call):
                 for keyword in decorator.keywords:

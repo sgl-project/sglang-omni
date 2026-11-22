@@ -17,6 +17,11 @@ def read_test_module(
     module_cache: dict[str, ast.Module | None],
 ) -> tuple[str, ast.Module | None]:
     for source_path in (f"{module_path}.py", f"{module_path}/__init__.py"):
+        cached_module = module_cache.get(source_path)
+        if cached_module is not None:
+            return source_path, cached_module
+        else:
+            pass
         source = git_show(repository, head_commit_sha, source_path)
         if source is None:
             continue
@@ -40,6 +45,8 @@ def imported_test_helpers(
     module: ast.Module,
     referenced: set[str],
     module_cache: dict[str, ast.Module | None],
+    *,
+    resolving_fixtures: bool = False,
 ) -> tuple[dict[str, tuple[str, ast.Module, TestFunction]], list[str]]:
     helpers: dict[str, tuple[str, ast.Module, TestFunction]] = {}
     limitations: list[str] = []
@@ -134,6 +141,21 @@ def imported_test_helpers(
                     imported,
                     definitions[alias.name],
                 )
+            elif resolving_fixtures and any(
+                (
+                    isinstance(declaration, ast.ClassDef)
+                    and declaration.name == alias.name
+                )
+                or (
+                    isinstance(declaration, ast.AnnAssign)
+                    and isinstance(declaration.target, ast.Name)
+                    and declaration.target.id == alias.name
+                    and ast.unparse(declaration.annotation)
+                    in {"TypeAlias", "typing.TypeAlias"}
+                )
+                for declaration in imported.body
+            ):
+                pass
             else:
                 limitations.append(
                     f"{module_file}: imported helper {alias.name} could not be resolved"
