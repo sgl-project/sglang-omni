@@ -144,6 +144,9 @@ tests/
     │   └── test_vocoder_streaming.py
     ├── llada2_uni/
     │   └── test_request_builders.py
+    ├── lfm3_audio/
+    │   ├── test_generation.py
+    │   └── test_stages.py
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
@@ -949,6 +952,10 @@ that happened to contain an older version of the test.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
+
+- `unit_test/lfm3_audio/`: LFM3-Audio text/speech state machine, interleaved
+  6-text/12-frame schedule, end-of-speech frames, speech-frame sampling, prompt
+  helpers and pipeline stages.
 
 - `unit_test/minimax_music3/`: MiniMax Music 3 request validation, placement,
   acoustic configuration, hidden-frame buffering, deterministic sampling,
