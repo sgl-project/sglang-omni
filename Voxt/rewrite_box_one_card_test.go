@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -266,5 +267,38 @@ func TestRewriteCardTakesTheFront(t *testing.T) {
 	a.boxSync()
 	if native.onTop || native.focused != 2 {
 		t.Errorf("the user went elsewhere: on top %v, focused %d", native.onTop, native.focused)
+	}
+}
+
+// TestRewriteCardEnterFollowsTheReturnSwitch: while the card records,
+// Enter sends only with Settings → Shortcuts' Return switch on (it is
+// taken, no newline). Off, Enter is a newline there, as it reaches any app
+// then, and the card's foot does not say that Enter sends.
+func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.prefs.Features.ReturnFinishes = false
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording})
+	frames(tt)
+	tt.Type("some text")
+	frames(tt)
+	if hasExact(tt, "send") {
+		t.Error("Return off: the card says Enter sends")
+	}
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if a.box.text != "some text\n" {
+		t.Fatalf("Return off: text %q after Enter, want a newline", a.box.text)
+	}
+	a.prefs.Features.ReturnFinishes = true
+	frames(tt)
+	if !hasExact(tt, "send") {
+		t.Error("Return on: the card does not say Enter sends")
+	}
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if a.box.text != "some text\n" {
+		t.Errorf("Return on: text %q after Enter, want Enter taken", a.box.text)
 	}
 }

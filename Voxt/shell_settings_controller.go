@@ -169,7 +169,7 @@ func (a *app) loadSettingsForm() {
 	appearance := a.appearanceSettingsModel()
 	f.theme, f.scale, f.reduceMotion, f.sidebar = appearance.Theme, appearance.Scale, appearance.ReduceMotion, appearance.Sidebar
 	a.loadAppearancePreview() // settings_appearance_controller.go
-	f.strictShortcuts = s.Features.StrictShortcuts
+	f.strictShortcuts, f.returnFinishes = s.Features.StrictShortcuts, s.Features.ReturnFinishes
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
 	f.sendClipboardWithSelection = s.Privacy.SendClipboardImageWithSelection

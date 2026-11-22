@@ -124,6 +124,7 @@ type rewriteBoxViewState struct {
 	Subtitle          string
 	SubtitleError     bool
 	CanSend           bool
+	EnterSends        bool // Enter sends: not while it records with Settings → Shortcuts' Return switch off
 	Limit             bool
 	FocusText         bool
 	ShowTip           bool

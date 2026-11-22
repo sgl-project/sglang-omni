@@ -194,6 +194,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `features.cancel` | shortcut | `{"keys": "Escape", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Transcribe → Cancel recording |
 | `features.note` | shortcut | `{"keys": "RightCommand", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Notes |
 | `features.strictShortcuts` | bool | `false` | Settings → Shortcuts → Strict shortcuts: only the starting feature's shortcut stops a recording |
+| `features.returnFinishes` | bool | `true` | Settings → Shortcuts → Return finishes a recording: Return stops a Transcribe, Translate or Rewrite recording (not a note's); off, Return reaches the app. Until 2.1.3 it was `features.transcribe.returnFinishes`, Transcribe's alone, which a document without this field still keeps |
 
 Settings → Shortcuts → presets set the four main shortcuts at once; no field stores the preset, Voxt recognises it from the keys.
 
@@ -215,7 +216,6 @@ And their own fields:
 | `features.transcribe.enhance` | bool | `true` | | Clean up with a language model |
 | `features.transcribe.cleanup` | bool | `true` | | Basic clean-up |
 | `features.transcribe.structure` | bool | `false` | | Structure |
-| `features.transcribe.returnFinishes` | bool | `true` | | Return finishes dictation |
 | `features.endWord` | string | `""` | a word that ends the recording; `""` = off (streaming speech models only) | Transcribe → End with a word |
 | `features.translate.target` | string | `""` | a language code; `""` = English, or Chinese when the main language is English | Target language |
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |
