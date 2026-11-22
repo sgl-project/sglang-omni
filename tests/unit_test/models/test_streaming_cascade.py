@@ -3104,9 +3104,10 @@ async def test_a_clear_utterance_uses_its_recognized_language_for_speech():
 
     async def complete(
         prompt_messages: list[ChatMessage],
-    ) -> AsyncIterator[ChatDelta]:
+        tool_choice: object,
+    ) -> AsyncIterator[ChatChoice]:
         assert prompt_messages[-1].content == "Quel temps fait-il aujourd'hui ?"
-        yield ChatDelta(content="Il fait 25 degrés aujourd’hui.")
+        yield ChatChoice(delta=ChatDelta(content="Il fait 25 degrés aujourd’hui."))
 
     generator.complete = complete
     deltas = [
