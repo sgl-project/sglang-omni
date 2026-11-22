@@ -1236,9 +1236,14 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 <td><p>Server error</p></td>
 <td><p>For example <code class="docutils literal notranslate"><span class="pre">internal</span></code>, <code class="docutils literal notranslate"><span class="pre">session_open_timeout</span></code> or <code class="docutils literal notranslate"><span class="pre">cleanup_timeout</span></code></p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1013</span></code></p></td>
+<td><p>The server is full; try again later</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">session_capacity_exhausted</span></code></p></td>
+</tr>
 </tbody>
 </table>
 </div>
+<p>The server closes a session with <code class="docutils literal notranslate"><span class="pre">session_capacity_exhausted</span></code> when its next unit does not fit: the KV cache shared by all sessions, after what the sessions in flight have reserved, or the request slots have no room for it. This depends on the load, not on the session, so a new session may succeed once other sessions finish.</p>
 <p>If a session has no input and no output for <code class="docutils literal notranslate"><span class="pre">realtime_idle_timeout_s</span></code>, the server closes it with <code class="docutils literal notranslate"><span class="pre">idle_timeout</span></code>. The pipeline configuration defaults to 300 seconds for native sessions and 6 hours for audio Session graphs, including the streaming cascade. WebSocket pings do not count as activity. Set <code class="docutils literal notranslate"><span class="pre">realtime_idle_timeout_s</span></code> in the pipeline YAML or override it with <code class="docutils literal notranslate"><span class="pre">--realtime-idle-timeout-s</span></code>. The server also waits for the first <code class="docutils literal notranslate"><span class="pre">session.update</span></code> up to <code class="docutils literal notranslate"><span class="pre">realtime_session_update_timeout_s</span></code> (default 60 seconds), which can be overridden with <code class="docutils literal notranslate"><span class="pre">--realtime-session-update-timeout-s</span></code>.</p>
 <p>For a Python client, see <code class="docutils literal notranslate"><span class="pre">warmup</span></code> in <code class="docutils literal notranslate"><span class="pre">playground/realtime/app.py</span></code>.</p>
 <p>Session settings go in the <code class="docutils literal notranslate"><span class="pre">sglang</span></code> field of <code class="docutils literal notranslate"><span class="pre">session.update</span></code>, before the first audio packet, and stay fixed for the session:</p>
