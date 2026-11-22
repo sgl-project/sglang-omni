@@ -44,6 +44,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Pictures copied from more places paste into the Rewrite card**: an image file copied in Finder pasted its file name, because Finder also puts the name on the clipboard as text; it now pastes the picture (HEIC too), while another copied file still pastes its name. A clipboard holding only a JPEG, HEIC or WebP picture pasted nothing; it now pastes the picture. Text copied with a picture of itself, such as a spreadsheet range, still pastes as text.
 - **Clipboard images are bounded before decoding**: the helper rejects source images over 32 MiB or 40 megapixels before creating thumbnails, including copied files and images captured from a copied selection. Pasteboard representations are copied before their byte count is checked. The Rewrite box reports oversized images instead of silently dropping them, and distinguishes them from files or images it cannot read.
 - **The answer card's scroll bar stays still while an answer streams** (#4320): the text stays centered, and the Markdown page matches the card's transparency instead of drawing a darker box.
+- **Check again no longer makes the permission rows flash** (#4365): in Settings → Permissions and the setup guide's Permissions step, a granted Microphone or Speech Recognition row showed "Not asked yet" for a moment after Check again or when you came back to Voxt. The rows now keep what they show until the helper answers.
 
 ### 中文
 
@@ -105,6 +106,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
+- **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
 
 ## [2.1.2] - 2026-11-19
 
