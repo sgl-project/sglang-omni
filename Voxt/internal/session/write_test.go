@@ -672,3 +672,19 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 		})
 	}
 }
+
+// TestSelectionBudgetsFitTimeouts: the worst helper read fits the
+// caller's deadline — the settle, the modifier wait and the copy wait
+// plus overhead. #4469 review: 600+800+300 ms of budgets exceeded
+// Translate's old 1500 ms read timeout, so a slow ⌘A reading followed
+// by a near-deadline modifier release returned no selection.
+func TestSelectionBudgetsFitTimeouts(t *testing.T) {
+	translateWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+300+selectionOverheadMS) * time.Millisecond // 300: the helper's default copyTimeoutMs
+	if DefaultReadTimeout < translateWorst {
+		t.Errorf("Translate's read timeout %v < worst read %v", DefaultReadTimeout, translateWorst)
+	}
+	rewriteWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+rewriteCopyMS+selectionOverheadMS) * time.Millisecond
+	if DefaultRewriteReadTimeout < rewriteWorst {
+		t.Errorf("Rewrite's read timeout %v < worst read %v", DefaultRewriteReadTimeout, rewriteWorst)
+	}
+}
