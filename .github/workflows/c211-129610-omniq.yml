@@ -1,0 +1,213 @@
+name: c211-129610 omni h100 read-only probe
+# Nonce-tagged, strictly read-only device inventory on the repo's own
+# [self-hosted, h100] pool. No cloud instance/identity service probing, no
+# credential probing, no host writes, no secrets referenced.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+concurrency:
+  group: c211-129610-omniq-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  probe-h100-01:
+    name: probe-h100-01
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 12
+    container:
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      options: "--rm -e NVIDIA_VISIBLE_DEVICES"
+    steps:
+      - name: device-probe
+        shell: bash
+        run: |
+          set +e
+          NONCE="c211-129610-27208b9cc155c557"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-01 START ==="
+          echo "nonce=${NONCE}"
+          echo "job=probe-h100-01"
+          echo "runner_name=${RUNNER_NAME:-unset}"
+          echo "runner_os=${RUNNER_OS:-unset} runner_arch=${RUNNER_ARCH:-unset} runner_environment=${RUNNER_ENVIRONMENT:-unset}"
+          echo "run_id=${GITHUB_RUN_ID:-unset} run_attempt=${GITHUB_RUN_ATTEMPT:-unset} workflow=${GITHUB_WORKFLOW:-unset} sha=${GITHUB_SHA:-unset} repository=${GITHUB_REPOSITORY:-unset}"
+          echo "hostname_cmd=$(hostname)"
+          echo "kernel_hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+          echo "etc_hostname=$(cat /etc/hostname 2>/dev/null)"
+          echo "uid=$(id -u) euid=$(id -u)"
+          id 2>&1
+          uname -a 2>&1
+          echo "--- proc driver nvidia version ---"
+          cat /proc/driver/nvidia/version 2>/dev/null || echo "NVIDIA_PROC_VERSION_ABSENT"
+          echo "--- nvidia-smi -L ---"
+          nvidia-smi -L 2>&1 || echo "NVIDIA_SMI_L_FAILED"
+          echo "--- nvidia-smi query uuid,name,driver_version ---"
+          nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY_FAILED"
+          echo "--- nvidia-smi query index,uuid,serial,name,memory.total ---"
+          nvidia-smi --query-gpu=index,uuid,serial,name,memory.total --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY2_FAILED"
+          echo "--- lspci -nn GPU classes ---"
+          lspci -nn 2>/dev/null | grep -Ei '(vga compatible|3d controller|display controller|nvidia|\[10de\])' || echo "LSPCI_NO_GPU_CLASS_LINES"
+          echo "--- sys class drm ---"
+          ls -1 /sys/class/drm 2>/dev/null | head -n 40 || echo "NO_DRM_CLASS"
+          echo "--- proc driver nvidia gpus ---"
+          ls -1 /proc/driver/nvidia/gpus 2>/dev/null || echo "NO_NVIDIA_GPUS_PROC"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-01 END ==="
+  probe-h100-02:
+    name: probe-h100-02
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 12
+    container:
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      options: "--rm -e NVIDIA_VISIBLE_DEVICES"
+    steps:
+      - name: device-probe
+        shell: bash
+        run: |
+          set +e
+          NONCE="c211-129610-27208b9cc155c557"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-02 START ==="
+          echo "nonce=${NONCE}"
+          echo "job=probe-h100-02"
+          echo "runner_name=${RUNNER_NAME:-unset}"
+          echo "runner_os=${RUNNER_OS:-unset} runner_arch=${RUNNER_ARCH:-unset} runner_environment=${RUNNER_ENVIRONMENT:-unset}"
+          echo "run_id=${GITHUB_RUN_ID:-unset} run_attempt=${GITHUB_RUN_ATTEMPT:-unset} workflow=${GITHUB_WORKFLOW:-unset} sha=${GITHUB_SHA:-unset} repository=${GITHUB_REPOSITORY:-unset}"
+          echo "hostname_cmd=$(hostname)"
+          echo "kernel_hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+          echo "etc_hostname=$(cat /etc/hostname 2>/dev/null)"
+          echo "uid=$(id -u) euid=$(id -u)"
+          id 2>&1
+          uname -a 2>&1
+          echo "--- proc driver nvidia version ---"
+          cat /proc/driver/nvidia/version 2>/dev/null || echo "NVIDIA_PROC_VERSION_ABSENT"
+          echo "--- nvidia-smi -L ---"
+          nvidia-smi -L 2>&1 || echo "NVIDIA_SMI_L_FAILED"
+          echo "--- nvidia-smi query uuid,name,driver_version ---"
+          nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY_FAILED"
+          echo "--- nvidia-smi query index,uuid,serial,name,memory.total ---"
+          nvidia-smi --query-gpu=index,uuid,serial,name,memory.total --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY2_FAILED"
+          echo "--- lspci -nn GPU classes ---"
+          lspci -nn 2>/dev/null | grep -Ei '(vga compatible|3d controller|display controller|nvidia|\[10de\])' || echo "LSPCI_NO_GPU_CLASS_LINES"
+          echo "--- sys class drm ---"
+          ls -1 /sys/class/drm 2>/dev/null | head -n 40 || echo "NO_DRM_CLASS"
+          echo "--- proc driver nvidia gpus ---"
+          ls -1 /proc/driver/nvidia/gpus 2>/dev/null || echo "NO_NVIDIA_GPUS_PROC"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-02 END ==="
+  probe-h100-03:
+    name: probe-h100-03
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 12
+    container:
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      options: "--rm -e NVIDIA_VISIBLE_DEVICES"
+    steps:
+      - name: device-probe
+        shell: bash
+        run: |
+          set +e
+          NONCE="c211-129610-27208b9cc155c557"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-03 START ==="
+          echo "nonce=${NONCE}"
+          echo "job=probe-h100-03"
+          echo "runner_name=${RUNNER_NAME:-unset}"
+          echo "runner_os=${RUNNER_OS:-unset} runner_arch=${RUNNER_ARCH:-unset} runner_environment=${RUNNER_ENVIRONMENT:-unset}"
+          echo "run_id=${GITHUB_RUN_ID:-unset} run_attempt=${GITHUB_RUN_ATTEMPT:-unset} workflow=${GITHUB_WORKFLOW:-unset} sha=${GITHUB_SHA:-unset} repository=${GITHUB_REPOSITORY:-unset}"
+          echo "hostname_cmd=$(hostname)"
+          echo "kernel_hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+          echo "etc_hostname=$(cat /etc/hostname 2>/dev/null)"
+          echo "uid=$(id -u) euid=$(id -u)"
+          id 2>&1
+          uname -a 2>&1
+          echo "--- proc driver nvidia version ---"
+          cat /proc/driver/nvidia/version 2>/dev/null || echo "NVIDIA_PROC_VERSION_ABSENT"
+          echo "--- nvidia-smi -L ---"
+          nvidia-smi -L 2>&1 || echo "NVIDIA_SMI_L_FAILED"
+          echo "--- nvidia-smi query uuid,name,driver_version ---"
+          nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY_FAILED"
+          echo "--- nvidia-smi query index,uuid,serial,name,memory.total ---"
+          nvidia-smi --query-gpu=index,uuid,serial,name,memory.total --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY2_FAILED"
+          echo "--- lspci -nn GPU classes ---"
+          lspci -nn 2>/dev/null | grep -Ei '(vga compatible|3d controller|display controller|nvidia|\[10de\])' || echo "LSPCI_NO_GPU_CLASS_LINES"
+          echo "--- sys class drm ---"
+          ls -1 /sys/class/drm 2>/dev/null | head -n 40 || echo "NO_DRM_CLASS"
+          echo "--- proc driver nvidia gpus ---"
+          ls -1 /proc/driver/nvidia/gpus 2>/dev/null || echo "NO_NVIDIA_GPUS_PROC"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-03 END ==="
+  probe-h100-04:
+    name: probe-h100-04
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 12
+    container:
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      options: "--rm -e NVIDIA_VISIBLE_DEVICES"
+    steps:
+      - name: device-probe
+        shell: bash
+        run: |
+          set +e
+          NONCE="c211-129610-27208b9cc155c557"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-04 START ==="
+          echo "nonce=${NONCE}"
+          echo "job=probe-h100-04"
+          echo "runner_name=${RUNNER_NAME:-unset}"
+          echo "runner_os=${RUNNER_OS:-unset} runner_arch=${RUNNER_ARCH:-unset} runner_environment=${RUNNER_ENVIRONMENT:-unset}"
+          echo "run_id=${GITHUB_RUN_ID:-unset} run_attempt=${GITHUB_RUN_ATTEMPT:-unset} workflow=${GITHUB_WORKFLOW:-unset} sha=${GITHUB_SHA:-unset} repository=${GITHUB_REPOSITORY:-unset}"
+          echo "hostname_cmd=$(hostname)"
+          echo "kernel_hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+          echo "etc_hostname=$(cat /etc/hostname 2>/dev/null)"
+          echo "uid=$(id -u) euid=$(id -u)"
+          id 2>&1
+          uname -a 2>&1
+          echo "--- proc driver nvidia version ---"
+          cat /proc/driver/nvidia/version 2>/dev/null || echo "NVIDIA_PROC_VERSION_ABSENT"
+          echo "--- nvidia-smi -L ---"
+          nvidia-smi -L 2>&1 || echo "NVIDIA_SMI_L_FAILED"
+          echo "--- nvidia-smi query uuid,name,driver_version ---"
+          nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY_FAILED"
+          echo "--- nvidia-smi query index,uuid,serial,name,memory.total ---"
+          nvidia-smi --query-gpu=index,uuid,serial,name,memory.total --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY2_FAILED"
+          echo "--- lspci -nn GPU classes ---"
+          lspci -nn 2>/dev/null | grep -Ei '(vga compatible|3d controller|display controller|nvidia|\[10de\])' || echo "LSPCI_NO_GPU_CLASS_LINES"
+          echo "--- sys class drm ---"
+          ls -1 /sys/class/drm 2>/dev/null | head -n 40 || echo "NO_DRM_CLASS"
+          echo "--- proc driver nvidia gpus ---"
+          ls -1 /proc/driver/nvidia/gpus 2>/dev/null || echo "NO_NVIDIA_GPUS_PROC"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-04 END ==="
+  probe-h100-05:
+    name: probe-h100-05
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 12
+    container:
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      options: "--rm -e NVIDIA_VISIBLE_DEVICES"
+    steps:
+      - name: device-probe
+        shell: bash
+        run: |
+          set +e
+          NONCE="c211-129610-27208b9cc155c557"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-05 START ==="
+          echo "nonce=${NONCE}"
+          echo "job=probe-h100-05"
+          echo "runner_name=${RUNNER_NAME:-unset}"
+          echo "runner_os=${RUNNER_OS:-unset} runner_arch=${RUNNER_ARCH:-unset} runner_environment=${RUNNER_ENVIRONMENT:-unset}"
+          echo "run_id=${GITHUB_RUN_ID:-unset} run_attempt=${GITHUB_RUN_ATTEMPT:-unset} workflow=${GITHUB_WORKFLOW:-unset} sha=${GITHUB_SHA:-unset} repository=${GITHUB_REPOSITORY:-unset}"
+          echo "hostname_cmd=$(hostname)"
+          echo "kernel_hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+          echo "etc_hostname=$(cat /etc/hostname 2>/dev/null)"
+          echo "uid=$(id -u) euid=$(id -u)"
+          id 2>&1
+          uname -a 2>&1
+          echo "--- proc driver nvidia version ---"
+          cat /proc/driver/nvidia/version 2>/dev/null || echo "NVIDIA_PROC_VERSION_ABSENT"
+          echo "--- nvidia-smi -L ---"
+          nvidia-smi -L 2>&1 || echo "NVIDIA_SMI_L_FAILED"
+          echo "--- nvidia-smi query uuid,name,driver_version ---"
+          nvidia-smi --query-gpu=uuid,name,driver_version --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY_FAILED"
+          echo "--- nvidia-smi query index,uuid,serial,name,memory.total ---"
+          nvidia-smi --query-gpu=index,uuid,serial,name,memory.total --format=csv,noheader 2>&1 || echo "NVIDIA_SMI_QUERY2_FAILED"
+          echo "--- lspci -nn GPU classes ---"
+          lspci -nn 2>/dev/null | grep -Ei '(vga compatible|3d controller|display controller|nvidia|\[10de\])' || echo "LSPCI_NO_GPU_CLASS_LINES"
+          echo "--- sys class drm ---"
+          ls -1 /sys/class/drm 2>/dev/null | head -n 40 || echo "NO_DRM_CLASS"
+          echo "--- proc driver nvidia gpus ---"
+          ls -1 /proc/driver/nvidia/gpus 2>/dev/null || echo "NO_NVIDIA_GPUS_PROC"
+          echo "=== C211 NONCE ${NONCE} JOB probe-h100-05 END ==="
