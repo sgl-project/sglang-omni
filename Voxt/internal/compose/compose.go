@@ -124,6 +124,9 @@ type Input struct {
 	// already in TargetLanguage (the main language, #4024): the model can
 	// tell languages apart that share a script. "" for none.
 	BackLanguage string
+	// Snippets says that Text holds triggers of the user's snippets,
+	// marked (snippet.Mark): the prompt tells the model to keep them.
+	Snippets bool
 	// Text is the input: the recognised speech (Transcribe, Translate),
 	// the selection (Translate with Selected, Rewrite; "" when Rewrite
 	// writes from scratch).
@@ -273,6 +276,7 @@ func Build(in Input) (Output, error) {
 	selected := in.Task == Rewrite && strings.TrimSpace(in.Text) != "" || in.Task == Translate && in.Selected
 	flags := map[string]string{
 		"FOR_TRANSCRIBE": on(in.Task == Transcribe),
+		"SNIPPETS":       on(in.Snippets),
 		"FOR_TRANSLATE":  on(in.Task == Translate),
 		"SELECTED":       on(selected),
 		"TYPED":          on(in.Task == Rewrite && strings.TrimSpace(in.Typed) != ""),

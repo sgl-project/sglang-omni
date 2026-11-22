@@ -12,6 +12,7 @@ target                  # App enhancement
 cloud                   # Remote models
 notebook-bookmark       # Dictionary
 text-square             # Snippets
+sort-vertical           # sort the snippets
 shield-keyhole          # Permissions
 clipboard-list          # Logs
 settings                # Settings, Settings → General

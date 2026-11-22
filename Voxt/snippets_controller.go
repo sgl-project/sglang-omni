@@ -147,5 +147,5 @@ func (a *app) deleteSnippet(id string) {
 
 func (a *app) snippetsPageModel() snippetsViewState {
 	s := &a.snip
-	return buildSnippetsViewState(i18n.CurrentTranslator(), s.list, s.loaded, s.err)
+	return buildSnippetsViewState(i18n.CurrentTranslator(), s.list, s.loaded, s.err, a.snipUI.query, a.snipUI.order)
 }

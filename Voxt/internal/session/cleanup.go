@@ -74,7 +74,7 @@ func (r *run) transcribe(text string) {
 			r.logf("info", "composed %s in %v", r.logText(result), llmTime.Round(time.Millisecond))
 		}
 	}
-	r.finish(Done, problem, r.expandSnippets(result), r.transcribeOpts())
+	r.finish(Done, problem, r.expandSnippets(text, result), r.transcribeOpts())
 }
 
 // transcribeOpts are how a Transcribe result is delivered.
@@ -199,12 +199,14 @@ func (d *drafter) add(delta string) {
 func (d *drafter) publish() {
 	part := d.parts[len(d.parts)-1]
 	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
+	draft = d.r.draftSnippets(draft)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 
 // done puts the answers of the parts so far in the snapshot.
 func (d *drafter) done(answers []string) {
 	draft := compose.JoinParts(d.parts, answers)
+	draft = d.r.draftSnippets(draft)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 

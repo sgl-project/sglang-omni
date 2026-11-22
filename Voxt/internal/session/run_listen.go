@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -480,12 +481,14 @@ func (r *run) warmLLM() {
 	}()
 }
 
-// transcribeInput is Transcribe's request to compose for raw.
+// transcribeInput is Transcribe's request to compose for raw, its
+// snippets' triggers marked for the model to keep (expandSnippets).
 func (r *run) transcribeInput(raw string) compose.Input {
 	f := r.settings.Features.Transcribe
+	text, marked := snippet.Mark(raw, r.snippets)
 	return compose.Input{
 		Task: compose.Transcribe, Cleanup: f.Cleanup, Structure: f.Structure, TaskPrompt: f.Prompt,
-		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: raw,
+		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: text, Snippets: len(marked) > 0,
 		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings),
 		Scene: r.composeScene(),
 	}

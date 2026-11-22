@@ -27,7 +27,6 @@
   "Import terms": "导入词条",
   "Imported: %d new, %d updated, %d rows skipped.": "已导入：新增 %d 个，更新 %d 个，跳过 %d 行。",
   "Imported: %d new, %d updated.": "已导入：新增 %d 个，更新 %d 个。",
-  "Import…": "导入…",
   "Names and terms you use": "你常用的名称和术语",
   "No term matches “%s”": "没有与“%s”匹配的词条",
   "Note": "备注",
