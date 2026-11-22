@@ -23,7 +23,7 @@
   "Imported snippets: %d new, %d updated, %d skipped.": "已导入片段：新增 %d 个，更新 %d 个，跳过 %d 个。",
   "Imported snippets: %d new, %d updated.": "已导入片段：新增 %d 个，更新 %d 个。",
   "Newest first": "最新的在前",
-  "No snippet matches “%s”": "没有片段匹配“%s”",
+  "No snippet matches “%s”": "没有与“%s”匹配的片段",
   "Oldest first": "最早的在前",
   "Search snippets": "搜索片段",
   "Snippets (JSON)": "片段（JSON）",
@@ -33,8 +33,8 @@
   "Words you won’t say by accident, like “insert my intro”: Voxt replaces them wherever they come up.": "选不会顺口说出的词，例如“插入自我介绍”：说到哪里就换到哪里。",
   "Could not read the snippets: %v": "无法读取片段：%v",
   "Could not save the snippets: %v": "无法保存片段：%v",
-  "Could not read the snippets, so nothing was saved.": "无法读取片段，所以没有保存。",
-  "Could not read the snippets, so nothing was imported.": "无法读取片段，所以没有导入。",
+  "Could not read the snippets, so nothing was saved.": "片段读取失败，没有保存。",
+  "Could not read the snippets, so nothing was imported.": "片段读取失败，没有导入。",
   "Could not import %s: it is larger than %d MB.": "无法导入 %s：文件超过 %d MB。",
   "Could not open %s.": "无法打开 %s。"
 }
