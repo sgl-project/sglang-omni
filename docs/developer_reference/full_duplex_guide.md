@@ -1777,7 +1777,7 @@ A healthy start logs each service as `starting service '<name>': ...` and `servi
 }
 ```
 
-with further fields omitted here. `skips_screen_blocks` is true for a profile whose `openai_speech` node sets `skip_screen_blocks`, as `qwen3-asr-qwen3.8-27b-vivian-screen` does. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the {ref}`turn latency benchmark <turn-latency>` confirms the whole chain.
+with further fields omitted here. `skips_screen_blocks` is true for a profile whose `openai_speech` nodes all set `skip_screen_blocks`, as `qwen3-asr-qwen3.8-27b-vivian-screen` does. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the {ref}`turn latency benchmark <turn-latency>` confirms the whole chain.
 
 (known-limitations)=
 

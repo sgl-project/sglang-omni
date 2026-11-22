@@ -570,6 +570,11 @@ class ComponentGraphConfig(BaseModel):
             controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
         else:
             controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
+        speakers = [
+            node.component
+            for node in self.nodes
+            if isinstance(node.component, OpenAISpeechSynthesizerConfig)
+        ]
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
             output=published_audio_port(self.published_audio_ports()),
@@ -579,11 +584,9 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
-            skips_screen_blocks=any(
-                isinstance(node.component, OpenAISpeechSynthesizerConfig)
-                and node.component.skip_screen_blocks
-                for node in self.nodes
-            ),
+            # note (Haoling Pu): a speaker that says the blocks would leave the client hiding words the user hears, so every speaker has to skip them.
+            skips_screen_blocks=bool(speakers)
+            and all(speaker.skip_screen_blocks for speaker in speakers),
         )
 
 
