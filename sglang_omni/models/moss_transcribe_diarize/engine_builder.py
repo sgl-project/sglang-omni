@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
@@ -255,9 +256,14 @@ class MossTranscribeDiarizeEngineBuilder(
             self.speculative_worker_class = draft_worker_class(
                 self.draft_checkpoint.name
             )
-            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
+            # note (Zhenning Guo): async decode under a draft means speculative overlap, which is on by default; plain fallback needs the synchronous verify loop, so it keeps overlap off.
             if self.enable_async_decode is None:
-                self.enable_async_decode = False
+                self.enable_async_decode = not self.enable_plain_fallback
+            else:
+                pass
+            # note (Zhenning Guo): under overlap a prefill's first token otherwise waits for the verify round launched after it, so by default every prefill is drained, whatever the batch size.
+            if self.enable_async_decode and self.prefill_drain_below_batch_size is None:
+                self.prefill_drain_below_batch_size = sys.maxsize
             else:
                 pass
             overrides["disable_overlap_schedule"] = not self.enable_async_decode

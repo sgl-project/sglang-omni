@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -48,6 +49,7 @@ def make_moss_engine_builder(
     enable_async_decode: bool | None = True,
     prefill_coalesce_after_builds_during_decode: bool | None = True,
     early_request_builds: bool | None = True,
+    prefill_drain_below_batch_size: int | None = None,
 ) -> MossTranscribeDiarizeEngineBuilder:
     return MossTranscribeDiarizeEngineBuilder(
         max_running_requests=16,
@@ -61,7 +63,7 @@ def make_moss_engine_builder(
         enable_async_decode=enable_async_decode,
         enable_plain_fallback=False,
         async_decode_min_batch_size=2,
-        prefill_drain_below_batch_size=None,
+        prefill_drain_below_batch_size=prefill_drain_below_batch_size,
         prefill_coalesce_requests=0,
         prefill_coalesce_wait_ms=0.0,
         prefill_coalesce_when_idle=True,
@@ -532,7 +534,7 @@ def write_speculators_config(
     ],
 )
 @pytest.mark.parametrize("enable_plain_fallback", [False, True])
-def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
+def test_factory_overlaps_a_draft_unless_plain_fallback_is_on(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     enable_plain_fallback: bool,
@@ -540,9 +542,9 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
     draft_architecture: str,
     worker_class: type[DFlashWorkerV2],
 ) -> None:
-    """Unset, async decode stays off under a draft, where it means speculative overlap;
-    SGLang cannot read the speculators config, so the worker class and the flat copy must
-    both reach the build, and the copy must not outlive it.
+    """Unset, async decode under a draft means speculative overlap, on unless plain fallback needs the synchronous verify loop.
+
+    SGLang cannot read the speculators config, so the worker class and the flat copy must both reach the build, and the copy must not outlive it.
     """
     calls = stub_factory_env(monkeypatch, want_cuda_graph=False)
     monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
@@ -607,13 +609,16 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
     assert infrastructure_kwargs["supports_speculative_decoding"] is True
     assert infrastructure_kwargs["speculative_worker_class"] is worker_class
     assert server_args_kwargs["enable_torch_compile"] is False
-    assert infrastructure_kwargs["enable_async_decode"] is False
-    assert server_args_kwargs["disable_overlap_schedule"] is True
+    assert infrastructure_kwargs["enable_async_decode"] is not enable_plain_fallback
+    assert server_args_kwargs["disable_overlap_schedule"] is enable_plain_fallback
     assert adapter_kwargs["speculative_reserve_tokens"] == (
         0 if enable_plain_fallback else 16
     )
     scheduler_kwargs = calls["scheduler_kwargs"][0]
-    assert scheduler_kwargs["enable_async_decode"] is False
+    assert scheduler_kwargs["enable_async_decode"] is not enable_plain_fallback
+    assert scheduler_kwargs["prefill_drain_below_batch_size"] == (
+        None if enable_plain_fallback else sys.maxsize
+    )
     assert scheduler_kwargs["async_prefill"] is False
     assert scheduler_kwargs["model_runner"].speculative_ignores_request_seed is True
     assert (
@@ -722,19 +727,19 @@ def test_torch_compile_is_turned_off_only_under_the_draft(
     ("requested", "with_draft", "expected"),
     [
         (None, False, True),
-        (None, True, False),
-        (True, True, True),
+        (None, True, True),
+        (False, True, False),
         (False, False, False),
     ],
 )
-def test_speculative_overlap_is_an_explicit_opt_in(
+def test_speculative_overlap_is_on_by_default(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     requested: bool | None,
     with_draft: bool,
     expected: bool,
 ) -> None:
-    """Ordinary decode defaults to async; under a draft async decode means speculative overlap, so it runs only when the operator asks for it."""
+    """Async decode is on by default, with or without a draft; under a draft it means speculative overlap, and an explicit false turns it off."""
     monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
     monkeypatch.setattr(
         engine_builder.request_builders,
@@ -766,6 +771,62 @@ def test_speculative_overlap_is_an_explicit_opt_in(
     else:
         assert builder.infra_kwargs() == {}
         assert scheduler_kwargs["async_prefill"] is expected
+
+
+@pytest.mark.parametrize(
+    (
+        "enable_async_decode",
+        "prefill_drain_below_batch_size",
+        "with_draft",
+        "expected_prefill_drain_below_batch_size",
+    ),
+    [
+        (None, None, True, sys.maxsize),
+        (None, 4, True, 4),
+        (None, 0, True, 0),
+        (False, None, True, None),
+        (None, None, False, None),
+    ],
+)
+def test_overlap_drains_every_prefill_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    enable_async_decode: bool | None,
+    prefill_drain_below_batch_size: int | None,
+    with_draft: bool,
+    expected_prefill_drain_below_batch_size: int | None,
+) -> None:
+    """Under speculative overlap an unset drain drains every prefill; an explicit value, the synchronous loop and a server without a draft keep the given value."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        engine_builder.request_builders,
+        "make_moss_transcribe_diarize_stream_output_builder",
+        Mock(),
+    )
+    write_speculators_config(tmp_path)
+    builder = make_moss_engine_builder(
+        enable_async_decode=enable_async_decode,
+        prefill_drain_below_batch_size=prefill_drain_below_batch_size,
+    )
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    assert (
+        builder.extra_scheduler_kwargs()["prefill_drain_below_batch_size"]
+        == expected_prefill_drain_below_batch_size
+    )
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
 
 
 @pytest.mark.parametrize(
