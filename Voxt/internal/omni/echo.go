@@ -24,14 +24,16 @@ const (
 // least two terms, in the context's order. cut < 0: none. A text the
 // token budget cut off (cutOff) may end in a part of a term.
 func echoTail(text string, terms []string, cutOff bool) (cut int, found []string, certain bool) {
-	rs := []rune(text)
+	originalRunes := []rune(text)
+	canonicalText, sourceEnds := lang.CanonicalChineseWithOffsets(text)
+	rs := []rune(canonicalText)
 	folded := make([]rune, len(rs))
 	for i, r := range rs {
 		folded[i] = foldRune(r)
 	}
 	keys := make([][]rune, len(terms))
 	for i, t := range terms {
-		for _, r := range t {
+		for _, r := range lang.CanonicalChinese(t) {
 			if !unicode.IsSpace(r) {
 				keys[i] = append(keys[i], foldRune(r))
 			}
@@ -85,7 +87,14 @@ func echoTail(text string, terms []string, cutOff bool) (cut int, found []string
 			certain = false
 		}
 	}
-	return len(string(rs[:c])), found, certain
+	if c == 0 {
+		return 0, found, certain
+	}
+	originalEnd := len(originalRunes)
+	if c-1 < len(sourceEnds) {
+		originalEnd = sourceEnds[c-1]
+	}
+	return len(string(originalRunes[:originalEnd])), found, certain
 }
 
 // spokenTokens counts text's words: a Chinese, Japanese or Korean
@@ -121,7 +130,6 @@ var fillers = map[string]bool{"嗯": true, "呃": true, "啊": true, "额": true
 
 // foldRune folds case and full width.
 func foldRune(r rune) rune {
-	r = lang.CanonicalChineseRune(r)
 	if r >= 0xFF01 && r <= 0xFF5E {
 		r -= 0xFEE0
 	}
@@ -207,7 +215,7 @@ func heardAgain(plain, kept string, terms []string) bool {
 				return -1
 			}
 			return foldRune(r)
-		}, s)
+		}, lang.CanonicalChinese(s))
 	}
 	p, k := fold(plain), fold(kept)
 	for _, t := range terms {

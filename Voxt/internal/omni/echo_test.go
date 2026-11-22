@@ -2,6 +2,7 @@ package omni
 
 import (
 	"context"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -60,6 +61,14 @@ func TestEchoTailAcrossChineseScripts(t *testing.T) {
 	}
 	if !heardAgain("语音识别，会议转写", "好的。", terms) {
 		t.Fatal("plain recognition in another script was not found")
+	}
+	if runtime.GOOS == "darwin" { // CoreFoundation phrase rules also run in Mac CI.
+		terms = []string{"看着", "会议转写"}
+		text = "好的。看著，會議轉寫。"
+		cut, found, certain = echoTail(text, terms, false)
+		if cut < 0 || text[:cut] != "好的。" || !slices.Equal(found, terms) || !certain {
+			t.Fatalf("phrase conversion: cut %d, found %q, certain %v", cut, found, certain)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -37,6 +38,15 @@ func TestIsEcho(t *testing.T) {
 		if got := isEcho(c.mic, c.system); got != c.want {
 			t.Errorf("%s: isEcho = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestIsEchoChinesePhrase(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("CoreFoundation phrase rules run in Mac CI")
+	}
+	if !isEcho("我們看著會議轉寫", "我们看着会议转写") {
+		t.Fatal("the same sentence in another script was not recognized")
 	}
 }
 

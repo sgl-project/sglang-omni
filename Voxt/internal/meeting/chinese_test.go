@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,12 +21,18 @@ func (f *chineseFileASR) Transcribe(context.Context, asr.FileRequest) (asr.Resul
 func TestTranscribeChunksChineseScript(t *testing.T) {
 	for _, test := range []struct {
 		name, languageTag, source, want string
+		darwinOnly                      bool
 	}{
 		{name: "simplified", languageTag: "zh-Hans", source: "我們今天討論 Qwen 的會議轉寫效果。", want: "我们今天讨论 Qwen 的会议转写效果。"},
 		{name: "traditional", languageTag: "zh-Hant", source: "我们今天讨论 Qwen 的会议转写效果。", want: "我們今天討論 Qwen 的會議轉寫效果。"},
+		{name: "traditional phrase", languageTag: "zh-Hant", source: "头发", want: "頭髮"},
+		{name: "simplified phrase", languageTag: "zh-Hans", source: "看著", want: "看着", darwinOnly: true},
 		{name: "unspecified script", languageTag: "zh", source: "我們今天討論會議轉寫。", want: "我們今天討論會議轉寫。"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.darwinOnly && runtime.GOOS != "darwin" {
+				t.Skip("CoreFoundation phrase rules run in Mac CI")
+			}
 			rate := asr.SampleRate
 			segs, err := transcribeChunks(context.Background(), SourceMic, &chineseFileASR{text: test.source}, asr.FileRequest{Lang: test.languageTag}, rate, make([]byte, rate*2), []Chunk{{Start: 0, End: rate}}, nil)
 			if err != nil {
@@ -66,6 +73,27 @@ func TestTranscribeChunksSuppressesCrossScriptGuidance(t *testing.T) {
 	}
 	if len(segs) != 1 || segs[0].Text != "我们讨论语音识别的准确率。" {
 		t.Fatalf("ordinary speech was suppressed or not rendered: %+v", segs)
+	}
+}
+
+func TestDiarizeTrackAnchorsAcrossChineseScripts(t *testing.T) {
+	diarizer := &seqDiarizer{results: []asr.Result{
+		{Segments: []asr.SpeakerSegment{
+			{Start: 0, End: time.Second, Speaker: "S01", Text: "開頭"},
+			{Start: 119 * time.Second, End: 120 * time.Second, Speaker: "S02", Text: "我們討論 Qwen 的會議轉寫"},
+		}},
+		{Segments: []asr.SpeakerSegment{
+			{Start: 100 * time.Millisecond, End: 1100 * time.Millisecond, Speaker: "S01", Text: "我們討論 Qwen 的會議轉寫"},
+			{Start: 2 * time.Second, End: 3 * time.Second, Speaker: "S01", Text: "下一步"},
+		}},
+	}}
+	rate := asr.SampleRate
+	segs, err := diarizeTrack(context.Background(), SourceSystem, diarizer, asr.FileRequest{Lang: "zh-Hans"}, rate, make([]byte, rate*200*2), []vad.Segment{{Start: 0, End: rate * 200}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 3 || segs[1].Speaker != "s2" || segs[1].Text != "我们讨论 Qwen 的会议转写" || segs[2].Speaker != "s2" {
+		t.Fatalf("segments %+v", segs)
 	}
 }
 

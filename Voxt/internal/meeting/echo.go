@@ -64,8 +64,7 @@ func echoWords(text string) []string {
 			word = word[:0]
 		}
 	}
-	for _, r := range strings.ToLower(text) {
-		r = lang.CanonicalChineseRune(r)
+	for _, r := range strings.ToLower(lang.CanonicalChinese(text)) {
 		switch {
 		case unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul):
 			flush()

@@ -4,20 +4,33 @@ import (
 	_ "embed"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 //go:embed STCharacters.txt
-var simplifiedTraditionalPairs string
+var simplifiedTraditionalCharacters string
+
+//go:embed STPhrases.txt
+var simplifiedTraditionalPhrases string
 
 //go:embed TSCharacters.txt
-var traditionalSimplifiedPairs string
+var traditionalSimplifiedCharacters string
 
-var simplifiedToTraditional = sync.OnceValue(func() map[rune]rune {
-	return chineseCharacterTable(simplifiedTraditionalPairs)
+//go:embed TSPhrases.txt
+var traditionalSimplifiedPhrases string
+
+type chineseConversion struct {
+	characters     map[rune]rune
+	phrases        map[string]string
+	maxPhraseRunes int
+}
+
+var simplifiedToTraditional = sync.OnceValue(func() *chineseConversion {
+	return newChineseConversion(simplifiedTraditionalCharacters, simplifiedTraditionalPhrases)
 })
 
-var traditionalToSimplified = sync.OnceValue(func() map[rune]rune {
-	return chineseCharacterTable(traditionalSimplifiedPairs)
+var traditionalToSimplified = sync.OnceValue(func() *chineseConversion {
+	return newChineseConversion(traditionalSimplifiedCharacters, traditionalSimplifiedPhrases)
 })
 
 // RenderChineseScript renders Chinese text in the script the language tag
@@ -26,34 +39,92 @@ func RenderChineseScript(text, languageTag string) string {
 	languageTag = strings.ToLower(strings.ReplaceAll(languageTag, "_", "-"))
 	switch {
 	case strings.Contains(languageTag, "hans"):
-		return convertChineseCharacters(text, traditionalToSimplified())
+		return renderChineseConversion(text, "Traditional-Simplified", traditionalToSimplified())
 	case strings.Contains(languageTag, "hant"):
-		return convertChineseCharacters(text, simplifiedToTraditional())
+		return renderChineseConversion(text, "Simplified-Traditional", simplifiedToTraditional())
 	default:
 		return text
 	}
 }
 
-// CanonicalChineseRune folds a Traditional Chinese character to Simplified
-// Chinese for comparisons. Other characters stay unchanged.
-func CanonicalChineseRune(character rune) rune {
-	if converted, ok := traditionalToSimplified()[character]; ok {
+// CanonicalChinese folds Traditional Chinese text to Simplified Chinese for
+// comparisons. Other text stays unchanged.
+func CanonicalChinese(text string) string {
+	converted, _ := CanonicalChineseWithOffsets(text)
+	return converted
+}
+
+// CanonicalChineseWithOffsets also returns, for each converted rune, the
+// exclusive rune index of its source text in text.
+func CanonicalChineseWithOffsets(text string) (string, []int) {
+	if converted, ok := convertChineseScript(text, "Traditional-Simplified"); ok && utf8.RuneCountInString(converted) == utf8.RuneCountInString(text) {
+		sourceEnds := make([]int, utf8.RuneCountInString(converted))
+		for index := range sourceEnds {
+			sourceEnds[index] = index + 1
+		}
+		return converted, sourceEnds
+	}
+	return traditionalToSimplified().convert(text)
+}
+
+func renderChineseConversion(text, transformID string, fallback *chineseConversion) string {
+	if converted, ok := convertChineseScript(text, transformID); ok {
 		return converted
 	}
-	return character
+	converted, _ := fallback.convert(text)
+	return converted
 }
 
-func convertChineseCharacters(text string, table map[rune]rune) string {
-	return strings.Map(func(character rune) rune {
-		if converted, ok := table[character]; ok {
-			return converted
+func newChineseConversion(characterPairs, phrasePairs string) *chineseConversion {
+	conversion := &chineseConversion{
+		characters: map[rune]rune{},
+		phrases:    chineseDictionary(phrasePairs),
+	}
+	for source, target := range chineseDictionary(characterPairs) {
+		sourceRunes, targetRunes := []rune(source), []rune(target)
+		if len(sourceRunes) == 1 && len(targetRunes) == 1 {
+			conversion.characters[sourceRunes[0]] = targetRunes[0]
 		}
-		return character
-	}, text)
+	}
+	for phrase := range conversion.phrases {
+		conversion.maxPhraseRunes = max(conversion.maxPhraseRunes, utf8.RuneCountInString(phrase))
+	}
+	return conversion
 }
 
-func chineseCharacterTable(pairs string) map[rune]rune {
-	table := map[rune]rune{}
+func (conversion *chineseConversion) convert(text string) (string, []int) {
+	sourceRunes := []rune(text)
+	var converted strings.Builder
+	converted.Grow(len(text))
+	sourceEnds := make([]int, 0, len(sourceRunes))
+	for start := 0; start < len(sourceRunes); {
+		replacement := ""
+		sourceLength := 1
+		for length := min(conversion.maxPhraseRunes, len(sourceRunes)-start); length > 1; length-- {
+			if phrase, ok := conversion.phrases[string(sourceRunes[start:start+length])]; ok {
+				replacement = phrase
+				sourceLength = length
+				break
+			}
+		}
+		if replacement == "" {
+			if character, ok := conversion.characters[sourceRunes[start]]; ok {
+				replacement = string(character)
+			} else {
+				replacement = string(sourceRunes[start])
+			}
+		}
+		converted.WriteString(replacement)
+		for range utf8.RuneCountInString(replacement) {
+			sourceEnds = append(sourceEnds, start+sourceLength)
+		}
+		start += sourceLength
+	}
+	return converted.String(), sourceEnds
+}
+
+func chineseDictionary(pairs string) map[string]string {
+	dictionary := map[string]string{}
 	for line := range strings.Lines(pairs) {
 		line = strings.TrimSpace(line)
 		source, targets, ok := strings.Cut(line, "\t")
@@ -61,10 +132,9 @@ func chineseCharacterTable(pairs string) map[rune]rune {
 			continue
 		}
 		target, _, _ := strings.Cut(targets, " ")
-		sourceRunes, targetRunes := []rune(source), []rune(target)
-		if len(sourceRunes) == 1 && len(targetRunes) == 1 {
-			table[sourceRunes[0]] = targetRunes[0]
+		if source != "" && target != "" {
+			dictionary[source] = target
 		}
 	}
-	return table
+	return dictionary
 }

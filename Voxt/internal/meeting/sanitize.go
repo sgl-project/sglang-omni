@@ -71,7 +71,6 @@ func isHintOnlyEcho(text string, hints []string) bool {
 
 func chineseComparisonKey(text string, dropPunctuation bool) string {
 	return strings.Map(func(character rune) rune {
-		character = lang.CanonicalChineseRune(character)
 		if character >= 0xFF01 && character <= 0xFF5E {
 			character -= 0xFEE0
 		}
@@ -79,5 +78,5 @@ func chineseComparisonKey(text string, dropPunctuation bool) string {
 			return -1
 		}
 		return unicode.ToLower(character)
-	}, text)
+	}, lang.CanonicalChinese(text))
 }

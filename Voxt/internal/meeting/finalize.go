@@ -247,7 +247,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 			prevText = text
 			needTrim = false
 			if speaker != "" {
-				tail = append(tail, labeledLine{words: splitWords(text), speaker: speaker})
+				tail = append(tail, labeledLine{words: echoWords(text), speaker: speaker})
 				if len(tail) > 8 {
 					tail = tail[len(tail)-8:]
 				}
@@ -323,12 +323,12 @@ func anchorSpeakers(parts []asr.SpeakerSegment, offset, covered time.Duration, t
 		if offset+part.End > covered {
 			continue
 		}
-		words := splitWords(part.Text)
+		words := echoWords(part.Text)
 		if len(words) < 2 {
 			continue // a one-word line anchors nothing: too many voices say it
 		}
 		for k := len(tail) - 1; k >= 0; k-- {
-			if tail[k].speaker != "" && sameWords(tail[k].words, words) {
+			if tail[k].speaker != "" && len(tail[k].words) >= 2 && sameWords(tail[k].words, words) {
 				anchors[part.Speaker] = tail[k].speaker
 				break
 			}
