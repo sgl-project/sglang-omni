@@ -10,6 +10,9 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
 
 import torch
+from sglang.srt.model_executor.runner.base_cuda_graph_runner import (
+    get_batch_sizes_to_capture,
+)
 from sglang.srt.server_args import ServerArgs
 from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
@@ -18,6 +21,7 @@ from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
     WhisperPrefillCudaGraphRunner,
 )
+from sglang_omni.models.whisper_asr.decode_graph import WhisperDecodeGraphRunner
 from sglang_omni.models.whisper_asr.dense_prefill import WhisperDensePrefillRunner
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
@@ -321,6 +325,44 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
     ) -> None:
         """Retain the model runner for post-capture resource setup."""
         self.sglang_runner = model_worker.model_runner
+
+    def post_cuda_graph_setup(
+        self, model: WhisperForConditionalGeneration, server_args: ServerArgs
+    ) -> None:
+        if not current_platform.enable_whisper_decode_graph():
+            return
+        else:
+            pass
+        decoder_device = model.model.decoder.embed_tokens.weight.device
+        graph_backend = current_platform.get_device_graph_backend(decoder_device)
+        if (
+            graph_backend is None
+            or server_args.disable_decode_cuda_graph
+            or self.sglang_runner.kv_cache_dtype != self.sglang_runner.dtype
+        ):
+            return
+        else:
+            pass
+        batch_sizes, _ = get_batch_sizes_to_capture(self.sglang_runner)
+        decode_graph_runner = WhisperDecodeGraphRunner(
+            model,
+            req_to_token=self.sglang_runner.req_to_token_pool.req_to_token,
+            token_to_kv_pool=self.sglang_runner.token_to_kv_pool,
+            graph_backend=graph_backend,
+            batch_sizes=tuple(batch_sizes),
+            encoder_token_count=self.encoder_token_count,
+            decoder_token_count=self.decoder_context_len,
+        )
+        device_module = torch.get_device_module(decoder_device)
+        free_bytes_before, _ = device_module.mem_get_info(decoder_device)
+        decode_graph_runner.capture()
+        free_bytes_after, _ = device_module.mem_get_info(decoder_device)
+        model.decode_graph_runner = decode_graph_runner
+        logger.info(
+            f"Captured Whisper decode graphs for batch sizes "
+            f"{decode_graph_runner.batch_sizes} in "
+            f"{(free_bytes_before - free_bytes_after) / 2**20:.0f} MiB"
+        )
 
     def setup_model_resources(
         self,

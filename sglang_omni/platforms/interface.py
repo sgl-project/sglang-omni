@@ -266,6 +266,9 @@ class OmniPlatform(DeviceMixin):
     def enable_thinker_decode_graph(self) -> bool:
         return True
 
+    def enable_whisper_decode_graph(self) -> bool:
+        return False
+
     def enable_zonos2_torch_compile(self) -> bool:
         return True
 

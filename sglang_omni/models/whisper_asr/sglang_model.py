@@ -27,6 +27,7 @@ from torch import nn
 from transformers import WhisperConfig
 from transformers.activations import ACT2FN
 
+from sglang_omni.models.whisper_asr.decode_graph import WhisperDecodeGraphRunner
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
@@ -481,6 +482,7 @@ class WhisperForConditionalGeneration(nn.Module):
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
         self.encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
+        self.decode_graph_runner: WhisperDecodeGraphRunner | None = None
 
     def init_encoder_graphs(
         self,
@@ -639,6 +641,12 @@ class WhisperForConditionalGeneration(nn.Module):
         **kwargs: object,
     ) -> LogitsProcessorOutput:
         del kwargs
+        if self.decode_graph_runner is not None and self.decode_graph_runner.can_run(
+            forward_batch
+        ):
+            return self.decode_graph_runner.replay(forward_batch)
+        else:
+            pass
 
         cross_attention_states = self.batch_precomputed_encoder_states(forward_batch)
         if cross_attention_states is None:
