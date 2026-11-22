@@ -157,6 +157,9 @@ func TestOnboardingSteps(t *testing.T) {
 	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download and continue (2.5 GB)") || !has(tt, "Set up a language model") {
 		t.Fatalf("models: step %d %q", a.ob.step, tt.Texts())
 	}
+	if !has(tt, "In Settings → Language models, choose Ollama, LM Studio, oMLX, or an API service. Paste any required key into API key, then select Test connection.") {
+		t.Fatalf("models: language model API guidance missing from %q", tt.Texts())
+	}
 	click(t, tt, "Skip this step")
 	if a.ob.step != obTranscribe || !has(tt, "Try Transcribe") || !has(tt, "Skip this step") {
 		t.Fatalf("transcribe: step %d %q", a.ob.step, tt.Texts())

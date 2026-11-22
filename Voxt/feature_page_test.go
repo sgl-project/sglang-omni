@@ -139,7 +139,7 @@ func TestTranscribePageRenders(t *testing.T) {
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
 		"Models", "No speech model is installed. Install one to transcribe.", "Open Speech models",
-		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
+		"Clean-up", "Clean up with a language model", "Add a prompt to translate or reformat what you said.", "Basic clean-up", "Structure",
 		"Your rules", "characters",
 		"Try it", "Start",
 	} {
@@ -187,6 +187,9 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	clickSwitch(t, tt, "Clean up with a language model")
 	if a.lib.settings.Get().Features.Transcribe.Enhance {
 		t.Error("enhance not saved")
+	}
+	if !has(tt, "Add a prompt to translate or reformat what you said.") {
+		t.Error("capability guidance disappeared when clean-up was off")
 	}
 	clickSwitch(t, tt, "Basic clean-up")
 	if !a.lib.settings.Get().Features.Transcribe.Cleanup {

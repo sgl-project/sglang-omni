@@ -57,8 +57,9 @@ func featureModelStatus(c *ui.Context, state *featureModelStatusViewState, actio
 func trEnhance(c *ui.Context, state *featureCleanupViewState, actions featureActions) {
 	sectionTitle(c, i18n.T("Clean-up"))
 	enhance, cleanup, structure := state.Enhance, state.Cleanup, state.Structure
-	settingRow(c, "tr-enhance", i18n.T("Clean up with a language model"),
-		i18n.T("When off, or if the model fails, the text is typed as recognised."), func() {
+	settingRowNoteTip(c, "tr-enhance", i18n.T("Clean up with a language model"),
+		i18n.T("When off, or if the model fails, the text is typed as recognised."),
+		i18n.T("Add a prompt to translate or reformat what you said."), func() {
 			if ui.Switch(c.Key("tr-enhance-switch"), &enhance).Label(i18n.T("Clean up with a language model")).Changed() {
 				actions.setFeatureEnhance(enhance)
 			}
