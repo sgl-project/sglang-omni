@@ -105,6 +105,19 @@ func coreCollapsible(c *context, label string, open *bool, fn func()) *node {
 	return root
 }
 
+// DisclosureArrow draws the same chevron as a sidebar section. Degrees
+// turns it from closed toward open, following the layout direction.
+func DisclosureArrow(c *Context, degrees float32) Element {
+	ctx := c.build()
+	if ctx == nil {
+		return Element{}
+	}
+	ctx.rt.beginBuild()
+	arrow := disclosureArrow(ctx, degrees)
+	ctx.rt.endBuild()
+	return wrapElement(arrow)
+}
+
 // disclosureArrow draws the arrow of a disclosure: pointing right, turned
 // by deg degrees clockwise, or right to left pointing left, turned as far
 // the other way, as Finder's do.

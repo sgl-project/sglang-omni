@@ -1,22 +1,22 @@
 # Nemotron Transcribe
 
-[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
+[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
 
-This integration accepts consolidated NeMo SpeechLM checkpoints with the `NeMoSpeechLMForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. The checkpoint directory must contain its tokenizer files and model weights. The loader creates a small configuration shim and reads the original weights without copying them.
+This integration accepts consolidated NeMo SpeechLM checkpoints with the `Nemotron3_5TranscribeForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. Earlier checkpoints using `NeMoSpeechLMForConditionalGeneration` are also supported. The [FP8 checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-FP8) loads its decoder through SGLang's ModelOpt FP8 path. Its speech encoder stores 128 transformer linears as FP8 with static per-tensor weight and input scales; they run as FP8 GEMMs on CUDA GPUs with compute capability 8.9 or newer and are dequantized to BF16 elsewhere. Compile the encoder with `--asr.factory.compile_perception true` to fuse the activation quantization into neighboring kernels; an eager FP8 encoder is slower than BF16. The checkpoint directory must contain its tokenizer files and matching model weights from the same checkpoint revision. The loader creates a small configuration shim and reads the original weights without copying them.
 
 ## Serve a checkpoint
 
 Install SGLang-Omni following [Installation](../get_started/installation.md), then download the checkpoint:
 
 ```bash
-hf download nvidia/Nemotron-3.5-Transcribe-30B-A4B
+hf download nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
 ```
 
 The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:
 
 ```bash
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --port 8000
@@ -36,6 +36,7 @@ The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to
 | `--asr.factory.mm_embedding_cache_size_bytes` | `0` | Audio embedding cache capacity |
 | `--asr.factory.compile_perception` | `false` | Compile encoder transformer layers |
 | `--asr.factory.perception_cuda_graphs` | `false` | Capture encoder graphs; requires compilation |
+| `--asr.factory.perception_fp8` | `true` | Run an FP8 checkpoint's encoder linears as FP8 GEMMs; `false` dequantizes them to BF16 |
 
 Decoder CUDA graphs are enabled. Decoder compilation is unsupported in this integration; use encoder compilation to reduce launch overhead. Encoder batch size bounds activation memory separately from decoder concurrency. For longer audio or a smaller GPU, reduce the encoder batch size and choose a memory fraction that still fits the model weights.
 
@@ -68,7 +69,7 @@ Enable compilation and encoder CUDA graphs independently of decoder graphs:
 SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1 \
 SGLANG_FLASHINFER_AUTOTUNE_CACHE=0 \
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --asr.engine.max_running_requests 16 \

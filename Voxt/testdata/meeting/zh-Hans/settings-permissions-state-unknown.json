@@ -1,0 +1,105 @@
+{
+  "name": "settings-permissions-state-unknown",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/permissions",
+    "shown_path": "/settings/permissions",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "permissions": {
+      "ask_required": true,
+      "microphone": {
+        "permission_id": "microphone",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        "status": "未知",
+        "allowed": false,
+        "known": true,
+        "ask": false,
+        "open": true
+      },
+      "accessibility": {
+        "permission_id": "accessibility",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        "status": "未允许",
+        "allowed": false,
+        "known": true,
+        "ask": true,
+        "open": true
+      },
+      "system_audio": {
+        "permission_id": "systemAudio",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture",
+        "status": "未知",
+        "allowed": false,
+        "known": false,
+        "ask": true,
+        "open": true
+      },
+      "speech_recognition": {
+        "permission_id": "speechRecognition",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
+        "status": "已允许",
+        "allowed": true,
+        "known": true,
+        "ask": false,
+        "open": false
+      }
+    }
+  }
+}

@@ -1,0 +1,333 @@
+{
+  "name": "page-normal",
+  "kind": "page",
+  "page": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "query": "",
+    "page": 0,
+    "has_more": true,
+    "active": true,
+    "settings_available": true,
+    "meeting_count": 20,
+    "items": [
+      {
+        "key": "head/Today",
+        "heading": "Today"
+      },
+      {
+        "key": "meeting-recording",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-recording",
+          "title": "Fixture recording",
+          "snippet": "Microphone and system audio",
+          "status_code": "recording",
+          "status_label": "In progress",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "1 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/Yesterday",
+        "heading": "Yesterday"
+      },
+      {
+        "key": "meeting-interrupted",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-interrupted",
+          "title": "Untitled meeting",
+          "snippet": "System audio only",
+          "status_code": "interrupted",
+          "status_label": "Interrupted",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "2 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/Previous 7 days",
+        "heading": "Previous 7 days"
+      },
+      {
+        "key": "meeting-asking",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-asking",
+          "title": "Fixture asking",
+          "snippet": "Microphone only",
+          "status_code": "asking",
+          "status_label": "In progress",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "3 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-finishing",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-finishing",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "finishing",
+          "status_label": "Finishing",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "4 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-done",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-done",
+          "title": "Fixture done",
+          "snippet": "System audio only",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "5 min",
+          "selected": true
+        }
+      },
+      {
+        "key": "meeting-failed",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-failed",
+          "title": "Untitled meeting",
+          "snippet": "Microphone only",
+          "status_code": "failed",
+          "status_label": "Failed",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "6 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-6",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-6",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-7",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-7",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/2025-12",
+        "heading": "2025-12"
+      },
+      {
+        "key": "meeting-page-8",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-8",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-9",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-9",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-10",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-10",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-11",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-11",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-12",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-12",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-13",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-13",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-14",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-14",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-15",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-15",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-16",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-16",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-17",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-17",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-18",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-18",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-page-19",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-page-19",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "",
+          "selected": false
+        }
+      }
+    ]
+  }
+}

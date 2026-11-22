@@ -201,6 +201,43 @@ func TestRetry(t *testing.T) {
 			t.Errorf("requests %+v", reqs)
 		}
 	})
+	t.Run("the new answer's title replaces the old one", func(t *testing.T) {
+		model := &fakeLLM{text: `{"title": "Polite decline", "content": "Thanks, but no."}`}
+		h, e := retryHarness(t, &fakeFile{text: "decline politely"}, model, false)
+		e.Kind, e.Title, e.Result = store.KindRewrite, "Old title", "old body"
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+		if err != nil || out.Result != "Thanks, but no." || out.Title != "Polite decline" {
+			t.Fatalf("entry %+v, %v", out, err)
+		}
+	})
+	t.Run("rewrite keeps typed text", func(t *testing.T) {
+		for _, tc := range []struct{ name, selected, typed string }{
+			{"typed only", "", "a rough draft"},
+			{"selected and typed", "the selected text", "and the tickets"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				model := &fakeLLM{text: `{"title":"Short","content":"Short."}`}
+				h, e := retryHarness(t, &fakeFile{text: "make it shorter"}, model, false)
+				e.Kind, e.SourceText, e.TypedText = store.KindRewrite, tc.selected, tc.typed
+				out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+				if err != nil || out.TypedText != tc.typed {
+					t.Fatalf("entry %+v, %v", out, err)
+				}
+				reqs := model.requests()
+				if len(reqs) != 1 {
+					t.Fatalf("%d requests", len(reqs))
+				}
+				got := reqs[0].Messages[len(reqs[0].Messages)-1].Content
+				want := "<selected_text>\n" + tc.selected + "\n</selected_text>\n\n<typed_text>\n" + tc.typed + "\n</typed_text>\n\n<instruction>\nmake it shorter\n</instruction>"
+				if tc.selected == "" {
+					want = "<selected_text>\n" + tc.typed + "\n</selected_text>\n\n<instruction>\nmake it shorter\n</instruction>"
+				}
+				if got != want {
+					t.Errorf("request:\n%s\nwant:\n%s", got, want)
+				}
+			})
+		}
+	})
 	t.Run("keeping recordings", func(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "x"}, nil, true)
 		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
@@ -231,6 +268,14 @@ func TestRetry(t *testing.T) {
 		e.Kind, e.TargetLang = store.KindTranslate, "zh-Hans"
 		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
 		if err != nil || out.Status != store.StatusDone || out.Result != "早上好" || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
+			t.Fatalf("entry %+v, %v", out, err)
+		}
+	})
+	t.Run("transcribe falls back", func(t *testing.T) {
+		h, e := retryHarness(t, &fakeFile{text: "hello aura link"}, &fakeLLM{err: errors.New("boom")}, false)
+		h.fallback = &fakeLLM{text: "Hello, VoxtNew."}
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+		if err != nil || out.Status != store.StatusDone || out.Result != "Hello, VoxtNew." || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 	})

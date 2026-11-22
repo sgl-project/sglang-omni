@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"slices"
 	"testing"
 
@@ -59,5 +62,35 @@ func TestDockBeforeLaunch(t *testing.T) {
 	a.applyDock()
 	if want := []mygo.ActivationPolicy{mygo.ActivationPolicyAccessory, mygo.ActivationPolicyRegular}; !slices.Equal(got, want) {
 		t.Fatalf("policies %v, want %v", got, want)
+	}
+}
+
+// TestMainAppliesDockBeforeReady: main calls applyDock before WhenReady,
+// not only inside it (#3918). Voxt cannot launch in a test, so this reads
+// main.go: the statements of main, in order.
+func TestMainAppliesDockBeforeReady(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "main" {
+			continue
+		}
+		for _, st := range fn.Body.List {
+			if e, ok := st.(*ast.ExprStmt); ok {
+				if c, ok := e.X.(*ast.CallExpr); ok {
+					if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+						calls = append(calls, sel.Sel.Name)
+					}
+				}
+			}
+		}
+	}
+	dock, ready := slices.Index(calls, "applyDock"), slices.Index(calls, "WhenReady")
+	if dock < 0 || ready < 0 || dock > ready {
+		t.Fatalf("main calls %v: want applyDock before WhenReady", calls)
 	}
 }

@@ -1,0 +1,26 @@
+package main
+
+type appEnhancementActions interface {
+	setAppEnhancementEnabled(on bool)
+	addAppEnhancementGroup()
+	deleteAppEnhancementGroup(id string)
+	openAppEnhancementApps()
+	openAppEnhancementBrowsers()
+	setAppEnhancementGroupName(id, name string)
+	setAppEnhancementGroupEnabled(id string, on bool)
+	setAppEnhancementGroupFeature(id, feature string, on bool)
+	setAppEnhancementGroupPrompt(id, prompt string)
+	copyAppEnhancementVariable(token string)
+	toggleAppEnhancementApp(bundleID string)
+	removeAppEnhancementApp(id, bundleID string)
+	addAppEnhancementBundle(id, bundleID string)
+	addAppEnhancementURL(id, pattern string)
+	removeAppEnhancementURL(id string, index int)
+	setAppEnhancementAutoKey(id, keys string)
+	commitAppEnhancementCustomAutoKey(id, keys string)
+	addAppEnhancementBrowser(bundleID, name string)
+	removeAppEnhancementBrowser(bundleID string)
+	refreshAppEnhancementPreview()
+	addAppEnhancementPreviewApp()
+	addAppEnhancementPreviewSite()
+}

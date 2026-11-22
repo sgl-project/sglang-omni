@@ -1,0 +1,61 @@
+{
+  "name": "logs-lines",
+  "kind": "shell-logs",
+  "shell_logs": {
+    "lines": [
+      {
+        "seq": 5,
+        "time": "09:30:04",
+        "source": "app",
+        "message": "line 5: a debug line",
+        "level": "debug"
+      },
+      {
+        "seq": 4,
+        "time": "09:30:03",
+        "source": "helper",
+        "message": "line 4: an error",
+        "level": "error"
+      },
+      {
+        "seq": 3,
+        "time": "09:30:02",
+        "source": "app",
+        "message": "line 3: a warning",
+        "level": "warning"
+      },
+      {
+        "seq": 2,
+        "time": "09:30:01",
+        "source": "helper",
+        "message": "line 2: the helper said hello",
+        "level": "info"
+      },
+      {
+        "seq": 1,
+        "time": "09:30:00",
+        "source": "app",
+        "message": "line 1: the app started",
+        "level": "info"
+      }
+    ],
+    "count": "5 lines",
+    "sources": [
+      {
+        "code": "",
+        "label": "All sources"
+      },
+      {
+        "code": "app",
+        "label": "App"
+      },
+      {
+        "code": "helper",
+        "label": "Helper"
+      }
+    ],
+    "source": "All sources",
+    "query": "",
+    "log_file": false
+  }
+}

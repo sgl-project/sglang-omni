@@ -1,0 +1,17 @@
+{
+  "name": "updates-about-installed",
+  "kind": "updates-settings",
+  "updates_settings": {
+    "available": true,
+    "known": true,
+    "enabled": true,
+    "check_only": false,
+    "bundle_updated": true,
+    "auto_check": true,
+    "auto_install": false,
+    "beta": false,
+    "check_description": "Last checked 2 hours ago.",
+    "automatic_description": "Once a day. Voxt asks before installing.",
+    "beta_note": "Releases only."
+  }
+}

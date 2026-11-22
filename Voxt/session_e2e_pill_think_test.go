@@ -36,7 +36,7 @@ func TestPillThinkingLevel(t *testing.T) {
 				s.Overlay.Position = "top"
 			}
 		})
-		label := askAgainText(long, settings.Generation{})
+		label := thinkButtonText(long, settings.Generation{})
 		snap(a, session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, LLM: session.Model{ID: "zhipu"}, Thinking: long, Partial: "so the release moves to thursday"})
 		tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 		frames(tt)
@@ -51,8 +51,8 @@ func TestPillThinkingLevel(t *testing.T) {
 			t.Errorf("%s lines %v: the capsule ends at %v, past the face's %v", c.lang, c.lines, r.X+r.W, right)
 		}
 		click(t, tt, label)
-		if !a.answer.langOpen || !a.answer.pillMenu || !a.ov.lang.shown {
-			t.Fatalf("%s: menu open %v pill %v shown %v", c.lang, a.answer.langOpen, a.answer.pillMenu, a.ov.lang.shown)
+		if !a.answer.ui.langOpen || !a.answer.ui.pillMenu || !a.ov.lang.shown {
+			t.Fatalf("%s: menu open %v pill %v shown %v", c.lang, a.answer.ui.langOpen, a.answer.ui.pillMenu, a.ov.lang.shown)
 		}
 		m, f := a.ov.lang.frame, a.ov.frame
 		if m.X+m.Width != f.X+f.Width {
@@ -69,7 +69,7 @@ func TestPillThinkingLevel(t *testing.T) {
 			}
 		}
 		click(t, tt, label) // again: it closes
-		if a.answer.langOpen || a.ov.lang.shown {
+		if a.answer.ui.langOpen || a.ov.lang.shown {
 			t.Errorf("%s: the capsule again left the menu open", c.lang)
 		}
 
@@ -82,7 +82,7 @@ func TestPillThinkingLevel(t *testing.T) {
 		} {
 			snap(a, s)
 			frames(tt)
-			if want := s.LLM.ID == "zhipu"; has(tt, askAgainText(nil, settings.Generation{})) != want {
+			if want := s.LLM.ID == "zhipu"; has(tt, thinkButtonText(nil, settings.Generation{})) != want {
 				t.Errorf("%s: %s on %s: capsule %v, want %v: %q", c.lang, s.Kind, s.LLM.ID, !want, want, firstTexts(tt))
 			} else if want && a.ov.passThrough {
 				t.Errorf("%s: %s's pill lets the click on its capsule through", c.lang, s.Kind)
@@ -109,20 +109,20 @@ func TestPillThinkingLevelEndToEnd(t *testing.T) {
 	chat.mu.Unlock()
 	// The pill's menu (the local model here takes no levels, so no
 	// capsule). The cancel shortcut closes it first: the step goes on.
-	a.answer.langOpen, a.answer.thinkMenu, a.answer.pillMenu = true, true, true
+	a.answer.ui.langOpen, a.answer.ui.thinkMenu, a.answer.ui.pillMenu = true, true, true
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	time.Sleep(50 * time.Millisecond)
-	if a.answer.langOpen || a.answer.pillMenu || a.sess.State != session.Composing || len(chat.requests()) != 1 {
-		t.Fatalf("Escape on the menu: open %v, %s, %d requests", a.answer.langOpen, a.sess.State, len(chat.requests()))
+	if a.answer.ui.langOpen || a.answer.ui.pillMenu || a.sess.State != session.Composing || len(chat.requests()) != 1 {
+		t.Fatalf("Escape on the menu: open %v, %s, %d requests", a.answer.ui.langOpen, a.sess.State, len(chat.requests()))
 	}
-	a.answer.langOpen, a.answer.thinkMenu, a.answer.pillMenu = true, true, true
+	a.answer.ui.langOpen, a.answer.ui.thinkMenu, a.answer.ui.pillMenu = true, true, true
 	off := llm.Thinking{Mode: llm.ThinkOff}
-	a.chooseThinking(&off)
+	a.chooseThinking(sessionThinkingValueOf(&off))
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	if s := a.sess; s.State != session.Done || s.Problem != nil || s.Result != "Hello, VoxtNew." || s.Thinking == nil || *s.Thinking != off {
 		t.Fatalf("end %s %+v %q %+v", s.State, s.Problem, s.Result, s.Thinking)
 	}
-	if a.answer.langOpen || a.answer.pillMenu {
+	if a.answer.ui.langOpen || a.answer.ui.pillMenu {
 		t.Error("the menu stayed open")
 	}
 	reqs := chat.requests()
@@ -151,7 +151,11 @@ func TestThinkingDefaultNamed(t *testing.T) {
 			s.Providers.LLM = []settings.Provider{{ID: "deepseek", Generation: settings.Generation{Thinking: llm.ThinkOn}}}
 		})
 		snap(a, session.Snapshot{Kind: store.KindRewrite, State: session.Composing, LLM: session.Model{ID: "deepseek"}, Raw: "make it shorter"})
-		on, off := i18n.T("%s (default)", i18n.T("On")), i18n.T("Ask again: Thinking (%s, default)", i18n.T("On"))
+		on, off := i18n.T("%s (default)", i18n.T("On")), i18n.T("Thinking level: %s (default)", i18n.T("On"))
+		// The capsule names the setting, not an action (#4066).
+		if want := map[string]string{"en": "Thinking level: On (default)", "zh-Hans": "思考强度：已开启（默认）"}[lang]; off != want {
+			t.Errorf("%s: capsule %q, want %q", lang, off, want)
+		}
 		tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 		frames(tt)
 		a.overlaySync()

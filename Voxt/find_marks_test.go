@@ -113,17 +113,17 @@ func TestDictionaryFind(t *testing.T) {
 	if !has(tt, "122 of 122") {
 		t.Errorf("Shift+Return first: no “122 of 122” in %q", firstTexts(tt))
 	}
-	if first, last := a.dv.listUI.Visible(); last != 119 {
+	if first, last := a.dictUI.listUI.Visible(); last != 119 {
 		t.Errorf("the last match's row is not in view: rows %d..%d", first, last)
 	}
 	for _, want := range []string{"1 of 122", "2 of 122", "3 of 122", "4 of 122"} {
 		tt.Key(0, ui.KeyEnter)
 		frames(tt)
 		if !has(tt, want) {
-			t.Errorf("after Return: no %q (at %d)", want, a.dv.find.cur)
+			t.Errorf("after Return: no %q (at %d)", want, a.dictUI.find.cur)
 		}
 	}
-	if first, _ := a.dv.listUI.Visible(); first != 0 {
+	if first, _ := a.dictUI.listUI.Visible(); first != 0 {
 		t.Errorf("the first match's row is not in view: from row %d", first)
 	}
 }
@@ -335,7 +335,7 @@ func TestDictionaryNotesFind(t *testing.T) {
 		tt.Key(0, ui.KeyEnter)
 		frames(tt)
 		if !has(tt, want) {
-			t.Errorf("after Return: no %q (at %d)", want, a.dv.notesFind.cur)
+			t.Errorf("after Return: no %q (at %d)", want, a.dictUI.notesFind.cur)
 		}
 	}
 	tt.Type("9")
@@ -345,7 +345,7 @@ func TestDictionaryNotesFind(t *testing.T) {
 	}
 	tt.Key(0, ui.KeyEnter)
 	frames(tt)
-	if !has(tt, "1 of 1") || a.dv.notes.text != longNotes(200) {
-		t.Errorf("Return on one match: %q, notes changed %v", firstTexts(tt), a.dv.notes.text != longNotes(200))
+	if !has(tt, "1 of 1") || a.dictUI.notes.text != longNotes(200) {
+		t.Errorf("Return on one match: %q, notes changed %v", firstTexts(tt), a.dictUI.notes.text != longNotes(200))
 	}
 }

@@ -226,4 +226,10 @@ class StatefulWaveformDecoder:
                     child_index += 1
             return hidden_states
         else:
-            return self.decoder.apply(module, hidden_states)
+            # note (Wenyao Gao): the convs above add their own bias, so the
+            # channels-last decoder's kernels get none to add and leave none pending.
+            hidden_states, pending_bias = self.decoder.apply(
+                module, hidden_states, None
+            )
+            assert pending_bias is None
+            return hidden_states

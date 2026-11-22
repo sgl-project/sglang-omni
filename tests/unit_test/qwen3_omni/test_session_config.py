@@ -2,6 +2,7 @@
 """The Qwen Session profile assembles without a cascade package."""
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -11,6 +12,7 @@ from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import SessionNodeConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
+from sglang_omni.models.qwen3_omni.realtime import build_realtime_deployment
 from sglang_omni.pipeline.replicas import expand_replica_stages
 from sglang_omni.proto.session import ControlEdge
 from sglang_omni.proto.streams import (
@@ -145,5 +147,12 @@ def test_session_profile_round_trip_keeps_model_factory_arguments() -> None:
             stage.name
         )
     assert config.realtime_deployment_factory == (
-        "sglang_omni.serve.realtime.session_deployment.build_realtime_deployment"
+        "sglang_omni.models.qwen3_omni.realtime.build_realtime_deployment"
     )
+
+
+def test_realtime_deployment_admits_one_connection_per_session_slot() -> None:
+    config = profile_config().model_copy(update={"max_sessions": 256})
+    deployment = build_realtime_deployment(Mock(), config)
+    assert deployment.max_connections == 256
+    assert deployment.session_limits == config.session_limits()

@@ -1,0 +1,50 @@
+{
+  "name": "overlay-composing",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot19",
+    "state": "composing",
+    "mode": "working",
+    "pill": {
+      "kind": "",
+      "title": "转录",
+      "working_label": "整理中…",
+      "live_text": "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

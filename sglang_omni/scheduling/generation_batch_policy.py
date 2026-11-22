@@ -39,6 +39,20 @@ _PREFILL_PADDING_FACTOR = 2
 FULL_PREFILL_ATTENTION_BACKENDS = frozenset({"fa3", "fa4", "flashinfer"})
 
 
+def falls_back_to_breakable_prefill(server_args: ServerArgs, model_name: str) -> bool:
+    """Whether this prefill attention backend needs the breakable graph instead."""
+    attention_backend = attention_backends_of(resolved_view(server_args))[0]
+    if attention_backend in FULL_PREFILL_ATTENTION_BACKENDS:
+        return False
+    else:
+        pass
+    logger.info(
+        f"{model_name}: prefill attention backend {attention_backend!r} cannot "
+        "capture a full prefill graph; using the breakable prefill graph"
+    )
+    return True
+
+
 def get_decode_cuda_graph_max_bs(server_args: ServerArgs) -> int | None:
     """Read the resolved SGLang decode CUDA Graph batch cap."""
     cfg = resolved_view(server_args)

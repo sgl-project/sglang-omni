@@ -80,9 +80,24 @@ class SpeculativeTargetWorker:
                     f"{logits.shape[0]} verify rows do not split over "
                     f"{len(requests)} requests"
                 )
-                self.omni_runner.apply_speculative_verify_logits(
-                    output.logits_output, requests, logits.shape[0] // len(requests)
-                )
+                rows_per_request = logits.shape[0] // len(requests)
+                if self.omni_runner.speculative_verify_takes_logits_hooks:
+                    self.omni_runner.apply_speculative_verify_logits(
+                        output.logits_output, requests, rows_per_request
+                    )
+                else:
+                    pass
+                if (
+                    self.omni_runner.speculative_repetition_penalty_owner
+                    == "verify_logits"
+                ):
+                    self.omni_runner.apply_speculative_repetition_penalty(
+                        logits.view(len(requests), rows_per_request, -1),
+                        forward_batch,
+                        requests,
+                    )
+                else:
+                    pass
             else:
                 pass
             return GenerationBatchResult(

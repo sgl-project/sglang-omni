@@ -410,6 +410,51 @@ func bestMatch(want, got []float64, maxLag int) (corr float64, lag int) {
 	return corr, lag
 }
 
+// TestMacHelperMicrophoneSelection exercises the real input with and
+// without its UID. It requires microphone permission granted in advance.
+func TestMacHelperMicrophoneSelection(t *testing.T) {
+	if os.Getenv("VOXTNEW_MAC_MIC_CAPTURE") != "1" {
+		t.Skip("set VOXTNEW_MAC_MIC_CAPTURE=1 to record from the real microphone")
+	}
+	bin := macE2E(t)
+	h := startMacHelper(t, bin, envCaptureFile+"=")
+	if perms := macCall[proto.PermissionsResult](t, h, proto.MethodPermissionsStatus, nil); perms.Microphone != "granted" {
+		t.Fatalf("the helper needs microphone permission, got %q", perms.Microphone)
+	}
+	devices := macCall[proto.DevicesResult](t, h, proto.MethodCaptureDevices, nil).Devices
+	index := slices.IndexFunc(devices, func(device proto.CaptureDevice) bool { return device.Default })
+	if index < 0 {
+		t.Fatal("no default microphone")
+	}
+	deviceID := devices[index].ID
+	for _, tc := range []struct {
+		name    string
+		devices []string
+	}{
+		{name: "default"},
+		{name: "selected", devices: []string{deviceID}},
+		{name: "selected_again", devices: []string{deviceID}},
+		{name: "back_to_default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := proto.CaptureParams{Devices: tc.devices, SampleRate: 16000, MaxSeconds: 0.6}
+			c := record(t, h, tc.name, params, 0, 5*time.Second)
+			if c.err != nil {
+				t.Fatal(c.err)
+			}
+			if c.started == nil || c.started.Device != deviceID || c.started.FellBack {
+				t.Fatalf("expected audio from %s without fallback, got %+v", deviceID, c.started)
+			}
+			if c.result.Reason != proto.CaptureMaxSeconds || len(c.frames) == 0 {
+				t.Fatalf("capture ended without the expected audio: %+v", c.result)
+			}
+			c.checkFrames(t)
+			t.Logf("%s started in %.1f ms, first PCM in %.1f ms, %d frames, %d restarts",
+				deviceID, c.started.StartMS, c.result.FirstFrameMS, c.result.Frames, c.result.Restarts)
+		})
+	}
+}
+
 // TestMacHelperCaptureFile: the helper records the speech sample through
 // its capture path (the test-only file input), at 4× speed: the frames
 // match the file, stop, cancel and maxSeconds end the job as they end a

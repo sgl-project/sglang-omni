@@ -1,6 +1,6 @@
 # Transcribing a file from the command line
 
-`Voxt transcribe` turns a recording on your Mac (a meeting, a voice memo, a screen recording or another video) into SRT subtitles or plain text with the speech model you chose for Transcribe on the Speech models page. Use it to archive recordings, or to give a transcript to a language model or a script that summarizes it.
+`Voxt transcribe` turns a recording on your Mac (a meeting, a voice memo, a screen recording or another video) into SRT subtitles or plain text with the speech model you chose for Transcribe in Settings → Speech models. Use it to archive recordings, or to give a transcript to a language model or a script that summarizes it.
 
 ## The command
 

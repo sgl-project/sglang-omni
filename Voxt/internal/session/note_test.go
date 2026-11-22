@@ -68,7 +68,7 @@ func TestNote(t *testing.T) {
 			}
 			if tc.saved {
 				got, _ := tc.notes.List(context.Background())
-				if len(got) != 1 || got[0].ID != id || got[0].Text != "buy milk" || !got[0].CreatedAt.Equal(end.StartedAt) {
+				if len(got) != 1 || got[0].ID != id || got[0].Text != "buy milk" || !got[0].CreatedAt.Equal(end.StartedAt) || got[0].AppName != slack.Name {
 					t.Errorf("notes %+v", got)
 				}
 				if end.Card || end.Problem != nil {

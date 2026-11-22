@@ -1,0 +1,56 @@
+{
+  "name": "session-problem-asr",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "session-problem",
+    "state": "failed",
+    "problem_code": "asr",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "语音识别失败：语音识别模型已停止或没有响应。请稍后再试。",
+      "action": "models",
+      "action_label": "打开语音识别模型页",
+      "tone": "error"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -36,14 +38,23 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 	var holdRelease func()
 	if cfg.ModelHold != nil {
 		holdRelease = cfg.ModelHold.Hold()
-		defer holdRelease()
+		defer func() {
+			if holdRelease != nil {
+				holdRelease()
+			}
+		}()
 	}
 	var first error
 	trackN := len(sources)
 	done := map[Source][]Segment{}
 	for i, src := range sources {
+		if src == SourceSystem && mode.Diarize() && holdRelease != nil {
+			// MTD cannot start until the selected speech model's hold lets its server stop.
+			holdRelease()
+			holdRelease = nil
+		}
 		base := float64(i) / float64(trackN)
-		segs, err := finalizeTrack(ctx, cfg, audioDir, src, func(p float64) {
+		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode.Diarize(), func(p float64) {
 			if onProgress != nil {
 				onProgress(base + p/float64(trackN))
 			}
@@ -93,7 +104,7 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 
 // finalizeTrack transcribes one track's WAV again; nil segments mean the
 // track has nothing to replace (no file, or no audio).
-func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, onProgress func(float64)) ([]Segment, error) {
+func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diarize bool, onProgress func(float64)) ([]Segment, error) {
 	path := filepath.Join(dir, string(src)+".wav")
 	pcm, rate, err := readTrackPCM(path)
 	if err != nil {
@@ -127,6 +138,22 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, onPr
 		req := asr.FileRequest{
 			SampleRate: rate, Lang: ta.Lang, Prompt: ta.Prompt, Hints: ta.Hints, Format: "pcm",
 		}
+		if diarize && src == SourceSystem && cfg.Diarizer != nil {
+			d, err := cfg.Diarizer(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if d != nil {
+				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress)
+				if err != nil {
+					return nil, err
+				}
+				if segs == nil {
+					segs = []Segment{}
+				}
+				return segs, nil
+			}
+		}
 		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
 		if err != nil {
 			return nil, err
@@ -137,6 +164,185 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, onPr
 		return segs, nil
 	}
 	return nil, fmt.Errorf("meeting: ASR not configured")
+}
+
+// diarizeChunkMax is how much of a track one MTD request covers: small
+// enough that a dictation waits at most one request (the runtime lets it
+// in between), and far from the native decoder's own 20-minute split.
+const diarizeChunkMax = 2 * time.Minute
+
+// mossPrompt is the instruction MOSS gets with no prompt of its own
+// (moss_transcriber.cpp's kDefaultPrompt, repeated here: a prompt of ours
+// replaces it, and the format must stay).
+const mossPrompt = "Transcribe the audio into text. Start each segment with the start timestamp and speaker label ([S01], [S02], [S03], ...), write the corresponding spoken content, and end each segment with the ending timestamp to clearly mark the segment range."
+
+// diarizeTrack transcribes the track with MTD in chunks, each request
+// after the first carrying the last labeled lines, so a voice keeps its
+// number across the boundaries (the native decoder starts its labels
+// over per chunk).
+func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64)) ([]Segment, error) {
+	p := DefaultChunkParams()
+	p.Rate = rate
+	p.MaxDur = diarizeChunkMax
+	// Pack speech across pauses up to the chunk cap: with the plain-ASR
+	// pause threshold every pause would start a new request, and the
+	// fixed per-request cost would dominate a pause-rich track.
+	p.PauseMin = diarizeChunkMax
+	chunks := PlanChunks(speech, len(pcm)/2, p)
+	var out []Segment
+	var carry string
+	var covered time.Duration // the earlier chunks returned audio up to here
+	var prevText string       // the last emitted line, for the straddling one
+	var tail []labeledLine    // the trailing emitted lines, for speaker anchors
+	needTrim := false
+	for i, ch := range chunks {
+		if onProgress != nil {
+			onProgress(float64(i) / float64(len(chunks)))
+		}
+		sub := req
+		sub.Audio = pcm[ch.Start*2 : ch.End*2]
+		sub.Prompt = mossPrompt
+		if req.Prompt != "" {
+			sub.Prompt += "\n" + req.Prompt
+		}
+		if carry != "" {
+			sub.Prompt += "\nThis recording's earlier part ended with these labeled segments; the same voices keep their labels:\n" + carry
+		}
+		res, err := d.Diarize(ctx, sub)
+		if err != nil {
+			return nil, err
+		}
+		offset := time.Duration(ch.Start) * time.Second / time.Duration(rate)
+		// A hard cut starts this chunk inside audio the previous chunk
+		// returned; the model numbers what it hears there over, and the
+		// repeated lines anchor its numbers to the earlier ones.
+		anchors := anchorSpeakers(res.Segments, offset, covered, tail)
+		marked := 0
+		carry = ""
+		for _, part := range res.Segments {
+			text := strings.TrimSpace(part.Text)
+			if text == "" {
+				continue
+			}
+			marked++
+			start := offset + max(part.Start, time.Duration(0))
+			end := max(offset+part.End, start)
+			if end <= covered {
+				continue // already returned with the previous chunk
+			}
+			if needTrim {
+				text = DedupeOverlapText(prevText, text)
+				if text == "" {
+					continue
+				}
+			}
+			speaker := mtdSpeaker(part.Speaker)
+			if anchored, ok := anchors[part.Speaker]; ok {
+				speaker = anchored
+			}
+			out = append(out, Segment{
+				ID: core.NewID(time.Now()), Source: src, Speaker: speaker,
+				Start: start, End: end, Text: text, Final: true,
+			})
+			prevText = text
+			needTrim = false
+			if speaker != "" {
+				tail = append(tail, labeledLine{words: splitWords(text), speaker: speaker})
+				if len(tail) > 8 {
+					tail = tail[len(tail)-8:]
+				}
+				carry += "[" + mtdLabel(speaker) + "] " + text + "\n"
+			}
+		}
+		if marked == 0 && strings.TrimSpace(res.Text) != "" {
+			out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: strings.TrimSpace(res.Text), Final: true})
+		}
+		if runes := []rune(carry); len(runes) > 300 { // the last lines, at most a screen
+			carry = string(runes[len(runes)-300:])
+		}
+		covered = time.Duration(ch.End) * time.Second / time.Duration(rate)
+		needTrim = true
+	}
+	if onProgress != nil {
+		onProgress(1)
+	}
+	return out, nil
+}
+
+func mtdSpeaker(speaker string) string {
+	n, ok := strings.CutPrefix(speaker, "S")
+	if !ok {
+		return ""
+	}
+	n = strings.TrimLeft(n, "0")
+	if n == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(n); err != nil {
+		return ""
+	}
+	return "s" + n
+}
+
+// mtdLabel is a global speaker in the prompt's own format (s2 -> S02), so
+// the next chunk continues the numbers it sees.
+func mtdLabel(speaker string) string {
+	n, ok := strings.CutPrefix(speaker, "s")
+	if !ok {
+		return speaker
+	}
+	v, err := strconv.Atoi(n)
+	if err != nil || v <= 0 {
+		return speaker
+	}
+	return fmt.Sprintf("S%02d", v)
+}
+
+// labeledLine is an emitted line's words and its global speaker.
+type labeledLine struct {
+	words   []string
+	speaker string
+}
+
+// anchorSpeakers maps a chunk's labels to the earlier chunks' speakers.
+// The model numbers the voices it hears from scratch, so a line it
+// repeated from the previous chunk's audio (ending at or before covered)
+// names the same voice under whatever number this chunk gave it.
+func anchorSpeakers(parts []asr.SpeakerSegment, offset, covered time.Duration, tail []labeledLine) map[string]string {
+	if covered <= 0 || len(tail) == 0 {
+		return nil
+	}
+	anchors := map[string]string{}
+	for _, part := range parts {
+		if _, ok := anchors[part.Speaker]; ok {
+			continue
+		}
+		if offset+part.End > covered {
+			continue
+		}
+		words := splitWords(part.Text)
+		if len(words) < 2 {
+			continue // a one-word line anchors nothing: too many voices say it
+		}
+		for k := len(tail) - 1; k >= 0; k-- {
+			if tail[k].speaker != "" && sameWords(tail[k].words, words) {
+				anchors[part.Speaker] = tail[k].speaker
+				break
+			}
+		}
+	}
+	return anchors
+}
+
+// sameWords says two lines match: equal, or the shorter a prefix of the
+// longer (a cut can clip the repeated line).
+func sameWords(a, b []string) bool {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, req asr.FileRequest, rate int, pcm []byte, chunks []Chunk, onProgress func(float64)) ([]Segment, error) {

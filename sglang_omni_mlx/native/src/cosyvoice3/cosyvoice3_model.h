@@ -15,14 +15,15 @@
 
 #include "common/campplus.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "common/text.h"
 #include "common/tokenizer.h"
 #include "cosyvoice3/cosyvoice3_audio.h"
 #include "cosyvoice3/cosyvoice3_speech_tokenizer.h"
 #include "cosyvoice3/cosyvoice3_vocoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace cosyvoice3 {
 
@@ -119,7 +120,7 @@ public:
   // caches.
   mlx::core::array
   ForwardEmbeddings(const mlx::core::array &embeddings,
-                    std::vector<qwen3_asr::KVCache> &caches) const;
+                    std::vector<omni_common::KVCache> &caches) const;
   // [SOS, text, TASK, prompt speech] embeddings.
   mlx::core::array
   BuildPromptEmbeddings(const std::vector<int> &text_token_ids,
@@ -127,14 +128,14 @@ public:
   // Includes the extended control-token vocabulary for teacher forcing.
   mlx::core::array
   SpeechEmbeddings(const std::vector<int> &speech_token_ids) const;
-  std::vector<qwen3_asr::KVCache> NewCaches() const;
+  std::vector<omni_common::KVCache> NewCaches() const;
 
 private:
   // Ids of text with the checkpoint's special tokens split out.
   std::vector<int> Encode(const std::string &text) const;
 
   omni_common::Checkpoint checkpoint_;
-  qwen3_asr::Qwen3Decoder decoder_;
+  omni_common::Qwen3Decoder decoder_;
   std::unique_ptr<omni_common::Tokenizer> tokenizer_;
   Flow flow_;
   Hift hift_;

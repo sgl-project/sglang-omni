@@ -27,7 +27,7 @@ func TestDialogsKeepInput(t *testing.T) {
 		{"remote service", remotePath, func() { a.openProviderDialog(local.LLM, llm.Custom) },
 			func() { a.provDlg.key = "sk-typed" }, func() bool { return a.provDlg.open }},
 		{"term", "/dictionary", func() { a.openTerm(store.Term{}) },
-			func() { a.dv.edit.term = "Voxt" }, func() bool { return a.dv.editOpen }},
+			func() { a.dictUI.edit.term = "Voxt" }, func() bool { return a.dictUI.editOpen }},
 		{"network", modelsPath, a.openNetwork,
 			func() { a.netForm.proxyURL = "http://127.0.0.1:7897" }, func() bool { return a.netOpen }},
 	} {

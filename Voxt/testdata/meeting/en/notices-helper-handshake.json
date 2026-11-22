@@ -1,0 +1,14 @@
+{
+  "name": "notices-helper-handshake",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/helper",
+      "severity": "error",
+      "title": "Helper stopped unexpectedly",
+      "body": "Recording and shortcuts work again once it is running.",
+      "action_label": "Restart helper",
+      "time_hint": "Jan 2 07:04"
+    }
+  ]
+}

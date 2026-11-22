@@ -1,0 +1,127 @@
+{
+  "name": "appenhance-url-error-empty",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "On",
+    "selected": "g-code",
+    "groups": [
+      {
+        "id": "g-code",
+        "name": "Website rules",
+        "summary": "1 website",
+        "enabled": true,
+        "selected": true,
+        "matches": false
+      }
+    ],
+    "detail": {
+      "id": "g-code",
+      "name": "Website rules",
+      "enabled": true,
+      "prompt": "",
+      "features": [
+        {
+          "id": "transcribe",
+          "label": "Transcribe",
+          "checked": true
+        },
+        {
+          "id": "translate",
+          "label": "Translate",
+          "checked": false
+        },
+        {
+          "id": "rewrite",
+          "label": "Rewrite",
+          "checked": true
+        }
+      ],
+      "variables": [
+        {
+          "name": "USER_MAIN_LANGUAGE",
+          "token": "{{USER_MAIN_LANGUAGE}}",
+          "tooltip": "Your main language, from General settings. Every feature."
+        },
+        {
+          "name": "USER_OTHER_LANGUAGES",
+          "token": "{{USER_OTHER_LANGUAGES}}",
+          "tooltip": "Your other languages, from General settings. Every feature."
+        },
+        {
+          "name": "TARGET_LANGUAGE",
+          "token": "{{TARGET_LANGUAGE}}",
+          "tooltip": "The Target language menu on the Translate page. Translate only."
+        },
+        {
+          "name": "APP_NAME",
+          "token": "{{APP_NAME}}",
+          "tooltip": "The app in front, when an App enhancement group matches it. The features that group applies to."
+        }
+      ],
+      "apps": [],
+      "urls": [
+        {
+          "text": "",
+          "warning": "Type a website, as in github.com.",
+          "warning_code": "empty"
+        }
+      ],
+      "url_input": "",
+      "auto_key": {
+        "options": [
+          {
+            "label": "None",
+            "value": ""
+          },
+          {
+            "label": "Return ↩",
+            "value": "Return"
+          },
+          {
+            "label": "⌘Return",
+            "value": "Command+Return"
+          },
+          {
+            "label": "⇧Return",
+            "value": "Shift+Return"
+          },
+          {
+            "label": "⌃Return",
+            "value": "Control+Return"
+          },
+          {
+            "label": "⌥Return",
+            "value": "Option+Return"
+          },
+          {
+            "label": "Custom…",
+            "value": ""
+          }
+        ],
+        "value": "",
+        "current_label": "None",
+        "custom_label": "Custom…",
+        "custom": false,
+        "text": ""
+      }
+    },
+    "preview": {
+      "app": {
+        "bundle_id": ""
+      },
+      "app_name": "",
+      "empty": true,
+      "has_bundle_id": false,
+      "front_text": "Switch to another app to see which group it falls in.",
+      "browser": false,
+      "address_status": "none",
+      "matched": false,
+      "match_source": "global",
+      "match_text": "No group matches, so only the features' own rules apply.",
+      "can_refresh": false,
+      "add_app": false,
+      "add_site": false
+    }
+  }
+}

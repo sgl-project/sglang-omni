@@ -18,7 +18,7 @@ from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
 )
 from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
 from sglang_omni.models.fishaudio_drama3.stateful_graphs import StatefulGraphDecoder
-from sglang_omni.models.fishaudio_drama3.vocoder import WindowGraphDecoder
+from sglang_omni.models.fishaudio_drama3.window_graphs import WindowGraphDecoder
 from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.scheduling.audio_stream import StreamVocoderState, decode_stream_window
 

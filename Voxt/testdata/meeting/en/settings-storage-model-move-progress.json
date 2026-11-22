@@ -1,0 +1,122 @@
+{
+  "name": "settings-storage-model-move-progress",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/storage",
+    "shown_path": "/settings/storage",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "storage": {
+      "data_directory": "testdata/fixture-home/data",
+      "data_path": "~/data",
+      "recordings_path": "~/recordings",
+      "previous_path": "~/previous-data",
+      "failed_move": "",
+      "can_open": true,
+      "report": {
+        "data_size": "8 KB",
+        "free_size": "66 KB",
+        "categories": [
+          {
+            "id": "audio",
+            "title": "Fixture recordings",
+            "size": "2 KB",
+            "directory": "testdata/fixture-home/recordings"
+          },
+          {
+            "id": "database",
+            "title": "Fixture database",
+            "size": "4 KB",
+            "directory": "testdata/fixture-home/data"
+          }
+        ]
+      },
+      "move_error": "",
+      "moving": false,
+      "move_path": "",
+      "move_progress": 0,
+      "move_progress_text": "0 B / 0 B",
+      "can_cancel_move": false,
+      "reset_ask": "",
+      "reset_text": "",
+      "erasing": false,
+      "kept_models_text": "",
+      "model_directory": "testdata/fixture-home/models",
+      "model_path": "~/models",
+      "model_note": "Shared by all apps that use this model library",
+      "can_change_model_folder": true,
+      "show_model_backup": true,
+      "model_backup": true,
+      "model_backup_hint": "Models can be downloaded again, so Time Machine leaves them out. Applies to all apps that use this model library.",
+      "model_usage": [
+        {
+          "title": "Only Voxt",
+          "size": "4 KB"
+        },
+        {
+          "title": "Shared with other apps that use this model library",
+          "size": "2 KB"
+        }
+      ],
+      "model_moving": true,
+      "model_move_text": "Moving every app's models to ~/moved-models, then Voxt restarts. The old folders are left as they are.",
+      "can_cancel_model_move": true
+    }
+  }
+}

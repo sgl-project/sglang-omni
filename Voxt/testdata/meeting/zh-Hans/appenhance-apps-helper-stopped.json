@@ -1,0 +1,164 @@
+{
+  "name": "appenhance-apps-helper-stopped",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "已开启",
+    "selected": "g-chat",
+    "groups": [
+      {
+        "id": "g-chat",
+        "name": "Team chat",
+        "summary": "2 个 App",
+        "enabled": true,
+        "selected": true,
+        "matches": true
+      },
+      {
+        "id": "g-code",
+        "name": "Code review",
+        "summary": "2 个网站",
+        "enabled": true,
+        "selected": false,
+        "matches": false
+      },
+      {
+        "id": "g-work",
+        "name": "Work browser",
+        "summary": "1 个 App",
+        "enabled": false,
+        "selected": false,
+        "matches": false
+      }
+    ],
+    "detail": {
+      "id": "g-chat",
+      "name": "Team chat",
+      "enabled": true,
+      "prompt": "This is a team chat: short and casual, no greetings or sign-offs.",
+      "features": [
+        {
+          "id": "transcribe",
+          "label": "转录",
+          "checked": true
+        },
+        {
+          "id": "translate",
+          "label": "翻译",
+          "checked": false
+        },
+        {
+          "id": "rewrite",
+          "label": "改写",
+          "checked": true
+        }
+      ],
+      "variables": [
+        {
+          "name": "USER_MAIN_LANGUAGE",
+          "token": "{{USER_MAIN_LANGUAGE}}",
+          "tooltip": "你的主要语言，来自通用设置。所有功能都用到。"
+        },
+        {
+          "name": "USER_OTHER_LANGUAGES",
+          "token": "{{USER_OTHER_LANGUAGES}}",
+          "tooltip": "你的其他语言，来自通用设置。所有功能都用到。"
+        },
+        {
+          "name": "TARGET_LANGUAGE",
+          "token": "{{TARGET_LANGUAGE}}",
+          "tooltip": "来自翻译页的“目标语言”菜单。只有翻译用到。"
+        },
+        {
+          "name": "APP_NAME",
+          "token": "{{APP_NAME}}",
+          "tooltip": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。"
+        }
+      ],
+      "apps": [
+        {
+          "ref": {
+            "bundle_id": "com.tinyspeck.slackmacgap",
+            "name": "Slack"
+          },
+          "browser": false
+        },
+        {
+          "ref": {
+            "bundle_id": "com.tencent.xinWeChat",
+            "name": "WeChat"
+          },
+          "browser": false
+        }
+      ],
+      "urls": [],
+      "url_input": "",
+      "auto_key": {
+        "options": [
+          {
+            "label": "无",
+            "value": ""
+          },
+          {
+            "label": "Return ↩",
+            "value": "Return"
+          },
+          {
+            "label": "⌘回车",
+            "value": "Command+Return"
+          },
+          {
+            "label": "⇧回车",
+            "value": "Shift+Return"
+          },
+          {
+            "label": "⌃回车",
+            "value": "Control+Return"
+          },
+          {
+            "label": "⌥回车",
+            "value": "Option+Return"
+          },
+          {
+            "label": "自定义…",
+            "value": ""
+          }
+        ],
+        "value": "Return",
+        "current_label": "Return ↩",
+        "custom_label": "自定义…",
+        "custom": false,
+        "text": "Return"
+      }
+    },
+    "preview": {
+      "app": {
+        "bundle_id": "com.tinyspeck.slackmacgap",
+        "name": "Slack"
+      },
+      "app_name": "Slack",
+      "empty": false,
+      "has_bundle_id": true,
+      "front_text": "前台：Slack",
+      "browser": false,
+      "address_status": "none",
+      "matched": true,
+      "match_source": "app",
+      "match_text": "命中“Team chat”，按 App",
+      "can_refresh": true,
+      "add_app": false,
+      "add_site": false
+    },
+    "apps": {
+      "group_id": "g-chat",
+      "title": "把 App 加入“Team chat”",
+      "loading": false,
+      "error": "辅助进程没有运行，只能用 Bundle ID 添加 App。",
+      "rows": null,
+      "has_catalog": false,
+      "no_matches": false,
+      "query": "",
+      "bundle_input": ""
+    }
+  }
+}

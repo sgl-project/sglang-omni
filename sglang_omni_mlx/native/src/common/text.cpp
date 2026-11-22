@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/text.h"
 
+#include <CoreFoundation/CoreFoundation.h>
+
 #include <algorithm>
+#include <cctype>
 #include <set>
 
 namespace omni_common {
@@ -178,6 +181,32 @@ std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
     }
   }
   return bytes;
+}
+
+std::string AsciiLowercase(std::string text) {
+  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return text;
+}
+
+bool Contains(const std::string &text, const char *needle) {
+  return text.find(needle) != std::string::npos;
+}
+
+bool ContainsStandaloneSpace(const std::string &text) {
+  const std::vector<uint32_t> code_points = CodePoints(text);
+  const CFCharacterSetRef combining =
+      CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
+  for (size_t index = 0; index < code_points.size(); ++index) {
+    if (code_points[index] == ' ' && (index + 1 == code_points.size() ||
+                                      !CFCharacterSetIsLongCharacterMember(
+                                          combining, code_points[index + 1]))) {
+      return true;
+    } else {
+    }
+  }
+  return false;
 }
 
 } // namespace omni_common

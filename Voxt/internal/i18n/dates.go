@@ -10,19 +10,23 @@ import (
 // ("Jan 2 15:04" / "Jan 2, 2025 15:04"; "1月2日 15:04" / "2025年1月2日 15:04").
 // Month names are English: Go's time package has no other.
 func DateTime(t time.Time) string {
-	t = t.Local()
-	sameYear := t.Year() == time.Now().Year()
-	switch Locale() {
+	return CurrentTranslator().DateTimeAt(t, time.Now())
+}
+
+func (t *Translator) DateTimeAt(value, now time.Time) string {
+	value = value.In(now.Location())
+	sameYear := value.Year() == now.Year()
+	switch t.Locale() {
 	case "zh-Hans":
 		if sameYear {
-			return fmt.Sprintf("%d月%d日 %s", t.Month(), t.Day(), t.Format("15:04"))
+			return fmt.Sprintf("%d月%d日 %s", value.Month(), value.Day(), value.Format("15:04"))
 		}
-		return fmt.Sprintf("%d年%d月%d日 %s", t.Year(), t.Month(), t.Day(), t.Format("15:04"))
+		return fmt.Sprintf("%d年%d月%d日 %s", value.Year(), value.Month(), value.Day(), value.Format("15:04"))
 	}
 	if sameYear {
-		return t.Format("Jan 2 15:04")
+		return value.Format("Jan 2 15:04")
 	}
-	return t.Format("Jan 2, 2006 15:04")
+	return value.Format("Jan 2, 2006 15:04")
 }
 
 // Date formats a day in the active language ("Jan 2, 2006" / "2006年1月2日").

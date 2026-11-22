@@ -76,7 +76,7 @@ func TestLiveTextCard(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Overlay.HideLiveText = true })
 	steps := cardSteps()
 	words := func() (all []string) {
-		for _, b := range a.cardNow().bubbles {
+		for _, b := range cardBubblesForTest(a.cachedCard()) {
 			all = append(all, b.text)
 		}
 		return all
@@ -110,6 +110,7 @@ func TestLiveLines(t *testing.T) {
 	a.navigate("/settings/overlay")
 	frames(tt)
 	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "Meet at three"}
+	a.refreshSessionOverlay(time.Now())
 	if w, h, _ := a.overlaySize(ovRecording); w >= layout.LinesW || h != layout.LiveH {
 		t.Fatalf("one line: %d×%d", w, h)
 	}
@@ -120,13 +121,16 @@ func TestLiveLines(t *testing.T) {
 	if !a.settings.Get().Overlay.LiveLines {
 		t.Fatal("not saved")
 	}
+	a.refreshSessionOverlay(time.Now())
 	_, one, _ := a.overlaySize(ovRecording)
 	if w, _, _ := a.overlaySize(ovRecording); w != layout.LinesW {
 		t.Errorf("lines: %d wide", w)
 	}
 	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 12)
+	a.refreshSessionOverlay(time.Now())
 	_, some, _ := a.overlaySize(ovRecording)
 	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 200)
+	a.refreshSessionOverlay(time.Now())
 	_, most, _ := a.overlaySize(ovRecording)
 	if !(one < some && some < most) || most != layout.LinesHeight(layout.LinesMax*layout.LineH) {
 		t.Errorf("heights: one line %d, a few %d, many %d (most %d)", one, some, most, layout.LinesHeight(layout.LinesMax*layout.LineH))
@@ -151,9 +155,10 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 	if m := a.overlayModeNow(); m != ovAnswer {
 		t.Fatalf("writing: mode %v", m)
 	}
+	a.refreshSessionOverlay(time.Now())
 	w, h, _ := a.cardSize()
-	if v := a.cardNow(); v.text != "Short." || !v.busy || w != layout.CardSizes[0].W || h <= layout.CardChrome || h >= layout.CardChrome+layout.CardBodyMax {
-		t.Errorf("the writing card: %q busy %v, %d×%d", v.text, v.busy, w, h)
+	if v := a.cachedCard(); cardTextForTest(v) != "Short." || !v.Busy || w != layout.CardSizes[0].W || h <= layout.CardChrome || h >= layout.CardChrome+layout.CardBodyMax {
+		t.Errorf("the writing card: %q busy %v, %d×%d", cardTextForTest(v), v.Busy, w, h)
 	}
 	a.prefs.Overlay.HideLiveText = true
 	if m := a.overlayModeNow(); m != ovWorking {
@@ -181,7 +186,7 @@ func TestRewriteWritingFollows(t *testing.T) {
 	s.Draft = long
 	snap(a, s)
 	frames(tt)
-	if st := a.ov.cardScroll; st.MaxY <= 0 || st.Y < st.MaxY-2 {
+	if st := a.ov.ui.cardScroll; st.MaxY <= 0 || st.Y < st.MaxY-2 {
 		t.Errorf("the writing card shows %v of %v: not the newest words", st.Y, st.MaxY)
 	}
 }
@@ -246,7 +251,7 @@ func TestLiveLinesScroll(t *testing.T) {
 	}
 	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 	frames(tt)
-	l := &a.ov.lines
+	l := &a.ov.ui.lines
 	if !l.follow || l.st.MaxY <= 0 || l.st.Y != l.st.MaxY {
 		t.Fatalf("at the start: %+v", *l)
 	}

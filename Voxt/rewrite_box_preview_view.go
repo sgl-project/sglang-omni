@@ -1,0 +1,115 @@
+package main
+
+import (
+	"strings"
+
+	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+)
+
+// boxClipText keeps the first chars characters of text: laying out one
+// unbroken paragraph takes time that grows faster than its length.
+func boxClipText(text string, chars int) string {
+	count := 0
+	for index := range text {
+		if count == chars {
+			return text[:index] + "…"
+		}
+		count++
+	}
+	return text
+}
+
+func boxTextBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
+	boxBlockView(context, key, segment, local, remove, false)
+}
+
+func boxSelectionBlockView(context *ui.Context, segment boxTextSegment, local *rewriteBoxLocalUI, remove func()) {
+	boxBlockView(context, "selection", segment, local, remove, true)
+}
+
+func boxBlockView(context *ui.Context, key string, segment boxTextSegment, local *rewriteBoxLocalUI, remove func(), selection bool) {
+	collapsible := selection || segment.Lines > boxTextCollapseLines || segment.Chars > boxTextCollapseChars
+	if !selection && (!segment.Pasted || !collapsible && !segment.File) {
+		ui.Row(context.Key(key)).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(context, boxClipText(segment.Text, boxTextCollapseChars)).FontSize(12).TextColor(ovText2).MaxLines(3).Grow(1).MinWidth(0)
+			if remove != nil {
+				if cardIconButton(context.Key("remove-text"), i18n.T("Remove pasted text"), "", icons.Close, true) {
+					remove()
+				}
+			}
+		})
+		return
+	}
+	previewLines, removeLabel := boxTextCollapseLines, i18n.T("Remove pasted text")
+	header := i18n.T("%s · %d chars · %d lines", segment.Source, segment.Chars, segment.Lines)
+	if selection {
+		previewLines, removeLabel = 2, i18n.T("Remove selected text")
+		header = i18n.T("%s · %d chars", segment.Source, segment.Chars)
+	}
+	expanded := local.expandedText[key]
+	ui.Column(context.Key(key)).Shrink(0).Padding(6, 8, 6, 8).Gap(5).Radius(6).Background(ui.RGBA(255, 255, 255, 0.06)).Children(func() {
+		ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(context, header).FontSize(11).FontWeight(600).TextColor(ovText2).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+			if remove != nil {
+				if cardIconButton(context.Key("remove-text"), removeLabel, "", icons.Close, true) {
+					remove()
+				}
+			}
+		})
+		if !collapsible {
+			ui.Text(context, segment.Text).FontSize(12).TextColor(ovCardText).Selectable()
+		} else if expanded {
+			ui.Scroll(context.Key("full-text")).MaxHeight(150).TrackScroll(&local.textScroll).Children(func() {
+				ui.Text(context, boxClipText(segment.Text, boxTextShownChars)).FontSize(12).TextColor(ovCardText).Selectable()
+			})
+		} else {
+			lines := strings.SplitN(boxClipText(segment.Text, boxTextCollapseChars), "\n", previewLines+1)
+			ui.Text(context, strings.Join(lines[:min(len(lines), previewLines)], "\n")).FontSize(12).TextColor(ovText2).MaxLines(previewLines).Shrink(0)
+		}
+		if collapsible {
+			label := i18n.T("Show all")
+			if expanded {
+				label = i18n.T("Show less")
+			}
+			if ui.ButtonBase(context.Key("toggle-text")).Height(18).Label(label).Children(func() {
+				ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
+			}).Clicked() {
+				if local.expandedText == nil {
+					local.expandedText = map[string]bool{}
+				}
+				local.expandedText[key] = !expanded
+			}
+		}
+	})
+}
+
+func boxFullImagePreview(context *ui.Context, state rewriteBoxViewState, local *rewriteBoxLocalUI) bool {
+	index := local.previewImage - 1
+	if index < 0 || index >= len(state.Thumbnails) {
+		return false
+	}
+	bitmap := state.Thumbnails[index]
+	if bitmap == nil {
+		return false
+	}
+	info := boxImageInfo{Source: i18n.T("Image")}
+	info.Width, info.Height = bitmap.Size()
+	if index < len(state.ImageInfo) {
+		info = state.ImageInfo[index]
+	}
+	ui.Column(context).Grow(1).Gap(6).Children(func() {
+		ui.Row(context).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
+			if cardCapsule(context.Key("close-image-preview"), i18n.T("Back to input"), "") {
+				local.previewImage = 0
+			}
+			ui.Text(context, info.Source).FontSize(12).TextColor(ovText2).SingleLine().Ellipsis("…")
+			ui.Text(context, i18n.T("%d × %d", info.Width, info.Height)).FontSize(11).TextColor(ovText2).SingleLine()
+		})
+		ui.ScrollBoth(context.Key("box-original-image")).Grow(1).TrackScroll(&local.previewScroll).Children(func() {
+			ui.Image(context, bitmap).Width(float32(info.Width)).Height(float32(info.Height)).Fit(ui.Contain)
+		})
+	})
+	return true
+}

@@ -1,0 +1,14 @@
+{
+  "name": "notices-warning",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "n1",
+      "severity": "warning",
+      "title": "Watch out",
+      "body": "Something needs a look.",
+      "action_label": "Open",
+      "time_hint": "Jan 2 07:04"
+    }
+  ]
+}

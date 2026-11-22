@@ -187,7 +187,8 @@ func TestRemotePage(t *testing.T) {
 	if !has(tt, "On this Mac") || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
 		t.Errorf("no where labels: %q", tt.Texts())
 	}
-	click(t, tt, "DeepSeek")
+	scrollSettingsToText(tt, "DeepSeek")
+	clickControl(t, tt, "DeepSeek")
 	frames(tt)
 	a.provDlg.key = "sk-deep-0123456789"
 	click(t, tt, "Save")
@@ -209,9 +210,9 @@ func TestRemotePage(t *testing.T) {
 	if !ok || m.ID != "deepseek" || m.Name != "DeepSeek · deepseek-flash" {
 		t.Fatalf("Rewrite's model %+v %v", m, ok)
 	}
-	click(t, tt, "DeepSeek")
+	a.openProviderDialog(local.LLM, "deepseek")
 	frames(tt)
-	click(t, tt, "Remove DeepSeek")
+	clickControl(t, tt, "Remove DeepSeek")
 	frames(tt)
 	if len(keys.m) != 0 || len(a.lib.settings.Get().Providers.LLM) != 0 || len(a.installed(local.LLM)) != 0 {
 		t.Fatalf("after Remove: keys %v, setups %+v", keys.m, a.lib.settings.Get().Providers.LLM)
@@ -258,7 +259,8 @@ func TestDialogTestWithoutKey(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{}})
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
-	click(t, tt, "Anthropic")
+	scrollSettingsToText(tt, "Anthropic")
+	clickControl(t, tt, "Anthropic")
 	click(t, tt, "Test connection")
 	const want = "Paste the service's API key above, then test again."
 	if a.provDlg.test.res.Err == nil || !has(tt, want) {

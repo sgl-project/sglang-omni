@@ -411,6 +411,7 @@ class SpeechResult:
     usage: UsageInfo | None = None
     spec_tokens_details: SpecTokensDetailsDict | None = None
     finish_reason: str = UNKNOWN_FINISH_REASON
+    text: str | None = None
 
 
 class ClientError(Exception):

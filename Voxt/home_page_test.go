@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
@@ -224,7 +226,7 @@ func TestHomeTryHistoryBeforeTheFlag(t *testing.T) {
 
 func TestSloganHint(t *testing.T) {
 	join := func(h *settings.Hotkey) string {
-		b, k, a := sloganHint(h)
+		b, k, a := sloganHintFor(i18n.CurrentTranslator(), h)
 		return b + "[" + k + "]" + a
 	}
 	for _, tc := range []struct {
@@ -331,14 +333,50 @@ func TestHomeRecent(t *testing.T) {
 	}
 	title, _ := uitext.EntryTitle(e)
 	click(t, tt, title)
-	if a.router.Path() != "/history" || a.hist.sel != e.ID || a.hist.kind() != e.Kind {
-		t.Errorf("opened %s sel %q tab %s", a.router.Path(), a.hist.sel, a.hist.kind())
+	if a.router.Path() != "/history" || a.histUI.sel != e.ID || a.histUI.kind() != e.Kind {
+		t.Errorf("opened %s sel %q tab %s", a.router.Path(), a.histUI.sel, a.histUI.kind())
 	}
 	// History off: nothing is counted.
 	a.navigate("/home")
 	a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepHistory = false })
 	if !has(tt, "History is off, so nothing is counted.") {
 		t.Errorf("history off: %q", tt.Texts())
+	}
+}
+
+func TestHomeRecentActionsUseVisibleEntry(t *testing.T) {
+	a, tt := homeTester(t)
+	fresh := store.Entry{
+		ID: "same", Kind: store.KindTranscribe, Status: store.StatusDone,
+		CreatedAt: time.Now(), Result: "  fresh text  \n", RawText: "fresh raw",
+	}
+	stale := fresh
+	stale.Kind, stale.Result, stale.RawText = store.KindRewrite, "stale text", "stale raw"
+	if err := a.lib.store.History().Put(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	a.hist.stale = true
+	a.hist.list = []store.Entry{stale}
+	a.hm.recent = []store.Entry{fresh}
+	frames(tt)
+
+	click(t, tt, "Copy: fresh text")
+	if got := tt.Clipboard(); got != fresh.Result {
+		t.Fatalf("inline Copy = %q, want original result %q", got, fresh.Result)
+	}
+	openMenu(t, tt, "fresh text")
+	choose(t, tt, "Copy")
+	if got := tt.Clipboard(); got != "fresh text" {
+		t.Fatalf("menu Copy = %q, want trimmed result", got)
+	}
+
+	click(t, tt, "fresh text")
+	frames(tt)
+	if a.router.Path() != "/history" || a.histUI.sel != fresh.ID || a.histUI.kind() != fresh.Kind {
+		t.Fatalf("opened %s selection %q kind %q", a.router.Path(), a.histUI.sel, a.histUI.kind())
+	}
+	if !has(tt, "fresh text") || hasExact(tt, "stale text") {
+		t.Fatalf("opened the stale entry: %q", tt.Texts())
 	}
 }
 
@@ -373,6 +411,16 @@ func TestTryPlace(t *testing.T) {
 	if a.tryPlace(store.KindTranscribe, *selfFront()) != placeNone {
 		t.Error("a try under the settings")
 	}
+	// After the first result Home has no Try area: a session (#4199).
+	a.updateSettings(func(s *settings.Settings) { s.Setup.Tried = true })
+	a.navigate("/home")
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
+		t.Errorf("Home after the first result: %v, want no try", got)
+	}
+	a.navigate("/translate")
+	if got := a.tryPlace(store.KindTranslate, *selfFront()); got != placeFeature {
+		t.Errorf("feature page after the first result: %v, want its try", got)
+	}
 	a.openOnboarding()
 	a.ob.step = obTranslate
 	if a.tryPlace(store.KindTranslate, *selfFront()) != placeOnboarding || a.tryPlace(store.KindTranscribe, *selfFront()) != placeIgnore {
@@ -392,8 +440,8 @@ func TestHomeTryByShortcut(t *testing.T) {
 	drain := queuePosts(a)
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
 	frames(tt)
-	if a.sess.State.Live() || a.hm.block == nil || !has(tt, "No speech model is installed.") {
-		t.Fatalf("blocked try: %+v %v %q", a.sess, a.hm.block, tt.Texts())
+	if a.sess.State.Live() || a.homeUI.block == nil || !has(tt, "No speech model is installed.") {
+		t.Fatalf("blocked try: %+v %v %q", a.sess, a.homeUI.block, tt.Texts())
 	}
 	if a.notice != nil {
 		t.Error("a try's problem went to the overlay")
@@ -414,6 +462,35 @@ func TestHomeTryByShortcut(t *testing.T) {
 	a.sessionChanged(s)
 	if !has(tt, "The meeting moves to Thursday at four.") {
 		t.Errorf("result: %q", tt.Texts())
+	}
+}
+
+// TestHomeShortcutAfterFirstResult (#4199): once Home no longer offers
+// its Try area, a shortcut pressed while Home shows is a session as in
+// another app: its result shows and the history keeps it. It was a try
+// that kept nothing and showed its result nowhere.
+func TestHomeShortcutAfterFirstResult(t *testing.T) {
+	set, keys, _ := fileSetup(t, "hello aura link", &fakeChat{text: "Hello, Voxt."})
+	self := func(afterMS int) string {
+		b, _ := json.Marshal(helpertest.Script{AfterMS: afterMS, Method: proto.MethodHotkeyEvent,
+			Params: mustJSON(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, T: 1, Front: selfFront()})})
+		return string(b)
+	}
+	a := newSessionApp(t, script(t, self(500), self(400)), func(s *settings.Settings) {
+		set(s)
+		s.Setup.Tried = true
+	}, keys)
+	a.navigate("/home")
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.Try || a.sess.State != session.Done || a.sess.Result != "Hello, Voxt." {
+		t.Fatalf("end %+v", a.sess)
+	}
+	shown := a.sess.Inserted || a.answer.open || a.notice != nil && a.notice.text == copiedNotice
+	if !shown {
+		t.Errorf("result shown nowhere: inserted %v, card %v, notice %+v", a.sess.Inserted, a.answer.open, a.notice)
+	}
+	if es := a.history(); len(es) != 1 || es[0].Result != "Hello, Voxt." {
+		t.Errorf("history %+v", es)
 	}
 }
 

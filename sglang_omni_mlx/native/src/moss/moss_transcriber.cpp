@@ -14,6 +14,7 @@
 #include "common/audio.h"
 #include "common/audio_chunks.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/text.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
@@ -21,18 +22,19 @@
 namespace moss {
 
 namespace mx = mlx::core;
+using omni_common::DraftStatistics;
 using omni_common::FinishReason;
 using omni_common::GenerationCancelled;
 using omni_common::IsTokenLoop;
 using omni_common::kHopLength;
 using omni_common::kSampleRate;
+using omni_common::KVCache;
 using omni_common::kWhisperWindowSampleCount;
+using omni_common::PrefilledSequence;
 using omni_common::SpeakerSegment;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::TranscriptionResult;
 using omni_common::WhisperWindowFeatures;
-using qwen3_asr::DraftStatistics;
-using qwen3_asr::KVCache;
 
 namespace {
 
@@ -80,6 +82,20 @@ std::string FormatTimestamp(double seconds) {
   char buffer[32];
   std::snprintf(buffer, sizeof(buffer), "[%.2f]", seconds);
   return buffer;
+}
+
+// The token budget per chunk of a final pass.
+int FinalMaxNewTokens(size_t sample_count, const MossOptions &options) {
+  const double duration_seconds =
+      static_cast<double>(sample_count) / kSampleRate;
+  return options.max_new_tokens.value_or(0) != 0
+             ? *options.max_new_tokens
+             : std::min(kDefaultMaxTokens,
+                        std::max(kDefaultMinTokens,
+                                 static_cast<int>(
+                                     std::ceil(duration_seconds *
+                                               kDefaultTokensPerAudioSecond)) +
+                                     kDefaultExtraTokens));
 }
 
 struct AudioChunk {
@@ -312,12 +328,9 @@ MossTranscriber::PromptIds(int audio_token_count,
   return ids;
 }
 
-TranscriptionResult
-MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
-                                 const MossOptions &options, int max_new_tokens,
-                                 double offset_seconds,
-                                 const std::atomic<bool> &cancel) const {
-  const auto frontend_started = std::chrono::steady_clock::now();
+mx::array MossTranscriber::PromptEmbeddings(
+    const std::vector<float> &samples,
+    const std::optional<std::string> &prompt) const {
   const int sample_count = static_cast<int>(samples.size());
   const int samples_per_token =
       kHopLength * kWhisperEncoderStride * model_.audio_merge_size();
@@ -336,9 +349,10 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   for (const int count : window_token_counts)
     audio_token_count += count;
 
-  const std::vector<int> prompt_ids =
-      PromptIds(audio_token_count, options.prompt);
+  const std::vector<int> prompt_ids = PromptIds(audio_token_count, prompt);
   const int prompt_length = static_cast<int>(prompt_ids.size());
+  // Short windows keep their silent padding so the encoder's bidirectional
+  // attention sees the same context as the original runtime.
   const mx::array audio_features =
       model_.EncodeAudio(mx::stack(windows), window_token_counts);
   const mx::array token_embeddings = model_.decoder().EmbedTokens(
@@ -383,32 +397,94 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   } else {
   }
   const mx::array embeddings = mx::expand_dims(mx::concatenate(pieces, 0), 0);
+  mx::async_eval(embeddings);
+  return embeddings;
+}
+
+PrefilledSequence
+MossTranscriber::Prefill(const mx::array &embeddings,
+                         const std::atomic<bool> &cancel) const {
+  // Note (Dayuxiaoshui): the last prompt token stays out of the chunked
+  // prefill, so its forward pass also gives the first logits.
+  const int prompt_length = embeddings.shape(1);
+  const int hidden = embeddings.shape(2);
+  std::vector<KVCache> caches = model_.decoder().NewCaches();
+  int processed = 0;
+  while (prompt_length - processed > 1) {
+    if (cancel.load()) {
+      throw GenerationCancelled();
+    } else {
+    }
+    const int step =
+        std::min(kPrefillStepTokens, prompt_length - processed - 1);
+    mx::async_eval(model_.decoder().Forward(
+        mx::slice(embeddings, {0, processed, 0}, {1, processed + step, hidden}),
+        caches));
+    processed += step;
+  }
+  const mx::array first_token =
+      mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
+          mx::slice(embeddings, {0, processed, 0}, {1, prompt_length, hidden}),
+          caches)));
+  mx::async_eval({first_token});
+  return {std::move(caches), prompt_length, first_token};
+}
+
+bool MossTranscriber::Commit(ChunkOutput &output, int token_id,
+                             const MossOptions &options,
+                             int max_new_tokens) const {
+  if (token_id == im_end_id_ ||
+      (options.stop_at_end_of_text && token_id == end_of_text_id_)) {
+    output.finish_reason = FinishReason::kStop;
+    return true;
+  } else {
+  }
+  output.output_ids.push_back(token_id);
+  if (options.stop_on_token_loop && IsTokenLoop(output.output_ids)) {
+    output.finish_reason = FinishReason::kStop;
+    return true;
+  } else {
+    return static_cast<int>(output.output_ids.size()) >= max_new_tokens;
+  }
+}
+
+TranscriptionResult
+MossTranscriber::ChunkResult(const ChunkOutput &output, int sample_count,
+                             double offset_seconds,
+                             const DraftStatistics &draft_statistics) const {
+  const std::string raw_text =
+      StripUnicodeWhitespace(tokenizer_.Decode(output.output_ids, true));
+  TranscriptionResult result;
+  result.text = OffsetTimestampTags(raw_text, offset_seconds);
+  result.segments =
+      ParseSegments(raw_text, static_cast<double>(sample_count) / kSampleRate,
+                    offset_seconds);
+  result.generated_token_count = static_cast<int>(output.output_ids.size());
+  result.finish_reason = output.finish_reason;
+  result.verify_round_count = draft_statistics.verify_round_count;
+  result.proposed_draft_token_count = draft_statistics.proposed_token_count;
+  result.accepted_draft_token_count = draft_statistics.accepted_token_count;
+  return result;
+}
+
+TranscriptionResult
+MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
+                                 const MossOptions &options, int max_new_tokens,
+                                 double offset_seconds,
+                                 const std::atomic<bool> &cancel) const {
+  const auto frontend_started = std::chrono::steady_clock::now();
+  const mx::array embeddings = PromptEmbeddings(samples, options.prompt);
+  // PromptEmbeddings schedules the evaluation; eval only waits for it, so no
+  // extra MLX evaluation is added.
   const auto frontend_eval_started = std::chrono::steady_clock::now();
   mx::eval(embeddings);
   const double frontend_build_ms =
       Milliseconds(frontend_eval_started - frontend_started);
   const double frontend_eval_ms =
       Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
-
-  const auto is_end = [&](int token_id) {
-    return token_id == im_end_id_ ||
-           (options.stop_at_end_of_text && token_id == end_of_text_id_);
-  };
-  std::vector<int> output_ids;
-  FinishReason finish_reason = FinishReason::kLength;
+  ChunkOutput output;
   const auto commit = [&](int token_id) {
-    if (is_end(token_id)) {
-      finish_reason = FinishReason::kStop;
-      return true;
-    } else {
-    }
-    output_ids.push_back(token_id);
-    if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
-      finish_reason = FinishReason::kStop;
-      return true;
-    } else {
-      return static_cast<int>(output_ids.size()) >= max_new_tokens;
-    }
+    return Commit(output, token_id, options, max_new_tokens);
   };
   DraftStatistics draft_statistics;
   double decoder_prefill_ms = 0.0;
@@ -420,32 +496,13 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
     decoder_prefill_ms = draft_statistics.prefill_ms;
     autoregressive_decode_ms = draft_statistics.decode_ms;
   } else {
-    // Note (Dayuxiaoshui): the last prompt token stays out of the chunked
-    // prefill, so its forward pass also gives the first logits.
     const auto prefill_started = std::chrono::steady_clock::now();
-    std::vector<KVCache> caches = model_.decoder().NewCaches();
-    int processed = 0;
-    while (prompt_length - processed > 1) {
-      if (cancel.load()) {
-        throw GenerationCancelled();
-      } else {
-      }
-      const int step =
-          std::min(kPrefillStepTokens, prompt_length - processed - 1);
-      mx::eval(
-          model_.decoder().Forward(mx::slice(embeddings, {0, processed, 0},
-                                             {1, processed + step, hidden}),
-                                   caches));
-      processed += step;
-    }
+    PrefilledSequence sequence = Prefill(embeddings, cancel);
+    mx::eval(sequence.first_token);
     decoder_prefill_ms =
         Milliseconds(std::chrono::steady_clock::now() - prefill_started);
     const auto decode_started = std::chrono::steady_clock::now();
-    mx::array next_token = mx::argmax(model_.decoder().LastLogits(
-        model_.decoder().Forward(mx::slice(embeddings, {0, processed, 0},
-                                           {1, prompt_length, hidden}),
-                                 caches)));
-    mx::async_eval({next_token});
+    mx::array next_token = sequence.first_token;
     bool finished = false;
     while (!finished) {
       if (cancel.load()) {
@@ -456,7 +513,7 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
       next_token =
           mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
               model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})),
-              caches)));
+              sequence.caches)));
       mx::async_eval({next_token});
       finished = commit(static_cast<int>(token.item<uint32_t>()));
     }
@@ -464,18 +521,9 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
         Milliseconds(std::chrono::steady_clock::now() - decode_started);
   }
   const auto rebuild_started = std::chrono::steady_clock::now();
-  const std::string raw_text =
-      StripUnicodeWhitespace(tokenizer_.Decode(output_ids, true));
-  TranscriptionResult result;
-  result.text = OffsetTimestampTags(raw_text, offset_seconds);
-  result.segments =
-      ParseSegments(raw_text, static_cast<double>(sample_count) / kSampleRate,
-                    offset_seconds);
-  result.generated_token_count = static_cast<int>(output_ids.size());
-  result.finish_reason = finish_reason;
-  result.verify_round_count = draft_statistics.verify_round_count;
-  result.proposed_draft_token_count = draft_statistics.proposed_token_count;
-  result.accepted_draft_token_count = draft_statistics.accepted_token_count;
+  TranscriptionResult result =
+      ChunkResult(output, static_cast<int>(samples.size()), offset_seconds,
+                  draft_statistics);
   result.frontend_build_ms = frontend_build_ms;
   result.frontend_eval_ms = frontend_eval_ms;
   result.decoder_prefill_ms = decoder_prefill_ms;
@@ -523,15 +571,7 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
   const auto native_started = std::chrono::steady_clock::now();
   const double duration_seconds =
       static_cast<double>(samples.size()) / kSampleRate;
-  const int max_new_tokens =
-      options.max_new_tokens.value_or(0) != 0
-          ? *options.max_new_tokens
-          : std::min(
-                kDefaultMaxTokens,
-                std::max(kDefaultMinTokens,
-                         static_cast<int>(std::ceil(
-                             duration_seconds * kDefaultTokensPerAudioSecond)) +
-                             kDefaultExtraTokens));
+  const int max_new_tokens = FinalMaxNewTokens(samples.size(), options);
   TranscriptionResult combined;
   combined.finish_reason = FinishReason::kStop;
   const auto split_started = std::chrono::steady_clock::now();
@@ -578,6 +618,112 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
                    .dump()
             << "\n";
   return combined;
+}
+
+bool MossTranscriber::CanBatch(const std::vector<float> &samples,
+                               const MossOptions &options) const {
+  if (draft_.has_value() || samples.empty()) {
+    return false;
+  } else if (options.window_offset_seconds.has_value()) {
+    return options.max_new_tokens.value_or(0) > 0;
+  } else {
+    return samples.size() <=
+           static_cast<size_t>(kChunkDurationSeconds * kSampleRate);
+  }
+}
+
+void MossTranscriber::TranscribeBatch(const std::vector<BatchRequest> &requests,
+                                      const BatchFinished &on_finished) const {
+  // A request decoded as one chunk: a realtime window as it is, else the
+  // final pass's single chunk, padded to the minimum length.
+  struct Row {
+    size_t request_index;
+    std::vector<float> samples;
+    double offset_seconds;
+    int max_new_tokens;
+    ChunkOutput output;
+  };
+  std::vector<Row> rows;
+  std::vector<PrefilledSequence> sequences;
+  // Note (XXXXRT666): each request is encoded and prefilled alone, since the
+  // prompts differ in length; the decode steps then run for all together.
+  for (size_t i = 0; i < requests.size(); ++i) {
+    try {
+      const BatchRequest &request = requests[i];
+      if (request.cancel->load()) {
+        throw GenerationCancelled();
+      } else {
+      }
+      const MossOptions &options = *request.options;
+      Row row{i, {}, 0.0, 0, {}};
+      if (options.window_offset_seconds.has_value()) {
+        row.samples = *request.samples;
+        row.offset_seconds = *options.window_offset_seconds;
+        row.max_new_tokens = *options.max_new_tokens;
+      } else {
+        row.samples = PaddedTo(
+            *request.samples,
+            static_cast<size_t>(kMinChunkDurationSeconds * kSampleRate));
+        row.max_new_tokens =
+            FinalMaxNewTokens(request.samples->size(), options);
+      }
+      sequences.push_back(Prefill(PromptEmbeddings(row.samples, options.prompt),
+                                  *request.cancel));
+      rows.push_back(std::move(row));
+    } catch (...) {
+      on_finished(i, {std::nullopt, std::current_exception()});
+    }
+  }
+  if (rows.empty()) {
+    return;
+  } else {
+  }
+  model_.decoder().DecodeGreedyBatch(
+      sequences, [&](size_t index, int token_id) {
+        Row &row = rows[index];
+        const BatchRequest &request = requests[row.request_index];
+        if (request.cancel->load()) {
+          on_finished(
+              row.request_index,
+              {std::nullopt, std::make_exception_ptr(GenerationCancelled())});
+          return true;
+        } else if (!Commit(row.output, token_id, *request.options,
+                           row.max_new_tokens)) {
+          return false;
+        } else {
+        }
+        TranscriptionResult result =
+            ChunkResult(row.output, static_cast<int>(row.samples.size()),
+                        row.offset_seconds, {});
+        if (!request.options->window_offset_seconds.has_value()) {
+          result.text = StripUnicodeWhitespace(result.text);
+        } else {
+        }
+        on_finished(row.request_index, {std::move(result), nullptr});
+        return true;
+      });
+}
+
+omni_server::BatchRunner BatchableTranscriptionRunner() {
+  return {[](const omni_server::Transcription &transcription) {
+            return transcription.target<BatchableTranscription>() != nullptr;
+          },
+          [](const std::vector<omni_server::BatchItem> &items,
+             const omni_server::BatchCompletion &finish) {
+            std::vector<BatchRequest> requests;
+            const MossTranscriber *transcriber = nullptr;
+            for (const omni_server::BatchItem &item : items) {
+              const auto *batchable =
+                  item.transcription->target<BatchableTranscription>();
+              transcriber = batchable->transcriber;
+              requests.push_back(
+                  {&batchable->samples, &batchable->options, item.cancel});
+            }
+            transcriber->TranscribeBatch(
+                requests, [&](size_t i, BatchOutcome outcome) {
+                  finish(i, std::move(outcome.result), outcome.error);
+                });
+          }};
 }
 
 } // namespace moss

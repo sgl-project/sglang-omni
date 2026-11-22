@@ -79,7 +79,7 @@ Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
   } else if (config.at("name") == "AuK-Flash") {
     mx::array times(kFlashTimeGrid.data(),
                     {static_cast<int>(kFlashTimeGrid.size())});
-    mx::eval(times);
+    mx::async_eval(times);
     return {times, kFlashGuidanceStrength};
   } else {
     mx::array times = mx::linspace(0, 1, kAukSteps + 1, mx::float32);
@@ -87,7 +87,7 @@ Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
         times + mx::array(kAukSwayCoefficient) *
                     (mx::cos(mx::array(static_cast<float>(M_PI_2)) * times) -
                      mx::array(1.0f) + times);
-    mx::eval(times);
+    mx::async_eval(times);
     return {times, kAukGuidanceStrength};
   }
 }

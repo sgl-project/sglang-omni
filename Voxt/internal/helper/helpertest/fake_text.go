@@ -31,6 +31,15 @@ func (f *fake) hotkeys(m proto.Message) {
 		return
 	}
 	f.mu.Lock()
+	if p.Generation < f.hkGen {
+		// A configuration older than the one in effect (requests land
+		// out of order) changes nothing, as the real helper.
+		f.mu.Unlock()
+		f.result(m.ID, f.hotkeyStatus())
+		return
+	}
+	f.hkGen = p.Generation
+	f.hkBindings = p.Bindings
 	f.bindings = len(p.Bindings)
 	f.hkCancel = p.Cancel != nil
 	f.installed = (f.bindings > 0 || f.hkCancel) && f.trusted
@@ -155,10 +164,13 @@ func (f *fake) textio(m proto.Message) {
 			if b, _ := os.ReadFile(path); len(b) > 0 {
 				res.Text, res.Via = string(b), proto.ViaAX
 			}
-		} else if sel := f.opts["selection"]; sel != "" {
-			res.Text, res.Via = sel, proto.ViaAX
+		} else if sel := f.opts["selection"]; strings.TrimSpace(sel) != "" {
+			res.Text, res.Via = sel, proto.ViaAX // a blank one is not text (the helper's SelectionRead.hasText): on to the copy
 		} else if sel := f.opts["copy-selection"]; sel != "" && p.AllowCopy {
 			res.Text, res.Via, res.Steps = sel, proto.ViaCopy, append(res.Steps, "copy: changed")
+			if f.has("copy-selection-image") {
+				res.Image = Shot(812)
+			}
 		}
 		f.result(m.ID, res)
 	case proto.MethodTextPaste:

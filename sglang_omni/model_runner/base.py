@@ -11,7 +11,7 @@ from collections import Counter
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeAlias
 
 import torch
 from sglang.srt.utils.common import async_h2d, is_pin_memory_available
@@ -35,6 +35,11 @@ from sglang_omni.scheduling.types import (
     SchedulerOutput,
     SchedulerRequest,
     sampled_logprobs_to_list,
+)
+from sglang_omni.speculative.repetition_penalty import (
+    apply_verify_repetition_penalty,
+    record_committed_tokens,
+    verify_penalty_temporary_bytes,
 )
 
 if TYPE_CHECKING:
@@ -150,6 +155,10 @@ class PendingStep:
     )
 
 
+# Bounds the verify penalty's temporaries per chunk of requests.
+SPECULATIVE_PENALTY_CHUNK_BYTES = 64 << 20
+
+
 class ModelRunner(Generic[RequestDataInput]):
     """Base AR model runner.
 
@@ -161,8 +170,10 @@ class ModelRunner(Generic[RequestDataInput]):
     # note(YzXiao): opt in when next-round inputs are ready before CPU result collection and pending outputs retain their own storage.
     supports_speculative_async_decode: bool = False
 
-    # True when the model's own speculative verify applies repetition_penalty exactly.
-    speculative_verifies_repetition_penalty: bool = False
+    # What applies repetition_penalty exactly in speculative verify: the model's own draft worker, or apply_speculative_repetition_penalty on SGLang's verify rows. None refuses a request that sets it.
+    speculative_repetition_penalty_owner: (
+        Literal["draft_worker", "verify_logits"] | None
+    ) = None
     # True when every verify row takes this runner's logits hooks, as its plain decode row would.
     speculative_verify_takes_logits_hooks: bool = False
     # True when the model's sampled DFlash or DSpark verify draws without the request seed.
@@ -171,6 +182,8 @@ class ModelRunner(Generic[RequestDataInput]):
     # runner composing multimodal inputs keeps here for one prefill.
     retain_prefill_input_embeds: bool = False
     retained_prefill_input_embeds: torch.Tensor | None = None
+    # [request slots, vocab + 1] bool, made on the first request whose repetition_penalty a verify applies.
+    committed_token_presence: torch.Tensor | None = None
 
     def __init__(
         self,
@@ -734,6 +747,141 @@ class ModelRunner(Generic[RequestDataInput]):
         rows = [request for request in requests for _ in range(rows_per_request)]
         self.apply_codec_suppress_tokens(logits_output, rows)
         self.process_sampling_logits(logits_output, rows)
+
+    def speculative_penalized_rows(self, requests: list[Req]) -> list[int]:
+        """Batch rows whose repetition_penalty this runner applies in speculative verify."""
+        if self.speculative_repetition_penalty_owner == "verify_logits":
+            return [
+                index
+                for index, request in enumerate(requests)
+                if request.sampling_params.repetition_penalty != 1.0
+            ]
+        else:
+            return []
+
+    def apply_speculative_repetition_penalty(
+        self,
+        verify_logits: torch.Tensor,
+        verify_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Penalize each verify row over its committed output and the drafts before it.
+
+        Args:
+            verify_logits: [requests, block, vocab], scaled in place.
+        """
+        penalized_rows = self.speculative_penalized_rows(
+            [request.data.req for request in requests]
+        )
+        if not penalized_rows:
+            return
+        else:
+            pass
+        committed_token_presence = self.committed_token_presence
+        assert committed_token_presence is not None
+        _, block_size, vocab_size = verify_logits.shape
+        assert vocab_size == committed_token_presence.shape[1] - 1
+        verify_input_ids = verify_batch.input_ids.view(-1, block_size)
+        pin_memory = is_pin_memory_available(self.device)
+        requests_per_chunk = max(
+            1,
+            SPECULATIVE_PENALTY_CHUNK_BYTES
+            // verify_penalty_temporary_bytes(block_size, vocab_size),
+        )
+        # Each chunk is a run of adjacent penalized rows, scaled in place as a view.
+        chunks: list[range] = []
+        for row in penalized_rows:
+            if (
+                chunks
+                and chunks[-1].stop == row
+                and len(chunks[-1]) < requests_per_chunk
+            ):
+                chunks[-1] = range(chunks[-1].start, row + 1)
+            else:
+                chunks.append(range(row, row + 1))
+        for chunk in chunks:
+            repetition_penalties = torch.tensor(
+                [
+                    requests[row].data.req.sampling_params.repetition_penalty
+                    for row in chunk
+                ],
+                dtype=torch.float32,
+                pin_memory=pin_memory,
+            ).to(self.device, non_blocking=True)
+            apply_verify_repetition_penalty(
+                verify_logits[chunk.start : chunk.stop],
+                verify_input_ids[chunk.start : chunk.stop].long(),
+                committed_token_presence[
+                    verify_batch.req_pool_indices[chunk.start : chunk.stop], :-1
+                ],
+                repetition_penalties,
+            )
+
+    def record_speculative_output(
+        self, batch: ScheduleBatch, result: GenerationBatchResult, *, is_prefill: bool
+    ) -> None:
+        """Mark the tokens a speculative step committed, for the rows apply_speculative_repetition_penalty scales.
+
+        A prefill restarts a request's history from the output it kept through a retraction.
+        """
+        penalized_rows = self.speculative_penalized_rows(batch.reqs)
+        if not penalized_rows:
+            return
+        elif self.committed_token_presence is None:
+            self.committed_token_presence = torch.zeros(
+                (
+                    self.tp_worker.model_runner.req_to_token_pool.req_to_token.shape[0],
+                    self.tp_worker.model_config.vocab_size + 1,
+                ),
+                dtype=torch.bool,
+                device=self.device,
+            )
+        else:
+            pass
+        committed_token_presence = self.committed_token_presence
+        pin_memory = is_pin_memory_available(self.device)
+        row_index = torch.tensor(
+            penalized_rows, dtype=torch.int64, pin_memory=pin_memory
+        ).to(self.device, non_blocking=True)
+        request_slots = batch.req_pool_indices.index_select(0, row_index)
+        if is_prefill:
+            committed_token_presence[request_slots] = False
+            histories = [batch.reqs[row].output_ids for row in penalized_rows]
+            if any(histories):
+                longest_history = max(len(history) for history in histories)
+                history_ids = torch.tensor(
+                    [
+                        history + [0] * (longest_history - len(history))
+                        for history in histories
+                    ],
+                    dtype=torch.int64,
+                    pin_memory=pin_memory,
+                )
+                history_lengths = torch.tensor(
+                    [len(history) for history in histories],
+                    dtype=torch.int64,
+                    pin_memory=pin_memory,
+                )
+                record_committed_tokens(
+                    committed_token_presence,
+                    request_slots,
+                    history_ids.to(self.device, non_blocking=True),
+                    history_lengths.to(self.device, non_blocking=True),
+                )
+            else:
+                pass
+            committed_token_presence[
+                request_slots, result.next_token_ids.index_select(0, row_index).long()
+            ] = True
+        else:
+            record_committed_tokens(
+                committed_token_presence,
+                request_slots,
+                result.next_token_ids.view(len(batch.reqs), -1).index_select(
+                    0, row_index
+                ),
+                result.accept_lens.index_select(0, row_index),
+            )
 
     def after_speculative_step(
         self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int

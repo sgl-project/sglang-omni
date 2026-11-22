@@ -1,0 +1,14 @@
+{
+  "name": "notices-models-llm",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/models",
+      "severity": "warning",
+      "title": "No language model",
+      "body": "Translate and Rewrite need one. Without it, Transcribe types the text as recognised.",
+      "action_label": "Open Language models",
+      "time_hint": "Jan 2 07:04"
+    }
+  ]
+}

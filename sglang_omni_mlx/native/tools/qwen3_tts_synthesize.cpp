@@ -11,6 +11,10 @@
 // --streaming-text feeds one text token per frame and --repetition-window
 // limits the penalty to the last N frames, as mlx-audio does; by default the
 // prompt and sampling are the CUDA server's.
+//
+// --full-precision loads the weights as stored, without load-time
+// quantization.
+
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -21,6 +25,7 @@
 
 #include "common/audio.h"
 #include "common/generation.h"
+#include "common/layers.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_tts/qwen3_tts_model.h"
 
@@ -52,6 +57,9 @@ int main(int argc, char **argv) {
     const std::string argument = argv[i];
     if (argument == "--streaming-text") {
       streaming_text = true;
+      continue;
+    } else if (argument == "--full-precision") {
+      omni_common::SetLoadTimeQuantization(false);
       continue;
     } else {
     }

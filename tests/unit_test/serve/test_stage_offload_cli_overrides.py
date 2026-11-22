@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""--stage-offload-components ar,dit CLI wiring."""
+"""Stage offload CLI wiring and worker allocator setup."""
 
 from __future__ import annotations
 
@@ -13,7 +13,12 @@ import typer
 
 from sglang_omni.cli.serve import apply_stage_offload_cli_overrides
 from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.models.llada2_uni.config import (
+    LLaDA2UniInterleavedPipelineConfig,
+    LLaDA2UniOmniPipelineConfig,
+)
 from sglang_omni.models.minimax_music3.config import (
     MiniMaxMusic3DualGPUPipelineConfig,
     MiniMaxMusic3SingleGPUPipelineConfig,
@@ -38,6 +43,26 @@ def test_absent_flag_is_a_no_op() -> None:
     assert (
         stage_named(result, "minimax_music3_ar").factory.enable_serial_offload is None
     )
+
+
+def test_auk_cli_enables_all_stages_and_preserves_default_config() -> None:
+    config = AuKPipelineConfig(model_path="/models/auk")
+    for stage in config.stages[1:]:
+        stage.factory.device = "cuda"
+    result = apply_stage_offload_cli_overrides(
+        config, stage_offload_components="conditioning,dit,vae"
+    )
+    assert all(stage.factory.enable_serial_offload for stage in result.stages[1:])
+    assert all(stage.factory.max_batch_size == 1 for stage in result.stages[1:])
+    assert result.stage_named("auk_engine").factory.enable_dit_cuda_graph
+    assert result.stage_named("auk_engine").factory.enable_dit_torch_compile
+    assert AuKPipelineConfig(**result.model_dump()).model_dump() == result.model_dump()
+    assert not any(stage.factory.enable_serial_offload for stage in config.stages[1:])
+    assert config.stage_named("auk_engine").factory.max_batch_size == 16
+    with pytest.raises(typer.BadParameter, match="requires exactly"):
+        apply_stage_offload_cli_overrides(
+            config, stage_offload_components="conditioning,dit"
+        )
 
 
 @pytest.mark.parametrize("components", ["ar,dit", " AR , Dit "])
@@ -82,6 +107,34 @@ def test_unsupported_pipeline_is_rejected() -> None:
         apply_stage_offload_cli_overrides(config, stage_offload_components="ar,dit")
 
 
+def test_llada_single_image_offload_cli() -> None:
+    config = LLaDA2UniOmniPipelineConfig(model_path="unused")
+    original_configuration = config.model_dump()
+    result = apply_stage_offload_cli_overrides(
+        config, stage_offload_components=" Thinker, Decoder, VAE "
+    )
+    stages = [
+        result.stage_named(name)
+        for name in ("thinker", "image_encoder", "image_decode")
+    ]
+    assert len({stage.process for stage in stages}) == 1
+    assert all(stage.factory.enable_serial_offload for stage in stages)
+    assert config.model_dump() == original_configuration
+    assert LLaDA2UniOmniPipelineConfig(**result.model_dump()) == result
+    with pytest.raises(typer.BadParameter, match="requires all of"):
+        apply_stage_offload_cli_overrides(
+            config, stage_offload_components="thinker,decoder"
+        )
+
+
+def test_llada_interleaved_offload_cli_is_rejected() -> None:
+    config = LLaDA2UniInterleavedPipelineConfig(model_path="unused")
+    with pytest.raises(typer.BadParameter, match="not supported"):
+        apply_stage_offload_cli_overrides(
+            config, stage_offload_components="thinker,decoder,vae"
+        )
+
+
 def test_mismatched_gpu_placement_is_rejected() -> None:
     config = MiniMaxMusic3DualGPUPipelineConfig(model_path="/models/minimax")
     assert (
@@ -103,7 +156,7 @@ def test_offload_allocator_reaches_workers_with_existing_preload(
         "torch_memory_saver", loader=None, origin=str(tmp_path / "__init__.py")
     )
     monkeypatch.setattr(
-        "sglang_omni.models.minimax_music3.config.find_spec", lambda name: package
+        "sglang_omni.scheduling.stage_residency.find_spec", lambda name: package
     )
     monkeypatch.setattr(torch.version, "cuda", "13.0")
     monkeypatch.setenv("LD_PRELOAD", "/lib/profiler.so")

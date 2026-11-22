@@ -38,7 +38,7 @@ voxt-tutorials/en/index
 voxt-tutorials/index
 ```
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/Voxt-2.1.0-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.2/Voxt-2.1.2-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/43128787320/artifacts/13904657773
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/43128787320#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

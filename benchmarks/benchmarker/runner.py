@@ -4,20 +4,23 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Coroutine, Protocol
 
 import aiohttp
 import numpy as np
 from tqdm.asyncio import tqdm
 
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import RequestClass, RequestResult
+from benchmarks.dataset.seedtts import SampleInput
 
 logger = logging.getLogger(__name__)
 
 SendFn = Callable[[aiohttp.ClientSession, Any], Coroutine[Any, Any, RequestResult]]
+REQUEST_ID_TAGS: dict[RequestClass, str] = {"non_streaming": "n", "streaming": "s"}
 
 
 class AfterSendFn(Protocol):
@@ -190,3 +193,100 @@ class BenchmarkRunner:
         finally:
             pbar.close()
         return results, follow_up_tasks
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClientGroup:
+    """Closed loop clients of one request class that walk the pool from first_sample_index."""
+
+    request_class: RequestClass
+    clients: int
+    send_fn: SendFn
+    first_sample_index: int
+
+
+@dataclass(kw_only=True)
+class FixedDurationRun:
+    results: list[RequestResult]
+    issued_samples: list[SampleInput]
+
+
+async def run_fixed_duration(
+    groups: list[ClientGroup],
+    samples: list[SampleInput],
+    *,
+    settle_s: float,
+    duration_s: float,
+    should_warm_up: bool,
+    timeout_s: int,
+    after_send: AfterSendFn | None,
+) -> FixedDurationRun:
+    """Run every group closed loop for settle_s plus duration_s, then drain."""
+    if not samples:
+        raise ValueError("a fixed duration run needs at least one sample")
+    else:
+        pass
+    results: list[RequestResult] = []
+    issued_samples: list[SampleInput] = []
+    follow_up_tasks: list[asyncio.Task[None]] = []
+    request_numbers = {group.request_class: itertools.count() for group in groups}
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
+    connector = aiohttp.TCPConnector(limit=0)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        if should_warm_up:
+            warmup_results = await asyncio.gather(
+                *(
+                    group.send_fn(session, samples[group.first_sample_index])
+                    for group in groups
+                    for _ in range(group.clients)
+                )
+            )
+            errors = [
+                result.error for result in warmup_results if not result.is_success
+            ]
+            logger.info(f"Warmup: {len(warmup_results)} requests, {len(errors)} failed")
+            if errors:
+                raise ValueError(
+                    f"Warmup failed, check the benchmark arguments. Error: {errors[0]}"
+                )
+            else:
+                pass
+        else:
+            pass
+        window_start_s = time.perf_counter() + settle_s
+        deadline_s = window_start_s + duration_s
+
+        async def run_client(group: ClientGroup) -> None:
+            is_failed = False
+            while not is_failed and time.perf_counter() < deadline_s:
+                request_number = next(request_numbers[group.request_class])
+                pool_sample = samples[
+                    (group.first_sample_index + request_number) % len(samples)
+                ]
+                tag = REQUEST_ID_TAGS[group.request_class]
+                sample = replace(
+                    pool_sample,
+                    sample_id=f"{pool_sample.sample_id}#{tag}{request_number}",
+                )
+                issued_samples.append(sample)
+                sent_at_s = time.perf_counter() - window_start_s
+                result = await group.send_fn(session, sample)
+                result.request_class = group.request_class
+                result.sent_at_s = sent_at_s
+                result.finished_at_s = time.perf_counter() - window_start_s
+                results.append(result)
+                if after_send is not None:
+                    follow_up_tasks.append(asyncio.create_task(after_send(result)))
+                else:
+                    pass
+                is_failed = not result.is_success
+
+        logger.info(
+            f"Running {sum(group.clients for group in groups)} closed loop clients "
+            f"for {settle_s} s settle and a {duration_s} s window"
+        )
+        await asyncio.gather(
+            *(run_client(group) for group in groups for _ in range(group.clients))
+        )
+        await asyncio.gather(*follow_up_tasks)
+    return FixedDurationRun(results=results, issued_samples=issued_samples)

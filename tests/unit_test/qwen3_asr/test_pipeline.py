@@ -28,6 +28,10 @@ from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.platforms.cpu import CPUOmniPlatform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -114,6 +118,7 @@ def make_engine_builder(
     mm_attention_backend: str | None = None,
     context_length: int = 1636,
     enable_async_decode: bool = True,
+    async_decode_min_batch_size: int | None = 2,
     prefill_coalesce_after_builds_during_decode: bool | None = True,
 ) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
     builder = qwen3_asr_builder.Qwen3ASREngineBuilder(
@@ -121,7 +126,7 @@ def make_engine_builder(
         max_new_tokens=128,
         enable_async_decode=enable_async_decode,
         enable_plain_fallback=False,
-        async_decode_min_batch_size=2,
+        async_decode_min_batch_size=async_decode_min_batch_size,
         mem_fraction_static=None,
         mm_embedding_cache_size_bytes=0,
         enable_torch_compile=False,
@@ -843,6 +848,7 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     assert scheduler.enable_async_decode is True
     assert scheduler.async_prefill is False
     assert scheduler.prefill_coalesce_after_builds_during_decode is False
+    assert scheduler.async_decode_min_batch_size == 2
     assert recorded.adapter_kwargs["greedy_only"] is (platform == "npu")
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is False
@@ -946,6 +952,50 @@ def test_qwen3_asr_explicit_coalesce_during_decode_reaches_scheduler(
     assert (
         builder.extra_scheduler_kwargs()["prefill_coalesce_after_builds_during_decode"]
         is coalesce_during_decode
+    )
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
+
+
+@pytest.mark.parametrize(
+    ("with_draft", "async_decode_min_batch_size", "scheduled_min_batch_size"),
+    [(False, None, 1), (True, None, 2), (True, 1, 1), (False, 3, 3)],
+)
+def test_qwen3_asr_lone_request_decodes_synchronously_only_under_a_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    with_draft: bool,
+    async_decode_min_batch_size: int | None,
+    scheduled_min_batch_size: int,
+) -> None:
+    """Unset, a draft decodes a lone request synchronously and a server without one overlaps every batch; an explicit value reaches the scheduler unchanged."""
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        request_builders,
+        "make_qwen3_asr_stream_output_builder",
+        lambda **kwargs: object(),
+    )
+    write_dflash_checkpoint(tmp_path, non_causal=False)
+    builder = make_engine_builder(
+        async_decode_min_batch_size=async_decode_min_batch_size
+    )
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+            "disable_cuda_graph": True,
+        }
+        if with_draft
+        else {"disable_cuda_graph": True}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    assert (
+        builder.extra_scheduler_kwargs()["async_decode_min_batch_size"]
+        == scheduled_min_batch_size
     )
     if with_draft:
         builder.draft_checkpoint.cleanup()
@@ -1180,6 +1230,40 @@ def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
         qwen3_asr_builder.envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.get()
         is expected_enabled
     )
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "enable_async_decode", "expected_async_prefill"),
+    [
+        (CUDAOmniPlatform, True, True),
+        (CUDAOmniPlatform, False, True),
+        (XPUOmniPlatform, True, True),
+        (XPUOmniPlatform, False, False),
+        (CPUOmniPlatform, True, False),
+    ],
+    ids=[
+        "cuda_async_decode_on",
+        "cuda_async_decode_off",
+        "xpu_async_decode_on",
+        "xpu_async_decode_off",
+        "other_platform",
+    ],
+)
+def test_qwen3_asr_async_prefill_follows_platform_and_async_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_type: type[OmniPlatform],
+    enable_async_decode: bool,
+    expected_async_prefill: bool,
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder, "current_platform", platform_type())
+    monkeypatch.setattr(
+        request_builders,
+        "make_qwen3_asr_stream_output_builder",
+        lambda tokenizer, min_emit_interval_s: None,
+    )
+    builder = make_engine_builder(enable_async_decode=enable_async_decode)
+
+    assert builder.extra_scheduler_kwargs()["async_prefill"] is expected_async_prefill
 
 
 @pytest.mark.parametrize("decode_backend", ["fa3", "flashinfer"])

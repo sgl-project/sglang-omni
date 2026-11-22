@@ -1,0 +1,231 @@
+{
+  "name": "home-helper-reason-missing",
+  "kind": "home",
+  "home": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "keep_history": true,
+    "slogan": {
+      "before": "按 ",
+      "keys": "右 ⌥",
+      "after": " 开始"
+    },
+    "missing": [
+      {
+        "key": "home-helper",
+        "title": "辅助进程",
+        "ok": false,
+        "warn": false,
+        "text": "辅助进程缺失",
+        "kind": "error",
+        "action": "重启辅助进程",
+        "fix": "restart-helper"
+      }
+    ],
+    "ready": [
+      {
+        "key": "home-asr",
+        "title": "语音识别",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture speech model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-llm",
+        "title": "语言模型",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture language model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-mic",
+        "title": "麦克风",
+        "ok": true,
+        "warn": false,
+        "text": "已允许",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-access",
+        "title": "辅助功能",
+        "ok": true,
+        "warn": false,
+        "text": "已允许",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-keys",
+        "title": "快捷键",
+        "ok": true,
+        "warn": false,
+        "text": "右 ⌥",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      }
+    ],
+    "show_try": false,
+    "try_recording": false,
+    "today": {
+      "count": "7",
+      "count_label": "次",
+      "characters": "12,345",
+      "characters_label": "字",
+      "kinds": [
+        {
+          "kind": "transcribe",
+          "title": "转录",
+          "count": "4"
+        },
+        {
+          "kind": "translate",
+          "title": "翻译",
+          "count": "2"
+        },
+        {
+          "kind": "rewrite",
+          "title": "改写",
+          "count": "1"
+        }
+      ]
+    },
+    "recent": [
+      {
+        "kind": "transcribe",
+        "kind_title": "转录",
+        "row": {
+          "id": "home-transcribe",
+          "title": "Weekly plan",
+          "failed_title": false,
+          "meta": "5 分钟前 · Notes · 0:08",
+          "selected": false,
+          "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
+          "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
+          "can_reveal": true,
+          "retry": {
+            "available": true,
+            "wanted": false,
+            "active": false,
+            "label": "重新识别",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "translate",
+        "kind_title": "翻译",
+        "row": {
+          "id": "home-translate",
+          "title": "晚上好",
+          "failed_title": false,
+          "meta": "5 分钟前 · Notes · → 简体中文 · 0:08",
+          "selected": false,
+          "copy_text": "晚上好",
+          "raw_copy_text": "good evening",
+          "can_reveal": false,
+          "retry": {
+            "available": false,
+            "wanted": false,
+            "active": false,
+            "label": "重新识别",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "rewrite",
+        "kind_title": "改写",
+        "row": {
+          "id": "home-rewrite",
+          "title": "A formal answer",
+          "failed_title": false,
+          "meta": "5 分钟前 · Notes · 选中文字 · 0:08",
+          "selected": false,
+          "copy_text": "A formal answer",
+          "raw_copy_text": "Rewrite formally",
+          "can_reveal": true,
+          "retry": {
+            "available": true,
+            "wanted": false,
+            "active": false,
+            "label": "重新识别",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "transcribe",
+        "kind_title": "转录",
+        "row": {
+          "id": "home-second",
+          "title": "Second result",
+          "failed_title": false,
+          "meta": "2 小时前 · Notes · 0:08",
+          "selected": false,
+          "copy_text": "Second result",
+          "raw_copy_text": "",
+          "can_reveal": false,
+          "retry": {
+            "available": false,
+            "wanted": false,
+            "active": false,
+            "label": "重新识别",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "translate",
+        "kind_title": "翻译",
+        "row": {
+          "id": "home-older",
+          "title": "Older result",
+          "failed_title": false,
+          "meta": "2025年12月31日 15:04 · Notes · → 简体中文 · 0:08",
+          "selected": false,
+          "copy_text": "Older result",
+          "raw_copy_text": "",
+          "can_reveal": false,
+          "retry": {
+            "available": false,
+            "wanted": false,
+            "active": false,
+            "label": "重新识别",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "用保存的录音重新识别，不会插入文字。"
+          },
+          "marks": null
+        }
+      }
+    ]
+  }
+}

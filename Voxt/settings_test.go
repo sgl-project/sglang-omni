@@ -13,9 +13,22 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
+
+func TestSettingsSectionNavigation(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/general")
+	if err := tt.ClickControl("Audio"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.shownPath() != "/settings/audio" || !has(tt, "Microphones") {
+		t.Fatalf("section: path %q, texts %q", a.shownPath(), firstTexts(tt))
+	}
+}
 
 func TestOverlayStyleSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
@@ -88,6 +101,33 @@ func TestShortcutsSettings(t *testing.T) {
 	click(t, tt, "Translate Right ⌥")
 	if a.shownPath() != "/translate" {
 		t.Fatalf("Translate row: %s", a.shownPath())
+	}
+}
+
+// TestReturnFinishesSetting: Settings → Shortcuts has the switch for
+// Return finishing a recording, under the shortcuts, on by default, in
+// English and Chinese, and it saves. It was Transcribe's page's, for
+// Transcribe alone; it now covers every feature (TestReturnFinishPlanScope).
+func TestReturnFinishesSetting(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/shortcuts")
+	const title = "Return finishes a recording"
+	scrollToText(tt, title)
+	if !has(tt, title) || !a.settings.Get().Features.ReturnFinishes {
+		t.Fatalf("section: %v %q", a.settings.Get().Features.ReturnFinishes, firstTexts(tt))
+	}
+	if err := tt.ClickControl(title); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.settings.Get().Features.ReturnFinishes {
+		t.Fatal("the switch did not turn Return finishing off")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	scrollToText(tt, "按回车结束录音")
+	if !has(tt, "按回车结束录音") {
+		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
 }
 
@@ -258,6 +298,36 @@ func TestSettingsDialogSize(t *testing.T) {
 		dw, dh := settingsDialogSize(th, c.w, c.h)
 		if math.Abs(float64(dw-c.dw)) > 0.5 || math.Abs(float64(dh-c.dh)) > 0.5 {
 			t.Errorf("%v×%v: %v×%v, want %v×%v", c.w, c.h, dw, dh, c.dw, c.dh)
+		}
+	}
+}
+
+// TestHideNotesAndMeetings: Settings → General lists Notes and Meetings;
+// hidden, their pages leave the sidebar and Notes' shortcut leaves the
+// Shortcuts page (#4224).
+func TestHideNotesAndMeetings(t *testing.T) {
+	translator := i18n.NewTranslator("en")
+	prefs := settings.Defaults()
+	prefs.Features.Hidden = []string{settings.HideNotes, settings.HideMeetings}
+	shownByID := map[string]bool{}
+	for _, feature := range buildSettingsGeneralViewState(translator, prefs).Features {
+		shownByID[feature.ID] = feature.Shown
+	}
+	for _, featureID := range []string{settings.HideNotes, settings.HideMeetings} {
+		if shown, listed := shownByID[featureID]; !listed || shown {
+			t.Errorf("General: %s listed %v, shown %v; want listed and unchecked", featureID, listed, shown)
+		}
+	}
+	for _, group := range buildNavViewState(translator, navViewStateInput{Current: "/home", Features: prefs.Features}).Groups {
+		for _, page := range group.Pages {
+			if page.Path == "/notes" || page.Path == "/meetings" {
+				t.Errorf("hidden page %s is in the sidebar", page.Path)
+			}
+		}
+	}
+	for _, row := range buildSettingsShortcutsViewState(translator, settingsShortcutsStateInput{Features: prefs.Features}).Rows {
+		if row.Feature == hotkey.Note {
+			t.Errorf("hidden Notes keeps its shortcut row %+v", row)
 		}
 	}
 }

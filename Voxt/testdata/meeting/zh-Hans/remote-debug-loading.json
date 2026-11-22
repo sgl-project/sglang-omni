@@ -1,0 +1,55 @@
+{
+  "name": "remote-debug-loading",
+  "kind": "remote-debug",
+  "remote_debug": {
+    "ready": true,
+    "models": [
+      "Fixture service · fixture-model"
+    ],
+    "presets": [
+      "转录",
+      "翻译",
+      "改写"
+    ],
+    "preset_states": [
+      {
+        "title": "转录",
+        "feature": "transcribe",
+        "saved_prompt": "Fixture saved prompt · 转录",
+        "prompt_label": "系统提示词",
+        "input_label": "识别原文",
+        "instruction": false
+      },
+      {
+        "title": "翻译",
+        "feature": "translate",
+        "saved_prompt": "Fixture saved prompt · 翻译",
+        "prompt_label": "系统提示词",
+        "input_label": "要翻译的文字",
+        "instruction": false
+      },
+      {
+        "title": "改写",
+        "feature": "rewrite",
+        "saved_prompt": "Fixture saved prompt · 改写",
+        "prompt_label": "系统提示词",
+        "input_label": "选中的文字（可选）",
+        "instruction": true
+      }
+    ],
+    "saved_prompt": "Fixture saved prompt",
+    "prompt_label": "系统提示词",
+    "input_label": "识别原文",
+    "edited": true,
+    "can_run": false,
+    "running": true,
+    "form": {
+      "model": "Fixture service · fixture-model",
+      "preset": "转录",
+      "filled": "转录",
+      "prompt": "Fixture edited prompt",
+      "input": "Fixture input",
+      "instruction": "Make it shorter"
+    }
+  }
+}

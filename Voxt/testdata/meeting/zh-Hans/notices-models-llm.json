@@ -1,0 +1,14 @@
+{
+  "name": "notices-models-llm",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/models",
+      "severity": "warning",
+      "title": "没有语言模型",
+      "body": "翻译和改写需要它。没有它时，转录会直接输入识别出的原文。",
+      "action_label": "打开语言模型页",
+      "time_hint": "1月2日 07:04"
+    }
+  ]
+}

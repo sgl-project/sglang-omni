@@ -23,10 +23,10 @@ func TestSessionNote(t *testing.T) {
 		t.Fatalf("end %+v", end)
 	}
 	a.pump("the notes", func() bool { return len(a.nv.list) == 1 })
-	if n := a.nv.list[0]; n.Text != "Buy milk." || n.ID != a.sess.ID {
+	if n := a.nv.list[0]; n.Text != "Buy milk." || n.ID != a.sess.ID || n.AppName != "Slack" {
 		t.Errorf("note %+v", n)
 	}
-	if a.notice == nil || a.notice.text != "Saved to Notes" {
+	if a.notice == nil || a.notice.text != "Saved to Notes" || !a.notice.ok {
 		t.Errorf("notice %+v", a.notice)
 	}
 	if p, es := a.pasted(), a.history(); len(p) != 0 || len(es) != 0 {

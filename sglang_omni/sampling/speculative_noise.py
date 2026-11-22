@@ -6,6 +6,8 @@ from __future__ import annotations
 import torch
 from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 
+from sglang_omni.sampling.speculative_noise_kernel import draw_seeded_noise
+
 # note (YifanLi3): a seeded step keys every draw by the committed length, which grows
 # each step, so no draw is reused; the salts keep the three draws of a step apart.
 DRAFT_NOISE_SEED_SALT = 0x68E31DA4
@@ -33,8 +35,16 @@ def seeded_exponential_noise(
     seeds: torch.Tensor, output_lengths: torch.Tensor, *, salt: int, column_count: int
 ) -> torch.Tensor:
     """Float32 Exp(1) draws fixed by each row's seed and output length."""
-    return (
-        -seeded_uniform_noise(
-            seeds, output_lengths, salt=salt, column_count=column_count
-        ).log()
-    ).float()
+    if seeds.device.type == "cuda":
+        return draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=column_count,
+            exponential_salt=salt,
+        )[0]
+    else:
+        return (
+            -seeded_uniform_noise(
+                seeds, output_lengths, salt=salt, column_count=column_count
+            ).log()
+        ).float()

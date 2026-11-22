@@ -1,0 +1,13 @@
+{
+  "name": "notices-error",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "n1",
+      "severity": "error",
+      "title": "It broke",
+      "body": "The thing did not work.",
+      "time_hint": "1月2日 07:04"
+    }
+  ]
+}

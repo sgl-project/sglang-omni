@@ -20,11 +20,11 @@ Glossary: write these terms exactly as below, also when the recognizer heard the
 
 ---- user ----
 <input>
-Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
+呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。
 </input>
 
 ---- assistant ----
-Can you send the weekly report to Anna before 5? I really need it before 5.
+Please send the weekly report to Xiao Li before the end of today. It must go out before the end of today.
 
 ---- user ----
 <input>

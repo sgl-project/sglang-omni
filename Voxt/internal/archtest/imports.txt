@@ -87,7 +87,6 @@ uitext i18n
 uitext lang
 uitext llm
 uitext local
-uitext permission
 uitext session
 uitext settings
 uitext store

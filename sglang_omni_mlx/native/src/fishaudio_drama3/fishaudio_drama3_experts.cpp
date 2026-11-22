@@ -527,12 +527,6 @@ mx::array ExpertCache::Routed(const mx::array &input,
     const int expert_count = slices_.at(prefix + ".up_proj.weight").shape[0];
     const bool use_sorted_kernel =
         flat_ids.size() >= 64 && flat_ids.size() / expert_count >= 4;
-    // Note (Codex): preserve MLX 0.32.3's sorted gather kernel when splitting a
-    // batch.
-    if (use_sorted_kernel && rows.size() < 16) {
-      rows.resize(16, rows.back());
-    } else {
-    }
     const auto hidden = mx::expand_dims(
         mx::take(
             flat_input,

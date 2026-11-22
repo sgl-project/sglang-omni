@@ -1,0 +1,49 @@
+{
+  "name": "notices-actions",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "n5",
+      "severity": "info",
+      "title": "History grew",
+      "body": "100 entries.",
+      "action_label": "Open",
+      "time_hint": "Jan 2 07:04"
+    },
+    {
+      "id": "n4",
+      "severity": "info",
+      "title": "Download paused",
+      "body": "Get the rest.",
+      "action_label": "Download",
+      "time_hint": "Jan 2 07:04"
+    },
+    {
+      "id": "n3",
+      "severity": "warning",
+      "title": "Old data found",
+      "body": "Bring it over.",
+      "action_label": "Import",
+      "time_hint": "Jan 2 07:04"
+    },
+    {
+      "id": "n2",
+      "severity": "info",
+      "title": "Voxt 2.1 is out",
+      "body": "What is new.",
+      "summary": [
+        "What is new."
+      ],
+      "action_label": "What's new",
+      "time_hint": "Jan 2 07:04"
+    },
+    {
+      "id": "n1",
+      "severity": "info",
+      "title": "Update ready",
+      "body": "Restart to use it.",
+      "action_label": "Restart Voxt",
+      "time_hint": "Jan 2 07:04"
+    }
+  ]
+}

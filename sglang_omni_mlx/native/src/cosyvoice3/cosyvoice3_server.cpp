@@ -24,49 +24,38 @@
 // 503. A request not done S seconds (600 by default) after it arrives is
 // cancelled, with 504 or an early end to its stream, and so is a request whose
 // client disconnects. A request body over 32 MiB gets 413.
-#include <arpa/inet.h>
 #include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cerrno>
-#include <charconv>
-#include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <filesystem>
-#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <system_error>
 #include <tuple>
-#include <typeinfo>
 #include <vector>
 
-#include "civetweb.h"
-#include "common/audio.h"
+#include "common/asr_service.h"
 #include "common/generation.h"
-#include "common/http.h"
 #include "common/reference_audio.h"
+#include "common/speech_service.h"
 #include "common/text.h"
-#include "common/transcription.h"
 #include "cosyvoice3/cosyvoice3_model.h"
-#include "qwen3_asr/asr_service.h"
 
 namespace {
 
-using omni_server::Json;
+using speech_service::FieldOr;
+using speech_service::Json;
+using speech_service::PresentFieldOr;
 
 constexpr size_t kMaxInputCharacters = 4096;
 // Room for 30 s of base64 WAV at 48 kHz in stereo float32 (15 MiB) and
@@ -75,35 +64,21 @@ constexpr size_t kMaxRequestBodyBytes = 32 * 1024 * 1024;
 constexpr size_t kMaxReferenceFileBytes = 24 * 1024 * 1024;
 // The reference speech tokens a prompt can hold: 30 s at 25 a second.
 constexpr size_t kMaxReferenceSpeechTokens = 750;
-constexpr int kRequestIdHexDigits = 32;
-constexpr int kMaxRequestTimeoutSeconds = 24 * 60 * 60;
-// As often as the CUDA server checks whether a speech client disconnected.
-constexpr auto kClientPollInterval = std::chrono::milliseconds(50);
-// The status civetweb logs for a request whose client left before its answer.
-constexpr int kClientLeftStatus = 499;
-// The most one disconnect check reads of what a client sent after its request,
-// so a client that keeps sending cannot hold the check.
-constexpr size_t kMaxUnreadBytesPerCheck = 64 * 1024;
 // The most a repetition penalty may be, as SGLang's sampler allows.
 constexpr double kMaxRepetitionPenalty = 2.0;
-// A collection field of CUDA's CreateSpeechRequest and the JSON type it takes.
-struct CollectionField {
-  const char *name;
-  Json::value_t type;
-  const char *type_description;
-};
 // Note (Minyi Tang): fields this server does not serve, each counted as
 // given by the CUDA request model's rule: text and flag fields when not null
 // or "", and collections when not empty. CUDA's request model first rejects a
 // collection of another type, even an empty one.
-constexpr std::array<const char *, 7> kUnsupportedFields = {
-    "duration_tokens",     "initial_codec_chunk_frames",
-    "stream_codec_output", "suppress_bootstrap_silence",
-    "task_type",           "token_count",
-    "x_vector_only_mode"};
-constexpr std::array<CollectionField, 1> kUnsupportedCollectionFields = {{
-    {"stage_params", Json::value_t::object, "an object"},
-}};
+const speech_service::UnsupportedFields kUnsupportedFields = {
+    {},
+    {"duration_tokens", "initial_codec_chunk_frames", "stream_codec_output",
+     "suppress_bootstrap_silence", "task_type", "token_count",
+     "x_vector_only_mode"},
+    {
+        {"stage_params", Json::value_t::object, "an object"},
+    },
+};
 
 struct SpeechRequest {
   cosyvoice3::SpeechText text;
@@ -117,85 +92,6 @@ struct SpeechRequest {
   std::string response_format;
   bool stream = false;
 };
-
-// Audio one synthesis hands from the worker thread to its request's thread.
-struct AudioChannel {
-  std::mutex mutex;
-  std::condition_variable ready;
-  std::optional<std::vector<float>> samples;
-  bool done = false;
-  std::exception_ptr error;
-  int prompt_token_count = 0;
-  int completion_token_count = 0;
-  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
-};
-
-// body's field, or fallback when it is missing or null.
-Json FieldOr(const Json &body, const char *name, Json fallback) {
-  const auto found = body.find(name);
-  if (found == body.end() || found->is_null()) {
-    return fallback;
-  } else {
-    return *found;
-  }
-}
-
-// body's field, null included, or fallback when it is missing.
-// Note (Minyi Tang): CUDA's CreateSpeechRequest takes null as the default
-// only for the fields it types as optional, and rejects it for the rest.
-Json PresentFieldOr(const Json &body, const char *name, Json fallback) {
-  const auto found = body.find(name);
-  if (found == body.end()) {
-    return fallback;
-  } else {
-    return *found;
-  }
-}
-
-size_t CharacterCount(const std::string &text) {
-  return static_cast<size_t>(
-      std::count_if(text.begin(), text.end(), [](char byte) {
-        return (static_cast<unsigned char>(byte) & 0xc0) != 0x80;
-      }));
-}
-
-// Throws naming every unsupported field body gives, in sorted order.
-void RejectUnsupportedFields(const Json &body) {
-  std::vector<std::string> given;
-  for (const char *field : kUnsupportedFields) {
-    const Json value = FieldOr(body, field, Json());
-    if (!value.is_null() && value != "") {
-      given.push_back(field);
-    } else {
-    }
-  }
-  for (const CollectionField &field : kUnsupportedCollectionFields) {
-    const Json value = FieldOr(body, field.name, Json());
-    if (!value.is_null() && value.type() != field.type) {
-      throw std::invalid_argument(std::string(field.name) + " must be " +
-                                  field.type_description);
-    } else if (!value.is_null() && !value.empty()) {
-      given.push_back(field.name);
-    } else {
-    }
-  }
-  if (given.empty()) {
-    return;
-  } else {
-  }
-  std::sort(given.begin(), given.end());
-  std::string fields;
-  for (const std::string &field : given) {
-    fields += (fields.empty() ? "" : ", ") + field;
-  }
-  throw std::invalid_argument(
-      "Fun-CosyVoice3 on this server does not support these "
-      "/v1/audio/speech fields: " +
-      fields +
-      ". Supported model-specific fields are ref_audio, ref_text, references, "
-      "instructions, temperature, top_p, top_k, repetition_penalty, seed and "
-      "max_new_tokens.");
-}
 
 bool IsInside(const std::filesystem::path &path,
               const std::filesystem::path &directory) {
@@ -330,7 +226,7 @@ std::optional<std::string> OptionalText(const Json &object, const char *name,
   }
   const std::string stripped =
       omni_common::StripUnicodeWhitespace(value.get<std::string>());
-  if (CharacterCount(stripped) > kMaxInputCharacters) {
+  if (omni_common::CodePointCount(stripped) > kMaxInputCharacters) {
     throw std::invalid_argument(label + " must be at most " +
                                 std::to_string(kMaxInputCharacters) +
                                 " characters");
@@ -474,12 +370,16 @@ SpeechRequest ParseRequest(const Json &body,
     throw std::invalid_argument("speech request body must be a JSON object");
   } else {
   }
-  RejectUnsupportedFields(body);
+  speech_service::RejectUnsupportedFields(
+      body, kUnsupportedFields, "Fun-CosyVoice3 on this server",
+      "ref_audio, ref_text, references, instructions, temperature, top_p, "
+      "top_k, repetition_penalty, seed and max_new_tokens");
   const Json input = FieldOr(body, "input", Json());
   if (!input.is_string() ||
       omni_common::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
     throw std::invalid_argument("input must be a non-empty string");
-  } else if (CharacterCount(input.get<std::string>()) > kMaxInputCharacters) {
+  } else if (omni_common::CodePointCount(input.get<std::string>()) >
+             kMaxInputCharacters) {
     throw std::invalid_argument("input must be at most " +
                                 std::to_string(kMaxInputCharacters) +
                                 " characters");
@@ -493,7 +393,7 @@ SpeechRequest ParseRequest(const Json &body,
     // Note (Jiaxin Deng): as CUDA, blank instructions are none.
     const std::string stripped =
         omni_common::StripUnicodeWhitespace(instructions.get<std::string>());
-    if (CharacterCount(stripped) > kMaxInputCharacters) {
+    if (omni_common::CodePointCount(stripped) > kMaxInputCharacters) {
       throw std::invalid_argument("instructions must be at most " +
                                   std::to_string(kMaxInputCharacters) +
                                   " characters");
@@ -627,380 +527,62 @@ SpeechRequest ParseRequest(const Json &body,
   return request;
 }
 
-std::string NewRequestId() {
-  static thread_local std::mt19937_64 generator{std::random_device{}()};
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string id = "speech-";
-  for (int index = 0; index < kRequestIdHexDigits; ++index) {
-    id.push_back(kHex[generator() % 16]);
-  }
-  return id;
-}
-
-// The socket civetweb accepted for connection's client, found by the client's
-// address and port since civetweb does not expose it, or -1.
-int ClientSocket(const mg_connection *connection) {
-  const mg_request_info *request_info = mg_get_request_info(connection);
-  // Note (Minyi Tang): a listing that fails, as it does in a process out of
-  // descriptors, ends the search, and the request is then served without
-  // watching its client. Nothing here throws, since an exception would unwind
-  // through civetweb's C callback and terminate the server.
-  std::error_code listing_error;
-  for (std::filesystem::directory_iterator listing("/dev/fd", listing_error);
-       !listing_error && listing != std::filesystem::directory_iterator();
-       listing.increment(listing_error)) {
-    const std::string name = listing->path().filename().string();
-    int file_descriptor = -1;
-    const auto [parse_end, parse_error] = std::from_chars(
-        name.data(), name.data() + name.size(), file_descriptor);
-    if (parse_error != std::errc() || parse_end != name.data() + name.size()) {
-      continue;
-    } else {
-    }
-    sockaddr_storage peer{};
-    socklen_t peer_size = sizeof(peer);
-    char address[INET6_ADDRSTRLEN] = "";
-    int port = -1;
-    if (getpeername(file_descriptor, reinterpret_cast<sockaddr *>(&peer),
-                    &peer_size) != 0) {
-      continue;
-    } else if (peer.ss_family == AF_INET) {
-      const auto *ipv4 = reinterpret_cast<const sockaddr_in *>(&peer);
-      inet_ntop(AF_INET, &ipv4->sin_addr, address, sizeof(address));
-      port = ntohs(ipv4->sin_port);
-    } else if (peer.ss_family == AF_INET6) {
-      const auto *ipv6 = reinterpret_cast<const sockaddr_in6 *>(&peer);
-      inet_ntop(AF_INET6, &ipv6->sin6_addr, address, sizeof(address));
-      port = ntohs(ipv6->sin6_port);
-    } else {
-    }
-    if (port == request_info->remote_port &&
-        request_info->remote_addr == std::string(address)) {
-      return file_descriptor;
-    } else {
-    }
-  }
-  return -1;
-}
-
-// Whether the client of client_socket closed it, which its socket shows by
-// reading as ended or failing.
-// Note (Minyi Tang): civetweb keeps no connection alive, so it never serves
-// what a client sends after its request; that is read and dropped here, since
-// bytes left unread would hide the end of the socket from every later check.
-// Note (Minyi Tang): a client that only shuts down its sending side also reads
-// as ended and is treated as gone, as uvicorn treats it for the CUDA server.
-// TCP tells the two apart only once something is written to the socket.
-bool ClientLeft(int client_socket) {
-  if (client_socket < 0) {
-    return false;
-  } else {
-  }
-  std::array<char, 4096> unread{};
-  size_t dropped_bytes = 0;
-  while (dropped_bytes < kMaxUnreadBytesPerCheck) {
-    const ssize_t received =
-        recv(client_socket, unread.data(), unread.size(), MSG_DONTWAIT);
-    if (received == 0) {
-      return true;
-    } else if (received < 0) {
-      return errno != EAGAIN && errno != EINTR;
-    } else {
-      dropped_bytes += static_cast<size_t>(received);
-    }
-  }
-  return false;
-}
-
-// Thrown by a generation that reaches its request's deadline; a cancellation,
-// so it is never logged as a failure.
-class DeadlineReached : public omni_common::GenerationCancelled {};
-
-// Whether error is a generation stopping at its request's deadline.
-bool ReachedDeadline(std::exception_ptr error) {
-  if (!error) {
-    return false;
-  } else {
-  }
-  try {
-    std::rethrow_exception(error);
-  } catch (const DeadlineReached &) {
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-void LogFailure(std::exception_ptr error) {
-  try {
-    std::rethrow_exception(error);
-  } catch (const omni_common::GenerationCancelled &) {
-  } catch (const std::exception &failure) {
-    // Note (Minyi Tang): only the exception type is logged, never the text.
-    std::cerr << "speech generation failed: " << typeid(failure).name() << "\n";
-  }
-}
-
-class CosyVoice3Service : public asr_service::ServedModel {
+class CosyVoice3Service : public speech_service::SpeechServedModel {
 public:
   CosyVoice3Service(const std::filesystem::path &model_directory,
                     int max_queued_requests, double request_timeout_seconds,
                     std::optional<std::filesystem::path> allowed_directory)
-      : model_(model_directory), max_queued_requests_(max_queued_requests),
-        request_timeout_(
-            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::duration<double>(request_timeout_seconds))),
+      : SpeechServedModel(kMaxRequestBodyBytes, max_queued_requests,
+                          request_timeout_seconds),
+        model_(model_directory),
         allowed_directory_(std::move(allowed_directory)) {}
 
-  asr_service::Transcription
-  Prepare(std::vector<float>, const asr_service::FormFields &) const override {
-    throw std::logic_error("cosyvoice3 serves no transcriptions");
-  }
-  bool Transcribes() const override { return false; }
-  // Note (Minyi Tang): /health counts the slots admission holds, which the
-  // worker frees only after it marks a request done; once /health shows the
-  // server idle, it admits a full queue.
-  std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
-    std::lock_guard<std::mutex> lock(admission_mutex_);
-    std::map<std::string, int> states;
-    if (admitted_requests_ > 0) {
-      states["running"] = 1;
-    } else {
-    }
-    if (admitted_requests_ > 1) {
-      states["queued"] = admitted_requests_ - 1;
-    } else {
-    }
-    return states;
-  }
-  void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
-    worker_ = &worker;
-    mg_set_request_handler(context, "/v1/audio/speech$", HandleSpeech, this);
-  }
-
 private:
-  static int HandleSpeech(mg_connection *connection, void *data) {
-    return static_cast<CosyVoice3Service *>(data)->Speak(connection);
-  }
+  int SampleRate() const override { return cosyvoice3::kSampleRate; }
 
-  int Speak(mg_connection *connection) {
-    if (!omni_server::IsPost(connection)) {
-      return omni_server::WriteJson(connection, 405,
-                                    {{"detail", "Method Not Allowed"}});
-    } else {
-    }
-    const std::optional<std::string> raw_body =
-        omni_server::ReadBody(connection, kMaxRequestBodyBytes);
-    if (!raw_body.has_value()) {
-      return 413;
-    } else {
-    }
-    const Json body = Json::parse(*raw_body, nullptr, false);
-    if (body.is_discarded()) {
-      return omni_server::BadRequest(connection,
-                                     "speech request body must be valid JSON");
-    } else {
-    }
-    SpeechRequest request;
+  speech_service::SpeechJob ParseSpeech(const Json &body) override {
     std::optional<ReferenceSource> reference_source;
-    try {
-      request = ParseRequest(body, reference_source);
-    } catch (const std::invalid_argument &error) {
-      return omni_server::BadRequest(connection, error.what());
-    }
-    // Note (Minyi Tang): no client can know a generated name, and the CUDA
-    // speech API ignores model, so only a chosen name is enforced.
-    if (has_chosen_model_name() && request.model.has_value() &&
-        *request.model != model_name()) {
-      return omni_server::WriteJson(
-          connection, 404, {{"detail", "Unknown model: " + *request.model}});
-    } else {
-    }
-    bool admitted = false;
-    {
-      std::lock_guard<std::mutex> lock(admission_mutex_);
-      admitted = admitted_requests_ <= max_queued_requests_;
-      admitted_requests_ += admitted ? 1 : 0;
-    }
-    if (!admitted) {
-      return omni_server::WriteJson(connection, 503,
-                                    {{"detail", "The request queue is full."}});
-    } else {
-    }
+    auto request =
+        std::make_shared<SpeechRequest>(ParseRequest(body, reference_source));
+    speech_service::SpeechJob job;
+    job.model = request->model;
+    job.response_format = request->response_format;
+    job.stream = request->stream;
+    job.starts_stream_at_admission = true;
     // Note (Jiaxin Deng): the text is tokenized and the reference audio read
     // and resampled only once the request holds a slot, so a burst of long
-    // texts or large references cannot hold more than the queue allows; a
-    // request refused here frees its slot again. Its deadline runs from
-    // here, so that work counts against it.
-    const auto deadline = std::chrono::steady_clock::now() + request_timeout_;
-    const auto release_slot = [this] {
-      std::lock_guard<std::mutex> lock(admission_mutex_);
-      --admitted_requests_;
-    };
-    try {
-      std::tie(request.prompt_ids, request.target_ids) =
-          model_.EncodeText(request.text);
+    // texts or large references cannot hold more than the queue allows.
+    job.prepare = [this, request, reference_source]() {
+      std::tie(request->prompt_ids, request->target_ids) =
+          model_.EncodeText(request->text);
       // Note (Jiaxin Deng): SOS, the text, TASK and every speech token must
       // fit the decoder's context, which text of unmerged bytes can overflow.
-      if (request.prompt_ids.size() + request.target_ids.size() + 2 +
+      if (request->prompt_ids.size() + request->target_ids.size() + 2 +
               kMaxReferenceSpeechTokens + cosyvoice3::kMaxSpeechTokens >
           static_cast<size_t>(cosyvoice3::kMaxContextTokens)) {
         throw std::invalid_argument(
             "input and instructions take too many text tokens");
-      } else {
-      }
-      if (reference_source.has_value()) {
-        request.reference_audio = cosyvoice3::ReadReferenceAudio(
+      } else if (reference_source.has_value()) {
+        request->reference_audio = cosyvoice3::ReadReferenceAudio(
             SourceBytes(*reference_source, allowed_directory_));
       } else {
       }
-    } catch (const std::invalid_argument &error) {
-      release_slot();
-      return omni_server::BadRequest(connection, error.what());
-    }
-    if (std::chrono::steady_clock::now() >= deadline) {
-      release_slot();
-      std::cerr << "speech generation timed out\n";
-      return omni_server::WriteJson(
-          connection, 504, {{"detail", "Speech generation timed out."}});
-    } else {
-    }
-    const std::string request_id = NewRequestId();
-    auto channel = std::make_shared<AudioChannel>();
-    const qwen3_asr::CancelFlag cancel = qwen3_asr::NewCancelFlag();
-    worker_->Submit(
-        [this, request, channel, deadline](const std::atomic<bool> &cancelled) {
-          return Synthesize(request, *channel, cancelled, deadline);
-        },
-        cancel,
-        [this, channel](std::optional<omni_common::TranscriptionResult>,
-                        std::exception_ptr error) {
-          // Note (Minyi Tang): the slot frees before the response can end,
-          // so a client's next request is never refused for its previous one.
-          {
-            std::lock_guard<std::mutex> lock(admission_mutex_);
-            --admitted_requests_;
-          }
-          std::lock_guard<std::mutex> lock(channel->mutex);
-          channel->done = true;
-          channel->error = error;
-          channel->ready.notify_all();
-        });
-    if (request.stream) {
-      mg_printf(connection,
-                "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
-                "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
-                "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
-                "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
-                request_id.c_str(), request_id.c_str(),
-                cosyvoice3::kSampleRate);
-    } else {
-    }
-
-    const int client_socket = ClientSocket(connection);
-    bool timed_out = false;
-    bool client_left = false;
-    std::unique_lock<std::mutex> lock(channel->mutex);
-    while (true) {
-      const bool done = channel->ready.wait_until(
-          lock,
-          std::min(deadline,
-                   std::chrono::steady_clock::now() + kClientPollInterval),
-          [&] { return channel->done; });
-      if (done) {
-        break;
-      } else if (std::chrono::steady_clock::now() >= deadline) {
-        timed_out = true;
-        break;
-      } else {
-        // Note (Minyi Tang): the client is watched while its request waits
-        // in the queue too, and a request cancelled there never starts.
-        client_left = ClientLeft(client_socket);
-        if (client_left) {
-          break;
-        } else {
-        }
-      }
-    }
-    lock.unlock();
-    if (client_left) {
-      // Note (Minyi Tang): nothing is read from the channel, which the
-      // synthesis may still be writing.
-      cancel->store(true);
-      return kClientLeftStatus;
-    } else {
-    }
-    // Note (Minyi Tang): the synthesis stops at the deadline itself, and may
-    // report that before this thread's wait reaches the deadline. Any other
-    // error is a failure, even one that arrives after the deadline.
-    if (!timed_out && ReachedDeadline(channel->error)) {
-      timed_out = true;
-    } else {
-    }
-    if (timed_out) {
-      // Note (Minyi Tang): a request still queued is dropped once the worker
-      // reaches it.
-      cancel->store(true);
-      std::cerr << "speech generation timed out\n";
-    } else if (channel->error) {
-      LogFailure(channel->error);
-    } else {
-    }
-    if (request.stream && (timed_out || channel->error)) {
-      return 200;
-    } else if (timed_out) {
-      return omni_server::WriteJson(
-          connection, 504, {{"detail", "Speech generation timed out."}});
-    } else if (channel->error) {
-      return omni_server::WriteJson(connection, 500,
-                                    {{"detail", "Speech generation failed."}});
-    } else {
-    }
-
-    const std::string pcm = omni_common::Pcm16Bytes(*channel->samples);
-    if (request.stream) {
-      mg_write(connection, pcm.data(), pcm.size());
-      return 200;
-    } else {
-    }
-    const std::string audio =
-        request.response_format == "wav"
-            ? omni_common::WavBytes(pcm, cosyvoice3::kSampleRate)
-            : pcm;
-    const int prompt_tokens = channel->prompt_token_count;
-    const int completion_tokens = channel->completion_token_count;
-    mg_printf(
-        connection,
-        "HTTP/1.1 200 OK\r\nContent-Type: audio/%s\r\nContent-Length: %zu\r\n"
-        "Content-Disposition: attachment; filename=\"speech.%s\"\r\n"
-        "X-Request-Id: %s\r\nX-Finish-Reason: %s\r\n"
-        "X-Prompt-Tokens: %d\r\nX-Completion-Tokens: %d\r\n"
-        "X-SGLang-Omni-Input-Tokens: %d\r\n"
-        "X-SGLang-Omni-Output-Tokens: %d\r\n"
-        "X-SGLang-Omni-Total-Tokens: %d\r\nConnection: close\r\n\r\n",
-        request.response_format.c_str(), audio.size(),
-        request.response_format.c_str(), request_id.c_str(),
-        omni_common::FinishReasonName(channel->finish_reason), prompt_tokens,
-        completion_tokens, prompt_tokens, completion_tokens,
-        prompt_tokens + completion_tokens);
-    mg_write(connection, audio.data(), audio.size());
-    return 200;
+    };
+    job.synthesize = [this,
+                      request](const speech_service::SpeechContext &context) {
+      return Synthesize(*request, context);
+    };
+    return job;
   }
 
-  omni_common::TranscriptionResult
-  Synthesize(const SpeechRequest &request, AudioChannel &channel,
-             const std::atomic<bool> &cancel,
-             std::chrono::steady_clock::time_point deadline) const {
-    // Note (Minyi Tang): the synthesis checks its own deadline, since the
-    // request's thread may be blocked writing to a slow client.
+  speech_service::SpeechResult
+  Synthesize(const SpeechRequest &request,
+             const speech_service::SpeechContext &context) const {
     const auto check = [&] {
-      if (cancel.load()) {
+      if (context.cancel.load()) {
         throw omni_common::GenerationCancelled();
-      } else if (std::chrono::steady_clock::now() >= deadline) {
-        throw DeadlineReached();
       } else {
+        context.check_deadline();
       }
     };
     const std::vector<int> &prompt_ids = request.prompt_ids;
@@ -1017,9 +599,9 @@ private:
             ? reference->speech_tokens
             : std::vector<int>();
     check();
-    const cosyvoice3::GeneratedSpeech generated =
-        model_.Generate(prompt_ids, target_ids, prompt_speech_tokens,
-                        request.sampling, cancel, [&](int) { check(); });
+    const cosyvoice3::GeneratedSpeech generated = model_.Generate(
+        prompt_ids, target_ids, prompt_speech_tokens, request.sampling,
+        context.cancel, [&](int) { check(); });
     const std::vector<int> kept =
         cosyvoice3::TrimSilentRuns(generated.speech_tokens);
     if (kept.empty()) {
@@ -1029,77 +611,41 @@ private:
     } else {
     }
     const mlx::core::array samples = model_.Vocode(kept, reference, check);
-    omni_common::TranscriptionResult result;
-    result.generated_token_count =
-        static_cast<int>(generated.speech_tokens.size());
-    result.finish_reason = generated.finish_reason;
-    std::lock_guard<std::mutex> lock(channel.mutex);
-    channel.samples.emplace(samples.data<float>(),
-                            samples.data<float>() + samples.size());
+    context.send(std::vector<float>(samples.data<float>(),
+                                    samples.data<float>() + samples.size()));
     // Note (Jiaxin Deng): the prompt counts SOS and TASK around the text, and
     // the speech prompt after them.
-    channel.prompt_token_count =
-        static_cast<int>(prompt_ids.size() + target_ids.size() +
-                         prompt_speech_tokens.size()) +
-        2;
-    channel.completion_token_count = result.generated_token_count;
-    channel.finish_reason = result.finish_reason;
-    return result;
+    return {generated.finish_reason,
+            prompt_ids.size() + target_ids.size() +
+                prompt_speech_tokens.size() + 2,
+            static_cast<int>(generated.speech_tokens.size())};
   }
 
   cosyvoice3::CosyVoice3Model model_;
-  const int max_queued_requests_;
-  const std::chrono::steady_clock::duration request_timeout_;
-  mutable std::mutex admission_mutex_;
-  // Requests the worker holds: running, queued, or finishing.
-  int admitted_requests_ = 0;
-  qwen3_asr::TranscriptionWorker *worker_ = nullptr;
   const std::optional<std::filesystem::path> allowed_directory_;
 };
 
 } // namespace
 
 int main(int argc, char **argv) {
-  int max_queued_requests = 2;
-  double request_timeout_seconds = 600;
   std::optional<std::filesystem::path> allowed_directory;
   asr_service::ServedKind kind;
   kind.model_kind = "cosyvoice3";
-  kind.flags = {
-      {"--max-queued-requests",
-       [&](const std::string &value) {
-         max_queued_requests = std::stoi(value);
-       }},
-      {"--request-timeout-s",
-       [&](const std::string &value) {
-         request_timeout_seconds = std::stod(value);
-       }},
-      {"--allowed-local-media-path",
-       [&](const std::string &value) {
-         std::error_code error;
-         allowed_directory = std::filesystem::canonical(value, error);
-         if (error || !std::filesystem::is_directory(*allowed_directory)) {
-           throw std::logic_error(
-               "--allowed-local-media-path must be a directory");
-         } else {
-         }
-       }},
-  };
-  kind.check_flags = [&]() {
-    if (max_queued_requests < 0) {
-      throw std::invalid_argument("--max-queued-requests must not be negative");
-    } else if (!(request_timeout_seconds > 0 &&
-                 request_timeout_seconds <= kMaxRequestTimeoutSeconds)) {
-      throw std::invalid_argument(
-          "--request-timeout-s must be above 0 and at most " +
-          std::to_string(kMaxRequestTimeoutSeconds));
+  speech_service::AddSpeechFlags(
+      kind, [&allowed_directory](const std::filesystem::path &model_directory,
+                                 int max_queued_requests,
+                                 double request_timeout_seconds) {
+        return std::make_unique<CosyVoice3Service>(
+            model_directory, max_queued_requests, request_timeout_seconds,
+            allowed_directory);
+      });
+  kind.flags["--allowed-local-media-path"] = [&](const std::string &value) {
+    std::error_code error;
+    allowed_directory = std::filesystem::canonical(value, error);
+    if (error || !std::filesystem::is_directory(*allowed_directory)) {
+      throw std::logic_error("--allowed-local-media-path must be a directory");
     } else {
     }
-  };
-  kind.load = [&](const std::filesystem::path &model_directory) {
-    return std::make_unique<CosyVoice3Service>(
-        model_directory, max_queued_requests, request_timeout_seconds,
-        allowed_directory);
   };
   return asr_service::Serve(argc, argv, kind);
 }

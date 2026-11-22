@@ -2,7 +2,7 @@
 
 *History: Voxt's own language models retired in 2.1 (its language models are the remote services the user sets up), and their process `voxtnew-llm` (`llm/`, `internal/llmrt`, the llm protocol) was removed after. This page keeps what was measured on them; the links into `llm/` and the protocol point at the code as it was (git history).*
 
-VoxtNew runs three curated language models in `voxtnew-llm`, and two of the ActNow family's that other apps install ([below](#borrowed-models-family-f1)) ([llm/](../llm/README.md), [llm-protocol.md](llm-protocol.md)). Their catalogue entries (repository, revision, files) are `internal/models/catalog.go`; how they run is one table, `internal/llmrt/models.go`, sent with every chat (the process keeps no settings).
+VoxtNew ran three curated language models in `voxtnew-llm`, and two of the ActNow family's that other apps installed ([below](#borrowed-models-family-f1)). Their catalogue entries (repository, revision, files) were in `internal/models/catalog.go`; how they ran was one table, `internal/llmrt/models.go`, sent with every chat (the process kept no settings). The `llm/` and `llm-protocol.md` sources named on this page are available in git history.
 
 | id | model | runtime | what it does |
 |---|---|---|---|
@@ -27,7 +27,7 @@ Every chat also has Voxt's repetition guard (a phrase repeated six times or more
 
 ## Measurements (mac-air: M4, 24 GB, macOS 26.7; 2026-10-17)
 
-`TestLLMMeasure` (llm_measure_test.go) runs VoxtNew's own prompts (compose, real settings) twice per model after a warm load; `llm_e2e_test.go` runs whole Translate and Rewrite sessions (fake helper and speech model, the real process) through the dev hook. Rates are the generation's after the first token; the first token includes the prompt's evaluation. Second runs, which match the first within a few per cent (measured before the prompt cache, M2b below: now a second run is a hit):
+TestLLMMeasure (llm_measure_test.go) runs VoxtNew's own prompts (compose, real settings) twice per model after a warm load; `llm_e2e_test.go` runs whole Translate and Rewrite sessions (fake helper and speech model, the real process) through the dev hook. Rates are the generation's after the first token; the first token includes the prompt's evaluation. Second runs, which match the first within a few per cent (measured before the prompt cache, M2b below: now a second run is a hit):
 
 | model | load (process start included) | prompt evaluation | first token | generation | memory |
 |---|---|---|---|---|---|
@@ -43,7 +43,7 @@ Whole sessions (the session's own LLM time, from the request to the answer):
 | Rewrite a selection ("make this more polite and formal") | `llm.balanced` | Please send me the report by Friday. | 2.1 s (first token 1.39 s, 373 + 8 tokens, 23 tokens/s, peak 4.3 GB) |
 | Translate a selection, zh → en | `llm.translate` | Today's weather is really nice. Let's meet at three o'clock. | 0.56–1.0 s (first token 63–78 ms, 52 tokens/s, resident 1.2 GB) |
 
-A cancelled chat ends 15–25 ms after `job.cancel` (`TestLLMRealCancel`), and the process takes the next chat.
+A cancelled chat ends 15–25 ms after `job.cancel` (TestLLMRealCancel), and the process takes the next chat.
 
 On the same Mac `mlx-community/Qwen3-4B-Instruct-2507-4bit` (from the HF cache, as `llm.balanced` through the dev hook) loaded in 0.5 s and generated 28–32 tokens/s with a 3.0 GB peak; it is now `llm.qwen3`, a borrowed model ([below](#borrowed-models-family-f1)).
 
@@ -53,15 +53,15 @@ Translation and rewriting come out right with both Qwen3.5 models, and the JSON 
 
 ## Prompt cache (M2b)
 
-`voxtnew-llm` keeps an MLX model's caches (attention KV and Qwen3.5's linear-attention state) after the **shared prefix** of a prompt: everything before the last message's text, which for compose's prompts is the system prompt and, since M3, the clean-up's example turn (≈ 520–550 tokens for clean-up and spoken translation, ≈ 220 for translating a selection). A chat whose prompt starts with a kept prefix evaluates only the rest. How it works is in [llm-protocol.md](llm-protocol.md#the-prompt-cache); in short:
+`voxtnew-llm` keeps an MLX model's caches (attention KV and Qwen3.5's linear-attention state) after the **shared prefix** of a prompt: everything before the last message's text, which for compose's prompts is the system prompt and, since M3, the clean-up's example turn (≈ 520–550 tokens for clean-up and spoken translation, ≈ 220 for translating a selection). A chat whose prompt starts with a kept prefix evaluates only the rest. The retired `llm-protocol.md` in git history describes how it works; in short:
 
 - Snapshots are reused whole, never trimmed (linear-attention state cannot be rewound). Up to 6 are kept (512 MB at most), the least recently used dropped first; they go with the model.
-- The shared prefix is evaluated in chunks ending at multiples of 256 tokens and at its end, whatever the cache holds; snapshots are kept and reused only at those points. A greedy answer is then the same token for token with the cache on, off (`VOXTNEW_LLM_PROMPT_CACHE=0`), on a miss or on a hit: `TestLLMRealPromptCache` checks it on both models (5 prompt kinds × miss, hit with another input, hit with the same input), and the eval's answers with and without the cache are identical.
+- The shared prefix is evaluated in chunks ending at multiples of 256 tokens and at its end, whatever the cache holds; snapshots are kept and reused only at those points. A greedy answer is then the same token for token with the cache on, off (`VOXTNEW_LLM_PROMPT_CACHE=0`), on a miss or on a hit: TestLLMRealPromptCache checks it on both models (5 prompt kinds × miss, hit with another input, hit with the same input), and the eval's answers with and without the cache are identical.
 - compose's glossary does not change the cached prefix: a dictionary of up to 30 terms is in the system prompt whole, in its order, the same for every dictation; a larger one's glossary (the terms the text mentions) opens the last user message, after the cached system prompt and example (#24: the first token with 130 terms 1.7–2.4 s → see eval.md). A prompt that parts from a kept one inside the shared prefix (a scene) keeps a **branch point** too (the last multiple of 256 before they part); the next such prompt starts there.
 - **Warm-up.** While the user speaks, the session sends its own prompt with an empty text as a prefill chat (`maxTokens: 0`, `llm.Prefiller`, `session/run_listen.go` `warmLLM`): Transcribe's clean-up and Translate of speech; not Rewrite, whose prompt depends on the selection being read meanwhile. When the prefix is kept already the prefill costs a template render (a few ms); otherwise it is evaluated while the user speaks, and the chat after the recording is a hit.
 - llama.cpp (Hy-MT2) makes a context per chat, and its prompts are 30–40 tokens with no system prompt (first token 0.06–0.11 s): nothing to gain, nothing done.
 
-Measurements (mac-air, 2026-10-17, medians of `TestLLMMeasure` ×3, `TestLLMRealPromptCache` ×2 and the regression's run; resident meanwhile: the user's Dicta and AudioSmith engines, swap 12.3 of 13.3 GB used, 71 % memory free; generation at the M2 rates, so no GPU contention). First token, from the request to the first piece of text:
+Measurements (mac-air, 2026-10-17, medians of TestLLMMeasure ×3, TestLLMRealPromptCache ×2 and the regression's run; resident meanwhile: the user's Dicta and AudioSmith engines, swap 12.3 of 13.3 GB used, 71 % memory free; generation at the M2 rates, so no GPU contention). First token, from the request to the first piece of text:
 
 | | cold (miss) | hit | prefill (warm-up) |
 |---|---|---|---|
@@ -92,8 +92,8 @@ Two language models of the ActNow family are in VoxtNew's catalogue as `Borrowed
 - **Qwen3-4B-Instruct-2507** is `model_type: qwen3`, a plain transformer: mlx-swift-lm's `Qwen3` (c6446cf), prequantized 4-bit layers through VoxtNew's loader (`PrequantizedModelLoading`), one safetensors file. Its chat template has no thinking mode (2507 Instruct never thinks), so no template variable is sent; `<think>` is still stripped if one came.
 - **Gemma 4 E4B** is `model_type: gemma4`, `Gemma4ForConditionalGeneration`: one 5.1 GB safetensors file with the text model (`language_model.*`, 1355 tensors), an audio tower (`audio_tower.*`, `embed_audio.*`, 750) and a vision tower (`vision_tower.*`, `embed_vision.*`, 661). mlx-swift-lm's `Gemma4Model` (the text-only `LLMModelFactory` type for `gemma4`) drops the towers' weights in its `sanitize` before `update(verify: .all)`, so VoxtNew's text loader loads it as it is; MLX reads arrays lazily, so the dropped towers are never read into memory (the text model is 3.9 GB of the file, the towers 0.9 GB; footprint 4.1 GB after the load). The tokenizer is `tokenizer.json` (no `vocab.json`), read by swift-transformers through VoxtNew's local loader. Generation stops at `generation_config.json`'s ends: `<eos>`, `<turn|>` (106) and 50.
 - **Gemma 4's thinking is off.** Its template opens a thought channel only when `enable_thinking` is true (`<|think|>` in the system turn); the profile sends `enable_thinking: false` anyway, and `llm.Client` strips a leading thought channel (`<|channel>thought…<channel|>`, which its card says a model may send even empty) as it strips `<think>` (`internal/llm` `thinkTags`). None came in the eval.
-- **The prompt cache** (M2b) is correct for both. Its snapshot is reused whole, never trimmed, which is what Qwen3.5's linear attention needs and is merely conservative for attention-only models. Qwen3's caches are plain KV caches. Gemma 4 E4B has 24 layers with their own KV (the last 18 share theirs) of which 20 are sliding-window layers: `RotatingKVCache`s of 512 tokens, whose `copy()` keeps the ring's position, so a snapshot after a 573-token prefix resumes exactly. `TestLLMRealPromptCache` passes on both: the same answers token for token with the cache on and off, on misses and hits, seeded Rewrite included. A snapshot is 70–81 MB for Qwen3 at 500–580 tokens (all 36 layers' KV) and 28–32 MB for Gemma 4 (the window caps 20 of its layers).
-- **Cancel** ends a chat 40–46 ms after `job.cancel` on both (`TestLLMRealCancel`). The repetition guard (`TextCollector`) is the same for every model.
+- **The prompt cache** (M2b) is correct for both. Its snapshot is reused whole, never trimmed, which is what Qwen3.5's linear attention needs and is merely conservative for attention-only models. Qwen3's caches are plain KV caches. Gemma 4 E4B has 24 layers with their own KV (the last 18 share theirs) of which 20 are sliding-window layers: `RotatingKVCache`s of 512 tokens, whose `copy()` keeps the ring's position, so a snapshot after a 573-token prefix resumes exactly. TestLLMRealPromptCache passes on both: the same answers token for token with the cache on and off, on misses and hits, seeded Rewrite included. A snapshot is 70–81 MB for Qwen3 at 500–580 tokens (all 36 layers' KV) and 28–32 MB for Gemma 4 (the window caps 20 of its layers).
+- **Cancel** ends a chat 40–46 ms after `job.cancel` on both (TestLLMRealCancel). The repetition guard (`TextCollector`) is the same for every model.
 
 ### Profiles (`internal/llmrt/models.go`)
 
@@ -108,7 +108,7 @@ Greedy for the exact skills because the eval (below) gives no reason to differ f
 
 ### Measurements (mac-air, 2026-10-17)
 
-The user's Dicta and AudioSmith engines were resident in every run (swap 15.7–16.8 of 17–18 GB used); `TestLLMMeasure` through the dev hook and the eval (docs/eval.md, `VOXTNEW_EVAL_LLM=all`) with the post-M2b `voxtnew-llm` of `~/voxtnew-runtime`:
+The user's Dicta and AudioSmith engines were resident in every run (swap 15.7–16.8 of 17–18 GB used); TestLLMMeasure through the dev hook and the eval (docs/eval.md, `VOXTNEW_EVAL_LLM=all`) with the post-M2b `voxtnew-llm` of `~/voxtnew-runtime`:
 
 | model | load (process start included) | first token, cold (prompt) | first token, prompt cache hit | generation | memory: footprint / peak |
 |---|---|---|---|---|---|
@@ -129,7 +129,7 @@ Quality, from docs/eval.md (20 short clips, 6 spoken translations, 8 Rewrite cas
 | Rewrite, no fault | 15 / 16 | 14 / 16 | 15 / 16 | **16 / 16** |
 | median total: Transcribe / Rewrite | 0.79 / 2.5 s | 0.36 / 0.76 s | 0.59 / 1.3 s | 0.71 / 1.7 s |
 
-Long dictation (`TestEvalLong`): `llm.gemma4` keeps the languages of the mixed 742-character `long-all` even as one request (2.9–5.8%), where `llm.balanced` and `llm.qwen3` turn it into English; in pieces cut where the language changes (the session's way) all three are at 4.8–6.3%, `llm.qwen3` in 8.3 s, `llm.balanced` 10.7 s, `llm.gemma4` 10.3 s.
+Long dictation (TestEvalLong): `llm.gemma4` keeps the languages of the mixed 742-character `long-all` even as one request (2.9–5.8%), where `llm.balanced` and `llm.qwen3` turn it into English; in pieces cut where the language changes (the session's way) all three are at 4.8–6.3%, `llm.qwen3` in 8.3 s, `llm.balanced` 10.7 s, `llm.gemma4` 10.3 s.
 
 **Qwen3-4B-Instruct-2507 translated English dictation into Chinese** when Chinese was the main language: every English clip (5 of 5), every English piece of a long dictation, although compose said to keep the mix of languages and that the main language is not a language to translate into. compose now says, for Transcribe, to write in the language spoken (docs/eval.md, "Compose's wording"): with it `llm.qwen3` keeps all 7 English clips in English, and `llm.fast`, which translated both ways (7 of 20 faultless with English as the main language), gains too; `llm.balanced` and `llm.gemma4` are unchanged.
 

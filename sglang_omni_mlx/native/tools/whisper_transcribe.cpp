@@ -4,6 +4,10 @@
 //
 //   whisper_transcribe --model-path DIR [--language L] [--max-new-tokens N]
 //     [--temperature T] [--draft-model-path DIR [--draft-steps N]] a.wav...
+//
+// --full-precision loads the weights as stored, without load-time
+// quantization.
+
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -16,6 +20,7 @@
 
 #include "common/audio.h"
 #include "common/generation.h"
+#include "common/layers.h"
 #include "nlohmann/json.hpp"
 #include "whisper/whisper_transcriber.h"
 
@@ -35,7 +40,9 @@ int main(int argc, char **argv) {
       }
       return std::string(argv[++i]);
     };
-    if (argument == "--model-path") {
+    if (argument == "--full-precision") {
+      omni_common::SetLoadTimeQuantization(false);
+    } else if (argument == "--model-path") {
       model_path = value();
     } else if (argument == "--draft-model-path") {
       draft_path = value();
