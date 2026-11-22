@@ -22,6 +22,11 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Shorter, plainer explanations** (#4377): Translate's page and target language, the Privacy switches for a screenshot and a copied image, the guide's Rewrite step, the upload size limit, the wait for the language model and the prompt preview say what matters in a sentence or two; the details are in docs/settings.md.
 - **The menu bar's recent results say Copy and confirm it** (#2967): the items under Recent results now read "Copy: …", so it is clear that a click copies that result, and a click toasts Copied; a failed copy already said so. The copy a session makes itself stays silent.
 
+- **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
+- **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
+- **The opening plays once per app version** (#4172): it appears after an update, but not on a same-version restart or when Reduce Motion is on.
+- **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
+
 ### Fixed
 
 - **Reopened answer cards keep their moved position**: closing and reopening a card, including from Reopen card or after a retry, now restores its previous position instead of centering it. The position also survives recording and a failed automatic insertion that falls back to a card; the chosen card width still follows the feature setting, and the height still follows the answer.
@@ -58,6 +63,11 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **首页“最近结果”去掉“在历史中打开”提示**（#4377）：点一行仍会打开历史；鼠标移上去的高亮和区块的“打开历史页”按钮已经说明了这一点，而这个提示会盖住上一行。
 - **说明更短、更好读**（#4377）：翻译页和目标语言、隐私里的截图和复制图片开关、新手引导的改写一步、上传大小上限、等待语言模型的时间和提示词示例，都只用一两句话说清要点；细节写在 docs/settings.md。
 - **菜单栏的最近结果标明“复制”，点击后提示**（#2967）：“最近结果”下的条目现在显示“复制：…”，一看就知道点击会复制这条结果，点击后提示“已复制”；复制失败此前已有提示。会话结束时的自动复制不提示。
+
+- **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
+- **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
+- **每个版本只播放一次开场**（#4172）：更新后会播放开场，同一版本重启不会重复播放；开启“减少动态效果”时跳过。
+- **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 
 #### 修复
 

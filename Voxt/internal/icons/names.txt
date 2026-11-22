@@ -6,6 +6,7 @@
 home-2                  # Home
 history                 # History
 microphone-3            # Transcribe
+dialog                  # Meetings
 global                  # Translate
 pen-new-round           # Rewrite
 target                  # App enhancement
@@ -42,6 +43,8 @@ copy-check              # copied (the answer card)
 pen                     # insert (the answer card)
 maximize-square-minimalistic # a larger answer card (the card)
 minimize-square-minimalistic # the answer card back to small (the card)
+maximize                # expand the meeting overlay
+minimize                # collapse the meeting overlay
 folder-open             # show in Finder
 trash-bin-minimalistic  # delete (a history entry, a shortcut)
 refresh                 # check again
