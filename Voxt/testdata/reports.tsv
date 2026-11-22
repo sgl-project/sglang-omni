@@ -1,6 +1,9 @@
 report	fix	symptom	level	check
 #3180	#3769	Dictated text is not inserted into a panel that does not become the active app (Raycast)	L	testTargetReached
 #3387	#3768	Meeting live and final speech requests omit dictation's main-language hint	L	TestMeetingTrackASRUsesDictationLanguage
+#3387	#4481	Meeting segment transcription ignores the Simplified or Traditional Chinese preference	L	TestTranscribeChunksChineseScript
+#3387	#4481	Meeting prompt and dictionary echoes escape suppression when Chinese scripts differ	L	TestTranscribeChunksSuppressesCrossScriptGuidance
+#3387	#4481	Imported-file transcription ignores the Chinese script preference	L	TestTranscribeUsesTranscribesSpeechModel
 #3431	#3767	The live meeting bubble repeats a sentence after a pause	L	TestCommitterPauseRevisedTail
 #3776	#3777	A settings dialog needs two presses of Escape to close	L	TestOneEscapeClosesDialogs
 #3778	#3779	A Logs filter with no match says there are no log lines yet	L	TestLogsFilterNoMatch
