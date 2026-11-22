@@ -317,7 +317,7 @@ Fields accepted by `/v1/chat/completions`. Model support and defaults vary; the 
 | `top_k` | int | model default | Top-k sampling |
 | `min_p` | float | model default | Minimum-token probability |
 | `repetition_penalty` | float | model default | Repetition penalty |
-| `stop` | string or list | `null` | Stop sequences |
+| `stop` | string or list | `null` | Stop sequences; an empty string is refused with 422 |
 | `seed` | int | `null` | Random seed for reproducibility |
 | `stream` | bool | `false` | Stream results as Server-Sent Events |
 | `audio` | object | `null` | Speech output settings, such as `{"format": "wav"}`; some models add `ref_audio` |

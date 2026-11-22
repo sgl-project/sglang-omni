@@ -9,6 +9,7 @@ import math
 from typing import Annotated, Literal
 
 from pydantic import (
+    AfterValidator,
     AliasChoices,
     BaseModel,
     ConfigDict,
@@ -32,6 +33,17 @@ SpeechOutputSampleRate = Annotated[
         ge=MIN_AUDIO_OUTPUT_SAMPLE_RATE, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
     ),
 ]
+
+
+def refuse_empty_stop_string(stop: str | list[str]) -> str | list[str]:
+    """An empty stop string matches at offset 0, so it would cut the whole completion."""
+    if stop == "" or (isinstance(stop, list) and "" in stop):
+        raise ValueError("stop strings must not be empty")
+    else:
+        return stop
+
+
+StopStrings = Annotated[str | list[str], AfterValidator(refuse_empty_stop_string)]
 
 
 class UsageResponse(BaseModel):
@@ -148,7 +160,7 @@ class ChatCompletionRequest(BaseModel):
     repetition_penalty: float | None = None
     max_tokens: int | None = Field(default=None, ge=1)
     max_completion_tokens: int | None = Field(default=None, ge=1)
-    stop: str | list[str] | None = None
+    stop: StopStrings | None = None
     seed: int | None = None
 
     # Streaming
@@ -278,7 +290,7 @@ class RolloutSamplingParams(BaseModel):
     top_k: int | None = None
     min_p: float | None = Field(default=None, ge=0.0, le=1.0)
     repetition_penalty: float | None = Field(default=None, gt=0.0)
-    stop: str | list[str] | None = None
+    stop: StopStrings | None = None
     stop_token_ids: list[int] | None = None
     seed: int | None = None
     max_new_tokens: int | None = Field(default=None, ge=1)

@@ -290,7 +290,7 @@ Standard sampling parameters apply to the thinker. When `modalities` includes `"
 | `repetition_penalty` | float | `1.0` | Thinker |
 | `max_tokens` | int | `2048` | Thinker |
 | `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
-| `stop` | str or list | `null` | Thinker |
+| `stop` | str or list | `null` | Thinker; an empty string is refused with 422 |
 | `seed` | int | `null` | Thinker |
 | `stream` | bool | `false` | Both |
 | `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
