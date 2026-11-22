@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage executors of the LFM3-Audio pipeline: preprocessing, generation, decode."""
+"""Stage executors of the LFM3 pipeline (LFM3-Audio, LFM3-Omni): preprocessing, generation, decode."""
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import logging
+import os
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +19,7 @@ import torch
 from sglang_omni.models.lfm3_audio.io import Lfm3AudioState
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.base import is_url
+from sglang_omni.preprocessing.image import ensure_image_list_async
 from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import load_state, store_state
@@ -40,6 +46,8 @@ DEFAULT_TTS_VOICE = "female"
 TTS_VOICES = frozenset({"female", "male"})
 INTERLEAVED_SYSTEM_PROMPT = "Respond with interleaved text and audio."
 AUDIO_PART_TYPES = frozenset({"audio", "audio_url", "input_audio"})
+IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+VIDEO_PART_TYPES = frozenset({"video", "video_url"})
 
 
 def load_processor(model_path: str):
@@ -93,6 +101,89 @@ def audio_source(part: Mapping[str, object]) -> object:
         return part.get("audio")
 
 
+def media_source(part: Mapping[str, object], kind: str) -> object:
+    """The image or video of a content part: `{kind}_url` ({"url": ...} or a string), or `{kind}`."""
+    value = part.get(f"{kind}_url", part.get(kind, part.get(f"input_{kind}")))
+    if isinstance(value, Mapping):
+        return value.get("url")
+    else:
+        return value
+
+
+def video_file(source: object) -> object:
+    """A video the processor can open: paths and http(s) URLs as given, a data URL as a temp file."""
+    if isinstance(source, str) and source.startswith("data:"):
+        header, _, encoded = source.partition(",")
+        if ";base64" not in header:
+            raise ValueError("LFM3 video data URLs must be base64")
+        else:
+            pass
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except binascii.Error as exc:
+            raise ValueError("LFM3 video data URL is not valid base64") from exc
+        suffix = (
+            "." + header[len("data:video/") :].split(";")[0]
+            if header.startswith("data:video/")
+            else ".mp4"
+        )
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+            handle.write(payload)
+        return handle.name
+    else:
+        return source
+
+
+def load_video_frames(
+    source: object, video_processor: object
+) -> tuple[np.ndarray, object]:
+    """The frames the checkpoint's video processor samples, decoded with PyAV, and their metadata.
+
+    Only the sampled frames are kept; the metadata carries their indices and the
+    clip's fps, from which the processor writes the frame timestamps.
+    """
+    import av
+    from transformers.video_utils import VideoMetadata
+
+    with av.open(str(source)) as container:
+        stream = container.streams.video[0]
+        fps = float(stream.average_rate or stream.base_rate or 0) or None
+        total = stream.frames or sum(1 for _ in container.demux(stream) if _.size)
+    if not total:
+        raise ValueError(f"LFM3 found no video frames in {source!r}")
+    else:
+        pass
+    indices = video_processor.sample_frames(
+        VideoMetadata(total_num_frames=total, fps=fps)
+    )
+    # The sampled indices are distinct and increasing: one decoding pass keeps them in order.
+    wanted = {int(index) for index in indices}
+    last = max(wanted)
+    decoded: list[np.ndarray] = []
+    with av.open(str(source)) as container:
+        for index, frame in enumerate(container.decode(video=0)):
+            if index in wanted:
+                decoded.append(frame.to_ndarray(format="rgb24"))
+            else:
+                pass
+            if index >= last:
+                break
+            else:
+                pass
+    if len(decoded) != len(wanted):
+        raise ValueError(
+            f"LFM3 decoded {len(decoded)} of {len(wanted)} sampled video frames"
+        )
+    else:
+        pass
+    metadata = VideoMetadata(
+        total_num_frames=total,
+        fps=fps,
+        frames_indices=[int(index) for index in indices],
+    )
+    return np.stack(decoded), metadata
+
+
 async def load_waveform(source: object, media_io: AudioMediaIO) -> np.ndarray:
     if isinstance(source, np.ndarray):
         return source.astype(np.float32)
@@ -109,28 +200,64 @@ async def load_waveform(source: object, media_io: AudioMediaIO) -> np.ndarray:
 
 
 def audio_sampling(params: Mapping[str, object], is_tts: bool) -> dict[str, object]:
-    """Speech-frame sampling; a TTS request's temperature, top_k and repetition_penalty set it."""
-    if is_tts:
-        names = {
-            "audio_temperature": "temperature",
-            "audio_top_k": "top_k",
-            "audio_repetition_penalty": "repetition_penalty",
-        }
-    else:
-        names = {
-            name: name
-            for name in ("audio_temperature", "audio_top_k", "audio_repetition_penalty")
-        }
-    return {field: params.get(source) for field, source in names.items()}
+    """Speech-frame sampling: a TTS request's sampling fields, or a chat request's `talker_*` fields."""
+    prefix = "" if is_tts else "talker_"
+    return {
+        "audio_temperature": params.get(f"{prefix}temperature"),
+        "audio_top_k": params.get(f"{prefix}top_k"),
+        "audio_repetition_penalty": params.get(f"{prefix}repetition_penalty"),
+    }
+
+
+class Media:
+    """A request's input clips (16 kHz), images and videos, in placeholder order."""
+
+    def __init__(self) -> None:
+        self.audio: list[np.ndarray] = []
+        self.images: list[object] = []
+        self.videos: list[np.ndarray] = []
+        self.video_metadata: list[object] = []
+        # Decoded video data URLs, removed once the processor has read them.
+        self.temp_files: list[str] = []
+
+    def cleanup(self) -> None:
+        for path in self.temp_files:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        self.temp_files.clear()
+
+    def processor_inputs(self) -> dict[str, object]:
+        inputs: dict[str, object] = {}
+        if self.audio:
+            inputs["audio"] = self.audio
+        else:
+            pass
+        if self.images:
+            inputs["images"] = self.images
+        else:
+            pass
+        if self.videos:
+            # Already sampled by load_video_frames, with their indices in the metadata.
+            inputs.update(
+                videos=self.videos,
+                video_metadata=self.video_metadata,
+                do_sample_frames=False,
+            )
+        else:
+            pass
+        return inputs
 
 
 class Lfm3AudioPreprocessor:
-    """Builds the prompt ids and the input clips' log-mel features."""
+    """Builds the prompt ids, the input clips' log-mel features and LFM3-Omni's image and video patches."""
 
     def __init__(self, model_path: str) -> None:
         self.processor = load_processor(model_path)
         self.tokenizer = self.processor.tokenizer
         self.media_io = AudioMediaIO(target_sr=INPUT_SAMPLE_RATE)
+        self.has_vision = getattr(self.processor, "image_processor", None) is not None
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         request = payload.request
@@ -138,7 +265,7 @@ class Lfm3AudioPreprocessor:
         metadata = request.metadata or {}
         tts_params = metadata.get("tts_params") or {}
         is_tts = metadata.get("task") == "tts"
-        waveforms: list[np.ndarray] = []
+        media = Media()
         if is_tts:
             inputs = request.inputs
             text = inputs if isinstance(inputs, str) else (inputs or {}).get("text", "")
@@ -155,30 +282,29 @@ class Lfm3AudioPreprocessor:
                 if isinstance(content, list):
                     parts = []
                     for part in content:
-                        part = dict(part)
-                        if part.get("type") in AUDIO_PART_TYPES:
-                            waveforms.append(
-                                await load_waveform(audio_source(part), self.media_io)
-                            )
-                            part = {"type": "audio"}
-                        else:
-                            pass
-                        parts.append(part)
+                        parts.append(await self.read_part(dict(part), media))
                     message["content"] = parts
                 else:
                     pass
-            extra_audio = (
-                request.inputs.get("audio") or request.inputs.get("audios")
-                if isinstance(request.inputs, dict)
-                else None
-            )
-            for source in extra_audio or []:
-                waveforms.append(await load_waveform(source, self.media_io))
-                messages[-1]["content"] = (
-                    [{"type": "text", "text": messages[-1]["content"]}]
-                    if isinstance(messages[-1]["content"], str)
-                    else list(messages[-1]["content"])
-                ) + [{"type": "audio"}]
+            extra = request.inputs if isinstance(request.inputs, dict) else {}
+            for kind, keys in (
+                ("audio", ("audio", "audios")),
+                ("image", ("image", "images")),
+                ("video", ("video", "videos")),
+            ):
+                sources = next((extra[key] for key in keys if extra.get(key)), None)
+                if sources is None:
+                    continue
+                else:
+                    pass
+                for source in sources if isinstance(sources, list) else [sources]:
+                    part = await self.read_part({"type": kind, kind: source}, media)
+                    last = messages[-1]["content"]
+                    messages[-1]["content"] = (
+                        [{"type": "text", "text": last}]
+                        if isinstance(last, str)
+                        else list(last)
+                    ) + [part]
             speaks = "audio" in (metadata.get("output_modalities") or [])
             if speaks and not any(
                 message.get("role") == "system" for message in messages
@@ -190,22 +316,31 @@ class Lfm3AudioPreprocessor:
                 pass
             marker = MIXED_START if speaks else NO_THINKING
             text_only = not speaks
-        prompt = (
-            self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False
+        rendered = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+        # LFM3-Omni's template already opens the answer with an empty reasoning block.
+        if marker == NO_THINKING and rendered.endswith(NO_THINKING):
+            marker = ""
+        else:
+            pass
+        try:
+            encoded = self.processor(
+                text=rendered + marker,
+                sampling_rate=INPUT_SAMPLE_RATE,
+                return_tensors="pt",
+                **media.processor_inputs(),
             )
-            + marker
-        )
-        encoded = self.processor(
-            text=prompt,
-            audio=waveforms or None,
-            sampling_rate=INPUT_SAMPLE_RATE,
-            return_tensors="pt",
-        )
+        finally:
+            media.cleanup()
         state = Lfm3AudioState(
             input_ids=encoded["input_ids"][0].tolist(),
             input_features=encoded.get("input_features"),
             feature_attention_mask=encoded.get("feature_attention_mask"),
+            pixel_values=encoded.get("pixel_values"),
+            image_grid_thw=encoded.get("image_grid_thw"),
+            pixel_values_videos=encoded.get("pixel_values_videos"),
+            video_grid_thw=encoded.get("video_grid_thw"),
             text_only=text_only,
             max_new_tokens=int(params.get("max_new_tokens") or 2048),
             temperature=0.0 if is_tts else float(params.get("temperature") or 0.0),
@@ -215,6 +350,40 @@ class Lfm3AudioPreprocessor:
             **audio_sampling(params, is_tts),
         )
         return store_state(payload, state)
+
+    async def read_part(self, part: dict, media: "Media") -> dict:
+        """Load a content part's audio, image or video; the template gets a bare placeholder part."""
+        kind = part.get("type")
+        if kind in AUDIO_PART_TYPES:
+            media.audio.append(await load_waveform(audio_source(part), self.media_io))
+            return {"type": "audio"}
+        elif kind in IMAGE_PART_TYPES or kind in VIDEO_PART_TYPES:
+            if not self.has_vision:
+                raise ValueError(
+                    "This LFM3 checkpoint takes text and audio; images and videos need LFM3-Omni"
+                )
+            else:
+                pass
+            if kind in IMAGE_PART_TYPES:
+                media.images.extend(
+                    await ensure_image_list_async(media_source(part, "image"))
+                )
+                return {"type": "image"}
+            else:
+                source = media_source(part, "video")
+                path = video_file(source)
+                if path is not source:
+                    media.temp_files.append(path)
+                else:
+                    pass
+                frames, metadata = await asyncio.to_thread(
+                    load_video_frames, path, self.processor.video_processor
+                )
+                media.videos.append(frames)
+                media.video_metadata.append(metadata)
+                return {"type": "video"}
+        else:
+            return part
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:

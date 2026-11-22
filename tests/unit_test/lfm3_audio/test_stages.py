@@ -45,6 +45,45 @@ def test_tts_sampling_fields_drive_the_speech_frames() -> None:
     }
 
 
+def test_chat_talker_fields_drive_the_speech_frames() -> None:
+    params = {"temperature": 0.7, "talker_temperature": 0.0, "talker_top_k": 32}
+    assert stages.audio_sampling(params, is_tts=False) == {
+        "audio_temperature": 0.0,
+        "audio_top_k": 32,
+        "audio_repetition_penalty": None,
+    }
+
+
+def test_image_and_video_parts() -> None:
+    assert (
+        stages.media_source(
+            {"type": "image_url", "image_url": {"url": "a.png"}}, "image"
+        )
+        == "a.png"
+    )
+    assert (
+        stages.media_source({"type": "video_url", "video_url": "b.mp4"}, "video")
+        == "b.mp4"
+    )
+    assert stages.media_source({"type": "image", "image": "c.png"}, "image") == "c.png"
+
+
+def test_video_data_url_becomes_a_temp_file() -> None:
+    import base64
+    import os
+
+    path = stages.video_file(
+        "data:video/mp4;base64," + base64.b64encode(b"abc").decode()
+    )
+    try:
+        assert path.endswith(".mp4")
+        with open(path, "rb") as handle:
+            assert handle.read() == b"abc"
+    finally:
+        os.unlink(path)
+    assert stages.video_file("https://example.com/v.mp4") == "https://example.com/v.mp4"
+
+
 def test_input_audio_part_becomes_a_data_url() -> None:
     part = {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}
     assert stages.audio_source(part) == "data:audio/wav;base64,AAAA"

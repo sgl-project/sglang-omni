@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pipeline configuration of LFM3-Audio: preprocessing -> AR generation -> decode."""
+"""Pipeline configuration of LFM3-Audio and LFM3-Omni: preprocessing -> AR generation -> decode."""
 
 from __future__ import annotations
 
@@ -19,9 +19,12 @@ DECODE_STAGE = "decode"
 
 
 class Lfm3AudioPipelineConfig(PipelineConfig):
-    """Text and 16 kHz audio in; text, 24 kHz speech or interleaved text and speech out."""
+    """Text and 16 kHz audio in (LFM3-Omni: also images and videos); text, 24 kHz speech or both out."""
 
     architecture: ClassVar[str] = "Lfm3AudioForConditionalGeneration"
+    architecture_aliases: ClassVar[tuple[str, ...]] = (
+        "Lfm3OmniForConditionalGeneration",
+    )
     requires_model_capabilities: ClassVar[bool] = True
     supported_speech_fields: ClassVar[frozenset[str] | None] = frozenset(
         {

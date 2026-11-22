@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SGLang engine of the LFM3-Audio AR stage."""
+"""SGLang engine of the LFM3 AR stage (LFM3-Audio and LFM3-Omni)."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from sglang_omni.models.lfm3_audio.hf_config import (
     Lfm3SGLangConfig,
     lfm3_config_from_checkpoint,
     lfm3_tokens_from_checkpoint,
+    speech_defaults_from_checkpoint,
 )
 from sglang_omni.models.lfm3_audio.model_runner import Lfm3AudioModelRunner
 from sglang_omni.models.lfm3_audio.request_builders import Lfm3AudioRequestData
@@ -43,8 +44,8 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
     hybrid conv-state pool needs the radix cache off.
     """
 
-    model_name = "LFM3-Audio"
-    context_length = 8192
+    model_name = "LFM3"
+    context_length = 16384
 
     def resolve_checkpoint(self, model_path: str) -> str:
         """A directory the SGLang loader reads: the backbone config plus the checkpoint's weights."""
@@ -109,5 +110,6 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
         return request_builders.make_adapters(
             model=model,
             tokens=lfm3_tokens_from_checkpoint(self.source_checkpoint_dir),
+            speech_defaults=speech_defaults_from_checkpoint(self.source_checkpoint_dir),
             device=self.device,
         )

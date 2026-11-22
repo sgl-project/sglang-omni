@@ -47,6 +47,16 @@ class DepthRMSNorm(nn.Module):
         return self.weight * x32.to(dtype)
 
 
+class HeadRMSNorm(DepthRMSNorm):
+    """The codebook heads' norm: scaled by the weight in fp32 and rounded once."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        dtype = x.dtype
+        x32 = x.float()
+        x32 = x32 * torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + self.eps)
+        return (x32 * self.weight.float()).to(dtype)
+
+
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     half = x.shape[-1] // 2
     return torch.cat((-x[..., half:], x[..., :half]), dim=-1)
@@ -171,7 +181,7 @@ class CodebookHead(nn.Module):
     def __init__(self, codebook_size: int, hidden: int, eps: float) -> None:
         super().__init__()
         self.embedding = nn.Embedding(codebook_size, hidden)
-        self.embedding_norm = DepthRMSNorm(hidden, eps)
+        self.embedding_norm = HeadRMSNorm(hidden, eps)
 
     def logits(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(self.embedding_norm(x), self.embedding.weight)

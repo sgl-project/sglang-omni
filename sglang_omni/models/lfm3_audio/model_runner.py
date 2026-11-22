@@ -78,43 +78,75 @@ class Lfm3AudioModelRunner(ModelRunner):
         self, forward_batch: ForwardBatch, requests: list[SchedulerRequest]
     ) -> torch.Tensor:
         input_embeds = self.model.get_input_embeddings()(forward_batch.input_ids)
-        audio_token_id = self.tokens.audio_token_id
         offset = 0
         for sched_req in requests:
             data: Lfm3AudioRequestData = sched_req.data
             req = data.req
             extend_len = req.extend_len
-            prefix_len = req.prefix_len
-            features = data.input_features
-            if features is not None and features.numel():
-                if prefix_len != 0 or extend_len != len(data.input_ids):
+            media = self.encode_media(data, input_embeds.device)
+            if media:
+                if req.prefix_len != 0 or extend_len != len(data.input_ids):
                     raise RuntimeError(
-                        "LFM3-Audio places a request's audio embeddings in one prefill; "
+                        "LFM3 places a request's media embeddings in one prefill; "
                         "serve it with chunked prefill and the radix cache off"
                     )
                 else:
                     pass
-                device = input_embeds.device
-                embeds = self.model.encode_audio(
-                    features.to(device),
-                    data.feature_attention_mask.to(device),
-                )
-                positions = (data.input_ids == audio_token_id).nonzero(as_tuple=True)[0]
+            else:
+                pass
+            for token_id, embeds in media:
+                positions = (data.input_ids == token_id).nonzero(as_tuple=True)[0]
                 if positions.numel() != embeds.shape[0]:
                     raise ValueError(
-                        f"{positions.numel()} audio placeholders for {embeds.shape[0]} audio tokens"
+                        f"{positions.numel()} placeholders of token {token_id} for "
+                        f"{embeds.shape[0]} media embeddings"
                     )
                 else:
                     pass
-                input_embeds[positions.to(device) + offset] = embeds.to(
+                input_embeds[positions.to(input_embeds.device) + offset] = embeds.to(
                     input_embeds.dtype
                 )
-                data.input_features = None
-                data.feature_attention_mask = None
-            else:
-                pass
             offset += extend_len
         return input_embeds
+
+    def encode_media(
+        self, data: Lfm3AudioRequestData, device: torch.device
+    ) -> list[tuple[int, torch.Tensor]]:
+        """(placeholder id, embeddings) of the request's audio clips, images and videos; consumes the inputs."""
+        media: list[tuple[int, torch.Tensor]] = []
+        tokens = self.tokens
+        if data.input_features is not None and data.input_features.numel():
+            media.append(
+                (
+                    tokens.audio_token_id,
+                    self.model.encode_audio(
+                        data.input_features.to(device),
+                        data.feature_attention_mask.to(device),
+                    ),
+                )
+            )
+        else:
+            pass
+        for token_id, pixels, grid in (
+            (tokens.image_token_id, data.pixel_values, data.image_grid_thw),
+            (tokens.video_token_id, data.pixel_values_videos, data.video_grid_thw),
+        ):
+            if pixels is not None and pixels.numel():
+                media.append(
+                    (
+                        token_id,
+                        self.model.encode_vision(pixels.to(device), grid.to(device)),
+                    )
+                )
+            else:
+                pass
+        data.input_features = None
+        data.feature_attention_mask = None
+        data.pixel_values = None
+        data.image_grid_thw = None
+        data.pixel_values_videos = None
+        data.video_grid_thw = None
+        return media
 
     def before_decode(
         self,

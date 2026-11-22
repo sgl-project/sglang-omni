@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""LFM3-Audio backbone config for the SGLang runtime.
+"""LFM3 backbone config for the SGLang runtime, for LFM3-Audio and LFM3-Omni.
 
-The checkpoint's ``config.json`` is in Liquid's export format (``lfm``,
-``encoder`` and ``depthformer`` sections, custom code). The AR stage serves
-the ``lfm`` section as an LFM2 config so the runtime allocates the short-conv
-state pool, plus the LFM3 additions (sliding attention layers, sandwich norm,
-per-layer RoPE) and the speech-output constants.
+LFM3-Audio's ``config.json`` is in Liquid's export format (``lfm``, ``encoder``
+and ``depthformer`` sections); LFM3-Omni's is a Transformers config
+(``text_config``, ``audio_encoder_config``, ``depth_config``,
+``vision_config``). Both share the text backbone, depth decoder and speech
+constants. The AR stage serves the text section as an LFM2 config so the
+runtime allocates the short-conv state pool, plus the LFM3 additions (sliding
+attention layers, sandwich norm, per-layer RoPE).
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ ATTENTION_LAYER_TYPES = ("full_attention", "sliding_attention")
 
 @dataclass(frozen=True)
 class Lfm3AudioTokens:
-    """Special token ids and speech constants of the released checkpoint."""
+    """Special token ids and speech constants of a released checkpoint."""
 
     audio_token_id: int = 125031
     audio_out_token_id: int = 125032
@@ -38,6 +40,9 @@ class Lfm3AudioTokens:
     maskgit_steps: int = 3
     interleaved_n_text: int = 6
     interleaved_n_audio: int = 12
+    # LFM3-Omni only.
+    image_token_id: int | None = None
+    video_token_id: int | None = None
 
     @property
     def maskgit_schedule(self) -> list[int]:
@@ -46,8 +51,15 @@ class Lfm3AudioTokens:
         return schedule
 
     @property
-    def placeholder_token_ids(self) -> tuple[int, int]:
-        return (self.audio_token_id, self.audio_out_token_id)
+    def placeholder_token_ids(self) -> tuple[int, ...]:
+        """Media placeholders, which are never sampled."""
+        ids = (
+            self.audio_token_id,
+            self.audio_out_token_id,
+            self.image_token_id,
+            self.video_token_id,
+        )
+        return tuple(token_id for token_id in ids if token_id is not None)
 
 
 class Lfm3SGLangConfig(Lfm2Config):
@@ -111,16 +123,47 @@ def load_checkpoint_config(checkpoint_dir: str) -> dict:
         return json.load(handle)
 
 
-def lfm3_config_from_checkpoint(checkpoint_dir: str) -> Lfm3SGLangConfig:
-    """Build the backbone config from the checkpoint's ``lfm`` section."""
-    raw = load_checkpoint_config(checkpoint_dir)
-    if "lfm" not in raw:
-        raise ValueError(
-            f"{checkpoint_dir}/config.json has no `lfm` section; expected an LFM3-Audio checkpoint"
-        )
+def is_export_format(raw: dict) -> bool:
+    """LFM3-Audio's export layout; LFM3-Omni ships a Transformers config."""
+    return "lfm" in raw
+
+
+def text_section(raw: dict, checkpoint_dir: str) -> dict:
+    if is_export_format(raw):
+        return raw["lfm"]
+    elif "text_config" in raw:
+        return raw["text_config"]
     else:
-        pass
-    text = raw["lfm"]
+        raise ValueError(
+            f"{checkpoint_dir}/config.json has neither an `lfm` nor a `text_config` "
+            "section; expected an LFM3-Audio or LFM3-Omni checkpoint"
+        )
+
+
+def speech_constants(raw: dict) -> dict[str, int]:
+    if is_export_format(raw):
+        codebook_size = raw.get("audio_vocab_size", 2017)
+        return {
+            "num_codebooks": raw.get("codebooks", 12),
+            "codebook_size": codebook_size,
+            "audio_eos_code": codebook_size - 1,
+            "maskgit_steps": raw.get("maskgit_steps", 3),
+        }
+    else:
+        codebook_size = raw.get("codebook_size", 2017)
+        return {
+            "num_codebooks": raw.get("num_codebooks", 12),
+            "codebook_size": codebook_size,
+            "audio_eos_code": raw.get("audio_eos_code", codebook_size - 1),
+            "maskgit_steps": len(raw.get("maskgit_schedule", [4, 4, 4])),
+        }
+
+
+def lfm3_config_from_checkpoint(checkpoint_dir: str) -> Lfm3SGLangConfig:
+    """Build the backbone config from the checkpoint's text section."""
+    raw = load_checkpoint_config(checkpoint_dir)
+    text = text_section(raw, checkpoint_dir)
+    speech = speech_constants(raw)
     return Lfm3SGLangConfig(
         architectures=[SGLANG_ARCHITECTURE],
         vocab_size=text["vocab_size"],
@@ -142,32 +185,36 @@ def lfm3_config_from_checkpoint(checkpoint_dir: str) -> Lfm3SGLangConfig:
         pad_token_id=text.get("pad_token_id"),
         bos_token_id=text.get("bos_token_id"),
         eos_token_id=text.get("eos_token_id"),
-        # The released export keeps the FFN width as stored; LFM2's auto-adjust would shrink it.
+        # The released checkpoints keep the FFN width as stored; LFM2's auto-adjust would shrink it.
         block_auto_adjust_ff_dim=False,
-        depth_config=raw.get("depthformer", {}),
-        num_codebooks=raw.get("codebooks", 12),
-        codebook_size=raw.get("audio_vocab_size", 2017),
-        maskgit_steps=raw.get("maskgit_steps", 3),
+        depth_config=raw.get("depthformer") or raw.get("depth_config") or {},
+        num_codebooks=speech["num_codebooks"],
+        codebook_size=speech["codebook_size"],
+        maskgit_steps=speech["maskgit_steps"],
         interleaved_n_text=raw.get("interleaved_n_text", 6),
         interleaved_n_audio=raw.get("interleaved_n_audio", 12),
     )
 
 
+def load_generation_config(checkpoint_dir: str) -> dict:
+    path = os.path.join(checkpoint_dir, "generation_config.json")
+    if os.path.exists(path):
+        with open(path) as handle:
+            return json.load(handle)
+    else:
+        return {}
+
+
 def lfm3_tokens_from_checkpoint(checkpoint_dir: str) -> Lfm3AudioTokens:
     raw = load_checkpoint_config(checkpoint_dir)
     defaults = Lfm3AudioTokens()
-    generation_path = os.path.join(checkpoint_dir, "generation_config.json")
-    eos = defaults.eos_token_ids
-    if os.path.exists(generation_path):
-        with open(generation_path) as handle:
-            generation = json.load(handle)
-        value = generation.get("eos_token_id")
-        if value is not None:
-            eos = tuple(value) if isinstance(value, list) else (int(value),)
-        else:
-            pass
+    eos = load_generation_config(checkpoint_dir).get("eos_token_id")
+    if eos is None:
+        eos_ids = defaults.eos_token_ids
+    elif isinstance(eos, list):
+        eos_ids = tuple(eos)
     else:
-        pass
+        eos_ids = (int(eos),)
     return Lfm3AudioTokens(
         audio_token_id=raw.get("audio_token_id", defaults.audio_token_id),
         audio_out_token_id=raw.get("audio_out_token_id", defaults.audio_out_token_id),
@@ -178,13 +225,37 @@ def lfm3_tokens_from_checkpoint(checkpoint_dir: str) -> Lfm3AudioTokens:
         mixed_start_token_id=raw.get(
             "mixed_start_token_id", defaults.mixed_start_token_id
         ),
-        eos_token_ids=eos,
-        num_codebooks=raw.get("codebooks", defaults.num_codebooks),
-        codebook_size=raw.get("audio_vocab_size", defaults.codebook_size),
-        audio_eos_code=raw.get("audio_vocab_size", defaults.codebook_size) - 1,
-        maskgit_steps=raw.get("maskgit_steps", defaults.maskgit_steps),
+        eos_token_ids=eos_ids,
         interleaved_n_text=raw.get("interleaved_n_text", defaults.interleaved_n_text),
         interleaved_n_audio=raw.get(
             "interleaved_n_audio", defaults.interleaved_n_audio
+        ),
+        image_token_id=raw.get("image_token_id"),
+        video_token_id=raw.get("video_token_id"),
+        **speech_constants(raw),
+    )
+
+
+@dataclass(frozen=True)
+class SpeechSamplingDefaults:
+    """The checkpoint's speech-frame sampling defaults (generation_config.json)."""
+
+    temperature: float = 1.0
+    top_k: int | None = 128
+    repetition_penalty: float = 1.1
+    repetition_window: int = 64
+
+
+def speech_defaults_from_checkpoint(checkpoint_dir: str) -> SpeechSamplingDefaults:
+    generation = load_generation_config(checkpoint_dir)
+    defaults = SpeechSamplingDefaults()
+    return SpeechSamplingDefaults(
+        temperature=generation.get("audio_temperature", defaults.temperature),
+        top_k=generation.get("audio_top_k", defaults.top_k),
+        repetition_penalty=generation.get(
+            "audio_repetition_penalty", defaults.repetition_penalty
+        ),
+        repetition_window=generation.get(
+            "audio_repetition_window", defaults.repetition_window
         ),
     )

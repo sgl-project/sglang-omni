@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pipeline state of LFM3-Audio requests."""
+"""Pipeline state of LFM3-Audio and LFM3-Omni requests."""
 
 from __future__ import annotations
 
@@ -18,6 +18,11 @@ class Lfm3AudioState(DeclarativeStateBase):
     # Log-mel features of the input clips, (clips, 128, frames), and their valid-frame mask.
     input_features: torch.Tensor | None = wire(None, codec="typed_tensor")
     feature_attention_mask: torch.Tensor | None = wire(None, codec="typed_tensor")
+    # LFM3-Omni images and videos: flattened patches and their (t, h, w) patch grids.
+    pixel_values: torch.Tensor | None = wire(None, codec="typed_tensor")
+    image_grid_thw: torch.Tensor | None = wire(None, codec="typed_tensor")
+    pixel_values_videos: torch.Tensor | None = wire(None, codec="typed_tensor")
+    video_grid_thw: torch.Tensor | None = wire(None, codec="typed_tensor")
     text_only: bool = False
     max_new_tokens: int = 2048
     temperature: float = 0.0

@@ -12,7 +12,10 @@ import torch
 
 from sglang_omni.models.lfm3_audio.depth import FrameSampling
 from sglang_omni.models.lfm3_audio.generation import SpeechState
-from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
+from sglang_omni.models.lfm3_audio.hf_config import (
+    Lfm3AudioTokens,
+    SpeechSamplingDefaults,
+)
 from sglang_omni.models.lfm3_audio.io import Lfm3AudioState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
@@ -22,25 +25,26 @@ if TYPE_CHECKING:
 else:
     pass
 
-# The checkpoint's generation_config.json speech defaults.
-DEFAULT_AUDIO_TEMPERATURE = 1.0
-DEFAULT_AUDIO_TOP_K = 128
-DEFAULT_AUDIO_REPETITION_PENALTY = 1.1
-DEFAULT_AUDIO_REPETITION_WINDOW = 4096
-
 
 @dataclass
 class Lfm3AudioRequestData(SGLangARRequestData):
     speech: SpeechState | None = None
     input_features: torch.Tensor | None = None
     feature_attention_mask: torch.Tensor | None = None
+    # LFM3-Omni vision inputs: flattened patches and (t, h, w) patch grids.
+    pixel_values: torch.Tensor | None = None
+    image_grid_thw: torch.Tensor | None = None
+    pixel_values_videos: torch.Tensor | None = None
+    video_grid_thw: torch.Tensor | None = None
     pending_feedback_queue: collections.deque[torch.Tensor] = field(
         default_factory=collections.deque
     )
 
 
-def speech_sampling(state: Lfm3AudioState, device: str) -> FrameSampling:
-    generator = None
+def speech_sampling(
+    state: Lfm3AudioState, device: str, defaults: SpeechSamplingDefaults
+) -> FrameSampling:
+    """A request's speech-frame sampling; unset fields take the checkpoint's defaults."""
     if state.seed is not None:
         generator = torch.Generator(device=device).manual_seed(int(state.seed))
     else:
@@ -48,19 +52,17 @@ def speech_sampling(state: Lfm3AudioState, device: str) -> FrameSampling:
         generator.seed()
     return FrameSampling(
         temperature=(
-            DEFAULT_AUDIO_TEMPERATURE
+            defaults.temperature
             if state.audio_temperature is None
             else float(state.audio_temperature)
         ),
-        top_k=(
-            DEFAULT_AUDIO_TOP_K if state.audio_top_k is None else int(state.audio_top_k)
-        ),
+        top_k=defaults.top_k if state.audio_top_k is None else int(state.audio_top_k),
         repetition_penalty=(
-            DEFAULT_AUDIO_REPETITION_PENALTY
+            defaults.repetition_penalty
             if state.audio_repetition_penalty is None
             else float(state.audio_repetition_penalty)
         ),
-        repetition_window=DEFAULT_AUDIO_REPETITION_WINDOW,
+        repetition_window=defaults.repetition_window,
         generator=generator,
     )
 
@@ -70,6 +72,7 @@ def build_request(
     *,
     model: "Lfm3AudioSGLangModel",
     tokens: Lfm3AudioTokens,
+    speech_defaults: SpeechSamplingDefaults,
     device: str,
 ) -> Lfm3AudioRequestData:
     from sglang.srt.managers.schedule_batch import Req
@@ -78,7 +81,7 @@ def build_request(
     state = Lfm3AudioState.from_dict(payload.data)
     prompt = [int(token) for token in state.input_ids or []]
     if not prompt:
-        raise ValueError("LFM3-Audio received an empty prompt")
+        raise ValueError("LFM3 received an empty prompt")
     else:
         pass
     vocab_size = model.config.vocab_size
@@ -107,7 +110,7 @@ def build_request(
         tokens,
         prompt[-1],
         text_only=bool(state.text_only),
-        sampling=speech_sampling(state, device),
+        sampling=speech_sampling(state, device, speech_defaults),
     )
     data = Lfm3AudioRequestData(
         input_ids=torch.tensor(prompt, dtype=torch.long),
@@ -117,6 +120,10 @@ def build_request(
         speech=speech,
         input_features=state.input_features,
         feature_attention_mask=state.feature_attention_mask,
+        pixel_values=state.pixel_values,
+        image_grid_thw=state.image_grid_thw,
+        pixel_values_videos=state.pixel_values_videos,
+        video_grid_thw=state.video_grid_thw,
     )
     data.stage_payload = payload
     return data
@@ -132,6 +139,10 @@ def apply_result(payload: StagePayload, data: Lfm3AudioRequestData) -> StagePayl
         state.audio_codes = torch.empty((0, 0), dtype=torch.long)
     state.input_features = None
     state.feature_attention_mask = None
+    state.pixel_values = None
+    state.image_grid_thw = None
+    state.pixel_values_videos = None
+    state.video_grid_thw = None
     state.prompt_tokens = len(data.input_ids) if data.input_ids is not None else 0
     state.completion_tokens = len(state.generated_ids)
     return StagePayload(
@@ -145,13 +156,20 @@ def make_adapters(
     *,
     model: "Lfm3AudioSGLangModel",
     tokens: Lfm3AudioTokens,
+    speech_defaults: SpeechSamplingDefaults,
     device: str,
 ) -> tuple[
     Callable[[StagePayload], Lfm3AudioRequestData],
     Callable[[Lfm3AudioRequestData], StagePayload],
 ]:
     def request_builder(payload: StagePayload) -> Lfm3AudioRequestData:
-        return build_request(payload, model=model, tokens=tokens, device=device)
+        return build_request(
+            payload,
+            model=model,
+            tokens=tokens,
+            speech_defaults=speech_defaults,
+            device=device,
+        )
 
     def result_adapter(data: Lfm3AudioRequestData) -> StagePayload:
         return apply_result(data.stage_payload, data)
