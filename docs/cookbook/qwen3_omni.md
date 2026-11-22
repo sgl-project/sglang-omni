@@ -282,9 +282,3 @@ sgl-omni serve \
 ## Advanced Guides
 
 - [Speech tuning](qwen3_omni/tuning.md): speech chunking, Code2Wav GPU optimizations, and stage placement measurements.
-
-```{toctree}
-:hidden:
-
-qwen3_omni/tuning
-```
