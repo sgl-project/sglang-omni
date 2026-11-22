@@ -116,7 +116,15 @@ func finalizePass(ctx context.Context, cfg Config, mt store.Meeting, importPCM [
 		}
 	}
 	mt.Status = store.MeetingDone
-	return cfg.Store.UpdateMeeting(ctx, mt)
+	if err := cfg.Store.UpdateMeeting(ctx, mt); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if markErr := markFinalizeFailed(context.WithoutCancel(ctx), cfg, mt); markErr != nil {
+				return errors.Join(err, markErr)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // finalizeTrack transcribes one track's WAV again; nil segments mean the
@@ -427,12 +435,6 @@ func segmentToStore(s Segment, src Source) store.MeetingSegment {
 func speechRegions(ctx context.Context, pcm []byte, rate int, model vad.Model) ([]vad.Segment, error) {
 	if rate <= 0 {
 		rate = asr.SampleRate
-	}
-	if model != nil {
-		segs, err := model.Speech(ctx, pcm, rate)
-		if err == nil && len(segs) > 0 {
-			return segs, nil
-		}
 	}
 	return batchedSpeechRegions(ctx, pcm, rate, model), nil
 }

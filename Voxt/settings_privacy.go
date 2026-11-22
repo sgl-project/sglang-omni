@@ -40,18 +40,18 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 			ui.Text(c, "• "+s).FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 		}
 	})
-	settingRow(c, "priv-window", i18n.T("Send a screenshot"), i18n.T("For language models that read images: when you start speaking, Voxt takes a screenshot of the window you speak into and sends it to the language model with the text, so names on screen come out right. Needs Screen Recording permission. A model that takes no images gets the text alone."), func() {
+	settingRow(c, "priv-window", i18n.T("Send a screenshot"), i18n.T("When you start speaking, Voxt sends a screenshot of the window with the text, so the language model can spell names and terms as they appear on screen. Needs Screen Recording permission and a model that reads images."), func() {
 		if ui.Switch(c.Key("priv-window"), &local.sendWindow).Label(i18n.T("Send the window to the language model")).Changed() {
 			actions.setSendWindow(local.sendWindow)
 		}
 	})
-	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. With text selected, only the text goes unless Text and a copied image together is also on. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("With Rewrite, Voxt sends the image you copied to the language model with what you said."), func() {
 		if ui.Switch(c.Key("priv-copied"), &local.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
 			actions.setSendClipboardImage(local.sendClipboard)
 		}
 	})
 	caption(c, i18n.T("With both on, the copied image goes, not the screenshot."))
-	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Off by default: a text selection sends only the text, so an image you copied earlier cannot take over a text rewrite. Turn it on to send the selected text and the copied image together."), func() {
+	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Turn it on to send the selected text and the copied image together."), func() {
 		if ui.Switch(c.Key("priv-copied-with-text"), &local.sendClipboardWithSelection).Label(i18n.T("Send both with Rewrite")).Changed() {
 			actions.setSendClipboardImageWithSelection(local.sendClipboardWithSelection)
 		}

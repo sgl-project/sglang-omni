@@ -113,6 +113,17 @@ func hms(d time.Duration) string {
 // by macOS's afconvert, which reads the sound of mp4 and mov videos too.
 // A cancelled ctx kills the conversion.
 func decodeAudio(ctx context.Context, path string) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "voxt-transcribe-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	return decodeAudioToWAV(ctx, path, filepath.Join(dir, "audio.wav"))
+}
+
+// decodeAudioToWAV leaves afconvert's output at wavPath, including the
+// decoded prefix when a meeting import is cancelled.
+func decodeAudioToWAV(ctx context.Context, path, wavPath string) ([]byte, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
@@ -120,13 +131,7 @@ func decodeAudio(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir, err := os.MkdirTemp("", "voxt-transcribe-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(dir)
-	wav := filepath.Join(dir, "audio.wav")
-	msg, err := exec.CommandContext(ctx, "/usr/bin/afconvert", "-f", "WAVE", "-d", fmt.Sprintf("LEI16@%d", asr.SampleRate), "-c", "1", path, wav).CombinedOutput()
+	msg, err := exec.CommandContext(ctx, "/usr/bin/afconvert", "-f", "WAVE", "-d", fmt.Sprintf("LEI16@%d", asr.SampleRate), "-c", "1", path, wavPath).CombinedOutput()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -136,7 +141,7 @@ func decodeAudio(ctx context.Context, path string) ([]byte, error) {
 		}
 		return nil, err
 	}
-	data, err := os.ReadFile(wav)
+	data, err := os.ReadFile(wavPath)
 	if err != nil {
 		return nil, err
 	}

@@ -29,6 +29,15 @@ func (f *importFileASR) Transcribe(context.Context, asr.FileRequest) (asr.Result
 	return asr.Result{Text: "plain"}, nil
 }
 
+type cancelDoneUpdates struct{ store.Meetings }
+
+func (r cancelDoneUpdates) UpdateMeeting(ctx context.Context, mt store.Meeting) error {
+	if mt.Status == store.MeetingDone {
+		return context.Canceled
+	}
+	return r.Meetings.UpdateMeeting(ctx, mt)
+}
+
 // importDiarizer is MTD with scripted speakers; block set has it work
 // until the context ends (the cancel test).
 type importDiarizer struct {
@@ -193,6 +202,26 @@ func TestImportOneHourBoundsPCMBufferingAndRequests(t *testing.T) {
 	t.Logf("allocated %.1f MiB across %d MTD requests", float64(allocated)/(1<<20), len(requests))
 	if allocated > uint64(len(pcm)*5/4) {
 		t.Fatalf("allocated %.1f MiB for a %.1f MiB track, want at most one full PCM copy plus working memory", float64(allocated)/(1<<20), float64(len(pcm))/(1<<20))
+	}
+}
+
+func TestImportFinalUpdateCancellationLeavesInterrupted(t *testing.T) {
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "hi"},
+	}}}
+	m, repo := importFixture(t, &fixingChat{}, diarizer, &importFileASR{})
+	m.cfg.Store = cancelDoneUpdates{repo}
+	m.cfg.Settings = func() settings.Meeting { return settings.Meeting{NoAutoSummary: true} }
+	id, err := m.Import(context.Background(), ImportRequest{Name: "cancel-final-update", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	mt, _, err := repo.Meeting(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt.Status != store.MeetingInterrupted || mt.Audio == "" {
+		t.Fatalf("status %s, audio %q", mt.Status, mt.Audio)
 	}
 }
 

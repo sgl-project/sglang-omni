@@ -23,6 +23,7 @@ type Manager struct {
 	seq           int64
 	mode          Mode
 	state         State
+	importing     bool
 	snap          Snapshot
 	timeline      *Timeline
 	archive       *Archive
@@ -78,7 +79,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 		return "", fmt.Errorf("meeting: not enough disk space")
 	}
 	m.mu.Lock()
-	if m.state.Active() {
+	if m.state.Active() || m.importing {
 		m.mu.Unlock()
 		return "", ErrBusy
 	}

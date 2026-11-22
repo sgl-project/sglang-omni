@@ -28,6 +28,9 @@ type ImportRequest struct {
 	// PCM is the whole file's sound (16-bit mono, Rate).
 	PCM  []byte
 	Rate int // 0 is asr.SampleRate
+	// Decode writes the recording as wavPath and returns its PCM. A cancel
+	// may leave partial decoded audio there for Continue processing. Nil uses PCM.
+	Decode func(ctx context.Context, wavPath string) ([]byte, error)
 }
 
 // ErrNoHistory is an import refused while Keep a history is off: the
@@ -40,6 +43,18 @@ var ErrNoHistory = errors.New("meeting: Keep a history is off")
 // summary. A failure before the pass drops the meeting; a failed or
 // cancelled pass leaves it interrupted, for Continue processing.
 func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func(float64)) (string, error) {
+	m.mu.Lock()
+	if m.state.Active() || m.importing {
+		m.mu.Unlock()
+		return "", ErrBusy
+	}
+	m.importing = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.importing = false
+		m.mu.Unlock()
+	}()
 	if !m.cfg.Privacy().KeepHistory {
 		return "", ErrNoHistory
 	}
@@ -57,29 +72,53 @@ func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func
 		_ = os.RemoveAll(audioDir)
 		return "", err
 	}
-	wav, err := os.Create(filepath.Join(audioDir, string(SourceSystem)+".wav"))
+	wavPath := filepath.Join(audioDir, string(SourceSystem)+".wav")
+	mt := store.Meeting{
+		ID: id, CreatedAt: req.CreatedAt, Status: store.MeetingFinishing,
+		Mode: toStoreMode(ModeImport), Title: req.Name, Audio: id,
+	}
+	if req.Decode == nil {
+		wav, err := os.Create(wavPath)
+		if err != nil {
+			return fail(err)
+		}
+		_, writeErr := wav.Write(asr.WAVHeader(len(req.PCM), rate))
+		if writeErr == nil {
+			_, writeErr = wav.Write(req.PCM)
+		}
+		closeErr := wav.Close()
+		if writeErr != nil {
+			return fail(writeErr)
+		}
+		if closeErr != nil {
+			return fail(closeErr)
+		}
+		dur := asr.Duration(req.PCM, rate)
+		mt.EndedAt = req.CreatedAt.Add(dur)
+		mt.DurationMS = dur.Milliseconds()
+	}
+	mt, err := m.cfg.Store.CreateMeeting(ctx, mt)
 	if err != nil {
 		return fail(err)
 	}
-	_, writeErr := wav.Write(asr.WAVHeader(len(req.PCM), rate))
-	if writeErr == nil {
-		_, writeErr = wav.Write(req.PCM)
-	}
-	closeErr := wav.Close()
-	if writeErr != nil {
-		return fail(writeErr)
-	}
-	if closeErr != nil {
-		return fail(closeErr)
-	}
-	dur := asr.Duration(req.PCM, rate)
-	mt, err := m.cfg.Store.CreateMeeting(ctx, store.Meeting{
-		ID: id, CreatedAt: req.CreatedAt, EndedAt: req.CreatedAt.Add(dur),
-		Status: store.MeetingFinishing, Mode: toStoreMode(ModeImport),
-		Title: req.Name, DurationMS: dur.Milliseconds(), Audio: id,
-	})
-	if err != nil {
-		return fail(err)
+	if req.Decode != nil {
+		pcm, decodeErr := req.Decode(ctx, wavPath)
+		if decodeErr != nil {
+			if errors.Is(decodeErr, context.Canceled) || errors.Is(decodeErr, context.DeadlineExceeded) {
+				fixErr := FixWAVHeader(wavPath)
+				markErr := markFinalizeFailed(context.WithoutCancel(ctx), m.cfg, mt)
+				return id, errors.Join(decodeErr, fixErr, markErr)
+			}
+			return fail(decodeErr)
+		}
+		req.PCM = pcm
+		dur := asr.Duration(req.PCM, rate)
+		mt.EndedAt = req.CreatedAt.Add(dur)
+		mt.DurationMS = dur.Milliseconds()
+		if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
+			markErr := markFinalizeFailed(context.WithoutCancel(ctx), m.cfg, mt)
+			return id, errors.Join(err, markErr)
+		}
 	}
 	if err := finalizePass(ctx, importPassConfig(m.cfg), mt, req.PCM, rate, onProgress); err != nil {
 		return id, err

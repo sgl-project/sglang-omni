@@ -47,6 +47,15 @@ func (f *importDiarizeFake) Diarize(context.Context, asr.FileRequest) (asr.Resul
 	}}, nil
 }
 
+func decodedImportPCM(pcm []byte) func(context.Context, string, string) ([]byte, error) {
+	return func(_ context.Context, _, wavPath string) ([]byte, error) {
+		if err := os.WriteFile(wavPath, asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
+			return nil, err
+		}
+		return pcm, nil
+	}
+}
+
 type importTimeoutDiarizeFake struct{ importDiarizeFake }
 
 func (f *importTimeoutDiarizeFake) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
@@ -79,7 +88,7 @@ func TestMeetingImportLabelsSpeakersAndSummarizes(t *testing.T) {
 	savedC, savedD := chooseRecordingFile, decodeRecording
 	t.Cleanup(func() { chooseRecordingFile, decodeRecording = savedC, savedD })
 	chooseRecordingFile = func(a *app, then func(string)) { then(wav) }
-	decodeRecording = func(context.Context, string) ([]byte, error) { return pcm, nil }
+	decodeRecording = decodedImportPCM(pcm)
 	tt.SetSize(windowWidth, 900)
 	a.navigate("/meetings")
 	frames(tt)
@@ -201,9 +210,7 @@ func TestMeetingImportLanguageFailureDoesNotSayMTDMissing(t *testing.T) {
 	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
 	saved := decodeRecording
 	t.Cleanup(func() { decodeRecording = saved })
-	decodeRecording = func(context.Context, string) ([]byte, error) {
-		return make([]byte, 2*asr.SampleRate), nil
-	}
+	decodeRecording = decodedImportPCM(make([]byte, 2*asr.SampleRate))
 	a.importRecording("unknown-language.wav")
 	if !a.mvUI.importNoLanguage || a.mvUI.importNoMTD {
 		t.Fatalf("language failure: noLanguage=%v, noMTD=%v", a.mvUI.importNoLanguage, a.mvUI.importNoMTD)
@@ -246,10 +253,20 @@ func TestMeetingImportExplainsHistoryOff(t *testing.T) {
 // on while the page shows the import as cancelled.
 func TestMeetingImportDecodeCancels(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	a.prefs.General.MainLanguage = "en"
+	a.prefs.Features.Meeting.NoAutoSummary = true
+	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
 	savedD := decodeRecording
 	t.Cleanup(func() { decodeRecording = savedD })
 	started := make(chan struct{})
-	decodeRecording = func(ctx context.Context, _ string) ([]byte, error) {
+	decodeRecording = func(ctx context.Context, _, wavPath string) ([]byte, error) {
+		pcm := make([]byte, 2*asr.SampleRate)
+		for i := 0; i < len(pcm); i += 2 {
+			pcm[i], pcm[i+1] = 0x10, 0x7f
+		}
+		if err := os.WriteFile(wavPath, asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
+			return nil, err
+		}
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -257,8 +274,10 @@ func TestMeetingImportDecodeCancels(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	imp := &meetingImport{name: "long.m4a", cancel: cancel}
 	done := make(chan error, 1)
+	var id string
 	go func() {
-		_, err := a.runImport(ctx, imp, "long.m4a")
+		var err error
+		id, err = a.runImport(ctx, imp, "long.m4a")
 		done <- err
 	}()
 	<-started
@@ -266,16 +285,37 @@ func TestMeetingImportDecodeCancels(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("err %v", err)
 	}
+	if id == "" {
+		t.Fatal("decode cancellation returned no interrupted meeting")
+	}
+	mt, _, err := a.lib.store.Meetings().Meeting(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt.Status != store.MeetingInterrupted || mt.Audio == "" {
+		t.Fatalf("status %s, audio %q", mt.Status, mt.Audio)
+	}
+	if _, err := os.Stat(filepath.Join(a.dataDir(), "meetings", mt.Audio, "system.wav")); err != nil {
+		t.Fatalf("decoded audio was not kept: %v", err)
+	}
+	if err := a.meetMgr.Reprocess(context.Background(), id); err != nil {
+		t.Fatalf("Continue processing: %v", err)
+	}
+	mt, _, err = a.lib.store.Meetings().Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingDone {
+		t.Fatalf("after Continue processing: status %s, err %v", mt.Status, err)
+	}
 }
 
 // An import cannot sit for hours: its whole decode, transcription and summary
 // get at most thirty minutes before the meeting is left for Continue processing.
 func TestMeetingImportBoundsTotalWait(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	a.prefs.General.MainLanguage = "en"
 	saved := decodeRecording
 	t.Cleanup(func() { decodeRecording = saved })
 	deadlines := make(chan time.Duration, 1)
-	decodeRecording = func(ctx context.Context, _ string) ([]byte, error) {
+	decodeRecording = func(ctx context.Context, _, _ string) ([]byte, error) {
 		deadline, _ := ctx.Deadline()
 		deadlines <- time.Until(deadline)
 		return nil, context.DeadlineExceeded
@@ -299,13 +339,11 @@ func TestMeetingImportTimeoutKeepsInterruptedMeeting(t *testing.T) {
 	a.prefs.General.MainLanguage = "en"
 	saved := decodeRecording
 	t.Cleanup(func() { decodeRecording = saved })
-	decodeRecording = func(context.Context, string) ([]byte, error) {
-		pcm := make([]byte, 2*asr.SampleRate)
-		for i := 0; i < len(pcm); i += 2 {
-			pcm[i], pcm[i+1] = 0x10, 0x7f
-		}
-		return pcm, nil
+	pcm := make([]byte, 2*asr.SampleRate)
+	for i := 0; i < len(pcm); i += 2 {
+		pcm[i], pcm[i+1] = 0x10, 0x7f
 	}
+	decodeRecording = decodedImportPCM(pcm)
 	a.importRecording("long.wav")
 	if len(a.toasts) != 0 {
 		t.Fatalf("an interrupted import showed a failure: %q", a.toasts)

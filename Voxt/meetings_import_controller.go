@@ -43,7 +43,7 @@ var (
 			a.post(func() { then(files[0]) })
 		}()
 	}
-	decodeRecording = decodeAudio
+	decodeRecording = decodeAudioToWAV
 )
 
 // meetingImport picks a recording to import. It needs MTD: the file is
@@ -71,7 +71,7 @@ func (a *app) openMeetingPrivacySettings() { a.navigate("/settings/privacy") }
 
 func (a *app) importRecording(path string) {
 	n := &a.mvUI
-	if n.importing != nil {
+	if n.importing != nil || a.meetingActive() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), meetingImportTimeout)
@@ -104,17 +104,15 @@ func (a *app) importRecording(path string) {
 }
 
 func (a *app) runImport(ctx context.Context, imp *meetingImport, path string) (string, error) {
-	pcm, err := decodeRecording(ctx, path)
-	if err != nil {
-		return "", err
-	}
 	if !a.meetingDiarizerLanguage() {
 		return "", meeting.ErrNoDiarizer
 	}
 	req := meeting.ImportRequest{
 		Name:      strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
 		CreatedAt: time.Now(),
-		PCM:       pcm,
+		Decode: func(ctx context.Context, wavPath string) ([]byte, error) {
+			return decodeRecording(ctx, path, wavPath)
+		},
 	}
 	if st, statErr := os.Stat(path); statErr == nil {
 		req.CreatedAt = st.ModTime()

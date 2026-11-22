@@ -119,7 +119,7 @@ func meetingModeFrom(s settings.Meeting) meeting.Mode {
 }
 
 func (a *app) startMeeting() {
-	if a.meetMgr == nil {
+	if a.meetMgr == nil || a.mvUI.importing != nil {
 		return
 	}
 	a.async(func() {

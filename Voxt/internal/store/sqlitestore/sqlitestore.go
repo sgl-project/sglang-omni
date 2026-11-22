@@ -146,6 +146,15 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 	}
 	start := v
 	legacyDictionary := false
+	if v == 9 || v == 10 {
+		rows, err := db.Query(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dictionary_profiles'`)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		// Dictionary previews could also carry the later notes and history versions.
+		legacyDictionary = len(rows.Values) != 0
+	}
 	if v == 9 {
 		rows, err := db.Query(ctx, "PRAGMA table_info(notes)")
 		if err != nil {
@@ -159,12 +168,6 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		if !hasAppName {
 			// Import and dictionary previews both used version 9 before notes did.
 			start = 8
-			rows, err = db.Query(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dictionary_profiles'`)
-			if err != nil {
-				db.Close()
-				return nil, err
-			}
-			legacyDictionary = len(rows.Values) != 0
 		}
 	}
 	latest := Version()

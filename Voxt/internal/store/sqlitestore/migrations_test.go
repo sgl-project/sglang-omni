@@ -115,6 +115,50 @@ func TestCombinedUpgradeLegacyDictionaryVersion9(t *testing.T) {
 	}
 }
 
+func TestCombinedUpgradeLegacyDictionaryAfterNotesAndRestart(t *testing.T) {
+	for _, version := range []int{9, 10} {
+		t.Run(strconv.Itoa(version), func(t *testing.T) {
+			saved := migrations
+			t.Cleanup(func() { migrations = saved })
+
+			dir := t.TempDir()
+			migrations = slices.Clone(saved[:8])
+			migrations = append(migrations, migration{version: 9, statements: saved[10].statements})
+			s := openTest(t, dir)
+			if _, err := s.db.Execute(ctx, `INSERT INTO dictionary_profiles (id, name, active) VALUES ('work', 'Work', 0)`); err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range saved[8:version] {
+				for _, statement := range step.statements {
+					if _, err := s.db.Execute(ctx, statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := s.db.Execute(ctx, `PRAGMA user_version = `+strconv.Itoa(version)); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+
+			migrations = saved
+			s = openTest(t, dir)
+			if v, _ := userVersion(ctx, s.db); v != Version() {
+				t.Fatalf("user_version %d, want %d", v, Version())
+			}
+			profiles, err := s.Dictionary().Profiles(ctx)
+			if err != nil || len(profiles) != 2 {
+				t.Fatalf("profiles after upgrade: %+v, %v", profiles, err)
+			}
+			s.Close()
+			s = openTest(t, dir)
+			profiles, err = s.Dictionary().Profiles(ctx)
+			if err != nil || len(profiles) != 2 {
+				t.Fatalf("profiles after restart: %+v, %v", profiles, err)
+			}
+		})
+	}
+}
+
 // TestCombinedUpgrade opens a database at each schema the merged tree can
 // meet — 8 (before the notes, history and profile changes), 9 (notes app
 // name), 10 (plus history reopen), 11 (dictionary profiles), 12 (typed

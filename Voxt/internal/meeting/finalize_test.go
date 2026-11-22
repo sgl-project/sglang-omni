@@ -44,12 +44,18 @@ func (s *seqFileASR) Transcribe(context.Context, asr.FileRequest) (asr.Result, e
 type fakeDiarizer struct {
 	result   asr.Result
 	requests []asr.FileRequest
+	block    chan struct{}
 }
 
 func (f *fakeDiarizer) Caps() asr.Caps { return asr.Caps{File: true} }
 
-func (f *fakeDiarizer) Diarize(_ context.Context, req asr.FileRequest) (asr.Result, error) {
+func (f *fakeDiarizer) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
 	f.requests = append(f.requests, req)
+	if f.block != nil {
+		close(f.block)
+		<-ctx.Done()
+		return asr.Result{}, ctx.Err()
+	}
 	return f.result, nil
 }
 
@@ -346,6 +352,72 @@ func TestManagerFinalizeReleasesRecordingHoldBeforeMTD(t *testing.T) {
 	}
 	if micASR.n == 0 {
 		t.Fatal("the selected model did not transcribe the microphone")
+	}
+}
+
+func importMutexFixture(t *testing.T, block chan struct{}) (*meeting.Manager, *fakeDiarizer) {
+	t.Helper()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(context.Background(), filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	diarizer := &fakeDiarizer{block: block}
+	fileASR := &seqFileASR{}
+	mgr := meeting.NewManager(meeting.Config{
+		Mic:      newFakeAudio(nil),
+		Store:    db.Meetings(),
+		Dir:      filepath.Join(root, "meetings"),
+		Settings: func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: fileASR.Caps(), File: fileASR}, nil
+		},
+		Diarizer: func(context.Context) (asr.Diarizer, error) { return diarizer, nil },
+	})
+	return mgr, diarizer
+}
+
+func TestStartDuringImportIsBusy(t *testing.T) {
+	mgr, diarizer := importMutexFixture(t, make(chan struct{}))
+	ctx := context.Background()
+	request := meeting.ImportRequest{Name: "long", CreatedAt: time.Now(), PCM: tonePCM(rateSamples(time.Second))}
+	importCtx, cancelImport := context.WithCancel(ctx)
+	importDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.Import(importCtx, request, nil)
+		importDone <- err
+	}()
+	<-diarizer.block
+	liveID, startErr := mgr.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if startErr == nil {
+		_ = mgr.Finish(ctx, liveID)
+	}
+	cancelImport()
+	if err := <-importDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Import cancellation: %v", err)
+	}
+	if !errors.Is(startErr, meeting.ErrBusy) {
+		t.Fatalf("Start during import: %v, want ErrBusy", startErr)
+	}
+}
+
+func TestImportDuringLiveMeetingIsBusy(t *testing.T) {
+	mgr, _ := importMutexFixture(t, nil)
+	ctx := context.Background()
+	liveID, err := mgr.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := meeting.ImportRequest{Name: "long", CreatedAt: time.Now(), PCM: tonePCM(rateSamples(time.Second))}
+	_, importErr := mgr.Import(ctx, request, nil)
+	if !errors.Is(importErr, meeting.ErrBusy) {
+		_ = mgr.Finish(ctx, liveID)
+		t.Fatalf("Import during live meeting: %v, want ErrBusy", importErr)
+	}
+	if err := mgr.Finish(ctx, liveID); err != nil {
+		t.Fatal(err)
 	}
 }
 
