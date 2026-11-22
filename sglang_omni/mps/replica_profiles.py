@@ -66,6 +66,7 @@ class ReplicaProfileDecision:
 
 
 B200 = MeasuredGpu(name="NVIDIA B200", total_memory_mib=183359)
+RTX_4090_D = MeasuredGpu(name="NVIDIA GeForce RTX 4090 D", total_memory_mib=24564)
 
 # note (Yuanfan Chen): measured with sglang-omni 8848e500. Each count served the most audio within a p99 latency of 0.5 s and keeps at least 88% of the best count's audio at 1 s and 3 s; docs/basic_usage/mps_dp.md has the numbers.
 REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
@@ -229,6 +230,21 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
             "stages.asr.env.OMP_NUM_THREADS": "4",
             "stages.asr.env.MKL_NUM_THREADS": "4",
             "stages.asr.env.OPENBLAS_NUM_THREADS": "4",
+        },
+    ),
+    # note (Jiaxin Deng): measured with sglang-omni a385eac6; on this GPU the engine's own 64 running requests and no queue cap beat the 16 and 16 above.
+    ReplicaProfile(
+        config_cls="MossTranscribeDiarizePipelineConfig",
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        gpu=RTX_4090_D,
+        num_replicas=2,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.2799,
+            "stages.asr.engine.mem_fraction_static": 0.8008,
+            "stages.asr.engine.max_running_requests": 64,
+            "stages.asr.engine.cuda_graph_max_bs": 64,
+            "stages.asr.engine.max_total_tokens": 32768,
         },
     ),
 )
