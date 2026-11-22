@@ -169,9 +169,8 @@ func TestRewriteCardClosesAfterInserting(t *testing.T) {
 }
 
 // TestRewriteCardDrags: the card moves where the user drags it (its face
-// drags the window), keeps that place through a change of size and a
-// follow-up, stays on the screen, and opens at its usual place again once
-// it was closed, as the answer card does (TestCardDragged).
+// drags the window), keeps that place through a change of size, a follow-up,
+// and close and reopen, and stays on the screen (TestCardDragged).
 func TestRewriteCardDrags(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	native := &fakeBoxDropWindow{}
@@ -199,16 +198,20 @@ func TestRewriteCardDrags(t *testing.T) {
 	if f := a.boxFrame(); f.Y != anchored.Y-200 {
 		t.Errorf("the follow-up moved the dragged card: %+v", f)
 	}
-	a.box.dragged.y = -5000
+	current := a.boxFrame()
+	native.bounds = mygo.Rectangle{X: current.X, Y: anchored.Y - 5000, Width: current.Width, Height: current.Height}
+	native.onMove()
 	if f := a.boxFrame(); f.Y != ovTestArea.Y-layout.Pad {
 		t.Errorf("dragged past the top: %+v", f)
 	}
 
-	a.closeBox()
 	a.setCardSize(string(store.KindRewrite), 0)
-	a.box.open, a.box.shown, a.box.area = true, true, ovTestArea
-	if f := a.boxFrame(); f != anchored {
-		t.Errorf("the next card: %+v, want %+v", f, anchored)
+	moved := a.boxFrame()
+	a.closeBox()
+	a.showBox(proto.App{}, "next")
+	a.box.area = ovTestArea
+	if f := a.boxFrame(); f != moved {
+		t.Errorf("the next card: %+v, want %+v", f, moved)
 	}
 }
 

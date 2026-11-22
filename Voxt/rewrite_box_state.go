@@ -257,6 +257,8 @@ func (a *app) boxDraggedTo(bounds mygo.Rectangle) {
 	anchor := layout.Frame(area, a.prefs.Overlay, a.boxFaceW(), boxFaceH)
 	a.box.dragged.x, a.box.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
 	a.box.frame.X, a.box.frame.Y = bounds.X, bounds.Y
+	a.ov.dragged = a.box.dragged
+	a.saveCardDrag()
 	if display {
 		a.boxSync() // the Fill size is as wide as this display
 	}
