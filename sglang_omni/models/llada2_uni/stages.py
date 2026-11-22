@@ -41,6 +41,7 @@ from sglang_omni.models.llada2_uni.request_builders import (
     build_encoder_request,
     merge_image_tokens_for_thinker,
 )
+from sglang_omni.models.llada2_uni.serial_offload import get_offload_coordinator
 from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
@@ -103,12 +104,25 @@ def create_image_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | torch.dtype | None = None,
+    enable_serial_offload: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
 
     dtype = resolve_dtype(dtype)
     device = str(resolve_concrete_device(device, gpu_id))
 
-    model = LLaDA2ImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    if enable_serial_offload and torch.device(device).type != "cuda":
+        raise ValueError("LLaDA2-Uni serial offload requires CUDA")
+    else:
+        pass
+    model = LLaDA2ImageEncoder(
+        model_path=model_path,
+        device="cpu" if enable_serial_offload else device,
+        dtype=dtype,
+    )
+    model.device = torch.device(device)
+    coordinator = (
+        get_offload_coordinator(model.device) if enable_serial_offload else None
+    )
 
     def encode_image(payload: StagePayload) -> StagePayload:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
@@ -117,7 +131,11 @@ def create_image_encoder_executor(
         if request.get("_skip"):
             result = request.get("_result", {})
         else:
-            with torch.no_grad():
+            with (
+                coordinator.use_module(model, "image_encoder")
+                if coordinator
+                else nullcontext()
+            ), torch.no_grad():
                 result = model(**request)
 
         apply_encoder_result(state, stage_name=IMAGE_STAGE, result=result)
@@ -142,6 +160,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
+    enable_serial_offload: bool = False,
 ) -> DllmScheduler:
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -160,6 +179,26 @@ def create_sglang_dllm_thinker_executor_from_config(
         pass
     overrides.update(server_args_overrides or {})
     overrides["tp_size"] = tp_size
+    if enable_serial_offload:
+        if concrete_device.type != "cuda" or int(overrides.get("tp_size", 1)) != 1:
+            raise ValueError("LLaDA2-Uni serial offload requires one CUDA GPU and TP=1")
+        elif overrides.get("weight_cache_mode", "off") != "off":
+            raise ValueError("LLaDA2-Uni serial offload cannot use IPC weight caching")
+        elif overrides.get("cpu_offload_gb", 0):
+            raise ValueError(
+                "LLaDA2-Uni serial offload cannot combine with layer CPU offload"
+            )
+        else:
+            pass
+        overrides.update(
+            enable_memory_saver=True,
+            enable_weights_cpu_backup=True,
+            disable_cuda_graph=True,
+            enable_torch_compile=False,
+            disable_overlap_schedule=True,
+        )
+    else:
+        pass
     pin_resolved_device_type(overrides, concrete_device.type)
 
     server_args = build_sglang_server_args(
@@ -185,7 +224,11 @@ def create_sglang_dllm_thinker_executor_from_config(
         f"mem_fraction_static={cfg.mem_fraction_static}"
     )
     return create_dllm_thinker_scheduler(
-        server_args, resolved_gpu_id, tp_rank=tp_rank, nccl_port=nccl_port
+        server_args,
+        resolved_gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        enable_serial_offload=enable_serial_offload,
     )
 
 
@@ -276,9 +319,18 @@ def create_image_decode_executor(
     resolution_multiplier: int = 2,
     backend: DecoderBackend = "diffusers",
     attention_backend: str = "torch_sdpa",
+    enable_serial_offload: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
+    if enable_serial_offload and (
+        backend != "diffusers" or concrete_device.type != "cuda"
+    ):
+        raise ValueError(
+            "LLaDA2-Uni serial offload requires the CUDA diffusers decoder"
+        )
+    else:
+        pass
     runtime = None
     if backend == "sglang":
         runtime = initialize_decoder_runtime(
@@ -300,6 +352,7 @@ def create_image_decode_executor(
                 resolution_multiplier=resolution_multiplier,
                 backend=backend,
                 runtime=runtime,
+                enable_serial_offload=enable_serial_offload,
             )
     except BaseException:
         if runtime:
@@ -310,6 +363,12 @@ def create_image_decode_executor(
 
     def decode_image(payload: StagePayload) -> StagePayload:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
+        if enable_serial_offload and state.task_kind == "interleaved":
+            raise ValueError(
+                "LLaDA2-Uni serial offload does not support interleaved generation"
+            )
+        else:
+            pass
         result = extract_image_vq_tokens(state)
         if result is None:
             if state.task_kind in ("t2i", "edit"):
