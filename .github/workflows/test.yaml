@@ -104,6 +104,8 @@ jobs:
         shell: bash
         env:
           OMNI_CI_STAGE_LABEL: ${{ matrix.name }}
+          # note (wilsonzheng0327): SGLANG_CACHE_DIR/inductor holds conv graphs compiled while a test leaked cuDNN off, and the cache key does not record cuDNN.
+          TORCHINDUCTOR_CACHE_DIR: /data/omni-ci/sglang-cache/inductor-unit-test-accelerator
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
