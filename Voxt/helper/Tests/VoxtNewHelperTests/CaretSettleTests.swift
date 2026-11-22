@@ -117,6 +117,45 @@ final class CaretSettleTests: XCTestCase {
         XCTAssertTrue(r.steps?.contains("empty-settle") ?? false, "steps \(r.steps ?? [])")
     }
 
+    /// A nil range is an empty reading too (fixture c23 reads an
+    /// AXGroup's range as nil): a non-editable AXWebArea with no range
+    /// settles, and the selection that shows up later is the answer.
+    func testNilRangeWebAreaSettlesIntoSelection() async throws {
+        let webEmpty = SelectionReading(role: "AXWebArea", selected: nil,
+                                        range: nil, ranged: nil, marker: nil, editable: false)
+        let page = SelectionReading(role: "AXWebArea", selected: "page text",
+                                    range: CFRange(location: 0, length: 9),
+                                    ranged: "page text", marker: nil, editable: false)
+        let f = Fake([webEmpty, page])
+        var p = SelectionParams()
+        p.caretSettleMs = 600
+        p.caretPollMs = 60
+        let r = try await TextIO.selection(p, world: f.world())
+        XCTAssertEqual(r.text, "page text")
+        XCTAssertEqual(r.via, SelectionVia.ax)
+        XCTAssertEqual(f.reads, 2, "the nil-range reading polled once more")
+        XCTAssertTrue(r.steps?.contains("empty-settle") ?? false, "steps \(r.steps ?? [])")
+    }
+
+    /// focus=nil does not settle: nothing is focused (the desktop), a
+    /// state, not a reading that can lag the ⌘A. The answer comes from
+    /// the first reading (here: no copy allowed, so none).
+    func testFocusNilDoesNotSettle() async throws {
+        let page = SelectionReading(role: "AXWebArea", selected: "page text",
+                                    range: CFRange(location: 0, length: 9),
+                                    ranged: "page text", marker: nil, editable: false)
+        let f = Fake([nil, page])
+        var p = SelectionParams()
+        p.caretSettleMs = 600
+        p.caretPollMs = 60
+        let r = try await TextIO.selection(p, world: f.world())
+        XCTAssertNil(r.text)
+        XCTAssertEqual(r.via, SelectionVia.none)
+        XCTAssertEqual(f.reads, 1, "a missing focus is final, not polled")
+        XCTAssertEqual(f.now, 0)
+        XCTAssertEqual(r.steps, ["focus=nil"])
+    }
+
     /// A caret that stays a caret is the answer once the app's settle
     /// budget is spent: caret-only, none, no ⌘C.
     func testCaretSettleGivesUpAfterTheBudget() async throws {

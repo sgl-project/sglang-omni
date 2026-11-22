@@ -49,7 +49,8 @@ public enum SelectionRead {
         !f.isDisjoint(with: [.maskControl, .maskAlternate, .maskShift])
     }
 
-    /// How long the ⌘C waits for those keys to lift before posting
-    /// anyway, when the app's params name none.
+    /// How long the ⌘C waits for those keys to lift, when the app's
+    /// params name none. Still held after that, the copy is skipped: a
+    /// posted ⌘C would reach the app as a chord that copies nothing.
     public static let defaultModifierWaitMs = 800.0
 }

@@ -140,10 +140,14 @@ final class TextIO: @unchecked Sendable {
                                                       editable: r.editable, blankSelection: blankAX)
                 // An empty reading on a non-editable element (a page's AX
                 // or a PDF view lags the ⌘A the same way, #3835) settles
-                // too; after the settle it falls through to ⌘C, while a
-                // real editable caret stays caret-only.
-                emptyRead = !blankAX && r.range?.length == 0
+                // too — range empty or absent (fixture c23 reads an
+                // AXGroup's range as nil); after the settle it falls
+                // through to ⌘C, while a real editable caret stays
+                // caret-only.
+                emptyRead = !blankAX && !r.editable && (r.range?.length ?? 0) == 0
             } else {
+                // focus=nil is a state (nothing is focused: the desktop),
+                // not a value that can lag the ⌘A, so it does not settle.
                 steps.append("focus=nil")
                 caretOnly = false
                 emptyRead = false
