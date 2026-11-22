@@ -4,9 +4,9 @@
 
 ![Fish Audio Drama 3 overview](../_static/image/fishaudio-drama3-overview.png)
 
-The figure shows what the model does: it follows inline tags and free-form direction, voices multi-speaker scenes from one or more reference clips per voice, revises a take when the next turn gives a note, edits an existing take while keeping the rest, and streams long-form audio as the text arrives. The [voice modes](#voice-modes) below show the request for each.
+The figure shows what the model does. It follows inline tags and free-form direction, voices multi-speaker scenes from one or more reference clips per voice, and revises a take when the next turn gives a note. It also edits an existing take while keeping the rest, and streams long-form audio as the text arrives. The [voice modes](#voice-modes) below show the request for each.
 
-The model is a 35B-parameter MoE text backbone with 3B parameters active per token and hybrid (full + linear) attention. A codebook-MTP audio decoder predicts 10 codebooks causally over the whole sequence. The MoE experts are stored in FP8 with the remaining weights in bf16; an [int4 checkpoint](#int4-checkpoint) cuts the weight memory from 37.0 GB to 20.8 GB. Speaker tags `<|speaker:0|>` to `<|speaker:15|>` mark the characters, and one text can carry up to 16 characters. Long text is chunked automatically and can be streamed per chunk. The [Fish Speech repository](https://github.com/fishaudio/fish-speech) and its [technical report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf) describe the architecture, and the [Fish Audio Playground](https://fish.audio) hosts the model online.
+Drama 3 is a 35B-parameter mixture-of-experts model that activates 3B parameters per token. The default checkpoint needs 37.0 GB of GPU memory for the engine weights alone, before the KV cache and the other stages. The [int4 checkpoint](#int4-checkpoint) brings that down to 20.8 GB. Speaker tags `<|speaker:0|>` to `<|speaker:15|>` mark the characters, and one text can carry up to 16 characters. Long text is chunked automatically and can be streamed per chunk. Under the hood, a hybrid-attention MoE text backbone drives a codebook-MTP audio decoder, with the experts stored in FP8 and the remaining weights in bf16. The figure below shows the stack, and the [Fish Speech repository](https://github.com/fishaudio/fish-speech) and its [technical report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf) describe it in full. The [Fish Audio Playground](https://fish.audio) hosts the model online.
 
 ![Fish Audio Drama 3 architecture](../_static/image/fishaudio-drama3-architecture.png)
 
@@ -36,7 +36,7 @@ The default checkpoint holds 37.0 GB of engine weights, and the GPU must also fi
 
 ## Server Configuration
 
-This command places preprocessing, the engine, and the vocoder on GPU 0. A stage moves to another GPU only when its `--<stage>.gpu` flag says so; see [Deployment Performance](fishaudio_drama3/tuning.md#deployment-performance).
+Drama 3 runs as three stages: preprocessing, which prepares the text and any reference audio; the engine, which generates the audio codec frames; and the vocoder, which turns those frames into audio. The stages can sit on different GPUs. This command places all three on GPU 0. A stage moves to another GPU only when its `--<stage>.gpu` flag says so; see [Deployment Performance](fishaudio_drama3/tuning.md#deployment-performance).
 
 ```bash
 sgl-omni serve \
@@ -76,7 +76,7 @@ Open `output.wav` in an audio player. The response is a WAV file by default. For
 | Checkpoint | Engine weights | Use it when |
 |---|---|---|
 | [`fishaudio/drama-3`](https://huggingface.co/fishaudio/drama-3) | 37.0 GB | The default: FP8 MoE experts, remaining weights in bf16. |
-| [`fishaudio/drama-3-int4`](https://huggingface.co/fishaudio/drama-3-int4) | 20.8 GB | GPU memory is tight. 4-bit GPTQ weights on GPTQ-Marlin kernels; needs compute capability 8.0 or newer. |
+| [`fishaudio/drama-3-int4`](https://huggingface.co/fishaudio/drama-3-int4) | 20.8 GB | GPU memory is tight. 4-bit GPTQ weights on GPTQ-Marlin kernels; needs compute capability 8.0 or newer, such as A100. |
 | `mlx-community/fish-audio-drama-3-4bit` and `-8bit` | 24 GB and 42 GB on disk | Apple Silicon, through the native MLX server. See [Platform deployment](fishaudio_drama3/platforms.md). |
 
 The int4 checkpoint is about 8% slower per request and its WER stays at the FP8 level; [Benchmarks](fishaudio_drama3/benchmarks.md#fp8-and-int4-checkpoints) has the measurements. When the FP8 checkpoint does not fit one GPU, `--tts_engine.tp_size` splits the engine across 2 or 4 GPUs; see [Tensor Parallelism](fishaudio_drama3/tuning.md#tensor-parallelism).
@@ -93,13 +93,13 @@ sgl-omni serve \
   --port 8000
 ```
 
-The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine's share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer. [Int4 weight layout](fishaudio_drama3/reference.md#int4-weight-layout) lists which modules are quantized and which stay in bf16.
+The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine's share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer, such as A100. [Int4 weight layout](fishaudio_drama3/reference.md#int4-weight-layout) lists which modules are quantized and which stay in bf16.
 
 <span id="example-usage"></span>
 
 ## Voice modes
 
-Drama 3 takes the shared speech request fields, documented in [Request Parameters](../basic_usage/tts.md#request-parameters). The modes below are what sets it apart. The samples clone one reference, `en0`: a 3.9 s clip, the `common_voice_en_10119832.wav` the cloning example uses, with the transcript `We asked over twenty different people, and they all said it was his.`:
+Drama 3 takes the shared speech request fields, documented in [Request Parameters](../basic_usage/tts.md#request-parameters). The modes below are what sets it apart. Every sample on this page clones the same reference voice, `en0`. It is a 3.9 s clip, `common_voice_en_10119832.wav`, the file the cloning example sends. Its transcript is `We asked over twenty different people, and they all said it was his.` Listen to it here:
 
 <audio controls>
   <source src="https://github.com/user-attachments/files/33393249/en0.wav" type="audio/wav">
@@ -126,7 +126,9 @@ Each reference may be at most 60 seconds long by default, and a request may carr
 
 ### Point tags
 
-A plain `/v1/tts` request: one reference (`en0`), no history, and the tags written into the text at the position where the event should land.
+A point tag is a cue in square brackets, such as `[sighs]` or `[laughs]`, written into the text at the position where the event should land. Figure 1 shows the same idea as inline direction. This page documents the two tags in the sample; the [technical report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf) describes fine-grained direction.
+
+The sample is a plain `/v1/tts` request rather than a `/v1/audio/speech` one, so the text goes in `text`. It sends one reference (`en0`) and no history:
 
 ```json
 {
@@ -186,7 +188,7 @@ Shared fields such as `input`, `response_format`, `stream` and the sampling cont
 |---|---|---|
 | `temperature` | `1.0` | Shared field. |
 | `top_p` | `0.9` | Shared field. |
-| `top_k` | unset | Without it the main token is drawn with no top-k cap; a cap of 30 there lets a stream fall silent after its first phrase. The codebook heads use at most 30 whatever the request asks. |
+| `top_k` | unset | Limits how many candidate tokens the sampler may pick from. Leave it unset: the main token is then drawn with no top-k cap, and a cap of 30 lets a stream fall silent after its first phrase. The codebook heads always cap at 30, whatever the request asks. |
 | `max_new_tokens` | the remaining context, up to 2048 frames | A prompt and its `max_new_tokens` must fit the engine's context length. |
 | `references` | unset | Any number of clips within the prompt limit; each item has `audio_path` and `text`. |
 | `previous_takes` | unset | Earlier takes for [editing as continuation](#editing-as-continuation). |
@@ -201,8 +203,8 @@ Engine-side defaults, such as CUDA graphs, Triton sampling and vocoder placement
 
 - **Attention backend.** Only `triton`; any other `--tts_engine.engine.attention_backend` stops startup.
 - **Reference audio length.** Each reference given as audio may be at most 60 seconds long; a longer one fails the request with HTTP 400 before it is encoded. Raise the limit with `--preprocessing.factory.max_reference_audio_seconds` and the preprocessing reserve with it; see [Reference Audio Length](fishaudio_drama3/reference.md#reference-audio-length).
-- **Prompt length.** A prompt may have at most 8192 rows, counting the text tokens and about 21.5 rows per second of reference audio; a longer one fails with HTTP 400. Change the cap with `--tts_engine.factory.max_prompt_rows`; see [Prompt Length](fishaudio_drama3/reference.md#prompt-length).
-- **Hopper-only kernels.** Triton sampling and the fused codebook tower layers run only on compute capability 9.0; other GPUs use the PyTorch sampler and the module path. See [Kernel fallbacks](fishaudio_drama3/tuning.md#kernel-fallbacks).
+- **Prompt length.** A prompt may have at most 8192 rows, counting the text tokens and about 21.5 rows per second of reference audio. A longer one fails with HTTP 400. Change the cap with `--tts_engine.factory.max_prompt_rows`; see [Prompt Length](fishaudio_drama3/reference.md#prompt-length).
+- **Hopper-only kernels.** The fastest sampling and decoder kernels run only on H100 and H200 class GPUs (compute capability 9.0). Other GPUs use the standard PyTorch sampler and decoder layers instead, and the startup log says which path is in use. See [Kernel fallbacks](fishaudio_drama3/tuning.md#kernel-fallbacks).
 - **Request `seed`.** Not supported; the server refuses a request that sets it.
 - **Native MLX server.** Reference audio only as base64 WAV, at most 4 references of 30 s together, one request at a time. See [Platform deployment](fishaudio_drama3/platforms.md).
 
