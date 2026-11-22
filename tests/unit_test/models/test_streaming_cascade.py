@@ -46,7 +46,7 @@ from sglang_omni.models.streaming_cascade.dialog import (
     DialogConfig,
     heard_prefix,
 )
-from sglang_omni.models.streaming_cascade.generators import ChatDelta
+from sglang_omni.models.streaming_cascade.generators import ChatChoice, ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
 from sglang_omni.models.streaming_cascade.running_transcript import (
@@ -103,8 +103,8 @@ PROFILE_NAMES = (
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3-tts-vivian-dflash",
-    "qwen3-asr-qwen3.8-27b-vivian",
     "qwen3-asr-qwen3.8-27b-vivian-styles",
+    "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
     "qwen3-asr-streaming-qwen3-tts-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
@@ -1293,7 +1293,7 @@ def test_a_client_cancel_while_the_dialog_interrupts_its_reply_keeps_the_interru
 
 def test_the_profile_dialog_waits_for_the_audio_its_synthesizer_delivered():
     assert profile_config(
-        "qwen3-asr-qwen3.8-27b-vivian"
+        "qwen3-asr-qwen3.8-27b-vivian-tts-tool"
     ).component_graph().delivery_reporters("dialog") == ["tts"]
 
 
@@ -2489,8 +2489,8 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
     [
         "qwen3-asr-qwen3-tts-vivian",
         "qwen3-asr-qwen3-tts-vivian-dflash",
-        "qwen3-asr-qwen3.8-27b-vivian",
         "qwen3-asr-qwen3.8-27b-vivian-styles",
+        "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
         "qwen3-asr-qwen3-tts-base-clone",
     ],
 )
@@ -2654,9 +2654,9 @@ def test_a_short_switch_after_a_cut_reply_adds_both_notes():
 async def test_chat_deltas_carry_the_language_of_their_messages():
     generator = build({"kind": "openai_chat", **HTTP_SERVICE})
 
-    async def complete(messages):
+    async def complete(messages, tool_choice):
         for content in ("1, ", "2."):
-            yield ChatDelta(content=content)
+            yield ChatChoice(delta=ChatDelta(content=content))
 
     generator.complete = complete
     outputs = await drain(
@@ -2691,7 +2691,7 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
             id="styles",
         ),
         pytest.param(
-            "qwen3-asr-qwen3.8-27b-vivian",
+            "qwen3-asr-qwen3-tts-vivian",
             "[Cheerful] Great news! [calm] Take a breath. [soon] stays calm. [ca",
             ["vivian.wav"] * 4,
             id="no_styles",
@@ -2706,7 +2706,7 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
     generator = build(graph.node("llm").component.model_dump())
     generator.place(graph, "llm")
 
-    async def complete(messages):
+    async def complete(messages, tool_choice):
         for content in (
             "[Che",
             "erful]",
@@ -2715,7 +2715,7 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
             " a breath. [soon] stays",
             " calm. [ca",
         ):
-            yield ChatDelta(content=content)
+            yield ChatChoice(delta=ChatDelta(content=content))
 
     generator.complete = complete
     outputs = await drain(
@@ -2935,7 +2935,7 @@ def test_profiles_cloning_vivian_send_its_transcript_and_drop_the_quiet_start(pr
     ("flags", "admitted"), [([], 16), (["--max_sessions", "24"], 24)]
 )
 def test_node_stages_admit_max_sessions_and_refuse_the_next(flags, admitted):
-    manager = ConfigManager(profile_config("qwen3-asr-qwen3.8-27b-vivian"))
+    manager = ConfigManager(profile_config("qwen3-asr-qwen3.8-27b-vivian-tts-tool"))
     config = manager.merge_config(manager.parse_extra_args(flags))
     stages = {}
     for name in ("vad", "dialog"):

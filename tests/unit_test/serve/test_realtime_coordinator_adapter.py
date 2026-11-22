@@ -301,6 +301,10 @@ async def test_context_exhaustion_with_pending_unit_fails_the_unit_without_loggi
     [
         (SessionIdleTimeoutError(300), "session_idle_timeout"),
         (SessionOutputBudgetError(), "output_budget_exhausted"),
+        (
+            RuntimeError("session_capacity_exhausted: session KV capacity exhausted"),
+            "session_capacity_exhausted",
+        ),
     ],
 )
 async def test_coordinator_failure_without_pending_unit_fails_the_session_without_logging(
