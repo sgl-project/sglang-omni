@@ -12,6 +12,19 @@
 - [把说的话转录到光标处](transcribe.md)
 - [用语音指令改写选中的文字](rewrite.md)
 
+## 按场景上手
+
+不按功能分，按手上的事分。每件事一篇，只讲那一件事怎么用 Voxt 做完：
+
+- [第一次用 Voxt：五分钟装好](first_time.md)
+- [看懂并回复一封英文邮件](reply_email.md)
+- [不动键盘写一段文字](write_by_voice.md)
+- [把写好的段落改得更好](polish_draft.md)
+- [把同一段话翻成另一种语言](translate_languages.md)
+- [让 Voxt 写对人名和术语](names_right.md)
+- [让 Voxt 看着屏幕帮你写](screenshot_context.md)
+- [把录音转成字幕文件](file_to_srt.md)
+
 | 功能 | 默认快捷键 |
 |---|---|
 | 转录 | 右 `⌥ Option` |
@@ -28,4 +41,12 @@ byok
 translate
 transcribe
 rewrite
+first_time
+reply_email
+write_by_voice
+polish_draft
+translate_languages
+names_right
+screenshot_context
+file_to_srt
 ```
