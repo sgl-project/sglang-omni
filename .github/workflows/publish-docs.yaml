@@ -16,6 +16,10 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+    # Docs Preview pushes to gh-pages too; one push at a time.
+    concurrency:
+      group: gh-pages-branch
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -49,6 +53,15 @@ jobs:
       - name: Add .nojekyll file
         run: |
           touch ./docs/_build/html/.nojekyll
+
+      # The deploy replaces the whole branch, so carry the pull request
+      # previews that Docs Preview keeps under pr-preview/ into the new build.
+      - name: Keep the pull request previews
+        run: |
+          git fetch --depth=1 origin gh-pages
+          if git cat-file -e origin/gh-pages:pr-preview 2>/dev/null; then
+            git archive origin/gh-pages pr-preview | tar -x -C ./docs/_build/html
+          fi
 
       - name: Deploy
         uses: peaceiris/actions-gh-pages@v4

@@ -56,6 +56,17 @@ jobs:
           make compile
           make html
 
+      # Docs Preview (docs-preview.yaml) deploys this build to
+      # https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/.
+      - name: Upload the built documentation
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/_build/html
+          retention-days: 7
+          if-no-files-found: error
+
   doc-style-test:
     runs-on: ubuntu-latest
     timeout-minutes: 5

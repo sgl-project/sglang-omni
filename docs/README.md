@@ -25,6 +25,8 @@ bash serve.sh
 PORT=8080 make serve
 ```
 
+- Preview on GitHub: once a PR is open, the Docs Preview workflow deploys each Docs Check build to `https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/` and posts the link in a comment on the PR. The preview is refreshed on every push and removed when the PR closes.
+
 ## Style
 
 - Prefer **Markdown** for cookbooks and usage guides. Use notebooks only when the example must be executed in docs CI.

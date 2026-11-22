@@ -1,0 +1,182 @@
+name: Docs Preview
+
+# Publishes the Sphinx build of every pull request to
+# https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/ and links
+# it from a comment on the pull request, so reviewers read the rendered pages
+# without a local build.
+#
+# Docs Check builds the HTML with the pull request's read-only token and
+# uploads it as the docs-html artifact. This workflow runs afterwards from the
+# default branch with a write token. It downloads that artifact and never
+# checks out or runs pull request code, which is the pattern GitHub documents
+# for pull requests from forks.
+
+on:
+  workflow_run:
+    workflows: [Docs Check]
+    types: [completed]
+  pull_request_target:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: deploy - pull request preview
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    # Docs Publish pushes to gh-pages too; one push at a time.
+    concurrency:
+      group: gh-pages-branch
+      cancel-in-progress: false
+    steps:
+      # The run's own payload lists no pull request when the head is in a
+      # fork, so look the open pull request up by its head commit instead.
+      # The number comes from the API, never from the artifact.
+      - name: Find the pull request
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const headSha = context.payload.workflow_run.head_sha;
+            const { owner, repo } = context.repo;
+            const { data: pulls } =
+              await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: headSha,
+              });
+            const pull = pulls.find(
+              (p) =>
+                p.state === 'open' &&
+                p.head.sha === headSha &&
+                p.base.repo.full_name === `${owner}/${repo}`
+            );
+            if (!pull) {
+              core.info(`No open pull request has head ${headSha}; nothing to deploy.`);
+              return;
+            }
+            core.setOutput('number', String(pull.number));
+            core.setOutput('head_sha', headSha);
+
+      - name: Download the built documentation
+        if: steps.pr.outputs.number != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-html
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: site
+
+      - name: Deploy the preview
+        if: steps.pr.outputs.number != ''
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          destination_dir: pr-preview/pr-${{ steps.pr.outputs.number }}
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          full_commit_message: "Deploy docs preview for PR #${{ steps.pr.outputs.number }} (${{ steps.pr.outputs.head_sha }})"
+
+      - name: Link the preview from the pull request
+        if: steps.pr.outputs.number != ''
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        with:
+          script: |
+            const number = Number(process.env.PR_NUMBER);
+            const sha = process.env.HEAD_SHA;
+            const url = `https://${context.repo.owner}.github.io/${context.repo.repo}/pr-preview/pr-${number}/`;
+            const body = [
+              '<!-- docs-preview -->',
+              '## Docs preview',
+              '',
+              `The documentation built from ${sha} is deployed at ${url}`,
+              '',
+              'GitHub Pages takes about a minute to publish each push. The preview is refreshed on every push and removed when the pull request closes.',
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body?.startsWith('<!-- docs-preview -->'));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+            }
+
+  remove:
+    name: remove - pull request preview on close
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: gh-pages-branch
+      cancel-in-progress: false
+    steps:
+      # Only the gh-pages branch is checked out; no pull request code runs here.
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+
+      - name: Remove the preview
+        id: remove
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          dir="pr-preview/pr-${PR_NUMBER}"
+          if [ ! -d "$dir" ]; then
+            echo "No preview at $dir."
+            echo "removed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r -q "$dir"
+          git commit -q -m "Remove docs preview for PR #${PR_NUMBER}"
+          git push origin gh-pages
+          echo "removed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Update the pull request comment
+        if: steps.remove.outputs.removed == 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            const number = Number(process.env.PR_NUMBER);
+            const { owner, repo } = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body?.startsWith('<!-- docs-preview -->'));
+            if (!existing) return;
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: existing.id,
+              body: '<!-- docs-preview -->\n## Docs preview\n\nThe pull request is closed and its preview has been removed.',
+            });
