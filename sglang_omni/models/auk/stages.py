@@ -149,7 +149,10 @@ def create_conditioning_executor(
         )
     else:
         encoder = AuKConditionEncoder(
-            text_encoder_path, device=device, dtype=torch.bfloat16
+            text_encoder_path,
+            device=device,
+            dtype=torch.bfloat16,
+            linear_weight_dtype=compute_dtype,
         )
         vae = load_vae(checkpoint, str(device))
         fusion = load_fusion(checkpoint, str(device))

@@ -10,6 +10,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from transformers import (
+    Qwen2_5OmniProcessor,
+    Qwen2_5OmniThinkerConfig,
+    Qwen2_5OmniThinkerForConditionalGeneration,
+)
 
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.batch_compute import (
@@ -19,6 +24,11 @@ from sglang_omni.models.auk.batch_compute import (
 )
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
+from sglang_omni.models.auk.reference_encode import (
+    AuKConditionEncoder,
+    ChatMessage,
+    build_messages,
+)
 from sglang_omni.models.auk.stages import create_auk_engine_executor
 from sglang_omni.models.auk.vae import BigVGANFlowVAE
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
@@ -99,6 +109,113 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
         waveform = np.frombuffer(restored.result["audio_waveform"], dtype=np.float32)
         np.testing.assert_array_equal(waveform, np.full(frames * 480, 0.25))
         assert restored.result["usage"]["completion_tokens"] == frames
+
+
+TINY_VOCABULARY = 64
+
+
+class CharacterProcessor:
+
+    def apply_chat_template(
+        self,
+        conversations: list[list[ChatMessage]],
+        tokenize: bool,
+        add_generation_prompt: bool,
+    ) -> list[str]:
+        return [
+            "".join(
+                part["text"] or ""
+                for message in messages
+                for part in message["content"]
+            )
+            for messages in conversations
+        ]
+
+    def __call__(
+        self, text: list[str], padding: bool, return_tensors: str
+    ) -> dict[str, torch.Tensor]:
+        rows = [
+            [ord(character) % TINY_VOCABULARY for character in line] for line in text
+        ]
+        width = max(len(row) for row in rows)
+        return {
+            "input_ids": torch.tensor([row + [0] * (width - len(row)) for row in rows]),
+            "attention_mask": torch.tensor(
+                [[1] * len(row) + [0] * (width - len(row)) for row in rows]
+            ),
+        }
+
+
+def tiny_thinker(
+    model_path: str, torch_dtype: torch.dtype
+) -> Qwen2_5OmniThinkerForConditionalGeneration:
+    config = Qwen2_5OmniThinkerConfig(
+        text_config=dict(
+            vocab_size=TINY_VOCABULARY,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            rope_parameters={
+                "rope_type": "default",
+                "rope_theta": 10000.0,
+                "mrope_section": [2, 1, 1],
+            },
+        ),
+        audio_config=dict(
+            d_model=16,
+            encoder_layers=1,
+            encoder_attention_heads=2,
+            encoder_ffn_dim=32,
+            num_mel_bins=8,
+            output_dim=32,
+        ),
+        vision_config=dict(
+            depth=1,
+            hidden_size=16,
+            intermediate_size=32,
+            num_heads=2,
+            out_hidden_size=32,
+            fullatt_block_indexes=[0],
+        ),
+    )
+    config.vision_start_token_id = 151652
+    torch.manual_seed(0)
+    return Qwen2_5OmniThinkerForConditionalGeneration(config).to(torch_dtype)
+
+
+def test_linear_weights_stored_in_the_autocast_dtype_encode_like_fp32_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        Qwen2_5OmniProcessor, "from_pretrained", lambda path: CharacterProcessor()
+    )
+    monkeypatch.setattr(
+        Qwen2_5OmniThinkerForConditionalGeneration, "from_pretrained", tiny_thinker
+    )
+    messages = [
+        build_messages("A calm voice.", False),
+        build_messages("A bright voice reading the evening news.", False),
+    ]
+    encodings = {}
+    for linear_weight_dtype in (torch.float32, torch.bfloat16):
+        encoder = AuKConditionEncoder("stub", linear_weight_dtype=linear_weight_dtype)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            encodings[linear_weight_dtype] = encoder.encode_batch(
+                messages, [None, None]
+            )
+
+    assert {
+        module.weight.dtype
+        for module in encoder.model.modules()
+        if isinstance(module, torch.nn.Linear)
+    } == {torch.bfloat16}
+    for (hidden, mask), (stored_hidden, stored_mask) in zip(
+        encodings[torch.float32], encodings[torch.bfloat16]
+    ):
+        assert torch.equal(stored_hidden, hidden)
+        assert torch.equal(stored_mask, mask)
 
 
 @pytest.mark.parametrize("flash", [False, True])
