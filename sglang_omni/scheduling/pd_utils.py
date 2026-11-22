@@ -10,6 +10,7 @@ import inspect
 import json
 import logging
 import queue
+import re
 import threading
 from array import array
 from collections.abc import Callable, Generator
@@ -20,15 +21,12 @@ from typing import Literal, ParamSpec, TypeVar
 
 import msgspec
 import torch
-from huggingface_hub import try_to_load_from_cache
-from huggingface_hub.errors import HFValidationError
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
 from sglang.srt.sampling.sampling_params import SamplingParams
-from transformers.utils.hub import extract_commit_hash
 
 from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
 from sglang_omni.proto import KVTransferPrepareMessage, StagePayload
@@ -430,6 +428,17 @@ def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
             ) = values
 
 
+def require_dflash_hub_commit(model: ModelConfig, revision_arg: str) -> str:
+    revision = model.revision
+    if revision is None or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise ValueError(
+            f"PD DFlash requires a full Hub commit for {model.model_path!r}. "
+            f"Set {revision_arg} to the commit SHA or use a local checkpoint."
+        )
+    else:
+        return revision
+
+
 def dflash_checkpoint_identity(
     target_model: ModelConfig,
     target_loader: LoadConfig,
@@ -438,35 +447,28 @@ def dflash_checkpoint_identity(
 ) -> str:
     target_path = Path(target_model.model_path)
     draft_path = Path(draft_model.model_path)
+    target_revision = (
+        target_model.revision
+        if target_path.is_dir()
+        else require_dflash_hub_commit(target_model, "revision")
+    )
     if draft_path.is_dir():
+        draft_weights = sorted(
+            str(path.resolve())
+            for path in draft_path.iterdir()
+            if path.suffix in (".safetensors", ".bin", ".pt") and path.is_file()
+        )
         draft_source = {
             "config": json.loads((draft_path / "config.json").read_text()),
-            "weights": sorted(
-                str(path.resolve()) for path in draft_path.glob("*.safetensors")
-            ),
+            "weights": draft_weights,
+            "directory": None if draft_weights else str(draft_path.resolve()),
         }
     else:
-        draft_commit = getattr(
-            draft_model.hf_config,
-            "_commit_hash",  # noqa: leading-underscore -- Transformers checkpoint provenance
-            None,
+        draft_commit = require_dflash_hub_commit(
+            draft_model, "speculative_draft_model_revision"
         )
-        if draft_commit is None:
-            try:
-                cached_config = try_to_load_from_cache(
-                    draft_model.model_path, "config.json", revision=draft_model.revision
-                )
-            except HFValidationError:
-                cached_config = None
-            if isinstance(cached_config, str):
-                draft_commit = extract_commit_hash(cached_config, None)
-            else:
-                pass
-        else:
-            pass
         draft_source = {
             "model_path": draft_model.model_path,
-            "revision": draft_model.revision,
             "commit": draft_commit,
             "config": draft_model.hf_config.to_dict(),
         }
@@ -477,12 +479,7 @@ def dflash_checkpoint_identity(
                 if target_path.is_dir()
                 else target_model.model_path
             ),
-            "target_revision": target_model.revision,
-            "target_commit": getattr(
-                target_model.hf_config,
-                "_commit_hash",  # noqa: leading-underscore -- Transformers checkpoint provenance
-                None,
-            ),
+            "target_revision": target_revision,
             "target_dtype": str(target_model.dtype),
             "target_quantization": target_model.quantization,
             "target_overrides": target_model.model_override_args,
