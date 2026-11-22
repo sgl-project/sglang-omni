@@ -178,6 +178,7 @@ SOURCE_ROOT = "sglang_omni/"
 MODEL_DIRECTORY_ROOT = "sglang_omni/models/"
 MODEL_DIRECTORIES_BY_PRESET = {
     "moss-td": ("moss_transcribe_diarize",),
+    "ark": ("arkasr",),
     "fun": ("fun_asr",),
     "qwen3": ("qwen3_asr",),
     "whisper": ("whisper_asr",),
