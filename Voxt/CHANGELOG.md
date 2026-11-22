@@ -74,6 +74,15 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **新安装也会在功能选模型的地方显示推荐语音识别模型的下载入口**：系统听写不再遮住转录、翻译和改写页的下载按钮。已安装的目录模型和已配置的远程服务保持原有操作。
+### Changed
+
+- **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
+
+### 中文
+
+#### 变更
+
+- **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
 
 ## [2.1.2] - 2026-11-19
 
