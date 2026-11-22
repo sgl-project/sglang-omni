@@ -464,8 +464,8 @@ const (
 	DefaultWriteTimeout   = 60 * time.Second
 	// DefaultReadTimeout must cover Translate's worst selection read:
 	// the settle (selectionSettleMS), the modifier wait
-	// (selectionModifierWaitMS) and the copy wait (the helper's default
-	// 300), plus AX and IPC overhead (selectionOverheadMS) — 2 s.
+	// (selectionModifierWaitMS) and the copy wait (selectionCopyMS),
+	// plus AX and IPC overhead (selectionOverheadMS) — 2 s.
 	DefaultReadTimeout  = 2 * time.Second
 	selectionOverheadMS = 300
 	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's

@@ -79,6 +79,9 @@ const (
 	selectionSettleMS       = 600
 	selectionPollMS         = 60
 	selectionModifierWaitMS = 800
+	// selectionCopyMS is the selection read's ⌘C budget, sent explicitly
+	// so the deadline arithmetic does not depend on the helper's default.
+	selectionCopyMS = 300
 )
 
 // intp is v's address: the selection params carry their budgets as
@@ -93,6 +96,7 @@ func (r *run) readSelection() string {
 	cfg := r.m.cfg
 	timeout, params := cfg.ReadTimeout, proto.SelectionParams{
 		AllowCopy:      AllowCopy(r.req.Target.BundleID),
+		CopyTimeoutMS:  selectionCopyMS,
 		CaretSettleMS:  intp(selectionSettleMS),
 		CaretPollMS:    intp(selectionPollMS),
 		ModifierWaitMS: intp(selectionModifierWaitMS),
