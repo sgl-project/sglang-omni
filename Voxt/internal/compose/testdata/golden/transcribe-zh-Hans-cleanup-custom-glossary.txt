@@ -1,5 +1,5 @@
 # profile: custom:cleanup+glossary
-# layers: custom cleanup glossary
+# layers: custom cleanup glossary example
 
 Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
 
@@ -18,6 +18,15 @@ Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
 - Kubernetes
 - VoxtNew（可能被听成：aura link、奥拉链接）
 - DeepSeek（可能被听成：deep seek）
+
+示例（只用来说明上面的规则，不是要整理的文字，不要输出它）。用户消息是：
+<input>
+呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。
+</input>
+你应输出：
+<output>
+帮我把周报发给小李，今天下班前。今天下班前一定要发出去。
+</output>
 
 ---- user ----
 <input>
