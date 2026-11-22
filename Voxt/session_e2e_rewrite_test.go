@@ -36,9 +36,9 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	front := helpertest.Apps["com.tinyspeck.slackmacgap"]
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 	a.pump("the follow-up's recording", func() bool { return a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt) })
-	// It records in the card, now a conversation (Voxt's).
-	if v := a.cachedCard(); !a.answer.open || a.ov.mode != ovAnswer || !v.Conversation || !v.Recording {
-		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.ov.mode, v)
+	// It records in the same card, the conversation above the text box.
+	if v := a.boxViewState(); !a.answer.open || !a.answer.conversation || !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
+		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.overlayModeNow(), v)
 	}
 	// At least 400 ms recorded, over the shortest recording kept: the
 	// fake helper sends a level before each 100 ms frame.

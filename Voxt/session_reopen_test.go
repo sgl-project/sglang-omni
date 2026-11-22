@@ -234,7 +234,8 @@ func TestReopenCardAndFollowUp(t *testing.T) {
 	slack := a.answer.target
 	rewriteSaid(t, a, tr, slack, "shorter", "two")
 	conversation := a.answer.conv
-	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	boxAnchor := a.boxFrame()
+	a.boxDraggedTo(mygo.Rectangle{X: boxAnchor.X - 300, Y: boxAnchor.Y - 200, Width: boxAnchor.Width, Height: boxAnchor.Height})
 	a.overlaySync()
 	moved := a.ov.frame
 	a.closeAnswer()

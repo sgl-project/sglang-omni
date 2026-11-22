@@ -28,7 +28,9 @@ func TestCardRedoKeepsScrollKeyWhenWritingStarts(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 	card := &sessionCardViewState{ID: "old-card", Blocks: []sessionCardBlock{{Kind: sessionCardBody, Text: "old answer"}}}
-	tester := ui.NewTester(func(context *ui.Context) { cardBody(context, "redo-session", card, 120, layout.AnswerW, a, local, nil) }, 400, 300)
+	tester := ui.NewTester(func(context *ui.Context) {
+		cardBody(context, "redo-session", card, 120, layout.AnswerW, false, 1, a, local, nil)
+	}, 400, 300)
 	frames(tester)
 	card.Writing = true
 	card.Live[0] = sessionCardWritingBlock("new answer", store.KindRewrite)
@@ -440,8 +442,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if !ok {
 		t.Fatalf("no heading in %q", firstTexts(tt))
 	}
-	// Its Copy: 8 from the bubble's top right corner, 22 high.
-	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW-8-10, title.Y-layout.BubblePadY+8+11)
+	// Its Copy: a 24 icon right of the bubble, level with its top.
+	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW+bubbleCopyGap+12, title.Y-layout.BubblePadY+12)
 	frames(tt)
 	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.ui.bubbleCopied == "" {
 		t.Errorf("bubble copied %q", tt.Clipboard())

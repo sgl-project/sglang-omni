@@ -35,6 +35,7 @@ type overlayState struct {
 		fade           int
 		epoch          time.Time
 		native         bool
+		front          overlayFront // a preview floats; the answer card takes the front
 		stream         streamReveal
 		projection     sessionOverlayProjection
 		layout         sessionOverlayLayout
@@ -106,8 +107,10 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
 		return ovHidden
-	case live && snapshot.State == session.Recording && snapshot.ID == a.box.session:
-		return ovHidden // the Rewrite card with the input box shows the recording
+	case live && a.box.open && snapshot.ID == a.boxSessionID():
+		// The Rewrite card shows its own session until the answer takes
+		// its place: no pill beside or after it (wall 122).
+		return ovHidden
 	case live && snapshot.State == session.Recording:
 		return ovRecording
 	case live:
@@ -143,7 +146,7 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 // sessionOverlayWindowOptions leaves StateKey empty because the pill and
 // card share this window; restored bounds would move the next mode.
 func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
-	opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
+	opts := cardWindowOptions("Voxt", frame.Width, frame.Height, content)
 	opts.Vibrancy = mygo.VibrancyHUD
 	opts.X, opts.Y = frame.X, frame.Y
 	return opts
@@ -156,6 +159,9 @@ func (a *app) saveCardDrag() {
 
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
+	if a.box.open {
+		defer a.boxSync() // the Rewrite card draws the answer card's state
+	}
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
 	mode := a.overlayModeNow()
@@ -195,6 +201,15 @@ func (a *app) overlaySync() {
 	defer a.syncLangMenu()
 	if !a.overlayNative() {
 		a.syncPassThrough()
+		return
+	}
+	if a.boxHoldsCard(mode) {
+		// Rewrite's card draws its answer itself: one window from the
+		// shortcut to the last follow-up (wall 122).
+		a.ov.shown = false
+		if was {
+			a.overlayFadeOut()
+		}
 		return
 	}
 	if a.ov.win == nil {
@@ -240,6 +255,7 @@ func (a *app) overlaySync() {
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
 	}
+	a.ov.front.sync(a.ov.win, mode == ovAnswer, !was, a.answer.id, func() cardMay { return a.cardMayTake(a.answer.target.PID) })
 }
 
 func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
@@ -412,6 +428,7 @@ func (a *app) closeOverlay() {
 	if a.ov.win != nil {
 		a.ov.win.Destroy()
 		a.ov.win = nil
+		a.ov.front = overlayFront{} // a new window starts above the others
 	}
 	a.overlayTranscript = transcriptPreview{}
 	a.bubbleTranscripts = nil

@@ -403,6 +403,9 @@ func (host *meetingDemoHost) openHistoryFeature(feature string) {
 	host.record("openHistoryFeature %s", feature)
 }
 func (host *meetingDemoHost) openHistoryPrivacy() { host.record("openHistoryPrivacy") }
+func (host *meetingDemoHost) saveHistoryDetailWidth(width float64) {
+	host.record("saveHistoryDetailWidth %g", width)
+}
 func (host *meetingDemoHost) openHistorySettingsDialog() {
 	host.historySettingsUI.open = true
 	host.record("openHistorySettingsDialog")
@@ -496,6 +499,9 @@ func (host *meetingDemoHost) addHomeShortcut() { host.record("addHomeShortcut") 
 func (host *meetingDemoHost) fixHomeReadiness(fix string) {
 	host.record("fixHomeReadiness %s", fix)
 }
+
+func (host *meetingDemoHost) activityBack()    { host.record("activityBack") }
+func (host *meetingDemoHost) activityForward() { host.record("activityForward") }
 
 func (host *meetingDemoHost) openOnboarding()  { host.record("openOnboarding") }
 func (host *meetingDemoHost) closeOnboarding() { host.record("closeOnboarding") }
