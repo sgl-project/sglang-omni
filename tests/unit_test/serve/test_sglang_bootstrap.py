@@ -22,10 +22,21 @@ def published() -> Iterator[list]:
         overrides.pop().restore()
 
 
+@pytest.fixture(autouse=True)
+def silent_gpu_sm_version(monkeypatch) -> None:
+    """Fake server args carry no device, so the SM gate stays silent by default."""
+    monkeypatch.setattr(bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: None)
+
+
 def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
     monkeypatch, published
 ) -> None:
     events: list[str] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "validate_sglang_runtime_configuration",
+        lambda _server_args, _gpu_id: events.append("validate_runtime_configuration"),
+    )
     monkeypatch.setattr(
         bootstrap,
         "describe_sglang_runtime_configuration",
@@ -80,6 +91,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
     infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
 
     assert events == [
+        "validate_runtime_configuration",
         "runtime_configuration",
         "model_worker",
         "alloc_memory_pool",
@@ -476,3 +488,90 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
     captured.clear()
     bootstrap.create_sglang_infrastructure(server_args, 0)
     assert captured["kv_cache_bytes"] is None
+
+
+@pytest.mark.parametrize("sm_version", [80, 86, 89])
+def test_fa4_is_rejected_on_pre_hopper_before_backend_construction(
+    monkeypatch, sm_version
+) -> None:
+    """fa4 on Ampere/Ada reached /health and failed on the first attention kernel."""
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: sm_version
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "resolved_view",
+        lambda _server_args: SimpleNamespace(
+            attention_backend="fa4",
+            prefill_attention_backend=None,
+            decode_attention_backend=None,
+        ),
+    )
+
+    with pytest.raises(ValueError) as error:
+        bootstrap.validate_sglang_runtime_configuration(SimpleNamespace(), 0)
+
+    message = str(error.value)
+    assert "prefill" in message
+    assert f"sm{sm_version}" in message
+    assert "flashinfer" in message
+    assert "torch_native" in message
+
+
+def test_fa4_prefill_override_is_rejected_with_a_flashinfer_decode(monkeypatch) -> None:
+    monkeypatch.setattr(bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89)
+    monkeypatch.setattr(
+        bootstrap,
+        "resolved_view",
+        lambda _server_args: SimpleNamespace(
+            attention_backend="flashinfer",
+            prefill_attention_backend="fa4",
+            decode_attention_backend="flashinfer",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="prefill"):
+        bootstrap.validate_sglang_runtime_configuration(SimpleNamespace(), 0)
+
+
+@pytest.mark.parametrize("sm_version", [90, 100, 103, 110, 120])
+def test_fa4_is_accepted_on_hopper_and_newer(monkeypatch, sm_version) -> None:
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: sm_version
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "resolved_view",
+        lambda _server_args: SimpleNamespace(
+            attention_backend="fa4",
+            prefill_attention_backend=None,
+            decode_attention_backend=None,
+        ),
+    )
+
+    bootstrap.validate_sglang_runtime_configuration(SimpleNamespace(), 0)
+
+
+def test_unknown_sm_keeps_the_gate_silent(monkeypatch) -> None:
+    def fail_resolve(_server_args):
+        raise AssertionError("resolved_view must not run without a detected SM")
+
+    monkeypatch.setattr(bootstrap, "resolved_view", fail_resolve)
+
+    bootstrap.validate_sglang_runtime_configuration(SimpleNamespace(), 0)
+
+
+def test_fa3_is_not_gated(monkeypatch) -> None:
+    """sgl-kernel ships fa3 for sm80/86/89/90a, so gating it would reject the 4090."""
+    monkeypatch.setattr(bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89)
+    monkeypatch.setattr(
+        bootstrap,
+        "resolved_view",
+        lambda _server_args: SimpleNamespace(
+            attention_backend="fa3",
+            prefill_attention_backend=None,
+            decode_attention_backend=None,
+        ),
+    )
+
+    bootstrap.validate_sglang_runtime_configuration(SimpleNamespace(), 0)

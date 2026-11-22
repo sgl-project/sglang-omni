@@ -32,6 +32,12 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
+FA4_ATTENTION_BACKEND_SM_VERSIONS = (90, 100, 103, 110, 120)
+PORTABLE_ATTENTION_BACKENDS = ("flashinfer", "torch_native")
+ATTENTION_BACKEND_REQUIRED_SM_VERSIONS: dict[str, tuple[int, ...]] = {
+    "fa4": FA4_ATTENTION_BACKEND_SM_VERSIONS,
+}
+
 
 class SGLangServerArgsForDiagnostics(Protocol):
     attention_backend: str | None
@@ -59,16 +65,55 @@ def describe_sglang_runtime_configuration(
     gpu_id: int,
 ) -> str:
     sm_version = get_visible_gpu_sm_version(gpu_id)
-    cfg = resolved_view(server_args)
-    prefill_attention_backend, decode_attention_backend = attention_backends_of(cfg)
+    resolved_configuration = resolved_view(server_args)
+    prefill_attention_backend, decode_attention_backend = attention_backends_of(
+        resolved_configuration
+    )
     return (
         f"SGLang runtime configuration: gpu_id={gpu_id}, sm={sm_version}, "
         f"architecture={gpu_architecture_for_sm(sm_version)}, "
-        f"attention_backend={cfg.attention_backend}, "
+        f"attention_backend={resolved_configuration.attention_backend}, "
         f"decode_attention_backend={decode_attention_backend}, "
         f"prefill_attention_backend={prefill_attention_backend}, "
-        f"sampling_backend={cfg.sampling_backend}"
+        f"sampling_backend={resolved_configuration.sampling_backend}"
     )
+
+
+def validate_sglang_runtime_configuration(
+    server_args: SGLangServerArgsForDiagnostics,
+    gpu_id: int,
+) -> None:
+    """Reject an attention backend the detected SM cannot run, before construction."""
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    if sm_version is None:
+        return
+    else:
+        pass
+    resolved_configuration = resolved_view(server_args)
+    prefill_attention_backend, decode_attention_backend = attention_backends_of(
+        resolved_configuration
+    )
+    for phase, attention_backend in (
+        ("prefill", prefill_attention_backend),
+        ("decode", decode_attention_backend),
+    ):
+        required_sm_versions = ATTENTION_BACKEND_REQUIRED_SM_VERSIONS.get(
+            attention_backend
+        )
+        if required_sm_versions is None or sm_version in required_sm_versions:
+            continue
+        else:
+            pass
+        portable_backends = " or ".join(PORTABLE_ATTENTION_BACKENDS)
+        required_backends = ", ".join(
+            f"sm{version}" for version in required_sm_versions
+        )
+        raise ValueError(
+            f"{attention_backend} attention backend cannot run on sm{sm_version} "
+            f"({gpu_architecture_for_sm(sm_version)}) for the {phase} phase; "
+            f"it requires {required_backends}. Use {portable_backends} for that "
+            f"phase instead."
+        )
 
 
 def init_sglang_cuda_graphs(
@@ -163,6 +208,7 @@ def create_sglang_infrastructure(
     else:
         pass
 
+    validate_sglang_runtime_configuration(server_args, gpu_id)
     logger.info(describe_sglang_runtime_configuration(server_args, gpu_id))
 
     kv_cache_bytes = consume_stage_kv_cache_bytes()

@@ -193,6 +193,7 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
         "describe_sglang_runtime_configuration",
         lambda server_args, gpu_id: "CPU test runtime",
     )
+    monkeypatch.setattr(bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: None)
     monkeypatch.setattr(model_worker_mod, "ModelWorker", lambda **kwargs: FakeWorker())
     monkeypatch.setattr(model_worker_mod, "ModelWorkerConfig", lambda **kwargs: kwargs)
     monkeypatch.setattr(sglang_backend, "create_tree_cache", lambda *args: "tree")
