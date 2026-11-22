@@ -5,6 +5,7 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -13,6 +14,7 @@ import (
 
 func homePage(c *ui.Context, state *homeViewState, actions homeActions) {
 	t := c.Theme()
+	c.After(time.Minute) // the rolling usage windows change at local midnight
 	columnPageHeader(c, i18n.T("Home"), func() {
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open setup guide")).Clicked() {
 			actions.openHomeGuide()

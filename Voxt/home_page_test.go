@@ -201,7 +201,7 @@ func TestReadHomeUsagePagesAndMidnight(t *testing.T) {
 		t.Fatalf("paged read made %d calls and returned %+v, want 2 calls and the recent window", history.listCalls, usage)
 	}
 
-	boundary, _, _ := newTestApp(t)
+	boundary, _, tt := newTestApp(t)
 	boundaryTime := now.AddDate(0, 0, -182)
 	if err := boundary.lib.store.History().Put(context.Background(), store.Entry{
 		ID: "boundary", Kind: store.KindTranscribe, CreatedAt: boundaryTime, Status: store.StatusDone,
@@ -217,11 +217,13 @@ func TestReadHomeUsagePagesAndMidnight(t *testing.T) {
 	if err != nil || usage.asrCount != 0 || usage.lastModel != "boundary-model" {
 		t.Fatalf("the window did not move at midnight: %+v, %v", usage, err)
 	}
+	boundary.navigate("/home")
+	frames(tt)
 	boundary.hm.read, boundary.hm.usageDay = true, "2000-01-01"
 	gen := boundary.hm.gen
-	boundary.prepareHomePage()
+	tt.Advance(time.Minute)
 	if boundary.hm.gen <= gen || boundary.hm.usageDay != time.Now().Format("2006-01-02") {
-		t.Fatalf("Home did not refresh for a new day: gen %d -> %d, day %q", gen, boundary.hm.gen, boundary.hm.usageDay)
+		t.Fatalf("Home did not refresh on its minute frame: gen %d -> %d, day %q", gen, boundary.hm.gen, boundary.hm.usageDay)
 	}
 }
 
