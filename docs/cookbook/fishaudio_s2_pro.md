@@ -4,11 +4,13 @@
 
 ## Prerequisites
 
-Follow the [CUDA source installation guide](../get_started/installation.md#from-source) to prepare the environment and clone the repository. From the repository root, include the Fish Audio extra in the editable install to get the Descript DAC codec. Run the server commands below from the same directory so they can find `examples/configs/s2pro_tts.yaml`.
+S2-Pro uses the `fishaudio` extra for the Descript DAC codec. For a source install, follow the [CUDA source installation guide](../get_started/installation.md#from-source) to prepare the environment and clone the repository, then install the extra from the repository root.
 
 ```bash
 uv pip install --prerelease=allow -e ".[fishaudio]"
 ```
+
+If you installed the wheel, get `examples/configs/s2pro_tts.yaml` from the checkout matching your installed version (for example, [the launch YAML for v0.2.0](https://github.com/sgl-project/sglang-omni/blob/v0.2.0/examples/configs/s2pro_tts.yaml)). Run the server commands below from the checkout root or pass the path to your copy with `--config`.
 
 To download the checkpoint before starting the server, run:
 
