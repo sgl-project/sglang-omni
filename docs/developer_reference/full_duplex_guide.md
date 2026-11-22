@@ -312,7 +312,7 @@ To use another language model, run it as its own server and point the `llm` node
 ```bash
 python3 -m sglang.launch_server --model-path thinkingmachines/Inkling-2-Mini \
   --tool-call-parser inkling2 --reasoning-parser inkling --tp 1 --mem-fraction-static 0.85 \
-  --disable-prefill-cuda-graph --cuda-graph-bs-decode 1 2 4 --port 9000
+  --cuda-graph-bs-prefill 16 32 64 128 256 512 --cuda-graph-bs-decode 1 2 4 --port 9000
 ```
 
 This writes a copy of the profile that has no `chat` service and sends the `llm` node to that server:
@@ -340,14 +340,14 @@ Inkling cannot turn its reasoning off. Its reasoning parser keeps the reasoning 
 
 Speech starts later than with Qwen3.8-27B. `chat_service` streams the text of a `tts_start` call while the model writes it, but SGLang's Inkling tool parser releases a call only once the call is complete, so the first sentence waits for the whole reply.
 
-With this image, capturing prefill CUDA graphs took about five minutes per shape on one H200, so the command above turns them off. The server then compiles Triton kernels the first time a request brings a new number of prompt tokens, and its log reports each compile, such as `Triton kernel '_marlin_route' took 8.19 s to compile after serving started`. In one run, six of the first 24 requests stalled for 10 to 16 s, and three of the 40 cascade turns that followed stalled as long. Sending requests of varied lengths before the first conversation compiles most of these kernels, though not all of them:
+The command captures prefill CUDA graphs only for 16 to 512 new tokens. That covers a cascade turn: the prefix cache holds the system prompt and the earlier turns, so a turn adds about 30 tokens. Without prefill CUDA graphs, the server compiles Triton kernels the first time a request brings a new number of prompt tokens, and its log reports each compile, such as `Triton kernel '_marlin_route' took 6.26 s to compile after serving started`. On one H100, with no warm-up requests:
 
-```bash
-for words in 1 8 16 32 64 96 128 192 256 320 400 500; do
-  curl -s http://127.0.0.1:9000/v1/chat/completions -H 'Content-Type: application/json' \
-    -d "{\"model\": \"thinkingmachines/Inkling-2-Mini\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": \"$(printf 'word %.0s' $(seq "$words"))\"}]}" > /dev/null
-done
-```
+| Inkling server | Ready after | Cascade-sized requests that stalled over 3 s | Median time to the first streamed token |
+| --- | --- | --- | --- |
+| `--disable-prefill-cuda-graph` | 6 min 54 s | 6 of 20, for 7 to 24 s | 124 ms |
+| `--cuda-graph-bs-prefill 16 32 64 128 256 512` | 7 min 32 s | 0 of 19 | 43 ms |
+
+Most of the startup is a one-time compile on the first captured size, 255 s, after which the other five sizes took 27 s together. The server reports ready with `The server is fired up and ready to roll!` about 10 s after `/v1/models` first answers, so wait for that line before the first conversation. A request that adds more than 512 tokens runs without a graph and stalled for about 4 s the first time. To keep those kernels across restarts, mount a directory for Triton's cache and set `TRITON_CACHE_DIR` to it and `TRITON_CACHE_AUTOTUNING=1`. On a restart with that cache, none of 36 requests stalled, including four with 1,000 to 3,200 prompt tokens.
 
 Then start the cascade with `--config /tmp/tts-tool-inkling.yaml` and talk to it once yourself, as above. To run both cascades side by side, for example on two H200s with the one-H200 copy on the first and Inkling-2-Mini on the second, give this cascade another `--port`. It reuses the ASR and TTS services that the other cascade started.
 
