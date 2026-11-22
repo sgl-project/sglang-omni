@@ -47,6 +47,7 @@ def make_moss_engine_builder(
     *,
     enable_async_decode: bool | None = True,
     prefill_coalesce_after_builds_during_decode: bool | None = True,
+    early_request_builds: bool | None = True,
 ) -> MossTranscribeDiarizeEngineBuilder:
     return MossTranscribeDiarizeEngineBuilder(
         max_running_requests=16,
@@ -71,6 +72,7 @@ def make_moss_engine_builder(
         encoder_max_batch_size=2,
         request_build_max_workers=8,
         request_build_max_pending=16,
+        early_request_builds=early_request_builds,
         stream_emit_interval_s=0.05,
     )
 
@@ -425,6 +427,7 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert scheduler_kwargs["prefill_coalesce_when_idle"] is True
     assert scheduler_kwargs["prefill_coalesce_requires_pending_builds"] is True
     assert scheduler_kwargs["prefill_coalesce_after_builds_during_decode"] is True
+    assert scheduler_kwargs["early_request_builds"] is False
 
 
 def test_factory_context_length_override_uses_final_server_value(
@@ -1047,3 +1050,46 @@ def test_packed_encoder_is_restricted_to_verified_dtype(
         packed_encoder if dtype == torch.bfloat16 else encoder
     )
     assert packed.call_count == int(dtype == torch.bfloat16)
+
+
+@pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, False),
+        (None, True, True),
+        (False, True, False),
+        (True, False, True),
+    ],
+)
+def test_early_request_builds_default_on_only_with_a_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """By default a build starts on arrival only under the draft; an explicit setting reaches the scheduler unchanged."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        engine_builder.request_builders,
+        "make_moss_transcribe_diarize_stream_output_builder",
+        Mock(),
+    )
+    write_speculators_config(tmp_path)
+    builder = make_moss_engine_builder(early_request_builds=requested)
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    assert builder.extra_scheduler_kwargs()["early_request_builds"] is expected
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
