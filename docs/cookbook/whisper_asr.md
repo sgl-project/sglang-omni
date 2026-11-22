@@ -4,7 +4,7 @@ Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md) or [Installation - Ascend NPU](../get_started/installation_npu.md), then download a Whisper checkpoint:
+Install `sglang-omni` by following [Installation](../get_started/installation.md) or [Installation - Ascend NPU](../other_platforms/installation_npu.md), then download a Whisper checkpoint:
 
 ```bash
 hf download openai/whisper-large-v3
@@ -12,7 +12,7 @@ hf download openai/whisper-large-v3
 
 ## Ascend NPU
 
-Follow [NPU Installation](../get_started/installation_npu.md) and use the SGLang/CANN runtime specified in [pyproject_npu.toml](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml). Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:
+Follow [NPU Installation](../other_platforms/installation_npu.md) and use the SGLang/CANN runtime specified in [pyproject_npu.toml](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml). Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0
