@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Engine option handling without model weights or CUDA initialization."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
+import sglang_omni.models.nemotron_transcribe.stages as stages
+import sglang_omni.models.weight_loader as weight_loader
 from sglang_omni.models.nemotron_transcribe.config import (
     EncoderCompileMode,
     NemotronTranscribePipelineConfig,
@@ -32,6 +36,7 @@ def make_builder(
         compile_perception=compile_perception,
         perception_cuda_graphs=cuda_graphs,
         mem_fraction_static=None,
+        checkpoint_revision=None,
     )
     return NemotronTranscribeEngineBuilder(**parameters)
 
@@ -53,6 +58,48 @@ def test_decoder_defaults_keep_cuda_graphs_and_disable_compilation() -> None:
     defaults = make_builder().generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
     assert defaults["disable_radix_cache"] is True
+
+
+def test_engine_revision_selects_the_checkpoint_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An engine revision used to be dropped, so a pinned MTP launch loaded the latest snapshot."""
+    revision = "c17667641642c4265ff2b7037dd101b7d4567634"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "llm_config": {},
+                "eos_token_id": [11],
+                "perception": {},
+                "pe_encoder_config": {},
+            }
+        )
+    )
+    downloads: list[tuple[str, str | None]] = []
+
+    def download_snapshot(
+        repo_id: str, *, local_files_only: bool, revision: str | None
+    ) -> str:
+        downloads.append((repo_id, revision))
+        return str(tmp_path)
+
+    monkeypatch.setattr(weight_loader, "snapshot_download", download_snapshot)
+    monkeypatch.setattr(
+        stages.NemotronTranscribeEngineBuilder,
+        "build",
+        lambda builder, model_path, **options: builder.resolve_checkpoint(model_path),
+    )
+    factory_options = (
+        NemotronTranscribePipelineConfig(model_path="unused")
+        .stages[0]
+        .factory.model_dump(exclude_none=True)
+    )
+    stages.create_nemotron_transcribe_executor(
+        "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        server_args_overrides={"revision": revision},
+        **factory_options,
+    )
+    assert downloads == [("nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B", revision)]
 
 
 def test_decoder_compilation_has_an_actionable_error() -> None:

@@ -90,6 +90,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         context_length: int,
         max_audio_seconds: float | None,
         mem_fraction_static: float | None,
+        checkpoint_revision: str | None,
         mm_embedding_cache_size_bytes: int,
         chunked_prefill_size: int,
         encoder_max_batch_size: int,
@@ -112,6 +113,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.context_length = context_length
         self.max_audio_seconds = max_audio_seconds
         self.mem_fraction_static = mem_fraction_static
+        self.checkpoint_revision = checkpoint_revision
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.chunked_prefill_size = chunked_prefill_size
         self.encoder_max_batch_size = encoder_max_batch_size
@@ -133,7 +135,9 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
-        checkpoint_directory = Path(resolve_model_path(model_path))
+        checkpoint_directory = Path(
+            resolve_model_path(model_path, revision=self.checkpoint_revision)
+        )
         checkpoint_config = json.loads(
             (checkpoint_directory / "config.json").read_text()
         )

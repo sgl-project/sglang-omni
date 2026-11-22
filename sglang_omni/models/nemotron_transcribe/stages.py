@@ -40,11 +40,13 @@ def create_nemotron_transcribe_executor(
     mem_fraction_static: float | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
 ) -> OmniScheduler[NemotronTranscribeRequestData]:
+    revision = (server_args_overrides or {}).get("revision")
     return NemotronTranscribeEngineBuilder(
         max_new_tokens=max_new_tokens,
         context_length=context_length,
         max_audio_seconds=max_audio_seconds,
         mem_fraction_static=mem_fraction_static,
+        checkpoint_revision=revision if isinstance(revision, str) else None,
         mm_embedding_cache_size_bytes=mm_embedding_cache_size_bytes,
         chunked_prefill_size=chunked_prefill_size,
         encoder_max_batch_size=encoder_max_batch_size,
