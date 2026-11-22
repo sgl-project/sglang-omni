@@ -146,7 +146,7 @@ class ImagePort:
 
 @dataclass(frozen=True)
 class SessionPorts:
-    """What a pipeline's Session accepts and produces; `input` is one audio port and the image ports of the nodes that see; hot_settings are the realtime session fields a CONFIGURE control may change while it is open; turn_detection_types are the `turn_detection.type` values its nodes implement."""
+    """What a pipeline's Session accepts and produces; `input` is one audio port and the image ports of the nodes that see; hot_settings are the realtime session fields a CONFIGURE control may change while it is open; turn_detection_types are the `turn_detection.type` values its nodes implement; skips_screen_blocks says its reply audio never speaks what a reply writes between <screen> and </screen>."""
 
     input: tuple[AudioPort | ImagePort, ...]
     output: AudioPort | None
@@ -155,6 +155,7 @@ class SessionPorts:
     hot_settings: frozenset[str] = frozenset()
     sampling_parameters: tuple[str, ...] = ()
     turn_detection_types: tuple[str, ...] = ()
+    skips_screen_blocks: bool = False
 
     def __post_init__(self) -> None:
         audio_ports = [port for port in self.input if isinstance(port, AudioPort)]
@@ -207,4 +208,5 @@ class SessionPorts:
                 for kind in node.turn_detection_types
                 if kind not in self.turn_detection_types
             ),
+            skips_screen_blocks=self.skips_screen_blocks or node.skips_screen_blocks,
         )

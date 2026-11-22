@@ -2004,7 +2004,11 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     assert graph.publish == {
         name: tuple(formats) for name, formats in config.session_publish.items()
     }
-    assert config.session_ports() == CASCADE_PORTS
+    # note (Haoling Pu): the client shows a screen only when the server says its audio skips the blocks, since any other profile speaks a screen tag.
+    assert config.session_ports() == replace(
+        CASCADE_PORTS,
+        skips_screen_blocks=profile == "qwen3-asr-qwen3.8-27b-vivian-screen",
+    )
     assert (
         StreamingCascadePipelineConfig.model_validate(
             config.model_dump()

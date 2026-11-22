@@ -181,6 +181,7 @@ class GrantedCapabilities(TypedDict, total=False):
     supports_reference_audio: bool
     supports_instruction_updates: bool
     supports_sampling_updates: bool
+    skips_screen_blocks: bool
     voices: list[str]
     limits: dict[str, int | float]
     rejections: list[Rejection]

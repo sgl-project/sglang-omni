@@ -579,6 +579,11 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
+            skips_screen_blocks=any(
+                isinstance(node.component, OpenAISpeechSynthesizerConfig)
+                and node.component.skip_screen_blocks
+                for node in self.nodes
+            ),
         )
 
 

@@ -123,10 +123,10 @@ export class DuplexSession {
   }
 
   // What the caption shows of a reply: the heard part and the part still to play, without its screen
-  // blocks. A reply that ended other than completed, or that the player stopped, keeps only what was
-  // heard: the prefix the server's history kept once it reports one, else where its caption was when it
-  // stopped, and nothing when none of its audio played. A reply without progress from the server is
-  // shown whole until it is cut.
+  // blocks when the reply audio skips them. A reply that ended other than completed, or that the player
+  // stopped, keeps only what was heard: the prefix the server's history kept once it reports one, else
+  // where its caption was when it stopped, and nothing when none of its audio played. A reply without
+  // progress from the server is shown whole until it is cut.
   captionParts(responseId) {
     const reply = this.reply(responseId);
     if (!reply) return { heard: "", pending: "" };
@@ -144,15 +144,17 @@ export class DuplexSession {
       end = reply.text.length;
     }
     // Screen blocks turn into spaces of the same length, so the offsets into the reply still fit.
-    const spoken = reply.text.replace(SCREEN_BLOCK, (block) => " ".repeat(block.length));
+    const spoken = this.skipsScreenBlocks ? reply.text.replace(SCREEN_BLOCK, (block) => " ".repeat(block.length)) : reply.text;
     return { heard: spoken.slice(0, end), pending: cut ? "" : spoken.slice(end) };
   }
 
-  // What the screen shows: the played screen blocks of the latest reply that has any. A block has played once a
-  // progress point past its closing tag has played, or, after a cut, once its closing tag lies in the prefix the
-  // server's history kept, which is when that history keeps it whole, so a reply cut before or inside its block
-  // never shows it. A block the reply left open ends with the reply once it has completed.
+  // What the screen shows when the reply audio skips screen blocks: the played screen blocks of the latest reply
+  // that has any. A block has played once a progress point past its closing tag has played, or, after a cut, once
+  // its closing tag lies in the prefix the server's history kept, which is when that history keeps it whole, so a
+  // reply cut before or inside its block never shows it. A block the reply left open ends with the reply once it
+  // has completed.
   get screen() {
+    if (!this.skipsScreenBlocks) return "";
     for (const reply of [...this.replies.values()].reverse()) {
       const cut = (reply.status !== null && reply.status !== "completed") || reply.stopped;
       let reachedEnd;
@@ -195,6 +197,11 @@ export class DuplexSession {
 
   get turnBased() {
     return Boolean(this.granted) && this.granted.interaction === "turn_based";
+  }
+
+  // note (Haoling Pu): only a profile whose reply audio skips screen blocks has a screen; in any other a screen tag is spoken, so the caption keeps it.
+  get skipsScreenBlocks() {
+    return Boolean(this.granted) && this.granted.skips_screen_blocks === true;
   }
 
   // Input PCM rate the server granted; the microphone is resampled to it.
