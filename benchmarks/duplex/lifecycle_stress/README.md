@@ -13,9 +13,10 @@ MODEL=$MODEL MAX_SESSIONS=$MAX_SESSIONS SERVER_PID=$SERVER_PID SERVER_LOG=$SERVE
 - `MAX_SESSIONS` is the server's `max_sessions`, `SERVER_PID` its main process, `SERVER_LOG` the file its log goes to.
 - This branch has #3623, which makes Qwen3-Omni's connection cap equal to `max_sessions`, so the capacity probe covers the session slots and the connection table alike. A server from before it keeps a connection cap of 128, see Limitations.
 - `PAIR` is a directory with `input.wav`, in which the user talks over the reply, and `clean_input.wav`, in which nobody does. The Full-Duplex-Bench v1.5 dataset has such pairs under `user_interruption/`. If `$FDB_WORK/dataset/v1.5` is not on the host yet, `python -m benchmarks.duplex.fdb setup` puts it there along with the rest of the Full-Duplex-Bench setup; see Setup in the [full-duplex guide](../../../docs/developer_reference/full_duplex_guide.md). `FDB_WORK` defaults to `$HOME/fdb`.
+- `CLIENTS` is how many sessions run at once. It defaults to `MAX_SESSIONS`, and that can be more than the server holds: `max_sessions` is how many sessions it admits, and with audio in every one of them the model's KV pool can run out first (#3488 has measurements). Set `CLIENTS` to what the server holds.
 - `URL` (default `ws://127.0.0.1:8000/v1/realtime`) and `CYCLES` (default 10) can be set the same way.
 
-Each cell first runs one cycle of two clients. A cell that fails there is skipped; the others run `CYCLES` cycles at `MAX_SESSIONS` clients. No failure stops the script, and a rerun with the same output directory skips what is already there. It ends with `runs/gpu/report.txt`, and `runs/gpu` is what to send back.
+Each cell first runs one cycle at `CLIENTS` clients, which takes about as long as the audio file. A cell that fails there is skipped; the others run `CYCLES` cycles. No failure stops the script, and a rerun with the same output directory skips what is already there. It ends with `runs/gpu/report.txt`, and `runs/gpu` is what to send back.
 
 What `report.txt` should show:
 
@@ -26,12 +27,14 @@ What `report.txt` should show:
 | `interrupt` | `interrupted_replies` is above zero |
 | `interrupt_control` | `interrupted_replies` is zero |
 | `churn`, `long` | every session `completed` |
-| `churn_overflow` | `MAX_SESSIONS` sessions `completed` per cycle and the rest `denied` |
+| `churn_overflow` | `MAX_SESSIONS` sessions `completed` per cycle and the rest `denied`; this cell runs a quarter more clients than `MAX_SESSIONS`, 0.4 s of audio each |
 | `drop_*`, `reconnect_reply_reset` | every session `dropped`; in the `reply` cells `drops_mid_reply` counts them and `drops_after_reply` is zero |
 | `cancel` | every session `completed`, `cancel_statuses` all `cancelled` |
 | `cancel_reply_reset` | every session `dropped` |
 
 The two interrupt cells run first, because they establish that the scenario does what it says before any of its numbers count. A zero in `interrupt` means the server's voice detection did not cancel a reply, or the tool did not count it; the traces under `traces/` tell which.
+
+If `errors` in a cell names `session_capacity_exhausted`, the server ran out of room for that many sessions with audio and closed some with 1013. That is the load being too high and not a fault of the cleanup: lower `CLIENTS` and rerun into a new output directory.
 
 Also worth a look:
 

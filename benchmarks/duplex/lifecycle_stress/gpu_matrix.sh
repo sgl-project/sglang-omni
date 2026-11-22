@@ -7,15 +7,18 @@
 #
 # PAIR is a directory with input.wav, in which the user talks over the reply, and
 # clean_input.wav, in which nobody does, such as one Full-Duplex-Bench v1.5
-# user_interruption pair. Each cell first runs one cycle of two clients. A cell
-# that fails there is skipped; the others run CYCLES cycles (10 by default) at
-# MAX_SESSIONS clients. No failure stops the script, and a rerun with the same
+# user_interruption pair. CLIENTS is how many sessions run at once and defaults
+# to MAX_SESSIONS; set it lower where the server admits more sessions than it
+# can hold with audio. Each cell first runs one cycle at CLIENTS clients. A cell
+# that fails there is skipped; the others run CYCLES cycles (10 by default).
+# No failure stops the script, and a rerun with the same
 # OUTPUT_DIRECTORY skips what is already there.
 set -u
 OUT=$1
 : "${MODEL:?}" "${MAX_SESSIONS:?}" "${SERVER_PID:?}" "${SERVER_LOG:?}" "${PAIR:?}"
 URL=${URL:-ws://127.0.0.1:8000/v1/realtime}
 CYCLES=${CYCLES:-10}
+CLIENTS=${CLIENTS:-$MAX_SESSIONS}
 PYTHON=${PYTHON:-python}
 # DEVICE_MEMORY=0 leaves out the nvidia-smi reading, for a host without one.
 DEVICE_MEMORY=${DEVICE_MEMORY:-1}
@@ -48,7 +51,7 @@ cell() {
   if [ ! -f "$OUT/smoke/$name/summary.json" ]; then
     rm -rf "$OUT/smoke/$name"
     mkdir -p "$OUT/smoke"
-    stress "$OUT/smoke/$name" --concurrency 2 --cycles 1 --audio-file "$audio" "$@"
+    stress "$OUT/smoke/$name" --concurrency "$clients" --cycles 1 --audio-file "$audio" "$@"
   fi
   if ! passed "$OUT/smoke/$name"; then
     echo "$name smoke FAILED, full run skipped: see $OUT/smoke/$name.log" | tee -a "$OUT/progress.log"
@@ -68,18 +71,19 @@ cell() {
 
 : >"$OUT/progress.log"
 # The two interrupt cells come first: they show whether the server cancels a reply the user talks over at all.
-cell interrupt "$MAX_SESSIONS" input.wav --scenario interrupt
-cell interrupt_control "$MAX_SESSIONS" clean_input.wav --scenario interrupt
-cell churn "$MAX_SESSIONS" clean_input.wav --scenario churn
-cell churn_overflow "$OVERFLOW" clean_input.wav --scenario churn
-cell long "$MAX_SESSIONS" clean_input.wav --scenario long
-cell drop_update_reset "$MAX_SESSIONS" clean_input.wav --scenario drop --leave-point update --leave-style reset
-cell drop_append_reset "$MAX_SESSIONS" clean_input.wav --scenario drop --leave-point append --leave-style reset
-cell drop_reply_reset "$MAX_SESSIONS" clean_input.wav --scenario drop --leave-point reply --leave-style reset
-cell drop_reply_frame "$MAX_SESSIONS" clean_input.wav --scenario drop --leave-point reply --leave-style close_frame
-cell cancel "$MAX_SESSIONS" clean_input.wav --scenario cancel
-cell cancel_reply_reset "$MAX_SESSIONS" clean_input.wav --scenario cancel --leave-point reply --leave-style reset
-cell reconnect_reply_reset "$MAX_SESSIONS" clean_input.wav --scenario reconnect --reconnects 2 --leave-point reply --leave-style reset
+cell interrupt "$CLIENTS" input.wav --scenario interrupt
+cell interrupt_control "$CLIENTS" clean_input.wav --scenario interrupt
+cell churn "$CLIENTS" clean_input.wav --scenario churn
+# More clients than the server admits, to see the excess denied. They send 0.4 s each, so that filling every slot does not also fill the model.
+cell churn_overflow "$OVERFLOW" clean_input.wav --scenario churn --packets-per-session 5
+cell long "$CLIENTS" clean_input.wav --scenario long
+cell drop_update_reset "$CLIENTS" clean_input.wav --scenario drop --leave-point update --leave-style reset
+cell drop_append_reset "$CLIENTS" clean_input.wav --scenario drop --leave-point append --leave-style reset
+cell drop_reply_reset "$CLIENTS" clean_input.wav --scenario drop --leave-point reply --leave-style reset
+cell drop_reply_frame "$CLIENTS" clean_input.wav --scenario drop --leave-point reply --leave-style close_frame
+cell cancel "$CLIENTS" clean_input.wav --scenario cancel
+cell cancel_reply_reset "$CLIENTS" clean_input.wav --scenario cancel --leave-point reply --leave-style reset
+cell reconnect_reply_reset "$CLIENTS" clean_input.wav --scenario reconnect --reconnects 2 --leave-point reply --leave-style reset
 
 "$PYTHON" - "$OUT" <<'PYTHON_END' | tee "$OUT/report.txt"
 import json
