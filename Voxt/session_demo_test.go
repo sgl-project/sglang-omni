@@ -41,10 +41,23 @@ func TestSessionDemoRejectsInvalidCardFixture(t *testing.T) {
 	}
 }
 
+func TestSessionDemoImageInputGetsFixturePreview(t *testing.T) {
+	host := &meetingDemoHost{}
+	host.resetSessionFixture(meetingFixtureState{Kind: "session-overlay", Session: &sessionOverlayViewState{Card: &sessionCardViewState{
+		Inputs: []sessionCardInput{{Label: "draft.png", Width: 20, Height: 10, Image: true}},
+	}}, SessionUI: &sessionOverlayFixtureUI{}})
+	if len(host.sessionUI.cardPreviews) != 1 || host.sessionUI.cardPreviews[0].Image == nil {
+		t.Fatalf("image input lost its fixture preview: %+v", host.sessionUI.cardPreviews)
+	}
+	if got := host.sessionUI.cardPreviews[0]; got.Width != 20 || got.Height != 10 {
+		t.Fatalf("fixture dimensions %d × %d", got.Width, got.Height)
+	}
+}
+
 func newSessionDemoActionTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 	t.Helper()
 	placement := host.sessionDemoPlacement()
-	width := max(placement.width, layout.CardSizes[len(layout.CardSizes)-1].W+2*layout.Pad)
+	width := max(placement.width, layout.CardFillW(ovTestArea, 96)+2*layout.Pad)
 	tester := ui.NewTester(func(context *ui.Context) { sessionDemoOverlayView(context, host) }, width, placement.height)
 	tester.SetLocale(host.current().locale)
 	tester.SetFontSmoothing(hudSmoothing)
@@ -133,7 +146,7 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 				t.Fatalf("bubble copy mark has %q", host.sessionUI.bubbleCopied)
 			}
 		}},
-		{name: "size cycle wraps", fixture: "en/card-short", methods: []string{"cycleOverlayCardSize"}, steps: steps("Make the card larger", "Make the card larger", "Make the card smaller"), want: []string{"cycleOverlayCardSize", "cycleOverlayCardSize", "cycleOverlayCardSize"}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+		{name: "size cycle wraps", fixture: "en/card-short", methods: []string{"cycleOverlayCardSize"}, steps: steps("Make the card larger", "Make the card larger", "Make the card larger", "Make the card smaller"), want: []string{"cycleOverlayCardSize", "cycleOverlayCardSize", "cycleOverlayCardSize", "cycleOverlayCardSize"}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 			if host.sessionState.Card.SizeStep != 0 {
 				t.Fatalf("size step %d, want wrapped step 0", host.sessionState.Card.SizeStep)
 			}
@@ -285,8 +298,9 @@ func clickSessionDemoBubbleCopy(t *testing.T, host *meetingDemoHost, tester *ui.
 	}
 	tester.Move(textBounds.X+textBounds.W/2, textBounds.Y+textBounds.H/2)
 	frames(tester)
-	text, _, _ := sessionCardBlockText(card, block)
-	tester.ClickAt(textBounds.X+text.wrap+layout.BubblePadX-35, titleBounds.Y-layout.BubblePadY+19)
+	text, _, _ := sessionCardBlockText(block, layout.CardSizes[card.SizeStep].Width(ovTestArea, host.sessionSeed.Overlay.Margin))
+	// The Copy icon (24) right of the bubble, level with its top.
+	tester.ClickAt(textBounds.X+text.wrap+layout.BubblePadX+bubbleCopyGap+12, titleBounds.Y-layout.BubblePadY+12)
 	frames(tester)
 }
 

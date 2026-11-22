@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // overlayState owns the session overlay's native and current-frame state.
@@ -32,11 +33,36 @@ type overlayState struct {
 		fade        int
 		epoch       time.Time
 		native      bool
+		front       overlayFront // a preview floats; the answer card takes the front
 		stream      streamReveal
 		projection  sessionOverlayProjection
 		layout      sessionOverlayLayout
 		lang        langMenuState
 		ui          sessionOverlayLocalUI
+	}
+	// pill is the session pill's own window, for while the answer card
+	// holds the overlay window (wall 116, session_pill_window.go).
+	pill struct {
+		win     *mygo.Window
+		shown   bool
+		visible bool
+		mode    overlayMode
+		w, h    int
+		frame   mygo.Rectangle
+		live    struct {
+			id string
+			w  int
+		}
+		textW       map[ovSized]ovMeasured
+		area        mygo.Rectangle
+		dragged     struct{ x, y int }
+		style       mygo.VibrancyStyle
+		passThrough bool
+		reveal      bool
+		fade        int
+		epoch       time.Time
+		projection  sessionOverlayProjection
+		layout      sessionOverlayLayout
 	}
 	laterHook   func(time.Duration, func())
 	measureHook func(ovSized) (float32, float32)
@@ -66,7 +92,10 @@ func (a *app) later(delay time.Duration, fn func()) {
 func (a *app) overlayModeNow() overlayMode {
 	snapshot := a.sess
 	live := snapshot.State.Live() && !snapshot.Try
-	card := a.answer.open && (!live || a.cardSessionLive())
+	// A Transcribe leaves the card on screen (wall 116): the card keeps
+	// the overlay window, the session's pill gets its own (pillModeNow).
+	haveCard := a.answer.open || a.bgID != ""
+	card := haveCard && (!live || a.cardSessionLive() || a.bgID != "" || snapshot.Kind == store.KindTranscribe)
 	switch {
 	case a.notice != nil && a.notice.over:
 		return ovNotice
@@ -75,6 +104,10 @@ func (a *app) overlayModeNow() overlayMode {
 	case card, live && a.writingAnswer():
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
+		return ovHidden
+	case live && a.box.open && snapshot.ID == a.boxSessionID():
+		// The Rewrite card shows its own session until the answer takes
+		// its place: no pill beside or after it (wall 122).
 		return ovHidden
 	case live && snapshot.State == session.Recording:
 		return ovRecording
@@ -86,11 +119,37 @@ func (a *app) overlayModeNow() overlayMode {
 	return ovHidden
 }
 
+// pillModeNow is what the session pill's own window shows (wall 116):
+// a Transcribe session's pill or a notice while the card holds the
+// overlay window. The card's own session (its recording, its streaming
+// answer, whatever its kind) already shows in the card, never here.
+func (a *app) pillModeNow(main overlayMode) overlayMode {
+	snapshot := a.sess
+	if live := snapshot.State.Live() && !snapshot.Try; live && main != ovRecording && main != ovWorking && snapshot.Kind == store.KindTranscribe {
+		switch {
+		case snapshot.State == session.Delivering:
+			return ovHidden
+		case snapshot.State == session.Recording:
+			return ovRecording
+		default:
+			return ovWorking
+		}
+	}
+	if main == ovAnswer && a.notice != nil && !a.notice.over {
+		return ovNotice
+	}
+	return ovHidden
+}
+
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
+	if a.box.open {
+		defer a.boxSync() // the Rewrite card draws the answer card's state
+	}
 	a.paceDraft()
 	a.refreshSessionOverlay(time.Now())
 	mode := a.overlayModeNow()
+	defer a.pillOverlaySync(mode) // the session pill's own window (wall 116)
 	was := a.ov.shown
 	if mode == ovHidden {
 		a.ov.mode, a.ov.shown = mode, false
@@ -120,6 +179,15 @@ func (a *app) overlaySync() {
 		a.syncPassThrough()
 		return
 	}
+	if a.boxHoldsCard(mode) {
+		// Rewrite's card draws its answer itself: one window from the
+		// shortcut to the last follow-up (wall 122).
+		a.ov.shown = false
+		if was {
+			a.overlayFadeOut()
+		}
+		return
+	}
 	if a.ov.win == nil {
 		content := sessionOverlayContent(
 			func() *sessionOverlayViewState {
@@ -135,7 +203,7 @@ func (a *app) overlaySync() {
 			a.postSessionOverlayMeasurements,
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
 		)
-		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
+		opts := cardWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
 		opts.Vibrancy = mygo.VibrancyHUD
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
@@ -160,6 +228,7 @@ func (a *app) overlaySync() {
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
 	}
+	a.ov.front.sync(a.ov.win, mode == ovAnswer, !was, a.answer.id, func() cardMay { return a.cardMayTake(a.answer.target.PID) })
 }
 
 func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
@@ -186,9 +255,27 @@ func (a *app) overlayDragged() {
 	if !a.ov.shown || bounds.X == a.ov.frame.X && bounds.Y == a.ov.frame.Y {
 		return
 	}
+	a.overlayDraggedTo(bounds)
+}
+
+func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 	frame := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
 	a.ov.dragged.x, a.ov.dragged.y = bounds.X-frame.X, bounds.Y-frame.Y
-	a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
+	area := ovTestArea
+	if a.overlayNative() {
+		area = mygo.Screen.DisplayMatching(bounds).WorkArea
+	}
+	if area != a.ov.area {
+		a.ov.area = area
+		a.ov.dragged.x, a.ov.dragged.y = 0, 0
+		a.refreshSessionOverlay(time.Now())
+		width, height := a.overlayFace(a.ov.mode)
+		anchor := layout.Frame(a.ov.area, a.prefs.Overlay, width, height)
+		a.ov.dragged.x, a.ov.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
+		a.overlayRestyle()
+	} else {
+		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
+	}
 	a.syncLangMenu()
 }
 
@@ -217,8 +304,7 @@ func (a *app) syncOverlayMaterial() {
 	if a.ov.win == nil {
 		return
 	}
-	style := mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
-		Radius: float64(faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h)), Dark: true}
+	style := floatingVibrancyStyle(faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h))
 	if style != a.ov.style {
 		a.ov.style = style
 		a.ov.win.SetVibrancyStyle(style)
@@ -261,6 +347,9 @@ func (a *app) overlayFace(mode overlayMode) (int, int) {
 }
 
 func (a *app) overlayRestyle() {
+	if a.box.open {
+		a.boxSync()
+	}
 	if !a.ov.shown {
 		return
 	}
@@ -271,6 +360,8 @@ func (a *app) overlayRestyle() {
 	a.ov.w, a.ov.h, a.ov.frame = width, height, frame
 	a.syncLangMenu()
 	a.syncPassThrough()
+	// The card moved: the pill window moves with it (overlaySync's).
+	defer a.pillOverlaySync(a.ov.mode)
 	if a.ov.win == nil {
 		return
 	}
@@ -283,18 +374,23 @@ func (a *app) overlayRestyle() {
 
 // invalidatePaletteOverlays redraws the overlay windows in a new palette.
 func (a *app) invalidatePaletteOverlays() {
-	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin} {
+	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin, a.pill.win} {
 		if window != nil {
 			window.Invalidate()
 		}
+	}
+	if a.box.win != nil {
+		a.box.win.Invalidate()
 	}
 }
 
 func (a *app) closeOverlay() {
 	a.closeLangWindow()
+	a.closePillOverlay()
 	if a.ov.win != nil {
 		a.ov.win.Destroy()
 		a.ov.win = nil
+		a.ov.front = overlayFront{} // a new window starts above the others
 	}
 	a.overlayTranscript = transcriptPreview{}
 	a.bubbleTranscripts = nil

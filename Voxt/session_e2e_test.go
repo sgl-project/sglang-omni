@@ -125,9 +125,11 @@ func (s *sessionApp) pump(what string, cond func() bool) {
 	}
 }
 
-// settle runs posted functions for d, so an action with an asynchronous
-// effect (a session's stop) has landed before a negative assertion.
-func (s *sessionApp) settle(d time.Duration) {
+// drain serves the queue for d: a wait during which nothing is
+// expected, with the posts that do come still run, so an action with an
+// asynchronous effect (a session's stop) has landed before a negative
+// assertion.
+func (s *sessionApp) drain(d time.Duration) {
 	s.t.Helper()
 	deadline := time.After(d)
 	for {
@@ -211,7 +213,7 @@ func TestSessionEndToEnd(t *testing.T) {
 		}
 	}
 	a.pump("the recording", func() bool { seen(); return a.sess.State == session.Recording })
-	if !strings.Contains(a.hotkeysSent, "Active:true") {
+	if !strings.Contains(a.hotkeysSent, `"active":true`) {
 		t.Errorf("not active while recording: %s", a.hotkeysSent)
 	}
 	a.pump("the end", func() bool { seen(); return a.sess.State.Ended() })
@@ -227,7 +229,7 @@ func TestSessionEndToEnd(t *testing.T) {
 	if p[0].Text != "Hello, VoxtNew." || p[0].TargetPID != 812 || p[1].Text != "Hello, VoxtNew." {
 		t.Errorf("pasted %+v", p)
 	}
-	if strings.Contains(a.hotkeysSent, "Active:true") {
+	if strings.Contains(a.hotkeysSent, `"active":true`) {
 		t.Errorf("still active: %s", a.hotkeysSent)
 	}
 	es := a.history()
@@ -264,7 +266,7 @@ func TestSessionReturnFinishes(t *testing.T) {
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
 			a := newSessionApp(t, ev, set, keys)
 			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
-			if !strings.Contains(a.hotkeysSent, "ID:finish") {
+			if !strings.Contains(a.hotkeysSent, `"id":"finish"`) {
 				t.Fatal("Return is not bound while Transcribe records")
 			}
 			a.hotkeyFired(proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
@@ -272,7 +274,7 @@ func TestSessionReturnFinishes(t *testing.T) {
 			if a.sess.State != session.Recognizing {
 				t.Fatalf("state after stop: %s, want recognizing", a.sess.State)
 			}
-			if strings.Contains(a.hotkeysSent, "ID:finish") {
+			if strings.Contains(a.hotkeysSent, `"id":"finish"`) {
 				t.Fatalf("helper still swallows Return while recognizing: %s", a.hotkeysSent)
 			}
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
@@ -282,7 +284,7 @@ func TestSessionReturnFinishes(t *testing.T) {
 			if p := a.pasted(); len(p) != 1 || p[0].Text != "Finished sentence." || len(p[0].Press) != 0 {
 				t.Errorf("pasted %+v", p)
 			}
-			if strings.Contains(a.hotkeysSent, "ID:finish") {
+			if strings.Contains(a.hotkeysSent, `"id":"finish"`) {
 				t.Errorf("Return is still bound after the session: %s", a.hotkeysSent)
 			}
 		})
@@ -297,7 +299,7 @@ func TestSessionPasteLastOtherKeyKeepsRecording(t *testing.T) {
 	a := newSessionApp(t, ev, set, keys)
 	a.pump("the recording", func() bool { return a.sess.State == session.Recording })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "paste-last", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: a.hotkeyGen})
-	a.settle(250 * time.Millisecond)
+	a.drain(250 * time.Millisecond)
 	if a.sess.State != session.Recording {
 		t.Fatalf("Paste last on its ordinary shortcut stopped dictation: %+v", a.sess)
 	}
@@ -351,7 +353,7 @@ func TestSessionStaleFinishEvent(t *testing.T) {
 				t.Fatal("the second dictation did not start")
 			}
 			a.hotkeyFired(stale)
-			a.settle(250 * time.Millisecond) // a wrongly accepted stop lands asynchronously
+			a.drain(250 * time.Millisecond) // a wrongly accepted stop lands asynchronously
 			if a.sess.State != session.Recording {
 				t.Fatalf("a Return event from the first dictation's configuration stopped the second: %+v", a.sess)
 			}
@@ -360,6 +362,26 @@ func TestSessionStaleFinishEvent(t *testing.T) {
 			a.pump("the second session's end", func() bool { return a.sess.State.Ended() })
 		})
 	}
+}
+
+// TestStopShortcutAfterOverlaySync: redrawing the overlay while recording
+// sends no new hotkey configuration, so the stop tap the helper decided
+// under the current one is not dropped as stale. The configuration's key
+// held the cancel binding's address, which changed on every sync.
+func TestStopShortcutAfterOverlaySync(t *testing.T) {
+	set, keys, _ := fileSetup(t, "hello", &fakeChat{text: "Hello."})
+	a := newSessionApp(t, script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger)), set, keys)
+	a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+	if a.hotkeyPlan().Cancel == nil {
+		t.Fatal("no cancel binding: the configuration has no pointer to compare")
+	}
+	generation := a.hotkeyGen
+	a.overlaySync()
+	if a.hotkeyGen != generation {
+		t.Fatalf("an unchanged configuration was sent again: generation %d, was %d", a.hotkeyGen, generation)
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: generation})
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
 }
 
 // TestSessionStreamingCard: a streaming model shows its partial while
@@ -385,7 +407,7 @@ func TestSessionStreamingCard(t *testing.T) {
 	if len(a.pasted()) != 0 {
 		t.Fatalf("pasted %+v", a.pasted())
 	}
-	if !strings.Contains(a.hotkeysSent, "Active:true") {
+	if !strings.Contains(a.hotkeysSent, `"active":true`) {
 		t.Error("Escape should close the card")
 	}
 	a.insertAnswer()

@@ -38,7 +38,7 @@
     "card": {
       "id": "shot29",
       "kind": "rewrite",
-      "title": "AI answer",
+      "title": "Rewrite",
       "target_name": "Slack",
       "thinking": {},
       "size_step": 0,

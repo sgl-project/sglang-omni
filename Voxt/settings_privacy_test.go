@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // TestPrivacySendWindow: sending a screenshot of the window is off by
@@ -20,7 +21,7 @@ func TestPrivacySendWindow(t *testing.T) {
 	openPrivacy(t, a, tt)
 	tt.Scroll(float32(windowWidth)*0.6, 900, 0, -10000)
 	frames(tt)
-	if !has(tt, "sends it to the language model with the text") {
+	if !has(tt, "sends a screenshot of the window with the text") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Send the window to the language model")
@@ -72,14 +73,14 @@ func TestPrivacyNamesBothDataPaths(t *testing.T) {
 
 // TestPrivacySendClipboardImage: sending the copied image with Rewrite is
 // off by default; the switch saves it, asks for no permission, and its
-// note says what goes and what does not.
+// note says what goes and to whom (docs/settings.md lists what does not).
 func TestPrivacySendClipboardImage(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	if a.settings.Get().Privacy.SendClipboardImage {
 		t.Fatal("on by default")
 	}
 	openPrivacy(t, a, tt)
-	if !has(tt, "Copied text, and copied files that are not images, are not sent") {
+	if !has(tt, "sends the image you copied to the language model") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Send the copied image with Rewrite")
@@ -100,5 +101,24 @@ func TestPrivacySendClipboardImage(t *testing.T) {
 	click(t, tt, "Send both with Rewrite")
 	if a.settings.Get().Privacy.SendClipboardImageWithSelection {
 		t.Error("text and image together: still on")
+	}
+}
+
+// TestPrivacyImagePriority: under the screenshot and copied-image
+// switches, one plain sentence says which one wins when both are on, in
+// English and in Chinese.
+func TestPrivacyImagePriority(t *testing.T) {
+	for _, tc := range []struct{ lang, want string }{
+		{"en", "With both on, the copied image goes, not the screenshot."},
+		{"zh-Hans", "两个都打开时，发送复制的图片，不发送截图。"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			a.updateSettings(func(s *settings.Settings) { s.General.Language = tc.lang })
+			openPrivacy(t, a, tt)
+			if !has(tt, tc.want) {
+				t.Errorf("no %q in %q", tc.want, firstTexts(tt))
+			}
+		})
 	}
 }

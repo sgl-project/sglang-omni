@@ -39,6 +39,12 @@ func TestMigrate(t *testing.T) {
 			t.Errorf("%s: cancel %+v %v", tc.doc, s.Features.Cancel, err)
 		}
 	}
+	// The dropped inputBox switch (never released: the input box is the
+	// only Rewrite now) loads without a word.
+	s, err = Migrate([]byte(`{"version":4,"features":{"rewrite":{"inputBox":true,"cleanup":false}}}`))
+	if err != nil || s.Features.Rewrite.Cleanup {
+		t.Errorf("inputBox: %+v %v", s.Features.Rewrite, err)
+	}
 	data, _ := json.Marshal(s)
 	again, err := Migrate(data)
 	if err != nil || !reflect.DeepEqual(again, s) {
@@ -46,6 +52,22 @@ func TestMigrate(t *testing.T) {
 	}
 	if _, err := Migrate([]byte(`{`)); err == nil {
 		t.Error("bad JSON accepted")
+	}
+}
+
+func TestMeetingCorrectionStyleDocument(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"meeting":{"prompt":"Summary style"}}}`))
+	if err != nil || s.Features.Meeting.CorrectionStyle != "" || s.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("older document: %+v %v", s.Features.Meeting, err)
+	}
+	s.Features.Meeting.CorrectionStyle = "保持原语气。Keep English product names. " + strings.Repeat("Be concise. ", 100)
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || back.Features.Meeting.CorrectionStyle != s.Features.Meeting.CorrectionStyle || back.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("round trip: %+v %v", back.Features.Meeting, err)
 	}
 }
 
@@ -77,6 +99,7 @@ func TestStore(t *testing.T) {
 		s.Appearance.Palette = " #B25280 "
 		s.Appearance.WindowTransparency = 25
 		s.Appearance.SidebarWidth = 900
+		s.Appearance.HistoryDetailWidth = 900
 		s.General.OtherLanguages = []string{" en ", "en", ""}
 		s.Features.Translate.Hotkeys = append(s.Features.Translate.Hotkeys, Hotkey{Keys: " "}, Hotkey{Keys: "Option+T", Trigger: "weird"})
 		s.Overlay.Opacity = 0.1
@@ -85,7 +108,7 @@ func TestStore(t *testing.T) {
 	}
 	got := s.Get()
 	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != ThemeSystem || got.Appearance.Palette != "#b25280" || got.Appearance.WindowTransparency != MaxWindowTransparency ||
-		got.Appearance.SidebarWidth != MaxSidebarWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
+		got.Appearance.SidebarWidth != MaxSidebarWidth || got.Appearance.HistoryDetailWidth != MaxHistoryDetailWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
 		len(got.Features.Translate.Hotkeys) != 2 || got.Features.Translate.Hotkeys[1].Trigger != TriggerTap || got.Overlay.Opacity != 0.5 {
 		t.Fatalf("normalized: %+v", got)
 	}

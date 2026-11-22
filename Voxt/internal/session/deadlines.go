@@ -40,7 +40,9 @@ func TimedOut(err error) bool {
 }
 
 // llmChat runs req within its deadlines, until SkipLLM; an error says
-// which one passed.
+// which one passed. One kind of picture goes with it: the Rewrite box's
+// own (only those, the user's own), else the picture the user copied,
+// else the window's.
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 	return r.llmChatContext(r.llmCtx, req)
 }
@@ -48,13 +50,32 @@ func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Response, error) {
 	ctx, cancel := context.WithTimeout(parent, req.Timeout)
 	defer cancel()
+	hint := ""
 	switch {
+	case len(r.req.Images) > 0:
+		req.Images, req.ImagesRequired = r.req.Images, true
+		hint = "box"
+		r.previewImage("", nil)
 	case r.clip != nil: // the picture the user copied wins over the window's
-		req.Image = r.clip
+		req.Images = [][]byte{r.clip}
+		hint = "clipboard"
+		r.previewImage("clipboard", r.clip)
 	case r.shot != nil:
-		req.Image = r.shot()
+		if jpeg := r.shot(); jpeg != nil {
+			req.Images = [][]byte{jpeg}
+			hint = "window"
+			r.previewImage("window", jpeg)
+		}
+	}
+	if hint != "" {
+		r.m.update(r, func(s *Snapshot) { s.ImageHint = hint })
 	}
 	resp, err := r.svc.LLM.Chat(ctx, req)
+	if err == nil && resp.ImagesDropped && hint != "" {
+		// The model answered from the text alone: the card must not
+		// claim a picture went with the request.
+		r.m.update(r, func(s *Snapshot) { s.ImageHint = "" })
+	}
 	if err == nil || r.ctx.Err() != nil {
 		return resp, err
 	}

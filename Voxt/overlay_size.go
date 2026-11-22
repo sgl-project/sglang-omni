@@ -88,6 +88,13 @@ type sessionOverlayLayoutInput struct {
 
 const streamGrowStep = 4 * 19
 
+// streamHeadroom is the room a card keeps under a streaming answer's
+// text: a line of it (14 pt Markdown at 1.5 leading) and a little. The
+// view measures a new text in the frame that first draws it, and the card
+// grows to it a turn of the main loop later, so the frame between draws
+// the next line in this room instead of past the body (#3836 feedback).
+const streamHeadroom = 26
+
 // sessionOverlayLayoutFor computes the native face model without owning an app or a window.
 func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
 	model := sessionOverlayLayout{
@@ -111,9 +118,11 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 			model.Width, model.Height = layout.CardSizes[0].W, layout.CardChrome
 			break
 		}
+		width := layout.CardSizes[card.SizeStep].Width(input.WorkArea, input.Overlay.Margin)
 		bodyMax := sessionOverlayCardBodyMax(card, input.WorkArea.Height, input.Overlay.Margin)
-		body, streamHeight, exact := sessionOverlayCardBodyHeight(state.SessionID, card, measureHeight, input.PreviewHeights, bodyMax, input.Memory.StreamHeight)
-		model.Width, model.Height, model.Exact, model.StreamHeight = layout.CardSizes[card.SizeStep].W, layout.CardChrome+body, exact, streamHeight
+		body, streamHeight, exact := sessionOverlayCardBodyHeight(state.SessionID, card, measureHeight, input.PreviewHeights, bodyMax, input.Memory.StreamHeight, width)
+		model.Width, model.Height, model.Exact, model.StreamHeight = width, layout.CardChrome+sessionCardAttachmentHeight(card)+body, exact, streamHeight
+		model.CardScrolls = body >= bodyMax
 		if card.Message != "" {
 			model.Height += layout.CardMsgGap + layout.CardMsgH
 		}
@@ -183,8 +192,8 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 	return model
 }
 
-func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBlock, measureHeight func(ovSized) (float32, bool), previewHeight int) (float32, bool) {
-	text, title, quote := sessionCardBlockText(card, block)
+func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBlock, measureHeight func(ovSized) (float32, bool), previewHeight, width int) (float32, bool) {
+	text, title, quote := sessionCardBlockText(block, width)
 	height, exact := measureHeight(text)
 	if previewHeight > 0 {
 		height, exact = float32(previewHeight), true
@@ -209,15 +218,26 @@ func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBloc
 	return height, exact
 }
 
+func sessionCardAttachmentHeight(card *sessionCardViewState) int {
+	if card != nil && (card.Attachment != "" || card.ThumbnailCount > 0 || card.InputCount > 0) {
+		return layout.CardAttachH
+	}
+	return 0
+}
+
 func sessionOverlayCardBodyMax(card *sessionCardViewState, workAreaHeight int, margin float64) int {
-	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome
+	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome - sessionCardAttachmentHeight(card)
 	if card != nil && card.Message != "" {
 		room -= layout.CardMsgGap + layout.CardMsgH
 	}
-	return max(room, layout.CardBodyMax)
+	limit := max(room, layout.CardBodyMax)
+	if card != nil {
+		limit = max(limit-sessionCardAttachmentHeight(card), 0)
+	}
+	return limit
 }
 
-func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, measureHeight func(ovSized) (float32, bool), previewHeights map[string]int, bodyMax int, previousStreamHeight float32) (int, float32, bool) {
+func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, measureHeight func(ovSized) (float32, bool), previewHeights map[string]int, bodyMax int, previousStreamHeight float32, width int) (int, float32, bool) {
 	var height float32
 	exact := true
 	streamHeight := previousStreamHeight
@@ -228,12 +248,12 @@ func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, 
 			blockIndex = -1
 		}
 		previewHeight := previewHeights[sessionCardPreviewKey(sessionID, card, blockIndex)]
-		blockHeight, ok := sessionOverlayBlockHeight(card, block, measureHeight, previewHeight)
+		blockHeight, ok := sessionOverlayBlockHeight(card, block, measureHeight, previewHeight, width)
 		height += sessionCardBlockGap(block, index) + blockHeight
 		exact = exact && ok
 	}
 	if card.Writing || card.Conversation && card.Busy && !card.Recording {
-		height = float32(math.Ceil(float64(height/streamGrowStep))) * streamGrowStep
+		height = float32(math.Ceil(float64((height+streamHeadroom)/streamGrowStep))) * streamGrowStep
 		if exact {
 			streamHeight = height
 		} else if streamHeight > 0 {
@@ -274,7 +294,7 @@ func sessionOverlayTexts(state *sessionOverlayViewState, layoutState sessionOver
 		}
 	case ovAnswer:
 		for index := 0; index < sessionCardBlockCount(state.Card); index++ {
-			text, title, quote := sessionCardBlockText(state.Card, sessionCardBlockAt(state.Card, index))
+			text, title, quote := sessionCardBlockText(sessionCardBlockAt(state.Card, index), layoutState.Width)
 			texts = append(texts, text)
 			if title.text != "" {
 				texts = append(texts, title)

@@ -73,6 +73,45 @@ def test_dflash_draft_is_served_synchronously_from_a_loadable_copy(
     assert not copy.exists()
 
 
+@pytest.mark.parametrize(
+    ("draft_overrides", "expected_replay", "expected_ring_length"),
+    [
+        ({}, True, 32),
+        ({"speculative_num_draft_tokens": 12}, True, 32),
+        ({"speculative_num_draft_tokens": 8}, True, 16),
+        (
+            {"speculative_dflash_block_size": 32, "speculative_num_draft_tokens": 8},
+            True,
+            64,
+        ),
+        ({"enable_linear_replayssm_spec": False}, False, None),
+    ],
+    ids=[
+        "checkpoint-block",
+        "non-power-of-two",
+        "smaller-block",
+        "dflash-block-size-wins",
+        "operator-off",
+    ],
+)
+def test_dflash_verify_replays_accepted_inputs_with_a_ring_that_fits_the_block(
+    tmp_path: Path,
+    draft_overrides: dict[str, JsonValue],
+    expected_replay: bool,
+    expected_ring_length: int | None,
+) -> None:
+    """DFlash defaults to ReplaySSM verify with a power-of-two ring covering twice the draft block, while honoring explicit overrides."""
+    write_dflash_checkpoint(tmp_path)
+    overrides: dict[str, JsonValue] = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+        **draft_overrides,
+    }
+    stages.prepare_draft_checkpoint(overrides).cleanup()
+    assert overrides["enable_linear_replayssm_spec"] is expected_replay
+    assert overrides.get("linear_replayssm_cache_len") == expected_ring_length
+
+
 def test_dflash_draft_keeps_its_own_architecture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -207,6 +246,48 @@ def test_dflash_admission_refuses_a_seed_the_verify_would_ignore(
         assert error is not None and "seed" in error
     else:
         assert error is None
+
+
+def test_overlapped_draft_reaches_the_scheduler_with_its_synchronous_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Overlap and its synchronous batch-size threshold must reach the thinker scheduler."""
+    write_dflash_checkpoint(tmp_path)
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
+    monkeypatch.setattr(stages, "build_sglang_server_args", Mock())
+    infrastructure = Mock(
+        return_value=(
+            Mock(gpu_id=0),
+            None,
+            None,
+            None,
+            SimpleNamespace(vocab_size=157184),
+        )
+    )
+    monkeypatch.setattr(stages, "create_sglang_infrastructure", infrastructure)
+    monkeypatch.setattr(
+        stages, "get_tokenizer", Mock(return_value=SimpleNamespace(eos_token_id=1))
+    )
+    scheduler_factory = Mock()
+    monkeypatch.setattr(stages, "OmniScheduler", scheduler_factory)
+    stages.create_thinker_executor(
+        "unused",
+        max_seq_len=8192,
+        enable_async_decode=True,
+        async_decode_min_batch_size=4,
+        device="cpu",
+        server_args_overrides={
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        },
+    )
+    scheduler_kwargs = scheduler_factory.call_args.kwargs
+    assert infrastructure.call_args.kwargs["enable_async_decode"] is True
+    assert scheduler_kwargs["enable_async_decode"] is True
+    assert scheduler_kwargs["async_decode_min_batch_size"] == 4
+    assert scheduler_kwargs["model_runner"].supports_speculative_async_decode
 
 
 def test_dflash_capture_reuses_the_layer_output_capture() -> None:

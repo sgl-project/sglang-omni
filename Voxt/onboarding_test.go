@@ -398,12 +398,23 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 		obPermissions: "Voxt needs the microphone to hear you",
 		obTranscribe:  "Transcribe writes down what you say",
 		obTranslate:   "Translate turns the selected text",
-		obRewrite:     "Rewrite writes what you ask for",
+		obRewrite:     "Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.",
 	} {
 		a.obGo(step)
 		if !has(tt, want) {
 			t.Errorf("step %d: no %q in %q", step, want, tt.Texts())
 		}
+	}
+}
+
+// TestOnboardingRewriteGuidanceMatchesTryFlow: the guide's Try records in
+// the guide, without the Rewrite card a shortcut opens.
+func TestOnboardingRewriteGuidanceMatchesTryFlow(t *testing.T) {
+	a, _ := obTester(t)
+	a.obGo(obRewrite)
+	a.obTry("")
+	if a.box.open {
+		t.Fatal("the onboarding Try opened the normal Rewrite input box")
 	}
 }
 

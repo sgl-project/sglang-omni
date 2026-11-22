@@ -86,10 +86,11 @@ type Appearance struct {
 	// user chose names and icons. SidebarWidth is its width in DIPs at
 	// 100 % (0 = the default); ClosedSections the sidebar sections the
 	// user closed.
-	Rail           bool     `json:"rail,omitempty"`
-	RailChosen     bool     `json:"railChosen,omitempty"`
-	SidebarWidth   float64  `json:"sidebarWidth,omitempty"`
-	ClosedSections []string `json:"closedSections,omitempty"`
+	Rail               bool     `json:"rail,omitempty"`
+	RailChosen         bool     `json:"railChosen,omitempty"`
+	SidebarWidth       float64  `json:"sidebarWidth,omitempty"`
+	HistoryDetailWidth float64  `json:"historyDetailWidth,omitempty"` // DIPs at 100 %, 0 = default
+	ClosedSections     []string `json:"closedSections,omitempty"`
 }
 
 // Privacy: what VoxtNew keeps on this Mac and what it logs.
@@ -307,6 +308,10 @@ type Setup struct {
 	// result once, or the history had one: Home stops offering its Try
 	// area. It stays when the history is cleared.
 	Tried bool `json:"tried,omitempty"`
+	// RewriteBoxOpens counts successful input-box opens, capped at three;
+	// RewriteBoxTipDismissed independently hides the guidance for good.
+	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
+	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
 }
 
 // Updates: what the updater offers (Settings → About → Updates). With an

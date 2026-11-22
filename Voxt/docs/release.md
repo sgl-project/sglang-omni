@@ -117,7 +117,7 @@ gh workflow run voxt-upgrade-test.yaml --repo sgl-project/sglang-omni -f from_ta
 
 ## Beta（GitHub Actions）
 
-[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt 的改动就跑一次上面的工作流：改了 `Voxt/` 或 app 里带的原生运行时 `sglang_omni_mlx/native/`（只改 Markdown 的不算），或者改了 voxt-beta.yaml、voxt-release.yaml。版本号是 mygo.json 的版本把补丁号加一，再加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）：发完 2.0.3 后的 beta 是 `2.0.4-beta.…`，比 2.0.3 新、比 2.0.4 旧，app 的“Beta 更新”才会提供它（#3850）。MyGo 只用 CHANGELOG 里版本号完全对上的一节给更新包签名，beta 的版本号只在 CI 里才有，所以工作流先用 `scripts/release-appcast.sh beta-changelog` 在 CI 的工作区里给它加一节（内容取 Unreleased，没有就写一句“从 main 的某个提交构建”），仓库里的 CHANGELOG 不变。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。main 上的 beta 还发成 GitHub 的 prerelease `voxt-vX.Y.Z-beta.YYYYMMDD.N`（附 dmg 和 `.sha256`，说明是 CHANGELOG 的 Unreleased 一节，不设为 Latest），只留最新的 5 个，更早的连同 tag 一起删掉；Voxt Release 随后调用 Voxt Appcast 的 Voxt 2 job 发布签名清单，打开“Beta 更新”的 app 在应用内下载并安装，不用登录 GitHub。这个 tag 由工作流的 token 创建，不会触发正式版的构建；正式版检查“比所有 voxt-v tag 新”时只看 X.Y.Z 形式的 tag。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行（Actions → Voxt Beta → Run workflow，选那个分支）时和 main 上一样签名、公证，版本号用那个分支 mygo.json 的版本（环境要放行那个分支，见上）。
+[voxt-beta.yaml](../../.github/workflows/voxt-beta.yaml) 在 main 每合入一次 Voxt、MLX 或它们 CI 的改动就跑一次上面的工作流：改了 `Voxt/`、`sglang_omni_mlx/`（只改 Markdown 的不算），或者改了 `.github/workflows/` 里的 `voxt*.yaml`（voxt-beta、voxt-release、voxt-appcast、voxt-nightly、voxt-upgrade-test、voxtnew-ci）或 `mac-ci.yaml`。凡是可能改变 app 或它发布流程的合入，都用一次签名的 beta 试一遍；Omni 运行时的缓存键只看 `sglang_omni_mlx/native/` 和 `build-omni.sh`，只改 `sglang_omni_mlx/` 里 app 不带的部分时照样命中缓存（11-20 的一次 beta 打包约 6 分钟）。版本号是 mygo.json 的版本把补丁号加一，再加 `-beta.YYYYMMDD.N`（UTC 日期，N 是 voxt-beta.yaml 的运行序号，区分同一天的几次）：发完 2.0.3 后的 beta 是 `2.0.4-beta.…`，比 2.0.3 新、比 2.0.4 旧，app 的“Beta 更新”才会提供它（#3850）。MyGo 只用 CHANGELOG 里版本号完全对上的一节给更新包签名，beta 的版本号只在 CI 里才有，所以工作流先用 `scripts/release-appcast.sh beta-changelog` 在 CI 的工作区里给它加一节（内容取 Unreleased，没有就写一句“从 main 的某个提交构建”），仓库里的 CHANGELOG 不变。签名、公证和 `release-verify.sh developer-id` 都和 nightly 一样，dmg 和它的 `.sha256` 是运行的 artifact `Voxt-X.Y.Z-beta.YYYYMMDD.N-arm64`，保留 14 天。main 上的 beta 还发成 GitHub 的 prerelease `voxt-vX.Y.Z-beta.YYYYMMDD.N`（附 dmg 和 `.sha256`，说明是 CHANGELOG 的 Unreleased 一节，不设为 Latest），只留最新的 5 个，更早的连同 tag 一起删掉；Voxt Release 随后调用 Voxt Appcast 的 Voxt 2 job 发布签名清单，打开“Beta 更新”的 app 在应用内下载并安装，不用登录 GitHub。这个 tag 由工作流的 token 创建，不会触发正式版的构建；正式版检查“比所有 voxt-v tag 新”时只看 X.Y.Z 形式的 tag。合入的改动在 PR 里已经跑过 Voxt CI，beta 不再跑测试；新的合入会取消还没构建完的上一个 beta。改了 voxt-beta.yaml 的 PR 也跑它，构建进不了环境，做的是 ad hoc 构建。从别的分支手动运行（Actions → Voxt Beta → Run workflow，选那个分支）时和 main 上一样签名、公证，版本号用那个分支 mygo.json 的版本（环境要放行那个分支，见上）。
 
 和正式版、nightly 不同（它们每次从头编），beta 用 GitHub Actions 的缓存复用 Omni 运行时，再交给 `release.sh --runtimes`：缓存的是 `build-omni.sh --out` 编出来的成品，缓存键是 `sglang_omni_mlx/native/`、`build-omni.sh` 和 runner 上 Xcode 版本的哈希。成品和 app 的版本号、签名身份无关（它自己是 ad hoc 签名，mygo build 给 app 里的那份重新签名），源码没变就直接用，变了就从头编。
 
@@ -145,7 +145,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 - **不降级**：只会更新到比当前更新的版本。beta 用户关掉开关后，要等到比当前 beta 新的正式版才会更新。
 - **还没有正式版时**，正式版通道的清单是 404，关着开关检查更新显示“已是最新”，不报错（`mygo.ErrNotPublished`）。
 
-**更新服务需要提供的新接口**：`POST /api/pkg/voxt2/update` 接收 `{channel, version, mode: "replace-latest", manifest}`，用现有 `VOXT_RELEASE_API_KEY` 鉴权，保存成功时返回 `{"ok":true}`。服务在上面的 stable 和 beta URL 原样返回 MyGo JSON 清单；正式版同时更新 stable，并且只在它较新时更新 beta，beta 只更新 beta，版本比较遵循 semver，不能覆盖更新的版本。清单只含 Voxt 2，Voxt 1.x 的 Sparkle 只读 `/updates/{stable,beta}/appcast.xml`，不会读这两个新地址。tar.gz 和 delta 仍从 GitHub Release 下载，服务不需要保存它们。现有 1.x appcast 仍要保留 `hardwareRequirements` 并输出 `sparkle:hardwareRequirements`，它的拦截逻辑不变。
+**更新服务需要提供的新接口**：`POST /api/pkg/voxt2/update` 接收 `{channel, version, mode: "replace-latest", manifest}`，用现有 `VOXT_RELEASE_API_KEY` 鉴权，保存成功时返回 `{"ok":true}`。服务在上面的 stable 和 beta URL 原样返回 MyGo JSON 清单；正式版同时更新 stable，并且只在它较新时更新 beta，beta 只更新 beta，版本比较遵循 semver，不能覆盖更新的版本。清单只含 Voxt 2，Voxt 1.x 的 Sparkle 只读 `/updates/{stable,beta}/appcast.xml`，不会读这两个新地址。tar.gz 和 delta 仍从 GitHub Release 下载，服务不需要保存它们。现有 1.x appcast 仍要保留 `hardwareRequirements` 并输出 `sparkle:hardwareRequirements`，它的拦截逻辑不变。截至 11-20 这个接口还没上线：它和两个更新源都回官网的 404 页面。接口上线前，Voxt 2 job 收到不是 JSON 的 404 时只留一条 warning，不发清单、不检查更新源，beta 和正式版的运行不因此失败；返回 JSON 的 404、鉴权失败、5xx 或 `ok` 不是 true 仍然失败。接口上线后工作流不用改，下一次运行就会发清单并检查更新源。
 
 ## 1. 一次性准备
 
@@ -433,7 +433,7 @@ MAC_DIR=code/VoxtNew-upd scripts/mac.sh scripts/mac-beta-e2e.sh     # 两个通�
 
 ## Voxt 1.x 的应用内更新和 Homebrew
 
-Swift 版 Voxt 1.x 用 Sparkle 2.10 更新：读 `https://voxt.actnow.dev/updates/stable/appcast.xml`，1.x 的 设置 → 关于 里打开 **Beta 更新**（Beta Updates）时读 `…/beta/appcast.xml`。[Voxt Appcast](../../.github/workflows/voxt-appcast.yaml) 工作流把一个已发布的 Release 放进其中一个通道：用 Sparkle 私钥给 `Voxt-X.Y.Z-macOS.zip` 签名，把 ZIP 和 dmg 传到 Voxt 的更新服务，设成这个通道的最新一项，再等 appcast 里出现它的构建号。通道是 stable 时，它还把 `hehehai/homebrew-tap` 的 `Casks/voxt.rb` 指向这个 ZIP。beta 和 stable 都只能手动运行：更新服务输出 `sparkle:hardwareRequirements` 之前，Release 发布时它不自动运行（见下面“只给 Apple 芯片”）。它是 1.x 的同名工作流（#3043 合并时删掉了）移植过来的，构建号、条目、更新说明和 cask 由 [scripts/release-appcast.sh](../scripts/release-appcast.sh) 生成（测试：`go test -run TestReleaseAppcast .`）。
+Swift 版 Voxt 1.x 用 Sparkle 2.10 更新：读 `https://voxt.actnow.dev/updates/stable/appcast.xml`，1.x 的 设置 → 关于 里打开 **Beta 更新**（Beta Updates）时读 `…/beta/appcast.xml`。[Voxt Appcast](../../.github/workflows/voxt-appcast.yaml) 工作流把一个已发布的 Release 放进其中一个通道：用 Sparkle 私钥给 `Voxt-X.Y.Z-macOS.zip` 签名，把 ZIP 和 dmg 传到 Voxt 的更新服务，设成这个通道的最新一项，再等 appcast 里出现它的构建号。通道是 stable 时，它还把 `hehehai/homebrew-tap` 的 `Casks/voxt.rb` 指向这个 ZIP。beta 和 stable 都只能手动运行：先发 beta，在真机上测通 1.x → 2.x 以后再发 stable（见下面“发一个版本给 1.x 用户”）。它是 1.x 的同名工作流（#3043 合并时删掉了）移植过来的，构建号、条目、更新说明和 cask 由 [scripts/release-appcast.sh](../scripts/release-appcast.sh) 生成（测试：`go test -run TestReleaseAppcast .`）。
 
 Sparkle 要满足下面几条才装 2.x（Sparkle 2.10 的 `SUPlainInstaller.m`、`SUUpdateValidator.m`、`SUInstaller.m`）：
 
@@ -456,11 +456,11 @@ Sparkle 要满足下面几条才装 2.x（Sparkle 2.10 的 `SUPlainInstaller.m`�
 
 ### 只给 Apple 芯片
 
-appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发条目。工作流在条目里发 `"hardwareRequirements": "arm64"`（`scripts/release-appcast.sh entry`）。设成最新一项（`replace-latest`）之前，它要在 beta / stable 的 appcast 里看到这个构建号的那一项有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（`scripts/release-appcast.sh hardware-kept`）；只在 API 返回里留下这个字段不算，因为 1.x 读的是 XML。没有就停下，什么都不会推给 1.x 用户，日志写“the update service does not output hardwareRequirements yet…”。设成最新以后，它还要求这个通道 appcast 的第一项既是这个构建号，又有这个元素。
+appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发条目。工作流在条目里发 `"hardwareRequirements": "arm64"`（`scripts/release-appcast.sh entry`）。设成最新一项（`replace-latest`）之前，它检查更新服务会把这个要求写进 appcast（`scripts/release-appcast.sh hardware-kept`）。下面两种情况算通过：beta / stable 的 appcast 里这个构建号的那一项已经有 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`；或者 `/api/pkg/update` 的返回留下了 `hardwareRequirements: arm64`，并且 appcast 里已经有别的条目带这个元素。一个版本在设成最新之前还不在 appcast 里，所以第一次发它时走的是后一种。API 返回留下了这个字段、appcast 里却没有一项带这个元素，不算，因为 1.x 读的是 XML。两种都不满足就停下，什么都不会推给 1.x 用户，日志写“the update service does not output hardwareRequirements yet…”。设成最新以后，它还要求这个通道 appcast 的第一项既是这个构建号，又有这个元素。
 
-现在的更新服务还不输出这个元素（两个 appcast 里只有 `sparkle:version` 和 `sparkle:shortVersionString`），所以两个通道都会在 `replace-latest` 之前停下。要在 voxt.actnow.dev 的服务端让 `/api/pkg/update` 接受 `hardwareRequirements`、在返回的 `data` 里带上它，并在生成 appcast 时输出 `<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>`（1.x 和 2.x 都要求 macOS 15，不用加 `sparkle:minimumSystemVersion`）。这一步在服务端做，这个仓库做不了。
+更新服务已经输出这个元素：beta 的 appcast 里 2.1.0 那一项（构建号 200100099）带 `arm64`（1.x 和 2.x 都要求 macOS 15，不用加 `sparkle:minimumSystemVersion`）。2.1.1 那次运行在 `replace-latest` 之前停下，是因为当时的检查只认这个构建号自己的那一项，而它在设成最新之前还不在 appcast 里；#4212 把通过条件改成了上面两种。
 
-服务端支持以后，想让 Release 发布时自动发 beta，在 voxt-appcast.yaml 里改回 1.x 的做法：`on:` 里加回 `release: types: [published]`；`appcast` job 加 `if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'voxt-v') && !github.event.release.prerelease)`；`TAG` 改成 `${{ github.event.release.tag_name || inputs.tag }}`，`CHANNEL` 改成 `${{ inputs.channel || 'beta' }}`（发布事件没有 inputs，只发 beta）。拦截那一步不用动，服务端支持以后它自己就会通过。
+想让 Release 发布时自动发 beta，在 voxt-appcast.yaml 里改回 1.x 的做法：`on:` 里加回 `release: types: [published]`；`appcast` job 加 `if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'voxt-v') && !github.event.release.prerelease)`；`TAG` 改成 `${{ github.event.release.tag_name || inputs.tag }}`，`CHANNEL` 改成 `${{ inputs.channel || 'beta' }}`（发布事件没有 inputs，只发 beta）。拦截那一步不用动。
 
 ### 发一个版本给 1.x 用户
 
@@ -468,7 +468,7 @@ appcast 的 XML 由更新服务生成，这个仓库只往 `/api/pkg/update` 发
    ```sh
    gh workflow run voxt-appcast.yaml --repo sgl-project/sglang-omni -f tag=voxt-vX.Y.Z -f channel=beta
    ```
-   成功时最后一步写“The beta appcast offers Voxt X.Y.Z (构建号) for arm64”。在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行应该是“构建号 arm64”。更新服务还不输出 `hardwareRequirements` 时，它在设成最新之前停下（上一节），要先在服务端加上。
+   成功时最后一步写“The beta appcast offers Voxt X.Y.Z (构建号) for arm64”。在 `Voxt/` 里跑 `curl -s https://voxt.actnow.dev/updates/beta/appcast.xml | scripts/release-appcast.sh items`，第一行应该是“构建号 arm64”。更新服务没留下这个要求时，它在设成最新之前停下（上一节）。
 2. **在真机上测 1.x → 2.x**：按 [manual-test.md](manual-test.md) §11 在一台装着 1.x 的 Mac 上更新一次。
 3. **发到 stable**：测通以后先在群里告诉 1.x 的维护者，再用同一个工作流，channel 选 `stable`：
    ```sh

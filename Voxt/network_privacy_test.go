@@ -99,7 +99,7 @@ func TestDefaultSessionContactsNoRemoteHost(t *testing.T) {
 	})
 	t.Run("remote language model", func(t *testing.T) {
 		dialed := recordDialedHosts(t)
-		srv, _ := mockOpenAI(t, "早上好，团队。")
+		srv, served := mockOpenAI(t, "早上好，团队。")
 		useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
 		ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
 		a := newSessionApp(t, helpertest.Opt("selection", "Good morning, team.")+","+ev, func(s *settings.Settings) {
@@ -112,11 +112,11 @@ func TestDefaultSessionContactsNoRemoteHost(t *testing.T) {
 			t.Fatalf("end %+v", a.sess)
 		}
 		want := strings.TrimPrefix(srv.URL, "http://")
-		got := dialed.seen()
-		if len(got) == 0 {
-			t.Fatal("the recorder saw no request to the remote model")
+		if len(served()) == 0 {
+			t.Fatal("the remote model got no request")
 		}
-		for _, host := range got {
+		// The mock listens on the loopback, which goes direct without asking the proxy, so the recorder may see nothing.
+		for _, host := range dialed.seen() {
 			if host != want {
 				t.Errorf("contacted %s, want only %s", host, want)
 			}

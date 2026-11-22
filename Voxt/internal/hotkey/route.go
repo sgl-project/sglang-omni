@@ -13,6 +13,9 @@ const (
 	// Busy: recognising, composing or delivering; only the cancel
 	// shortcut acts.
 	Busy
+	// Composing: an answer card is still streaming; it can finish in the
+	// background, so a feature's binding starts its session as in Idle.
+	Composing
 )
 
 // Action is what a hotkey event does.
@@ -68,6 +71,9 @@ type Decision struct {
 //     finishing is live (its Return may be the finish the plan dropped);
 //     otherwise it waits.
 //   - Busy: the cancel shortcut cancels; everything else waits.
+//   - Composing: an answer streams into its card; a feature's binding
+//     starts its session as in Idle (the answer finishes in the
+//     background), the cancel shortcut acts on the streaming session.
 //
 // holdBinding is the binding whose long press started the session ("":
 // none); strict is the feature that started it with Strict shortcuts on
@@ -106,7 +112,7 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string, f
 		return Decision{}
 	}
 	switch phase {
-	case Idle:
+	case Idle, Composing:
 		switch e.Phase {
 		case proto.PhaseTrigger:
 			return Decision{Action: Start, Feature: feature}

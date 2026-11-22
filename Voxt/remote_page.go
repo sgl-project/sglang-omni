@@ -24,6 +24,12 @@ func remoteSettingsView(c *ui.Context, state *remoteViewState, actions remoteAct
 	}
 	caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 	llmWaitView(c, &state.Wait, actions, local.wait)
+	on := state.Switch
+	settingRow(c, "llm-switch", i18n.T("Retry with another model on this Mac"), i18n.T("If the language model does not answer, Voxt tries once more with another model you set up on this Mac. When Translate fails, it tries its fallback model first. Voxt never switches to an external API on its own."), func() {
+		if ui.Switch(c.Key("llm-switch-switch"), &on).Label(i18n.T("Retry with another model on this Mac")).Changed() {
+			actions.setLLMSwitch(on)
+		}
+	})
 	remoteProviderCards(c, &state.Cards, actions, width)
 	if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
 		actions.openLLMDebug()
