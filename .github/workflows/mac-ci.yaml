@@ -203,7 +203,7 @@ jobs:
       # mac-e2e.sh's free-memory guard is for a Mac shared with other work; a
       # CI runner is dedicated, so the guard must not stop these steps.
       VOXTNEW_MAC_E2E: "1"
-      VOXTNEW_HELPER: ${{ runner.temp }}/mac-e2e-helper/voxtnew-helper
+      VOXTNEW_HELPER: /tmp/voxtnew-mac-ci-helper/voxtnew-helper
       VOXTNEW_MIN_FREE: "0"
     steps:
       - uses: actions/checkout@v4
@@ -228,9 +228,9 @@ jobs:
       - name: Sign the helper for the end-to-end tests
         run: |
           bin="$(swift build --package-path Voxt/helper --show-bin-path)/voxtnew-helper"
-          mkdir -p "$RUNNER_TEMP/mac-e2e-helper"
-          cp "$bin" "$RUNNER_TEMP/mac-e2e-helper/voxtnew-helper"
-          codesign --force --sign - --entitlements Voxt/helper/Support/helper.entitlements --options runtime "$RUNNER_TEMP/mac-e2e-helper/voxtnew-helper"
+          mkdir -p /tmp/voxtnew-mac-ci-helper
+          cp "$bin" /tmp/voxtnew-mac-ci-helper/voxtnew-helper
+          codesign --force --sign - --entitlements Voxt/helper/Support/helper.entitlements --options runtime /tmp/voxtnew-mac-ci-helper/voxtnew-helper
 
       - name: Vendored MyGo and native drop regressions
         working-directory: Voxt
