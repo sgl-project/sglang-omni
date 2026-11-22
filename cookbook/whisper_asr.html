@@ -636,14 +636,14 @@
 <p>Whisper ASR checkpoints can be started through the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code> endpoint. This path remains experimental in the current SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior before production deployment.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a> or <a class="reference internal" href="#../get_started/installation_npu.md"><span class="xref myst">Installation - Ascend NPU</span></a>, then download a Whisper checkpoint:</p>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a> or <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">Installation - Ascend NPU</span></a>, then download a Whisper checkpoint:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>openai/whisper-large-v3
 </pre></div>
 </div>
 </section>
 <section id="ascend-npu">
 <h2>Ascend NPU<a class="headerlink" href="#ascend-npu" title="Link to this heading">#</a></h2>
-<p>Follow <a class="reference internal" href="#../get_started/installation_npu.md"><span class="xref myst">NPU Installation</span></a> and use the SGLang/CANN runtime specified in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml">pyproject_npu.toml</a>. Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:</p>
+<p>Follow <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">NPU Installation</span></a> and use the SGLang/CANN runtime specified in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml">pyproject_npu.toml</a>. Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ASCEND_RT_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span>
 <span class="nb">export</span><span class="w"> </span><span class="nv">SGLANG_OMNI_PLATFORM_SPEC</span><span class="o">=</span>sglang_omni.platforms.npu.NPUOmniPlatform
 sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>openai/whisper-large-v3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>

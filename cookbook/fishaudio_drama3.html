@@ -605,35 +605,25 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesize-speech">Synthesize Speech</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#example-usage">Example Usage</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choose-a-model">Choose a model</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#int4-checkpoint">Int4 Checkpoint</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-modes">Voice modes</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning">Voice cloning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#point-tags">Point tags</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#editing-as-continuation">Editing as continuation</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serving-limits">Serving Limits</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-audio-length">Reference Audio Length</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt-length">Prompt Length</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-options">Common options</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known limitations</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attention-backend">Attention Backend</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#int4-checkpoint">Int4 Checkpoint</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deployment-performance">Deployment Performance</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#high-concurrency">High Concurrency</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#production-serving">Production Serving</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#non-streaming-requests">Non-Streaming Requests</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-native-expert-offload">Optional native expert offload</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity-and-performance">Reference parity and performance</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#links">Links</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#incremental-streaming-codec">Incremental streaming codec</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#advanced-guides">Advanced Guides</a></li>
 </ul>
             </nav>
         </div>
@@ -647,33 +637,47 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="fish-audio-drama-3">
 <h1>Fish Audio Drama 3<a class="headerlink" href="#fish-audio-drama-3" title="Link to this heading">#</a></h1>
-<p><strong>Fish Audio Drama 3</strong> is Fish Audio’s new-generation text-to-speech model, built for multi-character scenes and long-form content. It supports multi-speaker generation, voice cloning and natural-language control.</p>
+<p><a class="reference external" href="https://huggingface.co/fishaudio/drama-3">Fish Audio Drama 3</a> is Fish Audio’s text-to-speech model for multi-character scenes and long-form content. It supports multi-speaker generation, voice cloning and natural-language control, and SGLang-Omni serves it through the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> endpoint.</p>
+<p><img alt="Fish Audio Drama 3 overview" src="../_images/fishaudio-drama3-overview.png" /></p>
 <ul class="simple">
-<li><p><strong>35B parameters, 3B active per token</strong>: MoE text backbone with hybrid (full + linear) attention</p></li>
-<li><p><strong>Codebook-MTP audio decoder</strong>: 10 codebooks decoded causally over the whole sequence</p></li>
-<li><p><strong>FP8 MoE experts</strong> with the remaining weights in bf16; an <a class="reference internal" href="#int4-checkpoint"><span class="std std-ref">int4 checkpoint</span></a> cuts the weight memory from 37.0 GB to 20.8 GB</p></li>
+<li><p><strong>35B parameters, 3B active per token</strong>: a mixture-of-experts backbone with a codebook-MTP audio decoder; the <a class="reference external" href="https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf">technical report</a> has the architecture</p></li>
+<li><p><strong>37.0 GB of engine weights</strong> in the default FP8 checkpoint; the <a class="reference internal" href="#int4-checkpoint"><span class="std std-ref">int4 checkpoint</span></a> needs 20.8 GB</p></li>
 <li><p><strong>Speaker tags</strong> <code class="docutils literal notranslate"><span class="pre">&lt;|speaker:0|&gt;</span></code> … <code class="docutils literal notranslate"><span class="pre">&lt;|speaker:15|&gt;</span></code> — one text can carry up to 16 characters</p></li>
 <li><p><strong>Long text</strong> is chunked automatically and can be streamed per chunk</p></li>
+<li><p><strong>Shared request fields, streaming and clients</strong> are in <a class="reference internal" href="../basic_usage/tts.html"><span class="std std-doc">TTS Model Usage</span></a>; this page covers the CUDA server, and the native Apple Silicon server is under <a class="reference internal" href="fishaudio_drama3/platforms.html"><span class="std std-doc">Platform deployment</span></a></p></li>
 </ul>
-<section id="installation-and-startup">
-<h2>Installation and Startup<a class="headerlink" href="#installation-and-startup" title="Link to this heading">#</a></h2>
-<p>Detailed instructions are in <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>. From the repository root:</p>
+<p>Figure from the <a class="reference external" href="https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf">Fish Audio Drama 3 Technical Report</a>, reproduced from the report’s vector drawing.</p>
+<p><span id="installation-and-startup"></span></p>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>. Then, from the repository root, add the Fish Audio dependencies:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span>-v<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[fishaudio]"</span>
 </pre></div>
 </div>
-<p>Download the checkpoint, then start the server. This command places preprocessing, the engine, and the vocoder on GPU 0. A stage moves to another GPU only when its <code class="docutils literal notranslate"><span class="pre">--&lt;stage&gt;.gpu</span></code> flag says so; see Deployment.</p>
+<p>Download the checkpoint:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>fishaudio/drama-3
-
-sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p>The default checkpoint holds 37.0 GB of engine weights, and the GPU must also fit the KV cache, the preprocessing stage and the vocoder. <a class="reference internal" href="#choose-a-model"><span class="std std-ref">Choose a model</span></a> lists the smaller int4 checkpoint and the multi-GPU option.</p>
+</section>
+<section id="server-configuration">
+<h2>Server Configuration<a class="headerlink" href="#server-configuration" title="Link to this heading">#</a></h2>
+<p>Drama 3 runs as three stages: preprocessing, which prepares the text and any reference audio; the engine, which generates the audio codec frames; and the vocoder, which turns those frames into audio. The stages can sit on different GPUs. This command places all three on GPU 0. A stage moves to another GPU only when its <code class="docutils literal notranslate"><span class="pre">--&lt;stage&gt;.gpu</span></code> flag says so; see <a class="reference internal" href="fishaudio_drama3/tuning.html#deployment-performance"><span class="std std-ref">Deployment Performance</span></a>.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>fishaudio/drama-3<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>Startup captures CUDA graphs, so it takes longer than loading the weights alone. In another terminal, wait until <code class="docutils literal notranslate"><span class="pre">/health</span></code> returns HTTP 200:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-i<span class="w"> </span>http://localhost:8000/health
+</pre></div>
+</div>
+<p><span id="attention-backend"></span></p>
+<p>Drama 3 runs its attention on the <code class="docutils literal notranslate"><span class="pre">triton</span></code> backend only. The server refuses to start with any other attention backend, for example <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.attention_backend</span> <span class="pre">fa3</span></code>.</p>
+<p><span id="synthesize-speech"></span></p>
 </section>
-<section id="synthesize-speech">
-<h2>Synthesize Speech<a class="headerlink" href="#synthesize-speech" title="Link to this heading">#</a></h2>
-<p>The server supports plain text-to-speech, optionally cloning a voice from reference audio, returned as one response or
-as a stream.</p>
+<section id="synthesizing-speech">
+<h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
 <p>Plain TTS:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -683,7 +687,57 @@ as a stream.</p>
 <span class="w">  </span>--output<span class="w"> </span>output.wav
 </pre></div>
 </div>
-<p>Voice cloning, with a reference clip and its transcript:</p>
+<p>Open <code class="docutils literal notranslate"><span class="pre">output.wav</span></code> in an audio player. The response is a WAV file by default. For Python or the OpenAI SDK, use the <a class="reference internal" href="../basic_usage/tts.html#python"><span class="std std-ref">TTS client examples</span></a> with the request fields on this page.</p>
+</section>
+<section id="choose-a-model">
+<h2>Choose a model<a class="headerlink" href="#choose-a-model" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Checkpoint</p></th>
+<th class="head"><p>Engine weights</p></th>
+<th class="head"><p>Use it when</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/fishaudio/drama-3"><code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3</span></code></a></p></td>
+<td><p>37.0 GB</p></td>
+<td><p>The default: FP8 MoE experts, remaining weights in bf16.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/fishaudio/drama-3-int4"><code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3-int4</span></code></a></p></td>
+<td><p>20.8 GB</p></td>
+<td><p>GPU memory is tight. 4-bit GPTQ weights on GPTQ-Marlin kernels; needs compute capability 8.0 or newer, such as A100.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/fish-audio-drama-3-4bit</span></code> and <code class="docutils literal notranslate"><span class="pre">-8bit</span></code></p></td>
+<td><p>24 GB and 42 GB on disk</p></td>
+<td><p>Apple Silicon, through the native MLX server. See <a class="reference internal" href="fishaudio_drama3/platforms.html"><span class="std std-doc">Platform deployment</span></a>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The int4 checkpoint is about 8% slower per request and its WER stays at the FP8 level; <a class="reference internal" href="fishaudio_drama3/benchmarks.html#fp8-and-int4-checkpoints"><span class="std std-ref">Benchmarks</span></a> has the measurements. When the FP8 checkpoint does not fit one GPU, <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span></code> splits the engine across 2 or 4 GPUs; see <a class="reference internal" href="fishaudio_drama3/tuning.html#tensor-parallelism"><span class="std std-ref">Tensor Parallelism</span></a>.</p>
+<section id="int4-checkpoint">
+<h3>Int4 Checkpoint<a class="headerlink" href="#int4-checkpoint" title="Link to this heading">#</a></h3>
+<p><a class="reference external" href="https://huggingface.co/fishaudio/drama-3-int4"><code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3-int4</span></code></a> is a 4-bit GPTQ quantization of Drama 3. Thanks so much to <a class="reference external" href="https://x.com/_akhaliq">AK</a> for the quantization! The server reads its quantization from the checkpoint, so it starts with the same command:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>fishaudio/drama-3-int4
+
+sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>fishaudio/drama-3-int4<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>The engine’s weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine’s share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer, such as A100. <a class="reference internal" href="fishaudio_drama3/reference.html#int4-weight-layout"><span class="std std-ref">Int4 weight layout</span></a> lists which modules are quantized and which stay in bf16.</p>
+<p><span id="example-usage"></span></p>
+</section>
+</section>
+<section id="voice-modes">
+<h2>Voice modes<a class="headerlink" href="#voice-modes" title="Link to this heading">#</a></h2>
+<p>Drama 3 takes the shared speech request fields, documented in <a class="reference internal" href="../basic_usage/tts.html#request-parameters"><span class="std std-ref">Request Parameters</span></a>. The modes below are what sets it apart. Every sample on this page clones the same reference voice, <code class="docutils literal notranslate"><span class="pre">en0</span></code>. It is a 3.9 s clip, <code class="docutils literal notranslate"><span class="pre">common_voice_en_10119832.wav</span></code>, the file the cloning example sends. Its transcript is <code class="docutils literal notranslate"><span class="pre">We</span> <span class="pre">asked</span> <span class="pre">over</span> <span class="pre">twenty</span> <span class="pre">different</span> <span class="pre">people,</span> <span class="pre">and</span> <span class="pre">they</span> <span class="pre">all</span> <span class="pre">said</span> <span class="pre">it</span> <span class="pre">was</span> <span class="pre">his.</span></code> Listen to it here:</p>
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393249/en0.wav" type="audio/wav">
+</audio>
+<section id="voice-cloning">
+<h3>Voice cloning<a class="headerlink" href="#voice-cloning" title="Link to this heading">#</a></h3>
+<p>Send a reference clip and its transcript in <code class="docutils literal notranslate"><span class="pre">references</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
@@ -696,28 +750,12 @@ as a stream.</p>
 <span class="w">  </span>--output<span class="w"> </span>output_voice_cloning.wav
 </pre></div>
 </div>
-<p>Streaming:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "input": "Get the trust fund to the bank early.",</span>
-<span class="s1">    "stream": true,</span>
-<span class="s1">    "response_format": "pcm"</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output_streaming.pcm
-</pre></div>
-</div>
+<p>Each reference may be at most 60 seconds long by default, and a request may carry any number of references within the prompt limit; see <a class="reference internal" href="#known-limitations"><span class="std std-ref">Known limitations</span></a>. For the accepted audio sources and the <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> and <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> shorthand, see <a class="reference internal" href="../basic_usage/tts.html#voice-cloning"><span class="std std-ref">Voice Cloning</span></a>.</p>
 </section>
-<section id="example-usage">
-<h2>Example Usage<a class="headerlink" href="#example-usage" title="Link to this heading">#</a></h2>
-<p>The reference clip the samples below clone, unmodified:</p>
-<p>The reference, <code class="docutils literal notranslate"><span class="pre">en0</span></code> — a 3.9 s clip, the same <code class="docutils literal notranslate"><span class="pre">common_voice_en_10119832.wav</span></code> the cloning example above uses, with the transcript <code class="docutils literal notranslate"><span class="pre">We</span> <span class="pre">asked</span> <span class="pre">over</span> <span class="pre">twenty</span> <span class="pre">different</span> <span class="pre">people,</span> <span class="pre">and</span> <span class="pre">they</span> <span class="pre">all</span> <span class="pre">said</span> <span class="pre">it</span> <span class="pre">was</span> <span class="pre">his.</span></code>:</p>
-<audio controls>
-  <source src="https://github.com/user-attachments/files/33393249/en0.wav" type="audio/wav">
-</audio>
 <section id="point-tags">
 <h3>Point tags<a class="headerlink" href="#point-tags" title="Link to this heading">#</a></h3>
-<p>A plain <code class="docutils literal notranslate"><span class="pre">/v1/tts</span></code> request: one reference (<code class="docutils literal notranslate"><span class="pre">en0</span></code>), no history, and the tags written into the text at the position where the event should land.</p>
+<p>A point tag is a cue in square brackets, such as <code class="docutils literal notranslate"><span class="pre">[sighs]</span></code> or <code class="docutils literal notranslate"><span class="pre">[laughs]</span></code>, written into the text at the position where the event should land. Figure 1 shows the same idea as inline direction. This page documents the two tags in the sample; the <a class="reference external" href="https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf">technical report</a> describes fine-grained direction.</p>
+<p>The sample is a plain <code class="docutils literal notranslate"><span class="pre">/v1/tts</span></code> request rather than a <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> one, so the text goes in <code class="docutils literal notranslate"><span class="pre">text</span></code>. It sends one reference (<code class="docutils literal notranslate"><span class="pre">en0</span></code>) and no history:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"[sighs] Fine. If we miss it, it's on you. [laughs] Well, maybe that's fair."</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"references"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"audio_path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"</span><span class="p">,</span><span class="w"> </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"We asked over twenty different people, and they all said it was his."</span><span class="p">}]</span>
@@ -730,7 +768,7 @@ as a stream.</p>
 </section>
 <section id="editing-as-continuation">
 <h3>Editing as continuation<a class="headerlink" href="#editing-as-continuation" title="Link to this heading">#</a></h3>
-<p>Just send the previous VQ tokens and sent it as normal language models do.</p>
+<p>Pass the text of earlier takes in <code class="docutils literal notranslate"><span class="pre">previous_takes</span></code>. The model reads them as context and generates the new text as a continuation, so an edited line stays consistent with the take it replaces.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"The quarterly report is due on Thursday, so please finish it by noon."</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"references"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"audio_path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"</span><span class="p">,</span><span class="w"> </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"We asked over twenty different people, and they all said it was his."</span><span class="p">}],</span>
@@ -741,8 +779,7 @@ as a stream.</p>
 <audio controls>
   <source src="https://github.com/user-attachments/files/33393156/K1_edit_word_with_context.wav" type="audio/wav">
 </audio>
-<p>A second edit chained onto the result of the first:</p>
-<p>K5 chains a second edit: <code class="docutils literal notranslate"><span class="pre">by</span> <span class="pre">noon</span></code> becomes <code class="docutils literal notranslate"><span class="pre">by</span> <span class="pre">five</span></code>, with both earlier takes in the context.</p>
+<p>A second edit can chain onto the first. Here <code class="docutils literal notranslate"><span class="pre">by</span> <span class="pre">noon</span></code> becomes <code class="docutils literal notranslate"><span class="pre">by</span> <span class="pre">five</span></code>, with both earlier takes in the context:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">  </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"The quarterly report is due on Thursday, so please finish it by five."</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"references"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"audio_path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"</span><span class="p">,</span><span class="w"> </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"We asked over twenty different people, and they all said it was his."</span><span class="p">}],</span>
@@ -758,575 +795,92 @@ as a stream.</p>
 </audio>
 </section>
 </section>
-<section id="serving-limits">
-<h2>Serving Limits<a class="headerlink" href="#serving-limits" title="Link to this heading">#</a></h2>
-<section id="reference-audio-length">
-<h3>Reference Audio Length<a class="headerlink" href="#reference-audio-length" title="Link to this heading">#</a></h3>
-<p>Each reference given as audio may be at most 60 seconds long. The limit applies to every reference in the request separately, and a longer one fails the request with HTTP 400 before it is encoded:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 request: references.1: reference audio lasts 75.3 s, longer than the 60 s limit; shorten it or raise max_reference_audio_seconds
-</pre></div>
-</div>
-<p><code class="docutils literal notranslate"><span class="pre">references.N</span></code> names the reference by its position in the request’s <code class="docutils literal notranslate"><span class="pre">references</span></code> list, counted from 0.</p>
-<p>Shorten that reference, or raise the limit when you start the server, for example to 90 seconds:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>&lt;checkpoint&gt;<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--preprocessing.factory.max_reference_audio_seconds<span class="w"> </span><span class="m">90</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--preprocessing.total_reserve_bytes<span class="w"> </span>9GiB
-</pre></div>
-</div>
-<p>or in a config file:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">preprocessing</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">max_reference_audio_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">90</span>
-<span class="w">    </span><span class="nt">total_reserve_bytes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9GiB</span>
-</pre></div>
-</div>
-<p>The GPU memory the preprocessing stage needs grows with the length of the reference it encodes, and the stage is capped at <code class="docutils literal notranslate"><span class="pre">total_reserve_bytes</span></code> (6 GiB by default, sized for the 60-second limit). When you raise the limit, raise the reserve with it, measured on your GPU; a reference that does not fit the reserve fails with an out-of-memory error in
-the preprocessing stage. The budgets of all stages on the GPU must still fit the card, which the server checks at startup.</p>
+<section id="streaming">
+<h2>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h2>
+<p>Add <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code> to either request above to receive audio while generation is still running. Long text is chunked automatically and streamed chunk by chunk. With the server running, use the <a class="reference internal" href="../basic_usage/tts.html#raw-wav-and-pcm"><span class="std std-ref">raw WAV and PCM examples</span></a> in TTS Model Usage; Drama 3 needs no <code class="docutils literal notranslate"><span class="pre">model</span></code> or <code class="docutils literal notranslate"><span class="pre">voice</span></code> field. The guide also includes the <a class="reference internal" href="../basic_usage/tts.html#python-streaming-client"><span class="std std-ref">Python streaming client</span></a> and <a class="reference internal" href="../basic_usage/tts.html#sse-event-framing"><span class="std std-ref">SSE</span></a> clients.</p>
+<p>For many streams at once, see <a class="reference internal" href="fishaudio_drama3/tuning.html#high-concurrency"><span class="std std-ref">High Concurrency</span></a>; under sustained load, the opt-in <a class="reference internal" href="fishaudio_drama3/tuning.html#incremental-streaming-codec"><span class="std std-ref">incremental streaming codec</span></a> reuses each stream’s decoder state.</p>
 </section>
-<section id="prompt-length">
-<h3>Prompt Length<a class="headerlink" href="#prompt-length" title="Link to this heading">#</a></h3>
-<p>A prompt holds the tokens of the prompt template, the input text and the reference transcripts, plus one row for every codec frame of its reference audio, about 21.5 rows per second of audio (the codec turns 44.1 kHz audio into frames of 2048 samples). A prompt may have at most 8192 rows; a longer one fails the request with HTTP 400:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 request: a prompt of 8193 rows exceeds the maximum allowed length of 8192 rows
-</pre></div>
-</div>
-<p>Change the cap with <code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.max_prompt_rows</span></code>. A prompt and its <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> must also fit the engine’s context length.</p>
-</section>
-</section>
-<section id="attention-backend">
-<h2>Attention Backend<a class="headerlink" href="#attention-backend" title="Link to this heading">#</a></h2>
-<p>Drama 3 runs its attention on the <code class="docutils literal notranslate"><span class="pre">triton</span></code> backend only. The server refuses to start with any other attention backend, for example <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.attention_backend</span> <span class="pre">fa3</span></code>.</p>
-</section>
-<section id="int4-checkpoint">
-<h2>Int4 Checkpoint<a class="headerlink" href="#int4-checkpoint" title="Link to this heading">#</a></h2>
-<p><a class="reference external" href="https://huggingface.co/fishaudio/drama-3-int4"><code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3-int4</span></code></a> is a 4-bit GPTQ quantization of Drama 3. Thanks so much to <a class="reference external" href="https://x.com/_akhaliq">AK</a> for the quantization! The server reads its quantization from the checkpoint, so it starts with the same command:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>fishaudio/drama-3-int4
-
-sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>fishaudio/drama-3-int4<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
-</pre></div>
-</div>
-<p>The routed MoE experts and the attention projections (<code class="docutils literal notranslate"><span class="pre">q/k/v/o_proj</span></code> of the full attention layers, <code class="docutils literal notranslate"><span class="pre">in_proj_qkv</span></code>, <code class="docutils literal notranslate"><span class="pre">in_proj_z</span></code> and <code class="docutils literal notranslate"><span class="pre">out_proj</span></code> of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention’s <code class="docutils literal notranslate"><span class="pre">in_proj_a/b</span></code>, the output head and the codebook-MTP audio decoder stay in bf16. The engine’s weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine’s share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer.</p>
-<p>Table 3 compares the two checkpoints on one H200 with the default server settings: the 1,088 Seed-TTS English prompts, each cloning the voice of its own reference clip, sent as non-streaming requests at concurrency 8. WER is computed on the generated audio transcribed by Qwen3-ASR-1.7B.</p>
+<section id="common-options">
+<h2>Common options<a class="headerlink" href="#common-options" title="Link to this heading">#</a></h2>
+<p>Shared fields such as <code class="docutils literal notranslate"><span class="pre">input</span></code>, <code class="docutils literal notranslate"><span class="pre">response_format</span></code>, <code class="docutils literal notranslate"><span class="pre">stream</span></code> and the sampling controls are described in <a class="reference internal" href="../basic_usage/tts.html#request-parameters"><span class="std std-ref">Request Parameters</span></a>. Drama 3 applies these defaults and model-specific fields:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Checkpoint</p></th>
-<th class="head text-right"><p>Weights</p></th>
-<th class="head text-right"><p>Latency mean</p></th>
-<th class="head text-right"><p>Latency p95</p></th>
-<th class="head text-right"><p>RTF mean</p></th>
-<th class="head text-right"><p>Throughput (req/s)</p></th>
-<th class="head text-right"><p>WER (corpus)</p></th>
-<th class="head text-right"><p>WER without samples above 50%</p></th>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Drama 3 behavior</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3</span></code> (FP8 experts)</p></td>
-<td class="text-right"><p>37.0 GB</p></td>
-<td class="text-right"><p>1.235 s</p></td>
-<td class="text-right"><p>1.902 s</p></td>
-<td class="text-right"><p>0.281</p></td>
-<td class="text-right"><p>6.47</p></td>
-<td class="text-right"><p>1.99%</p></td>
-<td class="text-right"><p>1.32%</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
+<td><p>Shared field.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3-int4</span></code></p></td>
-<td class="text-right"><p>20.8 GB</p></td>
-<td class="text-right"><p>1.334 s</p></td>
-<td class="text-right"><p>2.178 s</p></td>
-<td class="text-right"><p>0.320</p></td>
-<td class="text-right"><p>5.99</p></td>
-<td class="text-right"><p>1.63%</p></td>
-<td class="text-right"><p>1.42%</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.9</span></code></p></td>
+<td><p>Shared field.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
+<td><p>unset</p></td>
+<td><p>Limits how many candidate tokens the sampler may pick from. Leave it unset: the main token is then drawn with no top-k cap, and a cap of 30 lets a stream fall silent after its first phrase. The codebook heads always cap at 30, whatever the request asks.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
+<td><p>the remaining context, up to 2048 frames</p></td>
+<td><p>A prompt and its <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> must fit the engine’s context length.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">references</span></code></p></td>
+<td><p>unset</p></td>
+<td><p>Any number of clips within the prompt limit; each item has <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> and <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">previous_takes</span></code></p></td>
+<td><p>unset</p></td>
+<td><p>Earlier takes for <a class="reference internal" href="#editing-as-continuation"><span class="std std-ref">editing as continuation</span></a>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code></p></td>
+<td><p>unset</p></td>
+<td><p>Accepted only with reference sampling on; otherwise a non-zero value is refused. See <a class="reference internal" href="fishaudio_drama3/tuning.html#defaults-parameters"><span class="std std-ref">Defaults Parameters</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
+<td><p>not supported</p></td>
+<td><p>The server refuses a request that sets it.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p><em>Table 3. Drama 3 FP8 and int4 checkpoints on Seed-TTS English, concurrency 8, one H200.</em></p>
-<p>The int4 checkpoint is about 8% slower per request and its WER stays at the FP8 level: the gap between the two is about as large as the run-to-run spread of one checkpoint (a second FP8 run measured 1.365 s mean latency and 2.02% WER).</p>
-</section>
-<section id="deployment-performance">
-<h2>Deployment Performance<a class="headerlink" href="#deployment-performance" title="Link to this heading">#</a></h2>
-<p>On one GPU the default placement works as is: every stage runs on GPU 0, and the vocoder runs in the engine’s process, decoding on its own high-priority CUDA stream. With two GPUs, put the vocoder in its own process on the second one, so its decoding no longer shares a GPU with the engine (one process cannot span two GPUs):</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>&lt;checkpoint&gt;<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--tts_engine.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--vocoder.process<span class="w"> </span>vocoder<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--vocoder.gpu<span class="w"> </span><span class="m">1</span>
-</pre></div>
-</div>
-<p>When the vocoder runs in its own process on the engine’s GPU (<code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code>), <code class="docutils literal notranslate"><span class="pre">--mps</span> <span class="pre">on</span></code> lets the two processes share it through CUDA MPS (see <a class="reference internal" href="../basic_usage/mps_dp.html"><span class="std std-doc">Same-GPU Data Parallelism with CUDA MPS</span></a>). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.</p>
-<section id="tensor-parallelism">
-<h3>Tensor Parallelism<a class="headerlink" href="#tensor-parallelism" title="Link to this heading">#</a></h3>
-<p>When the FP8 checkpoint does not fit one GPU, <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span></code> splits the engine across 2 or 4 GPUs: SGLang shards the backbone, and each GPU holds its share of the codebook tower’s attention heads and MLP width; with 4 GPUs, pairs of GPUs share each of the tower’s two key/value heads, as they share the backbone’s. The FP8 routed experts are stored in 128-wide blocks, so their 512-wide intermediate splits across at most 4 GPUs. On two 32 GB GPUs, such as two RTX 5090:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>fishaudio/drama-3<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--tts_engine.tp_size<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--tts_engine.gpu<span class="w"> </span><span class="s2">"[0, 1]"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--tts_engine.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.75<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--preprocessing.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--vocoder.gpu<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--vocoder.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.2
-</pre></div>
-</div>
-<p>Each GPU then holds 18.5 GB of engine weights, and 9.7 GB with <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span> <span class="pre">4</span> <span class="pre">--tts_engine.gpu</span> <span class="pre">&quot;[0,</span> <span class="pre">1,</span> <span class="pre">2,</span> <span class="pre">3]&quot;</span></code>. The vocoder’s default share of 0.10 is sized for an H200: on a 32 GB GPU it cannot hold one non-streaming decode of <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> frames, so the command raises it to 0.2. The fused codebook tower layers stay off under tensor parallelism. Table 4 compares these layouts with one H200 on the Seed-TTS English workload of Table 3, all measured with checkpoint revision <code class="docutils literal notranslate"><span class="pre">78e5ab7</span></code>; compare its rows with each other rather than with Table 3.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Setup</p></th>
-<th class="head text-right"><p>Latency mean</p></th>
-<th class="head text-right"><p>Latency p95</p></th>
-<th class="head text-right"><p>RTF mean</p></th>
-<th class="head text-right"><p>Throughput (req/s)</p></th>
-<th class="head text-right"><p>WER (corpus)</p></th>
-<th class="head text-right"><p>Samples above 50% WER</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>One H200</p></td>
-<td class="text-right"><p>1.048 s</p></td>
-<td class="text-right"><p>1.551 s</p></td>
-<td class="text-right"><p>0.237</p></td>
-<td class="text-right"><p>7.62</p></td>
-<td class="text-right"><p>0.85%</p></td>
-<td class="text-right"><p>0</p></td>
-</tr>
-<tr class="row-odd"><td><p>Two RTX 5090, tensor parallel</p></td>
-<td class="text-right"><p>1.255 s</p></td>
-<td class="text-right"><p>1.876 s</p></td>
-<td class="text-right"><p>0.283</p></td>
-<td class="text-right"><p>6.37</p></td>
-<td class="text-right"><p>0.90%</p></td>
-<td class="text-right"><p>0</p></td>
-</tr>
-<tr class="row-even"><td><p>Four RTX 5090, tensor parallel</p></td>
-<td class="text-right"><p>1.403 s</p></td>
-<td class="text-right"><p>2.081 s</p></td>
-<td class="text-right"><p>0.316</p></td>
-<td class="text-right"><p>5.69</p></td>
-<td class="text-right"><p>0.87%</p></td>
-<td class="text-right"><p>0</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p><em>Table 4. Drama 3 FP8 checkpoint on Seed-TTS English, non-streaming requests at concurrency 8.</em></p>
-</section>
-<section id="high-concurrency">
-<h3>High Concurrency<a class="headerlink" href="#high-concurrency" title="Link to this heading">#</a></h3>
-<p>The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU’s memory. For more streams at once, raise the request cap; the measurements below also raise the engine’s share:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>&lt;checkpoint&gt;<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--tts_engine.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.85<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--tts_engine.factory.max_running_requests<span class="w"> </span><span class="m">256</span>
-</pre></div>
-</div>
-<p>These values are sized for an H200: the engine’s and the vocoder’s shares and the preprocessing reserve must fit one GPU together, which the server checks at startup.</p>
-</section>
-<section id="production-serving">
-<h3>Production Serving<a class="headerlink" href="#production-serving" title="Link to this heading">#</a></h3>
-<p>All numbers below were measured on NVIDIA H200 GPUs with streaming requests on Seed-TTS English prompts. Each request clones a voice from one pre-encoded reference (<code class="docutils literal notranslate"><span class="pre">vq_codes</span></code> with its transcript) and uses <code class="docutils literal notranslate"><span class="pre">temperature</span></code> 1.0, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> 0.9, <code class="docutils literal notranslate"><span class="pre">top_k</span></code> 30 and <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> 500. Throughput counts generated acoustic frames per second. TTFA is the time to first audio. RTF is the time from sending a request to its last audio chunk, divided by the duration of the returned audio.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head text-right"><p>Concurrency</p></th>
-<th class="head text-right"><p>Throughput (frames/s)</p></th>
-<th class="head text-right"><p>TTFA p50</p></th>
-<th class="head text-right"><p>TTFA p95</p></th>
-<th class="head text-right"><p>RTF (mean)</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>166.7</p></td>
-<td class="text-right"><p>88.9 ms</p></td>
-<td class="text-right"><p>90.8 ms</p></td>
-<td class="text-right"><p>0.131</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>287.0</p></td>
-<td class="text-right"><p>96.2 ms</p></td>
-<td class="text-right"><p>130.1 ms</p></td>
-<td class="text-right"><p>0.152</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>467.6</p></td>
-<td class="text-right"><p>108.2 ms</p></td>
-<td class="text-right"><p>156.4 ms</p></td>
-<td class="text-right"><p>0.186</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>678.1</p></td>
-<td class="text-right"><p>153.2 ms</p></td>
-<td class="text-right"><p>210.9 ms</p></td>
-<td class="text-right"><p>0.256</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>927.6</p></td>
-<td class="text-right"><p>210.1 ms</p></td>
-<td class="text-right"><p>287.2 ms</p></td>
-<td class="text-right"><p>0.373</p></td>
-</tr>
-<tr class="row-odd"><td class="text-right"><p>32</p></td>
-<td class="text-right"><p>1,244.7</p></td>
-<td class="text-right"><p>304.6 ms</p></td>
-<td class="text-right"><p>396.1 ms</p></td>
-<td class="text-right"><p>0.551</p></td>
-</tr>
-<tr class="row-even"><td class="text-right"><p>64</p></td>
-<td class="text-right"><p>1,687.3</p></td>
-<td class="text-right"><p>450.9 ms</p></td>
-<td class="text-right"><p>1,020.1 ms</p></td>
-<td class="text-right"><p>0.801</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p><em>Table 1. Drama 3 streaming performance on one H200. Each cell is the mean of four runs.</em></p>
-<p>A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder in its own process and its default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Vocoder placement</p></th>
-<th class="head text-right"><p>Concurrency</p></th>
-<th class="head text-right"><p>Throughput (frames/s)</p></th>
-<th class="head text-right"><p>TTFA p50</p></th>
-<th class="head text-right"><p>TTFA p95</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>Engine’s GPU</p></td>
-<td class="text-right"><p>128</p></td>
-<td class="text-right"><p>2,177</p></td>
-<td class="text-right"><p>685 ms</p></td>
-<td class="text-right"><p>1,412 ms</p></td>
-</tr>
-<tr class="row-odd"><td><p>Engine’s GPU</p></td>
-<td class="text-right"><p>256</p></td>
-<td class="text-right"><p>2,422</p></td>
-<td class="text-right"><p>3,403 ms</p></td>
-<td class="text-right"><p>4,255 ms</p></td>
-</tr>
-<tr class="row-even"><td><p>Second GPU</p></td>
-<td class="text-right"><p>128</p></td>
-<td class="text-right"><p>3,692</p></td>
-<td class="text-right"><p>401 ms</p></td>
-<td class="text-right"><p>995 ms</p></td>
-</tr>
-<tr class="row-odd"><td><p>Second GPU</p></td>
-<td class="text-right"><p>256</p></td>
-<td class="text-right"><p>4,160</p></td>
-<td class="text-right"><p>2,146 ms</p></td>
-<td class="text-right"><p>2,469 ms</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p><em>Table 2. Drama 3 streaming performance by vocoder placement. Each cell is the mean of six server starts.</em></p>
-<p>With the vocoder on the engine’s GPU, at 256 streams the vocoder is fully loaded and each new stream’s first audio waits in its queue. Moving it to a second GPU, as described under <a class="reference external" href="https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html#deployment">Deployment</a>, gave about 72% more throughput and a 37% lower median TTFA at 256 streams. Use this layout when you need many concurrent streams and a short time to first audio together.</p>
-</section>
-<section id="non-streaming-requests">
-<h3>Non-Streaming Requests<a class="headerlink" href="#non-streaming-requests" title="Link to this heading">#</a></h3>
-<p>The vocoder decodes a non-streaming request’s audio in one piece after the engine finishes it, one request at a time, replaying a CUDA graph for requests of up to 512 frames (<code class="docutils literal notranslate"><span class="pre">--vocoder.factory.non_streaming_cuda_graph_max_frames</span></code>). With <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.max_batch_size</span></code> above 1 it instead batches requests that finish together, decoding them eagerly. Either way a decode takes at most a frame limit it sets at startup from the room its process leaves in the process’s memory share: the engine’s and the vocoder’s <code class="docutils literal notranslate"><span class="pre">gpu_memory_fraction</span></code> together (0.65 and 0.15 by default) while the vocoder runs in the engine’s process, the vocoder’s alone in its own process. It logs:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 vocoder: a non-streaming decode takes up to &lt;frames&gt; padded frames of &lt;bytes&gt; bytes each; share &lt;share&gt; GiB, held &lt;held&gt; GiB
-</pre></div>
-</div>
-<p>The limit does not count the memory the vocoder’s process holds outside PyTorch’s allocator, so it cannot guarantee that the process stays within its share. With the engine’s share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (<code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code>), keep the engine’s default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under Deployment.</p>
-</section>
-</section>
-<section id="defaults-parameters">
-<h2>Defaults Parameters<a class="headerlink" href="#defaults-parameters" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Default</p></th>
-<th class="head"><p>What it does</p></th>
-<th class="head"><p>Change it with</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>Decode CUDA graph</p></td>
-<td><p>Replays decode steps as CUDA graphs.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_backend_decode</span> <span class="pre">disabled</span></code>; <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.disable_cuda_graph</span> <span class="pre">true</span></code> turns off every engine CUDA graph</p></td>
-</tr>
-<tr class="row-odd"><td><p>Breakable prefill CUDA graph, up to 2048 tokens</p></td>
-<td><p>Replays prefill batches of up to 2048 tokens, backbone and codebook tower together, as one breakable CUDA graph; larger batches run eagerly. Shortens the time to the first audio at the cost of startup time and GPU memory; the KV cache keeps its size.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_backend_prefill</span> <span class="pre">disabled</span></code>; the token cap with <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_max_bs_prefill</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p>GDN extend inside the breakable prefill graph</p></td>
-<td><p>The breakable prefill CUDA graph also runs the extend of the linear-attention (GDN) layers for prefills of up to <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> requests, instead of breaking the graph at each of those layers and launching their kernels from Python. Its outputs and states equal the eager extend bit for bit.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.gdn_prefill_cuda_graphs</span> <span class="pre">false</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p>First-frame CUDA graphs, up to 16 requests</p></td>
-<td><p>Replays the step that samples each request’s first frame as a CUDA graph for prefills of up to 16 requests (at most the decode CUDA graph’s largest batch); larger prefills sample eagerly. Needs the decode CUDA graph; shortens each prefill at the cost of startup time and GPU memory.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.first_frame_cuda_graphs</span> <span class="pre">false</span></code>; the request cap with <code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.first_frame_cuda_graph_max_requests</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">prefill_decode_interval</span></code> 4</p></td>
-<td><p>After a prefill, new prefills wait for the next 4 scheduling rounds, so running streams keep decoding.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.prefill_decode_interval</span> <span class="pre">0</span></code> schedules prefills without the wait</p></td>
-</tr>
-<tr class="row-odd"><td><p>Sampling: <code class="docutils literal notranslate"><span class="pre">temperature</span></code> 1.0, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> 0.9, no <code class="docutils literal notranslate"><span class="pre">top_k</span></code> cap</p></td>
-<td><p>Without a request <code class="docutils literal notranslate"><span class="pre">top_k</span></code>, the main token is drawn with no top-k cap; a cap of 30 there lets a stream fall silent after its first phrase. The codebook heads draw with top-k 30 at most whatever the request asks, since wider caps there cost speaker similarity.</p></td>
-<td><p>The request’s <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">top_k</span></code>; a request <code class="docutils literal notranslate"><span class="pre">top_k</span></code> caps the main token, and the codebook heads up to 30</p></td>
-</tr>
-<tr class="row-even"><td><p>Triton sampling</p></td>
-<td><p>Samples each frame’s main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. Using the same seed does not guarantee the same tokens as the PyTorch sampler. Rounding can keep or drop a candidate whose cumulative probability lies at top_p.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.triton_sampling</span> <span class="pre">false</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p>Reference sampling, off</p></td>
-<td><p>Samples each frame with Fish Audio’s reference sampling for Drama 3, in PyTorch, instead of the samplers above. The main token’s first draw keeps only candidates whose probability reaches the request’s <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> (1e-3 when unset, 0 turns it off) and top-p drops the token that crosses it; a first draw that repeats one of the last 16 main tokens, end of speech included, becomes the most probable candidate. The codebook heads take the request’s <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_k</span></code> and <code class="docutils literal notranslate"><span class="pre">top_p</span></code> with no epsilon cutoff and never return a code the codec’s 1024-entry residual codebooks lack. Its recommended request parameters are <code class="docutils literal notranslate"><span class="pre">temperature</span></code> 1.0, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> 1.0, no <code class="docutils literal notranslate"><span class="pre">top_k</span></code> and <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> 1e-3. With it off, a request that sets a non-zero <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> is refused.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.reference_sampling</span> <span class="pre">true</span></code>; <code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.reference_sampling_fallback</span> <span class="pre">ras</span></code> replaces a repeated first draw with a second draw at temperature 1.0, top-p 0.95 and top-k 30 instead</p></td>
-</tr>
-<tr class="row-even"><td><p>Fused codebook tower layers, up to 32 rows</p></td>
-<td><p>Runs the codebook tower layers of decode and first-frame steps of up to 32 rows as fused Triton kernels (row tiles of 16 and 32), eagerly or inside the CUDA graphs; larger steps and the tower’s prefill keep the module path. The kernels add in a different order, so the tower’s outputs can differ in the last bits and the sampled frames can differ.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.tower_fused_layers</span> <span class="pre">false</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p>Vocoder CUDA graphs, up to 512 frames</p></td>
-<td><p>Replays streaming window decodes, and the decode of non-streaming requests of up to 512 frames padded to a multiple of 8, as CUDA graphs; a non-streaming request replays at batch 1, and non-streaming batches and longer requests decode eagerly. Beside incremental streams the vocoder halves the 512-frame cap until one request of <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> frames still fits its process’s GPU memory share, and logs each halving: with the default shares on an 80 GB GPU the cap is 256 frames. Under overlap or stateful decoding the cap does not halve, and a share too small for it stops startup with the flags to change. Costs startup time and vocoder GPU memory.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.window_cuda_graphs</span> <span class="pre">false</span></code>; the non-streaming cap with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.non_streaming_cuda_graph_max_frames</span></code> (0 keeps only the window graphs)</p></td>
-</tr>
-<tr class="row-even"><td><p>Incremental streaming decode</p></td>
-<td><p>Each streaming window decodes only its new frames, with the stream’s decoder state kept in one of 256 slots, and windows of one length from up to 16 streams share a decode. Needs fp16 decoding on a CUDA device with FA3 (compute capability 8.x or 9.x, CUDA 12.3 or newer) and <code class="docutils literal notranslate"><span class="pre">stream_crossfade_samples</span></code> 0; elsewhere, or when the state does not fit its process’s GPU memory share, the vocoder uses overlap decoding, where each window decodes again the <code class="docutils literal notranslate"><span class="pre">stream_overlap_tokens</span></code> frames before it.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_decode</span> <span class="pre">overlap</span></code>; the slots with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_slot_count</span></code> and the streams per decode with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.max_stream_batch_size</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p>Batched streaming windows, up to 4</p></td>
-<td><p>Under overlap decoding, same-length streaming windows already queued from different requests decode in one CUDA graph replay, shortest windows first; no window waits for others to arrive. At startup the vocoder times each batch size and keeps only those that save at least 5% of the GPU time of one-at-a-time replays, and logs the ratios. A batched decode can differ from a batch-1 decode in the last fp16 bits. Beside <code class="docutils literal notranslate"><span class="pre">stateful_decode</span></code>, windows do not batch.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_window_batch_size</span> <span class="pre">1</span></code> replays each window alone, still shortest first</p></td>
-</tr>
-<tr class="row-even"><td><p>Vocoder fp16 decoding</p></td>
-<td><p>Decodes frames into audio in fp16.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.decode_dtype</span> <span class="pre">float32</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p>Vocoder in the engine’s process</p></td>
-<td><p>The vocoder runs in the engine’s process and decodes on its own CUDA stream, at a higher priority than the engine’s stream, so its windows do not queue behind decode steps, and the engine hands it codes without a process hop. A tensor-parallel engine or vocoder holds its process alone, and <code class="docutils literal notranslate"><span class="pre">stateful_decode</span></code> needs a dedicated vocoder process, so with any of these the vocoder runs in its own.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code> runs it in its own process</p></td>
-</tr>
-<tr class="row-even"><td><p>Reference encode CUDA graphs, up to 20 s</p></td>
-<td><p>Encodes each reference by replaying a CUDA graph captured for its length rounded up to a multiple of 22 codec frames (1.02 s); the longest of the 20 graphs holds 440 frames (20.43 s), and longer references encode eagerly. The encoder is causal, so the zeros after a reference feed none of its codes, but the padded encode rounds differently from an unpadded one: on H100 about 4.5% of a reference’s code elements differ in bf16 and under 0.3% in fp32. Costs startup time and preprocessing GPU memory.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.reference_encode_graph_max_seconds</span> <span class="pre">0</span></code> encodes every reference eagerly; another value moves the cap</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>The same settings in a config file:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">tts_engine</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">engine</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">cuda_graph_backend_prefill</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">disabled</span>
-<span class="w">      </span><span class="nt">prefill_decode_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<span class="w">  </span><span class="nt">vocoder</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">window_cuda_graphs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
-<span class="w">      </span><span class="nt">decode_dtype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">float32</span>
-</pre></div>
-</div>
-<p>Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference, under tensor parallelism, or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 codebook sampling: PyTorch, untested GPU sm_120
-Drama 3 tower fused layers: off, untested GPU sm_120
-</pre></div>
-</div>
-</section>
-<section id="apple-silicon-native-mlx">
-<h2>Apple Silicon: native MLX<a class="headerlink" href="#apple-silicon-native-mlx" title="Link to this heading">#</a></h2>
-<p>The standalone <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_server</span></code> runs entirely in C++ on MLX under <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/</span></code> and serves <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> with the CUDA server’s request fields; reference audio is sent as base64 WAV (see the table below). It serves two community MLX conversions of <code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3</span></code>, made by mlx-audio’s <code class="docutils literal notranslate"><span class="pre">fish_drama3/convert.py</span></code> from the official FP8 checkpoint:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Checkpoint</p></th>
-<th class="head"><p>Routed experts</p></th>
-<th class="head"><p>Other projections</p></th>
-<th class="head text-right"><p>On disk</p></th>
-<th class="head text-right"><p>Peak MLX memory, mlx-audio</p></th>
-<th class="head text-right"><p>Unified memory</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/fish-audio-drama-3-4bit</span></code></p></td>
-<td><p>4-bit</p></td>
-<td><p>8-bit</p></td>
-<td class="text-right"><p>24 GB</p></td>
-<td class="text-right"><p>28.7 GB</p></td>
-<td class="text-right"><p>48 GB or more</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/fish-audio-drama-3-8bit</span></code></p></td>
-<td><p>8-bit</p></td>
-<td><p>bf16</p></td>
-<td class="text-right"><p>42 GB</p></td>
-<td class="text-right"><p>47.1 GB</p></td>
-<td class="text-right"><p>64 GB or more</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime’s pinned MLX toolchain:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>sglang_omni_mlx/native/ci/provision_models.py<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_DATA</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model<span class="w"> </span>mlx-community/fish-audio-drama-3-4bit
-sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_BUILD</span><span class="s2">"</span>
-<span class="s2">"</span><span class="nv">$DRAMA3_RUNTIME</span><span class="s2">/bin/fishaudio_drama3_server"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_DATA</span><span class="s2">/models/mlx-community_fish-audio-drama-3-4bit"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-name<span class="w"> </span>fishaudio/drama-3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-</pre></div>
-</div>
-<p>Set <code class="docutils literal notranslate"><span class="pre">DRAMA3_DATA</span></code>, <code class="docutils literal notranslate"><span class="pre">DRAMA3_RUNTIME</span></code> and <code class="docutils literal notranslate"><span class="pre">DRAMA3_BUILD</span></code> to separate local directories; for the 8-bit checkpoint, replace <code class="docutils literal notranslate"><span class="pre">4bit</span></code> with <code class="docutils literal notranslate"><span class="pre">8bit</span></code> in both commands. Serving needs neither Python nor SGLang’s CUDA package. Voice cloning sends the reference clip, a mono 44.1 kHz WAV, as base64:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s2">"{\"input\": \"Get the trust fund to the bank early.\",</span>
-<span class="s2">       \"references\": [{\"data\": \"</span><span class="k">$(</span>base64<span class="w"> </span>&lt;<span class="w"> </span>reference_44k.wav<span class="w"> </span><span class="p">|</span><span class="w"> </span>tr<span class="w"> </span>-d<span class="w"> </span><span class="s1">'\n'</span><span class="k">)</span><span class="s2">\",</span>
-<span class="s2">                       \"text\": \"We asked over twenty different people, and they all said it was his.\"}]}"</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output_voice_cloning.wav
-</pre></div>
-</div>
-<p>The server reads the request fields the CUDA server reads and refuses the same unsupported ones (<code class="docutils literal notranslate"><span class="pre">seed</span></code> included). Where they differ:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p></p></th>
-<th class="head"><p>CUDA server</p></th>
-<th class="head"><p>Native MLX server</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>Reference audio</p></td>
-<td><p>A path, URL or base64 data in any format the server decodes, resampled to 44.1 kHz; up to 60 s each by default</p></td>
-<td><p>Base64 mono 44.1 kHz PCM16 or float32 WAV, as <code class="docutils literal notranslate"><span class="pre">references[i].data</span></code>, a <code class="docutils literal notranslate"><span class="pre">data:</span></code> URL in <code class="docutils literal notranslate"><span class="pre">references[i].audio</span></code>, or <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> with <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>; paths and remote URLs are refused</p></td>
-</tr>
-<tr class="row-odd"><td><p>References</p></td>
-<td><p>Any number, within the prompt row limit (<code class="docutils literal notranslate"><span class="pre">max_prompt_rows</span></code>)</p></td>
-<td><p>Up to 4, together at most 30 s (646 frames of <code class="docutils literal notranslate"><span class="pre">vq_codes</span></code>) and 1024 transcript characters</p></td>
-</tr>
-<tr class="row-even"><td><p>Voices</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">default</span></code> (or <code class="docutils literal notranslate"><span class="pre">speaker</span></code>) or an uploaded voice</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">default</span></code> (or <code class="docutils literal notranslate"><span class="pre">speaker</span></code>) only</p></td>
-</tr>
-<tr class="row-odd"><td><p>Long input</p></td>
-<td><p>One prompt; <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> defaults to the remaining context, up to 2048 frames</p></td>
-<td><p>Split into chunks of about 300 bytes, each seeing the first and the previous chunk; <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> (default 1024, at most 4096) caps each chunk; <code class="docutils literal notranslate"><span class="pre">input</span></code> holds at most 4096 characters</p></td>
-</tr>
-<tr class="row-even"><td><p>Requests</p></td>
-<td><p>Batched</p></td>
-<td><p>One at a time; <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> more may wait (2 by default), the rest get 503; a request not done <code class="docutils literal notranslate"><span class="pre">--request-timeout-s</span></code> seconds after it arrives (600 by default) gets 504, and a disconnected client’s request is cancelled</p></td>
-</tr>
-<tr class="row-odd"><td><p>Streaming</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> with <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code></p></td>
-<td><p>The same, with audio every 7 frames (0.33 s)</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p><code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_synthesize</span></code> runs one request from the command line and prints its timings; with <code class="docutils literal notranslate"><span class="pre">--codes-output</span></code> it also writes the first chunk’s prompt ids and every frame’s codes, for parity checks.</p>
-<section id="optional-native-expert-offload">
-<h3>Optional native expert offload<a class="headerlink" href="#optional-native-expert-offload" title="Link to this heading">#</a></h3>
-<p>Both native binaries accept <code class="docutils literal notranslate"><span class="pre">--expert-offload</span> <span class="pre">2gib</span></code>. Without it, the existing resident loading and execution path is unchanged. Offload removes routed backbone experts before checkpoint evaluation and loads one expert’s packed up/gate/down weights, scales and biases on demand. Router, shared experts, attention and tower weights stay resident; the codec loads separately.</p>
-<p>The model owns one serial LRU cache with a 2,147,483,648-byte limit on live packed expert arrays, including a pending load. A pinned expert cannot be evicted; every expert computation completes before its lease is released. Prefill groups selected rows by expert and processes groups serially without changing top-k ids or scores. Small groups may repeat rows to preserve MLX 0.32.3’s sorted gather kernel; repeated outputs are discarded. This path prioritizes correctness over throughput and may perform many file reads.</p>
-<p>For N input rows and top-k K, one expert group processes at most max(N, 16) rows. Per-expert result batches hold at most (N<em>K + 15</em>E) hidden-width rows before assembly, where E is the number of selected experts. Assembly additionally uses tensors shaped up to [N, K, hidden] and a final [N, hidden] result; backend workspace has no separate byte limit. Padding outputs and operation graphs are released after the final weighted sum is evaluated. Cached expert arrays remain until LRU eviction, explicit release before non-streaming codec decoding, or model destruction. During offloaded codec decoding only, the native runtime sets a target of min(the caller’s existing limit, 256 MiB) for MLX idle allocator buffers and clears old idle buffers, then restores the caller’s previous cache limit on return or exception. This process-wide setting relies on the native server worker and CLI serializing MLX execution; concurrent embedded MLX jobs need their own coordination. It does not alter the 2 GiB expert capacity or AR-phase allocator limit. The idle-buffer target is soft and does not cap active tensors, workspace, process memory, or the operating system’s page cache.</p>
-<p>The limit is not a process or GPU memory cap. Resident model weights, output tensors, current operation workspace, MLX allocator reuse and CPU/GPU copies, and the operating system’s file cache are separate. No duplicate host payload cache is retained. Packed weights remain U32; F16/BF16/F32 quantization scales and biases retain their original dtype. Unquantized expert weights are unsupported by this offload path.</p>
-<p><code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_experts_test</span></code> is an explicit CMake target; pass a disposable fixture directory as its only argument. It generates small safetensors files and checks actual MLX loading, excluded payload reads, cache limits, pinning, eviction, failed reads, and resident/cached quantized execution. These fixtures do not establish complete checkpoint/audio parity or real-model throughput; run the checkpoint parity suite separately before relying on the option in production.</p>
-<p><code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_codec_test</span></code> is an optional local CMake target taking a checkpoint directory, saved codes JSON, output prefix, block frame count, <code class="docutils literal notranslate"><span class="pre">budget</span></code> or <code class="docutils literal notranslate"><span class="pre">resident</span></code>, and <code class="docutils literal notranslate"><span class="pre">success</span></code> or <code class="docutils literal notranslate"><span class="pre">failure</span></code>. It exercises the production codec decoder with actual weights, checks the cache target during decoding and restoration afterward, and can raise a callback exception after actual MLX evaluation. Codec-only checks do not establish full-model streaming, long-runtime, or request-cancellation behavior.</p>
-</section>
-<section id="reference-parity-and-performance">
-<h3>Reference parity and performance<a class="headerlink" href="#reference-parity-and-performance" title="Link to this heading">#</a></h3>
-<p>The numerical reference is mlx-audio 0.6.2 (<code class="docutils literal notranslate"><span class="pre">f6d5da9</span></code>: <code class="docutils literal notranslate"><span class="pre">mlx_audio/tts/models/fish_drama3</span></code> and <code class="docutils literal notranslate"><span class="pre">mlx_audio/codec/models/fish_s1_dac</span></code>) on the same checkpoint and MLX 0.32.3; <code class="docutils literal notranslate"><span class="pre">native/licenses/fishaudio_drama3-MIT.txt</span></code> holds its license. The native runtime runs the gated delta rule on MLX’s <code class="docutils literal notranslate"><span class="pre">mx::fast::gated_delta_update</span></code>, where mlx-audio runs its own Metal kernel, and the two round their bf16 outputs differently. With mlx-audio’s gated delta step on the same MLX primitive and the same seed (given to <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_synthesize</span></code>), the native runtime samples the same codes and decodes the same PCM16 samples on every seeded test request.</p>
-<p>Measured on an Apple M4 Max (64 GB), warm, in ABBA order (native, reference, reference, native). The server takes no seed, so each side ran each request three times; the table gives each round’s median real-time factor (generation time over audio duration) and the median time to the first streamed audio. Native times include the HTTP request and PCM encoding. The 4-bit checkpoint:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Request</p></th>
-<th class="head text-right"><p>Real-time factor, native</p></th>
-<th class="head text-right"><p>Real-time factor, mlx-audio 0.6.2</p></th>
-<th class="head text-right"><p>First streamed audio, native</p></th>
-<th class="head text-right"><p>First streamed audio, mlx-audio</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>English, no reference</p></td>
-<td class="text-right"><p>0.376 / 0.377</p></td>
-<td class="text-right"><p>0.372 / 0.372</p></td>
-<td class="text-right"><p>0.18 s</p></td>
-<td class="text-right"><p>0.18 s</p></td>
-</tr>
-<tr class="row-odd"><td><p>English, cloned voice</p></td>
-<td class="text-right"><p>0.375 / 0.373</p></td>
-<td class="text-right"><p>0.375 / 0.372</p></td>
-<td class="text-right"><p>0.18 s</p></td>
-<td class="text-right"><p>0.18 s</p></td>
-</tr>
-<tr class="row-even"><td><p>Chinese, cloned voice</p></td>
-<td class="text-right"><p>0.367 / 0.370</p></td>
-<td class="text-right"><p>0.366 / 0.366</p></td>
-<td class="text-right"><p>0.18 s</p></td>
-<td class="text-right"><p>0.18 s</p></td>
-</tr>
-<tr class="row-odd"><td><p>Two speakers, cloned voice</p></td>
-<td class="text-right"><p>0.371 / 0.373</p></td>
-<td class="text-right"><p>0.368 / 0.369</p></td>
-<td class="text-right"><p>0.19 s</p></td>
-<td class="text-right"><p>0.18 s</p></td>
-</tr>
-<tr class="row-even"><td><p>26 s passage, two chunks</p></td>
-<td class="text-right"><p>0.374 / 0.371</p></td>
-<td class="text-right"><p>0.369 / 0.377</p></td>
-<td class="text-right"><p>0.22 s</p></td>
-<td class="text-right"><p>0.22 s</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Loading takes 4.1 s native and 4.5 s for the reference, from a warm file cache. Peak MLX memory (<code class="docutils literal notranslate"><span class="pre">mx.get_peak_memory()</span></code>) is 28.2 GB native on the passage and 28.7 GB in the reference; the server’s process footprint stays near 32 GB under mixed load, against 23 GB idle.</p>
-<p>The 8-bit checkpoint, measured the same way:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Request</p></th>
-<th class="head text-right"><p>Real-time factor, native</p></th>
-<th class="head text-right"><p>Real-time factor, mlx-audio 0.6.2</p></th>
-<th class="head text-right"><p>First streamed audio, native</p></th>
-<th class="head text-right"><p>First streamed audio, mlx-audio</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>English, no reference</p></td>
-<td class="text-right"><p>0.513 / 0.513</p></td>
-<td class="text-right"><p>0.513 / 0.514</p></td>
-<td class="text-right"><p>0.25 s</p></td>
-<td class="text-right"><p>0.25 s</p></td>
-</tr>
-<tr class="row-odd"><td><p>English, cloned voice</p></td>
-<td class="text-right"><p>0.507 / 0.506</p></td>
-<td class="text-right"><p>0.510 / 0.506</p></td>
-<td class="text-right"><p>0.25 s</p></td>
-<td class="text-right"><p>0.25 s</p></td>
-</tr>
-<tr class="row-even"><td><p>Chinese, cloned voice</p></td>
-<td class="text-right"><p>0.500 / 0.499</p></td>
-<td class="text-right"><p>0.502 / 0.501</p></td>
-<td class="text-right"><p>0.25 s</p></td>
-<td class="text-right"><p>0.25 s</p></td>
-</tr>
-<tr class="row-odd"><td><p>Two speakers, cloned voice</p></td>
-<td class="text-right"><p>0.504 / 0.500</p></td>
-<td class="text-right"><p>0.508 / 0.505</p></td>
-<td class="text-right"><p>0.26 s</p></td>
-<td class="text-right"><p>0.26 s</p></td>
-</tr>
-<tr class="row-even"><td><p>26 s passage, two chunks</p></td>
-<td class="text-right"><p>0.496 / 0.495</p></td>
-<td class="text-right"><p>0.498 / 0.497</p></td>
-<td class="text-right"><p>0.30 s</p></td>
-<td class="text-right"><p>0.30 s</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Loading takes 6.4 to 6.8 s native and 6.9 to 7.2 s for the reference. Peak MLX memory is 47.1 GB in the reference, and the server’s process footprint reaches 48 GB. Its routed experts are twice the size of the 4-bit ones and its other projections are bf16, and it runs about 1.35 times slower.</p>
-</section>
-</section>
-<section id="links">
-<h2>Links<a class="headerlink" href="#links" title="Link to this heading">#</a></h2>
+<p>Engine-side defaults, such as CUDA graphs, Triton sampling and vocoder placement, are server settings rather than request fields. <a class="reference internal" href="fishaudio_drama3/tuning.html#defaults-parameters"><span class="std std-ref">Defaults Parameters</span></a> lists each one with the flag that changes it.</p>
+<p><span id="serving-limits"></span></p>
+<section id="known-limitations">
+<h3>Known limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><a class="reference external" href="https://fish.audio">Fish Audio Playground</a></p></li>
-<li><p><a class="reference external" href="https://github.com/fishaudio/fish-speech">Fish Speech GitHub</a></p></li>
-<li><p><a class="reference external" href="https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf">Technical Report</a></p></li>
-<li><p><a class="reference external" href="https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html">Fish Audio Drama 3 SGLang Omni Cookbook</a></p></li>
-<li><p><a class="reference external" href="https://sgl-project.github.io/sglang-omni/">SGLang Omni</a></p></li>
+<li><p><strong>Attention backend.</strong> Only <code class="docutils literal notranslate"><span class="pre">triton</span></code>; any other <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.attention_backend</span></code> stops startup.</p></li>
+<li><p><strong>Reference audio length.</strong> Each reference given as audio may be at most 60 seconds long; a longer one fails the request with HTTP 400 before it is encoded. Raise the limit with <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_reference_audio_seconds</span></code> and the preprocessing reserve with it; see <a class="reference internal" href="fishaudio_drama3/reference.html#reference-audio-length"><span class="std std-ref">Reference Audio Length</span></a>.</p></li>
+<li><p><strong>Prompt length.</strong> A prompt may have at most 8192 rows, counting the text tokens and about 21.5 rows per second of reference audio. A longer one fails with HTTP 400. Change the cap with <code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.max_prompt_rows</span></code>; see <a class="reference internal" href="fishaudio_drama3/reference.html#prompt-length"><span class="std std-ref">Prompt Length</span></a>.</p></li>
+<li><p><strong>Hopper-only kernels.</strong> The fastest sampling and decoder kernels run only on H100 and H200 class GPUs (compute capability 9.0). Other GPUs use the standard PyTorch sampler and decoder layers instead, and the startup log says which path is in use. See <a class="reference internal" href="fishaudio_drama3/tuning.html#kernel-fallbacks"><span class="std std-ref">Kernel fallbacks</span></a>.</p></li>
+<li><p><strong>Request <code class="docutils literal notranslate"><span class="pre">seed</span></code>.</strong> Not supported; the server refuses a request that sets it.</p></li>
+<li><p><strong>Native MLX server.</strong> Reference audio only as base64 WAV, at most 4 references of 30 s together, one request at a time. See <a class="reference internal" href="fishaudio_drama3/platforms.html"><span class="std std-doc">Platform deployment</span></a>.</p></li>
 </ul>
 </section>
-<section id="incremental-streaming-codec">
-<h2>Incremental streaming codec<a class="headerlink" href="#incremental-streaming-codec" title="Link to this heading">#</a></h2>
-<p>The incremental codec is opt-in: set <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stateful_decode</span> <span class="pre">true</span></code> to reuse per-request convolution and attention history. While it is on, it replaces the vocoder’s default batched incremental stream decoding (<code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_decode</span> <span class="pre">incremental</span></code>). GEMM upsampling, folded codebooks, Snake/history fusion and compiled attention follow this setting unless individually overridden. Slot capacity follows <code class="docutils literal notranslate"><span class="pre">tts_engine.engine.max_running_requests</span></code> when set, otherwise <code class="docutils literal notranslate"><span class="pre">tts_engine.factory.max_running_requests</span></code>; it does not add an HTTP admission limit. Streams that cannot acquire a slot use window decoding for their entire lifetime. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Enabling the feature adds state memory and compilation/capture startup cost. It targets sustained concurrent workloads, especially shared-GPU deployments; benefits with a dedicated vocoder GPU are workload-dependent.</p>
+</section>
+<section id="advanced-guides">
+<h2>Advanced Guides<a class="headerlink" href="#advanced-guides" title="Link to this heading">#</a></h2>
+<p><span id="deployment"></span>
+<span id="deployment-performance"></span>
+<span id="tensor-parallelism"></span>
+<span id="high-concurrency"></span>
+<span id="production-serving"></span>
+<span id="non-streaming-requests"></span>
+<span id="defaults-parameters"></span>
+<span id="apple-silicon-native-mlx"></span>
+<span id="optional-native-expert-offload"></span>
+<span id="reference-parity-and-performance"></span>
+<span id="incremental-streaming-codec"></span>
+<span id="reference-audio-length"></span>
+<span id="prompt-length"></span></p>
+<ul class="simple">
+<li><p><a class="reference internal" href="fishaudio_drama3/tuning.html"><span class="std std-doc">Tuning</span></a>: vocoder placement, tensor parallelism, high concurrency, non-streaming decode limits, engine defaults, kernel fallbacks, and the incremental streaming codec.</p></li>
+<li><p><a class="reference internal" href="fishaudio_drama3/reference.html"><span class="std std-doc">Reference</span></a>: the reference-length and prompt-length limits in detail, and the int4 weight layout.</p></li>
+<li><p><a class="reference internal" href="fishaudio_drama3/platforms.html"><span class="std std-doc">Platform deployment</span></a>: the native Apple Silicon MLX server and expert offload.</p></li>
+<li><p><a class="reference internal" href="fishaudio_drama3/benchmarks.html"><span class="std std-doc">Benchmarks</span></a>: streaming and non-streaming measurements on H200, the FP8 and int4 comparison, tensor-parallel layouts, and native MLX parity.</p></li>
+</ul>
 </section>
 </section>
 
@@ -1377,35 +931,25 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation-and-startup">Installation and Startup</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesize-speech">Synthesize Speech</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#example-usage">Example Usage</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choose-a-model">Choose a model</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#int4-checkpoint">Int4 Checkpoint</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-modes">Voice modes</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning">Voice cloning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#point-tags">Point tags</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#editing-as-continuation">Editing as continuation</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serving-limits">Serving Limits</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-audio-length">Reference Audio Length</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prompt-length">Prompt Length</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-options">Common options</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known limitations</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attention-backend">Attention Backend</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#int4-checkpoint">Int4 Checkpoint</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deployment-performance">Deployment Performance</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#high-concurrency">High Concurrency</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#production-serving">Production Serving</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#non-streaming-requests">Non-Streaming Requests</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-native-expert-offload">Optional native expert offload</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity-and-performance">Reference parity and performance</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#links">Links</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#incremental-streaming-codec">Incremental streaming codec</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#advanced-guides">Advanced Guides</a></li>
 </ul>
   </nav></div>
 

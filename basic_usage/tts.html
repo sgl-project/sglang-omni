@@ -673,67 +673,71 @@ model you are serving.</p>
 <td><p>Yes</p></td>
 <td><p>Text-only or voice cloning with <code class="docutils literal notranslate"><span class="pre">references</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS Base</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/fishaudio_drama3.html"><span class="std std-doc">Fish Audio Drama 3</span></a></p></td>
+<td><p>Yes</p></td>
+<td><p>Text-only or voice cloning with <code class="docutils literal notranslate"><span class="pre">references</span></code> and their transcripts; <code class="docutils literal notranslate"><span class="pre">previous_takes</span></code> for editing; a request <code class="docutils literal notranslate"><span class="pre">seed</span></code> is refused</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS Base</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Reference audio or a precomputed speaker embedding</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice"><span class="std std-ref">Qwen3-TTS CustomVoice</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice"><span class="std std-ref">Qwen3-TTS CustomVoice</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Built-in speakers; 1.7B supports instruction control</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS VoiceDesign</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS VoiceDesign</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">task_type:</span> <span class="pre">&quot;VoiceDesign&quot;</span></code> and non-empty <code class="docutils literal notranslate"><span class="pre">instructions</span></code>; checkpoint <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign</span></code> uses <code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_1_7b_voicedesign.yaml</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/fun_cosyvoice3.html"><span class="std std-doc">Fun-CosyVoice3</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/fun_cosyvoice3.html"><span class="std std-doc">Fun-CosyVoice3</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>One reference clip; cloning, cross-lingual and instruction modes</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/moss_tts.html"><span class="std std-doc">MOSS-TTS</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/moss_tts.html"><span class="std std-doc">MOSS-TTS</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Optional reference and model-specific duration control</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/moss_tts_local.html"><span class="std std-doc">MOSS-TTS Local</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/moss_tts_local.html"><span class="std std-doc">MOSS-TTS Local</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Optional reference; 48 kHz output</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/higgs_tts.html"><span class="std std-doc">Higgs TTS</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/higgs_tts.html"><span class="std std-doc">Higgs TTS</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Optional reference, inline control tokens</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/voxtral_tts.html"><span class="std std-doc">Voxtral TTS</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/voxtral_tts.html"><span class="std std-doc">Voxtral TTS</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Named preset voices; no reference cloning</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/dots_tts.html"><span class="std std-doc">dots.tts</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/dots_tts.html"><span class="std std-doc">dots.tts</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Reference audio and transcript; MeanFlow and SOAR have different settings</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/firered_tts3.html"><span class="std std-doc">FireRedTTS3</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/firered_tts3.html"><span class="std std-doc">FireRedTTS3</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Base uses a reference clip and transcript; Instruct supports voice design and editing; Speaker provides text-only synthesis and optional dual-stream decoding</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/ming_tts.html"><span class="std std-doc">Ming-Omni-TTS</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/ming_tts.html"><span class="std std-doc">Ming-Omni-TTS</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Optional reference and transcript; <code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> is rejected</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/ming3_tts.html"><span class="std std-doc">Ming-3.0-TTS</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/ming3_tts.html"><span class="std std-doc">Ming-3.0-TTS</span></a></p></td>
 <td><p>CUDA; CPU decodes a complete waveform</p></td>
 <td><p>Optional reference; the Tiny and 0.5B checkpoints handle <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> differently</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/ming3_audio.html"><span class="std std-doc">Ming-3.0 audio</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/ming3_audio.html"><span class="std std-doc">Ming-3.0 audio</span></a></p></td>
 <td><p>See cookbook</p></td>
 <td><p>Speech uses one reference clip and its transcript</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/zonos2.html"><span class="std std-doc">Zonos2</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/zonos2.html"><span class="std std-doc">Zonos2</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Reference cloning and model-specific chunk configuration</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/zonos3.html"><span class="std std-doc">Zonos3</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/zonos3.html"><span class="std std-doc">Zonos3</span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Optional reference clip; no transcript needed</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/auk.html"><span class="std std-doc">AuK</span></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/auk.html"><span class="std std-doc">AuK</span></a></p></td>
 <td><p>No</p></td>
 <td><p>Serial, non-streaming engine; <code class="docutils literal notranslate"><span class="pre">stage_params.auk_engine.gen_seconds</span></code> is required for speech</p></td>
 </tr>

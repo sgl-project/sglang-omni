@@ -1,0 +1,877 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Fish Audio Drama 3 Tuning &#8212; SGLang</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/sphinx-book-theme.css?v=4418a689" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/custom_log.css?v=3b484c19" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/custom_log.css?v=3b484c19" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/voxt_anim.css?v=cf61687c" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../../_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=ccdb6887"></script>
+    <script src="../../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cookbook/fishaudio_drama3/tuning';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../../_static/js/sidebar_company_toggle.js?v=4014cbb0"></script>
+    <script src="../../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
+    <script src="../../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
+    <script src="../../_static/js/voxt_anim.js?v=29b2ca9c"></script>
+    <link rel="icon" href="../../_static/logo.ico"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+    <meta name="docbuild:last-update" content="Nov 22, 2026"/>
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Voxt</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../get_started/voxt.html">Quickstart</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../get_started/voxt-tutorials/en/index.html">Voxt tutorials</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/en/start.html">Install Voxt and download a speech model</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/en/byok.html">Set up Voxt with your own API key (BYOK)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/en/translate.html">Translate with Voxt</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/en/transcribe.html">Transcribe what you say with Voxt</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/en/rewrite.html">Rewrite text with Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../get_started/voxt-tutorials/index.html">Voxt 上手教程</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/start.html">安装 Voxt 和下载语音识别模型</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/byok.html">用自己的 API Key 配置 Voxt（BYOK）</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/translate.html">用 Voxt 翻译</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/transcribe.html">用 Voxt 把说的话转录成文字</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../get_started/voxt-tutorials/rewrite.html">用 Voxt 改写文字（转写）</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/qwen.html">Qwen</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../qwen3_tts.html">Qwen3-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../qwen3_asr.html">Qwen3-ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/openmoss.html">OpenMOSS</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/openai.html">OpenAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../whisper_asr.html">Whisper ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/nvidia.html">NVIDIA</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../nemotron_transcribe.html">Nemotron Transcribe</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../personaplex.html">PersonaPlex</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cosmos3_nano.html">Cosmos3 Nano serving</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../nemotron_diarization.html">Nemotron 3 Diarization</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/fish_audio.html">Fish Audio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../fishaudio_drama3.html">Fish Audio Drama 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/fun_audio_llm.html">FunAudioLLM</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../fun_asr.html">Fun-ASR-Nano</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/openbmb.html">OpenBMB</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../minicpm_o.html">MiniCPM-o</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/boson_ai.html">Boson AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../higgs_tts.html">Higgs TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/minimax.html">MiniMax</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../minimax_music3.html">MiniMax Music 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/map.html">M·A·P</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../yue2.html">YuE2</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/inclusionai.html">InclusionAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../ming3_asr.html">Ming-3.0-asr-tiny</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../ming3_audio.html">Ming-3.0-audio-flash</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../ming3_tts.html">Ming-3.0-TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/tencent.html">Tencent</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../auk.html">AuK</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../hy_simulmt.html">Hy-SimulMT</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/zyphra.html">Zyphra</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../zonos2.html">Zonos2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../zonos3.html">Zonos3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/autoark_ai.html">AutoArk AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../arkasr.html">ARK-ASR-3B</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/mistral_ai.html">Mistral AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../voxtral_tts.html">Voxtral TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/dots_studio.html">Dots Studio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../dots_tts.html">dots.tts</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../companies/fireredteam.html">FireRedTeam</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../firered_tts3.html">FireRedTTS3</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/native_chat_stage.html">Native Chat Stage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/audio_translations.html">Audio Translations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/asr.html">ASR Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../basic_usage/native_media_routes.html">Native Media Routes</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../developer_reference/mlx/long_audio.html">ASR long-recording measurements</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/apiserver_design.html">API Server Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/pipeline.html">Pipeline Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/adding_parameters.html">Adding a Parameter</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/full_duplex_guide.html">Full-Duplex Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/tts_bench.html">TTS benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/tts_model_integration.html">TTS Model Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/asr_bench.html">ASR benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/omni_offline_bench.html">MiniCPM-o offline benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/ci_labels.html">CI Workflows and Labels</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/cookbook/fishaudio_drama3/tuning.md?plain=1" target="_blank"
+   class="btn btn-sm btn-source-file-button dropdown-item"
+   title="Show source"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-code"></i>
+  </span>
+<span class="btn__text-container">Show source</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/cookbook/fishaudio_drama3/tuning.md" target="_blank"
+   class="btn btn-sm btn-source-edit-button dropdown-item"
+   title="Suggest edit"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-pencil-alt"></i>
+  </span>
+<span class="btn__text-container">Suggest edit</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fcookbook/fishaudio_drama3/tuning.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../../_sources/cookbook/fishaudio_drama3/tuning.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Fish Audio Drama 3 Tuning</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deployment-performance">Deployment Performance</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#high-concurrency">High Concurrency</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#non-streaming-requests">Non-Streaming Requests</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#kernel-fallbacks">Kernel fallbacks</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#incremental-streaming-codec">Incremental streaming codec</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="fish-audio-drama-3-tuning">
+<h1>Fish Audio Drama 3 Tuning<a class="headerlink" href="#fish-audio-drama-3-tuning" title="Link to this heading">#</a></h1>
+<p><a class="reference internal" href="../fishaudio_drama3.html"><span class="std std-doc">Back to the Fish Audio Drama 3 quick start</span></a>.</p>
+<p>The <a class="reference internal" href="../fishaudio_drama3.html"><span class="std std-doc">Fish Audio Drama 3</span></a> defaults serve one GPU as they are. This page covers the settings to change when you have more GPUs, need more concurrent streams, or want a different decode path. The measurements these settings were chosen from are in <a class="reference internal" href="benchmarks.html"><span class="std std-doc">Benchmarks</span></a>.</p>
+<section id="deployment-performance">
+<h2>Deployment Performance<a class="headerlink" href="#deployment-performance" title="Link to this heading">#</a></h2>
+<p>On one GPU the default placement works as is: every stage runs on GPU 0, and the vocoder runs in the engine’s process, decoding on its own high-priority CUDA stream. With two GPUs, put the vocoder in its own process on the second one, so its decoding no longer shares a GPU with the engine (one process cannot span two GPUs):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>&lt;checkpoint&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.process<span class="w"> </span>vocoder<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.gpu<span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+<p>When the vocoder runs in its own process on the engine’s GPU (<code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code>), <code class="docutils literal notranslate"><span class="pre">--mps</span> <span class="pre">on</span></code> lets the two processes share it through CUDA MPS (see <a class="reference internal" href="../../basic_usage/mps_dp.html"><span class="std std-doc">Same-GPU Data Parallelism with CUDA MPS</span></a>). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.</p>
+<section id="tensor-parallelism">
+<h3>Tensor Parallelism<a class="headerlink" href="#tensor-parallelism" title="Link to this heading">#</a></h3>
+<p>When the FP8 checkpoint does not fit one GPU, <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span></code> splits the engine across 2 or 4 GPUs: SGLang shards the backbone, and each GPU holds its share of the codebook tower’s attention heads and MLP width; with 4 GPUs, pairs of GPUs share each of the tower’s two key/value heads, as they share the backbone’s. The FP8 routed experts are stored in 128-wide blocks, so their 512-wide intermediate splits across at most 4 GPUs. On two 32 GB GPUs, such as two RTX 5090:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>fishaudio/drama-3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.tp_size<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.gpu<span class="w"> </span><span class="s2">"[0, 1]"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.75<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--preprocessing.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.gpu<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.2
+</pre></div>
+</div>
+<p>Each GPU then holds 18.5 GB of engine weights, and 9.7 GB with <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span> <span class="pre">4</span> <span class="pre">--tts_engine.gpu</span> <span class="pre">&quot;[0,</span> <span class="pre">1,</span> <span class="pre">2,</span> <span class="pre">3]&quot;</span></code>. The vocoder’s default share of 0.10 is sized for an H200: on a 32 GB GPU it cannot hold one non-streaming decode of <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> frames, so the command raises it to 0.2. The fused codebook tower layers stay off under tensor parallelism. <a class="reference internal" href="benchmarks.html#tensor-parallel-layouts"><span class="std std-ref">Benchmarks</span></a> compares these layouts with one H200.</p>
+</section>
+<section id="high-concurrency">
+<h3>High Concurrency<a class="headerlink" href="#high-concurrency" title="Link to this heading">#</a></h3>
+<p>The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU’s memory. For more streams at once, raise the request cap; the measurements in <a class="reference internal" href="benchmarks.html#streaming-performance"><span class="std std-ref">Benchmarks</span></a> also raise the engine’s share:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>&lt;checkpoint&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.85<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.factory.max_running_requests<span class="w"> </span><span class="m">256</span>
+</pre></div>
+</div>
+<p>These values are sized for an H200: the engine’s and the vocoder’s shares and the preprocessing reserve must fit one GPU together, which the server checks at startup.</p>
+</section>
+<section id="non-streaming-requests">
+<h3>Non-Streaming Requests<a class="headerlink" href="#non-streaming-requests" title="Link to this heading">#</a></h3>
+<p>The vocoder decodes a non-streaming request’s audio in one piece after the engine finishes it, one request at a time, replaying a CUDA graph for requests of up to 512 frames (<code class="docutils literal notranslate"><span class="pre">--vocoder.factory.non_streaming_cuda_graph_max_frames</span></code>). With <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.max_batch_size</span></code> above 1 it instead batches requests that finish together, decoding them eagerly. Either way a decode takes at most a frame limit it sets at startup from the room its process leaves in the process’s memory share: the engine’s and the vocoder’s <code class="docutils literal notranslate"><span class="pre">gpu_memory_fraction</span></code> together (0.65 and 0.15 by default) while the vocoder runs in the engine’s process, the vocoder’s alone in its own process. It logs:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 vocoder: a non-streaming decode takes up to &lt;frames&gt; padded frames of &lt;bytes&gt; bytes each; share &lt;share&gt; GiB, held &lt;held&gt; GiB
+</pre></div>
+</div>
+<p>The limit does not count the memory the vocoder’s process holds outside PyTorch’s allocator, so it cannot guarantee that the process stays within its share. With the engine’s share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (<code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code>), keep the engine’s default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under <a class="reference internal" href="#deployment-performance"><span class="std std-ref">Deployment Performance</span></a>.</p>
+</section>
+</section>
+<section id="defaults-parameters">
+<h2>Defaults Parameters<a class="headerlink" href="#defaults-parameters" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Default</p></th>
+<th class="head"><p>What it does</p></th>
+<th class="head"><p>Change it with</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Decode CUDA graph</p></td>
+<td><p>Replays decode steps as CUDA graphs.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_backend_decode</span> <span class="pre">disabled</span></code>; <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.disable_cuda_graph</span> <span class="pre">true</span></code> turns off every engine CUDA graph</p></td>
+</tr>
+<tr class="row-odd"><td><p>Breakable prefill CUDA graph, up to 2048 tokens</p></td>
+<td><p>Replays prefill batches of up to 2048 tokens, backbone and codebook tower together, as one breakable CUDA graph; larger batches run eagerly. Shortens the time to the first audio at the cost of startup time and GPU memory; the KV cache keeps its size.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_backend_prefill</span> <span class="pre">disabled</span></code>; the token cap with <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_max_bs_prefill</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>GDN extend inside the breakable prefill graph</p></td>
+<td><p>The breakable prefill CUDA graph also runs the extend of the linear-attention (GDN) layers for prefills of up to <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> requests, instead of breaking the graph at each of those layers and launching their kernels from Python. Its outputs and states equal the eager extend bit for bit.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.gdn_prefill_cuda_graphs</span> <span class="pre">false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>First-frame CUDA graphs, up to 16 requests</p></td>
+<td><p>Replays the step that samples each request’s first frame as a CUDA graph for prefills of up to 16 requests (at most the decode CUDA graph’s largest batch); larger prefills sample eagerly. Needs the decode CUDA graph; shortens each prefill at the cost of startup time and GPU memory.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.first_frame_cuda_graphs</span> <span class="pre">false</span></code>; the request cap with <code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.first_frame_cuda_graph_max_requests</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">prefill_decode_interval</span></code> 4</p></td>
+<td><p>After a prefill, new prefills wait for the next 4 scheduling rounds, so running streams keep decoding.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.prefill_decode_interval</span> <span class="pre">0</span></code> schedules prefills without the wait</p></td>
+</tr>
+<tr class="row-odd"><td><p>Sampling: <code class="docutils literal notranslate"><span class="pre">temperature</span></code> 1.0, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> 0.9, no <code class="docutils literal notranslate"><span class="pre">top_k</span></code> cap</p></td>
+<td><p>Without a request <code class="docutils literal notranslate"><span class="pre">top_k</span></code>, the main token is drawn with no top-k cap; a cap of 30 there lets a stream fall silent after its first phrase. The codebook heads draw with top-k 30 at most whatever the request asks, since wider caps there cost speaker similarity.</p></td>
+<td><p>The request’s <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">top_k</span></code>; a request <code class="docutils literal notranslate"><span class="pre">top_k</span></code> caps the main token, and the codebook heads up to 30</p></td>
+</tr>
+<tr class="row-even"><td><p>Triton sampling</p></td>
+<td><p>Samples each frame’s main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. Using the same seed does not guarantee the same tokens as the PyTorch sampler. Rounding can keep or drop a candidate whose cumulative probability lies at top_p.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.triton_sampling</span> <span class="pre">false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Reference sampling, off</p></td>
+<td><p>Samples each frame with Fish Audio’s reference sampling for Drama 3, in PyTorch, instead of the samplers above. The main token’s first draw keeps only candidates whose probability reaches the request’s <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> (1e-3 when unset, 0 turns it off) and top-p drops the token that crosses it; a first draw that repeats one of the last 16 main tokens, end of speech included, becomes the most probable candidate. The codebook heads take the request’s <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_k</span></code> and <code class="docutils literal notranslate"><span class="pre">top_p</span></code> with no epsilon cutoff and never return a code the codec’s 1024-entry residual codebooks lack. Its recommended request parameters are <code class="docutils literal notranslate"><span class="pre">temperature</span></code> 1.0, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> 1.0, no <code class="docutils literal notranslate"><span class="pre">top_k</span></code> and <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> 1e-3. With it off, a request that sets a non-zero <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> is refused.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.reference_sampling</span> <span class="pre">true</span></code>; <code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.reference_sampling_fallback</span> <span class="pre">ras</span></code> replaces a repeated first draw with a second draw at temperature 1.0, top-p 0.95 and top-k 30 instead</p></td>
+</tr>
+<tr class="row-even"><td><p>Fused codebook tower layers, up to 32 rows</p></td>
+<td><p>Runs the codebook tower layers of decode and first-frame steps of up to 32 rows as fused Triton kernels (row tiles of 16 and 32), eagerly or inside the CUDA graphs; larger steps and the tower’s prefill keep the module path. The kernels add in a different order, so the tower’s outputs can differ in the last bits and the sampled frames can differ.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.tower_fused_layers</span> <span class="pre">false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Vocoder CUDA graphs, up to 512 frames</p></td>
+<td><p>Replays streaming window decodes, and the decode of non-streaming requests of up to 512 frames padded to a multiple of 8, as CUDA graphs; a non-streaming request replays at batch 1, and non-streaming batches and longer requests decode eagerly. Beside incremental streams the vocoder halves the 512-frame cap until one request of <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> frames still fits its process’s GPU memory share, and logs each halving: with the default shares on an 80 GB GPU the cap is 256 frames. Under overlap or stateful decoding the cap does not halve, and a share too small for it stops startup with the flags to change. Costs startup time and vocoder GPU memory.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.window_cuda_graphs</span> <span class="pre">false</span></code>; the non-streaming cap with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.non_streaming_cuda_graph_max_frames</span></code> (0 keeps only the window graphs)</p></td>
+</tr>
+<tr class="row-even"><td><p>Incremental streaming decode</p></td>
+<td><p>Each streaming window decodes only its new frames, with the stream’s decoder state kept in one of 256 slots, and windows of one length from up to 16 streams share a decode. Needs fp16 decoding on a CUDA device with FA3 (compute capability 8.x or 9.x, CUDA 12.3 or newer) and <code class="docutils literal notranslate"><span class="pre">stream_crossfade_samples</span></code> 0; elsewhere, or when the state does not fit its process’s GPU memory share, the vocoder uses overlap decoding, where each window decodes again the <code class="docutils literal notranslate"><span class="pre">stream_overlap_tokens</span></code> frames before it.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_decode</span> <span class="pre">overlap</span></code>; the slots with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_slot_count</span></code> and the streams per decode with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.max_stream_batch_size</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Batched streaming windows, up to 4</p></td>
+<td><p>Under overlap decoding, same-length streaming windows already queued from different requests decode in one CUDA graph replay, shortest windows first; no window waits for others to arrive. At startup the vocoder times each batch size and keeps only those that save at least 5% of the GPU time of one-at-a-time replays, and logs the ratios. A batched decode can differ from a batch-1 decode in the last fp16 bits. Beside <code class="docutils literal notranslate"><span class="pre">stateful_decode</span></code>, windows do not batch.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_window_batch_size</span> <span class="pre">1</span></code> replays each window alone, still shortest first</p></td>
+</tr>
+<tr class="row-even"><td><p>Vocoder fp16 decoding</p></td>
+<td><p>Decodes frames into audio in fp16.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.decode_dtype</span> <span class="pre">float32</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Vocoder in the engine’s process</p></td>
+<td><p>The vocoder runs in the engine’s process and decodes on its own CUDA stream, at a higher priority than the engine’s stream, so its windows do not queue behind decode steps, and the engine hands it codes without a process hop. A tensor-parallel engine or vocoder holds its process alone, and <code class="docutils literal notranslate"><span class="pre">stateful_decode</span></code> needs a dedicated vocoder process, so with any of these the vocoder runs in its own.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code> runs it in its own process</p></td>
+</tr>
+<tr class="row-even"><td><p>Reference encode CUDA graphs, up to 20 s</p></td>
+<td><p>Encodes each reference by replaying a CUDA graph captured for its length rounded up to a multiple of 22 codec frames (1.02 s); the longest of the 20 graphs holds 440 frames (20.43 s), and longer references encode eagerly. The encoder is causal, so the zeros after a reference feed none of its codes, but the padded encode rounds differently from an unpadded one: on H100 about 4.5% of a reference’s code elements differ in bf16 and under 0.3% in fp32. Costs startup time and preprocessing GPU memory.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.reference_encode_graph_max_seconds</span> <span class="pre">0</span></code> encodes every reference eagerly; another value moves the cap</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The same settings in a config file:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">tts_engine</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">engine</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">cuda_graph_backend_prefill</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">disabled</span>
+<span class="w">      </span><span class="nt">prefill_decode_interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">  </span><span class="nt">vocoder</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">window_cuda_graphs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">      </span><span class="nt">decode_dtype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">float32</span>
+</pre></div>
+</div>
+<section id="kernel-fallbacks">
+<h3>Kernel fallbacks<a class="headerlink" href="#kernel-fallbacks" title="Link to this heading">#</a></h3>
+<p>Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference, under tensor parallelism, or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 codebook sampling: PyTorch, untested GPU sm_120
+Drama 3 tower fused layers: off, untested GPU sm_120
+</pre></div>
+</div>
+</section>
+</section>
+<section id="incremental-streaming-codec">
+<h2>Incremental streaming codec<a class="headerlink" href="#incremental-streaming-codec" title="Link to this heading">#</a></h2>
+<p>The incremental codec is opt-in: set <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stateful_decode</span> <span class="pre">true</span></code> to reuse per-request convolution and attention history. While it is on, it replaces the vocoder’s default batched incremental stream decoding (<code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_decode</span> <span class="pre">incremental</span></code>). GEMM upsampling, folded codebooks, Snake/history fusion and compiled attention follow this setting unless individually overridden. Slot capacity follows <code class="docutils literal notranslate"><span class="pre">tts_engine.engine.max_running_requests</span></code> when set, otherwise <code class="docutils literal notranslate"><span class="pre">tts_engine.factory.max_running_requests</span></code>; it does not add an HTTP admission limit. Streams that cannot acquire a slot use window decoding for their entire lifetime. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Enabling the feature adds state memory and compilation/capture startup cost. It targets sustained concurrent workloads, especially shared-GPU deployments; benefits with a dedicated vocoder GPU are workload-dependent.</p>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deployment-performance">Deployment Performance</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#high-concurrency">High Concurrency</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#non-streaming-requests">Non-Streaming Requests</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#kernel-fallbacks">Kernel fallbacks</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#incremental-streaming-codec">Incremental streaming codec</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By SGLang-Omni Team
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026, SGLang-Omni.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    <p class="last-updated">
+  Last updated on Nov 22, 2026.
+  <br/>
+</p>
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
