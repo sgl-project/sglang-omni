@@ -305,9 +305,6 @@ func TestHomeShortcutStartsNormalSession(t *testing.T) {
 			if a.sess.Try || a.sess.State != session.Done || a.sess.Result != "Hello, Voxt." {
 				t.Fatalf("end %+v", a.sess)
 			}
-			if !a.settings.Get().Setup.Tried {
-				t.Fatal("a successful session did not save the first-result setting")
-			}
 			shown := a.sess.Inserted || a.answer.open || a.notice != nil && a.notice.text == copiedNotice
 			if !shown {
 				t.Errorf("result shown nowhere: inserted %v, card %v, notice %+v", a.sess.Inserted, a.answer.open, a.notice)

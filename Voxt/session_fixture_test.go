@@ -53,8 +53,6 @@ func driveSessionFixture(t *testing.T, scenario sessionFixtureScenario, locale s
 	if scenario.after != nil {
 		scenario.after(a)
 	}
-	// Pin the fixture's line layout after session callbacks that may save settings.
-	a.prefs.Overlay.LiveLines = scenario.liveLines
 	a.ov.projection.pillReady = false
 	a.refreshSessionOverlay(meetingFixtureNow)
 	state := cloneSessionOverlayViewState(a.ov.projection.view)

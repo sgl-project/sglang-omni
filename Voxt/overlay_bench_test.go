@@ -28,11 +28,10 @@ import (
 )
 
 type overlayBenchmarkState struct {
-	name      string
-	snapshot  session.Snapshot
-	liveLines bool
-	setup     func()
-	after     func(string)
+	name     string
+	snapshot session.Snapshot
+	setup    func()
+	after    func(string)
 }
 
 func sessionOverlayBenchmarkStates(a *app, now time.Time) []overlayBenchmarkState {
@@ -51,9 +50,9 @@ func sessionOverlayBenchmarkStates(a *app, now time.Time) []overlayBenchmarkStat
 		{name: "overlay-live-short-zh", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-3 * time.Second), Levels: wave(), Partial: "明天三点开会"}},
 		{name: "overlay-live-text", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-47 * time.Second), Levels: wave(), Partial: "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card"}},
 		{name: "overlay-live-text-zh", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-20 * time.Second), Levels: wave(), Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完"}},
-		{name: "overlay-lines-start", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-1 * time.Second), Levels: wave()}, liveLines: true, setup: func() { a.prefs.Overlay.LiveLines = true }},
-		{name: "overlay-live-lines", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-47 * time.Second), Levels: wave(), Partial: "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card"}, liveLines: true, setup: func() { a.prefs.Overlay.LiveLines = true }},
-		{name: "overlay-live-lines-long-zh", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-90 * time.Second), Levels: wave(), Partial: strings.Repeat("那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完。", 8)}, liveLines: true, setup: func() { a.prefs.Overlay.LiveLines = true }},
+		{name: "overlay-lines-start", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-1 * time.Second), Levels: wave()}, setup: func() { a.prefs.Overlay.LiveLines = true }},
+		{name: "overlay-live-lines", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-47 * time.Second), Levels: wave(), Partial: "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card"}, setup: func() { a.prefs.Overlay.LiveLines = true }},
+		{name: "overlay-live-lines-long-zh", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-90 * time.Second), Levels: wave(), Partial: strings.Repeat("那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完。", 8)}, setup: func() { a.prefs.Overlay.LiveLines = true }},
 		{name: "overlay-recording-scene", snapshot: session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-5 * time.Second), Levels: wave(), Target: proto.App{Name: "Slack"}, Scene: sceneMatch("Team chat", appctx.SourceApp, "")}},
 		{name: "overlay-working-scene", snapshot: session.Snapshot{State: session.Composing, Target: proto.App{Name: "Google Chrome"}, Scene: sceneMatch("Code review", appctx.SourceURL, "github.com")}},
 		{name: "overlay-recognizing", snapshot: session.Snapshot{State: session.Recognizing}},
