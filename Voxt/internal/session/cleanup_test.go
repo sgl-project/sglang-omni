@@ -161,9 +161,10 @@ func TestOnlyTheCleanedText(t *testing.T) {
 	}
 }
 
-// TestCleanupHasNoExampleTurn (#4228): Transcribe does not send a built-in
-// example that a model can mistake for the text to clean. A model that copies
-// an earlier assistant answer has no example to copy in either prompt path.
+// note (luojiaxuan): TestCleanupHasNoExampleTurn (#4228): Transcribe's example
+// is the last part of the system prompt, never an earlier conversation turn
+// that a short dictation could take as the text to rewrite. A model that
+// copies an earlier assistant answer has none to copy in either prompt path.
 func TestCleanupHasNoExampleTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name, main, text, prompt, example, cleanup string
@@ -185,13 +186,12 @@ func TestCleanupHasNoExampleTurn(t *testing.T) {
 			if len(reqs) != 1 || len(reqs[0].Messages) != 2 {
 				t.Fatalf("requests %+v", reqs)
 			}
-			for _, message := range reqs[0].Messages {
-				if strings.Contains(message.Content, tc.example) || message.Role == "assistant" {
-					t.Errorf("an example remains in the request: %+v", message)
-				}
+			system, user := reqs[0].Messages[0], reqs[0].Messages[1]
+			if system.Role != "system" || user.Role != "user" || strings.Contains(user.Content, tc.example) {
+				t.Errorf("an example turn in the request: %+v", reqs[0].Messages)
 			}
-			if !strings.Contains(reqs[0].Messages[0].Content, tc.cleanup) {
-				t.Error("removing the example also removed the cleanup rules")
+			if !strings.Contains(system.Content, tc.cleanup) || !strings.Contains(system.Content, tc.example) {
+				t.Error("the system prompt lacks the cleanup rules or the example")
 			}
 		})
 	}

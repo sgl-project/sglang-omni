@@ -19,6 +19,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     PCM_F32,
+    SPEECH_ERROR,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT_DELTA,
@@ -178,6 +179,133 @@ async def test_eos_flushes_uncommitted_audio_and_history(backends):
         assert (TURN_EMPTY, 2) in events
         assert (TURN_DONE, 3) in events
         assert session.outputs[-1].eos and session.outputs[-1].kind == "input_done"
+
+
+async def prompts_reach(messages: list[list[dict]], count: int) -> None:
+    while len(messages) < count:
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["speech_tool"], indirect=True)
+async def test_a_model_speaking_through_a_tool_reaches_the_client_as_one_reply_per_utterance(
+    backends, backend_requests
+):
+    config, _, words, messages = backends
+    async with conversation(config) as session:
+        for turn in (1, 2):
+            await session.audio()
+            await session.command(COMMIT)
+            await session.until(
+                lambda: any(
+                    control_type(o) == TURN_DONE and o.turn == turn
+                    for o in session.outputs
+                )
+            )
+        # A completed speech prompts nothing, so each utterance took one prompt, and the second read the first call's answer.
+        assert len(messages) == 2
+        assert words == ["Hello", "world."] * 2
+        assert [message["role"] for message in messages[1]] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "user",
+        ]
+        assert messages[1][3]["content"] == '{"status": "completed"}'
+        arguments = messages[1][2]["tool_calls"][0]["function"]["arguments"]
+        assert yaml.safe_load(arguments) == {"text": "Hello world."}
+        replies = [
+            (control_type(o), o.turn)
+            for o in session.outputs
+            if control_type(o) in (TURN_STARTED, TURN_DONE, TURN_EMPTY)
+        ]
+        assert replies == [
+            (TURN_STARTED, 1),
+            (TURN_DONE, 1),
+            (TURN_STARTED, 2),
+            (TURN_DONE, 2),
+        ]
+        # A speech is spoken as the model writes it, so its caption comes in pieces.
+        captions: dict[int, str] = {}
+        for o in session.outputs:
+            if o.format == TEXT_DELTA:
+                captions[o.turn] = captions.get(o.turn, "") + o.payload["text"]
+            else:
+                pass
+        assert captions == {1: "Hello world.", 2: "Hello world."}
+        assert [
+            request.get("tool_choice")
+            for request in backend_requests
+            if request.get("max_tokens") != 1
+        ] == ["required", "required"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["speech_tool_failed_speech"], indirect=True)
+async def test_a_speech_the_service_failed_is_said_again_in_a_turn_of_its_own(backends):
+    """Through the Session graph, the speech service fails the first speech: the model reads the failure and its second speech reaches the client as the next turn."""
+    config, _, words, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: any(
+                control_type(o) == TURN_DONE and o.turn == 2 for o in session.outputs
+            )
+        )
+        assert words == ["Hello", "Hello", "world."]
+        assert [message["role"] for message in messages[1]] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+        ]
+        assert yaml.safe_load(messages[1][3]["content"])["status"] == "failed"
+        ends = {
+            o.turn: SPEECH_ERROR in o.payload
+            for o in session.outputs
+            if control_type(o) == TURN_DONE
+        }
+        assert ends == {1: True, 2: False}
+        replies = [
+            (control_type(o), o.turn)
+            for o in session.outputs
+            if control_type(o) in (TURN_STARTED, TURN_DONE, TURN_EMPTY)
+        ]
+        assert replies == [
+            (TURN_STARTED, 1),
+            (TURN_DONE, 1),
+            (TURN_STARTED, 2),
+            (TURN_DONE, 2),
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["speech_tool"], indirect=True)
+async def test_new_instructions_reach_the_prompt_for_the_next_utterance(backends):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: any(
+                control_type(o) == TURN_DONE and o.turn == 1 for o in session.outputs
+            )
+        )
+        await session.command(CONFIGURE, instructions="Say banana.")
+        await session.audio()
+        await session.command(COMMIT)
+        await asyncio.wait_for(prompts_reach(messages, 2), 15)
+        assert messages[-1][0] == {"role": "system", "content": "Say banana."}
+        assert messages[-1][-1]["content"].endswith("[Say banana.]")
+        assert [message["role"] for message in messages[-1]] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "user",
+        ]
 
 
 @pytest.mark.asyncio
