@@ -208,4 +208,3 @@ def test_batch_encoder_helpers_read_encoder_lens_cpu_without_touching_device_len
     assert batched_features is not None
     assert batched_features.shape == (2, 8, 4)
     assert encoder_lens == [3, 2]
-
