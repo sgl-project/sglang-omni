@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
@@ -66,10 +65,9 @@ func omniLoads(t *testing.T) <-chan resident.Event {
 	return ch
 }
 
-// TestModelsMemory: the Speech models page says the memory of the model
-// loaded in the fake Omni server, measured by its pid, every memPoll
-// while the page shows; nothing for a model that is not loaded, and
-// nothing after an unload.
+// TestModelsMemory: the Speech models page measures the model loaded in
+// the fake Omni server by its pid every memPoll while the page shows,
+// without adding memory text to the simplified rows.
 func TestModelsMemory(t *testing.T) {
 	fakeOmni(t, omnitest.Opts{})
 	loads := omniLoads(t)
@@ -101,8 +99,8 @@ func TestModelsMemory(t *testing.T) {
 	pm.set(pid, 1536<<20)
 	timers.advance(memPoll)
 	frames(tt)
-	if !has(tt, "Loaded · 1.5 GB in memory") {
-		t.Errorf("loaded models: %v %q", a.modelMem, tt.Texts())
+	if has(tt, "Loaded · 1.5 GB in memory") {
+		t.Errorf("memory returned to the simplified rows: %v %q", a.modelMem, tt.Texts())
 	}
 	if len(a.modelMem) != 1 {
 		t.Errorf("memory %v", a.modelMem)
@@ -111,15 +109,13 @@ func TestModelsMemory(t *testing.T) {
 		t.Errorf("asked %v", pm.asked)
 	}
 
-	// Measured again on the next tick; zh-Hans says it in Chinese.
+	// Measured again on the next tick without changing the row content.
 	pm.set(pid, 1<<30)
 	timers.advance(memPoll)
-	i18n.SetLocale("zh-Hans")
 	frames(tt)
-	if !has(tt, "已载入 · 占用内存 1.0 GB") {
-		t.Errorf("zh-Hans: %q", tt.Texts())
+	if a.modelMem[models.ASRFast] != 1<<30 || has(tt, "Loaded") {
+		t.Errorf("second measurement: %v %q", a.modelMem, tt.Texts())
 	}
-	i18n.SetLocale("en")
 
 	// Another page stops the ticks; the next visit measures at once.
 	a.navigate("/home")

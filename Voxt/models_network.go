@@ -44,12 +44,10 @@ func networkDialog(c *ui.Context, state *modelsNetworkViewState, actions modelsA
 		segmentedFit(c.Key("net-proxy"), &form.proxyMode, i18n.T("Automatic"), i18n.T("No proxy"), i18n.T("Custom")).Label(i18n.T("Proxy"))
 		switch form.proxyMode {
 		case proxyAuto, proxyNone:
-			caption(c, state.ProxyCaption)
 		default:
 			ui.TextInput(c.Key("net-proxy-url"), &form.proxyURL).Label(i18n.T("Proxy address")).Placeholder("http://127.0.0.1:7890").Font("monospace").Width(px(t, 320))
 			ui.TextInput(c.Key("net-proxy-user"), &form.proxyUser).Label(i18n.T("Proxy user name")).Placeholder(i18n.T("User name (optional)")).Width(px(t, 320))
 			ui.TextInput(c.Key("net-proxy-password"), &form.proxyPassword).Password().Label(i18n.T("Proxy password")).Placeholder(i18n.T("Password (optional)")).Width(px(t, 320))
-			caption(c, i18n.T("The password is kept in the Keychain."))
 			if state.ProxyError != "" {
 				caption(c, state.ProxyError).TextColor(t.Danger)
 			}

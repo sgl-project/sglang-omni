@@ -53,19 +53,22 @@ func TestModelsPage(t *testing.T) {
 	frames(tt)
 	texts := tt.Texts()
 	for _, family := range []string{"Qwen3-ASR", "Whisper"} {
-		i := slices.Index(texts, family)
-		if i < 0 || i+1 == len(texts) || texts[i+1] != "3 models" {
-			t.Errorf("expected a card with three %s models: %q", family, texts)
+		if slices.Index(texts, family) < 0 {
+			t.Errorf("expected a %s family card: %q", family, texts)
 		}
 	}
-	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download",
-		"Local", "Accurate", "Fast", "Realtime", "Supports your main language",
-		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean"} {
+	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") || has(tt, "Faster transcription") {
+	for _, s := range []string{"3 models", "Local", "Accurate", "Fast", "Supports your main language",
+		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean"} {
+		if has(tt, s) {
+			t.Errorf("extra model row content %q in %q", s, tt.Texts())
+		}
+	}
+	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") || has(tt, "Speed-up model") {
 		t.Error("the VAD, a language model or a draft is listed, or a model is installed")
 	}
 
@@ -73,10 +76,18 @@ func TestModelsPage(t *testing.T) {
 	// features' choices. A language model Voxt 2.0 downloaded is retired:
 	// listed, to be deleted, and offered to no feature.
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
-	if !has(tt, "3 models · 1 installed") || !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
+	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") ||
 		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") ||
-		!has(tt, "Faster transcription") || !has(tt, "262.5 MB download") {
+		!has(tt, "Speed-up model") || !has(tt, "262.5 MB download") {
 		t.Errorf("installed: %q", tt.Texts())
+	}
+	for _, s := range []string{"3 models · 1 installed", "Used by Transcribe"} {
+		if has(tt, s) {
+			t.Errorf("extra installed model row content %q in %q", s, tt.Texts())
+		}
+	}
+	if slices.Contains(tt.Texts(), "Faster transcription") {
+		t.Errorf("old draft title in %q", tt.Texts())
 	}
 	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRFast || m.Name != "Qwen3-ASR 0.6B (4bit)" {
 		t.Errorf("transcribe's speech model %+v", m)
@@ -119,13 +130,13 @@ func TestModelsPageDraftAlone(t *testing.T) {
 	seedModels(t, a, models.ASRFastDraft)
 	a.navigate(modelsPath)
 	frames(tt)
-	if !has(tt, "Faster transcription") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
+	if !has(tt, "Speed-up model") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
 		t.Fatalf("the draft alone: %q", tt.Texts())
 	}
 	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
 	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
 	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
-	if has(tt, "Faster transcription") || a.models.Installed(models.ASRFastDraft) {
+	if has(tt, "Speed-up model") || a.models.Installed(models.ASRFastDraft) {
 		t.Errorf("after the delete: %q", tt.Texts())
 	}
 	draft, _ := models.Lookup(models.ASRFastDraft)
@@ -133,30 +144,27 @@ func TestModelsPageDraftAlone(t *testing.T) {
 	a.navigate("/home")
 	a.navigate(modelsPath)
 	frames(tt)
-	if !has(tt, "Faster transcription") || !has(tt, "Cancel") {
+	if !has(tt, "Speed-up model") || !has(tt, "Cancel") {
 		t.Errorf("downloading: %q", tt.Texts())
 	}
 }
 
 // TestModelsPageSystemDictation: System dictation's card says it is
-// built in and which features use it; once a speech model is downloaded,
-// Automatic moves the features to that one.
+// built in and cannot be hidden while the features use it; once a speech
+// model is downloaded, Automatic moves the features to that one.
 func TestModelsPageSystemDictation(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 1600)
 	a.dictation.SetHelper(fs) // as helperChanged does for a helper with speech.*
 	a.navigate(modelsPath)
 	frames(tt)
-	used := func() int {
-		return strings.Count(strings.Join(tt.Texts(), "\n"), "· Used by Transcribe · Translate · Rewrite")
-	}
-	if !has(tt, "System dictation") || !has(tt, "Built-in") || used() != 1 {
-		t.Fatalf("no dictation card, or not used: %q", tt.Texts())
+	if !has(tt, "System dictation") || !has(tt, "Built-in") || slices.Contains(tt.AccessLabels(), "Hide System dictation") {
+		t.Fatalf("no dictation card, or it can be hidden while used: %q", tt.Texts())
 	}
 	seedModels(t, a, models.ASRFast, models.VADSilero)
 	a.dictation.SetHelper(fs) // seedModels made the services anew
-	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast || used() != 1 || !has(tt, "System dictation") {
-		t.Errorf("after a download: transcribe uses %s, %d cards used, %q", m.ID, used(), tt.Texts())
+	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast || !slices.Contains(tt.AccessLabels(), "Hide System dictation") || !has(tt, "System dictation") {
+		t.Errorf("after a download: transcribe uses %s, controls %q, %q", m.ID, tt.AccessLabels(), tt.Texts())
 	}
 }
 
@@ -501,7 +509,7 @@ func TestModelsPageFaster(t *testing.T) {
 	frames(tt)
 	const sw, dl = "Faster transcription for Qwen3-ASR 0.6B (4bit)", "Download Qwen3-ASR 0.6B DFlash draft"
 	drain := queuePosts(a)
-	if !has(tt, "Faster transcription") || has(tt, "Download the draft model to use this.") || tt.HasText(dl) {
+	if !has(tt, "Speed-up model") || has(tt, "Download the draft model to use this.") || tt.HasText(dl) {
 		t.Fatalf("off: %q", tt.Texts())
 	}
 	scrollSettingsToText(tt, sw)
@@ -568,11 +576,10 @@ func TestModelsPageWhisperDraft(t *testing.T) {
 	}
 }
 
-// TestModelCardsLineUp: a speech model in a card of its own starts its
-// text at the card's edge, as the models of a family card do, its icon
-// beside its name (#3854: the text sat after an empty icon column). The
-// same holds for System dictation and the language models' cards, in
-// Chinese, and at the narrowest window.
+// TestModelCardsLineUp: a single model's icon sits beside its name, as
+// System dictation's does; family rows and wrapped long names start one
+// icon width to the left (#3854: single cards used to leave an empty icon
+// column). The same holds for the language models' cards and Chinese.
 func TestModelCardsLineUp(t *testing.T) {
 	for _, loc := range []string{"en", "zh-Hans"} {
 		for _, w := range []int{windowWidth, windowMinWidth} {
@@ -592,14 +599,23 @@ func TestModelCardsLineUp(t *testing.T) {
 			}
 			var x0 float32
 			for i, id := range ids {
-				r, ok := tt.Find(uitext.ModelAbout(id))
+				r, ok := tt.Find(uitext.ModelName(id))
 				if !ok {
-					t.Fatalf("%s %d wide: no about text for %s in %q", loc, w, id, firstTexts(tt))
+					t.Fatalf("%s %d wide: no name for %s in %q", loc, w, id, firstTexts(tt))
 				}
 				if i == 0 {
 					x0 = r.X
-				} else if d := r.X - x0; d < -1 || d > 1 {
-					t.Errorf("%s %d wide: %s's text at x %.0f, System dictation's at %.0f", loc, w, id, r.X, x0)
+					continue
+				}
+				wantX := x0
+				model, _ := models.Lookup(id)
+				familyRow := model.Kind == models.ASR && (model.Family == "qwen3-asr" || model.Family == "whisper")
+				wrappedLongName := w == windowMinWidth && (id == models.ASRCohere || id == models.ASRNemotron || id == models.ASRMoss && loc == "en")
+				if familyRow || wrappedLongName {
+					wantX -= 28 // the single cards' 20-point icon and its gap
+				}
+				if d := r.X - wantX; d < -1 || d > 1 {
+					t.Errorf("%s %d wide: %s's text at x %.0f, want %.0f", loc, w, id, r.X, wantX)
 				}
 			}
 		}

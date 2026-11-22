@@ -20,13 +20,17 @@ func TestModelsDemoActionControls(t *testing.T) {
 		{name: "network open", fixture: "en/models-page-normal", steps: historySteps("Network…"), want: []string{"openNetwork"}},
 		{name: "network cancel", fixture: "en/models-network-automatic", steps: historySteps("Cancel"), want: []string{"closeNetwork"}},
 		{name: "network save", fixture: "en/models-network-no-proxy", steps: historySteps("Save"), want: []string{"saveNetwork", "closeNetwork"}},
-		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), wantText: "The password is kept in the Keychain.", check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.modelsUI.netForm.proxyMode != proxyCustom {
 				t.Fatalf("proxy mode %d", host.modelsUI.netForm.proxyMode)
 			}
 		}},
-		{name: "network no proxy", fixture: "en/models-network-automatic", steps: historySteps("No proxy"), wantText: "Downloads connect to the server directly."},
-		{name: "network source", fixture: "en/models-network-automatic", steps: historySteps("hf-mirror.com only"), wantText: "Only this server. If it cannot be reached, downloads fail.", check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "network no proxy", fixture: "en/models-network-automatic", steps: historySteps("No proxy"), check: func(t *testing.T, host *meetingDemoHost) {
+			if host.modelsUI.netForm.proxyMode != proxyNone {
+				t.Fatalf("proxy mode %d", host.modelsUI.netForm.proxyMode)
+			}
+		}},
+		{name: "network source", fixture: "en/models-network-automatic", steps: historySteps("hf-mirror.com only"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.modelsUI.netForm.source != 2 {
 				t.Fatalf("source %d", host.modelsUI.netForm.source)
 			}
@@ -132,11 +136,11 @@ func TestModelsDemoActionControls(t *testing.T) {
 				switch {
 				case step.text != "":
 					if step.label == "Speech context" {
-						caption, ok := tester.Find("Tell the speech model who is speaking and about what.")
+						title, ok := tester.Find("Speech context")
 						if !ok {
-							t.Fatal("no Speech context caption")
+							t.Fatal("no Speech context title")
 						}
-						tester.ClickAt(caption.X+10, caption.Y+caption.H+30)
+						tester.ClickAt(title.X+10, title.Y+title.H+30)
 					} else {
 						err = tester.Click(step.label)
 					}
