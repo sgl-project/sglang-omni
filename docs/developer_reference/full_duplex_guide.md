@@ -1232,6 +1232,8 @@ A completed speech prompts nothing: the model reads the call's answer in the pro
 
 A speech starts with the first words of its text: the generator passes the call's arguments on as they arrive, the dialog reads the `text` value out of them, and the synthesizer speaks each sentence once it is complete while the model writes the rest. This needs a service that streams a call's arguments, and SGLang 0.5.23's `qwen3_coder` parser releases a parameter only at its closing tag, so the profile starts its language model with `python -m sglang_omni.models.streaming_cascade.chat_service`, which is `sglang.launch_server` with a `qwen3_coder` parser that releases a string argument as the model writes it and gives the same calls. On two H200s and from the end of the user's speech, the first audio of a reply of several sentences took a median of 1.47 s against 2.48 s with SGLang's parser and 1.29 s with the synthesizer reading the model's text directly, as the profile did before it spoke through a tool, and of a one-sentence reply 1.39 s against 1.38 s and 1.14 s, over 15 turns each with the aligner's `asr` method. A one-sentence reply gains nothing, since its first sentence ends where the call does. With thinking on the model calls the tool without `tool_choice`, but the whole text took a median of 3.1 s, so the profile runs with thinking off.
 
+Every call starts with the same 14 tokens of `qwen3_coder` syntax, `<tool_call>\n<function=tts_start>\n<parameter=text>\n`, so the profile's `llm` node sends them as its `required_call_opening`: when a prompt requires a call, the opening goes as an assistant message the model continues, with `continue_final_message: true`, and the model starts decoding at the text. The request asks for `tool_choice: auto`, because the opening already commits to the call and the grammar of a required choice would make the model open a second one. The chat service reads the continued opening in front of the first streamed delta, so the reply still arrives as a streamed `tts_start` call. SGLang's own server returns the rest of the call as content, closing tags included, and the dialog would speak them, so the option needs the chat service; the chat service reads the opening only in streamed completions, the only kind the node requests. On one H200 that served the chat, ASR and TTS models together, Qwen3.8-27B with the opening, at temperature 0 over 12 questions asked twice each, wrote the first character of its text a median 77 ms after the request against 293 ms without it, and its first sentence matched the reply without the opening in 21 of 24 pairs. Over 9 recorded questions asked twice each through `/v1/realtime` with a fresh session per turn, the median time from the end of the user's speech to the first audio went from 1.47 s to 1.26 s, with 15 of 18 paired turns faster.
+
 (scripted-conversation)=
 
 **Scripted Conversation**
@@ -1530,6 +1532,7 @@ Streams one chat completion from `<base_url>/chat/completions` per turn.
 | `temperature` | number 0 to 2, or null | null | The `temperature` field, left out when null; realtime `sampling.temperature` sets it. |
 | `extra_body` | object | `{}` | Further request fields, such as `chat_template_kwargs`. |
 | `constrain_style_tags` | boolean | `false` | Sends a `regex`, an SGLang request field, that holds the reply to one tag naming a style of the `openai_speech` nodes that read it, followed by text without brackets that does not start with whitespace. `extra_body` cannot also set `regex`. |
+| `required_call_opening` | string | `""` | The text the model writes to open a call. When the prompt requires a call, it goes as an assistant message the model continues, with `continue_final_message: true` and `tool_choice: auto`. The service must read the continued opening as the start of the call, as the chat service of [speaking through a tool](#speaking-through-a-tool) does. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
 
@@ -1664,7 +1667,7 @@ Each rule is followed by the error it raises.
 - Only one of `heard_asr_url` and `heard_asr_model` — `heard_asr_url and heard_asr_model go together`.
 - `method: asr` without them — `the asr method needs heard_asr_url and heard_asr_model`.
 - `heard_asr_url` with `method: sentence` — `heard_asr_url belongs to the asr and forced methods`.
-- `extra_body` sets `model`, `messages`, `stream`, `max_tokens` or `temperature` — `extra_body cannot set [...]`.
+- `extra_body` sets `model`, `messages`, `stream`, `max_tokens`, `temperature`, `tools`, `tool_choice` or `continue_final_message` — `extra_body cannot set [...]`.
 - `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` — a pydantic range error naming the field.
 - Two `services` with one name or one port — `services must have distinct names and ports`.
 - An empty `model_path` — `Model path is required`.

@@ -43,7 +43,16 @@ else:
 
 # The request fields this kind sets itself; `extra_body` adds others.
 CHAT_REQUEST_FIELDS = frozenset(
-    {"model", "messages", "stream", "max_tokens", "temperature", "tools", "tool_choice"}
+    {
+        "model",
+        "messages",
+        "stream",
+        "max_tokens",
+        "temperature",
+        "tools",
+        "tool_choice",
+        "continue_final_message",
+    }
 )
 WARM_UP_MESSAGES = [ChatMessage(role="user", content="Hi")]
 
@@ -59,7 +68,10 @@ class ToolFunction(BaseModel):
 
 
 class OpenAIChatGeneratorConfig(ComponentConfig):
-    """tools are the functions the model may call; a completion that calls them ends in a tool_call chunk instead of turn.done."""
+    """tools are the functions the model may call; a completion that calls them ends in a tool_call chunk instead of turn.done.
+
+    required_call_opening is the text the model writes to open the call a prompt requires, such as the qwen3_coder tags that open a tts_start call up to its text; it goes as an assistant message the model continues, so decoding starts at the call's argument.
+    """
 
     kind: Literal["openai_chat"] = "openai_chat"
     base_url: str = Field(pattern=r"^https?://[^/]+")
@@ -70,6 +82,7 @@ class OpenAIChatGeneratorConfig(ComponentConfig):
     extra_body: dict[str, object] = Field(default_factory=dict)
     constrain_style_tags: bool = False
     tools: list[ToolFunction] = Field(default_factory=list)
+    required_call_opening: str = ""
 
     @field_validator("tools")
     @classmethod
@@ -288,9 +301,10 @@ class OpenAIChatGenerator(Replier):
     def request_body(
         self, messages: list[ChatMessage], tool_choice: str | None = None
     ) -> dict[str, object]:
+        message_dicts = [message_dict(message) for message in messages]
         body: dict[str, object] = {
             "model": self.config.model,
-            "messages": [message_dict(message) for message in messages],
+            "messages": message_dicts,
             "stream": True,
             "max_tokens": self.config.max_tokens,
         }
@@ -317,7 +331,15 @@ class OpenAIChatGenerator(Replier):
             ]
         else:
             pass
-        if tool_choice is not None:
+        if tool_choice == "required" and self.config.required_call_opening:
+            body["messages"] = [
+                *message_dicts,
+                {"role": "assistant", "content": self.config.required_call_opening},
+            ]
+            body["continue_final_message"] = True
+            # Note (wenyao): the opening already commits to the call, and the grammar of a required choice would make the model open a second one.
+            body["tool_choice"] = "auto"
+        elif tool_choice is not None:
             body["tool_choice"] = tool_choice
         else:
             pass
