@@ -1184,7 +1184,7 @@ Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.
 | `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` | The start and the end of your utterance. |
 | `conversation.item.input_audio_transcription.delta`, `.completed` | Partial and final transcript of what you said. |
 | `response.created` | A reply begins. |
-| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. In a profile whose `openai_speech` node sets `skip_screen_blocks`, which `/v1/realtime/capabilities` and `session.updated` report as `skips_screen_blocks`, text between `<screen>` and `</screen>` is for the screen: the reply audio never says it, also when the text arrives as `response.output_audio_transcript.delta` for a session with audio output only. |
+| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. In a profile whose `openai_speech` nodes that publish audio set `skip_screen_blocks`, which `/v1/realtime/capabilities` and `session.updated` report as `skips_screen_blocks`, text between `<screen>` and `</screen>` is for the screen: the reply audio never says it, also when the text arrives as `response.output_audio_transcript.delta` for a session with audio output only. |
 | `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
 | `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
 | `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
@@ -1777,7 +1777,7 @@ A healthy start logs each service as `starting service '<name>': ...` and `servi
 }
 ```
 
-with further fields omitted here. `skips_screen_blocks` is true for a profile whose `openai_speech` nodes all set `skip_screen_blocks`, as `qwen3-asr-qwen3.8-27b-vivian-screen` does. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the {ref}`turn latency benchmark <turn-latency>` confirms the whole chain.
+with further fields omitted here. `skips_screen_blocks` is true for a profile whose `openai_speech` nodes that publish audio all set `skip_screen_blocks`, as `qwen3-asr-qwen3.8-27b-vivian-screen` does. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the {ref}`turn latency benchmark <turn-latency>` confirms the whole chain.
 
 (known-limitations)=
 

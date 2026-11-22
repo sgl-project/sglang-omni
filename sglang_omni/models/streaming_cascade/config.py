@@ -574,6 +574,7 @@ class ComponentGraphConfig(BaseModel):
             node.component
             for node in self.nodes
             if isinstance(node.component, OpenAISpeechSynthesizerConfig)
+            and AUDIO_FORMATS & set(self.publish.get(node.name, ()))
         ]
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
@@ -584,7 +585,7 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
-            # note (Haoling Pu): a speaker that says the blocks would leave the client hiding words the user hears, so every speaker has to skip them.
+            # note (Haoling Pu): only a speaker whose audio is published reaches the user, and one that says the blocks would leave the client hiding words the user hears, so each of them has to skip the blocks.
             skips_screen_blocks=bool(speakers)
             and all(speaker.skip_screen_blocks for speaker in speakers),
         )

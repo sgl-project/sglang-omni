@@ -2090,7 +2090,7 @@ def test_only_the_screen_profile_skips_screen_blocks_in_its_speech_and_aligner(
     assert settings.node("aligner").component.skip_screen_blocks == skips
 
 
-def test_a_session_skips_screen_blocks_only_when_every_speaker_does():
+def test_a_session_skips_screen_blocks_only_when_every_published_speaker_does():
     data = profile_config("qwen3-asr-qwen3.8-27b-vivian-screen").model_dump()
     assert (
         StreamingCascadePipelineConfig.model_validate(data)
@@ -2101,6 +2101,11 @@ def test_a_session_skips_screen_blocks_only_when_every_speaker_does():
         **data["session_nodes"]["tts"],
         "skip_screen_blocks": False,
     }
+    assert (
+        StreamingCascadePipelineConfig.model_validate(data)
+        .session_ports()
+        .skips_screen_blocks
+    )
     data["session_publish"]["tts_aloud"] = ["pcm_f32le"]
     assert (
         not StreamingCascadePipelineConfig.model_validate(data)
