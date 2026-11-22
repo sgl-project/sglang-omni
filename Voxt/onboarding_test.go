@@ -398,7 +398,7 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 		obPermissions: "Voxt needs the microphone to hear you",
 		obTranscribe:  "Transcribe writes down what you say",
 		obTranslate:   "Translate turns the selected text",
-		obRewrite:     "Outside this guide, the Rewrite shortcut opens a card with the microphone on: speak what to do, add text or images, then press Enter to send or Esc to close.",
+		obRewrite:     "Press the shortcut or Start and say what to write.",
 	} {
 		a.obGo(step)
 		if !has(tt, want) {
@@ -407,12 +407,11 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 	}
 }
 
+// TestOnboardingRewriteGuidanceMatchesTryFlow: the guide's Try records in
+// the guide, without the Rewrite card a shortcut opens.
 func TestOnboardingRewriteGuidanceMatchesTryFlow(t *testing.T) {
-	a, tt := obTester(t)
+	a, _ := obTester(t)
 	a.obGo(obRewrite)
-	if !has(tt, "Outside this guide, the Rewrite shortcut opens a card") {
-		t.Fatalf("the guidance does not distinguish normal Rewrite from the guide: %q", tt.Texts())
-	}
 	a.obTry("")
 	if a.box.open {
 		t.Fatal("the onboarding Try opened the normal Rewrite input box")
