@@ -41,3 +41,5 @@ report	fix	symptom	level	check
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
 #4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
 #4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
+#3835	#4469	The helper's copy keystroke reaches the app as Control-plus-C while the shortcut's Control is still held	L	testBlocksCopy
+#4467	#4469	A selection made with Command-A in the same motion as the hotkey reads as nothing	L	testCaretPending
