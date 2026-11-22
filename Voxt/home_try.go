@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -55,6 +56,14 @@ func (a *app) tryStarted(place tryPlace, kind store.Kind, id string, n *sessionN
 		a.fui(string(kind)).block = n
 	case placeOnboarding:
 		a.obTryStarted(id, n) // onboarding.go
+	}
+}
+
+// markTried keeps the legacy first-result flag consistent when settings
+// move between versions, although Home no longer reads it.
+func (a *app) markTried() {
+	if !a.prefs.Setup.Tried {
+		a.updateSettings(func(s *settings.Settings) { s.Setup.Tried = true })
 	}
 }
 
