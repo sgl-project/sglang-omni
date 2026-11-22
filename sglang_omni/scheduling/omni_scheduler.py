@@ -3811,11 +3811,15 @@ class OmniScheduler(Generic[RequestDataT]):
         executor.shutdown(wait=False, cancel_futures=True)
         self.request_build_executor = None
 
+    def abort_goes_through_inbox(self) -> bool:
+        """Whether abort() hands the request to the scheduler thread's inbox."""
+        return self.scheduler_thread_id != threading.get_ident() and (
+            self.enable_overlap or self.scheduler_thread_id is not None
+        )
+
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         bridge = self.session_bridge
-        if self.scheduler_thread_id != threading.get_ident() and (
-            self.enable_overlap or self.scheduler_thread_id is not None
-        ):
+        if self.abort_goes_through_inbox():
             # note (Richard Wang): every TP rank must drop a request in the same
             # pass, so the entry rank broadcast carries it and followers skip theirs.
             # note (Andreas Rath): TP1 without a session hands it over too. Applied on
