@@ -13,6 +13,8 @@ from einops import rearrange
 from torch import nn
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.models.dots_tts.patch_graph import GraphedDiTSolver
+from sglang_omni.platforms import current_platform
 
 if TYPE_CHECKING:
     from dots_tts.modules.backbone.dit_inference import DiTSolver, DiTSolverState
@@ -170,12 +172,28 @@ class DotsTTSFlowHead(nn.Module):
                         pass
             else:
                 pass
-            self.dit_solver = DiTSolver(
-                DiTInferenceContext.from_core(self),
-                optimize=self.optimize,
-                bucket_resolver=self.bucket,
-                meanflow=self.mode == "meanflow",
+            graph_backend = (
+                current_platform.get_device_graph_backend(
+                    next(self.parameters()).device
+                )
+                if self.optimize and current_platform.enable_dots_tts_patch_graph()
+                else None
             )
+            if graph_backend is None:
+                self.dit_solver = DiTSolver(
+                    DiTInferenceContext.from_core(self),
+                    optimize=self.optimize,
+                    bucket_resolver=self.bucket,
+                    meanflow=self.mode == "meanflow",
+                )
+            else:
+                self.dit_solver = GraphedDiTSolver(
+                    DiTInferenceContext.from_core(self),
+                    optimize=self.optimize,
+                    bucket_resolver=self.bucket,
+                    meanflow=self.mode == "meanflow",
+                    graph_backend=graph_backend,
+                )
         else:
             pass
         return self.dit_solver
