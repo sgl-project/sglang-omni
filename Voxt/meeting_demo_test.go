@@ -526,7 +526,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 	case "shell-announcement":
 		return state.Announcement.Title
 	default:
-		return ""
+		return snippetsDemoSentinel(state)
 	}
 }
 

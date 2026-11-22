@@ -8,8 +8,9 @@ import (
 )
 
 // insertSnippet delivers text's snippet when text is only its trigger
-// ("My email address."): as saved, without the language model, which
-// would rewrite it. It reports whether it did.
+// ("My email address."): as saved, not the language model's text, which
+// would rewrite it (an early clean-up may have asked the model already).
+// It reports whether it did.
 func (r *run) insertSnippet(text string) bool {
 	s, ok := snippet.Whole(text, r.snippets)
 	if !ok {

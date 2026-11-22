@@ -1,7 +1,8 @@
 // Package snippet is the user's snippets: text saved once (an email
 // address, a link, a prompt) that a spoken trigger puts in its place. A
-// dictation that is only a trigger is its snippet, without the language
-// model; a trigger inside a dictation is replaced in the final text.
+// dictation that is only a trigger is its snippet, not the language
+// model's text; a trigger inside a dictation is replaced in the final
+// text.
 // Triggers match ignoring case, spaces and punctuation, so "my LinkedIn"
 // matches "My linked in." as recognised; a trigger in Latin letters or
 // digits matches whole words only. The snippets live in a document of
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Key is the document the snippets are stored under (store.Documents).
@@ -99,24 +101,31 @@ func Expand(text string, snippets []Snippet) string {
 	return rebuild(text, runes, found, func(m match) string { return fit(m.snippet.Text, string(runes[m.end:])) })
 }
 
-// Punctuation fit looks at: a snippet's closing Chinese marks give way
-// to the sentence's own. Latin ones stay ("etc.", "Hold on...").
+// Punctuation fit looks at: before the sentence's own, a snippet's
+// closing Chinese marks and Latin ",;:" give way, and so does a closing
+// Latin mark the sentence repeats ("Best," "." is "Best.", "etc." "." is
+// "etc.").
 const (
 	fullMarks = "。！？；，、：．"
+	softMarks = ",;:"
 	anyMarks  = fullMarks + ".!?;,:"
 )
 
-// fit is a snippet's text before rest: without its last full-width
-// punctuation marks when rest starts with punctuation, so that "…优化。"
-// before "，然后" is not "。，".
+// fit is a snippet's text before rest, its closing punctuation fitted
+// to rest's: "…优化。" before "，然后" is not "。，".
 func fit(text, rest string) string {
-	if rest == "" || !strings.ContainsRune(anyMarks, []rune(rest)[0]) {
+	r, _ := utf8.DecodeRuneInString(rest)
+	if rest == "" || !strings.ContainsRune(anyMarks, r) {
 		return text
 	}
-	if t := strings.TrimRight(text, fullMarks); t != "" {
-		return t
+	t := strings.TrimRight(text, fullMarks+softMarks)
+	if r < utf8.RuneSelf && strings.HasSuffix(t, string(r)) {
+		t = t[:len(t)-1]
 	}
-	return text
+	if t == "" {
+		return text
+	}
+	return t
 }
 
 // Open and Close mark a trigger in the text a language model cleans up

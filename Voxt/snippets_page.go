@@ -16,6 +16,7 @@ type snippetsActions interface {
 	saveSnippet(id, trigger, text string) string
 	deleteSnippet(id string)
 	importSnippets()
+	loadSnippets()
 }
 
 // snippetsLocalUI is the page's search and sort, and its dialog: open,
@@ -40,6 +41,9 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 	t := c.Theme()
 	k := tok(t)
 	columnPageHeader(c, i18n.T("Snippets"), func() {
+		if !state.Ready {
+			return
+		}
 		if ui.Button(c.Key("snippet-import"), i18n.T("Import…")).Label(i18n.T("Import snippets")).Clicked() {
 			actions.importSnippets()
 		}
@@ -54,7 +58,11 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 				warnLine(c, state.Error)
 			}
 			switch {
-			case state.Loading:
+			case !state.Ready && state.Error != "":
+				if ghostButton(c.Key("snippets-retry"), i18n.T("Try again")).Clicked() {
+					actions.loadSnippets()
+				}
+			case !state.Ready:
 			case state.Total == 0:
 				snippetExamples(c, state.Examples, local)
 			default:
@@ -130,10 +138,10 @@ func snippetRow(c *ui.Context, row snippetRowViewState, actions snippetsActions,
 			if !hover {
 				return
 			}
-			if snippetIconButton(c.Key("edit"), icons.Pen2, i18n.T("Edit")).Label(i18n.T("Edit %s", row.Trigger)).Clicked() {
+			if iconButtonSized(c.Key("edit"), icons.Pen2, i18n.T("Edit"), snippetIcon, 14).Label(i18n.T("Edit %s", row.Trigger)).Clicked() {
 				edit()
 			}
-			if snippetIconButton(c.Key("delete"), icons.TrashBinMinimalistic, i18n.T("Delete")).Label(i18n.T("Delete %s", row.Trigger)).Clicked() {
+			if iconButtonSized(c.Key("delete"), icons.TrashBinMinimalistic, i18n.T("Delete"), snippetIcon, 14).Label(i18n.T("Delete %s", row.Trigger)).Clicked() {
 				actions.deleteSnippet(row.ID)
 			}
 		})
@@ -143,19 +151,6 @@ func snippetRow(c *ui.Context, row snippetRowViewState, actions snippetsActions,
 // snippetIcon is the size of a row's icon buttons: smaller than
 // iconButton's, a pair that sits close.
 const snippetIcon = 22
-
-func snippetIconButton(c *ui.Context, ic icons.Icon, tip string) ui.Element {
-	t := c.Theme()
-	b := ghostBase(c).Size(px(t, snippetIcon), px(t, snippetIcon)).Center().Label(tip).Tooltip(tip)
-	b.Children(func() {
-		col := tok(t).Text3
-		if b.Hovered() {
-			col = tok(t).Text
-		}
-		ui.Icon(c, ic.Linear).Size(px(t, 14), px(t, 14)).TextColor(col)
-	})
-	return b
-}
 
 // snippetExamples are an empty page's triggers to start from: each opens
 // the dialog with its trigger filled in.

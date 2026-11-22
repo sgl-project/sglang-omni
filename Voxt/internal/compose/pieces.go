@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 )
 
 // Speech is cleaned up in pieces (docs/eval.md): where whole sentences
@@ -241,26 +243,29 @@ func units(text string, level int) []Piece {
 // hardCut cuts text into pieces of equal length, the last resort, never
 // inside a snippet's mark.
 func hardCut(text string) []Piece {
-	rs := []rune(text)
-	n := (len(rs) + PieceChars - 1) / PieceChars
-	size := (len(rs) + n - 1) / n
+	var at []int // the byte each rune starts at, and the end
+	for i := range text {
+		at = append(at, i)
+	}
+	runes := len(at)
+	at = append(at, len(text))
+	n := (runes + PieceChars - 1) / PieceChars
+	size := (runes + n - 1) / n
 	var out []Piece
-	for i := 0; i < len(rs); {
-		j := min(i+size, len(rs))
-		for j < len(rs) && inMark(string(rs[:j]), len(string(rs[:j]))) {
+	for i := 0; i < runes; {
+		j := min(i+size, runes)
+		for j < runes && inMark(text, at[j]) {
 			j++
 		}
-		out = append(out, Piece{Text: string(rs[i:j])})
+		out = append(out, Piece{Text: text[at[i]:at[j]]})
 		i = j
 	}
 	return out
 }
 
-// Marks around a snippet's trigger (snippet.Mark), which a piece must
-// not cut: the model would lose the trigger.
-const markOpen, markClose = "⟦", "⟧"
-
-// inMark says whether byte i of text is inside a mark.
+// inMark says whether byte i of text is inside the mark around a
+// snippet's trigger (snippet.Mark), which a piece must not cut: the
+// model would lose the trigger.
 func inMark(text string, i int) bool {
-	return strings.LastIndex(text[:i], markOpen) > strings.LastIndex(text[:i], markClose)
+	return strings.LastIndex(text[:i], snippet.Open) > strings.LastIndex(text[:i], snippet.Close)
 }

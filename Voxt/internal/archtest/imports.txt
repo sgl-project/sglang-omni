@@ -18,6 +18,7 @@ asr/mimo asr
 asr/openai asr
 asr/openai core
 compose lang
+compose snippet
 datadir store/sqlitestore
 deliver helper/proto
 dict store

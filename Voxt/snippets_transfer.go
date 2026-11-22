@@ -29,6 +29,7 @@ var chooseSnippetsFile = func(a *app, then func(string)) {
 // trigger is already there changes that one's text.
 func (a *app) importSnippets() {
 	if !a.snip.loaded {
+		a.toast(i18n.T("Could not read the snippets, so nothing was imported."))
 		return
 	}
 	chooseSnippetsFile(a, a.importSnippetsFile)
@@ -36,22 +37,14 @@ func (a *app) importSnippets() {
 
 func (a *app) importSnippetsFile(path string) {
 	a.async(func() {
-		var data []byte
-		info, err := os.Stat(path)
-		if err == nil && info.Size() > snippet.MaxImportBytes {
-			err = snippet.ErrNotSnippets
-		}
-		if err == nil {
-			data, err = os.ReadFile(path)
-		}
-		var in []snippet.Snippet
-		var skipped int
-		if err == nil {
-			in, skipped, err = snippet.Import(data)
-		}
+		in, skipped, problem := readSnippetsFile(path)
 		a.post(func() {
-			if err != nil {
-				a.toast(i18n.T("Could not import %s: it is not a JSON list of snippets.", filepath.Base(path)))
+			if problem != "" {
+				a.toast(problem)
+				return
+			}
+			if !a.snip.loaded {
+				a.toast(i18n.T("Could not read the snippets, so nothing was imported."))
 				return
 			}
 			n := time.Now().UnixNano()
@@ -70,4 +63,24 @@ func (a *app) importSnippetsFile(path string) {
 			a.toast(i18n.T("Imported snippets: %d new, %d updated.", added, updated))
 		})
 	})
+}
+
+// readSnippetsFile reads the snippets in path, or says why it could not.
+func readSnippetsFile(path string) (in []snippet.Snippet, skipped int, problem string) {
+	name := filepath.Base(path)
+	info, err := os.Stat(path)
+	if err == nil && info.Size() > snippet.MaxImportBytes {
+		return nil, 0, i18n.T("Could not import %s: it is larger than %d MB.", name, snippet.MaxImportBytes>>20)
+	}
+	var data []byte
+	if err == nil {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return nil, 0, i18n.T("Could not open %s.", name)
+	}
+	if in, skipped, err = snippet.Import(data); err != nil {
+		return nil, 0, i18n.T("Could not import %s: it is not a JSON list of snippets.", name)
+	}
+	return in, skipped, ""
 }

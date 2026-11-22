@@ -36,6 +36,7 @@ type meetingDemoHost struct {
 	appEnhancementApps    map[string][]appEnhancementAppChoice
 	dictionaryUI          dictionaryLocalUI
 	notesUI               notesLocalUI
+	snipUI                snippetsLocalUI
 	remoteWaitUI          llmWaitLocalUI
 	remoteDialogUI        providerDialogLocalUI
 	remoteDebugUI         llmDebugUI
@@ -219,6 +220,14 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		}
 		if host.notesUI.keys.sel == "" {
 			host.notesUI.keys.sel = shortcut.CurrentText
+		}
+	}
+	host.snipUI = snippetsLocalUI{}
+	if state, local := fixture.state.Snippets, fixture.state.SnippetsUI; state != nil && local != nil {
+		host.snipUI.query, host.snipUI.order = local.Query, state.Order
+		if local.EditOpen {
+			host.snipUI.open(snippetEdit{id: local.ID, trigger: local.Trigger, text: local.Text})
+			host.snipUI.err = local.Error
 		}
 	}
 	host.remoteWaitUI = llmWaitLocalUI{}

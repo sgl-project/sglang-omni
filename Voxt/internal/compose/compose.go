@@ -39,7 +39,7 @@
 // {title, content} for the answer card (ParseAnswer, PartialAnswer);
 // Previous turns make a follow-up.
 //
-// Imports: lang.
+// Imports: lang, snippet.
 package compose
 
 import (
@@ -276,7 +276,6 @@ func Build(in Input) (Output, error) {
 	selected := in.Task == Rewrite && strings.TrimSpace(in.Text) != "" || in.Task == Translate && in.Selected
 	flags := map[string]string{
 		"FOR_TRANSCRIBE": on(in.Task == Transcribe),
-		"SNIPPETS":       on(in.Snippets),
 		"FOR_TRANSLATE":  on(in.Task == Translate),
 		"SELECTED":       on(selected),
 		"TYPED":          on(in.Task == Rewrite && strings.TrimSpace(in.Typed) != ""),
@@ -294,7 +293,11 @@ func Build(in Input) (Output, error) {
 	add(string(in.Task), render("role-"+string(in.Task), nil))
 	switch in.Task {
 	case Transcribe:
-		add("input", render("input-speech", nil))
+		input := render("input-speech", nil)
+		if in.Snippets {
+			input = strings.TrimSpace(input) + "\n" + render("snippets", nil)
+		}
+		add("input", input)
 		if in.Cleanup {
 			add("cleanup", render("cleanup", nil))
 		}

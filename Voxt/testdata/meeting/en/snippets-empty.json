@@ -1,0 +1,29 @@
+{
+  "name": "snippets-empty",
+  "kind": "snippets",
+  "snippets": {
+    "ready": true,
+    "rows": [],
+    "examples": [
+      {
+        "trigger": "my email",
+        "hint": "name@example.com"
+      },
+      {
+        "trigger": "my address",
+        "hint": "Your street, city and postcode"
+      },
+      {
+        "trigger": "insert my intro",
+        "hint": "Your name, role and what you work on"
+      },
+      {
+        "trigger": "my meeting link",
+        "hint": "https://zoom.us/j/…"
+      }
+    ],
+    "total": 0,
+    "order": 0
+  },
+  "snippets_ui": {}
+}

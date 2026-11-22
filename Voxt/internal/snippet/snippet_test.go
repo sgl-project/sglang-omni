@@ -128,13 +128,21 @@ func TestRestore(t *testing.T) {
 // TestFit: a snippet ending in punctuation before more loses its own,
 // marked or not; elsewhere it keeps it.
 func TestFit(t *testing.T) {
-	intro := []Snippet{{ID: "i", Trigger: "插入自我介绍", Text: "我是睿临，在做语音输入。"}, {ID: "s", Trigger: "sign off", Text: "Best,"}}
+	intro := []Snippet{{ID: "i", Trigger: "插入自我介绍", Text: "我是睿临，在做语音输入。"}, {ID: "s", Trigger: "sign off", Text: "Best,"},
+		{ID: "l", Trigger: "the link", Text: "https://example.com/x."}, {ID: "e", Trigger: "and so on", Text: "etc."},
+		{ID: "h", Trigger: "wait a sec", Text: "Hold on..."}, {ID: "w", Trigger: "say wow", Text: "Wow!"}}
 	for _, tc := range []struct{ text, want string }{
 		{"先插入自我介绍，然后聊项目", "先我是睿临，在做语音输入，然后聊项目"},
 		{"先插入自我介绍。", "先我是睿临，在做语音输入。"},
 		{"插入自我介绍 然后聊项目", "我是睿临，在做语音输入。 然后聊项目"},
 		{"插入自我介绍", "我是睿临，在做语音输入。"},
-		{"thanks, sign off.", "thanks, Best,."}, // Latin punctuation stays,
+		{"thanks, sign off.", "thanks, Best."},
+		{"here is the link.", "here is https://example.com/x."},
+		{"apples, pears and so on.", "apples, pears etc."},
+		{"wait a sec.", "Hold on..."},
+		{"wait a sec, then go", "Hold on..., then go"},
+		{"say wow.", "Wow!."}, // another closing mark stays
+		{"sign off and so on", "Best, etc."},
 	} {
 		if got := Expand(tc.text, intro); got != tc.want {
 			t.Errorf("Expand(%q) = %q; want %q", tc.text, got, tc.want)

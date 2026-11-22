@@ -30,5 +30,11 @@
   "Sort": "排序",
   "insert my intro": "插入自我介绍",
   "my meeting link": "我的会议链接",
-  "Words you won’t say by accident, like “insert my intro”: Voxt replaces them wherever they come up.": "选不会顺口说出的词，例如“插入自我介绍”：说到哪里就换到哪里。"
+  "Words you won’t say by accident, like “insert my intro”: Voxt replaces them wherever they come up.": "选不会顺口说出的词，例如“插入自我介绍”：说到哪里就换到哪里。",
+  "Could not read the snippets: %v": "无法读取片段：%v",
+  "Could not save the snippets: %v": "无法保存片段：%v",
+  "Could not read the snippets, so nothing was saved.": "无法读取片段，所以没有保存。",
+  "Could not read the snippets, so nothing was imported.": "无法读取片段，所以没有导入。",
+  "Could not import %s: it is larger than %d MB.": "无法导入 %s：文件超过 %d MB。",
+  "Could not open %s.": "无法打开 %s。"
 }

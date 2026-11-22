@@ -9,9 +9,10 @@ import (
 )
 
 // snippetsViewState is the Snippets page: its rows, the examples an empty
-// page offers, and what went wrong reading or saving.
+// page offers, and what went wrong reading or saving. Until the list is
+// read (Ready) the page changes nothing.
 type snippetsViewState struct {
-	Loading  bool                      `json:"loading"`
+	Ready    bool                      `json:"ready"`
 	Error    string                    `json:"error,omitempty"`
 	Rows     []snippetRowViewState     `json:"rows"`
 	Examples []snippetExampleViewState `json:"examples,omitempty"`
@@ -49,7 +50,7 @@ type snippetExampleViewState struct {
 }
 
 func buildSnippetsViewState(translator *i18n.Translator, list snippet.List, loaded bool, err, query string, order snippetOrder) snippetsViewState {
-	state := snippetsViewState{Loading: !loaded && err == "", Error: err, Rows: []snippetRowViewState{}, Total: len(list.Snippets), Order: order}
+	state := snippetsViewState{Ready: loaded, Error: err, Rows: []snippetRowViewState{}, Total: len(list.Snippets), Order: order}
 	q := strings.ToLower(strings.TrimSpace(query))
 	for _, s := range list.Snippets {
 		if q != "" && !strings.Contains(strings.ToLower(s.Trigger), q) && !strings.Contains(strings.ToLower(s.Text), q) {

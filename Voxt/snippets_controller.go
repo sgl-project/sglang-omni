@@ -68,7 +68,7 @@ func (a *app) loadSnippets() {
 			s := &a.snip
 			s.loading = false
 			if err != nil {
-				s.err = err.Error()
+				s.err = i18n.T("Could not read the snippets: %v", err)
 				return
 			}
 			s.list, s.loaded, s.err = l, true, ""
@@ -76,9 +76,10 @@ func (a *app) loadSnippets() {
 	})
 }
 
-// saveSnippets stores the list in the background.
+// saveSnippets stores the list in the background. A list that was not
+// read is never written: it would replace the saved one.
 func (a *app) saveSnippets() {
-	if a.lib == nil || a.lib.store == nil {
+	if a.lib == nil || a.lib.store == nil || !a.snip.loaded {
 		return
 	}
 	data, err := a.snip.list.Marshal()
@@ -95,17 +96,19 @@ func (a *app) saveSnippets() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		saves.mu.Lock()
-		defer saves.mu.Unlock()
 		if seq < saves.written {
+			saves.mu.Unlock()
 			return
 		}
 		err := docs.Put(ctx, snippet.Key, data)
 		if err == nil {
 			saves.written = seq
 		}
+		saves.mu.Unlock()
 		a.post(func() {
+			a.snip.err = ""
 			if err != nil {
-				a.snip.err = err.Error()
+				a.snip.err = i18n.T("Could not save the snippets: %v", err)
 			}
 		})
 	})
@@ -114,6 +117,9 @@ func (a *app) saveSnippets() {
 // saveSnippet adds a snippet (id "") or changes one, and says why it
 // could not ("" when it did).
 func (a *app) saveSnippet(id, trigger, text string) string {
+	if !a.snip.loaded {
+		return i18n.T("Could not read the snippets, so nothing was saved.")
+	}
 	s := snippet.Snippet{ID: id, Trigger: strings.TrimSpace(trigger), Text: strings.TrimRight(text, " \n")}
 	if problem := snippet.Check(a.snip.list, s); problem != "" {
 		return snippetProblemText(i18n.CurrentTranslator(), problem)
@@ -135,6 +141,9 @@ func (a *app) saveSnippet(id, trigger, text string) string {
 
 // deleteSnippet removes the snippet id.
 func (a *app) deleteSnippet(id string) {
+	if !a.snip.loaded {
+		return
+	}
 	list := a.snip.list.Snippets[:0]
 	for _, s := range a.snip.list.Snippets {
 		if s.ID != id {

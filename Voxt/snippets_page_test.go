@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -70,5 +71,40 @@ func TestSnippetsPage(t *testing.T) {
 	click(t, tt, "Delete")
 	if got := storedSnippets(t, a, tt, 0); len(got) != 0 || !has(tt, "No snippets yet") {
 		t.Fatalf("after delete: %+v, %q", got, firstTexts(tt))
+	}
+}
+
+// TestSnippetsUnreadable: a snippets document that cannot be read is
+// left as it is: the page says so and offers no Add or Import, and a
+// save or a delete changes nothing.
+func TestSnippetsUnreadable(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1200)
+	frames(tt)
+	docs := a.lib.store.Documents()
+	bad := []byte(`{"snippets":[{"id":"a","trigger":"my email","text":1}]}`)
+	if err := docs.Put(context.Background(), snippet.Key, bad); err != nil {
+		t.Fatal(err)
+	}
+	click(t, tt, "Snippets")
+	for deadline := time.Now().Add(5 * time.Second); a.snip.err == ""; frames(tt) {
+		if time.Now().After(deadline) {
+			t.Fatal("no error")
+		}
+	}
+	frames(tt)
+	if !has(tt, "Could not read the snippets") || has(tt, "Add snippet") || has(tt, "Import…") || has(tt, "No snippets yet") {
+		t.Errorf("page: %q", firstTexts(tt))
+	}
+	if msg := a.saveSnippet("", "my link", "https://example.com"); msg == "" {
+		t.Error("saved over an unread list")
+	}
+	a.deleteSnippet("a")
+	a.importSnippetsFile(filepath.Join(t.TempDir(), "none.json"))
+	for range 20 {
+		frames(tt)
+	}
+	if data, _, _ := docs.Get(context.Background(), snippet.Key); string(data) != string(bad) {
+		t.Errorf("the document became %s", data)
 	}
 }

@@ -1,0 +1,29 @@
+{
+  "name": "snippets-empty",
+  "kind": "snippets",
+  "snippets": {
+    "ready": true,
+    "rows": [],
+    "examples": [
+      {
+        "trigger": "我的邮箱",
+        "hint": "name@example.com"
+      },
+      {
+        "trigger": "我的地址",
+        "hint": "街道、城市和邮编"
+      },
+      {
+        "trigger": "插入自我介绍",
+        "hint": "你的名字、身份和在做的事"
+      },
+      {
+        "trigger": "我的会议链接",
+        "hint": "https://zoom.us/j/…"
+      }
+    ],
+    "total": 0,
+    "order": 0
+  },
+  "snippets_ui": {}
+}
