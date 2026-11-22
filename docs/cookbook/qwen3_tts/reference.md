@@ -25,6 +25,7 @@ These defaults describe the SGLang-Omni Python server. The [native Apple Silicon
 | `max_new_tokens` | Base: twice the slowest natural stop for the target text, at most `2048`. CustomVoice and VoiceDesign: the checkpoint's `generation_config.json` value, `8192` | Maximum number of generated codec tokens (80 ms each). The Base default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural. The server lowers any limit to what the context and the KV pool can hold |
 | `seed` | `null` | Random seed for reproducibility |
 | `response_format` | `wav` | Explicit values override the default in every mode. HTTP streaming accepts `pcm` or `wav` |
+| `sample_rate` | `null` | Requested output rate in Hz. Omit to encode the model's native 24 kHz audio at a rate supported by the selected format. See [output sample rates](../../basic_usage/tts.md#request-parameters) for encoder restrictions |
 | `stream` | `false` | Stream raw WAV audio chunks by default; set `response_format="pcm"` for raw PCM |
 | `stream_format` | `audio` | Raw audio bytes by default; explicit `sse` enables SSE events even when `stream` is omitted |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
@@ -123,6 +124,8 @@ By default the [first-audio chunk ramp](tuning.md#first-audio-chunk-ramp) starts
 ## Finish reasons
 
 Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or `X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length` response still contains decodable audio, but the utterance may be incomplete. Models that do not report how generation ended send `X-Finish-Reason: unknown`. Batch responses expose the same value as each item's `finish_reason`.
+
+When the talker reaches its generation limit, it emits an INFO log named `qwen3_tts_codec_budget_exhausted` with the request ID and generated codec frame count. Use this event to monitor budget stops across speech transports.
 
 ## Dependency troubleshooting
 

@@ -59,19 +59,21 @@ const boxThumb = 72
 type boxDropWindow interface {
 	boxWindow
 	OnFileDrop(func(*mygo.FileDropEvent)) func()
+	OnMove(func()) func()
 }
 
 var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
 
-// newBoxWindow creates the input box's native panel.
+// newBoxWindow creates the input box's window: an ordinary one, above
+// every window until it takes the front (cardFront).
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI, options mygo.WindowOptions) boxWindow {
 	options.Content = hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) })
 	options.Vibrancy = mygo.VibrancyHUD
-	options.Panel = true
-	options.NonActivating = false
+	options.Panel, options.NonActivating = false, false // an ordinary window: it takes typing, and a click brings VoxtNew in front
 	options.DisableClose = true
 	window := newBoxNativeWindow(options)
 	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
+	window.OnMove(actions.moved)
 	return window
 }
 
@@ -93,7 +95,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 		}
 	}
 	root.Children(func() {
-		faceStyle(context, ui.Column(context.Key("box-face")).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Gap(8), state.Radius, state.Alpha).Children(func() {
+		faceStyle(context, ui.Column(context.Key("box-face")).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Gap(8), state.Radius, state.Alpha).DragWindow().Children(func() {
 			// The header: what it is, Send while it records or a resend
 			// waits, Close.
 			ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
@@ -343,6 +345,9 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 		start, end = local.pasteCaret, local.pasteCaret
 	}
 	textArea.OnPaste(func(paste string) bool {
+		if actions.paste(context.Services()) {
+			return true // a picture, or an image file copied in Finder whose name is the text
+		}
 		original := *text
 		if local.paste != nil {
 			applyBoxPaste(local, actions.viewState())
@@ -365,7 +370,7 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 			return true
 		}
 		if !actions.pasteText(index, paste, start, end) {
-			return actions.paste(context.Services())
+			return false
 		}
 		suffixID := -1
 		if index >= 0 {

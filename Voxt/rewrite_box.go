@@ -13,10 +13,13 @@ package main
 // sending. Nothing selected, typed or pasted: the request is the speech
 // alone, as before.
 //
-// The card's window is a panel (mygo WindowOptions.Panel): it floats
-// and takes the keyboard without activating VoxtNew, so the app the
-// user was in stays in front and gets the keyboard back when the card
-// hides.
+// The card's window is an ordinary window (cardWindowOptions), as any
+// app's: each press of the Rewrite shortcut on it is a click on it, so it
+// shows above every window at once and VoxtNew comes in front with it
+// once the selection is read (cardFront); the user drags it by its
+// margins, a window manager moves it, and the user's next app covers it.
+// Closing it gives the front back to the app the user was in
+// (giveFrontBack); an insert activates that app first (deliver).
 //
 // A send that fails (a model that takes no images refuses them) brings
 // the card back with the error and everything kept: Enter sends again
@@ -49,6 +52,14 @@ type rewriteBox struct {
 	area   mygo.Rectangle // the screen the window opened on
 	frame  mygo.Rectangle
 	target proto.App // the app in front when the box opened
+	// dragged is how far the user moved the card from where it opens
+	// (boxDraggedTo): it keeps that place until it closes.
+	dragged struct{ x, y int }
+	// raise brings the window in front at the next boxSync: each press of
+	// the Rewrite shortcut on the card (it opens it, sends, asks in it)
+	// is a click on it. front is how it takes the front (cardFront).
+	raise bool
+	front cardFront
 	// session is the recording session's id ("" when it ended); sending
 	// a resend's after a failure.
 	session, sending string
@@ -150,6 +161,7 @@ type rewriteBoxActions struct {
 	segmentChanged  func(int, string)
 	dismissTip      func()
 	focused         func()
+	moved           func() // the user dragged the window
 }
 
 // boxWindow is the box's panel as boxSync and closeBoxWindow use it
@@ -157,7 +169,10 @@ type rewriteBoxActions struct {
 type boxWindow interface {
 	Invalidate()
 	SetContentBounds(mygo.Rectangle)
-	Show()
+	ContentBounds() mygo.Rectangle
+	SetAlwaysOnTop(bool)
+	SetVisibleOnAllWorkspaces(bool)
+	ShowInactive()
 	Focus()
 	Hide()
 	Destroy()
@@ -192,7 +207,7 @@ func (a *app) showBox(target proto.App, id string) {
 			})
 		}
 	}
-	a.box.open, a.box.shown, a.box.err = true, true, ""
+	a.box.open, a.box.shown, a.box.err, a.box.raise = true, true, "", true
 	a.box.target, a.box.session = target, id
 	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
 	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
@@ -214,11 +229,13 @@ func (a *app) closeBox() {
 // boxCloseCard is the card's Close button (and its window's close): the
 // answer it holds closes with it.
 func (a *app) boxCloseCard() {
-	answered := a.boxAnswered()
+	answered, target := a.boxAnswered(), a.box.target.PID
 	a.closeBox()
 	if answered {
-		a.closeAnswer()
+		a.closeAnswer() // which gives the front back
+		return
 	}
+	a.giveFrontBack(target)
 }
 
 // boxEscape is Esc in the card: a follow-up on its way is cancelled and
@@ -242,8 +259,8 @@ func (a *app) boxAnswered() bool {
 // the input is emptied for the next follow-up.
 func (a *app) boxKeep() {
 	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
-	target := a.box.target
-	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, ui: ui}
+	target, dragged, front := a.box.target, a.box.dragged, a.box.front
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
 	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
@@ -261,6 +278,15 @@ func (a *app) dropBox() {
 	// A send queued behind a picture's conversion dies with the box: an
 	// old life's conversion landing later must not send the new life.
 	a.boxSendQueued = false
+}
+
+// boxShortcutSend is the Rewrite shortcut pressed again, or its hold let
+// go, while the card records: like a click on the card, it brings the
+// card in front of the windows over it; then it sends (boxSend).
+func (a *app) boxShortcutSend() {
+	a.box.raise = true
+	a.boxSync()
+	a.boxSend()
 }
 
 // boxSend is Enter or the shortcut's stop in the box: while it records,
@@ -422,21 +448,44 @@ func (a *app) boxRemoveAutoImage() {
 	a.boxSync()
 }
 
+// boxClipboardImages are the clipboard's picture formats the helper reads
+// (clipboard.image: PNG, JPEG, HEIC, TIFF, WebP; MyGo lists TIFF as PNG).
+var boxClipboardImages = []transfer.Format{transfer.PNG, "image/jpeg", "image/heic", "image/webp"}
+
+// boxImageFileExtensions are the copied files the helper turns into a
+// picture (an image type ImageIO decodes).
+var boxImageFileExtensions = []string{".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff", ".gif", ".webp", ".bmp"}
+
+// boxCopiedImageFile says whether the clipboard's first copied file is a
+// picture: the helper reads only that one.
+func boxCopiedImageFile(svc uiServices) bool {
+	paths, err := svc.ReadClipboardData(transfer.FileList).Files()
+	return err == nil && len(paths) > 0 && slices.Contains(boxImageFileExtensions, strings.ToLower(filepath.Ext(paths[0])))
+}
+
 // boxPaste is ⌘V in the box: a picture on the clipboard goes into the
-// box (text it also holds wins, as with the copied-image setting); an
-// image file copied in Finder comes through the helper (HEIC too); text
-// pastes as ever. It reports whether the key was taken.
+// box. An image file copied in Finder is the picture although Finder
+// also puts its name there as text (the helper reads the file, HEIC
+// too); any other text wins, as with the copied-image setting (a copied
+// spreadsheet range or styled text brings a picture of itself along).
+// Text pastes as ever. It reports whether the key was taken.
 func (a *app) boxPaste(svc uiServices) bool {
 	formats := svc.ClipboardFormats()
 	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
 	switch {
-	case has(transfer.Text):
+	case has(transfer.FileList):
+		if !boxCopiedImageFile(svc) {
+			return false // another file: its name pastes
+		}
+	case has(transfer.Text), !slices.ContainsFunc(boxClipboardImages, has):
 		return false
-	case (has(transfer.PNG) || has(transfer.FileList)) && len(a.box.images)+a.boxPending >= boxMaxImages:
+	}
+	switch {
+	case len(a.box.images)+a.boxPending >= boxMaxImages:
 		a.box.limit = true
 		a.boxSync()
 		return true
-	case has(transfer.PNG), has(transfer.FileList):
+	default:
 		gen := a.boxGen
 		seq := a.boxReserve()
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
@@ -451,7 +500,6 @@ func (a *app) boxPaste(svc uiServices) bool {
 		})
 		return true
 	}
-	return false
 }
 
 // boxDrop takes picture files dropped on the box.

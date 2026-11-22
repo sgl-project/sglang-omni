@@ -7,8 +7,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -208,7 +208,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		a.startSession(req)
 	case hotkey.Stop:
 		if a.box.open && a.box.session != "" && a.box.session == a.sess.ID {
-			a.boxSend()
+			a.boxShortcutSend()
 		} else {
 			a.stopSession()
 		}
@@ -263,7 +263,11 @@ func (a *app) syncHotkeys() {
 		// The card's single-letter keys (#4127) bind only while it shows.
 		params.Bindings = append(slices.Clone(params.Bindings), hotkey.CardBindings(cardGeneration, plan.Cancel)...)
 	}
-	key := fmt.Sprintf("%+v", params)
+	// The JSON, not %+v: that prints the address of Cancel (a new one from
+	// each plan), so every call looked changed, counted the generation up
+	// and dropped the events the helper had decided under the last one.
+	raw, _ := json.Marshal(params) // plain data: cannot fail
+	key := string(raw)
 	if key == a.hotkeysSent {
 		return
 	}
