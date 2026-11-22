@@ -55,6 +55,15 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **预览里的按钮不再一直高亮，提示也不再盖住实时文字**：卡片和预览改成普通窗口之后，只有 Voxt 在前台时才跟踪鼠标。你在别的 App 里听写时，上次 Voxt 在前台时鼠标停过的按钮（比如“用识别原文”）会一直高亮，它的提示“不等语言模型，直接插入识别原文”盖住实时文字的第一行，鼠标根本不在那里；真把鼠标移上去反而没有反应。现在不管哪个 App 在前台都跟踪鼠标：只有鼠标停在按钮上时才出现提示。
 - **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
 - **答案卡片流式输出时滚动条不再闪烁**（#4320）：文字保持左右居中，Markdown 页面与卡片使用相同的透明度，不再显示更深的底色块。
+### Fixed
+
+- **Fresh installs offer the recommended speech model beside each feature's picker**: System dictation no longer hides the download on Transcribe, Translate and Rewrite. Installed catalog models and configured remote services keep their existing controls.
+
+### 中文
+
+#### 修复
+
+- **新安装也会在功能选模型的地方显示推荐语音识别模型的下载入口**：系统听写不再遮住转录、翻译和改写页的下载按钮。已安装的目录模型和已配置的远程服务保持原有操作。
 
 ## [2.1.2] - 2026-11-19
 
