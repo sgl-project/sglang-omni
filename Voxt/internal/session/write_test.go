@@ -447,7 +447,8 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	if end.State != Done || len(reqs) != 1 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Content, "<selected_text>\na long paragraph to shorten") {
 		t.Fatalf("end %s %q, requests %+v", end.State, end.Result, reqs)
 	}
-	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS {
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS ||
+		p[0].CaretSettleMS != selectionSettleMS || p[0].CaretPollMS != selectionPollMS || p[0].ModifierWaitMS != selectionModifierWaitMS {
 		t.Errorf("selection params %+v", p)
 	}
 }

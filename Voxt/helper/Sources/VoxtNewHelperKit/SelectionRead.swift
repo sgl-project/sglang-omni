@@ -27,17 +27,18 @@ public enum SelectionRead {
         editable && range?.length == 0 && !blankSelection
     }
 
-    /// How long a caret-only answer waits for the selection to settle, and
-    /// the pause between readings: ⌘A and the shortcut leave in one
-    /// motion, and the accessibility reading lags the keys, so the first
-    /// reading can be the caret from before the ⌘A (#4467). A real caret
-    /// just answers this much later.
-    public static let caretSettleMs = 600.0
-    public static let caretPollMs = 60.0
+    /// The budgets when the app's params name none: how long a
+    /// caret-only answer waits for the selection to settle, and the
+    /// pause between readings — ⌘A and the shortcut leave in one motion,
+    /// and the accessibility reading lags the keys, so the first reading
+    /// can be the caret from before the ⌘A (#4467). A real caret just
+    /// answers this much later.
+    public static let defaultCaretSettleMs = 600.0
+    public static let defaultCaretPollMs = 60.0
 
     /// Whether the caret-only answer still waits for the selection.
-    public static func caretPending(elapsedMs: Double) -> Bool {
-        elapsedMs < caretSettleMs
+    public static func caretPending(elapsedMs: Double, settleMs: Double) -> Bool {
+        elapsedMs < settleMs
     }
 
     /// Whether held modifiers turn the helper's ⌘C into another key in
@@ -48,6 +49,7 @@ public enum SelectionRead {
         !f.isDisjoint(with: [.maskControl, .maskAlternate, .maskShift])
     }
 
-    /// How long the ⌘C waits for those keys to lift before posting anyway.
-    public static let modifierWaitMs = 800.0
+    /// How long the ⌘C waits for those keys to lift before posting
+    /// anyway, when the app's params name none.
+    public static let defaultModifierWaitMs = 800.0
 }

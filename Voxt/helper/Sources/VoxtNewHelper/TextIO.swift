@@ -147,57 +147,53 @@ final class TextIO: @unchecked Sendable {
             // the shortcut leave in one motion, and the accessibility
             // reading lags the keys. Read again for a moment before
             // concluding that nothing is selected (#4467).
-            guard caretOnly, SelectionRead.caretPending(elapsedMs: monotonicMs() - t0) else { break }
+            let settleMs = Double(p.caretSettleMs ?? Int(SelectionRead.defaultCaretSettleMs))
+            guard caretOnly, SelectionRead.caretPending(elapsedMs: monotonicMs() - t0, settleMs: settleMs) else { break }
             if !settling { steps.append("caret-settle"); settling = true }
-            try? await Task.sleep(nanoseconds: UInt64(SelectionRead.caretPollMs * 1_000_000))
+            let pollMs = p.caretPollMs ?? Int(SelectionRead.defaultCaretPollMs)
+            try? await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
         }
         if caretOnly {
             steps.append("caret-only")
             return done(nil, SelectionVia.none)
         }
         guard p.allowCopy ?? false else { return done(nil, SelectionVia.none) }
-        let copied = await copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300))
+        let copied = await Self.copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300),
+                                              modifierWaitMs: Double(p.modifierWaitMs ?? Int(SelectionRead.defaultModifierWaitMs)))
         steps.append(copied.note)
         return SelectionResult(text: copied.text, image: copied.image, via: copied.text != nil ? SelectionVia.copy : SelectionVia.none,
                                ms: round1(monotonicMs() - t0), steps: steps)
     }
 
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
-    private func copySelection(timeoutMs: Double) async -> (text: String?, image: Data?, note: String) {
-        let (snap, c0) = await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) }
+    static func copySelection(timeoutMs: Double, modifierWaitMs: Double, world: CopyWorld = .live) async -> (text: String?, image: Data?, note: String) {
         // Keys the user still holds (Control of a Control+C shortcut) turn
         // the helper's ⌘C into another key in the app: wait for them to lift.
-        var f = CGEventSource.flagsState(.hidSystemState)
+        var f = world.heldFlags()
         if SelectionRead.blocksCopy(f) {
-            let deadline = monotonicMs() + SelectionRead.modifierWaitMs
+            let deadline = world.now() + modifierWaitMs
             repeat {
-                try? await Task.sleep(nanoseconds: 25_000_000)
-                f = CGEventSource.flagsState(.hidSystemState)
-            } while SelectionRead.blocksCopy(f) && monotonicMs() < deadline
+                await world.sleep(25_000_000)
+                f = world.heldFlags()
+            } while SelectionRead.blocksCopy(f) && world.now() < deadline
         }
         let held = flags(f)
-        postKey(UInt16(kVK_ANSI_C), flags: .maskCommand)
-        let deadline = monotonicMs() + timeoutMs
+        // The snapshot comes after the wait: a clipboard change during it
+        // is someone's newer clipboard, not the ⌘C's result, and it is
+        // what the restore puts back.
+        let (snap, c0) = await world.snapshot()
+        world.postCopy()
+        let deadline = world.now() + timeoutMs
         var changed = false
-        while monotonicMs() < deadline {
-            if await onMain({ NSPasteboard.general.changeCount }) != c0 {
+        while world.now() < deadline {
+            if await world.changeCount() != c0 {
                 changed = true
                 break
             }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+            await world.sleep(10_000_000)
         }
         guard changed else { return (nil, nil, "copy: clipboard unchanged" + held) }
-        let (text, types, data, file) = await onMain { () -> (String?, [String], [String: Data], URL?) in
-            let pb = NSPasteboard.general
-            let text = pb.string(forType: .string)
-            let types = (pb.types ?? []).map(\.rawValue)
-            let data = ClipboardPicture.copiedSelectionImageData(types: types, text: text) {
-                pb.data(forType: NSPasteboard.PasteboardType($0))
-            }
-            let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
-            Clipboard.restore(pb, snap)
-            return (text, types, data, file)
-        }
+        let (text, types, data, file) = await world.readAndRestore(snap)
         let selected = ClipboardPicture.imageForCopiedSelection(types: types, data: data, file: file, maxSide: screenMaxSide, text: text)
         let image = selected.flatMap { ScreenWindow.jpeg($0) }
         return (text?.isEmpty == false ? text : nil, image, "copy: changed" + held)
@@ -412,7 +408,7 @@ final class TextIO: @unchecked Sendable {
     }
 
     /// The modifiers in f besides ⌘, as " held=control+shift"; "" for none.
-    private func flags(_ f: CGEventFlags) -> String {
+    private static func flags(_ f: CGEventFlags) -> String {
         let names = [(CGEventFlags.maskControl, "control"), (.maskAlternate, "option"), (.maskShift, "shift"), (.maskSecondaryFn, "fn")]
             .filter { f.contains($0.0) }.map(\.1)
         return names.isEmpty ? "" : " held=" + names.joined(separator: "+")
@@ -443,6 +439,41 @@ func postKey(_ key: UInt16, flags: CGEventFlags) {
         e.setIntegerValueField(.eventSourceUserData, value: InjectedEvent.marker)
         e.post(tap: .cghidEventTap)
     }
+}
+
+/// What TextIO.copySelection runs against: the clipboard, the keys
+/// still held, the posted ⌘C, the clock and the sleeps. The tests drive
+/// a fake one; the helper runs the live one.
+struct CopyWorld: Sendable {
+    var snapshot: @Sendable () async -> ([[NSPasteboard.PasteboardType: Data]], Int)
+    var changeCount: @Sendable () async -> Int
+    var heldFlags: @Sendable () -> CGEventFlags
+    var postCopy: @Sendable () -> Void
+    var readAndRestore: @Sendable ([[NSPasteboard.PasteboardType: Data]]) async -> (String?, [String], [String: Data], URL?)
+    var now: @Sendable () -> Double
+    var sleep: @Sendable (UInt64) async -> Void
+
+    static let live = CopyWorld(
+        snapshot: { await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) } },
+        changeCount: { await onMain { NSPasteboard.general.changeCount } },
+        heldFlags: { CGEventSource.flagsState(.hidSystemState) },
+        postCopy: { postKey(UInt16(kVK_ANSI_C), flags: .maskCommand) },
+        readAndRestore: { snap in
+            await onMain { () -> (String?, [String], [String: Data], URL?) in
+                let pb = NSPasteboard.general
+                let text = pb.string(forType: .string)
+                let types = (pb.types ?? []).map(\.rawValue)
+                let data = ClipboardPicture.copiedSelectionImageData(types: types, text: text) {
+                    pb.data(forType: NSPasteboard.PasteboardType($0))
+                }
+                let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
+                Clipboard.restore(pb, snap)
+                return (text, types, data, file)
+            }
+        },
+        now: { monotonicMs() },
+        sleep: { ns in try? await Task.sleep(nanoseconds: ns) }
+    )
 }
 
 /// Every item of the clipboard with every type's data, to put it back.

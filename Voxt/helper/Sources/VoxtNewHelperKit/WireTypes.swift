@@ -394,6 +394,12 @@ public struct FocusResult: Codable, Sendable {
 public struct SelectionParams: Codable, Sendable {
     public var allowCopy: Bool?
     public var copyTimeoutMs: Int?
+    /// A caret-only reading waits out a settle for a selection made with
+    /// ⌘A in the shortcut's motion (#4467), a reading every caretPollMs.
+    public var caretSettleMs: Int?
+    public var caretPollMs: Int?
+    /// The ⌘C waits this long for the shortcut's held modifiers to lift (#3835).
+    public var modifierWaitMs: Int?
 }
 
 public enum SelectionVia {

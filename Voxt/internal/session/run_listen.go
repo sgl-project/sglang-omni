@@ -76,7 +76,12 @@ func (r *run) lacks() *Problem {
 func (r *run) readSelection() string {
 	defer r.m.update(r, func(s *Snapshot) { s.ReadingSelection = false })
 	cfg := r.m.cfg
-	timeout, params := cfg.ReadTimeout, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)}
+	timeout, params := cfg.ReadTimeout, proto.SelectionParams{
+		AllowCopy:      AllowCopy(r.req.Target.BundleID),
+		CaretSettleMS:  selectionSettleMS,
+		CaretPollMS:    selectionPollMS,
+		ModifierWaitMS: selectionModifierWaitMS,
+	}
 	if r.req.Kind == store.KindRewrite {
 		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
 	}

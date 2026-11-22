@@ -8,7 +8,7 @@
 {"to":"app","msg":{"id":"c30","result":{"pid":530,"role":"AXTextArea","editable":true,"valueLength":12}}}
 {"to":"helper","msg":{"id":"c22","method":"textio.selection"}}
 {"to":"app","msg":{"id":"c22","result":{"text":"Hello world","via":"ax","ms":2.4,"steps":["focus=AXTextArea"]}}}
-{"to":"helper","msg":{"id":"c23","method":"textio.selection","params":{"allowCopy":true}}}
+{"to":"helper","msg":{"id":"c23","method":"textio.selection","params":{"allowCopy":true,"caretSettleMs":600,"caretPollMs":60,"modifierWaitMs":800}}}
 {"to":"app","msg":{"id":"c23","result":{"text":"const x = 1","via":"copy","ms":41.3,"steps":["focus=AXGroup","range=nil","copy: changed"]}}}
 {"to":"helper","msg":{"id":"c39","method":"textio.selection","params":{"allowCopy":true}}}
 {"to":"app","msg":{"id":"c39","result":{"text":"[Image]","image":"/9j/","via":"copy","ms":42.1,"steps":["copy: changed"]}}}
