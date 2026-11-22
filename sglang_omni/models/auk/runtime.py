@@ -53,22 +53,17 @@ def autocast(device: torch.device, dtype: torch.dtype) -> torch.autocast:
 
 
 @lru_cache(maxsize=None)
-def load_vae(
-    checkpoint: str, device: str, fold_weight_norm: bool = False
-) -> BigVGANFlowVAE:
+def load_vae(checkpoint: str, device: str) -> BigVGANFlowVAE:
     config = make_runtime_config(checkpoint)
     vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
     load_vae_weights(vae, checkpoint)
     vae = vae.to(device=device).eval().requires_grad_(False)
-    if fold_weight_norm:
-        for module in vae.modules():
-            parameters = dict(module.named_parameters(recurse=False))
-            if "weight_g" in parameters and "weight_v" in parameters:
-                remove_weight_norm(module)
-            else:
-                pass
-    else:
-        pass
+    for module in vae.modules():
+        parameters = dict(module.named_parameters(recurse=False))
+        if "weight_g" in parameters and "weight_v" in parameters:
+            remove_weight_norm(module)
+        else:
+            pass
     return vae
 
 

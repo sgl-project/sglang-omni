@@ -138,7 +138,7 @@ def create_conditioning_executor(
         )
         offload.switch(None)
         with torch_memory_saver.region(tag="auk_vae", enable_cpu_backup=False):
-            vae = load_vae(checkpoint, str(device), fold_weight_norm=True)
+            vae = load_vae(checkpoint, str(device))
         vae_path = resolve_vae_file(checkpoint)
         assert vae_path is not None
         offload.register(
