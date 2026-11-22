@@ -211,13 +211,7 @@ class Stage:
         for pool, receiver in getattr(scheduler, "kv_registrations", ()):
             self.comm.register_kv_pool(pool)
             if receiver is not None:
-                logical_name = self.replica_topology.logical_name(name)
-                alias = (
-                    f"{name}:kv"
-                    if name != logical_name and pool.pool_id == f"{logical_name}:kv"
-                    else None
-                )
-                self.comm.register_kv_receiver(pool.pool_id, receiver, alias=alias)
+                self.comm.register_kv_receiver(pool.pool_id, receiver)
             else:
                 pass
 
@@ -1736,11 +1730,6 @@ class Stage:
             to_stage = self.resolve_target_instance(
                 transfer.request_id, transfer.to_stage
             )
-            target_pool_id = (
-                transfer.target_pool_id
-                if to_stage == transfer.to_stage
-                else f"{to_stage}:kv"
-            )
             metadata = {
                 **transfer.metadata,
                 "replica_bindings": self.replica_bindings.get(transfer.request_id),
@@ -1752,7 +1741,7 @@ class Stage:
                 request_id=transfer.request_id,
                 source_pool_id=transfer.source_pool_id,
                 source_page_indices=transfer.source_page_indices,
-                target_pool_id=target_pool_id,
+                target_pool_id=transfer.target_pool_id,
                 to_stage=to_stage,
                 metadata=metadata,
                 transfer_id=transfer.transfer_id,

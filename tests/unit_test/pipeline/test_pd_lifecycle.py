@@ -41,6 +41,7 @@ from sglang_omni.scheduling.pd_utils import (
     serialize_kv_allocator,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
 from tests.unit_test.pipeline.helpers import make_stage
 from tests.unit_test.pipeline.test_pd_utils import (
     KVAllocator,
@@ -745,26 +746,11 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
             await prefill.comm.close()
             await decode.comm.close()
 
-    asyncio.run(run())
-
-
-def test_replicated_decode_target_uses_bound_instance_and_pool():
-    async def run():
-        stage = make_stage(replica_topology={"decode": ["decode@r0", "decode@r1"]})
-        stage.record_replica_bindings("request-1", {"decode": 1})
-        transfer = make_transfer()
-
-        async def send(**kwargs):
-            kwargs["lease"].release()
-
-        stage.comm.send_kv_pages = AsyncMock(side_effect=send)
-        await stage.send_kv_transfer(transfer)
-        kwargs = stage.comm.send_kv_pages.call_args.kwargs
-        assert kwargs["to_stage"] == "decode@r1"
-        assert kwargs["target_pool_id"] == "decode@r1:kv"
-        transfer.lease.release.assert_called_once()
-
-    asyncio.run(run())
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(run())
+    (handoff,) = events_named(events, "comm_kv_send_start")
+    assert handoff["to_stage"] == "decode@r1"
+    assert handoff["target_pool_id"] == "decode:kv"
 
 
 @pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])

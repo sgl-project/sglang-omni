@@ -996,18 +996,17 @@ class MultiProcessPipelineRunner:
                 )
             else:
                 pass
+            target_pool_id = f"{source.partner_stage}:kv"
             for target_name in replica_topology.instances(source.partner_stage):
                 target = layouts.get(target_name)
                 if target is None or target.role != "decode":
                     raise RuntimeError(
                         f"PD Prefill stage {stage_name!r} targets missing Decode stage {target_name!r}"
                     )
-                elif target.pool_id not in (
-                    f"{target_name}:kv",
-                    f"{replica_topology.logical_name(target_name)}:kv",
-                ):
+                elif target.pool_id != target_pool_id:
                     raise RuntimeError(
-                        f"PD Decode stage {target_name!r} registered unexpected KV pool {target.pool_id!r}"
+                        f"PD Decode stage {target_name!r} registered KV pool "
+                        f"{target.pool_id!r}, expected {target_pool_id!r}"
                     )
                 elif not source.layout.compatible_with(target.layout):
                     raise RuntimeError(

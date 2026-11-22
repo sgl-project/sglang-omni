@@ -68,11 +68,13 @@ def failing_factory():
 
 
 class PDKVLayoutProbe(FakeScheduler):
-    def __init__(self, pd_role: Literal["prefill", "decode"], page_size: int) -> None:
+    def __init__(
+        self, pd_role: Literal["prefill", "decode"], page_size: int, pool_id: str
+    ) -> None:
         super().__init__()
         self.layout = PDStageKVLayout(
             role=pd_role,
-            pool_id=f"{pd_role}:kv",
+            pool_id=pool_id,
             layout=KVPoolLayout("model", page_size, (KVBufferSpec("key", 64),)),
             partner_stage="decode" if pd_role == "prefill" else None,
         )
@@ -372,9 +374,25 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("decode_replicas", "decode_page_size"), [(1, 2), (2, 1)])
+@pytest.mark.parametrize(
+    ("decode_replicas", "decode_page_size", "decode_pool_id", "startup_error"),
+    [
+        (1, 2, "decode:kv", "KV layouts do not match between 'prefill' and 'decode'"),
+        (2, 1, "decode:kv", None),
+        (
+            2,
+            1,
+            "decode@r0:kv",
+            "Decode stage 'decode@r0' registered KV pool 'decode@r0:kv', expected 'decode:kv'",
+        ),
+    ],
+)
 async def test_mp_runner_validates_pd_pair_at_startup(
-    tmp_path: Path, decode_replicas: int, decode_page_size: int
+    tmp_path: Path,
+    decode_replicas: int,
+    decode_page_size: int,
+    decode_pool_id: str,
+    startup_error: str | None,
 ) -> None:
     config = PipelineConfig(
         model_path="model",
@@ -384,14 +402,18 @@ async def test_mp_runner_validates_pd_pair_at_startup(
                 name="prefill",
                 process="prefill",
                 factory_path=f"{__name__}.PDKVLayoutProbe",
-                factory=FactoryArgs(pd_role="prefill", page_size=1),
+                factory=FactoryArgs(
+                    pd_role="prefill", page_size=1, pool_id="prefill:kv"
+                ),
                 next="decode",
             ),
             StageConfig(
                 name="decode",
                 process="decode",
                 factory_path=f"{__name__}.PDKVLayoutProbe",
-                factory=FactoryArgs(pd_role="decode", page_size=decode_page_size),
+                factory=FactoryArgs(
+                    pd_role="decode", page_size=decode_page_size, pool_id=decode_pool_id
+                ),
                 terminal=True,
             ),
         ],
@@ -401,7 +423,7 @@ async def test_mp_runner_validates_pd_pair_at_startup(
     runner = mp_runner.MultiProcessPipelineRunner(config)
 
     try:
-        if decode_page_size == 1:
+        if startup_error is None:
             await runner.start(timeout=30.0)
             assert set(runner.stage_control_endpoints) == {
                 "prefill",
@@ -409,10 +431,7 @@ async def test_mp_runner_validates_pd_pair_at_startup(
                 "decode@r1",
             }
         else:
-            with pytest.raises(
-                RuntimeError,
-                match="KV layouts do not match between 'prefill' and 'decode'",
-            ):
+            with pytest.raises(RuntimeError, match=startup_error):
                 await runner.start(timeout=30.0)
             assert not runner.started
     finally:
