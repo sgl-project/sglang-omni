@@ -17,7 +17,7 @@ Send one audio file to `POST /v1/audio/transcriptions`. The examples below use `
 
 ## DSpark decoding
 
-To enable [DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark), set `speculative_algorithm` to `DSPARK` and use `temperature=0`. The registry pins the draft revision automatically:
+To enable [DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark), set `speculative_algorithm` to `DSPARK`. The registry pins the draft revision automatically. Greedy and sampled requests (`temperature` above 0) and `repetition_penalty` all run under the draft:
 
 ```bash
 sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
