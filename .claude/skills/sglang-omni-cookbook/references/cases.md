@@ -6,6 +6,8 @@ Lead with the supported CustomVoice path from installation and readiness to spee
 
 The Qwen3-TTS review found that removing a checked-in `--config` changed concurrency, the GPU memory fraction, and vocoder execution. A missing shell continuation also turned `--port` into a separate command. Compare commands during prose edits and verify the effective setup when a command changes. [Command review](https://github.com/sgl-project/sglang-omni/pull/3031#issuecomment-6385566650)
 
+Qwen3-TTS links its tuning, reference, platform deployment, and benchmark subpages from **Advanced Guides**. The subpages use `orphan: true` and explicit toctree exemptions, so the model page is the only Qwen3-TTS item in the Cookbook sidebar. [Advanced Guides layout](https://github.com/sgl-project/sglang-omni/pull/3737)
+
 ## Qwen3-ASR
 
 Lead with the default server and a choice between file upload, streamed output, and live audio input. Share the multipart request, common response formats, and SSE client with ASR Model Usage. Keep the model's vocabulary bias, language hints, long-audio limits, realtime session details, and DFlash behavior with the model. Consolidate related Ascend NPU setup in one platform section and link to the platform installation guide. When adapting this pattern to another ASR model, verify translation, timestamps, and realtime support per backend before sending readers to a shared example. [Shared ASR guide](https://github.com/sgl-project/sglang-omni/pull/3700) · [Cookbook order](https://github.com/sgl-project/sglang-omni/pull/3980)
@@ -13,6 +15,8 @@ Lead with the default server and a choice between file upload, streamed output, 
 ## Qwen3-Omni
 
 Treat a buffered multimodal request, SSE output, and a persistent realtime session as three reader paths. Put shared request formats and modality examples in Omni Model Usage. Keep the supported modality matrix, Thinker-only and speech deployment choices, placement, and model-specific constraints in the Cookbook. Qualify readiness, warmup, and realtime event schemas by pipeline. The shared guide can point readers to the protocol for their deployment. When moving shared memory or readiness guidance, verify that the model's selector and compatibility matrix still describe the same combinations. [Shared Omni guide](https://github.com/sgl-project/sglang-omni/pull/3669) · [Protocol outline](https://github.com/sgl-project/sglang-omni/pull/3669#issuecomment-6725917645) · [Memory and readiness follow-up](https://github.com/sgl-project/sglang-omni/pull/4214)
+
+For the speech tuning split, keep the model page as the sidebar entry and the three direct links from the speech chunking, Code2Wav execution, and speech stage placement summaries to their sections in the tuning guide. Preserve the original section fragments on the model page. [Sidebar review](https://github.com/sgl-project/sglang-omni/pull/4214#issuecomment-7078224734)
 
 ## Zonos3
 
