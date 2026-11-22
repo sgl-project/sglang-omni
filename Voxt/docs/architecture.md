@@ -25,6 +25,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── icons/            Solar icons (names.txt → solar_gen.go)
 │   ├── logs/             log ring + rotated files
 │   ├── notify/           the notification centre (kept in the store's documents)
+│   ├── activity/         Home's activity calendar: results, characters and speech time per day (document activity:days)  (leaf)
 │   ├── lang/             the language table, 652 languages                                     (leaf)
 │   ├── permission/       Microphone, Accessibility and Speech Recognition (purego on darwin;
 │   │                     Fake for tests); system audio is asked for through the helper    (leaf)
@@ -191,7 +192,7 @@ Session and its overlay share one boundary. `session_overlay_state.go`, `session
 
 Updates uses the same boundary for Settings → About and the GitHub release dialog. `updates_view_state.go` turns updater preferences, the running version, the installed-update flag, and release results into serializable display data. `updates.go` and `updates_github.go` keep updater I/O, checks, watchers, cards, and action implementations. `updates_view.go` consumes that data, user-intent actions from `updates_actions.go`, and `updatesLocalUI`. The demo renders the same fixtures without an updater, browser, relauncher, network, or settings service.
 
-Home follows it too. `home_view_state.go` and `home_readiness_state.go` build serializable display data with explicit translators and clocks. `home_controller.go` owns history reads, readiness snapshots, and the actions from `home_actions.go`. `home_page.go` and `home_ready.go` consume only view state, actions, and local widget state. `pages.go` composes the feature-owned Try card; the Home demo leaves that card out while rendering every Home fixture.
+Home follows it too. `home_view_state.go` and `home_readiness_state.go` build serializable display data with explicit translators and clocks. `home_controller.go` owns history reads, readiness snapshots, and the actions from `home_actions.go`. `home_page.go` and `home_ready.go` consume only view state, actions, and local widget state. `pages.go` composes the feature-owned Try card; the Home demo leaves that card out while rendering every Home fixture. The activity calendar is `home_activity_view_state.go` (builder), `home_activity_controller.go` (reads, counts and stores `internal/activity`'s log) and `home_activity_view.go`. Beside the calendar it shows every result's characters, the characters a minute of speech held, and the days in a row (`activity.Stats`). Its per-day counts (results, characters written and spoken, speech time; no text) are kept apart from the history, so the history's clean-up and Settings → Privacy → Clear history leave them; only Erase everything removes them.
 
 Onboarding follows that boundary too. `onboarding_view_state.go`, `onboarding_models_state.go`, `onboarding_steps_state.go`, and `onboarding_try_state.go` turn permission reads, settings, model status, and session snapshots into serializable display data. `onboarding.go` owns the guide's lifecycle, model surveys, and user-intent actions from `onboarding_actions.go`. The onboarding view files consume the display data and local widget state. The demo renders the same onboarding fixtures without store, helper, model, permission, network, or Voxt data-directory access.
 

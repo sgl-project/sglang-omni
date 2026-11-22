@@ -14,7 +14,7 @@ const promptMinLines = 4
 
 func translateSettings(c *ui.Context, state *featurePromptViewState, actions featureActions, local *featureUI) {
 	sectionTitle(c, i18n.T("Translation"))
-	caption(c, i18n.T("How Translate works: speech recognition writes what you said in your own language, then the language model translates it into the target language with the prompt in Your rules. A prompt of your own replaces the built-in one and gets the target language only where it says {{TARGET_LANGUAGE}}. Selected text already in the target language goes into your main language instead."))
+	caption(c, i18n.T("Speech recognition writes what you said, then the language model translates it into the target language. Selected text already in the target language goes into your main language."))
 	local.lang = state.Target.Value
 	featureModelSelectRow(c, "tl-target", i18n.T("Target language"), i18n.T("Target language for Translate"), &local.lang, state.Target, actions.selectFeatureTarget)
 	if state.TargetWarning {
@@ -157,7 +157,7 @@ func featurePreviewBody(c *ui.Context, prefix string, state *featureRulesViewSta
 		caption(c, state.PreviewError)
 		return
 	}
-	caption(c, i18n.T("The whole prompt for a sample input: your rules, then your personal dictionary when it is on, then the input. The values of the variables, filled in from your settings now, are marked."))
+	caption(c, i18n.T("The whole prompt for a sample input, with the variables filled in from your settings."))
 	fillCard(c.Key(prefix + "-preview-prompt")).Padding(px(t, sp3)).Children(func() {
 		ui.RichText(c, markValues(tok(t).AccentInk, state.PreviewPrompt, state.PreviewValues)...).Label(state.PreviewPrompt).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 	})

@@ -76,7 +76,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         mm_attention_backend: str | None,
         enable_pre_lm_encoder: bool,
         pre_lm_cache_max_entries: int,
@@ -85,6 +85,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         pre_lm_max_batch_wait_ms: int,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        early_request_builds: bool | None,
         stream_emit_interval_s: float,
     ) -> None:
         self.max_running_requests = max_running_requests
@@ -113,6 +114,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.early_request_builds = early_request_builds
         self.stream_emit_interval_s = stream_emit_interval_s
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.feature_extractor: FunAsrNanoFeatureExtractor | None = None
@@ -492,11 +494,20 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (wilsonzheng0327): with the draft a decode round is a whole verify round, so by default a ready prefill is no longer held during decode, as for Qwen3-ASR and MOSS-TD.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.speculative_worker_class is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
             "request_build_max_workers": (
                 1 if self.uses_torch_mps() else self.request_build_max_workers
             ),
             "request_build_max_pending": self.request_build_max_pending,
+            # note (wilsonzheng0327): only with the draft by default, where a request would otherwise wait for the rest of a verify round before its build starts; without it, early builds made Fun-ASR's first output later.
+            "early_request_builds": (
+                self.speculative_worker_class is not None
+                if self.early_request_builds is None
+                else self.early_request_builds
+            ),
         }
