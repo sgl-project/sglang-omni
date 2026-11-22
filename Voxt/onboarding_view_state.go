@@ -344,7 +344,7 @@ func buildOnboardingViewState(translator *i18n.Translator, input onboardingViewS
 		state.Subtitle = translator.T("Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.")
 	case obRewrite:
 		state.Title = translator.T("Try Rewrite")
-		state.Subtitle = translator.T("Press the shortcut or Start and say what to write.")
+		state.Subtitle = translator.T("Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.")
 	default:
 		state.Title = translator.T("More to explore")
 		state.Subtitle = translator.T("Voxt is ready. Two more things make it yours.")

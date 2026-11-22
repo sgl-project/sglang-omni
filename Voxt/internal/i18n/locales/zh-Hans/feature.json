@@ -74,7 +74,7 @@
   "Shows translations in the answer card instead of typing them.": "译文显示在答案卡片里，不直接输入。",
   "Shows answers in the answer card, where you can follow up. When off, the answer is typed or replaces the selection.": "回答显示在答案卡片里，可以继续追问。关闭时直接输入，或替换选中的文字。",
   "Speech recognition writes what you said, then the language model translates it into the target language. Selected text already in the target language goes into your main language.": "先识别你说的话，再由语言模型翻译成目标语言。选中的文字已经是目标语言时，会译成你的主要语言。",
-  "Automatic is English, or Chinese when your main language is English.": "“自动”译成英语；你的主要语言是英语时，译成中文。",
+  "Automatic is English, or Chinese when your main language is English.": "“自动”译成英语；当你的主要语言是英语时，译成中文。",
   "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing.": "你的提示词里没有 {{TARGET_LANGUAGE}}，这个菜单不起作用。",
   "Add {{TARGET_LANGUAGE}} to the prompt": "在提示词里加上 {{TARGET_LANGUAGE}}",
   "Translate the text into {{TARGET_LANGUAGE}}.": "把文字翻译成{{TARGET_LANGUAGE}}。",

@@ -45,7 +45,7 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 			actions.setSendWindow(local.sendWindow)
 		}
 	})
-	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("With Rewrite, sends the image you copied with what you said. Copied text, and copied files that are not images, are not sent."), func() {
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("With Rewrite, Voxt sends the image you copied to the language model with what you said."), func() {
 		if ui.Switch(c.Key("priv-copied"), &local.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
 			actions.setSendClipboardImage(local.sendClipboard)
 		}

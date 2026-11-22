@@ -17,7 +17,7 @@
   "Free, and the text stays on this Mac.": "免费，文字不离开这台 Mac。",
   "From your app in the Volcengine speech console. Use its Access Token as the key below. Keys from the newer console need no App ID.": "火山引擎语音控制台里应用的 App ID，下面的密钥填它的 Access Token。新版控制台的 API Key 不需要 App ID。",
   "Get a key": "获取密钥",
-  "If the language model does not answer by then, the recognised text is inserted without the clean-up. Automatic waits 20 seconds to a minute, by the text's length.": "当等不到语言模型回答时，将插入未整理的原文。“自动”按文字长短等待 20 秒到 1 分钟。",
+  "If the language model does not answer by then, Voxt inserts the text as recognised, without the clean-up. Automatic waits 20 seconds to a minute, depending on the text's length.": "Voxt 等不到语言模型回答时，会插入未整理的原文。“自动”按文字长短等待 20 秒到 1 分钟。",
   "Leave it empty for the service's own. Only https://, or http:// to this Mac.": "留空则使用服务自己的地址。只能用 https://，或指向本机的 http://。",
   "Leave it empty for the service's own. Only wss://, or ws:// to this Mac.": "留空则使用服务自己的地址。只能用 wss://，或指向本机的 ws://。",
   "Model": "模型",

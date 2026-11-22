@@ -23,7 +23,7 @@
       false
     ],
     "title": "Try Rewrite",
-    "subtitle": "Press the shortcut or Start and say what to write.",
+    "subtitle": "Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.",
     "recording": false,
     "try": {
       "prefix": "ob-rw",

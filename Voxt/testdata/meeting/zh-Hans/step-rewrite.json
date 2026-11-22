@@ -23,7 +23,7 @@
       false
     ],
     "title": "试一试改写",
-    "subtitle": "按快捷键或“开始”，说一句想写的内容试试。",
+    "subtitle": "改写按你说的写一段内容，或者修改选中的文字。按快捷键（或点“开始”），说一句想写的内容。",
     "recording": false,
     "try": {
       "prefix": "ob-rw",

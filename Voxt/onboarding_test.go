@@ -398,7 +398,7 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 		obPermissions: "Voxt needs the microphone to hear you",
 		obTranscribe:  "Transcribe writes down what you say",
 		obTranslate:   "Translate turns the selected text",
-		obRewrite:     "Press the shortcut or Start and say what to write.",
+		obRewrite:     "Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.",
 	} {
 		a.obGo(step)
 		if !has(tt, want) {
