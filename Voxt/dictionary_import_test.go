@@ -11,6 +11,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictapi"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
@@ -113,6 +114,14 @@ func TestPageImportRefusesOversizeFile(t *testing.T) {
 	got := terms(t, a)
 	if len(got) != 1 || got[0].Term != "at-limit" {
 		t.Fatalf("imports at and over the limit saved %v, want only at-limit", got)
+	}
+
+	i18n.SetLocale("zh-Hans")
+	a.toasts = nil
+	a.importFile(path)
+	frames(tt)
+	if got := strings.Join(a.toasts, "\n"); !strings.Contains(got, "无法导入：文件超过 8 MB") && !has(tt, "无法导入：文件超过 8 MB") {
+		t.Fatalf("Chinese oversize import toast %q, want a translated size limit", got)
 	}
 }
 

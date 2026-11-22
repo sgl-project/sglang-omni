@@ -60,7 +60,7 @@ func (a *app) importFile(path string) {
 				return i18n.T("Could not import: %v", err)
 			}
 			if len(data) > dictapi.MaxBytes {
-				return i18n.T("Could not import: %v", fmt.Errorf("the file is larger than %d MB", dictapi.MaxBytes>>20))
+				return i18n.T("Could not import: %v", i18n.T("the file is larger than %d MB", dictapi.MaxBytes>>20))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()

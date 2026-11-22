@@ -31,7 +31,7 @@ When the import saves terms, Voxt refreshes the Dictionary page and shows the sa
 | 0 | Done (or counted, with `--dry-run`). |
 | 2 | Wrong arguments. |
 | 3 | Voxt is not running. |
-| 4 | The import stopped: the file is not a CSV or text list of terms or a Voxt 1.x export, or the dictionary could not be saved. stderr says which. |
+| 4 | The import stopped, or its JSON result could not be written: the file is not a CSV or text list of terms or a Voxt 1.x export, the dictionary could not be saved, or stdout failed. stderr says which. |
 | 5 | The file does not exist or cannot be read. |
 
 ## Privacy

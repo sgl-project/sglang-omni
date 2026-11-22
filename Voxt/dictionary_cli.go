@@ -91,7 +91,10 @@ func dictionaryCLI(args []string, stdout, stderr io.Writer, socket string, openF
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetEscapeHTML(false)
-		enc.Encode(res)
+		if err := enc.Encode(res); err != nil {
+			fmt.Fprintf(stderr, "Cannot write the import result: %v\n", err)
+			return exitInterrupted
+		}
 		return exitOK
 	}
 	verb := "Imported"

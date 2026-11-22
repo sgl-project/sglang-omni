@@ -96,7 +96,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		conn.SetWriteDeadline(time.Now().Add(lineTimeout))
 		enc := json.NewEncoder(conn)
 		enc.SetEscapeHTML(false)
-		enc.Encode(r)
+		_ = enc.Encode(r) // the client reports a missing or partial response as a connection failure
 	}
 	br := bufio.NewReaderSize(conn, maxRequest)
 	line, err := br.ReadSlice('\n')

@@ -116,6 +116,24 @@ func TestReadDictionaryDataStopsAtLimit(t *testing.T) {
 	}
 }
 
+type dictionaryErrorWriter struct{}
+
+func (dictionaryErrorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("output stopped")
+}
+
+func TestDictionaryCLIReportsJSONWriteFailure(t *testing.T) {
+	socket := dictionaryServer(t, func(context.Context, string, []byte, bool) (dictapi.Result, error) {
+		return dictapi.Result{Added: 1}, nil
+	})
+	file := writeTermsFile(t, "terms.csv", "Sol\n")
+	var stderr strings.Builder
+	code := dictionaryCLI([]string{"import", file, "--json"}, dictionaryErrorWriter{}, &stderr, socket, openDictionaryFile)
+	if code != exitInterrupted || !strings.Contains(stderr.String(), "Cannot write the import result: output stopped") {
+		t.Fatalf("code %d, stderr %q, want the output error", code, stderr.String())
+	}
+}
+
 func TestDictionaryCLIUsage(t *testing.T) {
 	socket := dictionaryServer(t, func(context.Context, string, []byte, bool) (dictapi.Result, error) {
 		t.Error("the app was called for a usage error")
