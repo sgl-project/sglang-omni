@@ -448,7 +448,9 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 		t.Fatalf("end %s %q, requests %+v", end.State, end.Result, reqs)
 	}
 	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS ||
-		p[0].CaretSettleMS != selectionSettleMS || p[0].CaretPollMS != selectionPollMS || p[0].ModifierWaitMS != selectionModifierWaitMS {
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
 		t.Errorf("selection params %+v", p)
 	}
 }

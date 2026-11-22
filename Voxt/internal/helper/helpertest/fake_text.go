@@ -159,6 +159,7 @@ func (f *fake) textio(m proto.Message) {
 	case proto.MethodTextSelection:
 		var p proto.SelectionParams
 		m.DecodeParams(&p)
+		appendLine(f.opts["selection-log"], p)
 		res := proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: []string{"focus=AXTextArea"}}
 		if path := f.opts["selection-file"]; path != "" {
 			if b, _ := os.ReadFile(path); len(b) > 0 {

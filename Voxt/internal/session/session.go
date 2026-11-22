@@ -482,6 +482,10 @@ const (
 	DefaultEndWordPause     = time.Second // Voxt 1.x's silence after the end word
 )
 
+// intp is v's address: the selection params carry their budgets as
+// pointers, so an explicit 0 reaches the helper (nil is its default).
+func intp(v int) *int { return &v }
+
 // StartRequest starts a session.
 type StartRequest struct {
 	Kind Kind

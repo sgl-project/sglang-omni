@@ -39,12 +39,14 @@ type SelectionParams struct {
 	// caret-only Accessibility reading can predate a selection made with
 	// ⌘A in the same motion as the shortcut, so it waits out a settle, a
 	// reading every CaretPollMS, before it is the answer (#4467).
-	CaretSettleMS int `json:"caretSettleMs,omitempty"`
-	CaretPollMS   int `json:"caretPollMs,omitempty"`
+	// Pointers, so an explicit 0 reaches the helper and disables the
+	// wait; nil is the default.
+	CaretSettleMS *int `json:"caretSettleMs,omitempty"`
+	CaretPollMS   *int `json:"caretPollMs,omitempty"`
 	// ModifierWaitMS (default 800): the helper's ⌘C waits this long for a
 	// shortcut's still-held Control, Option or Shift to lift, so the app
 	// reads ⌘C and not a key that copies nothing (#3835).
-	ModifierWaitMS int `json:"modifierWaitMs,omitempty"`
+	ModifierWaitMS *int `json:"modifierWaitMs,omitempty"`
 }
 
 // SelectionResult is the text ("" for none) and how it was read. Image

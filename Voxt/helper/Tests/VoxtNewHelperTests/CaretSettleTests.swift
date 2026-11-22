@@ -51,6 +51,23 @@ final class CaretSettleTests: XCTestCase {
         XCTAssertTrue(r.steps?.contains("caret-settle") ?? false, "steps \(r.steps ?? [])")
     }
 
+    /// A caretSettleMs of 0 on the wire disables the settle: the
+    /// dictionary's AX-only probe, which must answer inside its own
+    /// 300 ms, gets the caret's answer at once.
+    func testCaretSettleZeroDisables() async throws {
+        let f = Fake([caret, caret])
+        var p = SelectionParams()
+        p.caretSettleMs = 0
+        p.caretPollMs = 60
+        let r = try await TextIO.selection(p, world: f.world())
+        XCTAssertNil(r.text)
+        XCTAssertEqual(r.via, SelectionVia.none)
+        XCTAssertEqual(f.reads, 1, "no polling with a zero settle")
+        XCTAssertEqual(f.now, 0)
+        XCTAssertFalse(r.steps?.contains("caret-settle") ?? true)
+        XCTAssertEqual(r.steps?.last, "caret-only")
+    }
+
     /// A caret that stays a caret is the answer once the app's settle
     /// budget is spent: caret-only, none, no ⌘C.
     func testCaretSettleGivesUpAfterTheBudget() async throws {

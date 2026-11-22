@@ -78,9 +78,9 @@ func (r *run) readSelection() string {
 	cfg := r.m.cfg
 	timeout, params := cfg.ReadTimeout, proto.SelectionParams{
 		AllowCopy:      AllowCopy(r.req.Target.BundleID),
-		CaretSettleMS:  selectionSettleMS,
-		CaretPollMS:    selectionPollMS,
-		ModifierWaitMS: selectionModifierWaitMS,
+		CaretSettleMS:  intp(selectionSettleMS),
+		CaretPollMS:    intp(selectionPollMS),
+		ModifierWaitMS: intp(selectionModifierWaitMS),
 	}
 	if r.req.Kind == store.KindRewrite {
 		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
