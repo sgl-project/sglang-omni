@@ -16,6 +16,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
@@ -123,7 +124,7 @@ func main() {
 	// (updates_github.go); a development build has no updater: no Check
 	// for Updates…, and About says so.
 	v := mygo.App.Version()
-	switch updates.BuildBackend(mygo.Updater.HasFeed(), checksReleases(mygo.IsDev(), v)) {
+	switch updates.BuildBackend(mygo.Updater.HasFeed(), checksReleases(runtime.GOOS, mygo.IsDev(), v)) {
 	case updates.FeedUpdates:
 		a.upd = pluginUpdates{}
 	case updates.GitHubUpdates:
