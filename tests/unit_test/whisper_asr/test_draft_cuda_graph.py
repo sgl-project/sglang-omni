@@ -18,7 +18,10 @@ from torch import nn
 from transformers import WhisperConfig
 
 from sglang_omni.models.whisper_asr import sglang_model
-from sglang_omni.models.whisper_asr.draft_cuda_graph import DraftDecodeGraph
+from sglang_omni.models.whisper_asr.draft_cuda_graph import (
+    DraftDecodeGraph,
+    draft_capture_stream,
+)
 from sglang_omni.platforms import current_platform
 
 speculative = pytest.importorskip("sglang_omni.models.whisper_asr.speculative")
@@ -425,14 +428,23 @@ def test_a_draft_graph_refuses_torch_cuda_graphs_default_capture_stream(
 
 
 def capture_draft_graphs(
-    monkeypatch: pytest.MonkeyPatch, max_requests: int
+    monkeypatch: pytest.MonkeyPatch,
+    max_requests: int,
+    streams_since_default: int | None = None,
 ) -> list[tuple[int, object]]:
-    """Run init_cuda_graphs for a request pool of max_requests rows, with a stand-in for PyTorch's 32 pool streams handed out in turn, and return each captured graph's batch size and stream."""
+    """Run init_cuda_graphs for a request pool of max_requests rows, with a stand-in for PyTorch's 32 pool streams handed out in turn, and return each captured graph's batch size and stream; with streams_since_default, torch.cuda.graph's default stream was made that many pool streams earlier."""
     pool_streams = itertools.cycle([object() for _ in range(32)])
     monkeypatch.setattr(torch.cuda, "Stream", lambda: next(pool_streams))
     monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: (0, 0))
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (0, 0))
-    monkeypatch.setattr(torch.cuda.graph, "default_capture_stream", None)
+    if streams_since_default is None:
+        monkeypatch.setattr(torch.cuda.graph, "default_capture_stream", None)
+    else:
+        monkeypatch.setattr(
+            torch.cuda.graph, "default_capture_stream", next(pool_streams)
+        )
+        for _ in range(streams_since_default):
+            next(pool_streams)
     captured = []
     monkeypatch.setattr(
         speculative,
@@ -459,11 +471,16 @@ def capture_draft_graphs(
     return captured
 
 
-def test_the_draft_graphs_capture_on_the_pool_stream_after_torch_cuda_graphs_default(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "streams_since_default",
+    [None, 0, 31],
+    ids=["no_default_yet", "default_just_made", "default_comes_round_again"],
+)
+def test_the_draft_graphs_never_capture_on_torch_cuda_graphs_default_stream(
+    monkeypatch: pytest.MonkeyPatch, streams_since_default: int | None
 ) -> None:
-    """torch.cuda.Stream() hands out 32 pool streams in turn, and the encoder's graphs make torch.cuda.graph's default stream only after the draft graphs capture, so a draft stream taken first could later be handed out again as that default."""
-    captured = capture_draft_graphs(monkeypatch, 64)
+    """torch.cuda.Stream() hands out 32 pool streams in turn. With no default stream yet, the encoder's graphs would make it after the draft graphs capture and could be handed the draft stream; a default stream made 31 streams earlier is the next one handed out (#4397's CUDA test hit this in the accelerator job)."""
+    captured = capture_draft_graphs(monkeypatch, 64, streams_since_default)
     assert torch.cuda.graph.default_capture_stream is not None
     assert all(
         stream is not torch.cuda.graph.default_capture_stream for _, stream in captured
@@ -499,7 +516,7 @@ def test_replay_decodes_the_loaded_round_as_the_steps_run_eagerly(
         for batch_size in (4, 1)
     }
     memory_pool = torch.cuda.graph_pool_handle()
-    capture_stream = torch.cuda.Stream()
+    capture_stream = draft_capture_stream()
     for graph in graphs.values():
         graph.capture(memory_pool, capture_stream)
 
