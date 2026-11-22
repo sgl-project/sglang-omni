@@ -30,6 +30,6 @@
     "edit_open": true,
     "trigger": "sign off",
     "text": "Cheers,",
-    "error": "已经有片段用了这个触发词。"
+    "error": "已设置过这个触发词。"
   }
 }

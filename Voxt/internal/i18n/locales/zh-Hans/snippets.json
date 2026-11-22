@@ -7,7 +7,7 @@
   "Snippet": "内容",
   "Trigger": "触发词",
   "Too long: a trigger takes %d characters, a snippet %d.": "太长了：触发词最多 %d 个字，内容最多 %d 个字。",
-  "Another snippet has this trigger.": "已经有片段用了这个触发词。",
+  "Another snippet has this trigger.": "已设置过这个触发词。",
   "Type the text it stands for.": "填写要打出的内容。",
   "Type what you will say.": "填写你要说的触发词。",
   "What Voxt types, as written here.": "Voxt 会原样打出这里的文字。",
