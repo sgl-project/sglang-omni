@@ -191,6 +191,18 @@ func stripControlMarkup(s string, inputs ...string) string {
 			s = strings.TrimSpace(strings.TrimSuffix(end, "<|im_end|>"))
 		}
 	}
+	// Record the original answer start before orphan-close removal can move a structural marker there.
+	trimmed = strings.TrimLeft(s, " \t\r\n")
+	for _, token := range controlTokens {
+		if !strings.HasPrefix(token, "<|tool") || !strings.HasPrefix(trimmed, token) {
+			continue
+		}
+		rest := trimmed[len(token):]
+		if !structuralControlSuffix(rest) && !toolPayload(rest) && literalToolMarker(trimmed, 0, token, input, previous, true) {
+			literalMarker = token
+		}
+		break
+	}
 	for _, tag := range thinkingTags {
 		openSearchFrom, closeSearchFrom := 0, 0
 		literalOpen := -1

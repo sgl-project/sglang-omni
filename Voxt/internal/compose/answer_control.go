@@ -130,7 +130,7 @@ func proseTokenMention(s string, start int, token string, inputs ...string) bool
 		if !strings.HasPrefix(token, "<|tool") || toolPayload(rest) {
 			return false
 		}
-		if literalToolMarker(s, start, token, input, previous) {
+		if literalToolMarker(s, start, token, input, previous, false) {
 			return true
 		}
 	}
@@ -164,12 +164,32 @@ func toolPayload(rest string) bool {
 	if rest[index] == '{' {
 		return true
 	}
-	end := strings.IndexByte(rest[index+1:], ']')
+	end, depth := -1, 0
+	for i := index; i < len(rest) && end < 0; i++ {
+		switch rest[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+	}
 	candidate := ""
 	if end >= 0 {
-		candidate = rest[index : index+end+2]
+		candidate = rest[index : end+1]
 		if json.Valid([]byte(candidate)) || strings.ContainsAny(candidate, "\"{") {
 			return true
+		}
+		for index := 1; index < len(candidate)-1; index++ {
+			if candidate[index] != '\'' {
+				continue
+			}
+			before := strings.TrimSpace(candidate[:index])
+			if strings.HasSuffix(before, "[") || strings.HasSuffix(before, ",") {
+				return true
+			}
 		}
 	}
 	before := strings.TrimSpace(rest[:index])
@@ -196,7 +216,7 @@ func controlMarkerCue(field string) bool {
 	}
 }
 
-func literalToolMarker(s string, start int, token, input string, previous []string) bool {
+func literalToolMarker(s string, start int, token, input string, previous []string, allowAnswerStart bool) bool {
 	if !preservedControlToken(token, input) && !previousControlToken(token, previous) {
 		return false
 	}
@@ -213,7 +233,7 @@ func literalToolMarker(s string, start int, token, input string, previous []stri
 	beforeProse := start > 0 && (unicode.Is(unicode.Han, before) || unicode.IsSpace(before) || unicode.IsPunct(before))
 	afterProse := unicode.Is(unicode.Han, after) || unicode.IsSpace(after) || unicode.IsPunct(after)
 	// Keep the explicit prose scope: plain arguments must remain tool payloads.
-	return (beforeCue || afterCue) && beforeProse && afterProse
+	return (beforeCue || afterCue) && (beforeProse || allowAnswerStart && start == 0) && afterProse
 }
 
 func exactThinkingPair(pair string, input string, previous []string) bool {

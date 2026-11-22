@@ -58,6 +58,7 @@ func TestAnswerCleanupWithPreviousInput(t *testing.T) {
 		{name: "two inline literals", text: "Use <|im_end|> <think> tag", previous: "explain <|im_end|> and <think>", want: "Use"},
 		{name: "literal channel opener", text: "The <|channel> tag wraps reasoning.", previous: "explain <|channel>", want: "The"},
 		{name: "literal tool call opener", text: "The <|tool_call|> tag starts a call.", previous: "explain <|tool_call|>", want: "The <|tool_call|> tag starts a call."},
+		{name: "literal tool call opener at answer start", text: "<|tool_call|> token usage.", previous: "explain <|tool_call|>", want: "<|tool_call|> token usage."},
 		{name: "literal thinking opener at answer start", text: "<think> tag wraps reasoning.", previous: "explain <think>", want: ""},
 		{name: "literal thinking opener after a newline", text: "Markers:\n<think> tag opens reasoning.", previous: "explain <think>", want: "Markers:"},
 		{name: "literal thinking closer at answer start", text: "</think> tag ends reasoning.", previous: "explain </think>", want: "</think> tag ends reasoning."},
@@ -72,6 +73,7 @@ func TestAnswerCleanupWithPreviousInput(t *testing.T) {
 			assertAnswerCleanupWithPrevious(t, tc.text, tc.previous, tc.want)
 		})
 	}
+	assertAnswerCleanup(t, "reasoning</think><|tool_call|> tag", "explain <|tool_call|>", "")
 }
 
 func TestPartialAnswerWithPreviousInput(t *testing.T) {
@@ -100,6 +102,8 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 	}{
 		{"end token", "Explain <|im_end|> literally", "Use <|im_end|> literally"},
 		{"thinking tags", "Explain <think> and </think> literally", "Keep <think>this</think> whole"},
+		{"tool call token at answer start", "<|tool_call|> token usage.", "<|tool_call|> token usage."},
+		{"Chinese tool call token at answer start", "<|tool_call|> 这个标记。", "<|tool_call|> 这个标记。"},
 		{"dictated tool call token", "Use the <|tool_call|> token carefully.", "Use the <|tool_call|> token carefully."},
 		{"Chinese tool call token", "解释 <|tool_call|> 这个标记。", "解释 <|tool_call|> 这个标记。"},
 		{"Chinese tool call token without spaces", "解释<|tool_call|>这个标记。", "解释<|tool_call|>这个标记。"},
@@ -113,6 +117,7 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 		{"Chinese label after the tool call token", "说明 <|tool_call|> 这个标签。", "说明 <|tool_call|> 这个标签。"},
 		{"parenthesized English cue", "Use the <|tool_call|> (token) carefully.", "Use the <|tool_call|> (token) carefully."},
 		{"bracketed documentation after the tool call token", "Use the <|tool_call|> token, see [docs].", "Use the <|tool_call|> token, see [docs]."},
+		{"apostrophe in bracketed documentation", "Use the <|tool_call|> token, see [Alice's notes].", "Use the <|tool_call|> token, see [Alice's notes]."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Clean(tc.text, tc.input); got != tc.text {
@@ -476,6 +481,11 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ text, want string }{
+		{"<|tool_call|> search images now", ""},
+		{`<|tool_call|> tokens ['/private/secret.png']`, ""},
+		{`<|tool_call|> tokens [[1], [2]]`, ""},
+		{`<|tool_call|> tokens [[1], ['/private/secret.png']]`, ""},
+		{"<|tool_call|> token carefully. {\"name\":\"view_image\"}", ""},
 		{"Visible <|tool_call|> search images now", "Visible"},
 		{"Visible <|tool_call|> search images now. 这个标记会显示。", "Visible"},
 		{"Visible <|tool_call|> token carefully. {\"name\":\"view_image\"}", "Visible"},
