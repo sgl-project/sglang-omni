@@ -95,6 +95,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_LATENCY_SETTLE` | Wait after the app is ready, before the first session of the latency test. | `3s` |
 | `VOXTNEW_LATENCY_SPEAK` | How long a latency test session records after its first speech. | `2s` |
 | `VOXTNEW_LEGACY_HOME` | Home directory where the import of Voxt 1.x data looks, for tests that run the app with a fake home. | Unset: the real home |
+| `VOXTNEW_LIVE_RELEASES` | Any value runs `TestReleaseLive`, which asks api.github.com, read-only, for the newest release as the GitHub update check does. Run it by hand after changing that check (`updates_github.go`). | Unset: the test skips |
 | `VOXTNEW_MAC` | Any value runs the tests that use real macOS services (Keychain, permissions, app activation). | Unset: these tests skip |
 | `VOXTNEW_MAC_E2E` | `1` runs the headless end-to-end tests on a real Mac. | Unset: the tests skip |
 | `VOXTNEW_MAC_MIC_CAPTURE` | `1` lets the Mac end-to-end test record from the real microphone. | Unset: the test skips |
