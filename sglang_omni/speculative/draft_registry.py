@@ -59,6 +59,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wirybeaver/Ming-3.0-asr-tiny-dspark",
         draft_model_revision="3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
         license="mit",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="Qwen/Qwen3-ASR-1.7B",
