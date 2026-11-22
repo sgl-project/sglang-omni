@@ -23,6 +23,7 @@ from dataclasses import replace
 from functools import partial
 from typing import Awaitable, Callable, Literal, Protocol
 
+import msgspec
 import torch
 
 from sglang_omni.comm import stage_io
@@ -62,6 +63,8 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
+from sglang_omni.proto.kv_transfer import PDStageKVLayout
 from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.proto.request import RoutedPayloads
 from sglang_omni.proto.session import SessionOperation, find_session_operation
@@ -1375,6 +1378,21 @@ class Stage:
 
     async def run_admin_operation(self, operation: AdminOperation) -> AdminResult:
         try:
+            if operation.action == ADMIN_PD_KV_LAYOUT and self.comm.kv_pools:
+                (pool,) = self.comm.kv_pools.values()
+                layout = PDStageKVLayout(
+                    role=(
+                        "decode" if pool.pool_id in self.comm.kv_receivers else "prefill"
+                    ),
+                    pool_id=pool.pool_id,
+                    layout=pool.layout,
+                    partner_stage=getattr(self.scheduler, "pd_partner_stage", None),
+                )
+                return self.admin_result(
+                    operation, success=True, message="ok", data=msgspec.to_builtins(layout)
+                )
+            else:
+                pass
             handler = getattr(self.scheduler, "admin", None)
             if handler is None:
                 return self.admin_result(
