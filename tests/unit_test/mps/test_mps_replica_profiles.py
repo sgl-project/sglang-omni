@@ -25,9 +25,9 @@ from sglang_omni.mps.devices import MpsPhysicalDevice
 from sglang_omni.mps.manager import MpsClientRef
 from sglang_omni.mps.replica_profiles import (
     B200,
-    MeasuredGpu,
     REPLICA_PROFILES,
     RTX_4090_D,
+    MeasuredGpu,
     ReplicaProfile,
     decide_replica_profile,
 )
