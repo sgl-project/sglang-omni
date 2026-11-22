@@ -106,6 +106,9 @@ while [ "${attempt}" -le "${max_attempts}" ]; do
 
   echo "${stage_label} attempt ${attempt}/${max_attempts} failed with exit code ${last_status}."
   echo "Attempt log: ${log_file}"
+  # note (zhaochenyang20): one annotation per failed or erroring test from
+  # pytest's short summary, so the check page lists every failure.
+  grep -E '^(FAILED|ERROR) ' "${log_file}" | sed -e 's/%/%25/g' -e 's/^/::error::/'
   report_gpu_occupancy
 
   if [ "${attempt}" -ge "${max_attempts}" ]; then
