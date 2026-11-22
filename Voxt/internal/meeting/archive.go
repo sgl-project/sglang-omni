@@ -109,7 +109,8 @@ func (w *wavWriter) finalize() error {
 	return err
 }
 
-// FixWAVHeader patches a WAV data chunk length from the file size.
+// FixWAVHeader patches the RIFF and data lengths while preserving any
+// metadata chunks between the format and the sound.
 func FixWAVHeader(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
@@ -122,5 +123,30 @@ func FixWAVHeader(path string) error {
 	if info.Size() < 44 {
 		return errors.Join(fmt.Errorf("meeting: wav %s too short", path), f.Close())
 	}
-	return errors.Join((&wavWriter{f: f}).finalize(), f.Close())
+	fixErr := func() error {
+		for offset := int64(12); offset+8 <= info.Size(); {
+			var header [8]byte
+			if _, err := f.ReadAt(header[:], offset); err != nil {
+				return err
+			}
+			chunkBytes := int64(binary.LittleEndian.Uint32(header[4:]))
+			if string(header[:4]) == "data" {
+				var word [4]byte
+				binary.LittleEndian.PutUint32(word[:], uint32(info.Size()-8))
+				if _, err := f.WriteAt(word[:], 4); err != nil {
+					return err
+				}
+				binary.LittleEndian.PutUint32(word[:], uint32(info.Size()-(offset+8)))
+				_, err := f.WriteAt(word[:], offset+4)
+				return err
+			}
+			next := offset + 8 + chunkBytes + chunkBytes%2
+			if next <= offset+8 || next > info.Size() {
+				return fmt.Errorf("meeting: wav %s has no data chunk", path)
+			}
+			offset = next
+		}
+		return fmt.Errorf("meeting: wav %s has no data chunk", path)
+	}()
+	return errors.Join(fixErr, f.Close())
 }

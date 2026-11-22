@@ -264,7 +264,11 @@ func TestMeetingImportDecodeCancels(t *testing.T) {
 		for i := 0; i < len(pcm); i += 2 {
 			pcm[i], pcm[i+1] = 0x10, 0x7f
 		}
-		if err := os.WriteFile(wavPath, asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
+		wav := asr.WAV(pcm, asr.SampleRate)
+		metadataWAV := append([]byte{}, wav[:36]...)
+		metadataWAV = append(metadataWAV, []byte("FLLR\x04\x00\x00\x00\x00\x00\x00\x00")...)
+		metadataWAV = append(metadataWAV, wav[36:]...)
+		if err := os.WriteFile(wavPath, metadataWAV, 0o644); err != nil {
 			return nil, err
 		}
 		close(started)
