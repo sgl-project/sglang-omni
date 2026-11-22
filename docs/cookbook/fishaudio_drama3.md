@@ -164,20 +164,9 @@ A second edit can chain onto the first. Here `by noon` becomes `by five`, with b
 
 ## Streaming
 
-Add `"stream": true` and `"response_format": "pcm"` to either request above to receive audio while generation is still running. Long text is chunked automatically and streamed chunk by chunk.
+Add `"stream": true` and `"response_format": "pcm"` to either request above to receive audio while generation is still running. Long text is chunked automatically and streamed chunk by chunk. With the server running, use the [raw WAV and PCM examples](../basic_usage/tts.md#raw-wav-and-pcm) in TTS Model Usage; Drama 3 needs no `model` or `voice` field. The guide also includes the [Python streaming client](../basic_usage/tts.md#python-streaming-client) and [SSE](../basic_usage/tts.md#sse-event-framing) clients.
 
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Get the trust fund to the bank early.",
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output_streaming.pcm
-```
-
-Shared raw WAV, PCM and SSE clients, and the Python streaming client, are in [Streaming](../basic_usage/tts.md#streaming). For many streams at once, see [High Concurrency](fishaudio_drama3/tuning.md#high-concurrency); under sustained load, the opt-in [incremental streaming codec](fishaudio_drama3/tuning.md#incremental-streaming-codec) reuses each stream's decoder state.
+For many streams at once, see [High Concurrency](fishaudio_drama3/tuning.md#high-concurrency); under sustained load, the opt-in [incremental streaming codec](fishaudio_drama3/tuning.md#incremental-streaming-codec) reuses each stream's decoder state.
 
 ## Common options
 
