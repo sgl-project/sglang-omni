@@ -27,15 +27,17 @@ class KVPoolLayout:
     layout_id: str
     page_size: int
     buffers: tuple[KVBufferSpec, ...]
+    cache_dtype: str | None = None
 
     def compatible_with(self, other: "KVPoolLayout") -> bool:
         """Return whether pages can be copied without a layout transform."""
 
-        if self.layout_id != other.layout_id or self.page_size != other.page_size:
-            return False
-        else:
-            pass
-        return self.buffers == other.buffers
+        return (
+            self.layout_id == other.layout_id
+            and self.page_size == other.page_size
+            and self.cache_dtype == other.cache_dtype
+            and self.buffers == other.buffers
+        )
 
 
 @dataclass(frozen=True)

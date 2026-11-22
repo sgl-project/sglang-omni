@@ -1382,14 +1382,19 @@ class Stage:
                 (pool,) = self.comm.kv_pools.values()
                 layout = PDStageKVLayout(
                     role=(
-                        "decode" if pool.pool_id in self.comm.kv_receivers else "prefill"
+                        "decode"
+                        if pool.pool_id in self.comm.kv_receivers
+                        else "prefill"
                     ),
                     pool_id=pool.pool_id,
                     layout=pool.layout,
                     partner_stage=getattr(self.scheduler, "pd_partner_stage", None),
                 )
                 return self.admin_result(
-                    operation, success=True, message="ok", data=msgspec.to_builtins(layout)
+                    operation,
+                    success=True,
+                    message="ok",
+                    data=msgspec.to_builtins(layout),
                 )
             else:
                 pass

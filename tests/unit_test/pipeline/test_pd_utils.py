@@ -41,6 +41,8 @@ def test_pd_kv_layout_rejects_equal_size_buffers_with_incompatible_formats() -> 
         (16, torch.bfloat16, 1, 8),
         (16, torch.float16, 1, 8),
         (16, torch.bfloat16, 2, 4),
+        (8, torch.float8_e4m3fn, 1, 8),
+        (8, torch.float8_e5m2, 1, 8),
     ):
         pool = MHATokenToKVPool(
             size=capacity,
@@ -54,10 +56,11 @@ def test_pd_kv_layout_rejects_equal_size_buffers_with_incompatible_formats() -> 
         )
         layouts.append(build_kv_pool(pool, pool_id="test:kv").layout)
 
-    source, compatible, wrong_dtype, wrong_shape = layouts
+    source, compatible, wrong_dtype, wrong_shape, fp8_e4m3, fp8_e5m2 = layouts
     assert source.compatible_with(compatible)
     assert not source.compatible_with(wrong_dtype)
     assert not source.compatible_with(wrong_shape)
+    assert not fp8_e4m3.compatible_with(fp8_e5m2)
 
 
 class ReqPool:

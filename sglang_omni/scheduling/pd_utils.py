@@ -443,6 +443,7 @@ def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
     else:
         pass
     return KVPool(
+        cache_dtype=str(token_to_kv_pool.dtype),
         pool_id=pool_id,
         layout_id=(
             f"{type(token_to_kv_pool).__module__}."
