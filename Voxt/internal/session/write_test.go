@@ -455,6 +455,30 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	}
 }
 
+// TestTranslateSendsTheCopyBudget: Translate's read sends its ⌘C budget
+// explicitly — left at zero the helper's default applies, and the
+// deadline arithmetic of TestSelectionBudgetsFitTimeouts no longer
+// describes the real read (#3835).
+func TestTranslateSendsTheCopyBudget(t *testing.T) {
+	sel := &fakeSelector{text: "Good morning"}
+	model := &fakeLLM{text: "早上好"}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, model, func(c *Config, s *settings.Settings) {
+		c.Select = sel
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	if end := h.rec.wait(t); end.State != Done {
+		t.Fatalf("end %s %q", end.State, end.Result)
+	}
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != selectionCopyMS ||
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
+		t.Errorf("selection params %+v", p)
+	}
+}
+
 // TestRewriteLogsNoSelection: when the helper reads no selection, the
 // log says which steps it tried, so a report from an app that hides its
 // selection (Acrobat, a page selected with ⌘A) shows where the read
