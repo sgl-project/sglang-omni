@@ -60,7 +60,8 @@ package helpertest
 //	                 (a TEXT of only whitespace is not read, as in the helper)
 //	copy-selection=TEXT  textio.selection reads TEXT only with allowCopy (via copy)
 //	selection-file=PATH  textio.selection reads PATH's text at each call ("" or no
-//	                 file: nothing selected): the user selects something else
+//	                 file: nothing selected; only whitespace or U+FFFC: on to the
+//	                 copy, as selection=): the user selects something else
 //	readonly[=BUNDLE]  textio.focus: the focused element is not editable (of BUNDLE only)
 //	focus=none       textio.focus: nothing is focused (Finder's desktop)
 //	focus=secure     textio.focus: a password field (AXSecureTextField)
