@@ -22,7 +22,11 @@ from sglang.srt.mem_cache.kv_index_translator import IdSpaceKind
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, KVCache
 
 from sglang_omni.comm import KVPageTransfer, KVPool
-from sglang_omni.scheduling.message import OutgoingMessage, put_messages
+from sglang_omni.scheduling.message import (
+    IncomingMessage,
+    OutgoingMessage,
+    put_messages,
+)
 from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
@@ -404,7 +408,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
             self.abort(payload.request_id)
 
     def drain_decode_admissions(self) -> None:
-        with self.pd_lifecycle_lock:
+        with self.pd_lifecycle_lock, self.request_admission_lock:
             while True:
                 admission = self.pd_deferred_admission
                 if admission is None:
@@ -518,17 +522,23 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 self.token_to_kv_pool_allocator.free(admission.allocation.slots)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
-        if self.enable_overlap and self.scheduler_thread_id != threading.get_ident():
-            return super().abort(
-                request_id, defer_running_cleanup=defer_running_cleanup
-            )
+        scheduler_thread_id = self.scheduler_thread_id
+        if scheduler_thread_id != threading.get_ident() and (
+            scheduler_thread_id is not None or self.enable_overlap
+        ):
+            with self.request_admission_lock:
+                self.remember_aborted_request(request_id)
+                self.inbox.put(
+                    IncomingMessage(
+                        request_id=request_id, type="abort", data=defer_running_cleanup
+                    )
+                )
+            return
         else:
             pass
         with self.pd_lifecycle_lock:
             for req in self.waiting_queue:
                 if req.rid == request_id:
-                    # Note(Yue Yin): abort runs on the Stage event loop, and
-                    # only the scheduler thread may mutate the request table.
                     self.defer_pd_kv_release(req)
                     break
                 else:

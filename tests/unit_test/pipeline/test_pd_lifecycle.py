@@ -357,6 +357,8 @@ def decode_scheduler():
     scheduler.pd_lifecycle_lock = threading.RLock()
     scheduler.pd_state_restorer = lambda *args: None
     scheduler.enable_overlap = False
+    scheduler.scheduler_thread_id = None
+    scheduler.request_admission_lock = threading.RLock()
     scheduler.aborted_request_ids = set()
     scheduler.req_to_token_pool = ReqPool()
     scheduler.token_to_kv_pool_allocator = KVAllocator()

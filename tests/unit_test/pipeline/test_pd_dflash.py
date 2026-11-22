@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """DFlash handoff tests for the shared slot mapping and PREBUILT admission."""
 
+import queue
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -10,17 +12,23 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from huggingface_hub import constants as hub_constants
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.managers.overlap_utils import FutureMap
 from sglang.srt.managers.schedule_batch import ScheduleBatch
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.runtime_context import get_context
 from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from transformers import PretrainedConfig
 
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_scheduler import OmniDecodeScheduler, validate_pd_runtime
-from sglang_omni.scheduling.pd_utils import build_kv_pool, dflash_checkpoint_identity
+from sglang_omni.scheduling.pd_utils import (
+    build_kv_pool,
+    dflash_checkpoint_identity,
+    kv_buffer_regions,
+)
 from tests.unit_test.pipeline.test_pd_lifecycle import decode_scheduler
 from tests.unit_test.pipeline.test_pd_utils import make_continuation, make_message
 
@@ -106,6 +114,27 @@ def test_joint_kv_rejects_wrong_row_capacity_or_registration_order() -> None:
     with pytest.raises(ValueError, match="contiguous KV slot rows"):
         build_kv_pool(
             target, pool_id="decode:kv", draft_kv_pool=draft, dflash_model_id="model"
+        )
+
+
+def test_kv_region_validation_uses_full_pages() -> None:
+    pool = MHATokenToKVPool(
+        size=8,
+        page_size=4,
+        dtype=torch.bfloat16,
+        head_num=2,
+        head_dim=4,
+        layer_num=1,
+        device="cpu",
+        enable_memory_saver=False,
+    )
+    regions = kv_buffer_regions(pool, prefix="kv", validate_slot_layout=True)
+
+    assert [region.bytes_per_page for region in regions] == [64, 64]
+    assert [region.page_count for region in regions] == [3, 3]
+    with pytest.raises(ValueError, match="page_size"):
+        build_kv_pool(
+            pool, pool_id="decode:kv", draft_kv_pool=pool, dflash_model_id="model"
         )
 
 
@@ -206,6 +235,36 @@ def test_dflash_identity_uses_the_loaded_target_revision(tmp_path: Path) -> None
     assert dflash_checkpoint_identity(target, loader, draft, loader) != identities[0]
 
 
+def test_dflash_identity_distinguishes_cached_hub_draft_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loader = LoadConfig(load_format="auto")
+    target = SimpleNamespace(
+        model_path="target/checkpoint",
+        revision="main",
+        hf_config=PretrainedConfig(),
+        dtype=torch.bfloat16,
+        quantization=None,
+        model_override_args={},
+    )
+    draft = SimpleNamespace(**vars(target))
+    draft.model_path = "draft/checkpoint"
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    repo = tmp_path / "models--draft--checkpoint"
+    reference = repo / "refs" / "main"
+    reference.parent.mkdir(parents=True)
+    first_commit, second_commit = "a" * 40, "b" * 40
+    for commit in (first_commit, second_commit):
+        cached_config = repo / "snapshots" / commit / "config.json"
+        cached_config.parent.mkdir(parents=True)
+        cached_config.write_text("{}")
+    reference.write_text(first_commit)
+    identity = dflash_checkpoint_identity(target, loader, draft, loader)
+    assert dflash_checkpoint_identity(target, loader, draft, loader) == identity
+    reference.write_text(second_commit)
+    assert dflash_checkpoint_identity(target, loader, draft, loader) != identity
+
+
 @pytest.mark.parametrize("overlap", [False, True])
 def test_committed_dflash_request_seeds_native_prebuilt(overlap: bool) -> None:
     scheduler = decode_scheduler()
@@ -283,17 +342,30 @@ def test_rejected_dflash_admission_frees_slots_and_retry_admits() -> None:
     assert [request.rid for request in scheduler.waiting_queue] == [valid.request_id]
 
 
-def test_overlapped_decode_defers_waiting_row_release_only_on_scheduler_thread(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("enable_overlap", [False, True])
+def test_off_thread_decode_abort_blocks_admission_and_defers_row_release(
+    monkeypatch: pytest.MonkeyPatch, enable_overlap: bool
 ) -> None:
     scheduler: OmniDecodeScheduler = decode_scheduler()
     prepare = make_message()
     scheduler.pd_receiver.commit(prepare, scheduler.pd_receiver.reserve(prepare))
     scheduler.drain_decode_admissions()
-    scheduler.enable_overlap = True
+    pending_continuation = replace(
+        make_continuation(), request_id="pending", transfer_id="pending-transfer"
+    )
+    pending = replace(
+        prepare,
+        request_id=pending_continuation.request_id,
+        transfer_id=pending_continuation.transfer_id,
+        metadata={"decode_continuation": pending_continuation.encode()},
+    )
+    allocation = scheduler.pd_receiver.reserve(pending)
+    scheduler.pd_receiver.commit(pending, allocation)
+    scheduler.enable_overlap = enable_overlap
     scheduler.scheduler_thread_id = threading.get_ident()
     scheduler.is_entry_rank = True
-    scheduler.inbox = Mock()
+    scheduler.inbox = queue.SimpleQueue()
+    scheduler.aborted_request_id_order = deque()
     parent_abort = OmniScheduler.abort
 
     def abort(
@@ -302,16 +374,29 @@ def test_overlapped_decode_defers_waiting_row_release_only_on_scheduler_thread(
         if threading.get_ident() != self.scheduler_thread_id:
             parent_abort(self, request_id, defer_running_cleanup=defer_running_cleanup)
         else:
-            self.waiting_queue.clear()
+            self.waiting_queue = [
+                request for request in self.waiting_queue if request.rid != request_id
+            ]
 
     monkeypatch.setattr(OmniScheduler, "abort", abort)
     with ThreadPoolExecutor(1) as worker:
         worker.submit(scheduler.abort, prepare.request_id).result(timeout=5)
+        worker.submit(scheduler.abort, pending.request_id).result(timeout=5)
     assert scheduler.pd_due_releases.empty()
     [request] = scheduler.waiting_queue
-    (event,) = scheduler.inbox.put.call_args.args
-    assert event.type == "abort"
-    scheduler.abort(event.request_id)
-    scheduler.abort(event.request_id)
+    scheduler.drain_decode_admissions()
+    assert scheduler.waiting_queue == [request]
+    assert [slots.tolist() for slots in scheduler.token_to_kv_pool_allocator.freed] == [
+        list(allocation.page_indices)
+    ]
+
+    events = [scheduler.inbox.get_nowait(), scheduler.inbox.get_nowait()]
+    assert [(event.type, event.request_id) for event in events] == [
+        ("abort", prepare.request_id),
+        ("abort", pending.request_id),
+    ]
+    for event in events:
+        scheduler.abort(event.request_id)
+        scheduler.abort(event.request_id)
     assert scheduler.pd_due_releases.get_nowait() is request
     assert scheduler.pd_due_releases.empty()

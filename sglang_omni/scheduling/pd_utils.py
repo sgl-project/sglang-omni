@@ -20,12 +20,15 @@ from typing import Literal, ParamSpec, TypeVar
 
 import msgspec
 import torch
+from huggingface_hub import try_to_load_from_cache
+from huggingface_hub.errors import HFValidationError
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
 from sglang.srt.sampling.sampling_params import SamplingParams
+from transformers.utils.hub import extract_commit_hash
 
 from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
 from sglang_omni.proto import KVTransferPrepareMessage, StagePayload
@@ -434,7 +437,39 @@ def dflash_checkpoint_identity(
     draft_loader: LoadConfig,
 ) -> str:
     target_path = Path(target_model.model_path)
-    draft_directory = Path(draft_model.model_path)
+    draft_path = Path(draft_model.model_path)
+    if draft_path.is_dir():
+        draft_source = {
+            "config": json.loads((draft_path / "config.json").read_text()),
+            "weights": sorted(
+                str(path.resolve()) for path in draft_path.glob("*.safetensors")
+            ),
+        }
+    else:
+        draft_commit = getattr(
+            draft_model.hf_config,
+            "_commit_hash",  # noqa: leading-underscore -- Transformers checkpoint provenance
+            None,
+        )
+        if draft_commit is None:
+            try:
+                cached_config = try_to_load_from_cache(
+                    draft_model.model_path, "config.json", revision=draft_model.revision
+                )
+            except HFValidationError:
+                cached_config = None
+            if isinstance(cached_config, str):
+                draft_commit = extract_commit_hash(cached_config, None)
+            else:
+                pass
+        else:
+            pass
+        draft_source = {
+            "model_path": draft_model.model_path,
+            "revision": draft_model.revision,
+            "commit": draft_commit,
+            "config": draft_model.hf_config.to_dict(),
+        }
     return json.dumps(
         {
             "target_path": (
@@ -453,15 +488,12 @@ def dflash_checkpoint_identity(
             "target_overrides": target_model.model_override_args,
             "target_load_format": target_loader.load_format,
             "target_loader_options": target_loader.model_loader_extra_config,
-            "draft_config": json.loads((draft_directory / "config.json").read_text()),
+            "draft_source": draft_source,
             "draft_dtype": str(draft_model.dtype),
             "draft_quantization": draft_model.quantization,
             "draft_overrides": draft_model.model_override_args,
             "draft_load_format": draft_loader.load_format,
             "draft_loader_options": draft_loader.model_loader_extra_config,
-            "draft_weights": sorted(
-                str(path.resolve()) for path in draft_directory.glob("*.safetensors")
-            ),
         },
         sort_keys=True,
     )
@@ -490,15 +522,16 @@ def kv_buffer_regions(
     else:
         pass
     if validate_slot_layout:
+        page_size = token_to_kv_pool.page_size
         for tensor, pointer, byte_length, item_len in zip(
             tensors, pointers, byte_lengths, item_lens, strict=True
         ):
             if (
                 tensor.ndim < 2
-                or tensor.shape[0] != token_to_kv_pool.size + 1
+                or tensor.shape[0] != token_to_kv_pool.size + page_size
                 or tensor.data_ptr() != pointer
                 or tensor.numel() * tensor.element_size() != byte_length
-                or tensor.stride(0) * tensor.element_size() != item_len
+                or tensor.stride(0) * tensor.element_size() * page_size != item_len
                 or not tensor.is_contiguous()
             ):
                 raise ValueError("PD DFlash requires contiguous KV slot rows")
@@ -523,6 +556,16 @@ def build_kv_pool(
     draft_kv_pool: KVCache | None = None,
     dflash_model_id: str | None = None,
 ) -> KVPool:
+    if draft_kv_pool is not None and (
+        draft_kv_pool.page_size != 1 or token_to_kv_pool.page_size != 1
+    ):
+        raise ValueError("PD DFlash requires page_size == 1")
+    elif draft_kv_pool is not None and (
+        not dflash_model_id or draft_kv_pool.size != token_to_kv_pool.size
+    ):
+        raise ValueError("PD DFlash requires matching Target and Draft slot capacity")
+    else:
+        pass
     buffers = kv_buffer_regions(
         token_to_kv_pool,
         prefix="kv_buffer",
@@ -531,16 +574,6 @@ def build_kv_pool(
     target_type = type(token_to_kv_pool)
     layout_id = f"{target_type.__module__}.{target_type.__qualname__}:page_size=1"
     if draft_kv_pool is not None:
-        if not dflash_model_id or (
-            draft_kv_pool.size != token_to_kv_pool.size
-            or draft_kv_pool.page_size != 1
-            or token_to_kv_pool.page_size != 1
-        ):
-            raise ValueError(
-                "PD DFlash requires matching Target and Draft slot capacity"
-            )
-        else:
-            pass
         buffers += kv_buffer_regions(
             draft_kv_pool, prefix="draft_kv_buffer", validate_slot_layout=True
         )
