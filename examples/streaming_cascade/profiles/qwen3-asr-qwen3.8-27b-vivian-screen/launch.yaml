@@ -65,6 +65,7 @@ session_nodes:
     reference_audio_path: examples/streaming_cascade/voices/vivian.wav
     reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
     drop_quiet_start: true
+    skip_screen_blocks: true
     language: auto
   aligner:
     kind: alignment
@@ -72,6 +73,7 @@ session_nodes:
     alignment_url: "http://127.0.0.1:8010"
     heard_asr_url: "http://127.0.0.1:8002/v1"
     heard_asr_model: Qwen/Qwen3-ASR-1.7B
+    skip_screen_blocks: true
     inputs: ["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]
 
 session_publish:

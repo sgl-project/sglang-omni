@@ -102,6 +102,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     styles maps a style name to the recording a sentence of that style
     clones, and a sentence of a style it lacks clones reference_audio_path;
     the language model names a style with a tag such as [calm].
+    skip_screen_blocks leaves out of every request what the reply writes
+    between <screen> and </screen>, a block still open included, and a
+    stray </screen>.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -114,6 +117,7 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
     drop_quiet_start: bool = False
+    skip_screen_blocks: bool = False
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -431,10 +435,12 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             self.follow_deltas(deltas, delta_styles), self.config.max_sentence_words
         ):
             reply_text += span
-            # note (Haoling Pu): a span can start inside a block an earlier span opened, so the reply so far is blanked before the span is cut from it.
-            text = UNSPOKEN_SYMBOLS.sub(
-                "", MARKDOWN_LINK.sub(r"\1", blank_screen_blocks(reply_text)[text_end:])
-            )
+            if self.config.skip_screen_blocks:
+                # note (Haoling Pu): a span can start inside a block an earlier span opened, so the reply so far is blanked before the span is cut from it.
+                spoken = blank_screen_blocks(reply_text)[text_end:]
+            else:
+                spoken = span
+            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", spoken))
             text = TABLE_PIPE.sub(
                 ", ",
                 TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),

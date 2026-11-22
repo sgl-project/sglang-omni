@@ -106,7 +106,8 @@ class AlignmentConfig(ComponentConfig):
     part of its text the transcript says counts as heard. `forced` with
     `heard_asr_url` does the same for a sentence that has no word end at or
     after the cut, such as one an interruption cut off before its audio was
-    complete.
+    complete. `skip_screen_blocks` aligns and recognizes each sentence
+    without its screen blocks, for a synthesizer that never speaks them.
     """
 
     kind: Literal["alignment"] = "alignment"
@@ -115,6 +116,7 @@ class AlignmentConfig(ComponentConfig):
     heard_asr_url: str = Field(default="", pattern=r"^(https?://[^/]+.*)?$")
     heard_asr_model: str = ""
     timeout_s: float = Field(default=2, gt=0)
+    skip_screen_blocks: bool = False
 
     @model_validator(mode="after")
     def check_worker(self) -> "AlignmentConfig":
@@ -334,7 +336,10 @@ class Alignment(StreamComponent):
         emit: ChunkEmitter,
         sentences: asyncio.Queue[SentenceAudio | HeardAudio | None],
     ) -> None:
-        span = blank_screen_blocks(reply.text)[reply.start : text_end]
+        if self.config.skip_screen_blocks:
+            span = blank_screen_blocks(reply.text)[reply.start : text_end]
+        else:
+            span = reply.text[reply.start : text_end]
         text = span.strip()
         progress(emit, reply.turn, text_end, audio_ms)
         if self.keeps_audio() and text and reply.samples:
@@ -375,7 +380,7 @@ class Alignment(StreamComponent):
             pass
         else:
             reply.heard_ms = cut_ms
-            heard = heard_audio(reply, cut_ms)
+            heard = heard_audio(reply, cut_ms, self.config.skip_screen_blocks)
             if heard is None:
                 pass
             else:
@@ -543,8 +548,10 @@ def alignment_request(
     )
 
 
-def heard_audio(reply: SpokenReply, cut_ms: float) -> HeardAudio | None:
-    """The audio of the reply's sentence at `cut_ms` from the sentence's start to the cut; None when the cut falls on a sentence end or outside the reply's audio."""
+def heard_audio(
+    reply: SpokenReply, cut_ms: float, skip_screen_blocks: bool
+) -> HeardAudio | None:
+    """The audio of the reply's sentence at `cut_ms` from the sentence's start to the cut, with its text without screen blocks when `skip_screen_blocks`; None when the cut falls on a sentence end or outside the reply's audio."""
     ended = [
         sentence
         for sentence in reply.sentences
@@ -562,7 +569,10 @@ def heard_audio(reply: SpokenReply, cut_ms: float) -> HeardAudio | None:
             sentence.language,
         )
     elif reply.samples and cut_ms > reply.start_ms:
-        span = blank_screen_blocks(reply.text)[reply.start :]
+        if skip_screen_blocks:
+            span = blank_screen_blocks(reply.text)[reply.start :]
+        else:
+            span = reply.text[reply.start :]
         text = span.strip()
         start = reply.start + len(span) - len(span.lstrip())
         start_ms, samples = reply.start_ms, np.concatenate(reply.samples)

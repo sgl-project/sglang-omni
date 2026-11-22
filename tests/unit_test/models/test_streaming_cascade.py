@@ -1648,7 +1648,7 @@ async def test_openai_speech_never_speaks_a_screen_block_but_counts_it_in_progre
     settings, _, spoken, _ = backends
     tts = settings.component_graph().node("tts").component.model_dump()
     outputs = await drain(
-        build({**tts, "max_sentence_words": 24}),
+        build({**tts, "max_sentence_words": 24, "skip_screen_blocks": True}),
         [*(text_chunk(delta, 1) for delta in deltas), control_chunk(TURN_DONE, turn=1)],
     )
     # note (Haoling Pu): the fake speech service returns 3 samples at 24 kHz per sentence, so a sentence of a screen block reports its end without moving the audio.
@@ -1658,6 +1658,20 @@ async def test_openai_speech_never_speaks_a_screen_block_but_counts_it_in_progre
         (text_end, sentences_spoken * sentence_ms)
         for text_end, sentences_spoken in expected_progress
     ]
+
+
+@pytest.mark.asyncio
+async def test_openai_speech_speaks_a_screen_tag_without_skip_screen_blocks(backends):
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    await drain(
+        build({**tts, "max_sentence_words": 24}),
+        [
+            text_chunk("Wrap the page in a <screen> tag. Then reload it.", 1),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert spoken == ["Wrap the page in a <screen> tag.", "Then reload it."]
 
 
 @pytest.mark.asyncio
@@ -2059,6 +2073,19 @@ def test_every_profile_publishes_the_aligners_reply_progress(profile):
     assert SESSION_CONTROL in profile_config(profile).session_publish["aligner"]
 
 
+@pytest.mark.parametrize(
+    "profile", sorted(path.parent.name for path in PROFILES.glob("*/launch.yaml"))
+)
+def test_only_the_screen_profile_skips_screen_blocks_in_its_speech_and_aligner(
+    profile,
+):
+    # note (Haoling Pu): an aligner that skips the blocks its synthesizer speaks, or the other way round, aligns words the audio does not hold.
+    settings = profile_config(profile).component_graph()
+    skips = profile == "qwen3-asr-qwen3.8-27b-vivian-screen"
+    assert settings.node("tts").component.skip_screen_blocks == skips
+    assert settings.node("aligner").component.skip_screen_blocks == skips
+
+
 def test_the_reference_profile_routes_reply_progress_through_the_aligner():
     settings = aligned_profile().component_graph()
     aligner_node = settings.node("aligner")
@@ -2268,7 +2295,7 @@ async def test_the_forced_method_aligns_a_sentence_without_its_screen_block():
 
     reply = "<screen>Open it.</screen> One two three four."
     outputs = await drain(
-        await forced_aligner(handler),
+        await forced_aligner(handler, skip_screen_blocks=True),
         [
             text_chunk(reply, 1),
             *(speech() for _ in range(4)),
@@ -2284,6 +2311,26 @@ async def test_the_forced_method_aligns_a_sentence_without_its_screen_block():
         (len(reply), 2000),
         (len(reply), 2000),
     ]
+
+
+@pytest.mark.asyncio
+async def test_the_forced_method_aligns_a_screen_block_without_skip_screen_blocks():
+    texts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        texts.append(json.loads(request.content)["text"])
+        return worker_reply(request)
+
+    reply = "<screen>Open it.</screen> One two three four."
+    await drain(
+        await forced_aligner(handler),
+        [
+            text_chunk(reply, 1),
+            *(speech() for _ in range(4)),
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=len(reply), audio_ms=2000),
+        ],
+    )
+    assert texts == [reply]
 
 
 HEARD_ASR_URL = "http://asr:8002/v1"
@@ -2355,7 +2402,7 @@ async def test_the_asr_method_keeps_the_prefix_of_the_interrupted_sentence_its_d
 async def test_the_asr_method_hears_the_interrupted_sentence_after_a_screen_block():
     reply = "One two three four. <screen>Seven eight.</screen> Five six."
     outputs = await drain(
-        await hearing_aligner("asr", transcribing("five", [])),
+        await hearing_aligner("asr", transcribing("five", []), skip_screen_blocks=True),
         interrupted_speech(
             control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2600), text=reply
         ),
