@@ -101,46 +101,59 @@ final class TextIO: @unchecked Sendable {
         // every AX attribute (Lark docs in Chrome): not text, but a sign
         // that something is selected, so the read goes on to ⌘C.
         var blankAX = false
-        if let e = focusedElement(pid: pid_t(pid)) {
-            let role = string(e, kAXRoleAttribute)
-            steps.append("focus=\(role ?? "?")")
-            if let s = string(e, kAXSelectedTextAttribute), !s.isEmpty {
-                if SelectionRead.hasText(s) { return done(s, SelectionVia.ax) }
-                blankAX = true
-            }
-            let r = range(e)
-            steps.append("range=\(r.map { "\($0.location),\($0.length)" } ?? "nil")")
-            if let r, r.length > 0 {
-                var rr = r
-                var v: CFTypeRef?
-                if let axr = AXValueCreate(.cfRange, &rr),
-                   AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
-                   let s = v as? String, !s.isEmpty {
-                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axRange) }
+        var caretOnly = false
+        var settling = false
+        while true {
+            if let e = focusedElement(pid: pid_t(pid)) {
+                let role = string(e, kAXRoleAttribute)
+                steps.append("focus=\(role ?? "?")")
+                if let s = string(e, kAXSelectedTextAttribute), !s.isEmpty {
+                    if SelectionRead.hasText(s) { return done(s, SelectionVia.ax) }
                     blankAX = true
                 }
-            }
-            // WebKit's and Chromium's text markers.
-            var marker: CFTypeRef?
-            if AXUIElementCopyAttributeValue(e, "AXSelectedTextMarkerRange" as CFString, &marker) == .success, let marker {
-                var v: CFTypeRef?
-                if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
-                   let s = v as? String, !s.isEmpty {
-                    if SelectionRead.hasText(s) { return done(s, SelectionVia.axMarker) }
-                    blankAX = true
-                } else {
-                    steps.append("marker=empty")
+                let r = range(e)
+                steps.append("range=\(r.map { "\($0.location),\($0.length)" } ?? "nil")")
+                if let r, r.length > 0 {
+                    var rr = r
+                    var v: CFTypeRef?
+                    if let axr = AXValueCreate(.cfRange, &rr),
+                       AXUIElementCopyParameterizedAttributeValue(e, kAXStringForRangeParameterizedAttribute as CFString, axr, &v) == .success,
+                       let s = v as? String, !s.isEmpty {
+                        if SelectionRead.hasText(s) { return done(s, SelectionVia.axRange) }
+                        blankAX = true
+                    }
                 }
+                // WebKit's and Chromium's text markers.
+                var marker: CFTypeRef?
+                if AXUIElementCopyAttributeValue(e, "AXSelectedTextMarkerRange" as CFString, &marker) == .success, let marker {
+                    var v: CFTypeRef?
+                    if AXUIElementCopyParameterizedAttributeValue(e, "AXStringForTextMarkerRange" as CFString, marker, &v) == .success,
+                       let s = v as? String, !s.isEmpty {
+                        if SelectionRead.hasText(s) { return done(s, SelectionVia.axMarker) }
+                        blankAX = true
+                    } else {
+                        steps.append("marker=empty")
+                    }
+                }
+                var settable = DarwinBoolean(false)
+                AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
+                caretOnly = SelectionRead.endsAtCaret(range: r.map { TextRange(location: $0.location, length: $0.length) },
+                                                      editable: settable.boolValue || inEditableRegion(e), blankSelection: blankAX)
+            } else {
+                steps.append("focus=nil")
+                caretOnly = false
             }
-            var settable = DarwinBoolean(false)
-            AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
-            if SelectionRead.endsAtCaret(range: r.map { TextRange(location: $0.location, length: $0.length) },
-                                         editable: settable.boolValue || inEditableRegion(e), blankSelection: blankAX) {
-                steps.append("caret-only")
-                return done(nil, SelectionVia.none)
-            }
-        } else {
-            steps.append("focus=nil")
+            // A caret can be the reading from before the selection: ⌘A and
+            // the shortcut leave in one motion, and the accessibility
+            // reading lags the keys. Read again for a moment before
+            // concluding that nothing is selected (#4467).
+            guard caretOnly, SelectionRead.caretPending(elapsedMs: monotonicMs() - t0) else { break }
+            if !settling { steps.append("caret-settle"); settling = true }
+            try? await Task.sleep(nanoseconds: UInt64(SelectionRead.caretPollMs * 1_000_000))
+        }
+        if caretOnly {
+            steps.append("caret-only")
+            return done(nil, SelectionVia.none)
         }
         guard p.allowCopy ?? false else { return done(nil, SelectionVia.none) }
         let copied = await copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300))
@@ -152,8 +165,17 @@ final class TextIO: @unchecked Sendable {
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
     private func copySelection(timeoutMs: Double) async -> (text: String?, image: Data?, note: String) {
         let (snap, c0) = await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) }
-        // Keys the user still holds (Control of a Control+C shortcut), for the log: the app may see them with ⌘C.
-        let held = flags(CGEventSource.flagsState(.hidSystemState))
+        // Keys the user still holds (Control of a Control+C shortcut) turn
+        // the helper's ⌘C into another key in the app: wait for them to lift.
+        var f = CGEventSource.flagsState(.hidSystemState)
+        if SelectionRead.blocksCopy(f) {
+            let deadline = monotonicMs() + SelectionRead.modifierWaitMs
+            repeat {
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                f = CGEventSource.flagsState(.hidSystemState)
+            } while SelectionRead.blocksCopy(f) && monotonicMs() < deadline
+        }
+        let held = flags(f)
         postKey(UInt16(kVK_ANSI_C), flags: .maskCommand)
         let deadline = monotonicMs() + timeoutMs
         var changed = false
