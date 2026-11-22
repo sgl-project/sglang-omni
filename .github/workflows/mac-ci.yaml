@@ -9,11 +9,12 @@ name: Mac CI
 # checkpoint is downloaded. Model outputs are checked by hand per model PR with
 # the tools in sglang_omni_mlx/native/ci. Voxt Nightly runs it before its build.
 # Omni CI skips a pull request that changes only the MLX path, so this gate
-# fails such a pull request without a CI label. A pull request that changes
-# only Voxt's app (Voxt/** outside the helper's code and vendored MyGo) runs no
-# Mac job here, so it passes without a label, draft or not; Voxt CI tests it. A
-# pull request runs only the job whose side it changes, Markdown aside, and
-# both when it changes this file.
+# fails such a pull request without a CI label; a pull request that changes
+# Voxt's code runs the Voxt helper tests job, the headless end-to-end tests
+# included, and needs the same label. A pull request that changes only Voxt's
+# documentation runs no Mac job and passes without one. A pull request runs
+# only the job whose side it changes, Markdown aside, and both when it changes
+# this file.
 
 on:
   pull_request:
@@ -80,22 +81,16 @@ jobs:
             const hasChangesUnder = (directory) =>
               hasWorkflowChanges || changedPaths.some((path) => path.startsWith(directory) && !path.endsWith(".md"));
             core.setOutput("has_native_runtime_changes", hasChangesUnder("sglang_omni_mlx/"));
-            core.setOutput("has_voxt_helper_changes",
-              hasChangesUnder("Voxt/helper/") ||
-              hasChangesUnder("Voxt/third_party/mygo-patches/") ||
-              changedPaths.includes("Voxt/scripts/vendor-mygo.sh")
-            );
-            // App-only: every path under Voxt/, none an input of the helper job above.
-            const isVoxtHelperInput = (path) =>
-              (path.startsWith("Voxt/helper/") || path.startsWith("Voxt/third_party/mygo-patches/")) && !path.endsWith(".md") ||
-              path === "Voxt/scripts/vendor-mygo.sh";
+            // Every Voxt code change runs the helper job, the headless end-to-end tests included.
+            core.setOutput("has_voxt_helper_changes", hasChangesUnder("Voxt/"));
+            // Documentation only: every path under Voxt/, all Markdown. No Mac job runs, as before.
             core.setOutput(
-              "voxt_app_only",
-              changedPaths.every((path) => path.startsWith("Voxt/") && !isVoxtHelperInput(path))
+              "voxt_docs_only",
+              changedPaths.every((path) => path.startsWith("Voxt/") && path.endsWith(".md"))
             );
 
       - name: Block draft PR
-        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) && steps.pr.outputs.voxt_app_only != 'true' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) && steps.pr.outputs.voxt_docs_only != 'true' }}
         run: |
           echo "PR is draft. Blocking Mac CI."
           exit 1
@@ -110,7 +105,7 @@ jobs:
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}
-          VOXT_APP_ONLY: ${{ steps.pr.outputs.voxt_app_only }}
+          VOXT_DOCS_ONLY: ${{ steps.pr.outputs.voxt_docs_only }}
         run: |
           if resolved=$(python .github/scripts/resolve_ci_labels.py resolve \
             --labels-json "${LABELS_JSON}" \
@@ -119,11 +114,11 @@ jobs:
             echo "${resolved}"
             exit 0
           fi
-          if [ "${VOXT_APP_ONLY}" != "true" ]; then
+          if [ "${VOXT_DOCS_ONLY}" != "true" ]; then
             echo "${resolved}"
             exit 1
           fi
-          echo "::notice::Only Voxt's app changed: no Mac job runs, so no CI label is needed. Voxt CI tests it."
+          echo "::notice::Only Voxt's documentation changed: no Mac job runs, so no CI label is needed. Voxt CI tests it."
           echo "run_mac=false" >> "${GITHUB_OUTPUT}"
 
       - name: Check PR lint and mergeability

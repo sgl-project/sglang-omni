@@ -1168,7 +1168,7 @@
 
 **10.1 怎么跑**
 
-`mac-e2e.sh` 的 Go 步骤（辅助进程只读方法与文件录音、文字测量、假模型上的会话）已在 Mac CI 的「Voxt helper tests」任务里自动跑：改动辅助进程、vendored MyGo 或 CI 工作流的 Voxt PR 都会跑，`VOXTNEW_MIN_FREE=0` 让内存保护不拦 CI。完整脚本（含 `swift test` 和资源限制）仍按下面手动跑；`mac-regress.sh` 只手动跑。
+`mac-e2e.sh` 的 Go 步骤（辅助进程只读方法与文件录音、文字测量、假模型上的会话）已在 Mac CI 的「Voxt helper tests」任务里自动跑：每个改动 Voxt 代码的 PR 都跑（只改文档的不跑），`VOXTNEW_MIN_FREE=0` 让内存保护不拦 CI。完整脚本（含 `swift test` 和资源限制）仍按下面手动跑；`mac-regress.sh` 只手动跑。
 
 ```sh
 # 在 Linux 上执行。同步到独立目录（不要用 code/VoxtNew，那是给人用的构建）

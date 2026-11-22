@@ -13,7 +13,7 @@ import (
 // and the check that covers each. Levels: L runs on every pull request with
 // fake models and a fake helper, M runs on a Mac (what scripts/mac-e2e.sh
 // runs also runs in Mac CI's Voxt helper tests job on every pull request
-// that touches the helper; the rest of M runs by hand), E is an evaluation
+// that changes Voxt's code; the rest of M runs by hand), E is an evaluation
 // with real models, manual is a page of steps. An L or E check is a test; an
 // M check is a test or a script; a manual check is the page.
 func TestBehaviours(t *testing.T) {
