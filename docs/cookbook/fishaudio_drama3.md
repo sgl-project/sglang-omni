@@ -1,20 +1,16 @@
 # Fish Audio Drama 3
 
-[Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) is Fish Audio's text-to-speech model for multi-character scenes and long-form content. It supports multi-speaker generation, voice cloning and natural-language control. SGLang-Omni serves it through the OpenAI-compatible `/v1/audio/speech` endpoint, with [voice cloning](#voice-cloning), [point tags](#point-tags) and [editing as continuation](#editing-as-continuation) as the model-specific modes.
+[Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) is Fish Audio's text-to-speech model for multi-character scenes and long-form content. It supports multi-speaker generation, voice cloning and natural-language control, and SGLang-Omni serves it through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
 ![Fish Audio Drama 3 overview](../_static/image/fishaudio-drama3-overview.png)
 
-The figure shows what the model does. It follows inline tags and free-form direction, voices multi-speaker scenes from one or more reference clips per voice, and revises a take when the next turn gives a note. It also edits an existing take while keeping the rest, and streams long-form audio as the text arrives. The [voice modes](#voice-modes) below show the request for each.
+- **35B parameters, 3B active per token**: a mixture-of-experts backbone with a codebook-MTP audio decoder; the [technical report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf) has the architecture
+- **37.0 GB of engine weights** in the default FP8 checkpoint; the [int4 checkpoint](#int4-checkpoint) needs 20.8 GB
+- **Speaker tags** `<|speaker:0|>` … `<|speaker:15|>` — one text can carry up to 16 characters
+- **Long text** is chunked automatically and can be streamed per chunk
+- **Shared request fields, streaming and clients** are in [TTS Model Usage](../basic_usage/tts.md); this page covers the CUDA server, and the native Apple Silicon server is under [Platform deployment](fishaudio_drama3/platforms.md)
 
-Drama 3 is a 35B-parameter mixture-of-experts model that activates 3B parameters per token. The default checkpoint needs 37.0 GB of GPU memory for the engine weights alone, before the KV cache and the other stages. The [int4 checkpoint](#int4-checkpoint) brings that down to 20.8 GB. Speaker tags `<|speaker:0|>` to `<|speaker:15|>` mark the characters, and one text can carry up to 16 characters. Long text is chunked automatically and can be streamed per chunk. Under the hood, a hybrid-attention MoE text backbone drives a codebook-MTP audio decoder, with the experts stored in FP8 and the remaining weights in bf16. The figure below shows the stack, and the [Fish Speech repository](https://github.com/fishaudio/fish-speech) and its [technical report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf) describe it in full. The [Fish Audio Playground](https://fish.audio) hosts the model online.
-
-![Fish Audio Drama 3 architecture](../_static/image/fishaudio-drama3-architecture.png)
-
-The backbone reads the instruction, the reference text and the target text as text tokens, and the reference audio and its own generated audio as fused code embeddings. The codebook-MTP decoder sits on the backbone's hidden state: four shared layers and nine MTP layers predict the remaining codebooks one at a time, and the audio tokenizer decoder turns the ten codes into a waveform.
-
-Figures 1 and 2 of the [Fish Audio Drama 3 Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf), reproduced from the report's vector drawings.
-
-For shared request examples, response formats and streaming clients, see [TTS Model Usage](../basic_usage/tts.md). This page covers serving the model with SGLang-Omni on CUDA; the native Apple Silicon server is under [Platform deployment](fishaudio_drama3/platforms.md).
+Figure from the [Fish Audio Drama 3 Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf), reproduced from the report's vector drawing.
 
 <span id="installation-and-startup"></span>
 
