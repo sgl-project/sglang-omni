@@ -213,6 +213,16 @@ func TestReadHomeUsageModelIdentity(t *testing.T) {
 	}
 }
 
+func TestHomeHistoryReadError(t *testing.T) {
+	a, tt := homeTester(t)
+	a.hm.err = "fixture read failed"
+	a.hm.gen++
+	frames(tt)
+	if !hasExact(tt, "Could not read the history.") {
+		t.Fatalf("the history read error is missing: %q", tt.Texts())
+	}
+}
+
 func TestReadHomeUsage(t *testing.T) {
 	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
 	a, _, _ := newTestApp(t)

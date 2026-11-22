@@ -19,6 +19,7 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 		input.Activity, input.Usage = activity.Log{}, homeUsage{}
 	})
 	add("home-normal", func(_ *homeViewStateInput) {})
+	add("home-error", func(input *homeViewStateInput) { input.Error = "fixture read failed" })
 	add("home-history-off", func(input *homeViewStateInput) { input.KeepHistory = false })
 	add("home-history-off-empty", func(input *homeViewStateInput) {
 		input.KeepHistory = false

@@ -29,6 +29,7 @@ type homeUsage struct {
 
 type homeViewState struct {
 	KeepHistory bool                `json:"keep_history"`
+	Error       string              `json:"error,omitempty"`
 	Slogan      homeSloganViewState `json:"slogan"`
 	// Activity is the activity calendar once its log was read.
 	Activity *homeActivityViewState `json:"activity,omitempty"`
@@ -36,6 +37,7 @@ type homeViewState struct {
 
 type homeViewStateInput struct {
 	KeepHistory  bool
+	Error        string
 	Features     settings.Features
 	Now          time.Time
 	Activity     activity.Log
@@ -50,8 +52,8 @@ func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) h
 		lastModelName = uitext.ModelNameFor(translator, input.Usage.lastModel)
 	}
 	state := homeViewState{
-		KeepHistory: input.KeepHistory,
-		Slogan:      buildHomeSloganViewState(translator, input.Features, lastModelName),
+		KeepHistory: input.KeepHistory, Error: input.Error,
+		Slogan: buildHomeSloganViewState(translator, input.Features, lastModelName),
 	}
 	if input.ActivityRead {
 		activity := buildHomeActivityViewState(translator, input.Activity, input.ActivityPage, input.Now, input.Usage)

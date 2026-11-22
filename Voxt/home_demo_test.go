@@ -54,6 +54,12 @@ func TestHomeDemoUsage(t *testing.T) {
 		}
 	}
 
+	selectMeetingDemoFixture(t, host, "en/home-error")
+	tester = newMeetingDemoTester(t, host)
+	if !tester.HasText("Could not read the history.") {
+		t.Fatalf("history-error Home: %q", tester.Texts())
+	}
+
 	selectMeetingDemoFixture(t, host, "en/home-history-off")
 	tester = newMeetingDemoTester(t, host)
 	if !tester.HasText("History is off, so nothing is counted.") || tester.HasText("Per minute") {

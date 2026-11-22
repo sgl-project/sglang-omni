@@ -23,6 +23,9 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions) {
 	ui.Scroll(c.Key("home-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			homeSlogan(c, state.Slogan, actions)
+			if state.Error != "" {
+				notice(c, "home-history-error", noticeError, i18n.T("Could not read the history."), state.Error, nil, nil)
+			}
 			homeActivitySection(c, state, actions)
 		})
 	})

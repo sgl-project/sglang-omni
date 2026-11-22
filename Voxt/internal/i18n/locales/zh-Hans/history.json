@@ -32,7 +32,6 @@
   "Could not delete the recordings: %v": "无法删除录音：%v",
   "Could not export the recordings: %v": "无法导出录音：%v",
   "Could not measure them": "无法统计",
-  "Could not read the history.": "无法读取历史。",
   "Could not read the history: %v": "无法读取历史：%v",
   "Delete %d entries now?": "现在删除 %d 条记录？",
   "Delete %d entry now?": "现在删除 %d 条记录？",
