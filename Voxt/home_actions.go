@@ -19,4 +19,6 @@ type homeActions interface {
 	copyHomeRecent(id string)
 	addHomeShortcut()
 	fixHomeReadiness(fix string)
+	activityBack()
+	activityForward()
 }

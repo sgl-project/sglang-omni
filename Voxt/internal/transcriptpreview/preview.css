@@ -1,4 +1,6 @@
 html, body { margin: 0; background: var(--background); }
+html.streaming { scrollbar-width: none; }
+html.streaming::-webkit-scrollbar { display: none; }
 body { font: 1rem/1.55 -apple-system, BlinkMacSystemFont, sans-serif; overflow-wrap: anywhere; }
 main { display: flow-root; box-sizing: border-box; padding-right: var(--padding-right); }
 main > :first-child { margin-top: 0; }

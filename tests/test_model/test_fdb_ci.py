@@ -18,6 +18,7 @@ from tests.utils.fdb_ci import (
     check_overlaps_exercised,
     collect_fdb_metrics,
     count_exercised_overlaps,
+    count_speech_failures,
     run_fdb_ci,
 )
 
@@ -46,6 +47,10 @@ def test_full_duplex_bench() -> None:
     exercised = count_exercised_overlaps(run_root, strategy.engine_name)
     for category, count in exercised.items():
         print(f"  {category + ' overlaps exercised':36} {count}/{V15_PER_SUBSET}")
+    speech_failures = count_speech_failures(run_root)
+    print(
+        f"  {'replies ended failed/speech_error':36} {speech_failures}, reported only"
+    )
     checks = MetricCheckCollector(f"FDB {STRATEGY_NAME}")
     check_overlaps_exercised(checks, exercised, strategy)
     if PRESET.calibrated:

@@ -2051,6 +2051,15 @@ def apply_sglang_qwen3_tts_result(
     payload: StagePayload,
     data: Qwen3TTSSGLangRequestData,
 ) -> StagePayload:
+    finish_reason = qwen3_tts_finish_reason(data)
+    completion_frames = len(data.output_codes)
+    if finish_reason == "length":
+        logger.info(
+            f"qwen3_tts_codec_budget_exhausted request_id={payload.request_id} "
+            f"finish_reason={finish_reason} completion_frames={completion_frames}"
+        )
+    else:
+        pass
     code_parts: list[torch.Tensor] = []
     if data.ref_code is not None and data.ref_code_len:
         code_parts.append(data.ref_code.to(dtype=torch.long))
@@ -2076,10 +2085,10 @@ def apply_sglang_qwen3_tts_result(
         "audio_codes": codes,
         "ref_code_len": data.ref_code_len,
         "prompt_tokens": data.ref_code_len,
-        "completion_tokens": len(data.output_codes),
+        "completion_tokens": completion_frames,
         "engine_time_s": time.perf_counter() - data.engine_start_s,
         "sample_rate": 24000,
-        "finish_reason": qwen3_tts_finish_reason(data),
+        "finish_reason": finish_reason,
     }
     if data.speech_input_tokens is not None:
         result["speech_input_tokens"] = data.speech_input_tokens

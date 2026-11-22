@@ -74,6 +74,7 @@ func (r *run) lacks() *Problem {
 // Rewrite) and puts it in the snapshot; "" for none, or when it could
 // not be read (the session goes on without one).
 func (r *run) readSelection() string {
+	defer r.m.update(r, func(s *Snapshot) { s.ReadingSelection = false })
 	cfg := r.m.cfg
 	timeout, params := cfg.ReadTimeout, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)}
 	if r.req.Kind == store.KindRewrite {
