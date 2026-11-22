@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 from scripts.docs_review.models import (
-    BundleFileRecord,
     BundlePayload,
     CheckRecord,
     CollectedFile,
@@ -164,16 +163,6 @@ def review_input_sha256(
 def bundle_payload(
     bundle: ReviewBundle, prompt_version: str, input_hash: str
 ) -> BundlePayload:
-    records = [
-        BundleFileRecord(
-            file_path=collected.file_path,
-            change=collected.change,
-            truncated=collected.truncated,
-            content=collected.content,
-            missing=collected.missing,
-        )
-        for collected in bundle.files
-    ]
     return BundlePayload(
         repository_identity=bundle.repository_identity,
         base_commit_sha=bundle.base_commit_sha,
@@ -188,7 +177,7 @@ def bundle_payload(
         pull_request_text=bundle.pull_request_text,
         comment_text=bundle.comment_text,
         evidence_text=bundle.evidence_text,
-        files=records,
+        files=list(bundle.files),
         document_scopes=list(bundle.document_scopes),
     )
 
@@ -224,11 +213,7 @@ def is_documentation(file_path: str) -> bool:
 
 
 def is_code_or_config(file_path: str) -> bool:
-    suffix = Path(file_path).suffix
-    if suffix in CODE_SUFFIXES and not is_documentation(file_path):
-        return True
-    else:
-        return False
+    return Path(file_path).suffix in CODE_SUFFIXES and not is_documentation(file_path)
 
 
 def parse_name_status(raw: str) -> list[tuple[str, str]]:
@@ -267,7 +252,7 @@ def read_changed_file(
 
 def change_from_status(status: str) -> FileChange:
     kind = status[:1]
-    if kind == "A" or kind == "R" or kind == "C":
+    if kind in ("A", "R", "C"):
         return "added"
     elif kind == "D":
         return "deleted"

@@ -219,14 +219,6 @@ class SpendAuthorization:
     reason: str
 
 
-class BundleFileRecord(BaseModel):
-    file_path: str
-    change: FileChange
-    truncated: bool
-    content: str
-    missing: bool = False
-
-
 class BundlePayload(BaseModel):
     repository_identity: str
     base_commit_sha: str
@@ -241,5 +233,5 @@ class BundlePayload(BaseModel):
     pull_request_text: str
     comment_text: str
     evidence_text: str
-    files: list[BundleFileRecord]
+    files: list[CollectedFile]
     document_scopes: list[DocumentScope] = Field(default_factory=list)

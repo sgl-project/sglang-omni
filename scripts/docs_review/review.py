@@ -6,10 +6,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from scripts.docs_review.audit import (
     audit_bundle,
@@ -34,6 +35,8 @@ from scripts.docs_review.models import (
 from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
 from scripts.docs_review.reporting import render_bundle
 from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
+
+FINDING_LIST = TypeAdapter(list[Finding])
 
 
 class SystemClock:
@@ -62,188 +65,92 @@ def run_review(
     prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
     input_hash = review_input_sha256(bundle, request.model_settings, prompt_version)
     payload = bundle_payload(bundle, prompt_version, input_hash)
-    ledger = ReviewLedger(request.ledger_path)
-    try:
-        cached = ledger.fetch(input_hash)
-        if cached is not None:
-            return ReviewRun(bundle=bundle, payload=payload, report=cached)
+    with closing(ReviewLedger(request.ledger_path)) as ledger:
+        report = ledger.fetch(input_hash)
+        if report is None:
+            report = review_uncached(
+                request, reviewer, clock.now(), bundle, payload, prompt_text, ledger
+            )
         else:
             pass
-        report = review_uncached(
-            request,
-            reviewer,
-            clock,
-            bundle,
-            prompt_text,
-            prompt_version,
-            input_hash,
-            ledger,
-        )
-        return ReviewRun(bundle=bundle, payload=payload, report=report)
-    finally:
-        ledger.close()
+    return ReviewRun(bundle=bundle, payload=payload, report=report)
 
 
 def review_uncached(
     request: ReviewRequest,
     reviewer: DocumentationReviewer | None,
-    clock: Clock,
+    reviewed_at: datetime,
     bundle: ReviewBundle,
+    payload: BundlePayload,
     prompt_text: str,
-    prompt_version: str,
-    input_hash: str,
     ledger: ReviewLedger,
 ) -> Report:
-    reviewed_at = clock.now()
+    budget = request.budget
+    findings: list[Finding] = []
+    attempts = 0
+    usage_cost_cents = 0
     if reviewer is None and request.model_settings is None:
-        return assemble_report(
-            bundle=bundle,
-            prompt_version=prompt_version,
-            input_hash=input_hash,
-            model_findings=None,
-            model_failed=True,
-            incomplete_reason="model is not configured",
-            usage_cost_cents=0,
-        )
+        incomplete_reason = "model is not configured"
+    elif budget is None:
+        incomplete_reason = "quotas are not configured"
     else:
-        pass
-    if request.budget is None:
-        return assemble_report(
-            bundle=bundle,
-            prompt_version=prompt_version,
-            input_hash=input_hash,
-            model_findings=None,
-            model_failed=True,
-            incomplete_reason="quotas are not configured",
-            usage_cost_cents=0,
+        authorization = ledger.authorize(
+            pull_request_number=request.pull_request_number,
+            budget=budget,
+            follow_up_authorized=request.follow_up_authorized,
+            retry_count=request.retry_count,
+            reviewed_at=reviewed_at,
         )
-    else:
-        pass
-    authorization = ledger.authorize(
-        pull_request_number=request.pull_request_number,
-        budget=request.budget,
-        follow_up_authorized=request.follow_up_authorized,
-        retry_count=request.retry_count,
-        reviewed_at=reviewed_at,
-    )
-    if not authorization.allowed:
-        return assemble_report(
-            bundle=bundle,
-            prompt_version=prompt_version,
-            input_hash=input_hash,
-            model_findings=None,
-            model_failed=True,
-            incomplete_reason=authorization.reason,
-            usage_cost_cents=0,
-        )
-    else:
-        pass
-    settings = request.model_settings
-    if reviewer is None:
-        if settings is None:
-            raise RuntimeError("model settings missing after authorization")
+        incomplete_reason = authorization.reason
+        if authorization.allowed:
+            if reviewer is None:
+                assert request.model_settings is not None
+                reviewer = OpenAICompatibleReviewer(request.model_settings, prompt_text)
+            else:
+                pass
+            findings, incomplete_reason, attempts = review_findings(
+                reviewer, render_bundle(bundle), request.retry_count
+            )
+            usage_cost_cents = attempts * budget.call_cost_cents
         else:
-            active_reviewer: DocumentationReviewer = OpenAICompatibleReviewer(
-                settings, prompt_text
-            )
-    else:
-        active_reviewer = reviewer
-    raw_output, attempts, failed = call_with_retries(
-        active_reviewer, render_bundle(bundle), request.retry_count
+            pass
+    report = assemble_report(
+        bundle, payload, findings, incomplete_reason, usage_cost_cents
     )
-    usage_cost_cents = attempts * request.budget.call_cost_cents
-    if failed or raw_output is None:
-        report = assemble_report(
-            bundle=bundle,
-            prompt_version=prompt_version,
-            input_hash=input_hash,
-            model_findings=None,
-            model_failed=True,
-            incomplete_reason="model request failed",
-            usage_cost_cents=usage_cost_cents,
-        )
+    if attempts:
+        ledger.store(request.pull_request_number, report, reviewed_at)
     else:
-        parsed = parse_model_findings(raw_output)
-        if parsed is None:
-            report = assemble_report(
-                bundle=bundle,
-                prompt_version=prompt_version,
-                input_hash=input_hash,
-                model_findings=None,
-                model_failed=True,
-                incomplete_reason="model output was not a finding list",
-                usage_cost_cents=usage_cost_cents,
-            )
-        else:
-            report = assemble_report(
-                bundle=bundle,
-                prompt_version=prompt_version,
-                input_hash=input_hash,
-                model_findings=parsed,
-                model_failed=False,
-                incomplete_reason="",
-                usage_cost_cents=usage_cost_cents,
-            )
-    ledger.store(request.pull_request_number, report, reviewed_at)
+        pass
     return report
 
 
-def call_with_retries(
+def review_findings(
     reviewer: DocumentationReviewer, bundle_text: str, retry_count: int
-) -> tuple[str | None, int, bool]:
-    attempts = 0
-    last_error = False
-    raw_output: str | None = None
-    while attempts <= retry_count:
-        attempts += 1
+) -> tuple[list[Finding], str, int]:
+    max_attempts = retry_count + 1
+    for attempt in range(1, max_attempts + 1):
         try:
-            raw_output = reviewer.review(bundle_text)
+            output = reviewer.review(bundle_text)
         except ReviewerError:
-            last_error = True
-            raw_output = None
+            continue
         else:
-            last_error = False
-            break
-    return raw_output, attempts, last_error
-
-
-def parse_model_findings(raw: str) -> list[Finding] | None:
-    try:
-        payload: object = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    else:
-        pass
-    if not isinstance(payload, list):
-        return None
-    else:
-        findings: list[Finding] = []
-        for entry in payload:
-            if not isinstance(entry, dict):
-                return None
+            try:
+                findings = FINDING_LIST.validate_python(json.loads(output))
+            except (json.JSONDecodeError, ValidationError):
+                return [], "model output was not a finding list", attempt
             else:
-                try:
-                    findings.append(Finding.model_validate(entry))
-                except ValidationError:
-                    return None
-        return findings
+                return findings, "", attempt
+    return [], "model request failed", max_attempts
 
 
 def assemble_report(
     bundle: ReviewBundle,
-    prompt_version: str,
-    input_hash: str,
-    model_findings: list[Finding] | None,
-    model_failed: bool,
+    payload: BundlePayload,
+    model_findings: list[Finding],
     incomplete_reason: str,
     usage_cost_cents: int,
 ) -> Report:
-    deterministic = audit_bundle(bundle)
-    combined = list(deterministic)
-    if model_findings is None:
-        pass
-    else:
-        combined.extend(model_findings)
+    combined = audit_bundle(bundle) + model_findings
     kept, pre_existing, dropped_citations, dropped_absence = validate_findings(
         combined, bundle
     )
@@ -259,7 +166,7 @@ def assemble_report(
         )
     else:
         pass
-    if model_failed or coverage_limitations:
+    if incomplete_reason:
         execution = "incomplete"
         outcome = "incomplete"
     elif kept or pre_existing:
@@ -272,9 +179,9 @@ def assemble_report(
         advisory=True,
         execution=execution,
         outcome=outcome,
-        review_input_sha256=input_hash,
+        review_input_sha256=payload.review_input_sha256,
         policy_version=bundle.policy_version,
-        prompt_version=prompt_version,
+        prompt_version=payload.prompt_version,
         repository_identity=bundle.repository_identity,
         base_commit_sha=bundle.base_commit_sha,
         head_commit_sha=bundle.head_commit_sha,
