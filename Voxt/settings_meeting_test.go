@@ -36,7 +36,7 @@ func TestMeetingSpeechSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
 	a.navigate("/meetings")
-	a.mv.setOpen = true
+	a.mvUI.setOpen = true
 	frames(tt)
 	if !slices.Contains(tt.AccessLabels(), "Speech model for meetings") {
 		t.Fatalf("no speech model menu: %q", tt.AccessLabels())
@@ -82,13 +82,53 @@ func TestMeetingSpeechSettings(t *testing.T) {
 	}
 }
 
+// #4134: Meeting settings edit, save and reset the correction style.
+func TestMeetingCorrectionStyleSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/meetings")
+	a.mvUI.setOpen = true
+	frames(tt)
+	const label = "Correction style for meeting transcripts"
+	if !slices.Contains(tt.AccessLabels(), label) {
+		t.Fatalf("no correction style editor: %q", tt.AccessLabels())
+	}
+	custom := "Keep the conversation's tone. 保留英文产品名。"
+	click(t, tt, label)
+	tt.Command("selectAll")
+	tt.Type(custom)
+	frames(tt)
+	a.saveMeetingCorrectionStyle()
+	if got := a.lib.settings.Get().Features.Meeting.CorrectionStyle; got != custom {
+		t.Fatalf("saved style %q, want %q", got, custom)
+	}
+	a.meetingUI.correction.text = custom + " \n"
+	a.saveMeetingCorrectionStyle()
+	if got := a.lib.settings.Get().Features.Meeting.CorrectionStyle; got != custom {
+		t.Fatalf("trimmed saved style %q, want %q", got, custom)
+	}
+	if got := a.meetingUI.correction.text; got != custom+" \n" {
+		t.Fatalf("autosave changed the focused editor to %q", got)
+	}
+	frames(tt)
+	click(t, tt, "Reset to default prompt")
+	if got := a.lib.settings.Get().Features.Meeting.CorrectionStyle; got != "" || a.meetingUI.correction.text != meeting.DefaultCorrectionStyle {
+		t.Fatalf("reset saved %q, editor %q", got, a.meetingUI.correction.text)
+	}
+	a.meetingUI.correction.text = " \n"
+	a.saveMeetingCorrectionStyle()
+	if got := a.lib.settings.Get().Features.Meeting.CorrectionStyle; got != "" || a.meetingUI.correction.text != meeting.DefaultCorrectionStyle {
+		t.Fatalf("blank saved %q, editor %q", got, a.meetingUI.correction.text)
+	}
+}
+
 // TestMeetingSpeechSettingsNoModel: with no speech model installed the
 // menu reads Automatic and cannot open.
 func TestMeetingSpeechSettingsNoModel(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
 	a.navigate("/meetings")
-	a.mv.setOpen = true
+	a.mvUI.setOpen = true
 	frames(tt)
 	_ = tt.ClickControl("Speech model for meetings")
 	frames(tt)

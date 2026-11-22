@@ -77,8 +77,8 @@
 ## S10. 写一份个人词典
 
 - **起点**：用户有一张自己的写法表（标准写法、纠正映射、条件），原来分别粘贴在转录、翻译、改写的提示词里。
-- **操作**：词典页 → 切到“个人词典” → 把表格粘贴进编辑框 → 看下面的“怎么使用”，切换转录、翻译、改写。
-- **应看到**：内容自动保存，重启后还在；“怎么使用”分别显示系统提示词、个人词典、你的输入、语音识别文本，再显示语言模型收到的消息，个人词典紧跟在系统提示词的任务规则后面；关掉“加到语言模型的提示词里”后示例里写“不发送”。
+- **操作**：词典页 → 切到“个人词典” → 把表格粘贴进编辑框 → 打开转录、翻译、改写任一功能页 → “你的规则” → “语言模型收到什么”。
+- **应看到**：内容自动保存，重启后还在；功能页显示该功能实际发出的整条请求：你的规则、个人词典、术语表（开关打开时的启用词条）、输入和最后发出的消息，个人词典紧跟在任务规则后面；关掉“加到语言模型的提示词里”后整条请求里没有它。
 - **边界**：编辑框为空、开关关掉或词典总开关关掉时都不发送；语音识别从来不收到它；原有词条和别名照常生效；用户自己写了完整提示词时也只加一次；200 行的表格整页滚动，不在编辑框里另出一个滚动条。
 - **覆盖**：`TestDictionaryNotes`、`TestPersonalDictionary`、`TestGoldenDictionary`、`TestDictionaryKeepsThePrefix`、`TestDictionaryMarkdown`、`TestDictionaryNotesUpgrade`；截图 `page-dictionary-notes*`。
 
@@ -88,7 +88,7 @@
 - **操作**：转录或语音翻译停止录音后，浮窗显示“整理中”时点“用识别原文”，或按取消键（默认 Esc）。另试：语言模型页 → “等待语言模型”选 5 分钟。
 - **应看到**：马上插入识别原文，没有警告；历史记一条成功的记录。选了等待时长后，模型慢也会等到这个时长；语音翻译超时后插入识别原文并提示“语言模型没有及时响应”。
 - **边界**：改写在处理时没有这个按钮，回答还没开始写进卡片时按取消键仍然取消整段（写进卡片后见 S12）；选区翻译也没有；没有按钮时浮窗照旧让鼠标穿过。
-- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitCustom`、`TestLLMWaitNoLimit`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestLLMWaitNoLimit`、`TestTranslateTimeoutKeepsSpeech`。
+- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitSavedCustom`、`TestLLMWaitNoLimit`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestLLMWaitNoLimit`、`TestTranslateTimeoutKeepsSpeech`。
 
 ## S11b. 听写整理时换思考强度
 

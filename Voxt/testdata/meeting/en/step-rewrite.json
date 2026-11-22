@@ -1,0 +1,88 @@
+{
+  "name": "step-rewrite",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 5,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Try Rewrite",
+    "subtitle": "Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.",
+    "recording": false,
+    "try": {
+      "prefix": "ob-rw",
+      "shortcut": {
+        "present": true,
+        "feature_title": "Rewrite",
+        "text": "⌃ Right ⌥",
+        "how": "Press to start, press again to stop.",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": true,
+          "lit_keys": {
+            "control-left": true,
+            "control-right": true,
+            "option-right": true
+          },
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "Say, for example",
+      "sample_text": "Write a short note to the team saying I'll be ten minutes late to the stand-up.",
+      "sample_action": false,
+      "hint": "",
+      "card": {
+        "mine": false,
+        "state": "",
+        "session_kind": "",
+        "live": false,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": null,
+        "heard": false,
+        "elapsed_text": "",
+        "partial": "",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": ""
+      }
+    },
+    "footer": {
+      "mode": "try-wait",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "Continue is available once a test gives a result",
+      "continue_disabled": true
+    }
+  }
+}

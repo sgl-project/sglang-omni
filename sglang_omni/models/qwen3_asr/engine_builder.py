@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
@@ -36,6 +35,7 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
 )
 from sglang_omni.models.qwen3_asr.request_builders import Qwen3ASRRequestData
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.npu import validate_npu_graph_environment
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
@@ -344,17 +344,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 or cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
                 or cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
             )
-            and (
-                os.environ.get("PER_STREAM_QUEUE") != "1"
-                or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"
-                or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
-            )
         ):
-            raise ValueError(
-                "Qwen3-ASR NPU pre-LM graphs require PER_STREAM_QUEUE=1, "
-                "TASK_QUEUE_ENABLE unset or 1, and ASCEND_LAUNCH_BLOCKING unset or 0 "
-                "before starting the server"
-            )
+            validate_npu_graph_environment(self.model_name)
         else:
             pass
         if self.uses_torch_mps() and cfg.max_running_requests != 1:
@@ -621,9 +612,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 if self.async_decode_min_batch_size is None
                 else self.async_decode_min_batch_size
             ),
-            # note (rsi): ASR prompts fit one chunk, so a prefill's first
-            # tokens can be resolved after the next decode launches.
-            "async_prefill": current_platform.is_cuda()
+            # note (siju-samuel): on XPU, disabling async decode keeps request-build admission FIFO.
+            "async_prefill": (
+                current_platform.is_cuda()
+                or (current_platform.is_xpu() and self.enable_async_decode)
+            )
             and self.draft_checkpoint is None,
             "request_build_max_workers": (
                 1 if use_torch_mps else self.request_build_max_workers

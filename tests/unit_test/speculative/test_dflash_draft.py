@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reduced-vocabulary DFlash drafts loaded from speculators checkpoints."""
+"""DFlash and DFlash2 drafts loaded from speculators checkpoints."""
 
 from __future__ import annotations
 
@@ -8,15 +8,18 @@ from pathlib import Path
 
 import pytest
 import torch
+from sglang.srt.speculative.dflash_worker_v2 import DFlashWorkerV2
 from torch import nn
 
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.speculative.dflash_draft import (
     DRAFT_ARCHITECTURE,
+    SELECTOR_DRAFT_ARCHITECTURE,
     DraftBlockSampler,
     ReducedVocabularyDFlashDraftModel,
     ReducedVocabularyDFlashWorker,
+    draft_worker_class,
     materialize_draft_checkpoint,
 )
 
@@ -96,6 +99,48 @@ def test_flat_config_captures_before_the_layers_the_draft_was_trained_on(
     )
     for weight_file in weight_files:
         assert (draft_dir / weight_file).resolve() == (tmp_path / weight_file).resolve()
+
+
+def test_selector_draft_keeps_the_target_vocabulary_and_runs_under_the_shared_worker(
+    tmp_path: Path,
+) -> None:
+    """A DFlash2 draft proposes through the target head, so a copied draft vocabulary or a missing selector field would build the wrong draft, and the reduced-vocabulary worker would sample from a head it does not have."""
+    write_speculators_checkpoint(
+        tmp_path,
+        speculators_model_type="dflash2",
+        draft_vocab_size=151936,
+        conv_kernel_size=2,
+        conv_group_size=16,
+        selector_rank=256,
+        selector_top_k=16,
+    )
+    reduced_vocabulary_directory = tmp_path / "reduced_vocabulary"
+    reduced_vocabulary_directory.mkdir()
+    write_speculators_checkpoint(reduced_vocabulary_directory)
+
+    selector_checkpoint = materialize_draft_checkpoint(str(tmp_path), None)
+    reduced_vocabulary_checkpoint = materialize_draft_checkpoint(
+        str(reduced_vocabulary_directory), None
+    )
+
+    config = json.loads((Path(selector_checkpoint.name) / "config.json").read_text())
+    assert config["architectures"] == [SELECTOR_DRAFT_ARCHITECTURE]
+    assert "draft_vocab_size" not in config
+    assert config["dflash_config"] == {
+        "target_layer_ids": [1, 13, 24],
+        "mask_token_id": 151705,
+        "block_size": 8,
+        "sample_from_anchor": False,
+        "conv_kernel_size": 2,
+        "conv_group_size": 16,
+        "selector_rank": 256,
+        "selector_top_k": 16,
+    }
+    assert draft_worker_class(selector_checkpoint.name) is DFlashWorkerV2
+    assert (
+        draft_worker_class(reduced_vocabulary_checkpoint.name)
+        is ReducedVocabularyDFlashWorker
+    )
 
 
 @pytest.mark.parametrize(

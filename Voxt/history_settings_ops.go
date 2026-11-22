@@ -47,6 +47,8 @@ func retention(h settings.History, now time.Time) store.Retention {
 // openHistorySettings applies the saved recordings folder and runs the
 // clean-up once, as the app starts (newApp).
 func (a *app) openHistorySettings() {
+	a.homeDir, _ = os.UserHomeDir()
+	a.defaultAudioDir = a.lib.store.History().DefaultAudioDir()
 	a.applyAudioDir()
 	a.pruneHistory()
 }
@@ -107,14 +109,13 @@ func (a *app) askCleanup(next settings.History) {
 	a.async(func() {
 		n, err := h.CountPrune(context.Background(), rt)
 		a.post(func() {
-			hs := &a.histSet
 			if err != nil {
 				a.toast(i18n.T("Could not read the history: %v", err))
-				hs.formFor = "" // the controls show the setting again
+				a.histSetUI.formFor = "" // the controls show the setting again
 				return
 			}
 			if n > 0 {
-				hs.pruneAsk, hs.pruneN, hs.pruneTo = true, n, next
+				a.histSetUI.pruneAsk, a.histSetUI.pruneN, a.histSet.pruneTo = true, n, next
 				return
 			}
 			a.saveCleanup(next)
@@ -127,7 +128,7 @@ func (a *app) saveCleanup(h settings.History) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.History.CleanupOff, s.History.KeepDays, s.History.KeepCount = h.CleanupOff, h.KeepDays, h.KeepCount
 	})
-	a.histSet.formFor = ""
+	a.histSetUI.formFor = ""
 }
 
 // applyAudioDir makes the saved recordings folder the store's, or, when
@@ -199,7 +200,7 @@ func (a *app) endWork() {
 	}
 	hs.busy, hs.cancel = "", nil
 	hs.usageFor = ""
-	a.stReport = nil // Settings → Storage measures again
+	a.storageInvalidated() // Settings → Storage measures again
 }
 
 // moveRecordings moves the recordings to dir ("" = the default folder).
@@ -260,7 +261,7 @@ func (a *app) exportRecordings(dir string, shown bool) {
 	h := a.lib.store.History()
 	q := store.HistoryQuery{WithAudio: true}
 	if shown {
-		q.Kind, q.Search = a.hist.kind(), a.histSearch()
+		q.Kind, q.Search = a.histUI.kind(), a.histSearch()
 	}
 	ctx, progress := a.startWork("export")
 	a.async(func() {
@@ -298,7 +299,7 @@ func (a *app) deleteRecordings() {
 		n, err := h.DeleteAudio(context.Background())
 		a.post(func() {
 			a.histSet.usageFor = ""
-			a.stReport = nil
+			a.storageInvalidated()
 			if err != nil {
 				a.toast(i18n.T("Could not delete the recordings: %v", err))
 			} else {

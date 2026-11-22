@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +39,18 @@ func (s *seqFileASR) Transcribe(context.Context, asr.FileRequest) (asr.Result, e
 		text = s.texts[s.n-1]
 	}
 	return asr.Result{Text: text}, nil
+}
+
+type fakeDiarizer struct {
+	result   asr.Result
+	requests []asr.FileRequest
+}
+
+func (f *fakeDiarizer) Caps() asr.Caps { return asr.Caps{File: true} }
+
+func (f *fakeDiarizer) Diarize(_ context.Context, req asr.FileRequest) (asr.Result, error) {
+	f.requests = append(f.requests, req)
+	return f.result, nil
 }
 
 func writeWAV(t *testing.T, dir, name string, pcm []byte) {
@@ -117,6 +131,221 @@ func TestFinalizeReplacesMicSegments(t *testing.T) {
 	}
 	if micText != "final mic" || sysText != "final sys" {
 		t.Fatalf("segments mic=%q sys=%q", micText, sysText)
+	}
+}
+
+func TestFinalizeDiarizesSystemAndReloadsSpeakerLabels(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	meetDir := filepath.Join(root, "meetings", "m-speakers")
+	if err := os.MkdirAll(meetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWAV(t, meetDir, "mic.wav", tonePCM(rateSamples(2*time.Second)))
+	writeWAV(t, meetDir, "system.wav", tonePCM(rateSamples(5*time.Second)))
+	mt, err := db.Meetings().CreateMeeting(ctx, store.Meeting{
+		ID: "m-speakers", CreatedAt: time.Now(), Status: store.MeetingDone,
+		Mode: store.MeetingModeMeeting, Audio: "m-speakers", DurationMS: 5000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	micASR := &seqFileASR{texts: []string{"final mic"}}
+	sysASR := &seqFileASR{texts: []string{"plain system"}}
+	wantHints := []string{"SGLang", "Voxt"}
+	diarizer := &fakeDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 500 * time.Millisecond, End: 1500 * time.Millisecond, Speaker: "S01", Text: "first"},
+		{Start: 1500 * time.Millisecond, End: 2500 * time.Millisecond, Speaker: "S02", Text: "second"},
+		{Start: 2500 * time.Millisecond, End: 3500 * time.Millisecond, Speaker: "S04", Text: "fourth"},
+	}}}
+	hold := &fakeModelHold{}
+	cfg := meeting.Config{
+		Store:     db.Meetings(),
+		Dir:       filepath.Join(root, "meetings"),
+		Settings:  func() settings.Meeting { return settings.Meeting{} },
+		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		ModelHold: hold,
+		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
+			if src == meeting.SourceMic {
+				return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
+			}
+			return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR, Hints: wantHints}, nil
+		},
+		Diarizer: func(context.Context) (asr.Diarizer, error) {
+			if hold.holds != 0 {
+				t.Error("MTD resolved while the selected speech model was still held")
+			}
+			return diarizer, nil
+		},
+	}
+	if err := meeting.FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(diarizer.requests) != 1 || len(diarizer.requests[0].Audio) != rateSamples(5*time.Second)*2 {
+		t.Fatalf("diarizer requests %+v", diarizer.requests)
+	}
+	if !slices.Equal(diarizer.requests[0].Hints, wantHints) {
+		t.Errorf("diarizer hot words = %q, want %q", diarizer.requests[0].Hints, wantHints)
+	}
+	if sysASR.n != 0 {
+		t.Fatal("the plain system transcriber ran instead of MTD")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := db.Meetings().Meeting(ctx, "m-speakers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mic int
+	var exports []meeting.ExportSegment
+	for _, seg := range segs {
+		if seg.Source == store.SegmentMic {
+			mic++
+			if seg.Speaker != "me" || seg.Text != "final mic" {
+				t.Errorf("mic segment %+v", seg)
+			}
+			continue
+		}
+		exports = append(exports, meeting.ExportSegment{Start: time.Duration(seg.StartMS) * time.Millisecond, Speaker: seg.Speaker, Text: seg.Text})
+	}
+	if mic != 1 || len(exports) != 3 {
+		t.Fatalf("segments %+v", segs)
+	}
+	for i, want := range []struct {
+		speaker, text string
+		startMS       int64
+	}{{"s1", "first", 500}, {"s2", "second", 1500}, {"s4", "fourth", 2500}} {
+		if exports[i].Speaker != want.speaker || exports[i].Text != want.text || exports[i].Start.Milliseconds() != want.startMS {
+			t.Errorf("system %d: %+v", i, exports[i])
+		}
+	}
+	transcript := meeting.ExportTxt(exports, nil)
+	for _, want := range []string{"Speaker 1", "Speaker 2", "Speaker 4"} {
+		if !strings.Contains(transcript, want) {
+			t.Errorf("reloaded transcript %q lacks %q", transcript, want)
+		}
+	}
+}
+
+func TestFinalizeWithoutMTDUsesPlainSystemTrack(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	meetDir := filepath.Join(root, "meetings", "m-plain")
+	if err := os.MkdirAll(meetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWAV(t, meetDir, "system.wav", tonePCM(rateSamples(time.Second)))
+	mt, err := db.Meetings().CreateMeeting(ctx, store.Meeting{
+		ID: "m-plain", CreatedAt: time.Now(), Status: store.MeetingDone,
+		Mode: store.MeetingModeMeeting, Audio: "m-plain", DurationMS: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sysASR := &seqFileASR{texts: []string{"plain system"}}
+	diarizer := &fakeDiarizer{}
+	cfg := meeting.Config{
+		Store:    db.Meetings(),
+		Dir:      filepath.Join(root, "meetings"),
+		Settings: func() settings.Meeting { return settings.Meeting{} },
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR}, nil
+		},
+		Diarizer: func(context.Context) (asr.Diarizer, error) { return nil, nil },
+	}
+	if err := meeting.FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := db.Meetings().Meeting(ctx, "m-plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sysASR.n != 1 || len(diarizer.requests) != 0 || len(segs) != 1 || segs[0].Text != "plain system" || segs[0].Speaker != "" {
+		t.Fatalf("segments %+v, plain calls %d, diarizer calls %d", segs, sysASR.n, len(diarizer.requests))
+	}
+}
+
+func TestManagerFinalizeReleasesRecordingHoldBeforeMTD(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	pcm := tonePCM(rateSamples(time.Second))
+	micASR := &seqFileASR{texts: []string{"mic"}}
+	sysASR := &seqFileASR{texts: []string{"plain"}}
+	hold := &fakeModelHold{}
+	called := make(chan struct{})
+	cfg := meeting.Config{
+		Mic:       newFakeAudio(pcm),
+		System:    newFakeAudio(pcm),
+		Store:     db.Meetings(),
+		Dir:       filepath.Join(root, "meetings"),
+		Settings:  func() settings.Meeting { return settings.Meeting{NoAutoSummary: true} },
+		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		ModelHold: hold,
+		ASR: func(_ context.Context, src meeting.Source) (meeting.TrackASR, error) {
+			if src == meeting.SourceMic {
+				return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
+			}
+			return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR}, nil
+		},
+		Diarizer: func(context.Context) (asr.Diarizer, error) {
+			defer close(called)
+			if hold.holds != 0 {
+				t.Errorf("MTD runs with %d selected-model holds", hold.holds)
+			}
+			return &fakeDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "other"}}}}, nil
+		},
+	}
+	mgr := meeting.NewManager(cfg)
+	id, err := mgr.Start(ctx, meeting.StartRequest{Mode: meeting.ModeMeeting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hold.holds != 1 {
+		t.Fatalf("after Start: %d holds", hold.holds)
+	}
+	if err := mgr.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+	case <-time.After(10 * time.Second):
+		t.Fatal("MTD did not run")
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		mt, _, err := db.Meetings().Meeting(ctx, id)
+		if err == nil && mt.Status == store.MeetingDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("meeting %+v, err %v", mt, err)
+		}
+	}
+	if hold.holds != 0 {
+		t.Fatalf("after Finish: %d holds", hold.holds)
+	}
+	if micASR.n == 0 {
+		t.Fatal("the selected model did not transcribe the microphone")
 	}
 }
 

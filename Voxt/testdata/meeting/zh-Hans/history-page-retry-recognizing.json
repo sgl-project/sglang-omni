@@ -1,0 +1,43 @@
+{
+  "name": "history-page-retry-recognizing",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "1 条记录",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-retry",
+        "title": "recognition failed",
+        "failed_title": true,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": false,
+        "copy_text": "weekly plan\nI'll send the new agenda tonight",
+        "raw_copy_text": "",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": true,
+          "active": true,
+          "label": "重试",
+          "disabled": true,
+          "stage": "recognizing",
+          "stage_text": "识别中…",
+          "tooltip": ""
+        },
+        "marks": null
+      }
+    ]
+  }
+}

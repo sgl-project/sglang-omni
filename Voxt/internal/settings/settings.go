@@ -24,7 +24,7 @@ import (
 
 // Version is the schema version Defaults writes. Bump it when a field's
 // meaning changes, and migrate older documents in Migrate.
-const Version = 4
+const Version = 5
 
 // Settings is the whole document.
 type Settings struct {
@@ -74,20 +74,23 @@ type General struct {
 	CopyResult bool `json:"copyResult,omitempty"`
 }
 
-// Appearance: theme, scale and the sidebar.
+// Appearance: the main window's visual settings.
 type Appearance struct {
-	Theme        string  `json:"theme"`        // "system" | "light" | "dark"
-	Scale        float64 `json:"scale"`        // UI scale, 0.9–1.25 (1 = 100 %)
-	ReduceMotion bool    `json:"reduceMotion"` // in addition to the system setting
+	Theme              string  `json:"theme"`              // "system" | "light" | "dark" | "transparent"
+	Palette            string  `json:"palette"`            // user-selected color as #rrggbb
+	WindowTransparency int     `json:"windowTransparency"` // percent, used in transparent mode
+	Scale              float64 `json:"scale"`              // UI scale, 0.9–1.25 (1 = 100 %)
+	ReduceMotion       bool    `json:"reduceMotion"`       // in addition to the system setting
 	// Rail shows the sidebar as icons only. Without it the sidebar is
 	// automatic (icons only in a narrow window) unless RailChosen: the
 	// user chose names and icons. SidebarWidth is its width in DIPs at
 	// 100 % (0 = the default); ClosedSections the sidebar sections the
 	// user closed.
-	Rail           bool     `json:"rail,omitempty"`
-	RailChosen     bool     `json:"railChosen,omitempty"`
-	SidebarWidth   float64  `json:"sidebarWidth,omitempty"`
-	ClosedSections []string `json:"closedSections,omitempty"`
+	Rail               bool     `json:"rail,omitempty"`
+	RailChosen         bool     `json:"railChosen,omitempty"`
+	SidebarWidth       float64  `json:"sidebarWidth,omitempty"`
+	HistoryDetailWidth float64  `json:"historyDetailWidth,omitempty"` // DIPs at 100 %, 0 = default
+	ClosedSections     []string `json:"closedSections,omitempty"`
 }
 
 // Privacy: what VoxtNew keeps on this Mac and what it logs.
@@ -112,6 +115,10 @@ type Privacy struct {
 	// Rewrite's text to the language model (session/window.go); off by
 	// default.
 	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
+	// SendClipboardImageWithSelection deliberately includes that picture
+	// with selected text too; off unless the user turns it on, in fresh
+	// installs and in documents migrated from before version 5 alike.
+	SendClipboardImageWithSelection bool `json:"sendClipboardImageWithSelection,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.
@@ -295,11 +302,16 @@ type Dictionary struct {
 
 // Setup: the first-run guide.
 type Setup struct {
-	Done bool `json:"done,omitempty"`
+	Done         bool `json:"done,omitempty"`
+	OpeningShown bool `json:"openingShown,omitempty"`
 	// Tried: a session (a try or a real one, any feature) has given a
 	// result once, or the history had one: Home stops offering its Try
 	// area. It stays when the history is cleared.
 	Tried bool `json:"tried,omitempty"`
+	// RewriteBoxOpens counts successful input-box opens, capped at three;
+	// RewriteBoxTipDismissed independently hides the guidance for good.
+	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
+	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
 }
 
 // Updates: what the updater offers (Settings → About → Updates). With an
@@ -354,12 +366,12 @@ func Defaults() Settings {
 	return Settings{
 		Version:    Version,
 		General:    General{MenuBar: true, CloseToTray: true},
-		Appearance: Appearance{Theme: "system", Scale: 1},
+		Appearance: Appearance{Theme: ThemeSystem, Palette: DefaultPalette, WindowTransparency: DefaultWindowTransparency, Scale: 1},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
 		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
-			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
+			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true, ReturnFinishes: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
 			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},

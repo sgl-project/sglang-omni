@@ -1496,13 +1496,15 @@ def test_encode_audio_stereo_wav_and_mono_fallback():
     stereo = np.stack(
         [np.ones(64, dtype=np.float32) * 0.1, np.ones(64, dtype=np.float32) * -0.1]
     )
-    blob, mime = encode_audio(stereo, response_format="wav", sample_rate=48000)
-    assert mime == "audio/wav"
-    assert struct.unpack("<H", blob[22:24])[0] == 2
+    encoded_audio = encode_audio(stereo, response_format="wav", sample_rate=48000)
+    assert encoded_audio.mime_type == "audio/wav"
+    assert struct.unpack("<H", encoded_audio.audio_bytes[22:24])[0] == 2
     # Mono input keeps the legacy single-channel header.
-    mono_blob, _ = encode_audio(
-        np.ones(64, dtype=np.float32) * 0.1, response_format="wav", sample_rate=48000
-    )
+    mono_blob = encode_audio(
+        np.ones(64, dtype=np.float32) * 0.1,
+        response_format="wav",
+        sample_rate=48000,
+    ).audio_bytes
     assert struct.unpack("<H", mono_blob[22:24])[0] == 1
 
 
