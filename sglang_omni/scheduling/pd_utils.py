@@ -577,6 +577,8 @@ def build_kv_pool(
         draft_type = type(draft_kv_pool)
         layout_signature = (
             dflash_model_id,
+            str(token_to_kv_pool.dtype),
+            str(draft_kv_pool.dtype),
             draft_type.__module__,
             draft_type.__qualname__,
             [

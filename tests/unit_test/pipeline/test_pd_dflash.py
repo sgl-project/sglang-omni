@@ -36,6 +36,7 @@ class RowKVCache:
     def __init__(self, size: int, shape: tuple[int, ...], dtype: torch.dtype) -> None:
         self.size = size
         self.page_size = 1
+        self.dtype = dtype
         self.kv_rows = [torch.zeros((size + 1, *shape), dtype=dtype) for _ in range(2)]
 
     def _pd_registerable_tensors(
