@@ -1220,6 +1220,7 @@ python<span class="w"> </span>playground/cascade/app.py<span class="w"> </span>-
 <span class="s">    profile = yaml.safe_load(f)</span>
 <span class="s">profile["model_path"] = "qwen3-asr-inkling-2-mini-vivian-tts-tool"</span>
 <span class="s">profile["services"] = [s for s in profile["services"] if s["name"] != "chat"]</span>
+<span class="s">profile["session_nodes"]["llm"].pop("required_call_opening", None)</span>
 <span class="s">profile["session_nodes"]["llm"].update(</span>
 <span class="s">    base_url="http://127.0.0.1:9000/v1",</span>
 <span class="s">    model="thinkingmachines/Inkling-2-Mini",</span>
