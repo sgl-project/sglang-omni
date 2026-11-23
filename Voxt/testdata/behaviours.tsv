@@ -26,6 +26,7 @@ End word and long press	L	TestSessionLongPress	none
 App enhancement	L	TestSessionAppEnhancement	Each real target app is exercised by hand only
 App enhancement	M	TestMacHelperReadOnly	A real browser's URL is read only when one is running
 App enhancement	M	TestMacHelperIcons	none
+App enhancement: per-app Transcribe clean-up	L	TestAppEnhancementTranscribeCleanup	none
 Dictionary and hot words	L	TestTranscribeDictionaryHighlights	none
 Dictionary and hot words	E	TestEvalDictASR	none
 Dictionary profiles	L	TestDictionaryProfileControls	none
@@ -58,11 +59,14 @@ Audio settings	L	TestSessionMutesOutput	A changed microphone setting is checked 
 Audio settings	M	TestMacHelperMicrophoneSelection	none
 Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none
 Command-line transcription	L	TestTranscribeCLIFailures	none
+Command-line dictionary import	L	TestDictionaryCLIImports	none
+Command-line dictionary import	L	TestDictionaryCLIFailures	none
 In-app update	L	TestAppUpdated	The upgrade from 1.x has no automatic run
 In-app update	M	scripts/mac-update-e2e.sh	none
 First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionControls	none
 First use: opening, setup guide, import from 1.x	L	TestOnboardingWalk	none
 First use: opening, setup guide, import from 1.x	L	TestLegacyImportAsksForOptionalKey	none
+Opening at each start of the app	L	TestOpeningPlaysAtEachStart	A real quit and relaunch of Voxt.app is checked by hand only
 Settings and appearance	L	TestWindowTransparencySettings	none
 Settings and appearance	M	TestTextFitsItsOwnWidth	none
 Settings and appearance	M	TestTranslationsFit	none
@@ -76,3 +80,4 @@ An answer card takes the front when it opens and with a new answer, previews flo
 Paste a copied picture into the Rewrite card	L	TestRewriteBoxPastesCopiedPictures	Each app's real clipboard types (Finder, browsers, chat apps) and the helper's decoding are seen on a Mac only
 Home activity calendar and its numbers	L	TestHomeActivityShows	The light-up and the look are checked by hand only
 Hover a preview's buttons while another app is in front	L	TestFloatingWindowOptions	That AppKit tracks the pointer over the window while another app is active (MyGo patch 0020) is seen on a Mac only
+Return finishes a recording of any feature, switched in Settings → Shortcuts	L	TestReturnFinishPlanScope	The helper's event tap consuming Return in another app is seen on a Mac only
