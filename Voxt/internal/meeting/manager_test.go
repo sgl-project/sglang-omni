@@ -196,21 +196,19 @@ func testManagerStreams(t *testing.T, mic, system session.Audio, micStreamer, sy
 }
 
 type finishGateStreamer struct {
-	text           string
-	first          chan struct{}
-	finishStarted  chan struct{}
-	releaseFinish  chan struct{}
-	finishReturned chan struct{}
+	text          string
+	first         chan struct{}
+	finishStarted chan struct{}
+	releaseFinish chan struct{}
 }
 
 func newFinishGateStreamer() *finishGateStreamer {
 	first := make(chan struct{}, 1)
 	first <- struct{}{}
 	return &finishGateStreamer{
-		first:          first,
-		finishStarted:  make(chan struct{}),
-		releaseFinish:  make(chan struct{}),
-		finishReturned: make(chan struct{}),
+		first:         first,
+		finishStarted: make(chan struct{}),
+		releaseFinish: make(chan struct{}),
 	}
 }
 
@@ -237,7 +235,6 @@ func (s *finishGateStream) Finish() error {
 	<-s.streamer.releaseFinish
 	s.events <- asr.Event{Kind: asr.EventFinal, Text: s.streamer.text, Result: asr.Result{Text: s.streamer.text}}
 	close(s.events)
-	close(s.streamer.finishReturned)
 	return nil
 }
 
@@ -439,7 +436,7 @@ func (s *pcmCrossStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.opens++
-	return &pcmCrossStream{owner: s, old: s.opens == 1, events: make(chan asr.Event)}, nil
+	return &pcmCrossStream{owner: s, old: s.opens == 1, events: make(chan asr.Event, 1)}, nil
 }
 
 type pcmCrossStream struct {
@@ -467,7 +464,12 @@ func (s *pcmCrossStream) Send(pcm []byte) error {
 }
 
 func (s *pcmCrossStream) Finish() error {
-	s.once.Do(func() { close(s.events) })
+	s.once.Do(func() {
+		if s.old {
+			s.events <- asr.Event{Kind: asr.EventFinal, Text: "queued words from A", Result: asr.Result{Text: "queued words from A"}}
+		}
+		close(s.events)
+	})
 	return nil
 }
 
@@ -475,6 +477,14 @@ func (s *pcmCrossStream) Close()                   {}
 func (s *pcmCrossStream) Events() <-chan asr.Event { return s.events }
 
 func TestOldPCMDoesNotEnterNextMeeting(t *testing.T) {
+	testOldPCMIsolation(t, false, meeting.ModeRecording)
+}
+
+func TestOldPCMDoesNotEnterNextMeetingAfterFinalFailure(t *testing.T) {
+	testOldPCMIsolation(t, true, meeting.ModeSubtitles)
+}
+
+func testOldPCMIsolation(t *testing.T, failFinal bool, nextMode meeting.Mode) {
 	audio := &pcmCrossAudio{}
 	streamer := &pcmCrossStreamer{release: make(chan struct{}), started: make(chan struct{}), newPCM: make(chan []byte, 1)}
 	release := func() {
@@ -492,12 +502,22 @@ func TestOldPCMDoesNotEnterNextMeeting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
+	var settingsMu sync.Mutex
+	noFinalPass := !failFinal
 	m := meeting.NewManager(meeting.Config{
-		Mic: audio, Store: s.Meetings(), Dir: filepath.Join(dir, "meetings"),
-		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
-		Settings:  func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
+		Mic: audio, System: newFakeAudio(nil), Store: s.Meetings(), Dir: filepath.Join(dir, "meetings"),
+		Privacy: func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		Settings: func() settings.Meeting {
+			settingsMu.Lock()
+			defer settingsMu.Unlock()
+			return settings.Meeting{NoFinalPass: noFinalPass, NoAutoSummary: true}
+		},
 		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
-		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+		ASR: func(_ context.Context, src meeting.Source) (meeting.TrackASR, error) {
+			if src == meeting.SourceSystem {
+				systemStreamer := &meetTestStreamer{}
+				return meeting.TrackASR{Caps: systemStreamer.Caps(), Streamer: systemStreamer}, nil
+			}
 			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
 		},
 	})
@@ -511,6 +531,18 @@ func TestOldPCMDoesNotEnterNextMeeting(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("old PCM did not reach the old transcriber")
 	}
+	interrupted := make(chan struct{}, 1)
+	cancelSubscribe := func() {}
+	if failFinal {
+		cancelSubscribe = m.Subscribe(func(s meeting.Snapshot) {
+			if s.State == meeting.StateInterrupted {
+				select {
+				case interrupted <- struct{}{}:
+				default:
+				}
+			}
+		})
+	}
 	finished := make(chan error, 1)
 	go func() { finished <- m.Finish(ctx, idA) }()
 	select {
@@ -521,7 +553,18 @@ func TestOldPCMDoesNotEnterNextMeeting(t *testing.T) {
 	case <-time.After(7 * time.Second):
 		t.Fatal("meeting A did not finish")
 	}
-	idB, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if failFinal {
+		select {
+		case <-interrupted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("meeting A's final pass did not fail")
+		}
+		cancelSubscribe()
+		settingsMu.Lock()
+		noFinalPass = true
+		settingsMu.Unlock()
+	}
+	idB, err := m.Start(ctx, meeting.StartRequest{Mode: nextMode})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,6 +573,9 @@ func TestOldPCMDoesNotEnterNextMeeting(t *testing.T) {
 	case <-oldDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("old track did not settle")
+	}
+	if segments := m.Current().Segments; len(segments) != 0 {
+		t.Errorf("meeting B received meeting A's queued transcript: %+v", segments)
 	}
 	var crossedPCM []byte
 	select {
