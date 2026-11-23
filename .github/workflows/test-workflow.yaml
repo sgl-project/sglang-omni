@@ -10,8 +10,9 @@ concurrency:
 permissions: {}
 
 jobs:
-  noop:
+  echo:
     runs-on: ubuntu-latest
     steps:
-      - name: Do nothing
-        run: "true"
+      - name: Echo a message
+        shell: bash
+        run: echo "Hello from the test workflow"
