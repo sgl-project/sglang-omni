@@ -42,6 +42,7 @@ report	fix	symptom	level	check
 #4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
 #4409	#4414	A blocked microphone stop after a system-audio failure leaves meeting startup stuck	L	TestSystemStartFailureBoundsMicStop
 #4409	#4414	A late Final from a replaced track appears in the next meeting	L	TestLateFinalDoesNotCommitIntoNextMeeting
+#4409	#4414	Queued PCM from a replaced track reaches the next meeting's transcriber and WAV	L	TestOldPCMDoesNotEnterNextMeeting
 #4154	#4401	An image-only block selection reaches the language model as the single character U+FFFC with no content	L	testHasText
 #4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible

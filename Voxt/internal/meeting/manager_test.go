@@ -1,10 +1,12 @@
 package meeting_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -381,6 +383,171 @@ func TestLateFinalDoesNotCommitIntoNextMeeting(t *testing.T) {
 	}
 	if segments := m.Current().Segments; len(segments) != 0 {
 		t.Fatalf("meeting B received meeting A's late Final: %+v", segments)
+	}
+}
+
+type pcmCrossAudio struct {
+	mu    sync.Mutex
+	calls int
+	stops map[string]chan struct{}
+}
+
+func (a *pcmCrossAudio) Record(ctx context.Context, id string, _ proto.CaptureParams, fn func(session.AudioEvent)) (proto.CaptureResult, error) {
+	a.mu.Lock()
+	a.calls++
+	call := a.calls
+	stop := make(chan struct{})
+	if a.stops == nil {
+		a.stops = map[string]chan struct{}{}
+	}
+	a.stops[id] = stop
+	a.mu.Unlock()
+	fn(session.AudioEvent{Started: &proto.CaptureStartedParams{Job: id, SampleRate: asr.SampleRate}})
+	if call == 1 {
+		fn(session.AudioEvent{PCM: &proto.PCMParams{Job: id, Data: []byte{1, 1}}})
+		fn(session.AudioEvent{PCM: &proto.PCMParams{Job: id, Data: []byte{2, 2}}})
+	}
+	select {
+	case <-ctx.Done():
+		return proto.CaptureResult{}, ctx.Err()
+	case <-stop:
+		return proto.CaptureResult{Reason: proto.CaptureStopped}, nil
+	}
+}
+
+func (a *pcmCrossAudio) Stop(_ context.Context, id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if stop := a.stops[id]; stop != nil {
+		close(stop)
+		delete(a.stops, id)
+	}
+	return nil
+}
+
+type pcmCrossStreamer struct {
+	mu      sync.Mutex
+	opens   int
+	release chan struct{}
+	started chan struct{}
+	newPCM  chan []byte
+}
+
+func (s *pcmCrossStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
+
+func (s *pcmCrossStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opens++
+	return &pcmCrossStream{owner: s, old: s.opens == 1, events: make(chan asr.Event)}, nil
+}
+
+type pcmCrossStream struct {
+	owner  *pcmCrossStreamer
+	old    bool
+	mu     sync.Mutex
+	sends  int
+	once   sync.Once
+	events chan asr.Event
+}
+
+func (s *pcmCrossStream) Send(pcm []byte) error {
+	s.mu.Lock()
+	s.sends++
+	call := s.sends
+	s.mu.Unlock()
+	if s.old && call == 1 {
+		close(s.owner.started)
+		<-s.owner.release
+	}
+	if !s.old {
+		s.owner.newPCM <- bytes.Clone(pcm)
+	}
+	return nil
+}
+
+func (s *pcmCrossStream) Finish() error {
+	s.once.Do(func() { close(s.events) })
+	return nil
+}
+
+func (s *pcmCrossStream) Close()                   {}
+func (s *pcmCrossStream) Events() <-chan asr.Event { return s.events }
+
+func TestOldPCMDoesNotEnterNextMeeting(t *testing.T) {
+	audio := &pcmCrossAudio{}
+	streamer := &pcmCrossStreamer{release: make(chan struct{}), started: make(chan struct{}), newPCM: make(chan []byte, 1)}
+	release := func() {
+		select {
+		case <-streamer.release:
+		default:
+			close(streamer.release)
+		}
+	}
+	t.Cleanup(release)
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	m := meeting.NewManager(meeting.Config{
+		Mic: audio, Store: s.Meetings(), Dir: filepath.Join(dir, "meetings"),
+		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		Settings:  func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
+		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
+		},
+	})
+	idA, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDone := meeting.TrackDoneForTest(m, meeting.SourceMic)
+	select {
+	case <-streamer.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old PCM did not reach the old transcriber")
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- m.Finish(ctx, idA) }()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("meeting A did not finish")
+	}
+	idB, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	select {
+	case <-oldDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old track did not settle")
+	}
+	var crossedPCM []byte
+	select {
+	case crossedPCM = <-streamer.newPCM:
+	default:
+	}
+	if err := m.Finish(ctx, idB); err != nil {
+		t.Fatal(err)
+	}
+	wav, err := os.ReadFile(filepath.Join(dir, "meetings", idB, "mic.wav"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if crossedPCM != nil {
+		t.Errorf("meeting A PCM was sent to meeting B transcriber: %v", crossedPCM)
+	}
+	if bytes.Contains(wav, []byte{2, 2}) {
+		t.Errorf("meeting A PCM was written to meeting B WAV")
 	}
 }
 

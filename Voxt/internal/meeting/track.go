@@ -11,13 +11,12 @@ import (
 )
 
 type track struct {
-	src        Source
-	job        string
-	audio      session.Audio
-	stopping   bool
-	transcribe *trackTranscriber
-	done       chan struct{} // closed once Record returned, its PCM is handled and its transcriber finished
-	settled    chan struct{} // closed after the track's reconnect decision has settled
+	src      Source
+	job      string
+	audio    session.Audio
+	stopping bool
+	done     chan struct{} // closed once Record returned, its PCM is handled and its transcriber finished
+	settled  chan struct{} // closed after the track's reconnect decision has settled
 }
 
 func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
@@ -50,7 +49,6 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	if tx != nil {
 		m.mu.Lock()
 		tx.owner = tr
-		tr.transcribe = tx
 		m.mu.Unlock()
 	}
 
@@ -67,16 +65,13 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 			if !ok {
 				return
 			}
-			_ = m.archive.Write(src, data)
 			m.mu.Lock()
-			var tr *trackTranscriber
-			if tx := m.tracks[src]; tx != nil {
-				tr = tx.transcribe
+			if m.tracks[src] == tr && m.archive != nil {
+				_ = m.archive.Write(src, data)
 			}
-			runCtx := m.runCtx
 			m.mu.Unlock()
-			if tr != nil && runCtx != nil {
-				_ = tr.onPCM(runCtx, data)
+			if tx != nil {
+				_ = tx.onPCM(ctx, data)
 			}
 		}
 	}()
