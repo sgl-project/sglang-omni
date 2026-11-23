@@ -89,6 +89,7 @@ def attach_minimax_modules(model: "Qwen3ForCausalLM", checkpoint_root: str) -> N
     )
     model.graph_feedback_buffer = None
 
+    narrow_lm_head_to_c0(model)
     use_unfused_qk_norm(model)
     route_forward_batch_input_embeds(model)
     logger.info(
@@ -131,14 +132,29 @@ def apply_cfg(cond: torch.Tensor, uncond: torch.Tensor) -> torch.Tensor:
     return guided.masked_fill(cond < threshold, -float("inf"))
 
 
+def narrow_lm_head_to_c0(model: "Qwen3ForCausalLM") -> None:
+    head = model.lm_head
+    head.weight = nn.Parameter(
+        head.weight.data.index_select(0, model.c0_logit_ids),
+        requires_grad=False,
+    )
+
+
 def select_c0_logits(model: "Qwen3ForCausalLM", logits: torch.Tensor) -> torch.Tensor:
-    """Narrow backbone logits to the only ids c0 sampling can ever return.
+    """Backbone logits over the only ids c0 sampling can ever return.
 
     Returns [rows, 1 + 16384] in vocabulary order: <|audio_end|> first,
     then the c0 code range. Column 0 therefore means stop and column code+1
     means code.
     """
-    return logits.index_select(1, model.c0_logit_ids).float()
+    if logits.shape[1] != model.c0_logit_ids.numel():
+        raise RuntimeError(
+            "MiniMax Music 3 expects backbone logits over the narrowed c0 head: "
+            f"got {logits.shape[1]} columns, expected {model.c0_logit_ids.numel()}"
+        )
+    else:
+        pass
+    return logits.float()
 
 
 def enable_rvq_depth_cuda_graph(model: "Qwen3ForCausalLM", buckets: list[int]) -> None:
@@ -336,5 +352,6 @@ __all__ = [
     "enable_rvq_depth_cuda_graph",
     "depth_decode",
     "embed_audio_frames",
+    "narrow_lm_head_to_c0",
     "select_c0_logits",
 ]

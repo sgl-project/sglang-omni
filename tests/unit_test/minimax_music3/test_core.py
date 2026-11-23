@@ -32,9 +32,15 @@ from sglang_omni.models.minimax_music3.dit import (
 )
 from sglang_omni.models.minimax_music3.engine_builder import MiniMaxMusic3EngineBuilder
 from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
+from sglang_omni.models.minimax_music3.prompt import SPECIAL_TOKEN_IDS
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
 from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
+from sglang_omni.models.minimax_music3.sglang_model import (
+    build_c0_logit_ids,
+    narrow_lm_head_to_c0,
+    select_c0_logits,
+)
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -296,6 +302,44 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
 
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert remove_weight_norm(convolution) == 0
+
+
+MUSIC3_BACKBONE_VOCAB_SIZE = 200000
+
+
+def c0_head_model() -> torch.nn.Module:
+    torch.manual_seed(5)
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(4, MUSIC3_BACKBONE_VOCAB_SIZE, bias=False)
+    model.register_buffer(
+        "c0_logit_ids",
+        build_c0_logit_ids(SPECIAL_TOKEN_IDS["<|audio_end|>"], torch.device("cpu")),
+        persistent=False,
+    )
+    return model
+
+
+def test_narrowed_lm_head_keeps_the_c0_rows_in_logit_order() -> None:
+    model = c0_head_model()
+    full_weight = model.lm_head.weight.detach().clone()
+    hidden_states = torch.randn(2, full_weight.shape[1])
+
+    narrow_lm_head_to_c0(model)
+
+    c0_logit_ids = model.c0_logit_ids
+    assert torch.equal(model.lm_head.weight, full_weight.index_select(0, c0_logit_ids))
+    logits = select_c0_logits(model, model.lm_head(hidden_states))
+    assert logits.dtype == torch.float32
+    torch.testing.assert_close(
+        logits, (hidden_states @ full_weight.T).index_select(1, c0_logit_ids)
+    )
+
+
+def test_select_c0_logits_rejects_full_vocabulary_logits() -> None:
+    model = c0_head_model()
+
+    with pytest.raises(RuntimeError, match="narrowed c0 head"):
+        select_c0_logits(model, torch.zeros(2, model.lm_head.weight.shape[0]))
 
 
 @pytest.mark.accelerator
