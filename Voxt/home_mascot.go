@@ -3,10 +3,12 @@ package main
 // Home's mascot: the brand microphone and the logo's two stars, by the
 // page's title, in the day's outfit (mascotOutfitOn). A click plays the next of three
 // short moves: a sway with a blink, a double blink, and the stars
-// twinkling with a blink.
+// twinkling with a blink. When it puts on an outfit, it sways or blinks
+// twice, at random.
 
 import (
 	"math"
+	"math/rand/v2"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -21,8 +23,19 @@ const (
 )
 
 // mascotLocal is what the mascot keeps from frame to frame: how many
-// times it was clicked, which picks the move and plays it.
-type mascotLocal struct{ pokes uint64 }
+// times it was clicked, which picks the move and plays it; the outfit it
+// last put on while Home shows, how many times it put one on, which plays
+// dressMove.
+type mascotLocal struct {
+	pokes     uint64
+	worn      string
+	dresses   uint64
+	dressMove int
+}
+
+// mascotDressMoves are the moves it may play as it puts on an outfit:
+// the sway and the double blink.
+var mascotDressMoves = [...]int{0, 1}
 
 // mascotPose is the mascot at one moment of a move.
 type mascotPose struct {
@@ -83,9 +96,20 @@ func homeMascot(c *ui.Context, outfit string) {
 	if button.Clicked() {
 		local.pokes++
 	}
+	if outfit != local.worn {
+		local.worn = outfit
+		if outfit != "" {
+			local.dresses++
+			local.dressMove = mascotDressMoves[rand.IntN(len(mascotDressMoves))]
+		}
+	}
 	tl := button.Timeline("move", ui.TimelineOptions{Run: local.pokes, Paused: local.pokes == 0})
 	p := tl.Tween(ui.Tween{From: 0, To: 1, Duration: mascotLength})
 	pose := mascotPoseAt(int((local.pokes+mascotMoves-1)%mascotMoves), p)
+	dress := button.Timeline("dress", ui.TimelineOptions{Run: local.dresses, Paused: local.dresses == 0, Delay: 300 * time.Millisecond})
+	if dp := dress.Tween(ui.Tween{From: 0, To: 1, Duration: mascotLength}); local.dresses > 0 && dp < 1 {
+		pose = mascotPoseAt(local.dressMove, dp)
+	}
 	microphone := icons.MascotMicrophone
 	if pose.blink {
 		microphone = icons.MascotMicrophoneBlink

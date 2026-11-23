@@ -11,7 +11,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
 - **Import dictionary terms from the command line**: while Voxt runs, `Voxt dictionary import terms.csv` merges a CSV, text or Voxt 1.x dictionary file into your dictionary the way Dictionary → Import… does: new spellings are added, known ones get the aliases they lacked, nothing is removed. `--dry-run` says how many terms it would add and update without saving, and `--json` prints the counts for a script. The Dictionary page refreshes when the import saves terms. Both the page and the command refuse files over 8 MB. See docs/dictionary-import.md.
 - **An activity calendar on Home** (#4360): under Today, the days you used Voxt over about the last five months, shaded in your accent color by how many results each had, lighting up from left to right. Beside it: the characters Voxt has written for you, how many characters a minute you speak, and your days in a row. Hover a day for its date and count; the arrows go back further. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts (results, characters and speech time, no text) are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
-- **A mascot by Home's title** (#4439): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week.
+- **A mascot by Home's title** (#4439): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
 
 ### Changed
 
@@ -23,6 +23,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
 - **Copy on a Rewrite answer is an icon beside it** (#4377): under the pointer, an answer bubble shows only the copy icon, right of the bubble, so it no longer covers the answer's first line; its name is in the tooltip.
 - **Home's recent results drop the "Open in History" tooltip** (#4377): a row still opens History when clicked; its highlight under the pointer and the section's Open History button already say so, and the tooltip covered the row above.
+- **Plainer Chinese wording** (#4439): about 150 Chinese strings now say what you need to know rather than what Voxt does inside, read less like translations, and use one word for one thing: 授权 for permissions, 匹配, 无法, Return, API Key, 辅助程序, and macOS's own name 录屏与系统录音.
 - **Shorter, plainer explanations** (#4377): Translate's page and target language, the Privacy switches for a screenshot and a copied image, the guide's Rewrite step, the upload size limit, the wait for the language model and the prompt preview say what matters in a sentence or two; the details are in docs/settings.md.
 - **The menu bar's recent results say Copy and confirm it** (#2967): the items under Recent results now read "Copy: …", so it is clear that a click copies that result, and a click toasts Copied; a failed copy already said so. The copy a session makes itself stays silent.
 
@@ -65,10 +66,11 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
 - **在命令行里导入词典词条**：Voxt 运行时，`Voxt dictionary import terms.csv` 按“词典 → 导入…”的方式把 CSV、文本或 Voxt 1.x 词典文件合并进词典：新写法新增，已有的词条补上缺的别名，不删除任何词条。`--dry-run` 只报告会新增、更新几条，不保存；`--json` 以 JSON 输出计数，方便脚本使用。导入保存了词条时，词典页会刷新。页面和命令行都会拒绝超过 8 MB 的文件。用法见 docs/dictionary-import.md。
 - **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近约五个月使用 Voxt 的情况，用主题色深浅表示当天结果多少，打开时从左到右依次亮起。旁边是 Voxt 一共为你写了多少字、你每分钟说多少字，以及连续使用的天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数、字数和说话时长（不含文字）和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
-- **首页标题旁的吉祥物**（#4439）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。
+- **首页标题旁的吉祥物**（#4439）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
 
 #### 变更
 
+- **中文文案更清楚**（#4439）：约 150 条中文文案改写，讲你需要知道的结果，而不是 Voxt 内部做了什么；去掉翻译腔；同一个意思只用一个词：权限统一说“授权”，以及“匹配”“无法”“Return”“API Key”“辅助程序”，录屏权限沿用 macOS 的叫法“录屏与系统录音”。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
 - **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
