@@ -62,7 +62,7 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
             name=GENERATION_STAGE,
             process="pipeline",
             factory_path=f"{PACKAGE}.engine_builder.create_generation_executor",
-            factory=FactoryArgs(speech_sampler="seeded"),
+            factory=FactoryArgs(speech_sampler="seeded", enable_async_decode=True),
             gpu=0,
             next=DECODE_STAGE,
         ),

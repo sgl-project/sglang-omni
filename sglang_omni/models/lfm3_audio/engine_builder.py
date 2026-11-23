@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import shutil
 import tempfile
@@ -33,11 +34,17 @@ from sglang_omni.models.lfm3_audio.request_builders import (
 from sglang_omni.models.lfm3_audio.sglang_model import Lfm3AudioSGLangModel
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+
+logger = logging.getLogger(__name__)
 
 # Tokenizer files the runtime may read next to config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
@@ -51,8 +58,14 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
     model_name = "LFM3"
     context_length = 16384
 
-    def __init__(self, *, speech_sampler: SpeechSampler) -> None:
+    def __init__(
+        self, *, speech_sampler: SpeechSampler, enable_async_decode: bool
+    ) -> None:
         self.speech_sampler = speech_sampler
+        # Launching a decode step before the previous one resolves needs the seeded sampler's device speech state.
+        self.enable_async_decode = (
+            enable_async_decode and speech_sampler is SpeechSampler.SEEDED
+        )
 
     def resolve_checkpoint(self, model_path: str) -> str:
         """A directory the SGLang loader reads: the backbone config plus the checkpoint's weights."""
@@ -181,8 +194,25 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
         output_proc: SGLangOutputProcessor,
     ) -> Lfm3AudioModelRunner:
         return Lfm3AudioModelRunner(
-            model_worker, output_proc, speech_sampler=self.speech_sampler
+            model_worker,
+            output_proc,
+            speech_sampler=self.speech_sampler,
+            repetition_window=speech_defaults_from_checkpoint(
+                self.source_checkpoint_dir
+            ).repetition_window,
         )
+
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[Lfm3AudioRequestData]:
+        enable_async_decode = self.enable_async_decode and current_platform.is_cuda()
+        logger.info(
+            f"LFM3 async decode: {'on' if enable_async_decode else 'off'} "
+            f"(speech sampler {self.speech_sampler.value})"
+        )
+        # A prefill reads the host speech state, so the pending step resolves first.
+        return {
+            "enable_async_decode": enable_async_decode,
+            "async_decode_resolve_before_prefill": True,
+        }
 
     def make_adapters(self, model: Lfm3AudioSGLangModel) -> tuple[
         Callable[[StagePayload], Lfm3AudioRequestData],
@@ -203,8 +233,12 @@ def create_generation_executor(
     gpu_id: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
     speech_sampler: str,
+    enable_async_decode: bool,
 ) -> OmniScheduler[Lfm3AudioRequestData]:
-    return Lfm3AudioEngineBuilder(speech_sampler=SpeechSampler(speech_sampler)).build(
+    return Lfm3AudioEngineBuilder(
+        speech_sampler=SpeechSampler(speech_sampler),
+        enable_async_decode=enable_async_decode,
+    ).build(
         model_path,
         device=device,
         gpu_id=gpu_id,

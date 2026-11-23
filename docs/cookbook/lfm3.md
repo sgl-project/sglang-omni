@@ -86,8 +86,10 @@ Videos are sampled at the checkpoint's frame rate (2 fps, 4 to 384 frames) and r
 
 Speech frames are drawn by one of two samplers, set with `speech_sampler` under `stages.generation.factory` in the server config:
 
-- `seeded` (default): draws are hashed from the request seed and frame position, so one CUDA graph covers the whole frame. The same seed gives the same speech at any batch size, but not the checkpoint's own `generate` output.
+- `seeded` (default): draws are hashed from the request seed and frame position, so one CUDA graph covers the whole frame. The same seed reproduces a request served alone; under concurrency, bf16 numerics that vary with the batch can change its speech. Seeded output differs from the checkpoint's own `generate`.
 - `exact`: each request's generator draws in the checkpoint's order, so a seed reproduces the checkpoint's `generate`. Only the depth passes run in CUDA graphs.
+
+With `seeded`, each request's speech state lives on the GPU, so the next decode step launches before the host reads the last one (`enable_async_decode`, on by default).
 
 SeedTTS EN (1088 samples), LFM3-Omni-2B, one H200:
 

@@ -30,7 +30,7 @@ class SpeechSampler(str, Enum):
     """How speech frames are drawn.
 
     exact: each request's generator draws in the checkpoint's order, so a seed reproduces the checkpoint's own generate; only the depth passes are graphed.
-    seeded: hashed draws from the request seed and frame position, so one graph holds the whole frame; the same seed gives the same frames at any batch size, but not the checkpoint's.
+    seeded: hashed draws from the request seed and frame position, so one graph holds the whole frame and decode needs no host sync; the draws do not depend on the batch, and differ from the checkpoint's.
     """
 
     EXACT = "exact"
@@ -442,7 +442,7 @@ def seeded_frame_codes(
 ) -> torch.Tensor:
     """One frame per row with hashed draws and no host sync, so one CUDA graph can hold the whole frame.
 
-    A row's draws depend only on its seed and frame position: the same seed gives the same frames at any batch size. The draws differ from the checkpoint's generator stream.
+    A row's draws depend only on its seed and frame position, not on the rows beside it. The draws differ from the checkpoint's generator stream.
     hidden_states (N, H); seeds, frame_positions, top_k (N,) int64; temperature, repetition_penalty (N,) float; history (N, window, 12) int64; a row without history passes penalty 1, which leaves its scores unchanged.
     """
     batch_size = hidden_states.shape[0]

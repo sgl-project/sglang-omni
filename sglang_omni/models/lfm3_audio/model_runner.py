@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""LFM3 model runner: media input embeddings, speech-frame sampling and feedback."""
+"""LFM3 model runner: media input embeddings, speech-frame sampling and feedback.
+
+With the seeded sampler a step's speech state lives on the device (speech_pool.py), so a decode step launches without waiting for the previous one; the host SpeechState follows one resolve later. The exact sampler keeps the host state machine and decodes synchronously.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +21,11 @@ from sglang_omni.models.lfm3_audio.depth import (
 )
 from sglang_omni.models.lfm3_audio.request_builders import Lfm3AudioRequestData
 from sglang_omni.models.lfm3_audio.sglang_model import Lfm3AudioSGLangModel
+from sglang_omni.models.lfm3_audio.speech_pool import (
+    MODE_CODES,
+    SpeechStatePool,
+    advance_speech,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
 
@@ -33,11 +41,27 @@ class Lfm3AudioModelRunner(ModelRunner):
         output_processor: SGLangOutputProcessor,
         *,
         speech_sampler: SpeechSampler,
+        repetition_window: int,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         self.tokens = self.model.tokens
         self.stop_token_id = self.tokens.eos_token_ids[0]
-        self.speech_sampler = speech_sampler
+        self.speech_pool: SpeechStatePool | None = None
+        if speech_sampler is SpeechSampler.SEEDED:
+            self.speech_pool = SpeechStatePool(
+                slot_count=tp_worker.model_runner.req_to_token_pool.size,
+                hidden_size=self.model.decode_input_embed_buffer.shape[1],
+                window=repetition_window,
+                num_codebooks=self.tokens.num_codebooks,
+                embed_dtype=self.model.decode_input_embed_buffer.dtype,
+                device=self.model.decode_input_embed_buffer.device,
+            )
+        else:
+            pass
+
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
+        """Only the seeded sampler advances speech without the host; the exact sampler draws on the host's generators."""
+        return self.speech_pool is not None and super().lookahead_eligible(batch)
 
     # note (ruilin): the speech step reads the sampled text token, so sampling runs before the post hooks.
     def sample_before_post_prefill(
@@ -113,7 +137,7 @@ class Lfm3AudioModelRunner(ModelRunner):
             )
         elif request_data.feedback_frame_codes:
             output_embeds[is_frame] = self.model.frame_embeddings(
-                torch.stack(request_data.feedback_frame_codes)
+                torch.stack(request_data.feedback_frame_codes).to(output_embeds.device)
             ).to(output_embeds.dtype)
         else:
             pass
@@ -208,14 +232,25 @@ class Lfm3AudioModelRunner(ModelRunner):
         *,
         is_lookahead: bool = False,
     ) -> None:
-        del forward_batch, schedule_batch, is_lookahead
+        del schedule_batch, is_lookahead
         if not requests:
             return
         else:
             pass
         self.write_text_only_rows(requests)
-        decode_inputs = [self.next_decode_input(request.data) for request in requests]
         buffer = self.model.decode_input_embed_buffer
+        if self.speech_pool is not None:
+            slots = forward_batch.req_pool_indices[: len(requests)].long()
+            torch.index_select(
+                self.speech_pool.next_input_embeds,
+                0,
+                slots,
+                out=buffer[: len(requests)],
+            )
+            return
+        else:
+            pass
+        decode_inputs = [self.next_decode_input(request.data) for request in requests]
         buffer[: len(decode_inputs)].copy_(torch.stack(decode_inputs).to(buffer.dtype))
 
     def post_prefill(
@@ -225,8 +260,18 @@ class Lfm3AudioModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> None:
-        del forward_batch, schedule_batch
-        self.speech_step(result, requests)
+        del schedule_batch
+        if self.speech_pool is None:
+            self.speech_step(result, requests)
+            return
+        else:
+            pass
+        slots = forward_batch.req_pool_indices[: len(requests)].long()
+        self.speech_pool.load(slots, [request.data.speech for request in requests])
+        host_rows = self.launch_speech_step(
+            result, forward_batch, requests, non_blocking=False
+        )
+        self.commit_speech_step(host_rows, result, requests)
 
     def post_decode(
         self,
@@ -235,75 +280,191 @@ class Lfm3AudioModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> None:
-        del forward_batch, schedule_batch
-        self.speech_step(result, requests)
-
-    def sample_speaking_frames(
-        self, hidden_states: torch.Tensor, samplings: list[FrameSampling]
-    ) -> torch.Tensor:
-        """One frame per speaking row, from the depth graphs when they were captured."""
-        graphs = self.model.depth_graphs
-        schedule = self.tokens.maskgit_schedule
-        if self.speech_sampler is SpeechSampler.EXACT:
-            depth_logits = (
-                self.model.depth_decoder if graphs is None else graphs.depth_logits
-            )
-            codes = sample_frames(depth_logits, hidden_states, samplings, schedule)
-            for sampling in samplings:
-                sampling.frames_sampled += 1
-            return codes
+        del schedule_batch
+        if self.speech_pool is None:
+            self.speech_step(result, requests)
+            return
         else:
             pass
-        device = hidden_states.device
-        window = samplings[0].repetition_window
-        histories = []
-        penalties = []
-        for sampling in samplings:
-            history = sampling.history
-            if history is None:
-                histories.append(
-                    torch.zeros(
-                        window,
-                        self.tokens.num_codebooks,
-                        dtype=torch.long,
-                        device=device,
-                    )
-                )
-                penalties.append(1.0)
-            else:
-                # Repeating the oldest frame fills the window without adding a code.
-                padding = history[:1].expand(window - history.shape[0], -1)
-                histories.append(torch.cat([padding, history]))
-                penalties.append(sampling.repetition_penalty)
-        seeded_inputs = dict(
-            seeds=torch.tensor(
-                [sampling.seed for sampling in samplings], device=device
-            ),
-            frame_positions=torch.tensor(
-                [sampling.frames_sampled for sampling in samplings], device=device
-            ),
-            temperature=torch.tensor(
-                [sampling.temperature for sampling in samplings],
-                dtype=torch.float32,
-                device=device,
-            ),
-            top_k=torch.tensor(
-                [sampling.top_k or 0 for sampling in samplings], device=device
-            ),
-            repetition_penalty=torch.tensor(
-                penalties, dtype=torch.float32, device=device
-            ),
-            history=torch.stack(histories),
+        host_rows = self.launch_speech_step(
+            result, forward_batch, requests, non_blocking=False
         )
+        self.commit_speech_step(host_rows, result, requests)
+
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor | None:
+        if self.speech_pool is None:
+            return super().post_decode_launch(result, forward_batch, requests)
+        elif not requests:
+            return None
+        else:
+            pass
+        return self.launch_speech_step(
+            result, forward_batch, requests, non_blocking=True
+        )
+
+    def post_decode_resolve(
+        self,
+        launch_buf: torch.Tensor | None,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        if self.speech_pool is None:
+            super().post_decode_resolve(
+                launch_buf, result, forward_batch, schedule_batch, requests
+            )
+            return
+        elif launch_buf is None:
+            return
+        else:
+            pass
+        # The pinned staging is reused two launches later; the host state keeps these codes.
+        self.commit_speech_step(launch_buf.clone(), result, requests)
+
+    @torch.no_grad()
+    def launch_speech_step(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
+        *,
+        non_blocking: bool,
+    ) -> torch.Tensor:
+        """Advance the batch's device speech state one step and stage, per row, the emitted id, the sampled id, whether it took a frame and the fed codes."""
+        pool = self.speech_pool
+        assert pool is not None
+        batch_size = len(requests)
+        slots = forward_batch.req_pool_indices[:batch_size].long()
+        rows = pool.gather(slots)
+        hidden_states = result.logits_output.hidden_states[:batch_size]
+        seeded_inputs = dict(
+            seeds=rows.seed,
+            frame_positions=rows.frames_sampled,
+            temperature=rows.temperature,
+            top_k=rows.top_k,
+            # A row without history leaves its scores unchanged.
+            repetition_penalty=torch.where(
+                rows.history_len > 0, rows.repetition_penalty, 1.0
+            ),
+            history=rows.history,
+        )
+        graphs = self.model.depth_graphs
         if graphs is None:
             codes = seeded_frame_codes(
                 self.model.depth_decoder,
                 hidden_states,
-                schedule=schedule,
+                schedule=self.tokens.maskgit_schedule,
                 **seeded_inputs,
             )
         else:
             codes = graphs.seeded_frames(hidden_states, **seeded_inputs)
+        sampled_ids = result.next_token_ids[:batch_size]
+        step = advance_speech(rows, sampled_ids, codes, self.tokens, self.stop_token_id)
+        pool.store(slots, step.rows)
+        dtype = pool.next_input_embeds.dtype
+        next_inputs = torch.where(
+            step.needs_frame[:, None],
+            self.model.frame_embeddings(step.fed_codes).to(dtype),
+            self.model.get_input_embeddings()(step.token_ids).to(dtype),
+        )
+        pool.next_input_embeds.index_copy_(0, slots, next_inputs)
+        result.next_token_ids = step.token_ids
+        new = step.rows
+        packed = torch.cat(
+            [
+                step.token_ids[:, None].long(),
+                sampled_ids[:, None].long(),
+                step.needs_frame[:, None].long(),
+                step.fed_codes,
+                torch.stack(
+                    [
+                        new.mode,
+                        new.speaking.long(),
+                        new.text_done.long(),
+                        new.finished.long(),
+                        new.slots_left,
+                        new.frames_sampled,
+                        new.history_len,
+                    ],
+                    dim=1,
+                ),
+            ],
+            dim=1,
+        )
+        if non_blocking:
+            host_rows = self.next_host_staging(packed.shape, packed.dtype)[:batch_size]
+            host_rows.copy_(packed, non_blocking=True)
+            return host_rows
+        else:
+            return packed.cpu()
+
+    def commit_speech_step(
+        self,
+        host_rows: torch.Tensor,
+        result: GenerationBatchResult,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Replay a launched step on the host SpeechState, which outputs and replays read, and check the device state it reached."""
+        self.stage_token_ids(result, host_rows[:, 0])
+        num_codebooks = self.tokens.num_codebooks
+        for row, request in enumerate(requests):
+            request_data: Lfm3AudioRequestData = request.data
+            if request_data.req.finished() or self.req_is_retracted(request_data.req):
+                continue
+            else:
+                pass
+            speech = request_data.speech
+            took_frame = bool(host_rows[row, 2])
+            if speech.needs_frame() != took_frame:
+                raise RuntimeError(
+                    f"LFM3 speech state of {request.request_id} diverged: the device "
+                    f"{'took' if took_frame else 'skipped'} a frame the host state did not"
+                )
+            else:
+                pass
+            was_interleaving = speech.interleaving
+            if took_frame:
+                fed_codes = speech.apply_frame(host_rows[row, 3 : 3 + num_codebooks])
+                speech.sampling.frames_sampled += 1
+                request_data.feedback_frame_codes.append(fed_codes)
+            else:
+                speech.apply_text(int(host_rows[row, 1]), self.tokens.eos_token_ids)
+            speech.advance_slot(was_interleaving)
+            history = speech.sampling.history
+            host_state = [
+                MODE_CODES[speech.mode],
+                int(speech.speaking),
+                int(speech.text_done),
+                int(speech.finished),
+                speech.slots_left,
+                speech.sampling.frames_sampled,
+                0 if history is None else history.shape[0],
+            ]
+            if host_rows[row, 3 + num_codebooks :].tolist() != host_state:
+                raise RuntimeError(
+                    f"LFM3 speech state of {request.request_id} diverged: device "
+                    f"{host_rows[row, 3 + num_codebooks:].tolist()}, host {host_state}"
+                )
+            else:
+                pass
+
+    def sample_speaking_frames(
+        self, hidden_states: torch.Tensor, samplings: list[FrameSampling]
+    ) -> torch.Tensor:
+        """One frame per speaking row with the exact sampler, its depth passes from the graphs when they were captured."""
+        graphs = self.model.depth_graphs
+        depth_logits = (
+            self.model.depth_decoder if graphs is None else graphs.depth_logits
+        )
+        codes = sample_frames(
+            depth_logits, hidden_states, samplings, self.tokens.maskgit_schedule
+        )
         for sampling in samplings:
             sampling.frames_sampled += 1
         return codes
@@ -312,7 +473,7 @@ class Lfm3AudioModelRunner(ModelRunner):
     def speech_step(
         self, result: GenerationBatchResult, requests: list[SchedulerRequest]
     ) -> None:
-        """Advance every row one step: a speech frame or the sampled text token."""
+        """Advance every row one step on the host, for the exact sampler: a speech frame or the sampled text token."""
         hidden_states = result.logits_output.hidden_states
         sampled_token_ids = result.next_token_ids
         host_token_ids = sampled_token_ids.tolist()
