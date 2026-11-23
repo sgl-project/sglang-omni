@@ -104,6 +104,12 @@ func TestShortcutsSettings(t *testing.T) {
 	}
 }
 
+func TestShortcutsUseTheTranscribeIcon(t *testing.T) {
+	if got := shortcutIcon("transcribe"); got.Name != transcribeIcon.Name {
+		t.Fatalf("Transcribe shortcut icon = %q, want %q", got.Name, transcribeIcon.Name)
+	}
+}
+
 // TestReturnFinishesSetting: Settings → Shortcuts has the switch for
 // Return finishing a recording, under the shortcuts, on by default, in
 // English and Chinese, and it saves. It was Transcribe's page's, for

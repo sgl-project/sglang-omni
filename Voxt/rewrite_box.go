@@ -53,7 +53,7 @@ type rewriteBox struct {
 	frame  mygo.Rectangle
 	target proto.App // the app in front when the box opened
 	// dragged is how far the user moved the card from where it opens
-	// (boxDraggedTo): it keeps that place until it closes.
+	// (boxDraggedTo): showBox restores the shared card position after a close.
 	dragged struct{ x, y int }
 	// raise brings the window in front at the next boxSync: each press of
 	// the Rewrite shortcut on the card (it opens it, sends, asks in it)
@@ -199,7 +199,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 // showBox shows the box for its session id.
 func (a *app) showBox(target proto.App, id string) {
 	if !a.box.open {
-		a.box = rewriteBox{showTip: !a.prefs.Setup.RewriteBoxTipDismissed && a.prefs.Setup.RewriteBoxOpens < 3}
+		a.box = rewriteBox{showTip: !a.prefs.Setup.RewriteBoxTipDismissed && a.prefs.Setup.RewriteBoxOpens < 3, dragged: a.ov.cardDragged}
 		if a.prefs.Setup.RewriteBoxOpens < 3 {
 			a.updateSettings(func(s *settings.Settings) {
 				if s.Setup.RewriteBoxOpens < 3 {
@@ -494,8 +494,10 @@ func (a *app) boxPaste(svc uiServices) bool {
 			switch {
 			case err != nil:
 				res.JPEG, errText = nil, i18n.T("This image could not be read.")
-			case len(res.JPEG) > imgconv.MaxFileBytes:
+			case res.TooLarge || len(res.JPEG) > imgconv.MaxFileBytes:
 				res.JPEG, errText = nil, i18n.T("This image is too large.")
+			case len(res.JPEG) == 0:
+				errText = i18n.T("This image could not be read.")
 			}
 			a.boxConverted(gen, seq, res.JPEG, errText, i18n.T("Clipboard"))
 		})

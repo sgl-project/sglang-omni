@@ -410,6 +410,12 @@ func (f *fakeTimers) install(a *app) *fakeTimers {
 	return f
 }
 
+// clock is f's now as a time.Time, for a.now: only advance moves it, so
+// wall-clock time a test takes changes nothing.
+func (f *fakeTimers) clock() time.Time { return fakeClockBase.Add(f.now) }
+
+var fakeClockBase = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // advance moves the clock on by d, running the timers due (and those
 // they set that are due too).
 func (f *fakeTimers) advance(d time.Duration) {

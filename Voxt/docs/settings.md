@@ -264,9 +264,9 @@ And their own fields:
 |---|---|---|---|---|
 | `models.keepLoaded` | string | `""` | `""` (Automatic), `5m`, `15m`, `30m`, `1h`, `quit` | Speech models → Keep models loaded |
 | `models.hidden` | array of strings | `[]` | speech model ids | Speech models → Hide |
-| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed | Speech models → Faster transcription |
+| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed, except the 6bit (its draft came with the 8bit's download, so it stays off until switched on) | Speech models → Faster transcription |
 | `models.llmWait` | string | `""` | `""` (Automatic: 20 s to a minute, longer for long text), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works; after it the recognised text is inserted | Language models → Wait for the language model |
-| `models.llmSwitch` | bool | `false` | | Language models → Retry with another model on this Mac |
+| `models.llmSwitch` | bool | `false` | | Language models → Switch models when one fails |
 | `providers.llm` | array of providers | `[]` | one entry per language model service | Language models (one card per service set up) |
 | `providers.asr` | array of providers | `[]` | one entry per speech service | Speech models → online services |
 
@@ -327,6 +327,7 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `version` | integer | The document's schema version; Voxt rewrites it |
 | `setup.done` | bool | The setup guide is finished |
 | `setup.openingShown` | bool | The first-use opening was shown |
+| `setup.openingVersion` | string | The app version whose opening was last shown; a newer version plays it once |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
