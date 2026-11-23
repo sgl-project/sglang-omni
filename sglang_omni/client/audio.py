@@ -505,7 +505,10 @@ def encode_audio(
             config["valid_rates"],
             key=lambda supported_sample_rate: abs(supported_sample_rate - sample_rate),
         )
-        encoder_audio = resample_linear(arr, sample_rate, encoder_sample_rate)
+        if encoder_sample_rate < sample_rate and arr.size:
+            encoder_audio = soxr.resample(arr.T, sample_rate, encoder_sample_rate).T
+        else:
+            encoder_audio = resample_linear(arr, sample_rate, encoder_sample_rate)
         encoded_sample_rate = (
             OPUS_PLAYBACK_SAMPLE_RATE if fmt == "opus" else encoder_sample_rate
         )

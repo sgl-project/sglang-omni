@@ -402,3 +402,34 @@ def test_speech_sample_rate_metadata_matches_encoded_audio(
     expected_format = "wav" if encoding_backend == "wav" else response_format
     assert result.format == expected_format
     assert result.mime_type == FORMAT_MIME_TYPES[expected_format]
+
+
+def test_opus_automatic_downsampling_filters_aliases_and_preserves_stereo():
+    """Automatic Opus rate conversion must not fold high frequencies into music."""
+    sample_rate = 32000
+    time = np.arange(sample_rate * 2, dtype=np.float32) / sample_rate
+    audio = np.stack(
+        [
+            0.25 * np.sin(2 * np.pi * 1000 * time)
+            + 0.25 * np.sin(2 * np.pi * 13000 * time),
+            0.25 * np.sin(2 * np.pi * 2000 * time),
+        ]
+    )
+    encoded = encode_audio(
+        audio,
+        response_format="opus",
+        sample_rate=sample_rate,
+        allow_format_fallback=False,
+    )
+    decoded_rate, decoded = decode_audio(encoded.audio_bytes)
+
+    assert encoded.sample_rate == decoded_rate == 48000
+    assert decoded.shape == (2, decoded_rate * 2)
+    interior = decoded[:, decoded_rate // 10 : -decoded_rate // 10]
+    assert dominant_frequency(interior[0], decoded_rate) == pytest.approx(1000, abs=3)
+    assert dominant_frequency(interior[1], decoded_rate) == pytest.approx(2000, abs=3)
+    spectrum = np.abs(np.fft.rfft(interior[0]))
+    frequencies = np.fft.rfftfreq(interior.shape[1], 1 / decoded_rate)
+    alias = spectrum[np.argmin(np.abs(frequencies - 11000))]
+    signal = spectrum[np.argmin(np.abs(frequencies - 1000))]
+    assert alias / signal < 0.02
