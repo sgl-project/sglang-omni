@@ -63,6 +63,9 @@ int main(int argc, char **argv) {
     const nlohmann::json line = {
         {"file", file},
         {"text", result.text},
+        {"language", result.language.has_value()
+                         ? nlohmann::json(*result.language)
+                         : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
         {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"seconds", std::chrono::duration<double>(
