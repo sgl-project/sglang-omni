@@ -373,8 +373,9 @@ type Plan struct {
 	// while nothing records. Nil when it is off or clashes with an
 	// earlier binding.
 	Cancel *proto.HotkeyBinding
-	// Finish is the fixed Return binding that stops a Transcribe
-	// recording. Configure includes it only while active.
+	// Finish is the fixed Return binding that stops a Transcribe,
+	// Translate or Rewrite recording (features.returnFinishes). Configure
+	// includes it only while active.
 	Finish *proto.HotkeyBinding
 	// Carbon are the bindings that work without Accessibility, through
 	// MyGo's Carbon shortcuts: keys with ⌃⌥⇧⌘ (no fn, no sides). They

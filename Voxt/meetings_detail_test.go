@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -304,5 +305,14 @@ func TestMeetingDetailIsWideAndScrollsOnce(t *testing.T) {
 	frames(tt)
 	if r, ok := tt.Find("line 299 " + long); !ok || r.X > a.navUI.sideW+sp6+80 {
 		t.Fatalf("in a narrow window the details are not the page alone: %v %v", r, ok)
+	}
+}
+
+// waitLoadingLine lets a "Loading…" line (want) show: it waits for the
+// read to last (loadingShows).
+func waitLoadingLine(tester *ui.Tester, want string) {
+	if want == i18n.T("Loading…") {
+		tester.Advance(loadingDelay)
+		frames(tester)
 	}
 }

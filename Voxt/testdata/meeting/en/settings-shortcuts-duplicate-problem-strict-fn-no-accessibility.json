@@ -65,6 +65,7 @@
     "shortcuts": {
       "accessibility_installed": false,
       "strict_shortcuts": true,
+      "return_finishes": true,
       "preset": {
         "options": [
           {
