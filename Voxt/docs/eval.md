@@ -207,7 +207,7 @@ Without its example, Transcribe's clean-up scores 6 to 7 points lower on the sma
 - **Short dictations kept as said**: 440 and 410 of 480 answers, against 421 and 334 without an example. The rest are mostly the instruction carried out (翻译成英文 written as "translate into English") or an empty answer.
 - The example makes the system prompt 393 characters longer in English (2,570 → 2,963) and 168 characters longer in Chinese (968 → 1,136).
 
-**Decision: Transcribe's example closes the system prompt, in the request's own `<input>`/`<output>` form, with Cleanup on** (`templates/<set>/example-transcribe.txt`), in the built-in and custom prompt paths. Its first line says it only illustrates the rules and is not to be output.
+**Decision: Transcribe's example closes the built-in system prompt, in the request's own `<input>`/`<output>` form, with Cleanup on** (`templates/<set>/example-transcribe.txt`). A custom prompt appends the custom-cleanup precedence layer after the example, so custom translation and reformatting rules override conflicting basic cleanup rules. The example's first line says it only illustrates the rules and is not to be output.
 
 ### Long dictation (two clips, 95–104 s; M3b, TestEvalLong)
 

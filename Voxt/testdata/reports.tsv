@@ -57,5 +57,6 @@ report	fix	symptom	level	check
 #4470	#4488	TestSoundPairs fails in CI when a frame takes longer than the 230 ms sound preview	L	TestSoundPairs
 #3875	#4498	The setup guide does not explain language model service choices, API key entry, or connection testing	L	TestOnboardingSteps
 #3875	#4498	Transcribe does not explain that a language model prompt can translate or reformat dictation	L	TestTranscribePageRenders
+#3875	#4545	Transcribe custom rules to translate or reformat conflict with Basic clean-up's preservation rules	L	TestTranscribeCustomPromptOverridesBasicCleanup
 #4365	#4399	Check again in the Permissions step shows this process's permission read before the helper's answer, so the rows flash	L	TestPermissionsSettings
 #4364	#4452	System audio recording's Ask showed no change after it ran, so a granted permission looked unknown	L	TestPermissionsMeetingSystemAudio
