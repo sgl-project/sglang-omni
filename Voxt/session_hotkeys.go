@@ -7,8 +7,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -227,11 +227,12 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	}
 }
 
-// returnFinishes is whether Return finishes the session: a Transcribe
-// recording (not a note) with the setting on. The plan binds Finish then,
-// and routing reads it for a paste-last tap on the same key.
+// returnFinishes is whether Return finishes the session: a Transcribe,
+// Translate or Rewrite recording (not a note) with Settings → Shortcuts'
+// switch on. The plan binds Finish then, and routing reads it for a
+// paste-last tap on the same key.
 func (a *app) returnFinishes() bool {
-	return a.sess.State == session.Recording && a.sess.Kind == store.KindTranscribe && !a.sess.Note && a.prefs.Features.Transcribe.ReturnFinishes
+	return a.sess.State == session.Recording && !a.sess.Note && a.prefs.Features.ReturnFinishes
 }
 
 // hotkeyPlan is what the settings' shortcuts become.
@@ -263,7 +264,11 @@ func (a *app) syncHotkeys() {
 		// The card's single-letter keys (#4127) bind only while it shows.
 		params.Bindings = append(slices.Clone(params.Bindings), hotkey.CardBindings(cardGeneration, plan.Cancel)...)
 	}
-	key := fmt.Sprintf("%+v", params)
+	// The JSON, not %+v: that prints the address of Cancel (a new one from
+	// each plan), so every call looked changed, counted the generation up
+	// and dropped the events the helper had decided under the last one.
+	raw, _ := json.Marshal(params) // plain data: cannot fail
+	key := string(raw)
 	if key == a.hotkeysSent {
 		return
 	}

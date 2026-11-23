@@ -419,7 +419,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// the card staying with its answer; a second Escape closes it.
 	steps[7].apply(a) // its follow-up, recording
 	frames(tt)
-	if !has(tt, "Done") || !has(tt, "shorter") || !has(tt, "You") || has(tt, "Continue") {
+	if !has(tt, "Done") || !has(tt, "shorter") || has(tt, "You") || has(tt, "Continue") {
 		t.Errorf("recording: %q", firstTexts(tt))
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
@@ -442,8 +442,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if !ok {
 		t.Fatalf("no heading in %q", firstTexts(tt))
 	}
-	// Its Copy: 8 from the bubble's top right corner, 22 high.
-	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW-8-10, title.Y-layout.BubblePadY+8+11)
+	// Its Copy: a 24 icon right of the bubble, level with its top.
+	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW+bubbleCopyGap+12, title.Y-layout.BubblePadY+12)
 	frames(tt)
 	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.ui.bubbleCopied == "" {
 		t.Errorf("bubble copied %q", tt.Clipboard())
@@ -473,17 +473,17 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 	for _, tc := range inputs {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
-			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Title: "You", Text: tc.text}}}
+			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Text: tc.text}}}
 			local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 			tt := hudTester(func(c *ui.Context) {
 				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, "", card, card.Blocks[0], 0, layout.AnswerW, a, local, nil) })
 			}, layout.AnswerW, 500)
 			frames(tt)
-			title, ok := tt.Find("You")
+			said, ok := tt.Find(tc.text)
 			if !ok {
-				t.Fatalf("no input heading in %q", firstTexts(tt))
+				t.Fatalf("no input text in %q", firstTexts(tt))
 			}
-			img, y, left, right := tt.Image(), int(title.Y)/2, -1, -1
+			img, y, left, right := tt.Image(), int(said.Y)/2, -1, -1
 			background := img.RGBAAt(0, y)
 			for x := range img.Bounds().Dx() {
 				if img.RGBAAt(x, y) == background {
@@ -495,7 +495,7 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 				right = x
 			}
 			if left < 0 {
-				t.Fatal("no bubble pixels above its heading")
+				t.Fatal("no bubble pixels beside its text")
 			}
 			widths[tc.name] = right - left + 1
 			if tc.name != "long" {
@@ -688,7 +688,7 @@ func TestCardHeaderFits(t *testing.T) {
 
 // TestCardDragged: a card the user dragged (overlayDragged keeps the
 // offset) keeps its place as its answer grows, stays on the screen, and
-// the next card shows at the anchor again.
+// returns to that place when it is closed and reopened.
 func TestCardDragged(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
@@ -705,11 +705,12 @@ func TestCardDragged(t *testing.T) {
 	if a.ov.frame.Y != a.ov.area.Y-layout.Pad {
 		t.Errorf("dragged past the top: %+v", a.ov.frame)
 	}
+	moved := a.ov.frame
 	a.answer = answerCard{}
 	a.overlaySync()
-	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A longer answer, a few lines more. ", 12)}
 	a.overlaySync()
-	if a.ov.frame != anchored {
-		t.Errorf("the next card: %+v, want %+v", a.ov.frame, anchored)
+	if a.ov.frame != moved {
+		t.Errorf("the reopened card: %+v, want %+v", a.ov.frame, moved)
 	}
 }

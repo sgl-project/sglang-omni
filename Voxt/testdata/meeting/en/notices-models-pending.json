@@ -7,8 +7,7 @@
       "severity": "warning",
       "title": "No models",
       "body": "To start, install a speech model, then set up a language model.",
-      "action_label": "Open Speech models",
-      "time_hint": "Jan 2 07:04"
+      "action_label": "Open Speech models"
     }
   ]
 }

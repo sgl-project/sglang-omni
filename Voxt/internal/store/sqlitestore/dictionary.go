@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo/plugins/sqlite"
@@ -14,7 +15,13 @@ import (
 )
 
 // dictionaryRepo stores the active profile's terms (dictionary_terms).
-type dictionaryRepo struct{ db *sqlite.DB }
+type dictionaryRepo struct {
+	db *sqlite.DB
+	mu sync.Mutex
+}
+
+func (r *dictionaryRepo) Lock()   { r.mu.Lock() }
+func (r *dictionaryRepo) Unlock() { r.mu.Unlock() }
 
 const termColumns = `id, term, aliases, note, enabled, created_at, updated_at`
 const activeProfile = `(SELECT id FROM dictionary_profiles WHERE active = 1)`

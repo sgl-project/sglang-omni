@@ -58,8 +58,6 @@ else:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PREFILL_COALESCE_WAIT_MILLISECONDS = 32.0
-# note (Ruilin Gao): H100 Chinese c4 misses the first-text gate with either no hold or a 1 ms hold.
-DFLASH_PREFILL_COALESCE_WAIT_MILLISECONDS = 0.5
 DEFAULT_REQUEST_BUILD_WORKERS = 2
 DFLASH_REQUEST_BUILD_WORKERS = 4
 
@@ -96,6 +94,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         prefill_coalesce_wait_ms: float | None,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
+        early_request_builds: bool | None = None,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
@@ -134,6 +133,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         self.mm_attention_backend = mm_attention_backend
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.early_request_builds = early_request_builds
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
@@ -394,13 +394,15 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
             )
         else:
             pass
+        prefill_coalesce_requests = self.prefill_coalesce_requests
         prefill_coalesce_wait_ms = self.prefill_coalesce_wait_ms
         if prefill_coalesce_wait_ms is None:
-            prefill_coalesce_wait_ms = (
-                DFLASH_PREFILL_COALESCE_WAIT_MILLISECONDS
-                if is_synchronous_dflash
-                else DEFAULT_PREFILL_COALESCE_WAIT_MILLISECONDS
-            )
+            prefill_coalesce_wait_ms = DEFAULT_PREFILL_COALESCE_WAIT_MILLISECONDS
+            if is_synchronous_dflash:
+                # note (wilsonzheng0327): with builds starting on arrival, H100 c8 first text missed the gate under a 0.5 ms hold and passed with none; an explicit wait brings the hold back.
+                prefill_coalesce_requests = 0
+            else:
+                pass
         else:
             pass
         return {
@@ -412,10 +414,16 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
-            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_requests": prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
+            ),
+            # note (wilsonzheng0327): only with the draft by default, where a request would otherwise wait for the rest of a verify round before its build starts.
+            "early_request_builds": (
+                self.speculative_worker_class is not None
+                if self.early_request_builds is None
+                else self.early_request_builds
             ),
         }

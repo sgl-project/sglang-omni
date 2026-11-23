@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ func TestIsEcho(t *testing.T) {
 		{"English", "so the main window does not need to be fancy at all",
 			"So the main window doesn't need to be fancy at all, right?", true},
 		{"mixed", "我们用Voxt的translate功能试一下", "我们用 Voxt 的 translate 功能试一下吧", true},
+		{"Chinese scripts", "我們今天討論語音識別和會議轉寫", "我们今天讨论语音识别和会议转写", true},
 		{"own words over theirs", "因为就是我在想，我自己不是做app这个背景的，所以我觉得可能有点抽象",
 			"嗯，是这样子，你们其实是坐在两个方向上，就是一个做的剪贴板", false},
 		{"English own words", "I think we should ship the settings page first",
@@ -36,6 +38,15 @@ func TestIsEcho(t *testing.T) {
 		if got := isEcho(c.mic, c.system); got != c.want {
 			t.Errorf("%s: isEcho = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestIsEchoChinesePhrase(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("CoreFoundation phrase rules run in Mac CI")
+	}
+	if !isEcho("我們看著會議轉寫", "我们看着会议转写") {
+		t.Fatal("the same sentence in another script was not recognized")
 	}
 }
 

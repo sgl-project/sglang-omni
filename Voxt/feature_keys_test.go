@@ -175,20 +175,3 @@ func TestTranscribePasteLast(t *testing.T) {
 		t.Fatalf("paste-last %+v", k)
 	}
 }
-
-func TestTranscribeReturnFinishesSetting(t *testing.T) {
-	a, tt := trTester(t)
-	const title = "Return finishes dictation"
-	if !a.lib.settings.Get().Features.Transcribe.ReturnFinishes || !has(tt, title) {
-		t.Fatalf("default or setting row: %v, %q", a.lib.settings.Get().Features.Transcribe.ReturnFinishes, firstTexts(tt))
-	}
-	clickSwitch(t, tt, title)
-	if a.lib.settings.Get().Features.Transcribe.ReturnFinishes {
-		t.Error("the switch did not turn Return finishing off")
-	}
-	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
-	frames(tt)
-	if !has(tt, "按回车完成转录") {
-		t.Errorf("zh-Hans setting: %q", firstTexts(tt))
-	}
-}

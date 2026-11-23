@@ -68,7 +68,7 @@ func (a *app) switchDictionaryProfile(id string) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := repo.ActivateProfile(ctx, id)
+		err := withDictionaryLock(repo, func() error { return repo.ActivateProfile(ctx, id) })
 		a.post(func() {
 			if err != nil {
 				a.toast(i18n.T("Could not switch the dictionary profile: %v", err))
@@ -140,12 +140,12 @@ func (a *app) saveDictionaryProfile() {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		var err error
-		if id == "" {
-			err = repo.CreateProfile(ctx, store.DictionaryProfile{ID: core.NewID(time.Now()), Name: name})
-		} else {
-			err = repo.RenameProfile(ctx, id, name)
-		}
+		err := withDictionaryLock(repo, func() error {
+			if id == "" {
+				return repo.CreateProfile(ctx, store.DictionaryProfile{ID: core.NewID(time.Now()), Name: name})
+			}
+			return repo.RenameProfile(ctx, id, name)
+		})
 		a.post(func() {
 			edit := &a.dictUI.profileEdit
 			edit.saving = false
@@ -164,7 +164,7 @@ func (a *app) deleteDictionaryProfile(id string) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := repo.DeleteProfile(ctx, id)
+		err := withDictionaryLock(repo, func() error { return repo.DeleteProfile(ctx, id) })
 		a.post(func() {
 			if err != nil {
 				a.toast(i18n.T("Could not delete the profile: %v", err))
