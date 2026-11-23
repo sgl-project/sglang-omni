@@ -343,23 +343,18 @@ def test_early_cache_lookup_uses_namespace_and_validates_shape() -> None:
 def test_consuming_retained_embedding_does_not_promote_same_key_replacement() -> None:
     """A delayed consumer must leave the replacement generation's eviction order intact."""
     service = make_service(cache_max_entries=2)
-    try:
-        original = make_item(11, 3)
-        service.encode_item(original)
-        retained = service.get_cached_embedding("11", 3)
-        assert retained is not None
-        service.cache.put(service.cache_key(original), torch.zeros_like(retained))
-        service.encode_item(make_item(12, 3))
-        resumed = make_item(11, 3, with_feature=False)
-        service.attach_embedding(resumed, retained, cache_hit=True)
-        service.encode_item(make_item(13, 3))
-        assert torch.equal(
-            resumed.precomputed_embeddings, original.precomputed_embeddings
-        )
-        assert service.get_cached_embedding("11", 3) is None
-        assert service.get_cached_embedding("12", 3) is not None
-    finally:
-        service.close()
+    original = make_item(11, 3)
+    service.encode_item(original)
+    retained = service.get_cached_embedding("11", 3)
+    assert retained is not None
+    service.cache.put(service.cache_key(original), torch.zeros_like(retained))
+    service.encode_item(make_item(12, 3))
+    resumed = make_item(11, 3, with_feature=False)
+    service.attach_embedding(resumed, retained, cache_hit=True)
+    service.encode_item(make_item(13, 3))
+    assert torch.equal(resumed.precomputed_embeddings, original.precomputed_embeddings)
+    assert service.get_cached_embedding("11", 3) is None
+    assert service.get_cached_embedding("12", 3) is not None
 
 
 def test_concurrent_early_hits_count_once_per_consuming_request() -> None:

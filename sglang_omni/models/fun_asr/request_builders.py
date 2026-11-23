@@ -296,19 +296,20 @@ def make_fun_asr_scheduler_adapters(
 
         cached_embedding = None
         num_lfr_frames = None
+        num_audio_tokens = None
         if audio_encoder_service is not None and audio_encoder_service.cache_enabled:
             num_lfr_frames = feature_extractor.num_lfr_frames(len(audio))
             if num_lfr_frames is not None:
+                num_audio_tokens = fun_asr_low_frame_rate_length(num_lfr_frames)
                 cached_embedding = audio_encoder_service.get_cached_embedding(
-                    fingerprint,
-                    fun_asr_low_frame_rate_length(num_lfr_frames),
+                    fingerprint, num_audio_tokens
                 )
             else:
                 pass
         else:
             pass
         if cached_embedding is not None:
-            assert num_lfr_frames is not None
+            assert num_lfr_frames is not None and num_audio_tokens is not None
             features = None
             feature_attention_mask = torch.ones(
                 (1, num_lfr_frames), dtype=torch.long, device="cpu"
@@ -330,7 +331,7 @@ def make_fun_asr_scheduler_adapters(
             else:
                 pass
             num_lfr_frames = int(feature_attention_mask.sum().item())
-        num_audio_tokens = fun_asr_low_frame_rate_length(num_lfr_frames)
+            num_audio_tokens = fun_asr_low_frame_rate_length(num_lfr_frames)
         logger.debug(
             f"[fun-asr] lfr_frames={num_lfr_frames} "
             f"num_audio_tokens={num_audio_tokens}"

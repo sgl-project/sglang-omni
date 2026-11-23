@@ -910,30 +910,43 @@ def test_warm_audio_does_not_reuse_request_specific_prompt(
     assert service.stats()["hits"] == 1
 
 
-@pytest.mark.parametrize("num_samples", [0, 1, 480001])
+@pytest.mark.parametrize(
+    "num_samples,embedding_rows,error_type,error_match",
+    [
+        (0, 1, AssertionError, None),
+        (1, 1, AssertionError, None),
+        (480001, 63, ValueError, r"30(?:\.0)? seconds.*VAD"),
+    ],
+)
 def test_invalid_audio_still_fails_before_cache_can_bypass_it(
     cached_frontend: tuple[
         Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray
     ],
     monkeypatch: pytest.MonkeyPatch,
     num_samples: int,
+    embedding_rows: int,
+    error_type: type[Exception],
+    error_match: str | None,
 ) -> None:
     """Cached embeddings cannot turn invalid or overlong audio into a request."""
-    extractor, service, tokenizer, audio = cached_frontend
+    extractor, service, tokenizer, _ = cached_frontend
     invalid_audio = np.zeros(num_samples, dtype=np.float32)
     monkeypatch.setattr(
         transcription, "load_audio", lambda source, **kwargs: invalid_audio
     )
     service.cache.put(
-        f"{service.namespace}:{audio_fingerprint(invalid_audio)}", torch.ones(1, 4)
+        f"{service.namespace}:{audio_fingerprint(invalid_audio)}",
+        torch.ones(embedding_rows, service.hidden_size, dtype=service.dtype),
     )
+    lookup = Mock(wraps=service.get_cached_embedding)
+    monkeypatch.setattr(service, "get_cached_embedding", lookup)
     build, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=tokenizer,
         max_new_tokens=32,
         feature_extractor=extractor,
         audio_encoder_service=service,
     )
-    with pytest.raises((AssertionError, ValueError)):
+    with pytest.raises(error_type, match=error_match):
         build(
             StagePayload(
                 request_id="invalid",
@@ -941,4 +954,5 @@ def test_invalid_audio_still_fails_before_cache_can_bypass_it(
                 data={},
             )
         )
+    lookup.assert_not_called()
     assert service.stats()["hits"] == 0
