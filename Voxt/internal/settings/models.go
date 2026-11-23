@@ -30,8 +30,8 @@ type Models struct {
 	// need no migration (#3821). Either way a long text gets longer.
 	LLMWait string `json:"llmWait,omitempty"`
 	// LLMSwitch: when a feature's language model fails, or does not open,
-	// its session asks the next language model on this Mac that serves
-	// the feature, once, never an external API the feature did not choose.
+	// its session asks the next configured language model that serves the
+	// feature, once, including an external API chosen for another feature.
 	// Translate's own fallback model goes first.
 	LLMSwitch bool `json:"llmSwitch,omitempty"`
 	// Faster is each speech model's Faster transcription switch (its id:
@@ -43,12 +43,21 @@ type Models struct {
 }
 
 // FasterOn says whether speech model id uses its draft, given whether
-// the draft is installed: the switch, else the installed draft.
-func (m Models) FasterOn(id string, draftInstalled bool) bool {
+// the draft is installed: the switch, else FasterDefault.
+func (m Models) FasterOn(id string, draftInstalled, optIn bool) bool {
 	if on, set := m.Faster[id]; set {
 		return on && draftInstalled
 	}
-	return draftInstalled
+	return FasterDefault(draftInstalled, optIn)
+}
+
+// FasterDefault is a never-switched model's Faster transcription state:
+// on while its draft is installed, as 2.0.2 and 2.0.3 did — but an
+// opt-in model's (a draft that came with another's download) waits for
+// the switch. The model card's switch and the runtime share it so the
+// two cannot drift.
+func FasterDefault(draftInstalled, optIn bool) bool {
+	return draftInstalled && !optIn
 }
 
 // The choices of Models.LLMWait.

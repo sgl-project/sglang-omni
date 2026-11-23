@@ -325,6 +325,7 @@ with open("examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-
     profile = yaml.safe_load(f)
 profile["model_path"] = "qwen3-asr-inkling-2-mini-vivian-tts-tool"
 profile["services"] = [s for s in profile["services"] if s["name"] != "chat"]
+profile["session_nodes"]["llm"].pop("required_call_opening", None)
 profile["session_nodes"]["llm"].update(
     base_url="http://127.0.0.1:9000/v1",
     model="thinkingmachines/Inkling-2-Mini",

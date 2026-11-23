@@ -53,6 +53,16 @@
         "can_open": true,
         "ask_action": "speechRecognition",
         "ask_tooltip": ""
+      },
+      "system_audio": {
+        "code": "unknown",
+        "text": "Unknown",
+        "ok": false,
+        "can_ask": true,
+        "can_open": true,
+        "ask_action": "systemAudio",
+        "ask_tooltip": "Adds Voxt to the list in System Settings",
+        "tip": "macOS does not let apps read this permission. Check it in System Settings."
       }
     },
     "footer": {

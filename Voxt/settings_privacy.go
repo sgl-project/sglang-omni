@@ -30,7 +30,7 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 		for _, s := range []string{
 			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up in Settings → Speech models, its recordings go to that service. Voxt has no server of its own."),
 			i18n.T("The language model you set up in Settings → Language models can get text Voxt recognised, text you selected or typed, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content. With the switches below on, it can also get a screenshot of the window or an image you copied."),
-			i18n.T("A request to a language-model server on this Mac, such as Ollama, stays on this Mac. A request to an external API goes to the provider handling it. If Translate uses your fallback model, that provider gets the same request too."),
+			i18n.T("A request to a language-model server on this Mac, such as Ollama, stays on this Mac. A request to an external API goes to the provider handling it. If Translate uses your fallback model, or Switch models when one fails picks another configured model, that provider gets the same request too."),
 			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your account and its terms."),
 			state.Online,
 			i18n.T("Voxt reads the address of the current browser tab only to pick your app enhancement rules. The language model never sees it, only the app's name."),
