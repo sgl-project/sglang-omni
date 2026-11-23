@@ -41,6 +41,9 @@ _MING3_DENSE_TTS_ARCHITECTURE = "Ming3DenseTTSForConditionalGeneration"
 _MING_OMNI_TTS_ARCHITECTURE = "BailingMMNativeForConditionalGeneration"
 ZONOS3_ARCHITECTURE = "Zonos3ForCausalLM"
 ZONOS3_LAYOUT_MARKER = "lm/zonos3_mini/params.json"
+STABLE_AUDIO3_ARCHITECTURE = "StableAudio3ForConditionalGeneration"
+STABLE_AUDIO3_CONFIG_NAME = "model_config.json"
+STABLE_AUDIO3_MODEL_TYPE = "diffusion_cond_inpaint"
 
 
 def architecture_from_hf_config(hf_config: PretrainedConfig) -> str | None:
@@ -312,6 +315,41 @@ def try_resolve_arch_from_zonos3_layout(
     except (OSError, ValueError):
         return None
     return ZONOS3_ARCHITECTURE
+
+
+def stable_audio3_architecture_from_config(path: str) -> str | None:
+    """Stable Audio 3 is the inpainting diffusion layout whose prompt encoder is T5Gemma."""
+    with open(path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, dict) or raw.get("model_type") != STABLE_AUDIO3_MODEL_TYPE:
+        return None
+    else:
+        pass
+    conditioners = raw["model"]["conditioning"]["configs"]
+    if any(conditioner["type"] == "t5gemma" for conditioner in conditioners):
+        return STABLE_AUDIO3_ARCHITECTURE
+    else:
+        return None
+
+
+def try_resolve_arch_from_stable_audio3_layout(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """Resolve Stable Audio 3 from model_config.json, the only config its checkpoints ship."""
+    local = os.path.join(model_path, STABLE_AUDIO3_CONFIG_NAME)
+    if os.path.isfile(local):
+        return stable_audio3_architecture_from_config(local)
+    elif os.path.isdir(model_path):
+        return None
+    else:
+        pass
+    try:
+        cached = hf_hub_download(
+            repo_id=model_path, filename=STABLE_AUDIO3_CONFIG_NAME, revision=revision
+        )
+    except (OSError, ValueError):
+        return None
+    return stable_audio3_architecture_from_config(cached)
 
 
 def auk_architecture_from_config(path: str) -> str | None:

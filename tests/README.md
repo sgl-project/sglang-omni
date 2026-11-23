@@ -147,6 +147,8 @@ tests/
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
+    ├── stable_audio3/
+    │   └── test_stable_audio3.py
     ├── nemotron_voicechat/
     │   ├── test_checkpoint_shim.py
     │   ├── test_paged_rollback.py
@@ -954,6 +956,11 @@ that happened to contain an older version of the test.
   acoustic configuration, hidden-frame buffering, deterministic sampling,
   attention and decoder contracts, abort handling, and relay tensor validation.
   Kernel and CUDA Graph parity cases in `test_core.py` are marked `accelerator`.
+
+- `unit_test/stable_audio3/`: Stable Audio 3 request validation at the HTTP
+  boundary, latent lengths and noise levels from the official inference,
+  batched generation leaving each request's audio unchanged, and checkpoint
+  detection. CPU only, with a tiny randomly initialized model.
 
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution (including declared G.711 bytes getting

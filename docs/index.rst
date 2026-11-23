@@ -197,6 +197,7 @@ Community & Resources
    cookbook/companies/boson_ai.md
    cookbook/companies/minimax.md
    cookbook/companies/map.md
+   cookbook/companies/stability_ai.md
    cookbook/companies/inclusionai.md
    cookbook/companies/tencent.md
    cookbook/companies/zyphra.md

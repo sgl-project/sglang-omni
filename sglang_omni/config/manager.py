@@ -19,6 +19,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_zonos3_layout,
     try_resolve_ming3_dense_tts,
 )
+from sglang_omni.utils.hf import try_resolve_arch_from_stable_audio3_layout
 
 
 def resolve_config_cls_for_model_path(model_path: str):
@@ -74,6 +75,10 @@ def resolve_config_cls_for_model_path(model_path: str):
         pass
     if arch is None:
         arch = try_resolve_arch_from_zonos3_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_stable_audio3_layout(repo_id, revision=revision)
     else:
         pass
     if arch is None:
