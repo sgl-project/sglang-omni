@@ -88,7 +88,15 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 // A stream silent for stall (the server's heartbeat is every 250 ms) has
 // hung the server: it is killed.
 func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Duration) (finalResult, error) {
+	return transcribeTimed(ctx, l, r, stall, 0)
+}
+
+func transcribeTimed(ctx context.Context, l *lease, r finalRequest, stall time.Duration, requestID uint64) (finalResult, error) {
+	totalStarted := time.Now()
+	defer func() { logRequestStage(l.s.rt, requestID, "final", "total", totalStarted, len(r.pcm), 0) }()
+	started := time.Now()
 	body, ctype := r.body(l.endpoint().model)
+	logRequestStage(l.s.rt, requestID, "final", "multipart", started, len(r.pcm), body.Len())
 	// The hint goes to the log, never the recognised text: a wrong hint
 	// translated Chinese dictation (#3398) and nothing showed it.
 	if !r.preview {
@@ -104,7 +112,9 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 	var stalled atomic.Bool
 	watch := time.AfterFunc(stall, func() { stalled.Store(true); cancel() })
 	defer watch.Stop()
+	started = time.Now()
 	resp, err := loopback.Do(req)
+	logRequestStage(l.s.rt, requestID, "final", "http_headers", started, body.Len(), 0)
 	if err != nil {
 		return finalResult{}, stallOr(ctx, l, stalled.Load(), err)
 	}
@@ -118,6 +128,8 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 		}
 		return finalResult{}, e
 	}
+	started = time.Now()
+	defer func() { logRequestStage(l.s.rt, requestID, "final", "sse", started, 0, 0) }()
 	rd := bufio.NewReaderSize(resp.Body, 64<<10)
 	var done *finalResult
 	for {

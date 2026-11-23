@@ -252,12 +252,13 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		}
 		c := chunks[0]
 		chunks = chunks[1:]
-		pcm, ok := a.speechOnly(ctx, c.pcm)
+		requestID := nextOfflineRequestID()
+		pcm, ok := a.speechOnlyTimed(ctx, requestID, c.pcm)
 		if !ok {
 			continue
 		}
 		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
-		r, err := transcribe(ctx, l, req, a.rt.cfg.StallTimeout)
+		r, err := transcribeTimed(ctx, l, req, a.rt.cfg.StallTimeout, requestID)
 		if err != nil {
 			return "", "", err
 		}
