@@ -101,7 +101,7 @@ func TestOpeningLength(t *testing.T) {
 	for _, end := range []struct {
 		label string
 		ms    int
-	}{{"1 second", 1000}, {"3 seconds", 3000}} {
+	}{{"Faster", 1000}, {"Slower", 3000}} {
 		if err := tt.ClickControl(end.label); err != nil {
 			t.Fatalf("click %q: %v", end.label, err)
 		}

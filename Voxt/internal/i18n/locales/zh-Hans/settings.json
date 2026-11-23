@@ -276,5 +276,7 @@
   "With both on, the copied image goes, not the screenshot.": "两个都打开时，发送复制的图片，不发送截图。",
   "%s second": "%s 秒",
   "%s seconds": "%s 秒",
-  "Opening speed": "开场动画速度"
+  "Opening speed": "开场动画速度",
+  "Slower": "更慢",
+  "Faster": "更快"
 }

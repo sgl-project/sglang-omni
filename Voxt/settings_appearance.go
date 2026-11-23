@@ -57,7 +57,8 @@ func appearanceSettings(c *ui.Context, state settingsAppearanceViewState, action
 	})
 	// Its speed shows only while it plays: a slider of three stops from
 	// the turtle to the rabbit, as macOS's key repeat; a click on either
-	// animal goes to its end.
+	// animal (Slower, Faster to a screen reader; its seconds as the
+	// tooltip) goes to its end.
 	if state.Opening && len(state.OpeningLengthValues) > 0 {
 		settingRow(c, "opening-speed", i18n.T("Opening speed"), "", func() {
 			t := c.Theme()
@@ -67,7 +68,7 @@ func appearanceSettings(c *ui.Context, state settingsAppearanceViewState, action
 				actions.setOpeningLength(state.OpeningLengthValues[stop])
 			}
 			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-				if iconButton(c.Key("opening-slow"), icons.OpeningSlow, state.OpeningLengthOptions[0]).Clicked() {
+				if iconButton(c.Key("opening-slow"), icons.OpeningSlow, i18n.T("Slower")).Tooltip(state.OpeningLengthOptions[0]).Clicked() {
 					choose(0)
 				}
 				slider := ui.Slider(c.Key("opening-speed-slider"), &local.openingSpeed, 0, float64(last)).Step(1).
@@ -77,7 +78,7 @@ func appearanceSettings(c *ui.Context, state settingsAppearanceViewState, action
 				if slider.Changed() {
 					choose(stop)
 				}
-				if iconButton(c.Key("opening-fast"), icons.OpeningFast, state.OpeningLengthOptions[last]).Clicked() {
+				if iconButton(c.Key("opening-fast"), icons.OpeningFast, i18n.T("Faster")).Tooltip(state.OpeningLengthOptions[last]).Clicked() {
 					choose(last)
 				}
 			})
