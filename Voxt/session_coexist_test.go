@@ -129,10 +129,12 @@ func TestBackgroundLiveAfterTranscribeBlocksOtherFeatures(t *testing.T) {
 
 func TestBackgroundBeforeFirstTokenCanBeCancelled(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		cancel func(*sessionApp)
+		name      string
+		cancel    func(*sessionApp)
+		cardFirst bool
 	}{
 		{name: "close", cancel: func(a *sessionApp) { a.closeAnswer() }},
+		{name: "close beside a card-first Transcribe", cancel: func(a *sessionApp) { a.closeAnswer() }, cardFirst: true},
 		{name: "escape after foreground end", cancel: func(a *sessionApp) {
 			a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 		}},
@@ -145,6 +147,7 @@ func TestBackgroundBeforeFirstTokenCanBeCancelled(t *testing.T) {
 				set(s)
 				s.Features.Rewrite.ShowCard = true
 				s.Features.Transcribe.Enhance = false
+				s.Features.Transcribe.ShowCard = tc.cardFirst
 			}, keys)
 			a.pump("composing before the first token", func() bool {
 				return a.sess.State == session.Composing && a.sess.Card && a.sess.Draft == ""
@@ -162,6 +165,9 @@ func TestBackgroundBeforeFirstTokenCanBeCancelled(t *testing.T) {
 			a.pump("the pre-token background cancellation", func() bool { return a.bgID == "" })
 			if a.bgID != "" {
 				t.Fatalf("the pre-token background request was not cancelled: bg=%q state=%s", a.bgID, a.bgSess.State)
+			}
+			if tc.cardFirst && a.sess.State != session.Recording {
+				t.Fatalf("Close cancelled the card-first recording instead of the background answer: %s", a.sess.State)
 			}
 		})
 	}

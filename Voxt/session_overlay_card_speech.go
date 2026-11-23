@@ -49,6 +49,6 @@ func buildSessionSpeechCardViewState(translator *i18n.Translator, input sessionC
 // shows in the card from its first snapshot; Rewrite keeps its own flow.
 func (a *app) liveCard() bool {
 	snapshot := a.sess
-	return !a.answer.open && snapshot.State.Live() && snapshot.Card && !snapshot.Try && !snapshot.Note &&
+	return a.bgID == "" && !a.answer.open && snapshot.State.Live() && snapshot.Card && !snapshot.Try && !snapshot.Note &&
 		(snapshot.Kind == store.KindTranscribe || snapshot.Kind == store.KindTranslate)
 }

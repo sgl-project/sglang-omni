@@ -18,8 +18,8 @@ func TestCardFirstOverlay(t *testing.T) {
 			for _, state := range []session.State{session.Recording, session.Recognizing, session.Composing} {
 				snap(a, session.Snapshot{ID: "card-first", Kind: kind, State: state, Card: true,
 					Selection: "We plan to ship on Friday.", Partial: "this Friday", Levels: wave(), HeardAt: time.Now()})
-				if a.ov.mode != ovAnswer || a.ov.passThrough || !a.ov.shown {
-					t.Fatalf("%s: mode %s, pass-through %v, shown %v", state, a.ov.mode, a.ov.passThrough, a.ov.shown)
+				if a.ov.mode != ovAnswer || a.ov.passThrough || !a.ov.shown || a.pill.shown {
+					t.Fatalf("%s: mode %s, pass-through %v, card shown %v, pill shown %v", state, a.ov.mode, a.ov.passThrough, a.ov.shown, a.pill.shown)
 				}
 				if state == session.Recording {
 					tt := cardTester(t, a)

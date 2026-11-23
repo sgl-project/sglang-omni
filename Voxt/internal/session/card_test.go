@@ -176,4 +176,18 @@ func TestCardFirstEndsWithoutCard(t *testing.T) {
 			t.Fatalf("entries %+v", es)
 		}
 	})
+	t.Run("too short", func(t *testing.T) {
+		h := newHarness(t, &fakeFile{text: "hello"}, &fakeLLM{}, cardOn)
+		h.audio.tick = 50 * time.Millisecond
+		id := h.start()
+		h.rec.waitFor(t, "heard", func(s Snapshot) bool { return !s.HeardAt.IsZero() })
+		h.m.Stop(id)
+		end := h.rec.wait(t)
+		if end.State != Cancelled || end.Problem == nil || end.Problem.Code != ProblemTooShort || end.Card {
+			t.Fatalf("end %s card %v problem %+v", end.State, end.Card, end.Problem)
+		}
+		if entries := h.hist.all(); len(entries) != 0 {
+			t.Fatalf("entries %+v", entries)
+		}
+	})
 }

@@ -127,7 +127,7 @@ func (a *app) overlayModeNow() overlayMode {
 // answer, whatever its kind) already shows in the card, never here.
 func (a *app) pillModeNow(main overlayMode) overlayMode {
 	snapshot := a.sess
-	if live := snapshot.State.Live() && !snapshot.Try; live && main != ovRecording && main != ovWorking && snapshot.Kind == store.KindTranscribe {
+	if live := snapshot.State.Live() && !snapshot.Try; live && !a.liveCard() && main != ovRecording && main != ovWorking && snapshot.Kind == store.KindTranscribe {
 		switch {
 		case snapshot.State == session.Delivering:
 			return ovHidden
