@@ -68,3 +68,20 @@ func TestOpeningOff(t *testing.T) {
 		t.Fatal("turned on again, the opening did not play at the next start")
 	}
 }
+
+// While Reduce motion is on, the opening's switch shows off (it rests);
+// the saved choice is kept and shows again once Reduce motion is off.
+func TestOpeningSwitchFollowsReduceMotion(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.setReduceMotion(true)
+	if a.appearanceSettingsModel().Opening || a.settingsForm.opening {
+		t.Fatal("the opening's switch shows on while Reduce motion is on")
+	}
+	if !a.prefs.Appearance.Opening {
+		t.Fatal("Reduce motion changed the saved choice")
+	}
+	a.setReduceMotion(false)
+	if !a.appearanceSettingsModel().Opening || !a.settingsForm.opening {
+		t.Fatal("the saved choice did not come back after Reduce motion")
+	}
+}

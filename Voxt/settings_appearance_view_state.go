@@ -24,7 +24,9 @@ type settingsAppearanceViewState struct {
 	SidebarOptions []string  `json:"sidebar_options"`
 	SidebarValues  []string  `json:"sidebar_values"`
 	ReduceMotion   bool      `json:"reduce_motion"`
-	Opening        bool      `json:"opening"`
+	// Opening is what the opening's switch shows: off while Reduce motion,
+	// which skips the opening, is on; the saved choice is kept for after.
+	Opening bool `json:"opening"`
 	// Palette is the saved colour ("#0d9384"), DefaultPalette the one
 	// Reset color restores.
 	Palette        string `json:"palette"`
@@ -48,7 +50,7 @@ func buildSettingsAppearanceViewState(translator *i18n.Translator, appearance se
 		SidebarOptions: []string{translator.T("Automatic"), translator.T("Names and icons"), translator.T("Icons only")},
 		SidebarValues:  []string{settingsSidebarAutomatic, settingsSidebarNames, settingsSidebarIcons},
 		ReduceMotion:   appearance.ReduceMotion,
-		Opening:        appearance.Opening,
+		Opening:        appearance.Opening && !appearance.ReduceMotion,
 		Palette:        appearance.Palette, DefaultPalette: settings.DefaultPalette,
 		Transparent:     appearance.Theme == settings.ThemeTransparent,
 		MinTransparency: settings.MinWindowTransparency, MaxTransparency: settings.MaxWindowTransparency,

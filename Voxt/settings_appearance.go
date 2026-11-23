@@ -46,7 +46,8 @@ func appearanceSettings(c *ui.Context, state settingsAppearanceViewState, action
 			actions.setReduceMotion(local.reduceMotion)
 		}
 	})
-	// Reduce motion skips the opening, so its switch rests while it is on.
+	// Reduce motion skips the opening, so its switch rests, off, while it
+	// is on (state.Opening).
 	settingRow(c, "opening", i18n.T("Play the opening at start"), "", func() {
 		sw := ui.Switch(c.Key("opening-switch"), &local.opening).Label(i18n.T("Play the opening at start")).Disabled(state.ReduceMotion)
 		if sw.Changed() {
