@@ -16,7 +16,11 @@ from sglang_omni.client import Client, ClientError, GenerateRequest
 from sglang_omni.config import ResolvedAudioChunking
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import generation_error_status_code
-from sglang_omni.serve.protocol import TranscriptionResponse, TranscriptionUsage
+from sglang_omni.serve.protocol import (
+    TranscriptionResponse,
+    TranscriptionUsage,
+    build_sglext,
+)
 from sglang_omni.serve.transcription_adapters import TranscriptionAdapter
 from sglang_omni.serve.transcription_chunking import (
     ChunkPlan,
@@ -181,6 +185,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 audio_bytes=audio_bytes,
                 architectures=getattr(app.state, "architectures", None),
                 duration_s=duration_s,
+                return_spec_tokens_details=form.return_spec_tokens_details,
             )
         else:
             pass
@@ -310,6 +315,9 @@ async def transcribe_planned_upload(
             duration_s=duration_s,
             response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
             finish_reason=result.finish_reason,
+            sglext=build_sglext(
+                form.return_spec_tokens_details, result.spec_tokens_details
+            ),
         )
     else:
         pass

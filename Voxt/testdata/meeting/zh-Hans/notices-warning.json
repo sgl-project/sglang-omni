@@ -1,0 +1,13 @@
+{
+  "name": "notices-warning",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "n1",
+      "severity": "warning",
+      "title": "Watch out",
+      "body": "Something needs a look.",
+      "action_label": "打开"
+    }
+  ]
+}

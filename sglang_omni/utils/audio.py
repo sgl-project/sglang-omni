@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import functools
-import importlib
 import io
 import logging
 import math
 import os
+import wave
 from typing import TypedDict
 from urllib.parse import unquote, urlparse
 
@@ -42,7 +42,7 @@ _TORCHCODEC_USABLE: bool | None = None
 
 
 def check_torchcodec_ready() -> bool:
-    """Whether the torchcodec decoder backend can be imported and loaded.
+    """Whether the torchcodec decoder backend can be imported and can open a WAV.
 
     torchaudio 2.10+ delegates decoding to torchcodec. CPU-only torch images
     (e.g. Ascend NPU containers) may ship torchcodec wheels that cannot load
@@ -51,11 +51,17 @@ def check_torchcodec_ready() -> bool:
     """
     global _TORCHCODEC_USABLE
     if _TORCHCODEC_USABLE is None:
+        probe_wav = io.BytesIO()
+        with wave.open(probe_wav, "wb") as probe_writer:
+            probe_writer.setnchannels(1)
+            probe_writer.setsampwidth(2)
+            probe_writer.setframerate(16000)
+            probe_writer.writeframes(bytes(32))
         try:
-            # Probe import via importlib so the module name never binds a name
-            # that an unused-import linter would strip (the probe relies on the
-            # import raising for missing/unloadable torchcodec wheels).
-            importlib.import_module("torchcodec.decoders")
+            from torchcodec.decoders import AudioDecoder
+
+            # note (Haoling Pu): torchcodec imports fine on a host without FFmpeg and fails on its first decoder, so only a decoder shows that decoding works.
+            AudioDecoder(probe_wav.getvalue())
         except (ImportError, OSError, RuntimeError) as exc:
             _TORCHCODEC_USABLE = False
             logger.warning(

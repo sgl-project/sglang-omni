@@ -32,7 +32,7 @@ def attach_minimax_modules(model: "Qwen3ForCausalLM", checkpoint_root: str) -> N
     """Install the MiniMax audio modules on a loaded Qwen3 backbone."""
 
     paths = resolve_checkpoint(checkpoint_root)
-    config = load_json(paths.config_path)
+    config = load_json(paths.audio_config_path)
     audio_state = load_audio_state(paths)
 
     parameter = next(model.parameters())

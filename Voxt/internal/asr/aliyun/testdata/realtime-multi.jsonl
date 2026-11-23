@@ -1,0 +1,20 @@
+{"@":"note","text":"Messages shaped after Model Studio, Qwen-ASR-Realtime server events (help.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events: session.created/updated, input_audio_transcription.text/completed, session.finished, error examples) and Voxt RemoteASRAliyunStreaming.swift; texts are made up."}
+{"event_id":"event_1234","type":"session.created","session":{"id":"sess_001","object":"realtime.session","model":"qwen3-asr-flash-realtime","modalities":["text"],"input_audio_format":"pcm16","input_audio_transcription":null,"turn_detection":{"type":"server_vad","threshold":0.5,"silence_duration_ms":200}}}
+{"@":"wait","for":"start"}
+{"event_id":"event_1235","type":"session.updated","session":{"id":"sess_001","object":"realtime.session","model":"qwen3-asr-flash-realtime","modalities":["text"],"input_audio_format":"pcm16","input_audio_transcription":{"language":"zh"},"turn_detection":{"type":"server_vad","threshold":0.35,"silence_duration_ms":800}}}
+{"@":"wait","for":"audio","n":2}
+{"event_id":"event_2","type":"input_audio_buffer.speech_started","audio_start_ms":64,"item_id":"item_1"}
+{"@":"note","text":"The documented text/stash walk-through: the preview is text + stash."}
+{"type":"conversation.item.input_audio_transcription.text","content_index":0,"emotion":"neutral","event_id":"event_3","item_id":"item_1","language":"zh","text":"","stash":"今天"}
+{"type":"conversation.item.input_audio_transcription.text","content_index":0,"emotion":"neutral","event_id":"event_4","item_id":"item_1","language":"zh","text":"","stash":"今天天气"}
+{"type":"conversation.item.input_audio_transcription.text","content_index":0,"emotion":"neutral","event_id":"event_5","item_id":"item_1","language":"zh","text":"今天","stash":"天气不错"}
+{"type":"conversation.item.input_audio_transcription.text","content_index":0,"emotion":"neutral","event_id":"event_6","item_id":"item_1","language":"zh","text":"今天天气不错，","stash":""}
+{"type":"conversation.item.input_audio_transcription.text","content_index":0,"emotion":"neutral","event_id":"event_7","item_id":"item_1","language":"zh","text":"今天天气不错，","stash":"阳光明媚。"}
+{"event_id":"event_8","type":"input_audio_buffer.speech_stopped","audio_end_ms":900,"item_id":"item_1"}
+{"event_id":"event_9","type":"input_audio_buffer.committed","previous_item_id":"","item_id":"item_1"}
+{"type":"conversation.item.created","event_id":"event_10","previous_item_id":"","item":{"id":"item_1","object":"realtime.item","type":"message","status":"completed","role":"user","content":[{"type":"input_audio","transcript":null}]}}
+{"event_id":"event_11","type":"conversation.item.input_audio_transcription.completed","item_id":"item_1","content_index":0,"language":"zh","emotion":"happy","transcript":"今天天气不错，阳光明媚。"}
+{"@":"wait","for":"finish"}
+{"type":"conversation.item.input_audio_transcription.text","content_index":0,"emotion":"neutral","event_id":"event_12","item_id":"item_2","language":"en","text":"","stash":"Let's"}
+{"event_id":"event_13","type":"conversation.item.input_audio_transcription.completed","item_id":"item_2","content_index":0,"language":"en","emotion":"neutral","transcript":"Let's go."}
+{"event_id":"event_14","type":"session.finished"}

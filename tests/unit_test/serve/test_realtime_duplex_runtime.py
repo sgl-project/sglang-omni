@@ -403,7 +403,7 @@ async def test_duplicate_input_end_is_rejected_while_natural_tail_runs() -> None
 async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) -> None:
     recorder = get_recorder()
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
     adapter = GatedAdapter([])
@@ -416,7 +416,7 @@ async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) ->
         adapter.release.set()
         await receive_until(runtime, Drained)
         await runtime.close("client_closed")
-        recorder.stop()
+        recorder.stop(wait=True)
 
         assert [unit.ready_observation for unit in adapter.units] == [None, None]
 
@@ -547,6 +547,11 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
                 "context_exhausted: the session reached the thinker context length"
             ),
             "context_exhausted",
+            False,
+        ),
+        (
+            RuntimeError("session_capacity_exhausted: session KV capacity exhausted"),
+            "session_capacity_exhausted",
             False,
         ),
         (RuntimeError("talker step failed"), "internal", True),

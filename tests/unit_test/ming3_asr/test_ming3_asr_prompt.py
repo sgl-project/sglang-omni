@@ -55,12 +55,18 @@ def test_unsupported_requests_are_rejected_as_caller_errors(
 
 
 @pytest.mark.parametrize(
-    ("generated_text", "transcript"),
+    ("language", "generated_text", "transcript"),
     [
-        ("English\thello there ", "hello there"),
-        ("English hello there", "hello there"),
-        ("hello there", "hello there"),
+        (None, "English\thello there ", "hello there"),
+        (None, "English hello there", "hello there"),
+        (None, "hello there", "hello there"),
+        ("en", "English is a language.", "English is a language."),
+        ("zh", "Chinese food", "Chinese food"),
+        ("en", "a\tb", "a\tb"),
     ],
 )
-def test_transcript_drops_language_label(generated_text: str, transcript: str) -> None:
-    assert extract_transcript(generated_text) == transcript
+def test_transcript_removes_only_generated_language_labels(
+    language: str | None, generated_text: str, transcript: str
+) -> None:
+    """A supplied language used to strip language words and tabs from the body."""
+    assert extract_transcript(generated_text, language=language) == transcript

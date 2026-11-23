@@ -327,7 +327,8 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
             pass
         return None
 
-    def encode_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
+    def prepare_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
+        """[1, samples] mono audio at the codec's sample rate, within the length limit."""
         import torchaudio
 
         if (
@@ -351,6 +352,10 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
             audios = audios.clamp(-1.0, 1.0)
         else:
             pass
+        return audios
+
+    def encode_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
+        audios = self.prepare_reference_waveform(audio, sr)
         audio_lengths = torch.tensor([audios.shape[1]], dtype=torch.long)
         with (
             torch.no_grad(),
@@ -493,6 +498,7 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int = 2048,
     top_k: int = 30,
     ras_window: int = 16,
+    enable_async_decode: bool = False,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Returns OmniScheduler for the Fish TTS AR engine."""
@@ -504,6 +510,7 @@ def create_sglang_tts_engine_executor(
     return FishS2ProEngineBuilder(
         max_new_tokens=max_new_tokens,
         ras_window=ras_window,
+        enable_async_decode=enable_async_decode,
     ).build(
         model_path,
         device=device,

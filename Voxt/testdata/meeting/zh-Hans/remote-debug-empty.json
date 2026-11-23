@@ -1,0 +1,13 @@
+{
+  "name": "remote-debug-empty",
+  "kind": "remote-debug",
+  "remote_debug": {
+    "ready": false,
+    "prompt_label": "系统提示词",
+    "input_label": "识别原文",
+    "edited": false,
+    "can_run": false,
+    "running": false,
+    "form": {}
+  }
+}

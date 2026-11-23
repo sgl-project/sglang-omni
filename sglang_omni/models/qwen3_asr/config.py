@@ -90,7 +90,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 prefill_coalesce_wait_ms=40,
                 prefill_coalesce_when_idle=True,
                 prefill_coalesce_requires_pending_builds=True,
-                prefill_coalesce_after_builds_during_decode=True,
             ),
             engine=EngineArgs(
                 max_running_requests=64,
@@ -112,6 +111,8 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
         env_defaults = super().resolved_stage_env_defaults(stage_name)
         env_defaults.setdefault("SGLANG_ENABLE_METADATA_GLUE_GRAPH", "1")
+        # note (ratish): max-autotune races each kernel's configs at boot; the post-attention norm times 5 to 15 us per boot whatever the config, so a slower config can win and serve until restart.
+        env_defaults.setdefault("SGLANG_TORCH_COMPILE_MODE", "default")
         return env_defaults
 
     @property

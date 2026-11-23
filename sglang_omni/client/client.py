@@ -16,6 +16,7 @@ import numpy as np
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
+    audio_output_sample_rate_error,
     audio_to_base64,
     encode_audio,
     to_numpy,
@@ -47,11 +48,13 @@ from sglang_omni.proto.session import (
     SessionLimits,
     TimedChunk,
 )
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class EncodeAudioOptions(TypedDict, total=False):
     response_format: str
     sample_rate: int
+    output_sample_rate: int | None
     speed: float
     allow_format_fallback: bool
 
@@ -225,6 +228,7 @@ class Client:
         saw_output_token_logprobs = False
         omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
+        spec_tokens_details: SpecTokensDetailsDict | None = None
         language: str | None = None
         streamed_segments: list[UMMSegment] | None = None
         image_base64: str | None = None
@@ -270,6 +274,10 @@ class Client:
                 pass
             if chunk.weight_version is not None:
                 weight_version = chunk.weight_version
+            else:
+                pass
+            if chunk.spec_tokens_details is not None:
+                spec_tokens_details = chunk.spec_tokens_details
             else:
                 pass
             if chunk.language is not None:
@@ -328,6 +336,7 @@ class Client:
             ),
             omni_rollout=omni_rollout,
             weight_version=weight_version,
+            spec_tokens_details=spec_tokens_details,
             language=language,
             diarization=last_chunk.diarization,
             image=image_base64,
@@ -415,6 +424,7 @@ class Client:
                     audio_b64=audio_b64,
                     finish_reason=chunk.finish_reason,
                     usage=chunk.usage,
+                    spec_tokens_details=chunk.spec_tokens_details,
                     stage_name=chunk.stage_name,
                 )
                 if isinstance(chunk, UMMGenerateChunk):
@@ -442,6 +452,7 @@ class Client:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -449,7 +460,15 @@ class Client:
 
         Raises:
             ClientError: If the pipeline produces no audio output.
+            ValueError: If the requested sample rate cannot be encoded.
         """
+        sample_rate_error = audio_output_sample_rate_error(
+            response_format.strip().lower(), output_sample_rate
+        )
+        if sample_rate_error is not None:
+            raise ValueError(sample_rate_error)
+        else:
+            pass
         audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
@@ -482,6 +501,7 @@ class Client:
 
         encode_kwargs: EncodeAudioOptions = {
             "response_format": response_format,
+            "output_sample_rate": output_sample_rate,
             "speed": speed,
             "allow_format_fallback": allow_format_fallback,
         }
@@ -490,7 +510,7 @@ class Client:
         else:
             pass
 
-        audio_bytes, mime_type = await asyncio.to_thread(
+        encoded_audio = await asyncio.to_thread(
             encode_audio, audio_data, **encode_kwargs
         )
 
@@ -498,23 +518,25 @@ class Client:
         # to WAV if the requested codec is unavailable).
         actual_format = response_format
         for ext, mt in FORMAT_MIME_TYPES.items():
-            if mt == mime_type:
+            if mt == encoded_audio.mime_type:
                 actual_format = ext
                 break
             else:
                 pass
 
         return SpeechResult(
-            audio_bytes=audio_bytes,
-            mime_type=mime_type,
+            audio_bytes=encoded_audio.audio_bytes,
+            mime_type=encoded_audio.mime_type,
             format=actual_format,
-            sample_rate=sample_rate,
+            sample_rate=encoded_audio.sample_rate,
             usage=last_chunk.usage if last_chunk else None,
+            spec_tokens_details=last_chunk.spec_tokens_details if last_chunk else None,
             finish_reason=(
                 (last_chunk.reported_finish_reason or UNKNOWN_FINISH_REASON)
                 if last_chunk
                 else UNKNOWN_FINISH_REASON
             ),
+            text=last_chunk.text if last_chunk else None,
         )
 
     # ------------------------------------------------------------------
@@ -718,6 +740,11 @@ class Client:
             usage["engine_time_s"] = data.get("engine_time_s")
         else:
             pass
+        for field_name in ("speech_input_tokens", "speech_output_tokens"):
+            if field_name not in usage and data.get(field_name) is not None:
+                usage[field_name] = data.get(field_name)
+            else:
+                pass
         return UsageInfo.from_dict(usage)
 
     @staticmethod
@@ -818,6 +845,7 @@ class Client:
                 chunk.weight_version = weight_version
             else:
                 pass
+            chunk.spec_tokens_details = result.get("spec_tokens_details")
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
@@ -930,6 +958,7 @@ class Client:
                 chunk.weight_version = weight_version
             else:
                 pass
+            chunk.spec_tokens_details = data.get("spec_tokens_details")
             finish_reason = data.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason

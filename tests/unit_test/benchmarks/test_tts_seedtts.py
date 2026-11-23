@@ -1,18 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SeedTTS benchmark entry-point: model profiles, server lifecycle, WER filter, CLI
-configuration, concurrency sweeps and sustained overshoot."""
+"""SeedTTS benchmark entry point: model profiles, server lifecycle, WER filter, CLI configuration, concurrency sweeps, sustained overshoot and mixture loads."""
 
+import argparse
 import asyncio
+import base64
+import io
 import json
+import os
+import re
 import socket
 import sys
 import threading
+import wave
 from collections.abc import AsyncIterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import BinaryIO
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import requests
 from aiohttp import web
@@ -20,19 +27,29 @@ from aiohttp import web
 from benchmarks.benchmarker.data import FinishReason
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset.seedtts import SampleInput
+from benchmarks.eval import benchmark_drama3_codec as codec_benchmark
 from benchmarks.eval import benchmark_tts_seedtts as tts
+from benchmarks.eval.benchmark_drama3_codec import frame_partitions, read_codes
 from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     _build_arg_parser,
     _build_results_config,
     _config_from_args,
+    _parse_args,
     _parse_concurrencies,
     _validate_args,
+    parse_mixture_loads,
     plan_sustained_overshoot,
     run_tts_concurrency_sweep,
+    run_tts_mixture_sweep,
     run_tts_sustained_overshoot,
 )
-from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
+from benchmarks.metrics.mixture import MixtureLoad
+from benchmarks.metrics.wer import (
+    SampleOutput,
+    calculate_asr_speed_metrics,
+    calculate_wer_metrics,
+)
 from benchmarks.tasks import asr
 from benchmarks.tasks.tts import (
     _build_tts_payload,
@@ -184,6 +201,7 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
         ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
+        ("tencent/AuK-Flash", None),
     ],
 )
 def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
@@ -747,3 +765,786 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
     }
     assert len(set(seen_samples[0])) == 64
     assert (tmp_path / "overshoot" / "sustained_overshoot.json").is_file()
+
+
+@pytest.mark.parametrize("frame_count", [1, 10, 63, 64, 65, 129, 500])
+def test_codec_reproduction_covers_every_frame_once(frame_count: int) -> None:
+    counts = frame_partitions(frame_count)
+    assert sum(counts) == frame_count
+    assert all(1 <= count <= 64 for count in counts)
+    with pytest.raises(ValueError, match="at least one frame"):
+        frame_partitions(0)
+
+
+def test_codec_reproduction_retains_failed_manifest_and_refuses_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codes = tmp_path / "codes.npy"
+    np.save(codes, np.zeros((10, 3), dtype=np.int64))
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "codec",
+            "--codec-path",
+            "checkpoint",
+            "--codes",
+            str(codes),
+            "--output-dir",
+            str(output),
+        ],
+    )
+    monkeypatch.setattr(
+        codec_benchmark.subprocess,
+        "check_output",
+        lambda command, **kwargs: "test-head\n" if kwargs.get("text") else b"",
+    )
+
+    def fail_decode(codec_path: str, device: str, code_tensor, directory: Path) -> None:
+        raise RuntimeError("decode failed")
+
+    monkeypatch.setattr(codec_benchmark, "run_comparison", fail_decode)
+    with pytest.raises(RuntimeError, match="decode failed"):
+        codec_benchmark.main()
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["frames"] == 3
+    assert manifest["error"] == "RuntimeError: decode failed"
+    with pytest.raises(FileExistsError):
+        codec_benchmark.main()
+    assert json.loads((output / "manifest.json").read_text()) == manifest
+
+
+def test_codec_reproduction_validates_integer_code_inputs(tmp_path: Path) -> None:
+    path = tmp_path / "codes.npy"
+    expected = np.arange(30, dtype=np.int64).reshape(10, 3)
+    np.save(path, expected)
+    assert np.array_equal(read_codes(path).numpy()[0], expected)
+    for invalid in [expected.astype(np.float32), expected.reshape(-1), -expected]:
+        np.save(path, invalid)
+        with pytest.raises(ValueError):
+            read_codes(path)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="libproc is macOS only")
+@pytest.mark.asyncio
+async def test_native_server_run_inlines_references_and_samples_its_tree(
+    tmp_path: Path,
+) -> None:
+    """A native server reads ref_audio only as a data URI, and its stage
+    workers' memory must count toward the peak."""
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(b"RIFF-reference")
+    received: list[dict[str, object]] = []
+
+    async def speech(request: web.Request) -> web.Response:
+        received.append(await request.json())
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(24000)
+            writer.writeframes(bytes(4800))
+        return web.Response(body=audio.getvalue(), content_type="audio/wav")
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    # A child of this process stands in for a server's stage worker.
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        await web.SockSite(server, listener).start()
+        try:
+            config = config_from_cli(
+                "--model",
+                "tencent/AuK-Flash",
+                "--base-url",
+                f"http://127.0.0.1:{listener.getsockname()[1]}",
+                "--use-existing-server",
+                "--generate-only",
+                "--inline-ref-audio",
+                "--server-pid",
+                str(os.getpid()),
+                "--warmup",
+                "0",
+                "--disable-tqdm",
+                "--output-dir",
+                str(tmp_path / "results"),
+            )
+            await tts.run_tts_seedtts_benchmark(
+                config,
+                samples=[
+                    SampleInput(
+                        sample_id="sample-1",
+                        ref_text="reference",
+                        ref_audio=str(reference),
+                        target_text="hello world",
+                    )
+                ],
+            )
+        finally:
+            worker.kill()
+            await worker.wait()
+            await server.cleanup()
+    assert received[0]["ref_audio"] == "data:audio/wav;base64," + base64.b64encode(
+        b"RIFF-reference"
+    ).decode("ascii")
+    assert "max_new_tokens" not in received[0]
+    memory = json.loads((tmp_path / "results" / "memory.json").read_text())
+    sampled_processes = {
+        process["process_id"]
+        for sample in memory["samples"]
+        for process in sample["processes"]
+    }
+    assert {os.getpid(), worker.pid} <= sampled_processes
+    assert memory["peak_physical_footprint_bytes"] > 0
+
+
+def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:
+    """Scored and unscorable transcriptions both contribute to speed, unlike request failures."""
+    outputs = [
+        SampleOutput(
+            is_transcribed=True,
+            is_success=True,
+            asr_latency_s=0.25,
+            audio_duration_s=1.0,
+        ),
+        SampleOutput(is_transcribed=True, asr_latency_s=0.75, audio_duration_s=3.0),
+        SampleOutput(error="Transcription failed", asr_latency_s=9.0),
+    ]
+    speed = calculate_asr_speed_metrics(outputs, wall_time_s=2.0)
+    wer = calculate_wer_metrics(outputs, "en")
+    assert speed["evaluated"] == 2
+    assert speed["failed_requests"] == 1
+    assert speed["asr_throughput_samples_per_s"] == 1.0
+    assert speed["asr_latency_mean_s"] == 0.5
+    assert speed["asr_latency_p95_s"] == pytest.approx(0.725)
+    assert speed["asr_audio_processed_s"] == 4.0
+    assert speed["asr_rtf_mean"] == 0.25
+    assert wer["evaluated"] == 1
+    assert wer["skipped"] == 2
+
+
+def test_parse_mixture_loads_keeps_the_given_order() -> None:
+    assert parse_mixture_loads("48+16, 16+16,48+0,0+16") == [
+        MixtureLoad(non_streaming_clients=48, streaming_clients=16),
+        MixtureLoad(non_streaming_clients=16, streaming_clients=16),
+        MixtureLoad(non_streaming_clients=48, streaming_clients=0),
+        MixtureLoad(non_streaming_clients=0, streaming_clients=16),
+    ]
+
+
+@pytest.mark.parametrize(
+    "value", ["48", "48+", "+16", "-1+2", "0+0", "a+b", "48+16,48+16", ""]
+)
+def test_parse_mixture_loads_rejects_malformed_loads(value: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_mixture_loads(value)
+
+
+@pytest.mark.parametrize(
+    "argv, message",
+    [
+        (
+            ["--mixture", "48+16", "--generate-only", "--concurrencies", "16,32"],
+            "--mixture cannot be combined with --concurrencies",
+        ),
+        (
+            ["--mixture", "48+16", "--concurrency", "8"],
+            "--mixture cannot be combined with --concurrency/--max-concurrency",
+        ),
+        (
+            ["--model", "tencent/AuK", "--mixture", "4+2"],
+            "the model profile sets concurrency and warmup",
+        ),
+        (
+            ["--mixture", "48+16", "--stream"],
+            "--mixture cannot be combined with --stream",
+        ),
+        (
+            ["--mixture", "48+16", "--request-rate", "4"],
+            "--mixture cannot be combined with --request-rate",
+        ),
+        (
+            ["--mixture", "48+16", "--arrival-seed", "3"],
+            "--mixture cannot be combined with --arrival-seed",
+        ),
+        (
+            [
+                "--mixture",
+                "48+16",
+                "--generate-only",
+                "--sustained-overshoot",
+                "--max-queued-requests",
+                "16",
+            ],
+            "--mixture cannot be combined with --sustained-overshoot",
+        ),
+        (
+            ["--mixture", "48+16", "--subtalker-dosample-ratio", "0.5"],
+            "--mixture cannot be combined with --subtalker-dosample-ratio",
+        ),
+        (
+            ["--mixture", "48+16", "--warmup", "2"],
+            "--mixture cannot be combined with --warmup other than 0",
+        ),
+        (
+            ["--mixture", "48+16", "--inline-ref-audio"],
+            "--mixture cannot be combined with --inline-ref-audio",
+        ),
+        (
+            ["--mixture", "48+16", "--server-pid", "123"],
+            "--mixture cannot be combined with --server-pid",
+        ),
+        (
+            ["--mixture", "48+16", "--transcribe-only"],
+            "--mixture cannot be combined with --transcribe-only",
+        ),
+        (
+            ["--mixture", "48+16", "--similarity-only"],
+            "--mixture cannot be combined with --similarity-only",
+        ),
+        (
+            ["--mixture", "48+16", "--utmos-only"],
+            "--mixture cannot be combined with --utmos-only",
+        ),
+        (
+            ["--mixture", "48+16,48+0"],
+            "--mixture with more than one load requires --generate-only",
+        ),
+        (
+            [
+                "--mixture",
+                "48+16",
+                "--max-running-requests",
+                "32",
+                "--max-queued-requests",
+                "16",
+            ],
+            "--mixture above --max-running-requests plus --max-queued-requests "
+            "needs --warmup 0",
+        ),
+        (["--mixture-duration-s", "0"], "--mixture-duration-s must be positive"),
+        (["--mixture-settle-s", "-1"], "--mixture-settle-s must be at least 0"),
+    ],
+)
+def test_cli_rejects_invalid_mixture(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    message: str,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["benchmark", *argv])
+    parser = _build_arg_parser()
+    args, _ = _parse_args(parser)
+    with pytest.raises(SystemExit) as exc:
+        _validate_args(parser, args)
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_cli_accepts_a_mixture_above_capacity_without_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark",
+            "--mixture",
+            "48+16",
+            "--max-running-requests",
+            "32",
+            "--max-queued-requests",
+            "16",
+            "--warmup",
+            "0",
+        ],
+    )
+    parser = _build_arg_parser()
+    args, _ = _parse_args(parser)
+    _validate_args(parser, args)
+
+
+def test_mixture_config_records_the_load_and_keeps_the_legacy_concurrency() -> None:
+    legacy = config_from_cli()
+    assert legacy.concurrency == tts.DEFAULT_TTS_BENCHMARK_CONCURRENCY
+    assert _build_results_config(legacy, base_url="http://h")["mixture"] is None
+
+    single = config_from_cli("--mixture", "48+16")
+    results_config = _build_results_config(single, base_url="http://h")
+    assert single.mixture == MixtureLoad(non_streaming_clients=48, streaming_clients=16)
+    assert (results_config["concurrency"], results_config["warmup"]) == (64, 64)
+    assert results_config["stream"] is None
+    assert results_config["collect_stream_outcomes"] is True
+    assert results_config["mixture"] == {
+        "non_streaming_clients": 48,
+        "streaming_clients": 16,
+        "settle_s": 10.0,
+        "duration_s": 120.0,
+    }
+    assert config_from_cli("--mixture", "48+16,48+0", "--generate-only").mixture is None
+
+    load = MixtureLoad(non_streaming_clients=48, streaming_clients=16)
+    for warmup, expected_warmup in ((None, 64), (0, 0)):
+        direct = TtsSeedttsBenchmarkConfig(
+            model="tts", meta="unused", mixture=load, warmup=warmup
+        )
+        recorded = _build_results_config(direct, base_url="http://h")
+        assert (recorded["concurrency"], recorded["warmup"]) == (64, expected_warmup)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "repeats, point_names, streaming_audio",
+    [
+        (1, ["ns48_s16", "ns48_s0"], {"mean": 50.0, "min": 50.0, "max": 50.0, "n": 1}),
+        (
+            2,
+            ["ns48_s16_r1", "ns48_s16_r2", "ns48_s0_r1", "ns48_s0_r2"],
+            {"mean": 75.0, "min": 50.0, "max": 100.0, "n": 2},
+        ),
+    ],
+)
+async def test_mixture_sweep_writes_per_load_output_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repeats: int,
+    point_names: list[str],
+    streaming_audio: dict[str, float | int],
+) -> None:
+    seen: list[TtsSeedttsBenchmarkConfig] = []
+
+    async def fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
+        seen.append(config)
+        audio_scale = 2.0 if config.output_dir.endswith("_r2") else 1.0
+        classes = list(config.mixture.clients_by_class)
+        return {
+            "summary": {"completed_requests": 4, "failed_requests": 0},
+            "summary_by_class": {
+                request_class: {"audio_throughput_s_per_s": 50.0 * audio_scale}
+                for request_class in classes
+            },
+            "mixture": {
+                "outside_window_failed_requests": {
+                    request_class: 1 for request_class in classes
+                }
+            },
+        }
+
+    stub_seedtts_benchmark(monkeypatch, fake_run)
+    monkeypatch.setattr(tts, "print_mixture_summary", lambda *args, **kwargs: None)
+    loads = parse_mixture_loads("48+16,48+0")
+    config = config_from_cli(
+        "--output-dir",
+        str(tmp_path),
+        "--generate-only",
+        "--mixture",
+        "48+16,48+0",
+        "--mixture-settle-s",
+        "5",
+        "--mixture-duration-s",
+        "60",
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        await run_tts_mixture_sweep(config, loads, repeats=repeats)
+
+    expected_dirs = [str(tmp_path / name) for name in point_names]
+    for point_dir in expected_dirs:
+        failed_requests = 2 if "ns48_s16" in point_dir else 1
+        assert f"{point_dir} ({failed_requests} failed)" in str(error.value)
+    assert [point.output_dir for point in seen] == expected_dirs
+    assert [(point.mixture, point.concurrency) for point in seen] == [
+        (load, load.total_clients) for load in loads for _ in range(repeats)
+    ]
+    written = json.loads((tmp_path / "mixture_sweep.json").read_text())
+    assert written["loads"] == ["ns48_s16", "ns48_s0"]
+    leg_config = written["config"]
+    assert leg_config["mixture"] == {
+        "loads": ["ns48_s16", "ns48_s0"],
+        "settle_s": 5.0,
+        "duration_s": 60.0,
+    }
+    assert {leg_config[name] for name in ("stream", "concurrency", "warmup")} == {None}
+    assert leg_config["collect_stream_outcomes"] is True
+    mixture_row, single_row = written["rows"]
+    assert mixture_row["category"] == "mixture"
+    assert single_row["category"] == "non_streaming"
+    assert set(single_row["summary_by_class"]) == {"non_streaming"}
+    assert (
+        mixture_row["summary_by_class"]["streaming"]["audio_throughput_s_per_s"]
+        == streaming_audio
+    )
+    assert mixture_row["failed_requests"] == 2 * repeats
+    per_repeat_dirs = [item["output_dir"] for item in mixture_row["per_repeat"]]
+    assert per_repeat_dirs == expected_dirs[:repeats]
+
+
+@asynccontextmanager
+async def fake_speech_server(
+    stream_flags: list[bool], streaming_status: int
+) -> AsyncIterator[str]:
+    """Serve WAV to non streaming requests and PCM or the given error status to streams."""
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(bytes(1600))
+
+    async def speech(request: web.Request) -> web.Response:
+        payload = await request.json()
+        stream_flags.append(bool(payload.get("stream")))
+        await asyncio.sleep(0.01)
+        if payload.get("stream") and streaming_status != 200:
+            return web.Response(status=streaming_status, text="queue full")
+        elif payload.get("stream"):
+            return web.Response(
+                body=bytes(1600),
+                content_type="audio/pcm",
+                headers={
+                    "X-SGLang-Omni-Speech-Id": "speech-1",
+                    "X-Sample-Rate": "8000",
+                    "X-Channels": "1",
+                    "X-Bit-Depth": "16",
+                },
+            )
+        else:
+            return web.Response(body=wav_buffer.getvalue(), content_type="audio/wav")
+
+    async def outcome(request: web.Request) -> web.Response:
+        return web.Response(status=404)
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    application.router.add_get("/v1/audio/speech/{speech_id}", outcome)
+    server = web.AppRunner(application)
+    await server.setup()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        await web.SockSite(server, listener).start()
+        try:
+            yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+        finally:
+            await server.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_mixture_run_against_a_fake_server_tags_both_classes(
+    tmp_path: Path,
+) -> None:
+    """Each class reaches the server in its own mode and every request is saved."""
+    stream_flags: list[bool] = []
+    async with fake_speech_server(stream_flags, streaming_status=200) as base_url:
+        config = TtsSeedttsBenchmarkConfig(
+            model="tts",
+            meta="unused",
+            base_url=base_url,
+            output_dir=str(tmp_path),
+            concurrency=3,
+            mixture=MixtureLoad(non_streaming_clients=2, streaming_clients=1),
+            mixture_duration_s=0.2,
+            mixture_settle_s=0.05,
+        )
+        results = await tts.run_tts_seedtts_benchmark(
+            config, samples=[make_sample(f"s{index}") for index in range(4)]
+        )
+
+    per_request = results["per_request"]
+    assert set(results["summary_by_class"]) == {"non_streaming", "streaming"}
+    assert {entry["request_class"] for entry in per_request} == {
+        "non_streaming",
+        "streaming",
+    }
+    for entry in per_request:
+        is_stream = entry["request_class"] == "streaming"
+        assert entry["id"].split("#")[1][0] == ("s" if is_stream else "n")
+        assert (entry["audio_ttfp_s"] is not None) is is_stream
+    assert set(stream_flags) == {True, False}
+    generated = json.loads((tmp_path / "generated.json").read_text())
+    assert {entry["sample_id"] for entry in generated} == {
+        entry["id"] for entry in per_request
+    }
+    saved = json.loads((tmp_path / "speed_results.json").read_text())
+    assert saved["mixture"]["load"] == "ns2_s1"
+    assert saved["config"]["mixture"]["streaming_clients"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_mixture_whose_streams_are_rejected_fails_after_saving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Streams rejected with 503 read like starved streams, and the run used to exit 0."""
+    monkeypatch.setattr(
+        tts,
+        "_load_benchmark_samples",
+        lambda config: [make_sample(f"s{index}") for index in range(4)],
+    )
+    stream_flags: list[bool] = []
+    async with fake_speech_server(stream_flags, streaming_status=503) as base_url:
+        config = TtsSeedttsBenchmarkConfig(
+            model="tts",
+            meta="unused",
+            base_url=base_url,
+            output_dir=str(tmp_path),
+            concurrency=3,
+            warmup=0,
+            mixture=MixtureLoad(non_streaming_clients=2, streaming_clients=1),
+            mixture_duration_s=0.2,
+            mixture_settle_s=0.05,
+        )
+        with pytest.raises(RuntimeError, match=re.escape(f"{tmp_path} (1 failed)")):
+            await tts.benchmark(config)
+
+    assert stream_flags.count(True) == 1
+    saved = json.loads((tmp_path / "speed_results.json").read_text())
+    assert [
+        entry["error"]
+        for entry in saved["per_request"]
+        if entry["request_class"] == "streaming"
+    ] == ["HTTP 503: queue full"]
+
+
+@pytest.mark.asyncio
+async def test_mixture_config_rejects_settings_the_runner_ignores() -> None:
+    """A config built without the CLI used to run a mixture load with these dropped."""
+    config = TtsSeedttsBenchmarkConfig(
+        model="tts",
+        meta="unused",
+        mixture=MixtureLoad(non_streaming_clients=2, streaming_clients=1),
+        warmup=5,
+        stream=True,
+        request_rate=4.0,
+        arrival_seed=3,
+        subtalker_dosample_ratio=0.5,
+        inline_ref_audio=True,
+        server_process_id=123,
+    )
+    with pytest.raises(ValueError) as error:
+        await tts.run_tts_seedtts_benchmark(config)
+    for name in (
+        "warmup other than 0",
+        "stream",
+        "request_rate",
+        "arrival_seed",
+        "subtalker_dosample_ratio",
+        "inline_ref_audio",
+        "server_process_id",
+    ):
+        assert name in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "saved_config, expected_mode, expected_concurrency",
+    [
+        (
+            {
+                "stream": None,
+                "collect_stream_outcomes": True,
+                "concurrency": 6,
+                "mixture": {
+                    "non_streaming_clients": 4,
+                    "streaming_clients": 2,
+                    "settle_s": 10.0,
+                    "duration_s": 120.0,
+                },
+            },
+            "mixture",
+            6,
+        ),
+        ({"stream": False}, "non-streaming", tts.DEFAULT_TTS_BENCHMARK_CONCURRENCY),
+    ],
+)
+def test_a_later_transcribe_keeps_the_generation_mode_of_the_saved_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    saved_config: dict,
+    expected_mode: str,
+    expected_concurrency: int,
+) -> None:
+    """--transcribe-only after a mixture run used to record non streaming at concurrency 16."""
+    (tmp_path / "speed_results.json").write_text(
+        json.dumps({"summary": {}, "config": saved_config}), encoding="utf-8"
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        tts, "run_seedtts_transcribe", lambda config, **kwargs: calls.append(kwargs)
+    )
+
+    tts.run_tts_seedtts_transcribe(
+        config_from_cli("--transcribe-only", "--output-dir", str(tmp_path)),
+        asr_router_port=8000,
+    )
+
+    assert calls[0]["generation_mode"] == expected_mode
+    assert calls[0]["wer_config"]["concurrency"] == expected_concurrency
+    assert calls[0]["wer_config"]["mixture"] == saved_config.get("mixture")
+
+
+@pytest.mark.parametrize(
+    "argv, expected_events, expected_points, expected_transcribed",
+    [
+        (
+            ["--mixture", "4+2"],
+            ["start", "generate", "stop", "start", "transcribe", "stop"],
+            [(".", "ns4_s2")],
+            ["ns4_s2"],
+        ),
+        (
+            ["--mixture", "4+2", "--repeats", "2", "--generate-only"],
+            ["start", "generate", "generate", "stop"],
+            [("ns4_s2_r1", "ns4_s2"), ("ns4_s2_r2", "ns4_s2")],
+            [],
+        ),
+        (
+            ["--mixture", "4+2,0+2", "--generate-only"],
+            ["start", "generate", "generate", "stop"],
+            [("ns4_s2", "ns4_s2"), ("ns0_s2", "ns0_s2")],
+            [],
+        ),
+    ],
+)
+def test_main_sends_one_mixture_load_to_wer_and_several_to_the_sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected_events: list[str],
+    expected_points: list[tuple[str, str]],
+    expected_transcribed: list[str],
+) -> None:
+    """One load generates and then scores WER after the TTS server stops, while repeats or several loads run the generate only sweep."""
+    events: list[str] = []
+    generated: list[TtsSeedttsBenchmarkConfig] = []
+    transcribed: list[TtsSeedttsBenchmarkConfig] = []
+
+    @contextmanager
+    def server(**kwargs):
+        events.append("start")
+        yield
+        events.append("stop")
+
+    async def generate(config: TtsSeedttsBenchmarkConfig, **kwargs) -> dict:
+        events.append("generate")
+        generated.append(config)
+        classes = list(config.mixture.clients_by_class)
+        return {
+            "summary": {"failed_requests": 0},
+            "summary_by_class": {request_class: {} for request_class in classes},
+            "mixture": {
+                "outside_window_failed_requests": {
+                    request_class: 0 for request_class in classes
+                }
+            },
+        }
+
+    def transcribe(config: TtsSeedttsBenchmarkConfig, **kwargs) -> None:
+        events.append("transcribe")
+        transcribed.append(config)
+
+    monkeypatch.setattr(
+        sys, "argv", ["benchmark", "--output-dir", str(tmp_path), *argv]
+    )
+    monkeypatch.setattr(tts, "managed_omni_server", server)
+    monkeypatch.setattr(tts, "run_tts_seedtts_benchmark", generate)
+    monkeypatch.setattr(tts, "run_tts_seedtts_transcribe", transcribe)
+    monkeypatch.setattr(tts, "print_mixture_summary", lambda *args, **kwargs: None)
+    tts.main()
+
+    points = [
+        (Path(point.output_dir).relative_to(tmp_path).as_posix(), point.mixture.name)
+        for point in generated
+    ]
+    assert events == expected_events
+    assert points == expected_points
+    assert [config.mixture.name for config in transcribed] == expected_transcribed
+    assert (tmp_path / "mixture_sweep.json").is_file() == (not expected_transcribed)
+
+
+@pytest.mark.parametrize(
+    ("sample_ids", "extra_argv", "expected_ids"),
+    [
+        (("row0#n0", "row1#s0", "row0#n2"), (), ("row0#n0", "row1#s0", "row0#n2")),
+        (
+            ("row2#s0", "row0#n0", "row1#s1", "row0#n3"),
+            ("--max-samples", "2"),
+            ("row0#n0", "row1#s1", "row0#n3"),
+        ),
+    ],
+)
+def test_similarity_after_a_mixture_run_scores_each_repeat_against_its_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sample_ids: tuple[str, ...],
+    extra_argv: tuple[str, ...],
+    expected_ids: tuple[str, ...],
+) -> None:
+    """--similarity-only on a mixture output used to skip every suffixed id, and --max-samples kept the first completions instead of the selected rows."""
+    reference_paths = {
+        name: tmp_path / f"{name}.ref.wav" for name in ("row0", "row1", "row2")
+    }
+    for reference_path in reference_paths.values():
+        reference_path.write_bytes(b"reference")
+    generated = []
+    for sample_id in sample_ids:
+        wav_path = tmp_path / f"{sample_id}.wav"
+        wav_path.write_bytes(b"generated")
+        generated.append(
+            {"sample_id": sample_id, "wav_path": str(wav_path), "is_success": True}
+        )
+    (tmp_path / "generated.json").write_text(json.dumps(generated), encoding="utf-8")
+    scored_pairs: list[tuple[str, str]] = []
+
+    class FakeSpeakerSimilarity:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def score_batch(
+            self, ref_audio_paths: list[str], wav_paths: list[str]
+        ) -> list[float]:
+            scored_pairs.extend(zip(ref_audio_paths, wav_paths))
+            return [0.5] * len(wav_paths)
+
+    monkeypatch.setattr(
+        "benchmarks.tasks.tts.load_seedtts_samples",
+        lambda meta, max_samples, split: [
+            SampleInput(
+                sample_id=name, ref_text="r", ref_audio=str(path), target_text="t"
+            )
+            for name, path in list(reference_paths.items())[:max_samples]
+        ],
+    )
+    monkeypatch.setattr(
+        "benchmarks.tasks.tts.ensure_speaker_similarity_assets",
+        lambda **kwargs: SimpleNamespace(finetune_checkpoint="ft", wavlm_base="wavlm"),
+    )
+    monkeypatch.setattr(
+        "benchmarks.tasks.tts.WavLMSpeakerSimilarity", FakeSpeakerSimilarity
+    )
+    config = config_from_cli(
+        "--similarity-only",
+        "--output-dir",
+        str(tmp_path),
+        "--device",
+        "cpu",
+        *extra_argv,
+    )
+
+    result = tts.run_seedtts_similarity(config)
+
+    assert result["summary"]["evaluated"] == len(expected_ids)
+    assert result["summary"]["total_samples"] == len(expected_ids)
+    assert sorted(scored_pairs) == sorted(
+        (
+            str(reference_paths[sample_id.rsplit("#", 1)[0]]),
+            str(tmp_path / f"{sample_id}.wav"),
+        )
+        for sample_id in expected_ids
+    )

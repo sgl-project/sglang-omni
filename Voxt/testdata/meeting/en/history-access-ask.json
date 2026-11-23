@@ -1,0 +1,17 @@
+{
+  "name": "history-access-ask",
+  "kind": "history-access",
+  "history_access": {
+    "on": false,
+    "selection": true,
+    "ask": true,
+    "list_open": false,
+    "show_last_read": true,
+    "last_read": "Jan 2 15:03 · 1 entry · daily-editor (fixture-shell)",
+    "command": "",
+    "read_lines": [
+      "Jan 2 15:03 · 1 entry · daily-editor (fixture-shell)",
+      "Jan 2 15:02 · Status check · Unknown program"
+    ]
+  }
+}

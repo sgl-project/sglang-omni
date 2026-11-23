@@ -1,0 +1,121 @@
+{
+  "name": "appenhance-group-empty",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "已开启",
+    "selected": "g-empty",
+    "groups": [
+      {
+        "id": "g-empty",
+        "name": "未命名",
+        "summary": "空",
+        "enabled": false,
+        "selected": true,
+        "matches": false
+      }
+    ],
+    "detail": {
+      "id": "g-empty",
+      "name": "",
+      "enabled": false,
+      "prompt": "",
+      "features": [
+        {
+          "id": "transcribe",
+          "label": "转录",
+          "checked": false
+        },
+        {
+          "id": "translate",
+          "label": "翻译",
+          "checked": false
+        },
+        {
+          "id": "rewrite",
+          "label": "改写",
+          "checked": false
+        }
+      ],
+      "variables": [
+        {
+          "name": "USER_MAIN_LANGUAGE",
+          "token": "{{USER_MAIN_LANGUAGE}}",
+          "tooltip": "你的主要语言，来自通用设置。所有功能都用到。"
+        },
+        {
+          "name": "USER_OTHER_LANGUAGES",
+          "token": "{{USER_OTHER_LANGUAGES}}",
+          "tooltip": "你的其他语言，来自通用设置。所有功能都用到。"
+        },
+        {
+          "name": "TARGET_LANGUAGE",
+          "token": "{{TARGET_LANGUAGE}}",
+          "tooltip": "来自翻译页的“目标语言”菜单。只有翻译用到。"
+        },
+        {
+          "name": "APP_NAME",
+          "token": "{{APP_NAME}}",
+          "tooltip": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。"
+        }
+      ],
+      "apps": [],
+      "urls": [],
+      "url_input": "",
+      "auto_key": {
+        "options": [
+          {
+            "label": "无",
+            "value": ""
+          },
+          {
+            "label": "Return ↩",
+            "value": "Return"
+          },
+          {
+            "label": "⌘回车",
+            "value": "Command+Return"
+          },
+          {
+            "label": "⇧回车",
+            "value": "Shift+Return"
+          },
+          {
+            "label": "⌃回车",
+            "value": "Control+Return"
+          },
+          {
+            "label": "⌥回车",
+            "value": "Option+Return"
+          },
+          {
+            "label": "自定义…",
+            "value": ""
+          }
+        ],
+        "value": "",
+        "current_label": "无",
+        "custom_label": "自定义…",
+        "custom": false,
+        "text": ""
+      }
+    },
+    "preview": {
+      "app": {
+        "bundle_id": ""
+      },
+      "app_name": "",
+      "empty": true,
+      "has_bundle_id": false,
+      "front_text": "切换到其他 App，查看它会命中哪个分组。",
+      "browser": false,
+      "address_status": "none",
+      "matched": false,
+      "match_source": "global",
+      "match_text": "没有命中任何分组，只用各功能自己的规则。",
+      "can_refresh": false,
+      "add_app": false,
+      "add_site": false
+    }
+  }
+}

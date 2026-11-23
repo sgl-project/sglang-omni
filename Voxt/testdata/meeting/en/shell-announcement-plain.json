@@ -1,0 +1,12 @@
+{
+  "name": "shell-announcement-plain",
+  "kind": "shell-announcement",
+  "shell_ui": {
+    "announcement_open": true
+  },
+  "shell_announcement": {
+    "title": "Hello",
+    "sub": "Jan 2 15:04",
+    "body": "Welcome to Voxt."
+  }
+}

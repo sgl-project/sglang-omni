@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.attention.base_attn_backend import SharedReadEnds
 from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_executor.model_runner_components.cuda_graph_setup import (
@@ -144,11 +145,12 @@ def test_whisper_prefill_replay_preserves_encoder_metadata(
     monkeypatch.setattr(
         WhisperPrefillCudaGraphRunner.__mro__[1],
         "load_batch",
-        lambda self, forward_batch, **kwargs: static_batch,
+        lambda self, forward_batch, **kwargs: (static_batch, SharedReadEnds.UNKNOWN),
     )
 
-    replay_batch = runner.load_batch(live_batch)
+    replay_batch, shared_read_ends = runner.load_batch(live_batch)
 
+    assert shared_read_ends is SharedReadEnds.UNKNOWN
     assert replay_batch.encoder_lens_cpu == live_batch.encoder_lens_cpu
     assert replay_batch.encoder_cached == live_batch.encoder_cached
     assert replay_batch.encoder_out_cache_loc is live_batch.encoder_out_cache_loc

@@ -163,8 +163,12 @@ def test_a_codec_decode_can_be_captured_in_a_cuda_graph() -> None:
     torch.testing.assert_close(graph_audio, eager_audio)
 
 
-@pytest.mark.parametrize("samples", [4096, 4133])
-def test_reference_code_only_quantization_matches_full_forward(samples: int) -> None:
+@pytest.mark.parametrize(
+    ("samples", "n_quantizers"), [(4096, None), (4133, None), (4096, 3)]
+)
+def test_reference_code_only_quantization_matches_full_forward(
+    samples: int, n_quantizers: int | None
+) -> None:
     codec = tiny_codec()
     audio = torch.randn(1, samples) * 0.1
     padded = torch.nn.functional.pad(
@@ -175,9 +179,9 @@ def test_reference_code_only_quantization_matches_full_forward(samples: int) -> 
         lambda module, inputs, output: reconstructed.append(output)
     )
     with torch.no_grad():
-        expected = codec.quantizer(codec.encoder(padded)).codes
+        expected = codec.quantizer(codec.encoder(padded), n_quantizers).codes
         assert len(reconstructed) == 1
-        actual, lengths = codec.encode(audio, torch.tensor([samples]))
+        actual, lengths = codec.encode(audio, torch.tensor([samples]), n_quantizers)
     hook.remove()
     assert torch.equal(actual, expected)
     assert len(reconstructed) == 1

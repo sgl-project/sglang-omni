@@ -1,0 +1,82 @@
+{
+  "name": "step-more",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 6,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "更多功能",
+    "subtitle": "快去试试 Voxt 吧。下面两项能让它更顺手。",
+    "recording": false,
+    "more": {
+      "preset_options": [
+        {
+          "id": "option",
+          "label": "右 ⌥（默认）"
+        },
+        {
+          "id": "fn",
+          "label": "fn（和 Auralink 相同）"
+        },
+        {
+          "id": "command",
+          "label": "⌘ 组合"
+        },
+        {
+          "id": "mouseMiddle",
+          "label": "鼠标中键 + fn⇧"
+        }
+      ],
+      "preset_selected": "右 ⌥（默认）",
+      "preset_about": "右 ⌥：单手就能按，是 Voxt 的默认方案。fn 是地球键或与 Auralink 共用时，选它更合适。",
+      "preset_warnings": null,
+      "shortcuts": [
+        {
+          "title": "转录",
+          "keys": "右 ⌥",
+          "problems": null
+        },
+        {
+          "title": "翻译",
+          "keys": "右 ⌥ ⇧",
+          "problems": null
+        },
+        {
+          "title": "改写",
+          "keys": "⌃ 右 ⌥",
+          "problems": null
+        },
+        {
+          "title": "粘贴最近结果",
+          "keys": "⌃⌥V",
+          "problems": null
+        }
+      ]
+    },
+    "footer": {
+      "mode": "finish",
+      "busy": false,
+      "back": true,
+      "continue_label": "开始使用 Voxt",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

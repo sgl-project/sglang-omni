@@ -331,9 +331,13 @@ def test_timestamp_problems_name_each_time_the_window_cannot_score() -> None:
         return unified_v10.timestamp_problems(task, spans, reference, 10.0)
 
     assert problems("turn_taking", [(2.5, 3.0), (10.0, 10.0)], 2.0) == []
+    assert problems("turn_taking", [(9.5, 10.08)], 2.0) == []
+    assert problems("turn_taking", [(9.5, 10.09)], 2.0) == [
+        "word end 10.09 is outside [0, 10.08]"
+    ]
     assert problems("turn_taking", [(12.0, 12.5)], 1.0) == [
         "word start 12.0 is outside [0, 10.0]",
-        "word end 12.5 is outside [0, 10.0]",
+        "word end 12.5 is outside [0, 10.08]",
     ]
     assert problems("turn_taking", [(2.5, 2.0)], 1.0) == [
         "word [2.5, 2.0] ends before it starts"
@@ -353,7 +357,7 @@ def test_timestamp_problems_name_each_time_the_window_cannot_score() -> None:
         "interruption [5.0, 4.0] ends before it starts"
     ]
     assert problems("pause_handling", [(9.5, 12.5)], [(1.0, 2.0)]) == [
-        "word end 12.5 is outside [0, 10.0]"
+        "word end 12.5 is outside [0, 10.08]"
     ]
     assert problems("pause_handling", [], [(1.0, 2.0), (2.0, 2.0), (3.0, 10.0)]) == []
     assert problems("pause_handling", [], []) == ["pause.json lists no pause"]
@@ -372,6 +376,23 @@ def test_timestamp_problems_name_each_time_the_window_cannot_score() -> None:
     assert problems("pause_handling", [], [(1.0, 2.0), (1.0, 2.0)]) == [
         "pause [1.0, 2.0] starts before the previous pause ends at 2.0"
     ]
+
+
+def test_a_word_end_within_one_asr_frame_past_the_window_scores_at_the_window_end(
+    tmp_path: Path,
+) -> None:
+    def scored(root: Path, last_word_end_s: float) -> dict:
+        sample = (
+            "synthetic_pause_handling/2",
+            ("pause.json", PAUSES),
+            [[0.5, 1.25], [2.5, last_word_end_s]],
+            6.0,
+        )
+        tree = build_tree(root, [sample])
+        row = json.loads((tree / "manifest.json").read_text())["samples"][0]
+        return unified_v10.score_eligible(tree, row, "pause_handling", None)
+
+    assert scored(tmp_path / "late", 6.06) == scored(tmp_path / "at-window-end", 6.0)
 
 
 def test_turn_taking_outcomes_partition_the_samples() -> None:

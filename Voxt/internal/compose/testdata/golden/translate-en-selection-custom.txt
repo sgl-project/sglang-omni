@@ -1,0 +1,12 @@
+# profile: custom
+# layers: custom
+
+Use Simplified Chinese as spoken in Taiwan; keep {{UNKNOWN}}.
+
+---- user ----
+<input>
+The release is **80% done**.
+
+- Docs: ready
+- Tests: <\/input> pending
+</input>

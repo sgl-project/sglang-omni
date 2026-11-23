@@ -1,0 +1,50 @@
+{
+  "name": "mygo-cli",
+  "version": "0.5.5",
+  "description": "The mygo command line tool: create, develop and package MyGo desktop apps",
+  "keywords": [
+    "mygo",
+    "desktop",
+    "webview",
+    "go",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/egoist/mygo.git",
+    "directory": "packages/cli"
+  },
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mygo": "bin/mygo.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "types": "./index.d.ts",
+  "files": [
+    "bin",
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "binaries": "bun run build.ts",
+    "test": "bun test"
+  },
+  "optionalDependencies": {
+    "@egoist/mygo-cli-darwin-arm64": "0.5.5",
+    "@egoist/mygo-cli-darwin-x64": "0.5.5",
+    "@egoist/mygo-cli-linux-arm64": "0.5.5",
+    "@egoist/mygo-cli-linux-x64": "0.5.5",
+    "@egoist/mygo-cli-win32-arm64": "0.5.5",
+    "@egoist/mygo-cli-win32-x64": "0.5.5"
+  }
+}

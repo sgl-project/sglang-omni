@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-import tempfile
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
+from transformers import LlamaConfig
 
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
 from sglang_omni.models.voxtral_tts.pipeline.state_io import store_state
 from sglang_omni.models.voxtral_tts.vocoder import (
     VoxtralStreamingVocoder,
@@ -173,31 +173,25 @@ def create_generation_executor(
     )
 
 
-def write_voxtral_sglang_config(checkpoint_dir: str) -> str:
-    from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
-
+def build_voxtral_sglang_config(checkpoint_dir: str) -> LlamaConfig:
     cfg = VoxtralModelConfig.from_model_path(checkpoint_dir).text_config
-    path = os.path.join(
-        tempfile.gettempdir(), f"voxtral_sglang_config_{abs(hash(checkpoint_dir))}.json"
+    return LlamaConfig.from_dict(
+        {
+            "name_or_path": checkpoint_dir,
+            "architectures": ["VoxtralSGLangTTSModel"],
+            "hidden_size": cfg.dim,
+            "intermediate_size": cfg.hidden_dim,
+            "num_hidden_layers": cfg.n_layers,
+            "num_attention_heads": cfg.n_heads,
+            "num_key_value_heads": cfg.n_kv_heads,
+            "head_dim": cfg.head_dim,
+            "vocab_size": cfg.vocab_size,
+            "max_position_embeddings": cfg.max_seq_len,
+            "rope_theta": cfg.rope_theta,
+            "rms_norm_eps": cfg.norm_eps,
+            "tie_word_embeddings": cfg.tied_embeddings,
+        }
     )
-    data = {
-        "model_type": "llama",
-        "architectures": ["VoxtralSGLangTTSModel"],
-        "hidden_size": cfg.dim,
-        "intermediate_size": cfg.hidden_dim,
-        "num_hidden_layers": cfg.n_layers,
-        "num_attention_heads": cfg.n_heads,
-        "num_key_value_heads": cfg.n_kv_heads,
-        "head_dim": cfg.head_dim,
-        "vocab_size": cfg.vocab_size,
-        "max_position_embeddings": cfg.max_seq_len,
-        "rope_theta": cfg.rope_theta,
-        "rms_norm_eps": cfg.norm_eps,
-        "tie_word_embeddings": cfg.tied_embeddings,
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f)
-    return path
 
 
 def load_voxtral_voice_embeddings(
@@ -232,7 +226,6 @@ def load_audio_tokenizer(
     from sglang.srt.model_loader.weight_utils import safetensors_weights_iterator
 
     from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
-    from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
 
     config = VoxtralModelConfig.from_model_path(checkpoint_dir)
     tokenizer = VoxtralTTSAudioTokenizer(

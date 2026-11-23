@@ -1,0 +1,104 @@
+{
+  "name": "models-runtime-omni",
+  "kind": "models",
+  "models": {
+    "asr": [
+      {
+        "key": "model-asr.accurate",
+        "rows": [
+          {
+            "id": "asr.accurate",
+            "kind": "asr",
+            "name": "Qwen3-ASR 1.7B (8bit)",
+            "default": true,
+            "installed": false,
+            "size_text": "2.5 GB download",
+            "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
+            "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
+            "tags": [
+              "Local",
+              "Accurate",
+              "Realtime",
+              "Supports your main language"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.accurate",
+                "label": "Hide",
+                "accessibility_label": "Hide Qwen3-ASR 1.7B (8bit)",
+                "tooltip": "Hide it from the features' menus"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.accurate",
+                "label": "Download",
+                "accessibility_label": "Download Qwen3-ASR 1.7B (8bit)"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "llm": null,
+    "show_llm": false,
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "en",
+      "value": "",
+      "selection": "Automatic",
+      "options": [
+        {
+          "label": "Automatic",
+          "value": ""
+        },
+        {
+          "label": "5 minutes",
+          "value": "5m"
+        },
+        {
+          "label": "15 minutes",
+          "value": "15m"
+        },
+        {
+          "label": "30 minutes",
+          "value": "30m"
+        },
+        {
+          "label": "1 hour",
+          "value": "1h"
+        },
+        {
+          "label": "Until Voxt quits",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "The proxy in this Mac's network settings, or one set by an environment variable.",
+      "source": 0,
+      "source_labels": [
+        "Automatic",
+        "Hugging Face only",
+        "hf-mirror.com only"
+      ],
+      "source_caption": "Whichever answers first. Every file is checked.",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": ""
+  }
+}

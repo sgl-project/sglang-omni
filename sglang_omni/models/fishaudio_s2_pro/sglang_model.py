@@ -335,6 +335,7 @@ class S2ProSGLangTextModel(nn.Module):
             max_batch_size, dtype=torch.long, device=device
         )
         self.rep_history_len = rep_history_len
+        self.async_decode_state_enabled = False
         self.rep_positions = torch.arange(rep_history_len, device=device)
         self.top_k_positions = torch.arange(_GRAPH_TOP_K, device=device)
         self.ras_range = torch.arange(4, 0, -1, device=device)
@@ -507,6 +508,27 @@ class S2ProSGLangTextModel(nn.Module):
             self.output_codes[:bs, cb_idx + 1] = cb_token
 
         self.output_semantic_ids[:bs] = semantic_token
+
+        if getattr(self, "async_decode_state_enabled", False):
+            # The next launch can start before the host resolves this step.
+            self.vq_codes[:bs].copy_(self.output_codes[:bs, 1:])
+            previous = self.prev_tokens[:bs]
+            count = self.prev_token_count[:bs]
+            insert_at = count.clamp(max=self.rep_history_len - 1).unsqueeze(1)
+            appended = previous.scatter(1, insert_at, semantic_token.unsqueeze(1))
+            shifted = torch.cat((previous[:, 1:], semantic_token.unsqueeze(1)), dim=1)
+            updated = torch.where(
+                (count >= self.rep_history_len).unsqueeze(1), shifted, appended
+            )
+            self.prev_tokens[:bs].copy_(
+                torch.where(is_eos.unsqueeze(1), previous, updated)
+            )
+            self.prev_token_count[:bs].copy_(
+                torch.where(is_eos, count, (count + 1).clamp(max=self.rep_history_len))
+            )
+            self.step_count[:bs].add_((~is_eos).long())
+        else:
+            pass
 
     def get_embed_tokens(self):
         return self.embed_tokens

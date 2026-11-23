@@ -49,25 +49,27 @@ def results(changed: int, clip_count: int = 10) -> dict:
 
 
 def test_a_recorded_chip_requires_every_clip() -> None:
-    assert check_golden.check(golden(), "Apple M5", results(0), METRICS)[1] == []
-    failures = check_golden.check(golden(), "Apple M5", results(1), METRICS)[1]
+    assert check_golden.check(golden(), "Apple M5", results(0), METRICS, {})[1] == []
+    failures = check_golden.check(golden(), "Apple M5", results(1), METRICS, {})[1]
     assert failures == ["`c0` differs from its golden output"]
 
 
 def test_another_chip_is_held_to_the_error_rates() -> None:
-    assert check_golden.check(golden(), "Apple M4 Pro", results(2), METRICS)[1] == []
+    assert (
+        check_golden.check(golden(), "Apple M4 Pro", results(2), METRICS, {})[1] == []
+    )
     worse = {**METRICS, "cer_zh": METRICS["cer_zh"] + 0.02}
-    failures = check_golden.check(golden(), "Apple M4 Pro", results(2), worse)[1]
+    failures = check_golden.check(golden(), "Apple M4 Pro", results(2), worse, {})[1]
     assert failures == ["cer_zh is +2.00 pp from Apple M5's"]
 
 
 def test_another_chip_needs_most_clips_identical() -> None:
-    failures = check_golden.check(golden(), "Apple M4 Pro", results(3), METRICS)[1]
+    failures = check_golden.check(golden(), "Apple M4 Pro", results(3), METRICS, {})[1]
     assert failures == ["only 7/10 clips match Apple M5's outputs"]
 
 
 def test_an_empty_golden_file_fails() -> None:
-    assert check_golden.check(golden(0), "Apple M5", {}, METRICS)[1] == [
+    assert check_golden.check(golden(0), "Apple M5", {}, METRICS, {})[1] == [
         "the golden file has no clips"
     ]
 
@@ -80,9 +82,44 @@ def test_moss_tags_are_dropped_before_scoring() -> None:
     assert check_golden.spoken_text("[S01] kept", None) == "[S01] kept"
 
 
+def test_better_silence_count_cannot_hide_a_noise_regression() -> None:
+    """A new noise transcript used to pass when aggregate error rates still matched."""
+    reference = golden()
+    reference["model_kind"] = "moss_transcribe_diarize"
+    clips = reference["devices"]["Apple M5"]["clips"]
+    clips["c0"] = {**CLIP, "text": "[0.00][S01][sniff]…"}
+    manifest = {"c0": {"stratum": "noise"}, "c1": {"stratum": "silence"}}
+    outputs = {
+        **clips,
+        "c0": {**CLIP, "text": "[S01]かな"},
+        "c1": {**CLIP, "text": " "},
+    }
+    lines, failures = check_golden.check(
+        reference, "another chip", outputs, METRICS, manifest
+    )
+    assert failures == ["More noise clips transcribed than Apple M5: 1 > 0"]
+    assert any(
+        "Noise clips with transcribed words: 1/1 (Apple M5 golden: 0/1)" in line
+        for line in lines
+    )
+    assert any(
+        "Silence clips with transcribed words: 0/1 (Apple M5 golden: 1/1)" in line
+        for line in lines
+    )
+
+
+def test_missing_control_is_not_counted_as_a_quiet_clip() -> None:
+    clips = results(0)
+    del clips["c0"]
+    failures = check_golden.check(
+        golden(), "another chip", clips, METRICS, {"c0": {"stratum": "silence"}}
+    )[1]
+    assert failures == ["Missing silence controls in runtime or golden: c0"]
+
+
 def test_a_pending_baseline_reports_no_delta() -> None:
     pending = {**golden(), "baseline": {"source": "pending", **METRICS}}
-    lines, failures = check_golden.check(pending, "Apple M5", results(0), METRICS)
+    lines, failures = check_golden.check(pending, "Apple M5", results(0), METRICS, {})
     assert failures == []
     assert "| wer_en | pending | 3.00% | n/a |" in lines
 
@@ -237,8 +274,8 @@ def test_a_recorded_chip_requires_every_voxtral_code() -> None:
 
 
 def test_a_recorded_chip_requires_the_same_decoded_audio() -> None:
-    """Drama 3 and Qwen3-TTS goldens hold a hash of the decoded audio beside the
-    codes; only a recorded chip is held to it."""
+    """Drama 3, Qwen3-TTS and S2-Pro goldens hold a hash of the decoded audio beside
+    the codes; only a recorded chip is held to it."""
     recorded = {**SPEECH, "pcm_sha256": "ab"}
     golden = {
         **speech_golden_file(),

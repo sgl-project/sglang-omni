@@ -1,0 +1,38 @@
+{
+  "name": "mygo-runtime",
+  "version": "0.5.5",
+  "description": "Typed access to the MyGo runtime in the pages of MyGo desktop apps",
+  "keywords": [
+    "mygo",
+    "desktop",
+    "webview",
+    "go"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/egoist/mygo.git",
+    "directory": "packages/runtime"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./i18n": {
+      "types": "./dist/i18n.d.ts",
+      "default": "./dist/i18n.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun run build.ts",
+    "test": "bun test"
+  }
+}

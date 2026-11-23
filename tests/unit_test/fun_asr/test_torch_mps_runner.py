@@ -42,7 +42,9 @@ def test_torch_runner_cache_lifecycle_and_flat_audio_features(device):
     runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
     req = SimpleNamespace(
-        multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)
+        multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10),
+        sampling_params=SimpleNamespace(repetition_penalty=1.0),
+        output_ids=[],
     )
     requests = [SimpleNamespace(request_id="one", data=SimpleNamespace(req=req))]
     first = runner.custom_prefill_forward(

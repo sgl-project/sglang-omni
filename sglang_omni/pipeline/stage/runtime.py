@@ -73,6 +73,7 @@ from sglang_omni.scheduling.message import (
     StageScheduler,
 )
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
+from sglang_omni.utils.process import name_native_thread
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -286,6 +287,7 @@ class Stage:
 
             def _run_scheduler() -> None:
                 nonlocal warmup_error
+                name_native_thread()
                 try:
                     try:
                         # Active-stage binding so ``emit(stage=None)`` from
@@ -453,6 +455,8 @@ class Stage:
             await self.comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
+        recorder = _get_recorder()
+        recorder.release_stage(self.name)
         logger.info("Stage %s stopped", self.name)
         if cleanup_error is not None:
             raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
@@ -2700,7 +2704,10 @@ class Stage:
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(
-                    run_id=run_id, event_dir=msg.event_dir, stage=self.name
+                    run_id=run_id,
+                    event_dir=msg.event_dir,
+                    stage=self.name,
+                    event_buffer_capacity=msg.event_buffer_capacity,
                 )
             except Exception:
                 logger.warning(
@@ -2723,7 +2730,7 @@ class Stage:
         if recorder.is_active() and (
             msg.run_id is None or recorder.active_run_id() == msg.run_id
         ):
-            recorder.stop(run_id=msg.run_id)
+            recorder.release_stage(self.name)
         else:
             pass
 

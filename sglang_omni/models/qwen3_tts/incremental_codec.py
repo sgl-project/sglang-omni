@@ -5,16 +5,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import torch
+import torch._dynamo as dynamo
 import torch.nn.functional as F
 from sglang.kernels.ops.activation import silu_and_mul
 from sglang.kernels.ops.attention.rope import (
     apply_rope_inplace,
     apply_rope_inplace_with_kvcache,
 )
-from sglang.kernels.ops.layernorm import rmsnorm
 from sglang.srt.utils.custom_op import register_custom_op
 
 from sglang_omni.platforms import current_platform
@@ -26,6 +26,8 @@ from sglang_omni.utils.channels_last_conv import (
 )
 from sglang_omni.utils.merged_projections import merge_projection_weights
 
+rmsnorm = current_platform.get_rmsnorm()
+
 if current_platform.is_cuda():
     from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache
     from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
@@ -34,7 +36,11 @@ if current_platform.is_cuda():
         SnakeBetaCoefficients,
         fused_bias_snake_beta,
     )
-    from sglang_omni.kernels.codec_state import history_exchange, overlap_exchange
+    from sglang_omni.kernels.codec_state import (
+        history_exchange,
+        overlap_exchange,
+        ring_step_rows,
+    )
     from sglang_omni.kernels.single_output_conv import clamped_single_output_conv
 else:
     pass
@@ -53,6 +59,18 @@ if TYPE_CHECKING:
     )
 else:
     pass
+
+
+class PointwiseConv(Protocol):
+    """Pointwise convolution on contiguous BTC activations, with optional bias and residual."""
+
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+        residual: torch.Tensor | None,
+    ) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -136,7 +154,7 @@ class Qwen3TTSIncrementalCodecState:
             )
         else:
             pass
-        if int(self.frame_positions.shape[0]) != batch_size:
+        if self.frame_positions.shape[0] != batch_size:
             raise ValueError(
                 "Qwen3-TTS incremental codec state carries "
                 f"{int(self.frame_positions.shape[0])} row positions for a batch "
@@ -420,8 +438,10 @@ def padded_input(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch_size, length, channels = frames_like.shape
     history_samples = int(module.padding)
-    # note (ratish): the tail completes the last dilation phase of the conv's folded input.
-    tail_samples = (-length) % int(module.conv.dilation[0])
+    dilation = int(module.conv.dilation[0])
+    # note (ratish): the tail completes the last dilation phase of the conv's folded input, by a
+    # ceil division, since a modulo of a symbolic length costs more to trace and compile.
+    tail_samples = -(-length // dilation) * dilation - length
     padded = frames_like.new_empty(
         batch_size, history_samples + length + tail_samples, channels
     )
@@ -456,7 +476,7 @@ def slot_causal_transconv(
     conv = module.conv
     # note (ratish): the consumer adds the bias after the overlap, so overlaps carry it once.
     output = channels_last_conv_transpose1d(frames, conv, weight, None)
-    emitted_samples = int(frames.shape[1]) * int(conv.stride[0])
+    emitted_samples = frames.shape[1] * int(conv.stride[0])
     if overlap_pool.shape[1] > 0:
         exchange = (
             compiled_overlap_exchange
@@ -714,6 +734,22 @@ def ring_window_attention_fake(
     return query.new_empty(query.shape)
 
 
+def ring_step_rows_fake(
+    start_positions: torch.Tensor,
+    slot_rows: torch.Tensor,
+    fresh_frames: int,
+    ring_frames: int,
+    retained_frames: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    batch_size = start_positions.shape[0]
+    return (
+        start_positions.new_empty(batch_size * fresh_frames),
+        start_positions.new_empty(batch_size * fresh_frames),
+        start_positions.new_empty(batch_size, ring_frames, dtype=torch.int32),
+        start_positions.new_empty(batch_size, dtype=torch.int32),
+    )
+
+
 if current_platform.is_cuda():
     # note (ratish): FA3 has no fake implementation, so a compiled decode calls it as this op.
     compiled_ring_window_attention = register_custom_op(
@@ -721,6 +757,12 @@ if current_platform.is_cuda():
         op_name="qwen3_tts_codec_ring_window_attention",
         mutates_args=[],
         fake_impl=ring_window_attention_fake,
+    )
+    compiled_ring_step_rows = register_custom_op(
+        ring_step_rows,
+        op_name="qwen3_tts_codec_ring_step_rows",
+        mutates_args=[],
+        fake_impl=ring_step_rows_fake,
     )
 else:
     pass
@@ -769,18 +811,15 @@ class FusedIncrementalTransformer:
         else:
             return rmsnorm(hidden_states, norm.weight, norm.variance_epsilon)
 
-    def cos_sin_rows(
-        self, query_positions: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """The rope kernels' cos/sin table, one row per query, and each query's row."""
+    def cos_sin(self, query_positions: torch.Tensor) -> torch.Tensor:
+        """The rope kernels' cos/sin table, one row per query."""
         # note (ratish): one cos/sin row per query, from its absolute frame position,
         # which a stream's reference prefix can carry past max_position_embeddings.
         rows = query_positions.numel()
         angles = query_positions.reshape(rows, 1).float() * self.inverse_frequencies
-        cos_sin = torch.cat((angles.cos(), angles.sin()), dim=-1) * (
+        return torch.cat((angles.cos(), angles.sin()), dim=-1) * (
             self.attention_scaling
         )
-        return cos_sin, torch.arange(rows, device=query_positions.device)
 
     def projected_qkv(
         self,
@@ -791,7 +830,7 @@ class FusedIncrementalTransformer:
         kv_heads * head_dim) value, from one qkv GEMM on the normed rows."""
         attention = layer.self_attn
         head_dim = int(attention.head_dim)
-        rows = int(hidden_states.shape[0])
+        rows = hidden_states.shape[0]
         normalized = self.normalize(hidden_states, layer.input_layernorm)
         query, key, value = F.linear(normalized, attention.qkv_weight).split(
             [
@@ -876,7 +915,8 @@ class FusedIncrementalTransformer:
         attention_mask = allowed_keys(
             key_positions, query_positions, int(transformer.window_size)
         ).unsqueeze(1)
-        cos_sin, rotary_rows = self.cos_sin_rows(query_positions)
+        cos_sin = self.cos_sin(query_positions)
+        rotary_rows = torch.arange(rows, device=device)
         hidden_states = hidden_states.reshape(rows, hidden_size)
         next_keys: dict[int, torch.Tensor] = {}
         next_values: dict[int, torch.Tensor] = {}
@@ -932,8 +972,8 @@ class FusedIncrementalTransformer:
         transformer = self.transformer
         rings = state.kv_rings
         hidden_states = transformer.input_proj(hidden_states)
-        batch_size = int(hidden_states.shape[0])
-        fresh_frames = int(hidden_states.shape[1])
+        batch_size = hidden_states.shape[0]
+        fresh_frames = hidden_states.shape[1]
         hidden_size = int(hidden_states.shape[2])
         rows = batch_size * fresh_frames
         device = hidden_states.device
@@ -943,15 +983,30 @@ class FusedIncrementalTransformer:
         query_positions = start_positions.unsqueeze(1) + torch.arange(
             fresh_frames, device=device
         )
-        slot_rows = rings.slot_rows.unsqueeze(1)
-        frame_rows = slot_rows + query_positions % rings.ring_frames
-        cos_sin, rotary_rows = self.cos_sin_rows(query_positions)
+        cos_sin = self.cos_sin(query_positions)
         is_in_place = (
             valid_frames is None
             and fresh_frames <= rings.ring_frames - retained_context
         )
-        if is_in_place:
-            write_rows = frame_rows.reshape(rows)
+        if is_in_place and self.is_paged_attention:
+            # note (ratish): as tensor expressions, Inductor writes these rows into a buffer per
+            # layer that reads them, sixteen launches a decode for the same values.
+            step_rows = (
+                compiled_ring_step_rows
+                if torch.compiler.is_dynamo_compiling()
+                else ring_step_rows
+            )
+            write_rows, rotary_rows, page_table, window_lengths = step_rows(
+                start_positions,
+                rings.slot_rows,
+                fresh_frames,
+                rings.ring_frames,
+                retained_context,
+            )
+        elif is_in_place:
+            rotary_rows = torch.arange(rows, device=device)
+            slot_rows = rings.slot_rows.unsqueeze(1)
+            write_rows = (slot_rows + query_positions % rings.ring_frames).reshape(rows)
             window_starts = (start_positions - retained_context).clamp(min=0)
             window_rows = (
                 slot_rows
@@ -962,20 +1017,17 @@ class FusedIncrementalTransformer:
                 % rings.ring_frames
             )
             window_lengths = start_positions - window_starts + fresh_frames
-            if self.is_paged_attention:
-                page_table = window_rows.to(torch.int32)
-                window_lengths = window_lengths.to(torch.int32)
-            else:
-                query_offsets = (window_lengths - fresh_frames).unsqueeze(
-                    1
-                ) + torch.arange(fresh_frames, device=device)
-                distances = query_offsets.unsqueeze(2) - torch.arange(
-                    rings.ring_frames, device=device
-                )
-                attention_mask = (
-                    (distances >= 0) & (distances < window_size)
-                ).unsqueeze(1)
+            query_offsets = (window_lengths - fresh_frames).unsqueeze(1) + torch.arange(
+                fresh_frames, device=device
+            )
+            distances = query_offsets.unsqueeze(2) - torch.arange(
+                rings.ring_frames, device=device
+            )
+            attention_mask = ((distances >= 0) & (distances < window_size)).unsqueeze(1)
         else:
+            rotary_rows = torch.arange(rows, device=device)
+            slot_rows = rings.slot_rows.unsqueeze(1)
+            frame_rows = slot_rows + query_positions % rings.ring_frames
             key_positions = start_positions.unsqueeze(1) + torch.arange(
                 -retained_context, fresh_frames, device=device
             )
@@ -1121,7 +1173,12 @@ def incremental_residual_unit(
 
 
 class Qwen3TTSIncrementalDecoder:
-    def __init__(self, decoder: "Qwen3TTSTokenizerV2Decoder") -> None:
+    def __init__(
+        self,
+        decoder: "Qwen3TTSTokenizerV2Decoder",
+        *,
+        pointwise_conv: PointwiseConv | None = None,
+    ) -> None:
         self.require_attrs(
             decoder,
             "decoder",
@@ -1212,7 +1269,17 @@ class Qwen3TTSIncrementalDecoder:
                     "act2",
                     "conv2",
                 )
+                if pointwise_conv is not None:
+                    assert residual.conv2.conv.kernel_size == (1,)
+                    assert residual.conv2.padding == 0
+                    assert (
+                        residual.conv2.conv.in_channels
+                        == residual.conv2.conv.out_channels
+                    )
+                else:
+                    pass
         self.decoder = decoder
+        self.pointwise_conv = pointwise_conv
         self.total_upsample = int(decoder.total_upsample)
         # note (ratish): on CUDA the convs run channels last on weights kept here in
         # that layout; the shared modules keep theirs for the whole-utterance decode.
@@ -1683,7 +1750,7 @@ class Qwen3TTSIncrementalDecoder:
     ) -> torch.Tensor:
         decoder = self.decoder
         coefficients = self.snake_coefficients
-        slot_index = state.conv_slots(int(hidden_states.shape[0]), hidden_states.device)
+        slot_index = state.conv_slots(hidden_states.shape[0], hidden_states.device)
         padded, length = self.slot_upsample(hidden_states, state, slot_index)
         decoder_output = slot_causal_conv(
             decoder.decoder[0],
@@ -1725,7 +1792,7 @@ class Qwen3TTSIncrementalDecoder:
                     padded_frames,
                     residual=residual,
                 )
-        length = int(conv_output.shape[1])
+        length = conv_output.shape[1]
         slot_history_exchange(
             padded,
             state.conv_histories["decoder.final"],
@@ -1806,7 +1873,7 @@ class Qwen3TTSIncrementalDecoder:
             state.pad_slot,
         )
         residual_units = decoder_block.block[2:]
-        length = int(frames.shape[1])
+        length = frames.shape[1]
         residual = frames.new_empty(frames.shape)
         padded, padded_frames = padded_input(residual_units[0].conv1, frames)
         slot_bias_snake_beta(
@@ -1834,15 +1901,24 @@ class Qwen3TTSIncrementalDecoder:
                 coefficients[unit.act2],
                 padded_frames,
             )
-            conv2_output = slot_causal_conv(
-                unit.conv2,
-                weights[f"{unit_key}.conv2"],
-                padded,
-                histories[f"{unit_key}.conv2"],
-                slot_index,
-                state.pad_slot,
-                length,
-            )
+            if self.pointwise_conv is not None:
+                # note (Hao Wang): The following fused activation owns bias and residual addition.
+                conv2_output = self.pointwise_conv(
+                    padded,
+                    weights[f"{unit_key}.conv2"].transpose(1, 2),
+                    None,
+                    None,
+                )
+            else:
+                conv2_output = slot_causal_conv(
+                    unit.conv2,
+                    weights[f"{unit_key}.conv2"],
+                    padded,
+                    histories[f"{unit_key}.conv2"],
+                    slot_index,
+                    state.pad_slot,
+                    length,
+                )
             if residual_index + 1 < len(residual_units):
                 next_unit = residual_units[residual_index + 1]
                 padded, padded_frames = padded_input(next_unit.conv1, frames)
@@ -1881,12 +1957,19 @@ class Qwen3TTSIncrementalDecoder:
             return
         else:
             pass
-        # note (luojiaxuan): one trace per (batch, width) pair, past the default
-        # 8; ``decode`` never compiles a new shape, so the limit only matters here.
-        with torch._dynamo.config.patch(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            recompile_limit=max(
-                torch._dynamo.config.recompile_limit, 64
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        ):
-            self.compiled_kernel(codes, state)
+        # note (ratish): batch and width stay symbolic, so sizes share programs; Dynamo keeps a size
+        # of one apart, and a width divisible by a dilated conv's 3 splits once more: five in all.
+        batch_tensors = (
+            codes,
+            state.frame_positions,
+            state.slot_index,
+            None if state.kv_rings is None else state.kv_rings.slot_rows,
+        )
+        for tensor in batch_tensors:
+            if tensor is not None:
+                dynamo.maybe_mark_dynamic(tensor, 0)
+            else:
+                pass
+        dynamo.maybe_mark_dynamic(codes, 2)
+        self.compiled_kernel(codes, state)
         self.compiled_shapes.add(shape)

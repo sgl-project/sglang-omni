@@ -33,6 +33,11 @@ Usage:
         --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
         --concurrencies 32 --repeats 3 --warmup --stream
 
+    # Score Japanese (ja_jp, CER) or Cantonese (yue_hant_hk, yue) on FLEURS test:
+    python -m benchmarks.eval.benchmark_asr_stt_benchmark \
+        --port 8000 --repo-id google/fleurs --config-name ja_jp \
+        --split test --lang ja --concurrencies 1,8 --repeats 1
+
 Pipecat's own benchmark reports Semantic WER and TTFS for this dataset; this
 script does not reproduce those metrics, so its numbers are not comparable to
 the Pipecat leaderboard.
@@ -67,6 +72,7 @@ from benchmarks.eval.benchmark_asr_seedtts import (
     finalize_args,
 )
 from benchmarks.runtime_metrics import collect_benchmark_provenance
+from benchmarks.tasks.asr import ASR_LANGUAGES
 from sglang_omni.utils.logging import configure_dependency_loggers
 
 RESULTS_FILE = "asr_stt_benchmark_results.json"
@@ -101,8 +107,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lang",
         default=STT_BENCHMARK_LANG,
-        choices=["en", "zh"],
-        help="Transcript language: picks WER (en) or CER (zh) normalization.",
+        choices=ASR_LANGUAGES,
+        help="Transcript language: WER for en, CER for zh, ja and yue.",
     )
     add_common_args(parser, default_output=RESULTS_FILE)
     return finalize_args(parser.parse_args())

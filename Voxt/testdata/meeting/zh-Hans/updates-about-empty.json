@@ -1,0 +1,17 @@
+{
+  "name": "updates-about-empty",
+  "kind": "updates-settings",
+  "updates_settings": {
+    "available": false,
+    "known": false,
+    "enabled": false,
+    "check_only": false,
+    "bundle_updated": false,
+    "auto_check": false,
+    "auto_install": false,
+    "beta": false,
+    "check_description": "",
+    "automatic_description": "",
+    "beta_note": ""
+  }
+}

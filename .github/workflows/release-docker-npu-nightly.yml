@@ -1,9 +1,20 @@
 name: Release Docker Images Nightly (NPU)
 
-# Pull requests build the image without publishing it. The image copies the
-# whole repository, so every pull request builds it.
+# Pull requests build the image without publishing it, when they change what
+# the build reads: the Dockerfile, the NPU installer and its pyproject files,
+# or these workflows. The installer checks package metadata and imports no
+# Omni code, so other changes reach the image only through the nightly build.
 on:
   pull_request:
+    paths:
+      - ".dockerignore"
+      - ".github/workflows/release-docker-npu.yml"
+      - ".github/workflows/release-docker-npu-nightly.yml"
+      - "docker/npu.Dockerfile"
+      - "pyproject.toml"
+      - "pyproject_npu.toml"
+      - "scripts/npu/**"
+      - "tests/unit_test/npu/**"
   workflow_dispatch:
   schedule:
     - cron: '0 9 * * *' # 17:00 Beijing time

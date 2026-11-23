@@ -1,0 +1,10 @@
+{"to":"helper","msg":{"id":"r1","method":"hotkey.record","params":{"timeoutSeconds":15}}}
+{"to":"app","msg":{"id":"r1","result":{"keys":"RightCommand+Space"}}}
+{"to":"helper","msg":{"id":"r2","method":"hotkey.record","params":{}}}
+{"to":"app","msg":{"id":"r2","error":{"code":"timeout","message":"Recording timed out"}}}
+{"to":"helper","msg":{"id":"r3","method":"hotkey.record","params":{}}}
+{"to":"helper","msg":{"id":"r4","method":"hotkey.cancelRecord","params":{}}}
+{"to":"app","msg":{"id":"r4","result":{}}}
+{"to":"app","msg":{"id":"r3","error":{"code":"cancelled","message":"Cancelled"}}}
+{"to":"helper","msg":{"id":"r5","method":"hotkey.record","params":{}}}
+{"to":"app","msg":{"id":"r5","error":{"code":"permission_denied","message":"Accessibility is required","data":{"permission":"accessibility"}}}}

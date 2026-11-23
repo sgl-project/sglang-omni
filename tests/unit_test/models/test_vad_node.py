@@ -131,15 +131,28 @@ def test_boundaries_follow_the_input_timeline_and_commit_resets_the_detector():
 
 def test_configure_changes_the_turn_detection_of_one_session_only():
     hooks, _ = scripted([])
+    hooks.config = VADConfig(silence_duration_ms=160)
     a = Node(hooks, "a")
     b = Node(hooks, "b", params={"turn_detection": {"threshold": 0.9}})
-    assert (a.detector.config, b.detector.config.threshold) == (VADConfig(), 0.9)
+    assert (a.detector.config, b.detector.config.threshold) == (
+        VADConfig(silence_duration_ms=160),
+        0.9,
+    )
     turn_detection = {"type": "server_vad", "silence_duration_ms": 800}
     a.control(CONFIGURE, instructions="Be brief.", turn_detection=turn_detection)
     assert a.detector.config == VADConfig(silence_duration_ms=800)
-    assert b.detector.config == VADConfig(threshold=0.9)
+    assert b.detector.config == VADConfig(threshold=0.9, silence_duration_ms=160)
     a.control(CONFIGURE, instructions="Be terse.")
     assert a.detector.config == VADConfig(silence_duration_ms=800)
+    a.control(
+        CONFIGURE,
+        turn_detection={
+            "type": "semantic_vad",
+            "eagerness": "high",
+            "silence_duration_ms": 800,
+        },
+    )
+    assert a.detector.config == VADConfig(silence_duration_ms=160)
     with pytest.raises(ValueError, match="turn_detection must be an object"):
         a.control(CONFIGURE, turn_detection=3)
 

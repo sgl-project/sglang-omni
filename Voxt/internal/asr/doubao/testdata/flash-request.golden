@@ -1,0 +1,66 @@
+POST /api/v3/auc/bigmodel/recognize/flash
+Accept: application/json
+Content-Type: application/json
+User-Agent: Voxt
+X-Api-Access-Key: token-123
+X-Api-App-Key: app-1
+X-Api-Request-Id: <uuid>
+X-Api-Resource-Id: volc.bigasr.auc_turbo
+X-Api-Sequence: -1
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "data": "<3244 bytes of WAV>",
+    "format": "wav",
+    "language": "ja-JP",
+    "rate": 16000
+  },
+  "request": {
+    "corpus": {
+      "context": "{\"hotwords\":[{\"word\":\"Voxt\"},{\"word\":\"豆包\"},{\"word\":\"Kubernetes\"}],\"context_type\":\"dialog_ctx\",\"context_data\":[{\"text\":\"Dictation in Chinese and English.\"}]}"
+    },
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}
+---
+POST /api/v3/auc/bigmodel/recognize/flash
+Accept: application/json
+Content-Type: application/json
+User-Agent: Voxt
+X-Api-Key: token-123
+X-Api-Request-Id: <uuid>
+X-Api-Resource-Id: volc.bigasr.auc_turbo
+X-Api-Sequence: -1
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "data": "<3244 bytes of WAV>",
+    "format": "wav",
+    "language": "ja-JP",
+    "rate": 16000
+  },
+  "request": {
+    "corpus": {
+      "context": "{\"hotwords\":[{\"word\":\"Voxt\"},{\"word\":\"豆包\"},{\"word\":\"Kubernetes\"}],\"context_type\":\"dialog_ctx\",\"context_data\":[{\"text\":\"Dictation in Chinese and English.\"}]}"
+    },
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}

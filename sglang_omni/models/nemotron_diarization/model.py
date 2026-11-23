@@ -21,6 +21,7 @@ from torch import nn
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
 from sglang_omni.models.nemotron_diarization.speaker_cache import SpeakerCache
+from sglang_omni.utils.device import device_guard, supports_device_streams
 
 # note (Richard Wang): Use deterministic compiler reductions without changing other models.
 compiled_flex_attention = torch.compile(
@@ -152,7 +153,7 @@ class RotaryEmbedding(nn.Module):
         size = (batch, heads, frames, head_dim)
         stride = (frames * heads * head_dim, head_dim, heads * head_dim, 1)
         q_out, k_out = (q.new_empty_strided(size, stride) for _ in range(2))
-        with torch.cuda.device(q.device):
+        with device_guard(q.device):
             # note (Richard Wang): Fusion changes the FP32 reference rounding.
             rotary_kernel[(frames, heads, batch)](
                 q,
@@ -365,9 +366,11 @@ class NemotronDiarizationModel(nn.Module):
         else:
             pass
         for start_frame in range(0, frame_count, chunk_size * 8):
-            if features.is_cuda:
+            if supports_device_streams(features.device):
                 # note (Richard Wang): The next window may run on another worker stream.
-                stream = torch.cuda.current_stream(features.device)
+                stream = torch.get_device_module(features.device).current_stream(
+                    features.device
+                )
                 for tensor in (features, state.cache, state.fifo, state.cache_preds):
                     tensor.record_stream(stream)
             else:

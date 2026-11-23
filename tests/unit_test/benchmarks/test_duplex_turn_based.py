@@ -942,6 +942,25 @@ def test_empty_turn_terminal_is_accepted() -> None:
     assert result["metrics"]["responses_created"] == 2
 
 
+def test_a_failed_speech_is_accepted_and_counted() -> None:
+    """A cascade reply whose speech service failed ends failed/speech_error, which kept the protocol and is counted apart."""
+    trace = turn_based_trace()
+    result = evaluate_trace(trace, profile=TURN_BASED)
+    assert result["metrics"]["responses_speech_failed"] == 0
+    finish_last_response("failed", "speech_error")(trace)
+    result = evaluate_trace(trace, profile=TURN_BASED)
+    assert result["violations"] == []
+    assert result["metrics"]["responses_speech_failed"] == 1
+
+
+def test_a_failed_response_with_another_reason_is_rejected() -> None:
+    trace = turn_based_trace()
+    finish_last_response("failed", "server_error")(trace)
+    assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == [
+        "unsupported response terminal failed/server_error"
+    ]
+
+
 def test_a_reply_cut_at_the_talker_budget_is_accepted() -> None:
     """A Qwen3-Omni reply that stopped at its talker's token budget ends incomplete, which failed the recording as an unsupported terminal."""
     trace = turn_based_trace()

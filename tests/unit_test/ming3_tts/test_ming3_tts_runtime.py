@@ -33,8 +33,9 @@ from sglang_omni.modules.ming_audio.flow.cfm import get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.flow_loss import FlowLoss
 from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.types import SchedulerRequest
-from tests.unit_test.fixtures.accelerator import require_cuda
+from tests.unit_test.fixtures.accelerator import require_cuda, require_device_streams
 
 HIDDEN_SIZE = 64
 LATENT_DIM = 8
@@ -83,8 +84,12 @@ class TinySpeechHeads(SpeechHeadModel, nn.Module):
         self.weights_loaded = False
 
 
-def make_inputs(batch_size: int, device: torch.device) -> AcousticInputs:
-    generator = torch.Generator(device=device).manual_seed(batch_size)
+def make_inputs(
+    batch_size: int, device: torch.device, seed: int | None = None
+) -> AcousticInputs:
+    generator = torch.Generator(device=device).manual_seed(
+        batch_size if seed is None else seed
+    )
     return AcousticInputs(
         hidden_states=torch.randn(
             (batch_size, HIDDEN_SIZE),
@@ -110,8 +115,7 @@ def make_inputs(batch_size: int, device: torch.device) -> AcousticInputs:
 @pytest.mark.accelerator
 def test_acoustic_graph_replays_the_declared_guidance_after_allocator_reuse() -> None:
     """A captured step once read its guidance scales from freed memory."""
-    require_cuda()
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = require_device_streams()
     heads = TinySpeechHeads(device)
     with torch.no_grad():
         heads.capture_acoustic_graphs(4)
@@ -129,6 +133,41 @@ def test_acoustic_graph_replays_the_declared_guidance_after_allocator_reuse() ->
             assert torch.equal(replayed.feedback_embeddings, eager.feedback_embeddings)
             assert torch.equal(replayed.stop_probabilities, eager.stop_probabilities)
     assert len(overwrites) == 256
+
+
+@pytest.mark.accelerator
+def test_a_replayed_row_survives_a_later_replay_of_its_bucket() -> None:
+    """A kept latent once moved when the next request replayed the same bucket."""
+    device = require_device_streams()
+    heads = TinySpeechHeads(device)
+    with torch.no_grad():
+        heads.capture_acoustic_graphs(4)
+        assert 1 in heads.acoustic_graphs
+        first = heads.sample_acoustic_step(make_inputs(1, device))
+        kept = {
+            field: getattr(first, field).clone()
+            for field in ("latents", "feedback_embeddings", "stop_probabilities")
+        }
+        second = heads.sample_acoustic_step(make_inputs(1, device, seed=29))
+
+    for field, retained in kept.items():
+        assert not torch.equal(getattr(second, field), retained)
+        assert torch.equal(getattr(first, field), retained)
+
+
+def test_a_device_with_no_graph_backend_stays_eager() -> None:
+    """Capture is a no-op off an accelerator, so a CPU-placed stage still serves."""
+    device = torch.device("cpu")
+    assert current_platform.get_device_graph_backend(device) is None
+    heads = TinySpeechHeads(device)
+    heads.enable_fused_flow_head = False
+
+    with torch.no_grad():
+        heads.capture_acoustic_graphs(4)
+        step = heads.sample_acoustic_step(make_inputs(2, device))
+
+    assert heads.acoustic_graphs == {}
+    assert step.latents.shape == (2, 1, LATENT_DIM)
 
 
 def test_retraction_restores_the_resolved_launch_before_a_newer_launch(

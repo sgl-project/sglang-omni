@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.layers.attention.base_attn_backend import SharedReadEnds
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
 from sglang.srt.model_executor.model_runner import ModelRunner
@@ -176,11 +177,12 @@ def test_request_id_prefill_runner_carries_request_ids(
     monkeypatch.setattr(
         RequestIdPrefillCudaGraphRunner.__mro__[1],
         "load_batch",
-        lambda self, forward_batch, **kwargs: static_batch,
+        lambda self, forward_batch, **kwargs: (static_batch, SharedReadEnds.UNKNOWN),
     )
 
-    replay_batch = runner.load_batch(live_batch)
+    replay_batch, shared_read_ends = runner.load_batch(live_batch)
 
     assert replay_batch is static_batch
+    assert shared_read_ends is SharedReadEnds.UNKNOWN
     assert replay_batch.rids is live_batch.rids
     assert replay_batch.extend_num_tokens == 5

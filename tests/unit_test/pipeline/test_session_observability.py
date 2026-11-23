@@ -20,7 +20,7 @@ from tests.unit_test.fixtures.session_pipeline import chunk, pipeline
 async def test_session_pipeline_emits_joinable_duplex_trace(tmp_path: Path) -> None:
     event_dir = tmp_path / "events"
     recorder = get_recorder()
-    recorder.stop()
+    recorder.stop(wait=True)
     async with pipeline(tmp_path, stage_count=3) as (coordinator, _, _):
         run_id = "session-observability-test"
         recorder.start(run_id, str(event_dir), "coordinator")
@@ -58,7 +58,7 @@ async def test_session_pipeline_emits_joinable_duplex_trace(tmp_path: Path) -> N
             else:
                 pass
             await control.close()
-            recorder.stop()
+            recorder.stop(wait=True)
 
     events = [
         json.loads(line)

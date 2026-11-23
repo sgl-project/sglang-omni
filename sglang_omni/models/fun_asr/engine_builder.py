@@ -3,12 +3,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from collections.abc import Callable
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -24,6 +30,7 @@ from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -69,7 +76,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         mm_attention_backend: str | None,
         enable_pre_lm_encoder: bool,
         pre_lm_cache_max_entries: int,
@@ -78,6 +85,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         pre_lm_max_batch_wait_ms: int,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        early_request_builds: bool | None,
         stream_emit_interval_s: float,
     ) -> None:
         self.max_running_requests = max_running_requests
@@ -106,12 +114,17 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.early_request_builds = early_request_builds
         self.stream_emit_interval_s = stream_emit_interval_s
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.feature_extractor: FunAsrNanoFeatureExtractor | None = None
         self.audio_encoder_service: FunASRPreLMEncoderService | None = None
         self.device: str | None = None
         self.torch_mps_model_runner: FunASRTorchMpsModelRunner | None = None
+        self.speculative_worker_class: type[BaseSpecWorker] | None = None
+        self.draft_checkpoint: TemporaryDirectory[str] | None = None
+        self.speculative_reserve_tokens = 0
+        self.engine_context_padding = 0
         self.context_length = 0
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
@@ -139,6 +152,68 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             overrides["enable_torch_compile"] = False
         else:
             pass
+
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        speculative_algorithm = SpeculativeAlgorithm.from_string(
+            overrides.get("speculative_algorithm")
+        )
+        if speculative_algorithm.is_none():
+            if draft_model_path is not None:
+                raise ValueError(
+                    "speculative_draft_model_path needs a speculative_algorithm"
+                )
+            else:
+                pass
+        elif not speculative_algorithm.is_dflash():
+            raise ValueError(
+                f"{self.model_name} speculative decoding supports DFLASH, "
+                f"not {speculative_algorithm.name}"
+            )
+        elif draft_model_path is None:
+            raise ValueError(
+                "speculative_algorithm=DFLASH needs speculative_draft_model_path"
+            )
+        elif not current_platform.is_cuda():
+            raise ValueError(f"{self.model_name} DFLASH needs a CUDA GPU")
+        else:
+            # note (wilsonzheng0327): hosts without a draft never load its kernels.
+            from sglang_omni.speculative.dflash_draft import (
+                ReducedVocabularyDFlashWorker,
+                materialize_draft_checkpoint,
+            )
+
+            # note (wilsonzheng0327): SGLang reads the draft config while resolving
+            # the server args, so the flat copy must exist before that.
+            self.draft_checkpoint = materialize_draft_checkpoint(
+                str(draft_model_path), overrides.get("speculative_draft_model_revision")
+            )
+            overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
+            overrides["speculative_draft_model_revision"] = None
+            self.speculative_worker_class = ReducedVocabularyDFlashWorker
+            # note (wilsonzheng0327): async decode under a draft means speculative
+            # overlap, which this runner has not opted into.
+            self.enable_async_decode = False
+            # note (wilsonzheng0327): on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1, while without a draft it still speeds up concurrency 1 by about 17%.
+            overrides["enable_torch_compile"] = False
+            dflash_block_size = overrides.get("speculative_dflash_block_size")
+            num_draft_tokens = overrides.get("speculative_num_draft_tokens")
+            # note (wilsonzheng0327): SGLang verifies speculative_dflash_block_size tokens per step, else speculative_num_draft_tokens, else the draft's block size.
+            if dflash_block_size is not None:
+                draft_width = int(dflash_block_size)
+            elif num_draft_tokens is not None:
+                draft_width = int(num_draft_tokens)
+            else:
+                with open(
+                    os.path.join(self.draft_checkpoint.name, "config.json")
+                ) as config_file:
+                    draft_width = int(
+                        json.load(config_file)["dflash_config"]["block_size"]
+                    )
+            # note (wilsonzheng0327): the context fits a 30 s clip and the full budget
+            # exactly, and a draft request must stay two verify widths below the context.
+            self.speculative_reserve_tokens = 2 * draft_width
+            self.engine_context_padding = self.speculative_reserve_tokens + 1
+            self.context_length += self.engine_context_padding
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         if self.uses_torch_mps():
@@ -171,6 +246,31 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             pass
         super().validate_before_infrastructure(server_args)
 
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.speculative_worker_class is None:
+            return {}
+        else:
+            return {
+                "supports_speculative_decoding": True,
+                "speculative_worker_class": self.speculative_worker_class,
+            }
+
+    def validate_after_model_setup(
+        self, model: FunAsrNanoForConditionalGeneration, server_args: ServerArgs
+    ) -> None:
+        del model, server_args
+        # note (wilsonzheng0327): the reserve was sized before the server args resolved.
+        if self.speculative_worker_class is None:
+            pass
+        elif get_alloc_reserve_per_decode() != self.speculative_reserve_tokens:
+            raise RuntimeError(
+                f"{self.model_name} sized its context for a "
+                f"{self.speculative_reserve_tokens}-token speculative reserve, but "
+                f"the scheduler reserves {get_alloc_reserve_per_decode()}"
+            )
+        else:
+            pass
+
     def make_model_runner(
         self,
         model_worker: ModelWorker,
@@ -185,7 +285,12 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             return self.torch_mps_model_runner
         else:
             pass
-        return super().make_model_runner(model_worker, output_proc)
+        model_runner = super().make_model_runner(model_worker, output_proc)
+        # note (wilsonzheng0327): the shared verify penalty is validated on CUDA only, where Fun-ASR's draft runs; realtime requests with a prefix set repetition_penalty.
+        model_runner.speculative_repetition_penalty_owner = (
+            "verify_logits" if current_platform.is_cuda() else None
+        )
+        return model_runner
 
     def setup_model(
         self,
@@ -347,7 +452,9 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             tokenizer=self.tokenizer,
             feature_extractor=self.feature_extractor,
             max_new_tokens=self.max_new_tokens,
-            context_length=self.context_length,
+            # note (wilsonzheng0327): requests keep the limit they have without a
+            # draft; only the engine holds the reserve.
+            context_length=self.context_length - self.engine_context_padding,
             audio_encoder_service=self.audio_encoder_service,
             greedy_only=self.uses_torch_mps(),
         )
@@ -387,11 +494,20 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (wilsonzheng0327): with the draft a decode round is a whole verify round, so by default a ready prefill is no longer held during decode, as for Qwen3-ASR and MOSS-TD.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.speculative_worker_class is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
             "request_build_max_workers": (
                 1 if self.uses_torch_mps() else self.request_build_max_workers
             ),
             "request_build_max_pending": self.request_build_max_pending,
+            # note (wilsonzheng0327): only with the draft by default, where a request would otherwise wait for the rest of a verify round before its build starts; without it, early builds made Fun-ASR's first output later.
+            "early_request_builds": (
+                self.speculative_worker_class is not None
+                if self.early_request_builds is None
+                else self.early_request_builds
+            ),
         }

@@ -15,7 +15,13 @@ import threading
 import pytest
 import torch
 
+from sglang_omni.models.dots_tts import stages
 from sglang_omni.models.dots_tts.codec import DotsAudioCodec
+from sglang_omni.platforms import current_platform
+from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
+    CublasFlagSetter,
+    cublas_flags,
+)
 
 HOP_SIZE = 8
 PATCH_SIZE = 4
@@ -96,8 +102,10 @@ def install_waveforms(
     monkeypatch.setattr("sglang_omni.models.dots_tts.codec.load_audio", fake_load_audio)
 
 
-def set_tf32(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", enabled)
+def set_tf32(
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter, *, enabled: bool
+) -> None:
+    cublas_flags("allow_tf32", enabled)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", enabled)
 
 
@@ -209,13 +217,13 @@ def test_hop_misaligned_latents_are_rejected() -> None:
 
 
 def test_encoder_coalesces_equal_length_references_into_one_forward(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     import concurrent.futures
 
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     # Same duration, different content: the case batching can actually help.
     waveforms = {
@@ -255,14 +263,14 @@ def test_encoder_coalesces_equal_length_references_into_one_forward(
 
 
 def test_encoder_handles_all_distinct_lengths_without_padding(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     """Worst case for grouping: every group is size one, results still correct."""
     import concurrent.futures
 
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     waveforms = {
         f"ref-{index}.wav": make_waveform(4 + index, seed=40 + index)
@@ -295,11 +303,11 @@ def test_encoder_handles_all_distinct_lengths_without_padding(
 
 
 def test_cuda_reference_batching_is_disabled_with_default_cudnn_tf32(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", True)
     codec = make_codec()
     codec.device = torch.device("cuda")
@@ -311,11 +319,11 @@ def test_cuda_reference_batching_is_disabled_with_default_cudnn_tf32(
 
 
 def test_reference_executor_defaults_to_per_request(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     from sglang_omni.models.dots_tts import stages
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     monkeypatch.setattr(stages, "load_dots_audio_codec", lambda *args, **_kwargs: codec)
 
@@ -328,11 +336,11 @@ def test_reference_executor_defaults_to_per_request(
 
 
 def test_reference_executor_stop_closes_batch_worker(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     from sglang_omni.models.dots_tts import stages
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     monkeypatch.setattr(stages, "load_dots_audio_codec", lambda *args, **_kwargs: codec)
     scheduler = stages.create_reference_encode_executor(
@@ -345,6 +353,72 @@ def test_reference_executor_stop_closes_batch_worker(
     scheduler.stop()
 
     assert not encoder.service.batch_thread.is_alive()
+
+
+@pytest.mark.parametrize("allow_reduced_precision", [False, True])
+def test_reference_precision_option_rejects_cpu(
+    allow_reduced_precision: bool,
+) -> None:
+    with pytest.raises(ValueError, match="requires an NPU reference worker"):
+        stages.create_reference_encode_executor(
+            "stub",
+            device="cpu",
+            npu_conv_allow_hf32=allow_reduced_precision,
+        )
+
+
+def test_reference_hf32_option_rejects_non_boolean() -> None:
+    with pytest.raises(ValueError, match="must be a boolean or None"):
+        stages.create_reference_encode_executor(
+            "stub", device="cpu", npu_conv_allow_hf32="false"
+        )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(current_platform.device_type != "npu", reason="requires NPU")
+@pytest.mark.parametrize(
+    "allow_reduced_precision,initial_precision",
+    [(None, True), (None, False), (False, True), (True, False)],
+)
+def test_reference_precision_is_configured_before_codec_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    allow_reduced_precision: bool | None,
+    initial_precision: bool,
+) -> None:
+    device_module = torch.get_device_module("npu")
+    if not device_module.is_available():
+        pytest.skip("NPU is unavailable")
+    else:
+        pass
+    codec = make_codec()
+    codec.device = torch.device("npu", device_module.current_device())
+    monkeypatch.setattr(device_module.conv, "allow_hf32", initial_precision)
+    expected_precision = (
+        initial_precision
+        if allow_reduced_precision is None
+        else allow_reduced_precision
+    )
+
+    def load_codec(
+        model_path: str, *, device: str, decoder_dtype: torch.dtype
+    ) -> DotsAudioCodec:
+        assert model_path == "stub"
+        assert device == str(codec.device)
+        assert decoder_dtype == torch.float32
+        assert device_module.conv.allow_hf32 == expected_precision
+        return codec
+
+    monkeypatch.setattr(stages, "load_dots_audio_codec", load_codec)
+    scheduler = stages.create_reference_encode_executor(
+        "stub",
+        device="npu",
+        gpu_id=codec.device.index,
+        npu_conv_allow_hf32=allow_reduced_precision,
+    )
+    try:
+        assert scheduler.fn.__self__.codec is codec
+    finally:
+        scheduler.stop()
 
 
 # --------------------------------------------------------------------------

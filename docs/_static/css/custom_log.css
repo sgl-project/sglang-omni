@@ -35,3 +35,11 @@ img.logo__image,
     max-width: 100%;
     height: auto;
 }
+
+/* Anti-flash: hide sidebar sub-nav of non-active groups before
+   sidebar_company_toggle.js runs. The server renders <details open="open">
+   for every group, which would otherwise flash expanded on first paint.
+   The JS adds .js-ready to <nav class="bd-links"> after collapsing groups. */
+nav.bd-links:not(.js-ready) li.has-children:not(.current):not(.active) > details > ul {
+    display: none !important;
+}

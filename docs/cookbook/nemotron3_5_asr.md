@@ -12,7 +12,7 @@ Follow [Installation](../get_started/installation.md), then run the examples
 from the repository root. Use the repository's pinned Transformers version;
 the Nemotron compatibility implementation is included.
 
-For Intel GPUs, follow the [Nemotron 3.5 ASR XPU recipe](../get_started/installation_xpu.md#nemotron-35-asr-speech-to-text-single-xpu).
+For Intel GPUs, follow the [Nemotron 3.5 ASR XPU recipe](../other_platforms/installation_xpu.md#nemotron-35-asr-speech-to-text-single-xpu).
 
 ## Server Configuration
 
@@ -207,11 +207,14 @@ streaming encoder state representation. Offline transcription is unchanged.
 
 ### Streaming encoder CUDA graphs
 
-At startup, CUDA captures every exact subsequent-window batch size from
+At startup, the accelerator captures every exact subsequent-window batch size from
 `min(encoder_graph_max_batch_size, max_batch_size, pool_capacity)` down to 1,
 largest first, in one shared graph memory pool. The defaults capture B8 through
 B1. First windows and uncovered shapes use the pooled eager encoder. Capture
 failures fail startup; set `enable_encoder_cuda_graph=false` to run entirely eager.
+CUDA and Intel XPU both capture. Every other device logs once and runs entirely
+eager, including the accelerators whose platforms do record graphs, until their
+capture is measured.
 
 Graphs update persistent attention, convolution and frame-count state by slot ID.
 History length therefore needs no additional buckets or Python cache packing.

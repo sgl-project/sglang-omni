@@ -6,12 +6,15 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import torch
 from pydantic import JsonValue
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.utils.hf_transformers.tokenizer import get_tokenizer
 from transformers import AutoConfig
 
@@ -28,6 +31,7 @@ from sglang_omni.modules.ming_audio.audio_encoder import (
 from sglang_omni.modules.ming_audio.hf_config import Ming3AudioConfig
 from sglang_omni.modules.ming_audio.thinker import (
     Ming3AudioModelRunner,
+    Ming3AudioMTP,
     Ming3AudioThinker,
 )
 from sglang_omni.proto.request import StagePayload
@@ -39,6 +43,10 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.speculative.dflash_draft import (
+    ReducedVocabularyDFlashWorker,
+    materialize_draft_checkpoint,
+)
 from sglang_omni.utils.audio import decode_audio_data_uri
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
@@ -148,11 +156,55 @@ def create_audio_encoder_executor(
     return SimpleScheduler(encode)
 
 
+def prepare_draft_checkpoint(
+    overrides: dict[str, JsonValue],
+) -> TemporaryDirectory[str]:
+    """Point the engine at a loadable copy of a DFlash draft; the caller removes it once loaded."""
+    draft_model_path = overrides.get("speculative_draft_model_path")
+    if not isinstance(draft_model_path, str) or not draft_model_path:
+        raise ValueError(
+            "speculative_algorithm DFLASH needs speculative_draft_model_path"
+        )
+    else:
+        pass
+    revision = overrides.get("speculative_draft_model_revision")
+    draft_checkpoint = materialize_draft_checkpoint(
+        draft_model_path, None if revision is None else str(revision)
+    )
+    # note (evanderfff123-boop): fold accepted KDA inputs from a power-of-two ring covering twice the draft block instead of keeping per-draft-token state snapshots.
+    if overrides.setdefault("enable_linear_replayssm_spec", True):
+        dflash_block_size = overrides.get("speculative_dflash_block_size")
+        num_draft_tokens = overrides.get("speculative_num_draft_tokens")
+        # note (evanderfff123-boop): SGLang verifies speculative_dflash_block_size tokens per step, else speculative_num_draft_tokens, else the draft's block size.
+        if dflash_block_size is not None:
+            draft_width = int(dflash_block_size)
+        elif num_draft_tokens is not None:
+            draft_width = int(num_draft_tokens)
+        else:
+            draft_config = json.loads(
+                (Path(draft_checkpoint.name) / "config.json").read_text()
+            )
+            draft_width = int(draft_config["dflash_config"]["block_size"])
+        overrides.setdefault(
+            "linear_replayssm_cache_len", 2 ** (2 * draft_width - 1).bit_length()
+        )
+    else:
+        pass
+    overrides.update(
+        speculative_draft_model_path=draft_checkpoint.name,
+        speculative_draft_model_revision=None,
+        disable_overlap_schedule=True,
+        enable_mixed_chunk=False,
+    )
+    return draft_checkpoint
+
+
 def create_thinker_executor(
     model_path: str,
     *,
     max_seq_len: int,
     enable_async_decode: bool,
+    async_decode_min_batch_size: int = 1,
     device: str | None = None,
     gpu_id: int | None = None,
     tp_rank: int = 0,
@@ -165,28 +217,104 @@ def create_thinker_executor(
     AutoConfig.register(Ming3AudioConfig.model_type, Ming3AudioConfig, exist_ok=True)
     ModelRegistry.models["BailingMoeV3ForCausalLM"] = Ming3AudioThinker
     overrides = dict(server_args_overrides or {})
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
+    model_overrides: dict[str, JsonValue] = {
+        "architectures": ["BailingMoeV3ForCausalLM"]
+    }
+    draft_checkpoint: TemporaryDirectory[str] | None = None
+    speculative_worker_class: type[BaseSpecWorker] | None = None
+    if speculative_algorithm.is_none():
+        if overrides.get("speculative_draft_model_path") is not None:
+            raise ValueError("speculative_draft_model_path needs speculative_algorithm")
+        else:
+            pass
+    elif speculative_algorithm.is_dflash():
+        draft_checkpoint = prepare_draft_checkpoint(overrides)
+        speculative_worker_class = ReducedVocabularyDFlashWorker
+        # note (wilsonzheng0327): SGLang also applies json_model_override_args to the draft's
+        # config, so the thinker's architecture comes from Ming3AudioConfig instead.
+        model_overrides = {}
+    elif speculative_algorithm != SpeculativeAlgorithm.EAGLE:
+        raise ValueError(
+            "Ming3 audio supports NEXTN (EAGLE) with its bundled MTP, or a DFLASH draft"
+        )
+    else:
+        if overrides.get("speculative_draft_model_path") not in (None, model_path):
+            raise ValueError("Ming3 audio MTP must use the thinker's checkpoint")
+        elif overrides.get("speculative_draft_model_revision") not in (
+            None,
+            overrides.get("revision"),
+        ):
+            raise ValueError("Ming3 audio MTP must use the thinker's revision")
+        elif overrides.get("speculative_eagle_topk") not in (None, 1):
+            raise ValueError(
+                "Ming3 audio KDA verification requires speculative_eagle_topk=1"
+            )
+        elif overrides.get("enable_multi_layer_eagle"):
+            raise ValueError(
+                "Ming3 audio has one MTP layer; enable_multi_layer_eagle is unsupported"
+            )
+        elif overrides.get("enable_mixed_chunk"):
+            raise ValueError("Ming3 audio MTP requires enable_mixed_chunk off")
+        else:
+            pass
+        configuration = Ming3AudioConfig.from_pretrained(
+            model_path, revision=overrides.get("revision")
+        )
+        if (
+            not configuration.use_kda
+            or configuration.num_nextn_predict_layers != 1
+            or configuration.mtp_use_kda
+        ):
+            raise ValueError(
+                "Ming3 audio MTP requires a KDA thinker with one MLA MTP layer"
+            )
+        else:
+            pass
+        # note (YzXiao): NextN selects its V3 decoder and weight loader from the flattened text model type.
+        model_overrides["model_type"] = "bailing_hybrid"
+        overrides.update(
+            speculative_draft_model_path=model_path,
+            speculative_draft_model_revision=overrides.get("revision"),
+            enable_mixed_chunk=False,
+        )
+        ModelRegistry.models["BailingMoeForCausalLMNextN"] = Ming3AudioMTP
     overrides.update(
         tp_size=tp_size,
         trust_remote_code=False,
-        json_model_override_args=json.dumps(
-            {"architectures": ["BailingMoeV3ForCausalLM"]}
-        ),
         disable_radix_cache=True,
         chunked_prefill_size=-1,
     )
-    server_args = build_sglang_server_args(
-        model_path, context_length=max_seq_len, **overrides
-    )
-    worker, tree_cache, request_pool, token_pool, model_config = (
-        create_sglang_infrastructure(
-            server_args,
-            resolved_device.index or 0,
-            tp_rank=tp_rank,
-            nccl_port=nccl_port,
-            total_gpu_memory_fraction=total_gpu_memory_fraction,
+    if model_overrides:
+        overrides["json_model_override_args"] = json.dumps(model_overrides)
+    else:
+        pass
+    try:
+        server_args = build_sglang_server_args(
+            model_path, context_length=max_seq_len, **overrides
         )
+        worker, tree_cache, request_pool, token_pool, model_config = (
+            create_sglang_infrastructure(
+                server_args,
+                resolved_device.index or 0,
+                tp_rank=tp_rank,
+                nccl_port=nccl_port,
+                total_gpu_memory_fraction=total_gpu_memory_fraction,
+                supports_speculative_decoding=True,
+                speculative_worker_class=speculative_worker_class,
+                enable_async_decode=enable_async_decode,
+            )
+        )
+    finally:
+        if draft_checkpoint is not None:
+            draft_checkpoint.cleanup()
+        else:
+            pass
+    tokenizer = get_tokenizer(
+        model_path, trust_remote_code=False, revision=overrides.get("revision")
     )
-    tokenizer = get_tokenizer(model_path, trust_remote_code=False)
 
     def build_request(payload: StagePayload) -> SGLangARRequestData:
         state: AudioPipelineState = payload.data
@@ -232,6 +360,7 @@ def create_thinker_executor(
             pass
         payload.data = {
             "text": text,
+            "spec_tokens_details": request.spec_tokens_details,
             "usage": {
                 "prompt_tokens": len(request.input_ids),
                 "completion_tokens": len(request.output_ids),
@@ -251,4 +380,5 @@ def create_thinker_executor(
         request_builder=build_request,
         result_adapter=build_result,
         enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     )

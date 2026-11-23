@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from .execution import TalkerExecutionConfig
-from .modules import DiTBlock, FinalLayer, RMSNorm
+from .modules import DiTBlock, FinalLayer, RMSNorm, run_transformer_blocks
 from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
 
 
@@ -55,6 +55,7 @@ class Aggregator(nn.Module):
         self.word_embedder = nn.Embedding(1, hidden_size)
         self.x_embedder = nn.Linear(in_channels, hidden_size)
         self.hidden_size = hidden_size
+        self.fuse_residual_norm = execution_config.fuse_residual_norm
 
         self.rotary_embed = build_rotary_embedding(
             hidden_size // num_heads,
@@ -128,9 +129,14 @@ class Aggregator(nn.Module):
             mask = torch.cat([mask_pad, mask], dim=-1)
         else:
             pass
-        for block in self.blocks:
-            x = block(x, mask, rope)  # (N, T, D)
-        x = self.final_layer(x)  # (N, T, patch_size ** 2 * out_channels)
+        x = run_transformer_blocks(
+            self.blocks,
+            self.final_layer,
+            x,
+            mask,
+            rope,
+            fuse_residual_norm=self.fuse_residual_norm,
+        )
         x = x[:, :1, :]
         return x
 

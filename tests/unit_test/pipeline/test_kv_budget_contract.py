@@ -20,6 +20,7 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import import_pipeline_configs
 
 KV_BYTES = 2 * 1024**3
@@ -72,12 +73,13 @@ def test_registry_discovery_covers_every_model_package():
     registered_config_classes(),
     ids=lambda value: value if isinstance(value, str) else value.__name__,
 )
-def test_every_registered_model_stage_accepts_a_kv_byte_budget(arch, config_cls):
-    del arch
+def test_every_registered_model_stage_accepts_a_kv_byte_budget(
+    arch: str, config_cls: type[PipelineConfig], tmp_path: Path
+) -> None:
     if config_cls.__name__ in DECLARED_EXAMPLES:
         config = ConfigManager.from_file(DECLARED_EXAMPLES[config_cls.__name__]).config
     else:
-        config = config_cls(model_path="dummy")
+        config = config_cls(model_path=str(tmp_path))
 
     if not any(
         config_cls.stage_config_cls(stage.name).engine_stage for stage in config.stages
@@ -105,4 +107,6 @@ def test_every_registered_model_stage_accepts_a_kv_byte_budget(arch, config_cls)
         assert "kv_cache_bytes" not in (typed.get("server_args_overrides") or {})
         accepted += 1
 
-    assert accepted > 0, f"{config_cls.__name__} accepted a byte budget on no stage"
+    assert (
+        accepted > 0
+    ), f"{arch} ({config_cls.__name__}) accepted a byte budget on no stage"

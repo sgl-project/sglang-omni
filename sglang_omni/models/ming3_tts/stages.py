@@ -47,6 +47,7 @@ from sglang_omni.models.ming3_tts.model_runner import (
     Ming3TTSModelRunner,
     Ming3TTSRequestData,
     StopPolicy,
+    build_stream_output,
 )
 from sglang_omni.models.ming3_tts.sglang_model import (
     AGGREGATOR_WEIGHT_PREFIX,
@@ -63,6 +64,8 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
+    falls_back_to_breakable_prefill,
+    get_prefill_cuda_graph_backend,
     operator_selected_prefill_backend,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -543,6 +546,8 @@ def create_tts_engine_executor(
     prefill_graph_max_requests: int = 32,
     enable_async_decode: bool = False,
     enable_fused_flow_head: bool = False,
+    use_streaming_vocoder: bool = True,
+    enable_dense_streaming: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
     tp_rank: int = 0,
@@ -592,6 +597,8 @@ def create_tts_engine_executor(
         json_model_override_args=json.dumps({"architectures": [backbone_architecture]}),
         disable_radix_cache=True,
     )
+    operator_selected_prefill = operator_selected_prefill_backend(overrides)
+    defaults_full_prefill = False
     overrides.setdefault("chunked_prefill_size", max_seq_len if dense else -1)
     overrides.setdefault("enable_mixed_chunk", dense)
     if dense:
@@ -604,7 +611,8 @@ def create_tts_engine_executor(
             "disable_prefill_cuda_graph"
         )
         if not disables_prefill and prefill_graph_token_counts:
-            if not operator_selected_prefill_backend(overrides):
+            if not operator_selected_prefill:
+                defaults_full_prefill = True
                 overrides.setdefault(
                     "cuda_graph_backend_prefill", CudaGraphBackend.FULL
                 )
@@ -623,6 +631,17 @@ def create_tts_engine_executor(
     server_args = build_sglang_server_args(
         checkpoint, context_length=max_seq_len, **overrides
     )
+    if (
+        defaults_full_prefill
+        and get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.FULL
+        and falls_back_to_breakable_prefill(server_args, "Ming 3 TTS")
+    ):
+        overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+        server_args = build_sglang_server_args(
+            checkpoint, context_length=max_seq_len, **overrides
+        )
+    else:
+        pass
     worker, tree_cache, request_pool, token_pool, model_config = (
         create_sglang_infrastructure(
             server_args,
@@ -633,6 +652,10 @@ def create_tts_engine_executor(
         )
     )
     tokenizer = get_tokenizer(checkpoint, trust_remote_code=False)
+    if dense and not enable_dense_streaming:
+        use_streaming_vocoder = False
+    else:
+        pass
 
     def build_request(payload: StagePayload) -> Ming3TTSRequestData:
         parameters = payload.request.params
@@ -711,8 +734,11 @@ def create_tts_engine_executor(
         # note (rsi): a finished request's latents are complete once its step
         # resolved, so the copy runs on a side stream instead of waiting for
         # the lookahead step already queued on the loop's stream.
-        with device_module.stream(result_stream):
-            latents = torch.stack(request.latents).float().cpu()
+        if not use_streaming_vocoder or not payload.request.params.get("stream", False):
+            with device_module.stream(result_stream):
+                latents = torch.stack(request.latents).float().cpu()
+        else:
+            latents = None
         payload.data = {
             "latents": latents,
             "finish_reason": request.finish_reason,
@@ -750,6 +776,7 @@ def create_tts_engine_executor(
         model_runner=model_runner,
         request_builder=build_request,
         result_adapter=build_result,
+        stream_output_builder=build_stream_output if use_streaming_vocoder else None,
         # note (rsi): a decode step launches before the previous one's host
         # bookkeeping, which then runs while the GPU works.
         enable_async_decode=enable_async_decode,
