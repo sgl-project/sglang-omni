@@ -13,7 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
-- **Dictionary controls share the overflow menu**: Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections, and Scan history now sit beside Import and Export. Add term stays in the header, and dictionary learning behaves as before.
+- **Dictionary controls share the overflow menu**: Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections, and Scan history now sit beside Import and Export. Add term stays in the header, and dictionary learning behaves as before. Adjacent help keeps the Speech hints, Glossary, and correction-learning explanations, including the privacy promise.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
 ### Fixed
@@ -31,7 +31,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
-- **词典控件收进更多操作菜单**：“使用词典”“语音识别提示”“语言模型术语表”“从我的改正中学习”和“扫描历史”现在与导入、导出放在同一个菜单里。“添加词条”仍在页头，词典学习行为不变。
+- **词典控件收进更多操作菜单**：“使用词典”“语音识别提示”“语言模型术语表”“从我的改正中学习”和“扫描历史”现在与导入、导出放在同一个菜单里。“添加词条”仍在页头，词典学习行为不变。菜单旁边的 ⓘ 保留这三项设置的说明，包括读取内容的隐私承诺。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 
 #### 修复

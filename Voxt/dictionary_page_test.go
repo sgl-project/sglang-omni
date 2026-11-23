@@ -162,6 +162,54 @@ func TestDictionaryGuide(t *testing.T) {
 	}
 }
 
+func TestDictionaryControlExplanations(t *testing.T) {
+	english := []string{
+		"Terms go to the speech model as words to expect.",
+		"The language model writes terms as spelled here.",
+		fmt.Sprintf("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds),
+	}
+	chinese := []string{
+		"词条会发给语音识别模型，让它留意这些词。",
+		"语言模型会按这里的写法输出词条。",
+		fmt.Sprintf("插入后的 %d 秒内，Voxt 会读取插入处附近的文字。你改了某个词，它会建议加入词典。读到的内容不保存，也不发送。", learn.WatchSeconds),
+	}
+	for _, test := range []struct {
+		name          string
+		locale        string
+		dictionaryOff bool
+		want          []string
+	}{
+		{name: "English", locale: "en", want: english},
+		{name: "Chinese", locale: "zh-Hans", want: chinese},
+		{name: "available before enabling the dictionary", locale: "en", dictionaryOff: true, want: english},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, tt := dictTester(t)
+			i18n.SetLocale(test.locale)
+			frames(tt)
+			if test.dictionaryOff {
+				chooseDictionaryMenuItem(t, tt, i18n.T("Use the dictionary"))
+			}
+			helpLabel := ""
+			for _, label := range tt.AccessLabels() {
+				if strings.Contains(label, test.want[0]) {
+					helpLabel = label
+					break
+				}
+			}
+			if helpLabel == "" {
+				t.Fatalf("no Speech hints help in %q", tt.AccessLabels())
+			}
+			clickControl(t, tt, helpLabel)
+			for _, want := range test.want {
+				if !has(tt, want) {
+					t.Errorf("no %q in %q", want, firstTexts(tt))
+				}
+			}
+		})
+	}
+}
+
 func TestDictionarySearchAndSwitches(t *testing.T) {
 	a, tt := dictTester(t)
 	seedTerms(t, a)

@@ -87,6 +87,11 @@ func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionar
 				actions.exportTerms("txt")
 			}
 		})
+		infoTip(c.Key("dict-controls-info"), strings.Join([]string{
+			i18n.T("Terms go to the speech model as words to expect."),
+			i18n.T("The language model writes terms as spelled here."),
+			i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", state.LearnWatchSeconds),
+		}, "\n"))
 		if primaryIconButton(c.Key("dict-add"), icons.Add, i18n.T("Add term")).Clicked() {
 			actions.openDictionaryTerm("")
 		}
