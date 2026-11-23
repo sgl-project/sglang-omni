@@ -45,9 +45,9 @@ constexpr int kMinFinalTokens = 96;
 
 MossRealtimeSession::MossRealtimeSession(
     omni_server::TranscriptionWorker &worker, TranscribeFn transcribe,
-    Sender sender)
+    Sender sender, ClockFn clock)
     : RealtimeConnection(std::move(sender)), worker_(worker),
-      transcribe_(std::move(transcribe)) {}
+      transcribe_(std::move(transcribe)), clock_(std::move(clock)) {}
 
 void MossRealtimeSession::Close() {
   {
@@ -201,7 +201,7 @@ MossRealtimeSession::TakeFinalWindow(int sample_count) {
 }
 
 std::optional<MossRealtimeSession::Decode> MossRealtimeSession::NextDecode() {
-  const auto now = std::chrono::steady_clock::now();
+  const auto now = clock_();
   const int pending_count = static_cast<int>(pending_samples_.size());
   Decode decode;
   if (decoding_) {

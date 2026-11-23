@@ -27,9 +27,13 @@ public:
   using TranscribeFn = std::function<omni_common::TranscriptionResult(
       const std::vector<float> &, const MossOptions &,
       const std::atomic<bool> &)>;
+  // steady_clock::now in production; tests inject a virtual clock so timed
+  // scenarios are deterministic.
+  using ClockFn = std::function<std::chrono::steady_clock::time_point()>;
 
   MossRealtimeSession(omni_server::TranscriptionWorker &worker,
-                      TranscribeFn transcribe, Sender sender);
+                      TranscribeFn transcribe, Sender sender,
+                      ClockFn clock = std::chrono::steady_clock::now);
 
   bool Handle(const nlohmann::json &message) override;
   void Close() override;
@@ -75,6 +79,7 @@ private:
 
   omni_server::TranscriptionWorker &worker_;
   TranscribeFn transcribe_;
+  ClockFn clock_;
 
   // Session state; decodes finish on the worker thread.
   std::mutex mutex_;
