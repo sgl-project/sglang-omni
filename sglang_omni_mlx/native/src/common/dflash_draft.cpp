@@ -151,8 +151,18 @@ DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
             return quantization_bits;
           })),
       decoder_(checkpoint_, "",
-               Qwen3DecoderConfig::FromJson(
-                   draft.config.at("transformer_layer_config"))),
+               [&] {
+                 Qwen3DecoderConfig config = Qwen3DecoderConfig::FromJson(
+                     draft.config.at("transformer_layer_config"));
+                 // note (wilsonzheng0327): the DSpark block attends both ways,
+                 // as the CUDA server serves it; on six corpus clips the
+                 // Ming-3.0-asr-tiny draft accepts 4.2 tokens a round so and
+                 // 2.4 causally.
+                 config.is_causal =
+                     draft.config.value("speculators_model_type",
+                                        std::string()) != "dspark";
+                 return config;
+               }()),
       aux_layers_(draft.config.at("aux_hidden_state_layer_ids")
                       .get<std::vector<int>>()),
       block_size_(draft.config.at("block_size").get<int>()),
@@ -189,9 +199,9 @@ void DFlashDraft::AppendContext(const std::vector<mx::array> &aux_hidden_states,
 mx::array DFlashDraft::ProposeBlock(int anchor_id,
                                     const mx::array &block_embeddings,
                                     std::vector<KVCache> &caches) const {
-  // note (wilsonzheng0327): the block attends causally, as the pinned drafts
-  // were trained (sliding_window_non_causal is false, checked at load). A
-  // bidirectional block, as in the DFlash reference, lowers the acceptance on
+  // note (wilsonzheng0327): a DFlash block attends causally, as the pinned
+  // drafts were trained (sliding_window_non_causal is false, checked at load).
+  // A bidirectional block, as in the DFlash reference, lowers the acceptance on
   // the 392-clip corpus: 4.86 to 4.42 a round on the 0.6B draft and 5.50 to
   // 4.95 on the 1.7B (measured by Jiaxin Deng), with the same transcripts.
   const mx::array hidden = decoder_.Forward(block_embeddings, caches);

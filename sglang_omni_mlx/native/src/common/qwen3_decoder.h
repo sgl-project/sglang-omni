@@ -28,6 +28,9 @@ struct Qwen3DecoderConfig {
   bool has_query_key_norm = true;
   // Rotates adjacent rather than half-split pairs of each head.
   bool traditional_rope = false;
+  // A pass over several tokens attends causally; otherwise each token attends
+  // to every other one in the pass.
+  bool is_causal = true;
   int hidden_size = 0;
   int vocab_size = 0;
 
