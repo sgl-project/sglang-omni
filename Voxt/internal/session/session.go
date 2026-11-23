@@ -383,9 +383,8 @@ type Config struct {
 	// dictionary's enabled terms (nil: none).
 	History  store.History
 	Glossary func(ctx context.Context) ([]store.Term, error)
-	// Snippets lists the user's snippets (nil: none): a Transcribe that is
-	// only a trigger is its snippet, and triggers in a dictation are
-	// replaced in its result (snippets.go).
+	// Snippets lists the user's snippets (nil: none): a Transcribe of only
+	// a trigger is its snippet; said triggers are replaced (snippets.go).
 	Snippets func(ctx context.Context) ([]snippet.Snippet, error)
 	// Notes keeps the results of note sessions (nil: they show in the
 	// card, with a problem).
