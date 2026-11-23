@@ -140,8 +140,9 @@ func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	}
 }
 
-// TestLLMDebugUneditedPresetReadsLatestSavedPrompt: an unedited preset
-// must not restore a cached prompt over a newer setting saved elsewhere.
+// TestLLMDebugUneditedPresetReadsLatestSavedPrompt: an unedited preset,
+// including one edited back to its saved value, must not restore a cached
+// prompt over a newer setting saved elsewhere.
 func TestLLMDebugUneditedPresetReadsLatestSavedPrompt(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
 	a, _, _ := newTestApp(t)
@@ -167,6 +168,29 @@ func TestLLMDebugUneditedPresetReadsLatestSavedPrompt(t *testing.T) {
 	}
 	if a.prefs.Features.Transcribe.Prompt != "Transcribe new" {
 		t.Fatal("reading the preset overwrote the newer saved prompt")
+	}
+
+	a.llmDbg.prompt = "Transcribe draft"
+	a.llmDbg.preset = "Rewrite"
+	_ = a.llmDebugModel()
+	a.llmDbg.preset = "Transcribe"
+	_ = a.llmDebugModel()
+	if a.llmDbg.prompt != "Transcribe draft" {
+		t.Fatalf("the edited draft was not cached: %q", a.llmDbg.prompt)
+	}
+	a.llmDbg.prompt = "Transcribe new"
+	a.llmDbg.preset = "Rewrite"
+	_ = a.llmDebugModel()
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = "Transcribe newest"
+	})
+	a.llmDbg.preset = "Transcribe"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe newest" || model.Edited || a.llmDbg.prompt != "Transcribe newest" {
+		t.Fatalf("the return-to-saved preset restored a stale draft: model %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe newest" {
+		t.Fatal("reading the return-to-saved preset overwrote the newer saved prompt")
 	}
 }
 
