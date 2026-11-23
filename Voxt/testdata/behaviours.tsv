@@ -44,6 +44,7 @@ Reopen a card from the menu bar, history for other programs	L	TestHistoryAccessR
 Local speech models	L	TestKeepIdle	none
 Local speech models	L	TestModelsPageMatchesCatalogue	none
 Local speech models	L	TestModelsMemory	none
+Local speech models	L	TestModelsViewStateNoRuntime	none
 Local speech models	M	TestMacE2EOmni	none
 Remote speech recognition and system dictation	L	TestRemoteSpeechUpload	none
 Remote speech recognition and system dictation	L	TestRemoteSpeechStreaming	none

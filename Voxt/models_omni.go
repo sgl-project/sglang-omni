@@ -46,6 +46,22 @@ type omniState struct {
 	// omniCache holds the folders of links omniFolder makes ("": the
 	// system's temporary folder, in tests).
 	omniCache string
+	// runtimeKnown/runtimeOK are the startup probe's answer: the models
+	// page warns when this copy has no runtime (probeOmniRuntime).
+	runtimeKnown, runtimeOK bool
+}
+
+// probeOmniRuntime looks for the omni runtime off the main thread, so
+// the models page can say when this copy has none (its downloads and
+// Apply to are of no use then: modelsViewStateInput.NoRuntime).
+func (a *app) probeOmniRuntime() {
+	a.async(func() {
+		_, err := omniLocate()
+		a.post(func() {
+			a.runtimeKnown, a.runtimeOK = true, err == nil
+			a.modelViewKey = "" // rebuild the models page with the answer
+		})
+	})
 }
 
 // omniLocate finds the runtime (a test seam).

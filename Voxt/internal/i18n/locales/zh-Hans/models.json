@@ -91,6 +91,8 @@
   "The proxy in this PC's network settings, or one set by an environment variable.": "使用这台电脑网络设置里的代理，或环境变量指定的代理。",
   "This frees %s. You can download it again later.": "会释放 %s，之后可以重新下载。",
   "This model does not support this feature.": "此模型不支持该功能。",
+  "This version of Voxt cannot run speech models on this Mac: it has no local runtime. Use an online speech service below.": "这个版本的 Voxt 没有本地运行组件，不能在这台 Mac 上运行语音识别模型，请改用下面的在线服务。",
+  "This version of Voxt cannot run speech models on this PC: it has no local runtime. Use an online speech service below.": "这个版本的 Voxt 没有本地运行组件，不能在这台电脑上运行语音识别模型，请改用下面的在线服务。",
   "This model is no longer available. Close this dialog and set it up again.": "此模型已不可用，请关闭对话框并重新设置。",
   "Transcribe clean-up": "转录整理",
   "Unavailable: %s": "不可用：%s",

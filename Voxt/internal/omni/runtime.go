@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,16 +71,20 @@ type Config struct {
 const beforeLoadTimeout = 5 * time.Second
 
 // Locate finds the runtime: $VOXTNEW_OMNI_RUNTIME (a directory with
-// bin/qwen3_asr_server, or the binary itself), else the app bundle's
-// Contents/Resources/omni beside exe (the running executable,
-// Contents/MacOS/Voxt). It returns the server binary's path.
+// bin/qwen3_asr_server, or the binary itself), else an omni directory
+// beside the running executable (the app bundle's Contents/Resources/omni
+// on macOS, <install dir>/omni elsewhere). It returns the server binary's
+// path.
 func Locate(exe string) (string, error) {
 	var tried []string
 	try := func(p string) (string, bool) {
 		tried = append(tried, p)
 		fi, err := os.Stat(p)
 		if err == nil && fi.IsDir() {
-			p = filepath.Join(p, ServerBinary)
+			p, err = runtimeBinary(p)
+			if err != nil {
+				return p, false
+			}
 			fi, err = os.Stat(p)
 		}
 		return p, err == nil && fi.Mode().IsRegular()
@@ -91,11 +96,27 @@ func Locate(exe string) (string, error) {
 		return "", fmt.Errorf("omni: %s=%s has no %s", EnvRuntime, env, ServerBinary)
 	}
 	if exe != "" {
-		if p, ok := try(filepath.Join(filepath.Dir(exe), "..", "Resources", "omni")); ok {
+		dir := filepath.Dir(exe)
+		if p, ok := try(filepath.Join(dir, "omni")); ok {
+			return filepath.Clean(p), nil
+		}
+		if p, ok := try(filepath.Join(dir, "..", "Resources", "omni")); ok {
 			return filepath.Clean(p), nil
 		}
 	}
 	return "", fmt.Errorf("omni: no runtime (looked in %s; set %s)", strings.Join(tried, ", "), EnvRuntime)
+}
+
+// runtimeBinary is the server binary in a runtime directory: with the
+// .exe Windows gives it, without it for the bundles and unpacked trees
+// that keep the plain name.
+func runtimeBinary(dir string) (string, error) {
+	plain := filepath.Join(dir, ServerBinary)
+	fi, err := os.Stat(plain)
+	if runtime.GOOS != "windows" || (err == nil && fi.Mode().IsRegular()) {
+		return plain, err
+	}
+	return filepath.Join(dir, ServerBinary+".exe"), nil
 }
 
 // Runtime supervises the servers: one per model, one speech model at a

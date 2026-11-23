@@ -284,6 +284,9 @@ func modelsSettingsSection(c *ui.Context, state *settingsModelsViewState, action
 	models := &state.Models
 	sectionTitle(c, i18n.Platform("On this Mac", "On this PC"))
 	caption(c, i18n.Platform("Free, and your audio stays on this Mac.", "Free, and your audio stays on this PC."))
+	if models.NoRuntimeText != "" {
+		caption(c, models.NoRuntimeText)
+	}
 	modelCards(c, models.ASR, actions)
 	if models.Dictation != nil {
 		modelCard(c, *models.Dictation, actions)

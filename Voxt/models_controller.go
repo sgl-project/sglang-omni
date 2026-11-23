@@ -284,7 +284,7 @@ func (a *app) modelsViewStateInput() modelsViewStateInput {
 		ModelAsk: a.modelAsk, ModelAskFree: a.modelAskFree, ModelShared: a.modelShared, ModelDeciding: a.modelDeciding,
 		NetworkOpen: a.netOpen, NetworkForm: a.netForm, FamilyOthers: familyOthers, FamilyReadOnly: readOnly,
 		AdvancedOpen: a.modelAdvanced, HiddenOpen: a.modelHiddenOpen,
-		Assignment: a.assignmentStateInput(),
+		Assignment: a.assignmentStateInput(), NoRuntime: a.runtimeKnown && !a.runtimeOK,
 	}
 }
 

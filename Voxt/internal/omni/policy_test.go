@@ -255,6 +255,16 @@ func TestLocate(t *testing.T) {
 	if got, err := Locate(exe); err != nil || got != bin {
 		t.Errorf("bundle: %q %v", got, err)
 	}
+	side := filepath.Join(dir, "side", "omni", ServerBinary)
+	if err := os.MkdirAll(filepath.Dir(side), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(side, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Locate(filepath.Join(dir, "side", "VoxtNew")); err != nil || got != side {
+		t.Errorf("beside the executable: %q %v", got, err)
+	}
 	if _, err := Locate(filepath.Join(dir, "elsewhere", "VoxtNew")); err == nil || !strings.Contains(err.Error(), EnvRuntime) {
 		t.Errorf("none: %v", err)
 	}

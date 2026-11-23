@@ -148,6 +148,7 @@ type modelsViewState struct {
 	Network       modelsNetworkViewState    `json:"network"`
 	SpeechContext string                    `json:"speech_context"`
 	Assignment    *modelAssignmentViewState `json:"assignment,omitempty"`
+	NoRuntimeText string                    `json:"no_runtime_text,omitempty"`
 }
 
 type modelsViewStateInput struct {
@@ -168,6 +169,10 @@ type modelsViewStateInput struct {
 	AdvancedOpen   bool
 	HiddenOpen     bool
 	Assignment     *modelAssignmentStateInput
+	// NoRuntime: this copy has no omni runtime, so no local speech model
+	// can run. Downloads and Apply to are not offered, and the page says
+	// so (models_controller.go's probe).
+	NoRuntime bool
 }
 
 func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInput) modelsViewState {
@@ -176,6 +181,11 @@ func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInpu
 		Hidden: buildHiddenModelCards(translator, input), HiddenOpen: input.HiddenOpen,
 		Advanced: buildModelsAdvancedViewState(translator, input), Delete: buildModelsDeleteViewState(translator, input),
 		Network: buildModelsNetworkViewState(translator, input), SpeechContext: input.Settings.Dictionary.SpeechContext,
+	}
+	if input.NoRuntime {
+		state.NoRuntimeText = i18n.PlatformFor(translator,
+			"This version of Voxt cannot run speech models on this Mac: it has no local runtime. Use an online speech service below.",
+			"This version of Voxt cannot run speech models on this PC: it has no local runtime. Use an online speech service below.")
 	}
 	state.Dictation = buildDictationCard(translator, input, false)
 	if input.Assignment != nil {
@@ -338,7 +348,7 @@ func buildModelRowViewState(translator *i18n.Translator, input modelsViewStateIn
 		}
 	}
 	row.Actions = append(row.Actions, buildModelActions(translator, input, model, status)...)
-	if status.Installed && !model.Retired {
+	if status.Installed && !model.Retired && !input.NoRuntime {
 		row.Actions = append(row.Actions, buildAssignAction(translator, model)...)
 	}
 	row.Progress = buildModelProgress(translator, model, status)
@@ -380,7 +390,7 @@ func buildModelActions(translator *i18n.Translator, input modelsViewStateInput, 
 			return []modelActionViewState{{Kind: modelActionDiscard, ModelID: model.ID, Label: translator.T("Delete"), AccessibilityLabel: translator.T("Delete the partial download of %s", name)}}
 		}
 	case model.Borrowed || status.OnDisk:
-		if status.OnDisk {
+		if status.OnDisk && !input.NoRuntime {
 			return []modelActionViewState{{Kind: modelActionUse, ModelID: model.ID, Label: translator.T("Use it"), AccessibilityLabel: translator.T("Use %s", name)}}
 		}
 	default:
@@ -396,7 +406,7 @@ func buildModelActions(translator *i18n.Translator, input modelsViewStateInput, 
 		case status.Done > 0 && !elsewhere:
 			label = translator.T("Resume")
 		}
-		if status.Err == nil {
+		if status.Err == nil && !input.NoRuntime {
 			actions = append(actions, modelActionViewState{Kind: modelActionDownload, ModelID: model.ID, Label: label, AccessibilityLabel: translator.T("Download %s", name), Disabled: elsewhere})
 		}
 		return actions
