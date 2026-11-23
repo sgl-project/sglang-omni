@@ -154,7 +154,7 @@ git rev-parse HEAD > $OUT/commit.txt
 python -m pip freeze --exclude-editable > $OUT/freeze.txt
 ```
 
-CI sets `SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0`. Without it, every model that does not set compile itself (Qwen3-ASR, Whisper, Fun-ASR) runs `torch.compile`. MOSS-Transcribe-Diarize turns compile on itself. `TORCHINDUCTOR_CACHE_DIR` keeps its compile cache on the `/work` mount, so it survives a new container. Delete that directory to measure a cold start. `SGLANG_OMNI_STARTUP_TIMEOUT=1800` raises the server's own startup limit from 600 s. On a host with few CPU cores, a cold Whisper start can spend more than 600 s capturing CUDA graphs.
+CI sets `SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0`. Without it, every model that does not set compile itself (Whisper, Fun-ASR) runs `torch.compile`. Qwen3-ASR and MOSS-Transcribe-Diarize turn compile on themselves. `TORCHINDUCTOR_CACHE_DIR` keeps its compile cache on the `/work` mount, so it survives a new container. Delete that directory to measure a cold start. `SGLANG_OMNI_STARTUP_TIMEOUT=1800` raises the server's own startup limit from 600 s. On a host with few CPU cores, a cold Whisper start can spend more than 600 s capturing CUDA graphs.
 
 The `find` line stops every server left over from an earlier run. The block must print `GPU_FREE`. If it does not, run `docker restart asr-bench` on the host, reattach as in Step 1, and run this step again. The block deletes earlier results of the same run, so a run is always redone whole.
 
