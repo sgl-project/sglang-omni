@@ -189,7 +189,7 @@ struct Tokenizer::Pcre2Regex {
 
 Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
     : split_pattern_(std::make_unique<Pcre2Regex>()) {
-  if (!std::filesystem::exists(model_directory / "vocab.json")) {
+  if (std::filesystem::exists(model_directory / "tokenizer.json")) {
     LoadJson(
         nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json")));
     return;

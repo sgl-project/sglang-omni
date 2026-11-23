@@ -467,6 +467,8 @@ set_target_properties(stub_server PROPERTIES
 
 add_executable(audio_chunk_test EXCLUDE_FROM_ALL tests/audio_chunk_test.cpp)
 target_link_libraries(audio_chunk_test PRIVATE common)
+add_executable(tokenizer_preference_test EXCLUDE_FROM_ALL tests/tokenizer_preference_test.cpp)
+target_link_libraries(tokenizer_preference_test PRIVATE common)
 target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
