@@ -38,6 +38,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Translate accepts answers that keep Chinese input-tag names**: `<指令>` around a valid translation no longer counts as untranslated Chinese text; the tags stay in the delivered answer.
 - **Resetting the look or all settings also restores the History detail width** (#4421): after widening the History details from their 290 DIP default, "Reset the look" and "Reset all settings" left the page showing the old width until a restart; both now bring back the default at once.
 - **Meeting and file transcripts honour the Chinese script preference**: Simplified and Traditional Chinese main languages now render chunked, live file-based, post-meeting and imported-file transcription in the selected script. Prompt and dictionary echo suppression compares Chinese text across scripts, as does microphone-versus-system echo detection.
+- **Check for Updates finds new versions again**: Voxt 2.1.1 and 2.1.2 looked for updates at an address that never served them, so Check for Updates always said Voxt was up to date. Voxt now reads its updates from its GitHub releases and installs them in the app. If you run 2.1.2 or earlier, download this version once from the release page; later versions update in the app.
 - **A shortcut pressed while recording is no longer ignored now and then**: about one press in twenty-five did nothing while Voxt recorded, so the recording went on until the next press. Voxt sent the helper its shortcuts again at every update of the recording pill, and dropped a press the helper reported in between as one from an old configuration. It now sends them only when they change.
 - **Meeting audio meters keep updating during system silence** (#4198): when the Mac stops delivering system audio buffers, the waveform returns to silence and the existing sustained-silence reminder can still appear.
 - **Meetings explain how to enable speaker labels** (#4394): the spoken-language setting now says that Speaker 1–4 labels need MOSS-Transcribe-Diarize and an explicit Chinese or English choice, covering meetings whose automatic language hint is empty or unsupported.
@@ -88,6 +89,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **翻译接受保留中文输入标签的回答**：有效译文外保留 `<指令>` 标签时，不再把标签当成未翻译的中文内容；标签原样保留在回答中。
 - **重置外观或全部设置时，历史详情宽度也一起恢复**（#4421）：把历史详情从默认的 290 DIP 调宽之后，“重置外观”和“重置所有设置”原来要重启才恢复默认宽度，现在立即回到默认。
 - **会议和文件转录稿遵循中文简繁偏好**：主语言选简体中文或繁体中文时，分段转写、无流式实时转写、会后重转和导入文件转写都按所选简繁输出。提示词和词典回显抑制、麦克风与系统声音回声比较也能识别跨简繁的同一文本。
+- **“检查更新”又能找到新版本了**：Voxt 2.1.1 和 2.1.2 去读更新的地址上一直没有内容，所以“检查更新”总是显示已是最新。现在 Voxt 从它的 GitHub Release 读更新，并在 app 里安装。还在用 2.1.2 或更早版本的话，请从 Release 页面手动下载一次这个版本，之后的版本就能在 app 里更新。
 - **录音时按快捷键不再偶尔没反应**：录音过程中大约每二十五次按键有一次不起作用，录音会一直持续到下一次按键。原因是录音浮窗每次刷新时 Voxt 都把快捷键重新发给辅助进程，辅助进程在这期间报来的按键被当成旧配置的按键丢掉了。现在只在快捷键有变化时才发送。
 - **系统静音时会议音量表继续更新**（#4198）：Mac 不再提供系统音频缓冲区时，波形会回到静音状态，已有的持续静音提醒也能正常触发。
 - **会议说明怎样启用说话人标签**（#4394）：说话语言设置现在写明，按说话人 1–4 分开需要安装 MOSS-Transcribe-Diarize 并明确选择中文或英文，覆盖自动语言提示为空或不受支持的会议。
