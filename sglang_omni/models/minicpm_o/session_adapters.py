@@ -107,6 +107,7 @@ class ThinkerAdapter(ARSessionAdapter):
         window: MiniCPMODuplexWindow,
         rotary_embedding: RotaryEmbedding,
         random_seed: int,
+        is_draft_enabled: bool,
     ) -> None:
         assert (
             rotary_embedding.is_neox_style
@@ -117,6 +118,7 @@ class ThinkerAdapter(ARSessionAdapter):
         self.window: MiniCPMODuplexWindow = window
         self.rotary_embedding: RotaryEmbedding = rotary_embedding
         self.random_seed: int = random_seed
+        self.is_draft_enabled: bool = is_draft_enabled
         self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
         )
@@ -332,13 +334,14 @@ class ThinkerAdapter(ARSessionAdapter):
         payload: StagePayload,
         chunk: TimedChunk,
     ) -> DuplexUnitRequestData | None:
-        """The unit after chunk under silence, sampled on a copy of the session's sampler state; None while the model speaks or when the next unit cannot take a draft: no plan, a forced listen, or a pending cut."""
+        """The unit after chunk under silence, sampled on a copy of the session's sampler state; None when drafts are off, while the model speaks, or when the next unit cannot take a draft: no plan, a forced listen, or a pending cut."""
         state = self.states[session_identity]
         silence_plan = self.silence_unit_plan
         sampling = state.sampling
         # note (bianyutong): While the model speaks, a draft competes with the talker for forwards and shortens nothing the user hears.
         if (
-            silence_plan is None
+            not self.is_draft_enabled
+            or silence_plan is None
             or (bool(state.reply_units) and state.reply_units[-1].is_spoken)
             or state.is_interrupt_pending
             or state.is_listen_held

@@ -104,6 +104,7 @@ def thinker_adapter(tokenizer: Mock) -> ThinkerAdapter:
         rotary_embedding=SimpleNamespace(
             head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
         ),
+        is_draft_enabled=True,
     )
 
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Every draft the docs, example configs and model defaults serve is pinned in the registry."""
+"""Every published draft the docs, example configs and model defaults serve is pinned in the registry."""
 
 from __future__ import annotations
 
@@ -39,12 +39,19 @@ def engine_draft_keys(engine: EngineArgs | None) -> dict[str, str]:
         return {}
     else:
         overrides = engine.overrides()
-        return {
-            key: str(value)
-            for key, value in overrides.items()
-            if key.startswith("speculative_")
-            or (key == "revision" and overrides.get("speculative_algorithm"))
-        }
+        # note (bianyutong): a drafter that is the model's own code names no algorithm and no draft repo, so the registry has nothing to pin.
+        if not (
+            overrides.get("speculative_algorithm")
+            or overrides.get("speculative_draft_model_path")
+        ):
+            return {}
+        else:
+            return {
+                key: str(value)
+                for key, value in overrides.items()
+                if key.startswith("speculative_")
+                or (key == "revision" and overrides.get("speculative_algorithm"))
+            }
 
 
 def drafts_in_docs() -> tuple[list[ServedDraft], list[str]]:

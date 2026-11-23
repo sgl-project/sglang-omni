@@ -59,6 +59,7 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     adapter: ThinkerAdapter
     window: MiniCPMODuplexWindow
     random_seed: int
+    is_draft_enabled: bool
 
     def __init__(
         self, *, window: MiniCPMODuplexWindow = DEFAULT_WINDOW_SETTINGS
@@ -79,18 +80,29 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             enable_torch_compile=False,
         )
 
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        # note (bianyutong): The thinker drafts in its own code, so the key leaves before SGLang's server args; engine.disable_speculative_decoding drops the key, so an absent key means off.
+        is_draft_enabled = overrides.pop("speculative_next_unit_draft", False)
+        if not isinstance(is_draft_enabled, bool):
+            raise ValueError(
+                "thinker.engine.speculative_next_unit_draft must be true or false "
+                f"(got {is_draft_enabled!r})"
+            )
+        else:
+            self.is_draft_enabled = is_draft_enabled
+
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
-        """Refuse settings that would split a unit's prefill or add a draft worker, before loading weights."""
+        """With drafts on, refuse settings that would split a unit's prefill or add a draft worker, before loading weights."""
         server_settings = resolved_view(server_args)
-        if server_settings.chunked_prefill_size > 0:
+        if not self.is_draft_enabled:
+            pass
+        elif server_settings.chunked_prefill_size > 0:
             raise ValueError(
                 "MiniCPM-o draft verification needs the whole unit in one prefill; "
                 "set thinker.engine.chunked_prefill_size=-1 "
                 f"(got {server_settings.chunked_prefill_size})"
             )
-        else:
-            pass
-        if not SpeculativeAlgorithm.from_string(
+        elif not SpeculativeAlgorithm.from_string(
             server_settings.speculative_algorithm
         ).is_none():
             raise ValueError(
@@ -118,6 +130,7 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             window=self.window,
             rotary_embedding=model.model.layers[0].self_attn.rotary_emb,
             random_seed=self.random_seed,
+            is_draft_enabled=self.is_draft_enabled,
         )
         return None, None
 

@@ -22,6 +22,7 @@ from sglang_omni.cli import app
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
+    resolve_stage_factory_args,
     resolve_stage_typed_kwargs,
 )
 from sglang_omni.models.minicpm_o import engine_builder, native_stages, stages
@@ -57,7 +58,7 @@ def test_duplex_thinker_rejects_chunked_prefill_before_loading_weights(
     rejection: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A split prefill or a speculative draft worker is refused at the configuration boundary, before any weights load."""
+    """With drafts on, a split prefill or a speculative draft worker is refused at the configuration boundary, before any weights load; with drafts off, neither is."""
     monkeypatch.setattr(
         engine_builder,
         "resolved_view",
@@ -69,8 +70,14 @@ def test_duplex_thinker_rejects_chunked_prefill_before_loading_weights(
         ),
     )
 
+    builder = MiniCPMOThinkerEngineBuilder()
+    builder.adjust_overrides({"speculative_next_unit_draft": True})
+
     with pytest.raises(ValueError, match=rejection):
-        MiniCPMOThinkerEngineBuilder().validate_before_infrastructure(Mock())
+        builder.validate_before_infrastructure(Mock())
+
+    builder.adjust_overrides({})
+    builder.validate_before_infrastructure(Mock())
 
 
 @pytest.fixture
@@ -613,3 +620,40 @@ def test_each_duplex_session_optimization_turns_off_alone(
     native_stages.MiniCPMOVocoderRuntime.return_value.warm_up.assert_called_once_with(
         b"reference", capture_chunk_graphs=captures_chunk_graphs
     )
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        ["--thinker.engine.disable_speculative_decoding", "true"],
+        ["--thinker.engine.speculative_next_unit_draft", "false"],
+    ],
+)
+def test_an_engine_setting_turns_off_the_thinker_next_unit_draft(
+    setting: list[str],
+) -> None:
+    manager = ConfigManager(MiniCPMODuplexPipelineConfig(model_path="unused"))
+    drafted = resolve_stage_factory_args(
+        manager.config.stage_named("thinker"), manager.config
+    )["server_args_overrides"]
+    config = manager.merge_config(manager.parse_extra_args(setting))
+    overrides = resolve_stage_factory_args(config.stage_named("thinker"), config)[
+        "server_args_overrides"
+    ]
+    builder = MiniCPMOThinkerEngineBuilder()
+
+    builder.adjust_overrides(drafted)
+    is_drafting_by_default = builder.is_draft_enabled
+    builder.adjust_overrides(overrides)
+
+    assert is_drafting_by_default
+    assert not builder.is_draft_enabled
+    assert "speculative_next_unit_draft" not in drafted
+    assert drafted == overrides
+
+
+def test_a_next_unit_draft_setting_must_be_a_boolean() -> None:
+    with pytest.raises(ValueError, match="speculative_next_unit_draft"):
+        MiniCPMOThinkerEngineBuilder().adjust_overrides(
+            {"speculative_next_unit_draft": "off"}
+        )

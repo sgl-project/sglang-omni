@@ -774,6 +774,7 @@ def make_thinker_adapter(tokenizer: Mock) -> ThinkerAdapter:
         rotary_embedding=SimpleNamespace(
             head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
         ),
+        is_draft_enabled=True,
     )
 
 
@@ -2219,3 +2220,29 @@ def test_a_draft_and_the_unit_that_verifies_it_share_the_noise_of_the_next_audio
     assert listened.noise_unit_index == 0
     assert (draft.unit_index, draft.noise_unit_index) == (1, 1)
     assert (following.unit_index, following.noise_unit_index) == (2, 1)
+
+
+def test_an_adapter_with_drafts_off_builds_no_draft_after_a_listen_unit() -> None:
+    adapter, request = open_duplex_adapter()
+    payload = perception_payload(request, 0)
+    payload.data["silence_unit_plan"] = perception_payload(request, 1).data
+    listened = adapter.build(SESSION, audio_unit(0), payload)
+    complete_unit(
+        adapter,
+        listened,
+        prompt_length=FIRST_UNIT_PROMPT_LENGTH,
+        output_ids=[SPECIAL_TOKENS.listen],
+        generated_unit_ids=[],
+    )
+
+    adapter.is_draft_enabled = False
+    draft_off = adapter.build_draft(
+        SESSION, StagePayload("draft", request, None), audio_unit(0)
+    )
+    adapter.is_draft_enabled = True
+    draft_on = adapter.build_draft(
+        SESSION, StagePayload("draft", request, None), audio_unit(0)
+    )
+
+    assert draft_off is None
+    assert draft_on is not None

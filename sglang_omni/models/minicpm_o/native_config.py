@@ -43,7 +43,9 @@ def stages() -> list[StageConfig]:
             factory_path=f"{PKG}.create_thinker_scheduler",
             next="talker",
             # note (Junnan Li): Compiling every decode graph batch size adds minutes to startup.
-            engine=EngineArgs(enable_torch_compile=False),
+            engine=EngineArgs(
+                enable_torch_compile=False, speculative_next_unit_draft=True
+            ),
         ),
         EngineStageConfig(
             name="talker",

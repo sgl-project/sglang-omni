@@ -65,6 +65,7 @@ def make_adapter(window: MiniCPMODuplexWindow) -> ThinkerAdapter:
             is_neox_style=True,
             cos_sin_cache=torch.cat((angles.cos(), angles.sin()), dim=-1),
         ),
+        is_draft_enabled=True,
     )
     adapter.states[IDENTITY] = MiniCPMOThinkerSessionState(
         sampling=MiniCPMODuplexSampling(), speech_detector=Mock(spec=StatelessVAD)
