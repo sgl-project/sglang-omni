@@ -36,13 +36,6 @@ AudioSmith
   supervisor). They have been modified; docs/architecture.md lists what
   was taken and how it changed.
 
-Voxt overlay preview background
-  assets/overlay-preview-background.png, the desktop picture behind the
-  overlay's preview in Settings → Overlay style, is taken unchanged from
-  Voxt (https://github.com/hehehai/voxt) at commit baa6f31
-  (Voxt/Assets.xcassets/OverlayPreviewBackground.imageset), Copyright the
-  Voxt authors, licensed under the Apache License 2.0.
-
 Voxt overlay icons
   internal/icons/voxt.go holds the overlay's mode icons (transcription,
   translation, rewrite), its answer icon and its small spinner, drawn from

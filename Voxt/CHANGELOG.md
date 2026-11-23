@@ -31,6 +31,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it.
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
 - **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
+- **A new picture behind the overlay preview** (#4439): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
 ### Fixed
 
@@ -84,6 +85,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减少动态效果”时不播放。
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
+- **浮窗预览换了背景图**（#4439）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 - **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
 
 #### 修复
