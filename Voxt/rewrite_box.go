@@ -63,6 +63,9 @@ type rewriteBox struct {
 	// session is the recording session's id ("" when it ended); sending
 	// a resend's after a failure.
 	session, sending string
+	// typedFollowUp marks a session that cleared the editor when its
+	// typed follow-up started, so boxKeep keeps only edits after that.
+	typedFollowUp bool
 	// selection is the text selected when the shortcut fired (the
 	// session reads it; the box shows it).
 	selection         string
@@ -212,6 +215,7 @@ func (a *app) showBox(target proto.App, id string) {
 	a.box.target, a.box.session = target, id
 	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
 	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
+	a.box.typedFollowUp = false
 	a.box.focusText = true
 	a.boxSync()
 }
@@ -257,11 +261,18 @@ func (a *app) boxAnswered() bool {
 }
 
 // boxKeep keeps the card open for its answer once a session of its ends:
-// the input is emptied for the next follow-up.
+// the sent input is emptied, but text changed during that send stays for
+// the next follow-up.
 func (a *app) boxKeep() {
+	keepText := a.box.typedFollowUp
+	text, textSegments, nextTextID := a.box.text, a.box.textSegments, a.box.nextTextID
 	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
 	target, dragged, front := a.box.target, a.box.dragged, a.box.front
 	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
+	if keepText {
+		a.box.text, a.box.textSegments, a.box.nextTextID = text, textSegments, nextTextID
+		a.box.textSegmentsDirty = true
+	}
 	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
@@ -337,6 +348,7 @@ func (a *app) boxSend() {
 	if a.followUp != "" && a.followUp == a.answer.id {
 		req.Previous, req.Conversation, req.Images = a.answer.turns, a.answer.conv, a.answer.images // still the card's follow-up
 	}
+	a.box.typedFollowUp = false // a resend keeps its original clear-on-end behavior
 	id, n := a.startSessionID(req)
 	if n == nil && id != "" {
 		a.box.sending, a.box.err = id, ""
@@ -370,6 +382,8 @@ func (a *app) boxEnded(s session.Snapshot) {
 		}
 		if s.Spoken != "" {
 			a.box.instruction = s.Spoken
+		} else if s.Raw != "" {
+			a.box.instruction = s.Raw
 		}
 		if s.Selection != "" {
 			a.box.selection = s.Selection

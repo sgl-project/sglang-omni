@@ -1,12 +1,15 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -154,6 +157,129 @@ func TestRewriteFollowUpTypedInTheCard(t *testing.T) {
 	a.boxCloseCard()
 	if a.box.open || a.answer.open {
 		t.Errorf("after Close: box open %v, answer open %v", a.box.open, a.answer.open)
+	}
+}
+
+// TestRewriteTypedFollowUpSurvivesStartRefusal: a missing helper refuses
+// the start. The typed follow-up stays in the card for another attempt.
+func TestRewriteTypedFollowUpSurvivesStartRefusal(t *testing.T) {
+	chat := &fakeChat{text: "First answer"}
+	a, _ := rewriteOnce(t, "", chat, "help me with a problem")
+	a.hstatus.State = helper.Stopped
+	a.boxActions().textChanged("make it polite")
+	a.boxSend()
+	if a.notice == nil {
+		t.Fatal("the follow-up start was not refused")
+	}
+	if got := a.boxTextContent(); got != "make it polite" {
+		t.Errorf("the refused start erased the typed follow-up: %q", got)
+	}
+}
+
+// TestRewriteTypingDuringFollowUpSurvivesItsEnd: text typed after a
+// follow-up went to the model belongs to the next one. Finishing the
+// request, or cancelling it with Escape, must not erase that text.
+func TestRewriteTypingDuringFollowUpSurvivesItsEnd(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		name := "done"
+		if cancelled {
+			name = "escape"
+		}
+		t.Run(name, func(t *testing.T) {
+			chat := &fakeChat{text: "First answer"}
+			a, _ := rewriteOnce(t, "", chat, "help me with a problem")
+			first := a.sess.ID
+			chat.set("Second answer", 0)
+			chat.mu.Lock()
+			chat.stall = cancelled
+			if !cancelled {
+				chat.delay = time.Second
+			}
+			chat.mu.Unlock()
+			a.boxActions().textChanged("first follow-up")
+			a.boxSend()
+			a.pump("the follow-up request", func() bool { return len(chat.requests()) == 2 })
+			a.pump("the follow-up card", func() bool {
+				return a.sess.ID != first && a.sess.ID == a.boxSessionID() && a.sess.State.Live()
+			})
+			a.boxActions().textChanged("typed while waiting")
+			if cancelled {
+				a.boxEscape()
+			}
+			a.pump("the follow-up end", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
+			if got := a.boxTextContent(); got != "typed while waiting" {
+				t.Errorf("the follow-up end erased the next typed input: %q", got)
+			}
+			if !a.box.open || !a.answer.open {
+				t.Errorf("the one card closed: box %v, answer %v", a.box.open, a.answer.open)
+			}
+		})
+	}
+}
+
+// TestRewriteTypedFollowUpRetryKeepsClearOnEnd: a resend keeps its
+// original clear-on-end behavior, including text typed while the first
+// attempt was running. No new edits are made during the resend.
+func TestRewriteTypedFollowUpRetryKeepsClearOnEnd(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		name := "done"
+		if cancelled {
+			name = "escape"
+		}
+		t.Run(name, func(t *testing.T) {
+			chat := &fakeChat{text: "First answer"}
+			a, _ := rewriteOnce(t, "", chat, "help me with a problem")
+			first := a.sess.ID
+			chat.set("", 401)
+			chat.mu.Lock()
+			chat.delay = time.Second
+			chat.mu.Unlock()
+			a.boxActions().textChanged("first follow-up")
+			a.boxSend()
+			a.pump("the failed follow-up request", func() bool { return len(chat.requests()) == 2 })
+			a.pump("the failed follow-up card", func() bool {
+				return a.sess.ID != first && a.sess.ID == a.boxSessionID() && a.sess.State.Live()
+			})
+			a.boxActions().textChanged("typed while waiting")
+			a.pump("the failed follow-up", func() bool { return a.sess.ID != first && a.sess.State == session.Failed })
+			if got := a.boxTextContent(); got != "typed while waiting" {
+				t.Fatalf("the failure lost the editor setup: %q", got)
+			}
+
+			failed := a.sess.ID
+			chat.set("Recovered", 0)
+			chat.mu.Lock()
+			chat.delay = 0
+			chat.stall = cancelled
+			chat.mu.Unlock()
+			a.boxSend()
+			a.pump("the retry request", func() bool { return len(chat.requests()) == 3 })
+			a.pump("the retry card", func() bool {
+				return a.sess.ID != failed && a.sess.ID == a.boxSessionID() && a.sess.State.Live()
+			})
+			if cancelled {
+				a.boxEscape()
+			}
+			a.pump("the retry end", func() bool { return a.sess.ID != failed && a.sess.State.Ended() })
+			if got := a.boxTextContent(); got != "" {
+				t.Errorf("the resend kept its sent input: %q", got)
+			}
+		})
+	}
+}
+
+// TestRewriteTypedFollowUpSurvivesNoLLM: a typed follow-up can fail
+// before the write step copied Raw into Spoken. Raw still restores the
+// instruction for the retry.
+func TestRewriteTypedFollowUpSurvivesNoLLM(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, id: "first", kind: store.KindRewrite, text: "First answer"}
+	a.followUp = "first"
+	a.box = rewriteBox{open: true, shown: true, session: "follow"}
+	a.boxEnded(session.Snapshot{ID: "follow", State: session.Failed, Raw: "make it polite",
+		Problem: &session.Problem{Code: session.ProblemNoLLM, Err: errors.New("no model")}})
+	if got := a.boxVoiceLine(); got != "make it polite" {
+		t.Errorf("the early failure erased the typed follow-up: %q", got)
 	}
 }
 
