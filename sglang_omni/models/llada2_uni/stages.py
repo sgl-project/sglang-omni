@@ -168,11 +168,14 @@ def create_sglang_dllm_thinker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     resolved_gpu_id = concrete_device.index or 0
 
+    # note (guomangmang): only the NPU CFG path has a fixed-buffer decode graph;
+    # every other DLLM configuration keeps CUDA graphs off.
+    want_decode_graph = current_platform.is_npu() and dllm_algorithm == "LowConfidenceCFG"
     overrides: dict[str, object] = {
         "attention_backend": (
             ASCEND_ATTENTION_BACKEND if current_platform.is_npu() else "flashinfer"
         ),
-        "disable_cuda_graph": True,
+        "disable_cuda_graph": not want_decode_graph,
         "sampling_backend": "pytorch",
     }
     if dllm_algorithm == "LowConfidenceCFG":

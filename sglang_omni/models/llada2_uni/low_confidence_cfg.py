@@ -12,6 +12,9 @@ from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.utils import is_npu
+
+_IS_NPU = is_npu()
 
 
 class LowConfidenceCFG(DllmAlgorithm):
@@ -40,6 +43,18 @@ class LowConfidenceCFG(DllmAlgorithm):
         cfg_image_scale: float = 0.0,
         cfg_rescale: float = 0.0,
     ) -> tuple[LogitsProcessorOutput | torch.Tensor, list[torch.Tensor], bool]:
+        if _IS_NPU and not getattr(model_runner, "llada2_cfg_hooks_installed", False):
+            # The replay hooks need the decode graph runner, which only exists
+            # after graph capture, so install them on the first block.
+            from sglang_omni.models.llada2_uni.cfg_attention_ascend import (
+                install_cfg_npu_replay_hooks,
+            )
+
+            install_cfg_npu_replay_hooks(model_runner)
+            if getattr(model_runner, "decode_cuda_graph_runner", None) is not None:
+                model_runner.llada2_cfg_hooks_installed = True
+        else:
+            pass
         reqs = forward_batch.reqs
         is_cfg = no_text_idx is not None
         if reqs and all(req.is_dllm_prefill() for req in reqs):
@@ -82,6 +97,15 @@ class LowConfidenceCFG(DllmAlgorithm):
             else:
                 pass
             out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
+            if step == 0 and (
+                _IS_NPU or (self.reuse_forward_metadata and out.can_run_graph)
+            ):
+                # note (guomangmang): the denoise canvas is fixed for the whole
+                # block, so mirror DllmAlgorithm._run_sync and stop re-planning
+                # attention metadata on every step.
+                forward_batch.mark_forward_metadata_ready(
+                    replan_equivalent=not _IS_NPU
+                )
             logits = out.logits_output.full_logits.view(
                 forward_batch.batch_size, self.block_size, -1
             )

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import types
 from itertools import accumulate
 
 import torch
@@ -24,12 +25,18 @@ class LLaDA2CFGAscendAttnBackend(AscendAttnBackend):
     multiple of 16, so a sub-page left padding cannot be dropped by shortening
     ``actual_seq_lengths_kv``. The padding tokens are dropped from a gathered
     dense KV view instead, which keeps the page table untouched.
+
+    Under a decode graph the padded tokens occupy whole pages (the scheduler
+    rounds the left pad up to a page), so replay can start the page table at
+    the first real token and shorten the KV lengths by the same amount.
     """
 
     def __init__(self, model_runner: ModelRunner) -> None:
         super().__init__(model_runner)
         self.cfg_kv_indices: torch.Tensor | None = None
         self.cfg_kv_lens_cumsum: list[int] = []
+        self.cfg_replay_batch: ForwardBatch | None = None
+        self.cfg_replay_untrimmed_seq_lens_cpu: list[int] | None = None
 
     def init_forward_metadata(self, forward_batch: ForwardBatch) -> None:
         self.cfg_kv_indices = None
@@ -62,6 +69,73 @@ class LLaDA2CFGAscendAttnBackend(AscendAttnBackend):
         )
         self.cfg_kv_lens_cumsum = list(accumulate(kv_lens))
 
+    def init_forward_metadata_out_graph(
+        self,
+        forward_batch: ForwardBatch,
+        in_capture: bool = False,
+    ) -> None:
+        """Plan graph replay metadata with the CFG left pad excluded.
+
+        The scheduler rounds a companion's left pad up to a page, so the real
+        tokens of every branch start on a page boundary. Replay can therefore
+        drop the leading ``pad / page_size`` pages from the page table and
+        shorten ``actual_seq_lengths_kv`` by the same token count (the runner
+        does the latter before computing the graph update payload).
+        """
+        super().init_forward_metadata_out_graph(forward_batch, in_capture)
+        if in_capture:
+            return
+        else:
+            pass
+        batch = self.cfg_replay_batch
+        if batch is None:
+            return
+        else:
+            pass
+        left_pad_lens = getattr(batch, "dllm_left_pad_lens_cpu", None)
+        if not left_pad_lens or not any(left_pad_lens):
+            return
+        else:
+            pass
+
+        num_rows = len(left_pad_lens)
+        page_size = self.page_size
+        block_tables = self.forward_metadata.block_tables
+        req_pool_indices = forward_batch.req_pool_indices[:num_rows].tolist()
+        # The replay hook trims ``seq_lens`` before the runner stages it, so the
+        # lengths reaching this view already exclude the pad. Use the untrimmed
+        # snapshot the hook kept, or the pad would be subtracted twice.
+        if self.cfg_replay_untrimmed_seq_lens_cpu is not None:
+            seq_lens = self.cfg_replay_untrimmed_seq_lens_cpu[:num_rows]
+        else:
+            seq_lens = forward_batch.seq_lens_cpu[:num_rows].tolist()
+        for row, req_index, seq_len, left_pad in zip(
+            block_tables[:num_rows],
+            req_pool_indices,
+            seq_lens,
+            left_pad_lens,
+            strict=True,
+        ):
+            left_pad = int(left_pad)
+            if left_pad <= 0:
+                continue
+            else:
+                pass
+            real_len = int(seq_len) - left_pad
+            num_pages = (real_len + page_size - 1) // page_size
+            row.fill_(0)
+            if num_pages <= 0:
+                continue
+            else:
+                pass
+            row[:num_pages].copy_(
+                self.req_to_token[
+                    int(req_index), left_pad : left_pad + real_len : page_size
+                ]
+                .to(row.dtype)
+                // page_size
+            )
+
     def forward_dllm(
         self,
         q,
@@ -74,7 +148,10 @@ class LLaDA2CFGAscendAttnBackend(AscendAttnBackend):
         k_rope: torch.Tensor | None = None,
         topk_indices: torch.Tensor | None = None,
     ):
-        if self.cfg_kv_indices is None:
+        if self.graph_mode or self.cfg_kv_indices is None:
+            # Graph capture/replay reads the page table planned by
+            # ``init_forward_metadata_out_graph``, which already excludes the
+            # aligned left pad; only eager steps need the dense gather below.
             return super().forward_dllm(
                 q,
                 k,
@@ -175,3 +252,94 @@ def register_llada2_cfg_ascend_backend() -> None:
 
     _create_backend._llada2_cfg_wrapped = True  # noqa: leading-underscore
     ATTENTION_BACKENDS[ASCEND_ATTENTION_BACKEND] = _create_backend
+
+
+def install_cfg_npu_replay_hooks(model_runner: ModelRunner) -> None:
+    """Make NPU decode-graph replay hide the CFG left pad.
+
+    Ascend FIA receives ``actual_seq_lengths_kv`` as a host list that the NPU
+    graph runner rebinds from ``forward_batch.seq_lens`` on every replay, so a
+    companion's pad cannot be dropped by attention metadata alone. Shorten the
+    live batch's lengths for the duration of the replay and hand the untrimmed
+    batch to the backend for the page-table rewrite.
+    """
+    runner = getattr(model_runner, "decode_cuda_graph_runner", None)
+    if runner is None or getattr(runner, "llada2_cfg_replay_hook", False):
+        return
+    else:
+        pass
+    original_execute = runner.execute
+
+    def execute(self, forward_batch, pp_proxy_tensors=None):
+        left_pad_lens = getattr(forward_batch, "dllm_left_pad_lens_cpu", None)
+        seq_lens = forward_batch.seq_lens
+        if (
+            not left_pad_lens
+            or not any(left_pad_lens)
+            or len(left_pad_lens) != seq_lens.numel()
+        ):
+            return original_execute(forward_batch, pp_proxy_tensors)
+        else:
+            pass
+        backend = self._replay_attn_backend()  # noqa: leading-underscore - sglang private API
+        if not isinstance(backend, LLaDA2CFGAscendAttnBackend):
+            return original_execute(forward_batch, pp_proxy_tensors)
+        else:
+            pass
+        left_pad = torch.tensor(
+            left_pad_lens, dtype=seq_lens.dtype, device=seq_lens.device
+        )
+        backend.cfg_replay_batch = forward_batch
+        if forward_batch.needs_forward_metadata_init():
+            # Only the re-planning step reads these lengths; the replay fast path
+            # must stay free of a device-to-host sync.
+            backend.cfg_replay_untrimmed_seq_lens_cpu = seq_lens.cpu().tolist()
+        else:
+            pass
+        seq_lens.sub_(left_pad)
+        try:
+            return original_execute(forward_batch, pp_proxy_tensors)
+        finally:
+            seq_lens.add_(left_pad)
+            backend.cfg_replay_batch = None
+            backend.cfg_replay_untrimmed_seq_lens_cpu = None
+
+    runner.execute = types.MethodType(execute, runner)
+    runner.llada2_cfg_replay_hook = True
+    install_inline_graph_update(runner)
+
+
+class CompletedUpdateFuture:
+    def result(self) -> None:
+        return None
+
+
+class InlineUpdateExecutor:
+    """Run ``graph.update`` inline.
+
+    SGLang hands ``graph.update`` to a background thread so it can overlap with
+    ``graph.replay``. On Ascend the two calls deadlock once a decode batch holds
+    more than a few rows, even with per-stream Host task queues enabled, so the
+    CFG decode path runs the update before the replay instead.
+    """
+
+    def submit(self, fn, /, *args, **kwargs):
+        fn(*args, **kwargs)
+        return CompletedUpdateFuture()
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        pass
+
+
+def install_inline_graph_update(runner) -> None:
+    backend = getattr(runner, "backend", None)
+    executor = getattr(backend, "_update_executor", None)  # noqa: leading-underscore - sglang private API
+    if executor is None or isinstance(executor, InlineUpdateExecutor):
+        return
+    else:
+        pass
+    if hasattr(executor, "shutdown"):
+        executor.shutdown(wait=False, cancel_futures=True)
+    else:
+        pass
+    backend._update_executor = InlineUpdateExecutor()  # noqa: leading-underscore - sglang private API
