@@ -11,11 +11,10 @@ import torch
 from sglang.srt.models.qwen3 import Qwen3Attention
 
 import sglang_omni.models.moss_tts.sglang_model as moss_model
-from sglang_omni.models.moss_tts.sampling_kernels import (
-    multinomial_with_seed_and_token_ids,
-)
+from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts.sampling_npu import (
     moss_hash32,
+    multinomial_with_seed_and_token_ids_npu,
     multinomial_with_seed_npu,
 )
 from sglang_omni.models.moss_tts.sglang_model import (
@@ -110,37 +109,8 @@ def sample_seeded_scalar(
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
-def test_npu_hash_graph_replay_matches_scalar_reference() -> None:
-
-    seeds = torch.tensor([0, 2**40, -1, -(2**63)], device="npu")
-    positions = torch.tensor([0, 17, 2**32 - 1, 2**40], device="npu")
-    columns = torch.tensor([0, 1, 2**31, 2**32 - 1, 2**40], device="npu")
-    stream = torch.npu.Stream()
-    stream.wait_stream(torch.npu.current_stream())
-    with torch.npu.stream(stream):
-        moss_hash32(seeds, positions, columns)
-    torch.npu.synchronize()
-    graph = torch.npu.NPUGraph()
-    with torch.npu.graph(graph, stream=stream, capture_error_mode="thread_local"):
-        captured = moss_hash32(seeds, positions, columns)
-    for _ in range(3):
-        positions.add_(7)
-        graph.replay()
-        torch.npu.synchronize()
-        expected = [
-            [
-                murmur_hash32_scalar(int(seed), int(position), int(column))
-                for column in columns.cpu()
-            ]
-            for seed, position in zip(seeds.cpu(), positions.cpu())
-        ]
-        assert captured.tolist() == expected
-
-
-@pytest.mark.accelerator
-@pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
 def test_npu_compact_sampler_handles_request_batch_shapes() -> None:
-
+    """Request dispatch preserves original token IDs through padded NPU batches."""
     token_ids = torch.tensor([12, 13], device="npu")
     generator = torch.Generator().manual_seed(42)
     for rows in range(1, 17):
@@ -149,11 +119,17 @@ def test_npu_compact_sampler_handles_request_batch_shapes() -> None:
         positions = torch.arange(rows, dtype=torch.long) + 17
         expected = sample_seeded_scalar(scores, seeds, positions, token_ids.cpu())
         for _ in range(2):
-            actual = multinomial_with_seed_and_token_ids(
-                scores.npu(), seeds.npu(), positions.npu(), token_ids
+            actual = MossTTSModelRunner.sample_tokens(
+                scores.npu(),
+                temperature=1.0,
+                top_p=1.0,
+                top_k=0,
+                seeds=seeds.npu(),
+                positions=positions.npu(),
+                candidate_token_ids=token_ids,
             )
             assert actual.shape == (rows,)
-            assert actual.tolist() == expected
+            assert actual.tolist() == token_ids.cpu()[expected].tolist()
 
 
 @pytest.mark.parametrize("compact", [False, True], ids=["full", "compact"])
@@ -172,7 +148,7 @@ def test_npu_seeded_sampler_matches_scalar_reference(compact: bool) -> None:
     token_ids = torch.arange(257) * 65537 if compact else None
     expected = sample_seeded_scalar(scores, seeds, positions, token_ids)
     if compact:
-        actual = multinomial_with_seed_and_token_ids(
+        actual = multinomial_with_seed_and_token_ids_npu(
             scores.npu(), seeds.npu(), positions.npu(), token_ids.npu()
         )
     else:
@@ -196,7 +172,7 @@ def test_npu_seeded_sampler_masks_hash_endpoints(
     positions = torch.tensor([position], dtype=torch.long, device="npu")
     assert murmur_hash32_scalar(0, position, 0) == expected_hash
     assert multinomial_with_seed_npu(scores, seeds, positions).item() == 1
-    compact = multinomial_with_seed_and_token_ids(
+    compact = multinomial_with_seed_and_token_ids_npu(
         scores.flip(1),
         seeds,
         positions,

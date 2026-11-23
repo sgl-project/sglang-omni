@@ -80,3 +80,42 @@ def multinomial_with_seed_npu(
     noise.log_().neg_()
     noise.add_(torch_npu.npu_dtype_cast(scores, torch.float64))
     return torch.argmax(noise, dim=1)
+
+
+if current_platform.is_npu():
+    compiled_multinomial_with_seed_npu = torch.compile(
+        multinomial_with_seed_npu, dynamic=False, backend="npugraphs", fullgraph=True
+    )
+else:
+    pass
+
+
+def multinomial_with_seed_and_token_ids_npu(
+    scores: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    token_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Pad eager request batches for compiled NPU sampling and return their rows."""
+    moss_hash_shift_constants(scores.device)
+    num_rows = scores.shape[0]
+    if num_rows == 0:
+        return torch.empty(0, dtype=torch.long, device=scores.device)
+    else:
+        pass
+    bucket_size = 1 << (num_rows - 1).bit_length()
+    if num_rows != bucket_size:
+        scores = torch.nn.functional.pad(
+            scores, (0, 0, 0, bucket_size - num_rows), value=-torch.inf
+        )
+        seeds = torch.nn.functional.pad(seeds, (0, bucket_size - num_rows))
+        positions = torch.nn.functional.pad(positions, (0, bucket_size - num_rows))
+    else:
+        pass
+    torch.compiler.npugraph_mark_step_begin()
+    return compiled_multinomial_with_seed_npu(
+        scores.contiguous(),
+        seeds.contiguous(),
+        positions.contiguous(),
+        token_ids.contiguous(),
+    )[:num_rows]
