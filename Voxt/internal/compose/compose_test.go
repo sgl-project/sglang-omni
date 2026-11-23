@@ -151,13 +151,17 @@ func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	custom := base.System + "\nUse British spelling."
+	custom := strings.Replace(base.System, "so never output it", "do not reproduce it", 1) + "\nUse British spelling."
 	edited, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: custom, Text: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(edited.System, custom) || strings.Count(edited.System, "Basic cleanup:") != 1 || len(edited.History) != 0 {
 		t.Errorf("edited built-in prompt changed or duplicated cleanup:\n%s", edited.System)
+	}
+	// note (luojiaxuan): and the example, which closes the built-in prompt.
+	if n := strings.Count(edited.System, "Can you send the weekly report to Anna before 5?"); n != 1 {
+		t.Errorf("the example appears %d times:\n%s", n, edited.System)
 	}
 }
 
@@ -166,7 +170,7 @@ func TestLayersAndProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output" {
+	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output example" {
 		t.Errorf("layers %q", got)
 	}
 	if out.Profile() != "transcribe:cleanup+structure" {
@@ -428,6 +432,9 @@ func TestUntranslated(t *testing.T) {
 		{"我们周五发布", "我们周五发布 Release", "en", true},
 		{"我们周五发布", "我们在周五发版", "en", true}, // still Chinese
 		{"我们周五发布", "We ship on Friday.", "en", false},
+		{"<指令>你好</指令>", "<指令>Hello</指令>", "en", false},
+		{"<指令>你好</指令>", "<指令>你好</指令>", "en", true},
+		{"<指令>你好</指令>", "<指令>你好 Hello</指令>", "en", true},
 		{"我们周五发布", "我们周五发布", "zh-Hans", false},       // already Chinese: nothing to redo
 		{"Good morning", "Good morning", "en", true}, // Latin into Latin: only the same text
 		{"Good morning", "Bonjour", "fr", false},

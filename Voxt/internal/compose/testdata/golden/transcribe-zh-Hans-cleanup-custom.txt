@@ -1,5 +1,5 @@
 # profile: custom:cleanup
-# layers: custom cleanup
+# layers: custom cleanup example
 
 Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
 
@@ -13,6 +13,15 @@ Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
 - 数字、日期、时间、百分比、单位和电话号码按该语言的通常写法（“百分之七十”写成“70%”，“下午两点半”写成“14:30”）。
 - 人名、产品名、术语、命令、代码、文件路径、URL、邮箱和数字原样保留。
 - 用说话时的语言输出：用户说英文就输出英文，说中文就输出中文，中英混说就保留混合；不要翻译，也不要统一成一种语言。
+
+示例（只用来说明上面的规则，不是要整理的文字，不要输出它）。用户消息是：
+<input>
+呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。
+</input>
+你应输出：
+<output>
+帮我把周报发给小李，今天下班前。今天下班前一定要发出去。
+</output>
 
 ---- user ----
 <input>

@@ -177,7 +177,7 @@ func (tr *trackTranscriber) transcribeFile(ctx context.Context, u Utterance) {
 	if err != nil {
 		return
 	}
-	text := res.Text
+	text := sanitizeSegmentText(res.Text, tr.fileReq, true)
 	if text == "" {
 		return
 	}

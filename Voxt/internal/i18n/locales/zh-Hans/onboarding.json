@@ -9,7 +9,7 @@
   "Continue is available once a test gives a result": "试一次并得到结果后才能继续",
   "Browser addresses only choose which rules apply": "浏览器网址只用来匹配规则",
   "Choose models…": "选择模型…",
-  "Cleans up, translates and rewrites the text. Run one on this Mac with Ollama, LM Studio or oMLX, or use a service's API key.": "用来整理、翻译和改写文字。可以用 Ollama、LM Studio 或 oMLX 在这台 Mac 上运行一个，也可以使用服务商的 API Key。",
+  "In Settings → Language models, choose Ollama, LM Studio, oMLX, or an API service. Paste any required key into API key, then select Test connection.": "在“设置 → 语言模型”里选择 Ollama、LM Studio、oMLX 或 API 服务。需要 API Key 时粘贴到“API Key”栏，再点“测试连接”。",
   "Close guide": "关闭引导",
   "Close guide (Settings → General opens it again)": "关闭引导（以后可以在“设置 → 通用”里重新打开）",
   "Could not use the models: %v": "无法使用这些模型：%v",

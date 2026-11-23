@@ -12,11 +12,18 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
 
+type libraryStore interface {
+	store.Store
+	Dir() string
+	Stats(context.Context) (sqlitestore.Stats, error)
+}
+
 type library struct {
-	store    *sqlitestore.Store
+	store    libraryStore
 	bus      *core.Bus
 	settings *settings.Store
 }
