@@ -1,6 +1,6 @@
 # Installation — NPU
 
-Install SGLang-Omni on ARM64 Linux with Ascend A3 or A2 / 910B devices.
+Install SGLang-Omni on ARM64 Linux with Ascend A3, A2 / 910B, or 950 / A5 devices.
 Choose the Docker image for your device or install into an existing Ascend environment.
 
 ## Prerequisites
@@ -35,17 +35,17 @@ Use an ARM64 Linux host with Docker and Ascend A3 devices.
 
 Pull the image matching your hardware from Huawei Cloud SWR:
 
-- **Release:** use `v<version>-cann9.0.0-a3` for deployments, replacing
+- **Release:** use `v<version>-cann9.1.0-a3` for deployments, replacing
   `v<version>` with a published version tag.
-- **Development:** use `main-cann9.0.0-a3` for the latest published development
+- **Development:** use `main-cann9.1.0-a3` for the latest published development
   build. Scheduled or manual publications update this rolling tag.
 
 ```bash
 # Release (replace v<version> with a published version):
-# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.0.0-a3
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.1.0-a3
 
 # Development (A3):
-IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-a3
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.1.0-a3
 
 docker pull "$IMAGE"
 ```
@@ -89,6 +89,9 @@ When selecting another device, update both `/dev/davinci0` and
 relative to the visible devices (`gpu: 0` selects the first visible device).
 
 ### A2 / 910B image installation
+
+<details>
+<summary>Show installation instructions</summary>
 
 Use an ARM64 Linux host with Docker and Ascend A2 / 910B devices.
 
@@ -139,6 +142,59 @@ source /usr/local/Ascend/ascend-toolkit/set_env.sh
 When selecting another device, update both `/dev/davinci0` and
 `ASCEND_RT_VISIBLE_DEVICES`. Pipeline device indices are relative to the
 visible devices (`gpu: 0` selects the first visible device).
+
+</details>
+
+### 950 / A5 image installation
+
+<details>
+<summary>Show installation instructions</summary>
+
+Use an ARM64 Linux host with Docker and Ascend 950 / A5 devices.
+
+**1. Pull the image**
+
+Use `v<version>-cann9.1.0-950` for a release, or `main-cann9.1.0-950` for the latest published development build.
+
+```bash
+# Release (replace v<version> with a published version):
+# IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:v<version>-cann9.1.0-950
+
+# Development (950 / A5):
+IMAGE=swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.1.0-950
+
+docker pull "$IMAGE"
+```
+
+For reproducible deployments, set `IMAGE` to `swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni@sha256:<digest>`.
+
+**2. Start the container**
+
+Set `MODEL_DIR` to your model directory. The example exposes device 0; adjust device IDs and driver paths for your host. Use `--privileged` only on a trusted host; production deployments should use restricted device access.
+
+```bash
+MODEL_DIR=<your_own_path>
+docker run --rm -it --name omni-npu \
+  --privileged --network host --shm-size 8g \
+  --device /dev/davinci0 \
+  --device /dev/davinci_manager \
+  --device /dev/devmm_svm --device /dev/hisi_hdc \
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
+  -v /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro \
+  -v /usr/local/sbin:/usr/local/sbin:ro \
+  -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
+  -v "$MODEL_DIR:/models:ro" \
+  -e ASCEND_RT_VISIBLE_DEVICES=0 \
+  -e OMP_NUM_THREADS=8 \
+  "$IMAGE" bash
+
+# Inside the container:
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+```
+
+When selecting another device, update both `/dev/davinci0` and `ASCEND_RT_VISIBLE_DEVICES`. Pipeline device indices are relative to the visible devices (`gpu: 0` selects the first visible device).
+
+</details>
 
 <a id="option-b-manual-install"></a>
 
