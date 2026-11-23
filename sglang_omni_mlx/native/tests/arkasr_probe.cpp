@@ -33,13 +33,13 @@ bool Require(bool holds, const char *message) {
 }
 
 // Low-amplitude noise: loud enough that no window is taken for silence.
-std::vector<float> Noise(size_t sample_count) {
+std::vector<float> Noise(size_t sample_count, float amplitude = 0.02f) {
   std::vector<float> samples(sample_count);
   uint32_t state = 1;
   for (float &sample : samples) {
     state = state * 1664525 + 1013904223;
-    sample =
-        static_cast<float>((state >> 8) & 0xFFFF) / 65535.0f * 0.02f - 0.01f;
+    sample = static_cast<float>((state >> 8) & 0xFFFF) / 65535.0f * amplitude -
+             amplitude / 2;
   }
   return samples;
 }
@@ -118,6 +118,19 @@ int main(int argc, char **argv) {
   ok &= Require(led.text == "\xc3\xa9x" && led.window_texts.size() == 1,
                 "a split window that is only the request's zero padding "
                 "must add no text before the speech");
+
+  // Note (AzizbekMuminoff): nonzero audio is never padding, however quiet:
+  // 20 s of noise at 1e-5 after 26 s of zeros splits into a skipped zero
+  // window and this one, which must still decode.
+  std::vector<float> quiet(26 * 16000, 0.0f);
+  const std::vector<float> quiet_speech = Noise(20 * 16000, 2e-5f);
+  quiet.insert(quiet.end(), quiet_speech.begin(), quiet_speech.end());
+  const omni_common::TranscriptionResult quiet_result =
+      stop.Transcribe(quiet, arkasr::ArkOptions{}, cancel);
+  ok &= Require(quiet_result.text == "\xc3\xa9x" &&
+                    quiet_result.window_texts.size() == 1,
+                "a nonzero window must decode however quiet it is (only "
+                "exact zeros are padding)");
 
   const nlohmann::json rows = {
       {{"checkpoint", "loop"},
