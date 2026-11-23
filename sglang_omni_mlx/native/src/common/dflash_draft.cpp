@@ -268,9 +268,12 @@ DraftStatistics DFlashDraft::Decode(
             prompt_hidden, {0, prompt_count - 1, 0},
             {1, prompt_count + guessed_count, prompt_hidden.shape(2)})),
         -1);
-    // The frontend was scheduled before Decode, so observing it here — with
-    // the prefill and the prediction already queued — keeps the GPU fed and
-    // still separates the encoder from the prefill figure.
+    // Queue the whole chain first: the prediction depends on the embeddings,
+    // so this also schedules the frontend, as main's eval(predicted) did.
+    // Only then observe the frontend: the encoder can never be serialized
+    // ahead of the decoder graphs, even for callers that scheduled nothing
+    // before Decode. eval(embeddings) adds no evaluation of its own.
+    mx::async_eval(predicted);
     mx::eval(embeddings);
     statistics.frontend_eval_ms =
         std::chrono::duration<double, std::milli>(
