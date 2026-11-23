@@ -42,7 +42,8 @@
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
-      "insert_tooltip": "插入到 Slack",
+      "insert_tooltip": "插入到 Slack（R）",
+      "copy_tooltip": "复制（C）",
       "size_step": 0,
       "levels": [
         0.35,
@@ -67,7 +68,6 @@
           "key": "turn-0-user",
           "kind": "bubble",
           "turn": 0,
-          "title": "你",
           "text": "写一句话告诉同事我会晚到十分钟",
           "user": true,
           "selectable": true
@@ -87,7 +87,6 @@
           "key": "turn-1-user",
           "kind": "bubble",
           "turn": 1,
-          "title": "你",
           "text": "再正式一点",
           "live": true,
           "user": true,

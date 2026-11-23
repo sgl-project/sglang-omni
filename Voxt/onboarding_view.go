@@ -114,7 +114,15 @@ func obHeader(c *ui.Context, state onboardingViewState, actions onboardingAction
 				if index > 0 {
 					ui.Icon(c, icons.AltArrowRight.Linear).Size(arrow, arrow).TextColor(k.Text3)
 				}
-				ui.Row(c.Key("ob-step-" + strconv.Itoa(index))).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+				var step ui.Element
+				if index < state.Step {
+					step = ghostBase(c.Key("ob-step-"+strconv.Itoa(index))).Border(0, ui.Color{}).
+						Disabled(state.Footer.Busy).Label(title).Tooltip(i18n.T("Back") + " · " + title).
+						OnClick(func() { actions.obGo(index) })
+				} else {
+					step = ui.Row(c.Key("ob-step-" + strconv.Itoa(index)))
+				}
+				step.Height(px(t, 28)).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
 					color := k.Text3
 					switch {
 					case index == state.Step:
@@ -124,6 +132,9 @@ func obHeader(c *ui.Context, state onboardingViewState, actions onboardingAction
 						ui.Icon(c, icons.CheckCircle.Bold).Size(px(t, 12), px(t, 12)).TextColor(k.Accent)
 					case index < state.Step:
 						color = k.Text2
+					}
+					if index < state.Step && step.Hovered() {
+						color = k.Text
 					}
 					text := ui.Text(c, title).FontSize(px(t, fsCaption)).TextColor(color).SingleLine()
 					if index == state.Step {

@@ -61,11 +61,15 @@ func (s *live) recognisePieces(language string, b bias) {
 		}
 		piece := audio[start : start+cut*2]
 		begin := time.Now()
-		req := finalRequest{pcm: padPiece(piece, t), language: language, context: b.context,
-			maxTokens: t.tokenBudget(asr.Duration(piece, sampleRate)), layout: t.AudioLayout}
-		r, err := transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
-		if err == nil {
-			r.text = s.a.trimEcho(s.ctx, s.l, req, r.text, r.length, b.terms)
+		var r finalResult
+		var err error
+		if sent, ok := s.a.speechOnly(s.ctx, piece); ok {
+			req := finalRequest{pcm: padPiece(sent, t), language: language, context: b.context,
+				maxTokens: t.tokenBudget(asr.Duration(sent, sampleRate)), layout: t.AudioLayout}
+			r, err = transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
+			if err == nil {
+				r.text = s.a.trimEcho(s.ctx, s.l, req, s.a.plainText(r.text), r.length, b.terms)
+			}
 		}
 		took := time.Since(begin)
 		if err != nil {
@@ -83,6 +87,9 @@ func (s *live) recognisePieces(language string, b bias) {
 		pc.language = language
 		pc.busy += took
 		n := len(pc.texts)
+		// The text so far is final: the session can start its clean-up of
+		// it instead of waiting for Stop (the Final repeats it as its prefix).
+		s.emit(asr.Event{Kind: asr.EventPiece, Text: joinParts(pc.texts)})
 		s.mu.Unlock()
 		looked = 0
 		select { // the rest may hold another piece already

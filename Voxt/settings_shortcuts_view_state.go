@@ -40,6 +40,7 @@ type shortcutPresetPickerViewState struct {
 type settingsShortcutsViewState struct {
 	AccessibilityInstalled bool                           `json:"accessibility_installed"`
 	StrictShortcuts        bool                           `json:"strict_shortcuts"`
+	ReturnFinishes         bool                           `json:"return_finishes"`
 	Preset                 shortcutPresetPickerViewState  `json:"preset"`
 	Rows                   []settingsShortcutRowViewState `json:"rows"`
 }
@@ -54,10 +55,11 @@ func buildSettingsShortcutsViewState(translator *i18n.Translator, input settings
 	state := settingsShortcutsViewState{
 		AccessibilityInstalled: input.AccessibilityInstalled,
 		StrictShortcuts:        input.Features.StrictShortcuts,
+		ReturnFinishes:         input.Features.ReturnFinishes,
 		Preset:                 buildShortcutPresetPickerViewState(translator, input.Features, input.AccessibilityInstalled, false),
 	}
 	for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
-		if input.Features.IsHidden(feature) {
+		if input.Features.IsHidden(feature) || (feature == hotkey.Note && input.Features.IsHidden(settings.HideNotes)) {
 			continue
 		}
 		bindings := hotkey.HotkeysOf(input.Features, feature)

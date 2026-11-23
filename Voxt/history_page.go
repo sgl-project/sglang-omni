@@ -11,10 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
-const (
-	historyPanelW   = 290
-	historyListMinW = 300
-)
+const historyListMinW = 300
 
 type historyLocalUI struct {
 	tab    int
@@ -22,8 +19,12 @@ type historyLocalUI struct {
 	find   finder
 	sel    string
 	listUI ui.ListState
-	delAsk bool
-	delID  string
+	// panelWidth is the detail width in DIPs at 100 %, 0 before the first
+	// frame reads the saved one; panelResizing is set while a drag lasts.
+	panelWidth    float32
+	panelResizing bool
+	delAsk        bool
+	delID         string
 }
 
 func historyPage(c *ui.Context, state *historyViewState, actions historyActions, local *historyLocalUI, pageWidth float32) {
@@ -84,8 +85,16 @@ func historyPage(c *ui.Context, state *historyViewState, actions historyActions,
 				}, nil)
 			})
 		}
-		width := px(t, historyPanelW)
-		inline := pageWidth-width >= px(t, historyListMinW)
+		if local.panelWidth == 0 {
+			local.panelWidth = float32(state.DetailWidth)
+			if local.panelWidth == 0 {
+				local.panelWidth = historyPanelW
+			}
+		}
+		lo := px(t, historyPanelW)
+		hi := max(lo, min(px(t, historyPanelMaxW), pageWidth-px(t, historyListMinW)-1))
+		width := min(max(px(t, local.panelWidth), lo), hi)
+		inline := pageWidth-lo-1 >= px(t, historyListMinW)
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				switch {
@@ -110,9 +119,16 @@ func historyPage(c *ui.Context, state *historyViewState, actions historyActions,
 						actions.closeHistoryDetail()
 					}
 				}
-				sidePanel(c, "hist-detail", width, inline, i18n.T("Entry details"), closePanel, func() {
-					historyDetail(c, state.Detail, actions, local)
-				})
+				if inline {
+					width = historyDetailDivider(c, actions, local, width, hi)
+					ui.Scroll(c.Key("hist-detail")).Width(width).Shrink(0).Label(i18n.T("Entry details")).Children(func() {
+						historyDetail(c, state.Detail, actions, local)
+					})
+				} else {
+					sidePanel(c, "hist-detail", lo, false, i18n.T("Entry details"), closePanel, func() {
+						historyDetail(c, state.Detail, actions, local)
+					})
+				}
 			}
 		})
 	})

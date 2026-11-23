@@ -53,7 +53,7 @@
       "stage": "ended",
       "model_name": "Fixture model",
       "body": "Found 0 suggestions",
-      "warning": "The remote model's address is not allowed. Use https://, or http:// for an address on this Mac.",
+      "warning": "The remote model's address is not allowed. Use http:// or https:// without a user name or password.",
       "error_code": "llm.config",
       "can_start": false,
       "stop_disabled": false

@@ -12,7 +12,8 @@ package main
 // what happened to <report.json> and quits. With --update-beta on it takes
 // betas (mygo.Updater.SetPrereleases), as Beta updates does; without it,
 // as the app does by default: betas when the running version is one.
-// Release builds do not have it.
+// Releases do not have it; betas do (Voxt Release), so that the workflow
+// can let the previous beta update itself to the one it just published.
 
 import (
 	"context"

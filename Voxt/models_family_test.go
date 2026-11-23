@@ -20,6 +20,7 @@ import (
 	"github.com/hehehai/actnowkit/family"
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
@@ -390,7 +391,7 @@ func TestModelFamilyText(t *testing.T) {
 		{qwen, models.Status{OnDisk: true}, "Already on this Mac"},
 		{qwen, models.Status{OnDisk: true, Installed: true, Mine: true, Users: []string{"Dicta"}}, "Shared with Dicta"},
 	} {
-		if got := modelFamilyText(c.m, c.st); got != c.want {
+		if got := modelFamilyTextFor(i18n.CurrentTranslator(), c.m, c.st); got != c.want {
 			t.Errorf("%s %+v: %q, want %q", c.m.ID, c.st, got, c.want)
 		}
 	}

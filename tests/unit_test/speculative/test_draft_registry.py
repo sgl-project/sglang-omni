@@ -125,13 +125,26 @@ DOC_DRAFTS, UNREADABLE_DOC_DRAFT_FLAGS = drafts_in_docs()
 SERVED_DRAFTS = DOC_DRAFTS + drafts_in_example_configs()
 
 
+def served_draft_identity(
+    served: ServedDraft,
+) -> tuple[str | None, str, str | None, str | None]:
+    """The model, stage, algorithm and draft repo a served draft names; a bundled draft's repo is its model."""
+    return (
+        served.model_path,
+        served.stage,
+        served.engine_keys.get("speculative_algorithm"),
+        served.engine_keys.get("speculative_draft_model_path", served.model_path),
+    )
+
+
+def registry_draft_identity(draft: PinnedDraft) -> tuple[str, str, str, str]:
+    return (draft.model_path, draft.stage, draft.algorithm, draft.draft_model_path)
+
+
 def test_registry_pins_each_draft_and_turns_on_at_most_one_per_stage() -> None:
     for draft in DRAFT_REGISTRY:
         assert re.fullmatch(r"[0-9a-f]{40}", draft.draft_model_revision), draft
         assert all(key.startswith("speculative_") for key in draft.engine_settings)
-    assert len(
-        {(draft.model_path, draft.stage, draft.algorithm) for draft in DRAFT_REGISTRY}
-    ) == len(DRAFT_REGISTRY)
     draft_repos = Counter(draft.draft_model_path for draft in DRAFT_REGISTRY)
     assert all(count == 1 for count in draft_repos.values()), draft_repos
     default_on = Counter(
@@ -172,6 +185,35 @@ def test_engine_fills_a_pinned_draft_revision_only_when_the_key_is_absent() -> N
     assert "speculative_draft_model_revision" not in unpinned.overrides()
 
 
+def test_a_config_naming_only_speechspecs_cosyvoice3_draft_keeps_its_revision(
+    tmp_path: Path,
+) -> None:
+    """A Fun-CosyVoice3 config written before the Apache-2.0 draft names SpeechSpec's draft by path alone."""
+    config_path = tmp_path / "fun_cosyvoice3_dspark.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "FunCosyVoice3PipelineConfig",
+                "model_path": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                "stages": {
+                    "tts_engine": {
+                        "engine": {
+                            "speculative_algorithm": "DSPARK",
+                            "speculative_draft_model_path": "yuekai/cosyvoice3_llm_dspark",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    overrides = config.stage_named("tts_engine").engine.overrides()
+    assert (
+        overrides["speculative_draft_model_revision"]
+        == "0b1b28dbb751bac3b74eea5dcc11e0570c91563b"
+    )
+
+
 @pytest.mark.parametrize("revision", [None, "another-revision"])
 def test_bundled_draft_does_not_override_the_target_revision(
     revision: str | None,
@@ -200,20 +242,13 @@ def test_disabling_a_bundled_draft_preserves_the_target_revision() -> None:
 @pytest.mark.parametrize(
     "served",
     SERVED_DRAFTS,
-    ids=lambda served: f"{served.source}:{served.stage}:{served.engine_keys.get('speculative_algorithm')}",
+    ids=lambda served: ":".join(
+        str(part) for part in (served.source, *served_draft_identity(served)[1:])
+    ),
 )
 def test_served_draft_gives_its_registry_entry_keys(served: ServedDraft) -> None:
-    registered = {
-        (draft.model_path, draft.stage, draft.algorithm): draft
-        for draft in DRAFT_REGISTRY
-    }
-    draft = registered.get(
-        (
-            served.model_path,
-            served.stage,
-            served.engine_keys.get("speculative_algorithm"),
-        )
-    )
+    registered = {registry_draft_identity(draft): draft for draft in DRAFT_REGISTRY}
+    draft = registered.get(served_draft_identity(served))
     assert draft is not None, (
         f"{served.source} serves a draft for {served.model_path} {served.stage} that "
         "sglang_omni/speculative/draft_registry.py does not pin"
@@ -222,16 +257,9 @@ def test_served_draft_gives_its_registry_entry_keys(served: ServedDraft) -> None
 
 
 def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> None:
-    served_drafts = {
-        (
-            served.model_path,
-            served.stage,
-            served.engine_keys.get("speculative_algorithm"),
-        )
-        for served in SERVED_DRAFTS
-    }
+    served_drafts = {served_draft_identity(served) for served in SERVED_DRAFTS}
     assert {
-        (draft.model_path, draft.stage, draft.algorithm)
+        registry_draft_identity(draft)
         for draft in DRAFT_REGISTRY
         if not draft.is_default_on
     } <= served_drafts

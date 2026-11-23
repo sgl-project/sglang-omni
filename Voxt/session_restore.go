@@ -65,21 +65,25 @@ func cardFromHistory(entries []store.Entry, conversation string) (answerCard, bo
 	for _, entry := range turns {
 		card.id, card.text, card.title, card.llmID = entry.ID, entry.Result, entry.Title, entry.LLMProvider
 		card.target = proto.App{BundleID: entry.AppBundle, Name: entry.AppName}
-		card.input = session.TextInput{Raw: entry.RawText, Selection: entry.SourceText}
+		card.input = session.TextInput{Raw: entry.RawText, Selection: entry.SourceText, Typed: entry.TypedText}
 		if !hasRewrite {
 			card.lang = entry.TargetLang
 			continue
 		}
 		card.kind = store.KindRewrite
-		instruction, selection := entry.PromptText, entry.SourceText
+		instruction, selection, typed := entry.PromptText, entry.SourceText, entry.TypedText
 		if entry.Kind == store.KindTranslate {
 			instruction = i18n.T("Translate into %s", uitext.TargetLanguageLabel(entry.TargetLang))
-			selection = cmpOr(entry.SourceText, entry.RawText)
+			selection, typed = cmpOr(entry.SourceText, entry.RawText), ""
 		}
-		card.turns = append(card.turns, compose.Turn{Instruction: instruction, Selection: selection,
+		if selection == "" {
+			selection, typed = typed, ""
+		}
+		card.turns = append(card.turns, compose.Turn{Instruction: instruction, Selection: selection, Typed: typed,
 			Answer: compose.Answer{Title: entry.Title, Content: entry.Result}})
 		card.input.Raw = entry.PromptText
 	}
+	card.previews = answerInputPreviews(session.Snapshot{Kind: card.kind, Selection: card.input.Selection, Typed: card.input.Typed}, nil)
 	card.conversation = len(card.turns) > 1
 	return card, true
 }

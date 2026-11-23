@@ -62,19 +62,6 @@ func dictionaryNotesView(c *ui.Context, state *dictionaryNotesViewState, actions
 				input.SetTextSelection(matches[local.notesFind.cur-1][0], matches[local.notesFind.cur-1][1])
 			}
 			actions.autosaveDictionaryNotes(input.Changed(), input.Focused())
-			caption(c, i18n.T("Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives."))
-		})
-	})
-}
-
-// promptCard is a part of a request: its title and its text, in a card.
-func promptCard(c *ui.Context, key, title, text string) {
-	t := c.Theme()
-	colors := tok(t)
-	ui.Column(c.Key(key)).Gap(px(t, 4)).Children(func() {
-		ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(colors.Text2)
-		fillCard(c).Padding(px(t, sp3)).Children(func() {
-			ui.Text(c, text).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 		})
 	})
 }

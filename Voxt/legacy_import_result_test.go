@@ -119,6 +119,52 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 	}
 }
 
+func TestLegacyHTTPGatewayDocs(t *testing.T) {
+	for _, check := range []struct {
+		file        string
+		wants, olds []string
+	}{
+		{"docs/voxt-migration.md", []string{"API-key language models can use HTTP on another host", "the Address tip in the service's set-up dialog says so, and the import's result and the Language models settings show no warning"}, []string{"Voxt 2 only connects over https, or http to this Mac", "the Language models page warns that HTTP sends the API key and text without encryption"}},
+		{"docs/manual-test.md", []string{"另一台机器的 http 地址可以继续使用", "结果和语言模型设置里都没有 HTTP 的警告"}, []string{"另一台机器的 http 地址写“要改", "语言模型页说明 HTTP 会不加密地发送 API Key 和文字"}},
+		{"docs/behavior.md", []string{"API-key 服务接受 http 或 https", "页面和卡片上没有警告"}, []string{"地址只接受 https 或指向本机的 http", "http 不加密地发送 API key 和文字，页面给出警告"}},
+		{"docs/architecture.md", []string{"API-key services: http or https; Codex: https off this Mac"}, []string{"ProviderConfig.Resolve (https, or http to this Mac)"}},
+		{"CHANGELOG.md", []string{"which the Address tip in the service's set-up dialog says"}, []string{"Voxt warns that HTTP sends the key and text without encryption"}},
+	} {
+		doc, err := os.ReadFile(check.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(doc)
+		for _, want := range check.wants {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s lacks %q", check.file, want)
+			}
+		}
+		for _, old := range check.olds {
+			if strings.Contains(text, old) {
+				t.Errorf("%s still says %q", check.file, old)
+			}
+		}
+	}
+	// Only the Address tip in the set-up dialog mentions plain HTTP; no
+	// document may claim the Language models page or the import result
+	// warns about it (remote_dialog_view_state.go draws the tip).
+	for file, claim := range map[string]string{
+		"docs/voxt-migration.md": "the Language models page warns that HTTP sends",
+		"docs/behavior.md":       "页面给出警告",
+		"docs/manual-test.md":    "语言模型页说明 HTTP",
+		"CHANGELOG.md":           "Voxt warns that HTTP sends",
+	} {
+		doc, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(doc), claim) {
+			t.Errorf("%s claims a plain-HTTP warning that the app does not show", file)
+		}
+	}
+}
+
 func TestLegacyPromptInputVariables(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"Task: {{DICTATED_PROMPT}}\nText: {{SOURCE_TEXT}}", ""},

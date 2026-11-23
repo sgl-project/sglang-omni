@@ -1,0 +1,112 @@
+MyGo patch 0019: accept AppKit's generic file-drag operation.
+
+A file drag whose source advertises only NSDragOperationGeneric was rejected
+before the Rewrite panel saw its files. Treat that native effect as Copy in the
+Go event, but answer AppKit with Generic when the source does not offer Copy.
+The native test checks that the answer intersects the source mask.
+diff --git a/internal/darwin/surface_drag.go b/internal/darwin/surface_drag.go
+--- a/internal/darwin/surface_drag.go
++++ b/internal/darwin/surface_drag.go
+@@ -156,6 +156,6 @@ func macOperations(o transfer.Operation) uint {
+ func goOperations(n uint) transfer.Operation {
+ 	var o transfer.Operation
+-	if n&1 != 0 {
++	if n&5 != 0 {
+ 		o |= transfer.Copy
+ 	}
+ 	if n&16 != 0 {
+@@ -346,6 +346,11 @@ func (s *surface) nativeDataOperation(info id) uint {
+ func (s *surface) nativeDataOperation(info id) uint {
+ 	if !s.nativeDataEvent(info, platform.DataDragOver) {
+ 		return 0
+ 	}
+-	return macOperations(s.dragOperation)
++	operation := macOperations(s.dragOperation)
++	sourceOperations := uint(send(info, "draggingSourceOperationMask"))
++	if operation&sourceOperations == 0 && sourceOperations&4 != 0 {
++		return 4
++	}
++	return operation
+ }
+diff --git a/internal/darwin/testhooks.go b/internal/darwin/testhooks.go
+--- a/internal/darwin/testhooks.go
++++ b/internal/darwin/testhooks.go
+@@ -595,6 +595,12 @@ func TestInputClient(handle uintptr) (selected [2]int, document string) {
+ // the surface took the files over that point and whether it took the
+ // drop.
+ func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped bool) {
++	return TestDropFilesOperation(handle, x, y, paths, 1)
++}
++
++// TestDropFilesOperation is TestDropFiles with an explicit AppKit source
++// operation mask, for destinations that must accept Generic file drags.
++func TestDropFilesOperation(handle uintptr, x, y float64, paths []string, mask uint) (over, dropped bool) {
+ 	w := theBackend.byNSWindow[id(handle)]
+ 	if w == nil || w.surface == nil {
+ 		return false, false
+@@ -611,7 +619,7 @@ func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped
+ 	})
+ 	withPool(func() {
+ 		content := msgRect(send(w.win, "contentView"), sel("frame"))
+-		testDragMask = 1
++		testDragMask = mask
+ 		testDragAt = NSPoint{x, content.Size.Height - y}
+ 		send(testDragPB, "clearContents")
+ 		var urls []id
+@@ -625,7 +633,7 @@ func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped
+ 		send(testDragPB, "writeObjects:", uintptr(nsArray(urls...)))
+ 		v := w.surface.view
+-		over = send(v, "draggingEntered:", uintptr(testDragInfo)) != 0
+-		over = send(v, "draggingUpdated:", uintptr(testDragInfo)) != 0 && over
++		over = uint(send(v, "draggingEntered:", uintptr(testDragInfo)))&mask != 0
++		over = uint(send(v, "draggingUpdated:", uintptr(testDragInfo)))&mask != 0 && over
+ 		if !over {
+ 			send(v, "draggingExited:", uintptr(testDragInfo))
+ 			return
+diff --git a/internal/e2e/file_url_drop_operation_test.go b/internal/e2e/file_url_drop_operation_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/e2e/file_url_drop_operation_test.go
+@@ -0,0 +1,42 @@
++//go:build darwin
++
++package e2e
++
++import (
++	"os"
++	"path/filepath"
++	"slices"
++	"sync/atomic"
++	"testing"
++
++	"github.com/egoist/mygo"
++	"github.com/egoist/mygo/internal/darwin"
++	"github.com/egoist/mygo/ui"
++)
++
++// TestContentWindowGenericFileDrop uses the Rewrite panel's exact window
++// options with a source that offers only NSDragOperationGeneric (4).
++func TestContentWindowGenericFileDrop(t *testing.T) {
++	w := newWindow(t, mygo.WindowOptions{
++		Title: "Rewrite", Width: 480, Height: 340, UseContentSize: true, Hidden: true,
++		Frameless: true, Transparent: true, Vibrancy: mygo.VibrancyHUD,
++		Panel: true, DisableResize: true, DisableClose: true,
++		Content: ui.View(func(c *ui.Context) { ui.Text(c, "Rewrite") }),
++	})
++	var event atomic.Pointer[mygo.FileDropEvent]
++	w.OnFileDrop(func(e *mygo.FileDropEvent) { event.Store(e) })
++	path := filepath.Join(t.TempDir(), "picture.png")
++	if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	var over, dropped bool
++	mygo.RunOnMain(func() {
++		over, dropped = darwin.TestDropFilesOperation(w.NativeHandle(), 50, 50, []string{path}, 4)
++	})
++	if !over || !dropped {
++		t.Fatalf("the panel refused a generic file drag: over %v, dropped %v", over, dropped)
++	}
++	if e := event.Load(); e == nil || !slices.Equal(e.Paths, []string{path}) {
++		t.Fatalf("OnFileDrop got %+v, want path %q", e, path)
++	}
++}

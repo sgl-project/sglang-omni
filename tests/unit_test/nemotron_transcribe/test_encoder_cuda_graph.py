@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Encoder replay correctness across requests, shapes and compilation."""
 
+import threading
+
 import pytest
 import torch
 
@@ -39,6 +41,44 @@ def test_replay_and_shape_limit_preserve_independent_outputs() -> None:
         retained_outputs.append((output, reference))
     for output, reference in retained_outputs:
         torch.testing.assert_close(output, reference)
+
+
+@torch.no_grad()
+def test_capture_lets_another_thread_allocate_device_memory() -> None:
+    """The pre-LM encoder captures on a worker thread while the decoder allocates."""
+    capturing = threading.Event()
+    allocated = threading.Event()
+    results: list[torch.Tensor | BaseException] = []
+
+    def forward(
+        hidden_states: torch.Tensor, valid_key_mask: torch.Tensor | None
+    ) -> torch.Tensor:
+        if torch.cuda.is_current_stream_capturing():
+            capturing.set()
+            assert allocated.wait(timeout=30)
+        else:
+            pass
+        return masked_projection(hidden_states, valid_key_mask)
+
+    def encode() -> None:
+        try:
+            results.append(replay(hidden_states, None))
+        except BaseException as error:
+            results.append(error)
+
+    replay = EncoderCudaGraphs(forward)
+    hidden_states = torch.randn(2, 5, 8, device="cuda")
+    worker = threading.Thread(target=encode)
+    worker.start()
+    try:
+        assert capturing.wait(timeout=30)
+        fresh_block = torch.empty(770 * 1024**2, dtype=torch.uint8, device="cuda")
+    finally:
+        allocated.set()
+        worker.join(timeout=60)
+    del fresh_block
+    assert len(results) == 1 and isinstance(results[0], torch.Tensor), results
+    torch.testing.assert_close(results[0], masked_projection(hidden_states, None))
 
 
 @torch.no_grad()

@@ -130,25 +130,11 @@ func assignmentFeatureTitle(translator *i18n.Translator, kind local.Kind, featur
 	return uitext.FeatureTitleFor(translator, feature)
 }
 
-// assignmentFeature is a feature's part of the settings.
-func assignmentFeature(s *settings.Settings, feature string) *settings.Feature {
-	switch feature {
-	case hotkey.Translate:
-		return &s.Features.Translate.Feature
-	case hotkey.Rewrite:
-		return &s.Features.Rewrite.Feature
-	case hotkey.Meeting:
-		return &s.Features.Meeting.Feature
-	default:
-		return &s.Features.Transcribe.Feature
-	}
-}
-
 func assignmentModelID(s *settings.Settings, kind local.Kind, feature string) string {
 	if kind == local.ASR {
-		return assignmentFeature(s, feature).ASR
+		return featurePart(s, feature).ASR
 	}
-	return assignmentFeature(s, feature).LLM
+	return featurePart(s, feature).LLM
 }
 
 // assignmentModelAt finds an installed model by id alone: unlike
@@ -204,11 +190,7 @@ func (a *app) applyModelAssignment() {
 	id := assign.id
 	a.updateSettings(func(s *settings.Settings) {
 		for _, feature := range features {
-			if modelKind == local.ASR {
-				assignmentFeature(s, feature).ASR = id
-			} else {
-				assignmentFeature(s, feature).LLM = id
-			}
+			setFeatureModel(s, modelKind, feature, id)
 		}
 	})
 	assign.open = false

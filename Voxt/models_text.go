@@ -69,11 +69,7 @@ func percent(done, total int64) int {
 	return int(done * 100 / total)
 }
 
-// modelFamilyText is what the family says of a model ("" nothing).
-func modelFamilyText(m models.Model, status models.Status) string {
-	return modelFamilyTextFor(i18n.CurrentTranslator(), m, status)
-}
-
+// modelFamilyTextFor is what the family says of a model ("" nothing).
 func modelFamilyTextFor(translator *i18n.Translator, m models.Model, status models.Status) string {
 	switch {
 	case (m.Borrowed || status.OnDisk) && !status.Installed:

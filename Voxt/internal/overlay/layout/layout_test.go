@@ -95,3 +95,51 @@ func TestBubbleTextWidth(t *testing.T) {
 		})
 	}
 }
+
+// TestCardFillW: Fill uses the room beyond Large, keeps Large when it fits,
+// and clamps only when Large itself cannot fit. Fixed sizes keep their widths.
+func TestCardFillW(t *testing.T) {
+	for _, test := range []struct {
+		width  int
+		margin float64
+		want   int
+	}{
+		{width: 2560, margin: 96, want: 2560 - 2*(96+Pad)},
+		{width: 900, margin: 96, want: 760},
+		{width: 900, margin: 400, want: 760},
+		{width: 800, margin: 96, want: 760},
+		{width: 520, margin: 96, want: 484},
+	} {
+		area := mygo.Rectangle{X: 0, Y: 25, Width: test.width, Height: 600}
+		if got := CardFillW(area, test.margin); got != test.want {
+			t.Errorf("CardFillW(%d, %.0f) = %d, want %d", test.width, test.margin, got, test.want)
+		}
+	}
+	area := mygo.Rectangle{X: 0, Y: 25, Width: 2560, Height: 1415}
+	for step, want := range []int{AnswerW, 600, 760, CardFillW(area, 96)} {
+		if got := CardSizes[step].Width(area, 96); got != want {
+			t.Errorf("CardSizes[%d].Width = %d, want %d", step, got, want)
+		}
+	}
+}
+
+// TestCardSizeButtonInsideCorner: at any corner radius the settings
+// allow (0 to 40), the size button's outer corner stays inside the
+// rounded corner: its distance from the corner's centre is at most the
+// radius.
+func TestCardSizeButtonInsideCorner(t *testing.T) {
+	for r := float64(CardSizeBtnInset); r <= 40; r++ {
+		if d := (r - CardSizeBtnInset) * math.Sqrt2; d > r {
+			t.Errorf("radius %.0f: the button's corner %.2f from the corner's centre, past the rounded corner", r, d)
+		}
+	}
+}
+
+// TestCardSizeStepsMatch: the settings' size count and the sizes
+// themselves move together (Features.CardSize clamps by one, the
+// layout indexes by the other).
+func TestCardSizeStepsMatch(t *testing.T) {
+	if settings.CardSizeSteps != len(CardSizes) {
+		t.Errorf("settings.CardSizeSteps = %d, but there are %d card sizes", settings.CardSizeSteps, len(CardSizes))
+	}
+}

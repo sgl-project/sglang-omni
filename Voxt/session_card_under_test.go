@@ -9,9 +9,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
 
-// #4013: an answer card waits under a new session and comes back when that
-// session leaves no card. The card is from Slack (rewriteSelecting); the
-// user goes on in TextEdit.
+// #4013: an answer card that a new session takes the place of waits under
+// it and comes back when that session leaves no card. Wall 116: a
+// Transcribe never takes the card's place — the card stays where it is
+// and the session's pill shows in its own window. The card is from Slack
+// (rewriteSelecting); the user goes on in TextEdit.
 
 var textEditApp = helpertest.Apps["com.apple.TextEdit"]
 
@@ -39,7 +41,7 @@ func rewriteSaid(t *testing.T, a *sessionApp, tr *fakeTranscriptions, app proto.
 	a.pump("the end", func() bool { return a.sess.State.Ended() && a.answer.text == answer })
 }
 
-// slackCardBack checks that Slack's card shows again, as it was.
+// slackCardBack checks that Slack's card shows, as it was.
 func slackCardBack(t *testing.T, a *sessionApp, when string) {
 	t.Helper()
 	if c := a.answer; !c.open || c.target.Name != "Slack" || c.text != "one" || len(c.turns) != 1 || a.under.open || a.overlayModeNow() != ovAnswer {
@@ -47,18 +49,29 @@ func slackCardBack(t *testing.T, a *sessionApp, when string) {
 	}
 }
 
-// A transcription in between: the card hides while it runs and comes back,
-// and the next Rewrite in Slack still follows it up.
-func TestCardBackAfterTranscribe(t *testing.T) {
+// Wall 116: a transcription beside the card: the card stays open,
+// unmoved, the pill records in its own window, and the next Rewrite in
+// Slack still follows the card up. The card used to hide for the
+// transcription and come back at the default place.
+func TestCardStaysDuringTranscribe(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one", "two", "three"}}
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	frame := a.ov.frame
 	startSaying(a, tr, "transcribe/0", textEditApp, "dictated")
-	if a.answer.open || !a.under.open || a.ov.mode != ovRecording {
-		t.Fatalf("recording: card open=%v under=%v mode=%s", a.answer.open, a.under.open, a.ov.mode)
+	if !a.answer.open || a.under.open || a.ov.mode != ovAnswer || a.pill.mode != ovRecording || a.ov.frame != frame {
+		t.Fatalf("recording: card open=%v under=%v mode=%s pill=%s frame=%v (was %v)",
+			a.answer.open, a.under.open, a.ov.mode, a.pill.mode, a.ov.frame, frame)
 	}
+	pillBesideCard(t, a, "recording beside the open card")
 	tap(a, "transcribe/0", textEditApp)
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	slackCardBack(t, a, "after the transcription")
+	if a.ov.frame != frame || a.pill.shown {
+		t.Fatalf("the card moved or the pill stayed: frame=%v (was %v), pill shown=%v", a.ov.frame, frame, a.pill.shown)
+	}
+	if p := a.pasted(); len(p) != 1 || p[0].Text != "two" { // the clean-up's answer to "dictated"
+		t.Fatalf("pasted %+v", p)
+	}
 	answer := "two"
 	if len(chat.requests()) > 1 { // the transcription's clean-up asked the model too
 		answer = "three"
@@ -70,23 +83,51 @@ func TestCardBackAfterTranscribe(t *testing.T) {
 	}
 }
 
-// The cancel shortcut during the transcription cancels it; the card comes back.
-func TestCardBackAfterCancelledTranscribe(t *testing.T) {
+// The cancel shortcut during the transcription cancels it; the card never
+// leaves.
+func TestCardStaysAfterCancelledTranscribe(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	frame := a.ov.frame
 	startSaying(a, tr, "transcribe/0", textEditApp, "dictated")
+	if !a.answer.open || a.ov.mode != ovAnswer || a.pill.mode != ovRecording {
+		t.Fatalf("recording: card open=%v mode=%s pill=%s", a.answer.open, a.ov.mode, a.pill.mode)
+	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("cancelled", func() bool { return a.sess.State == session.Cancelled })
 	slackCardBack(t, a, "after cancel")
+	if a.ov.frame != frame || a.pill.shown {
+		t.Fatalf("the card moved or the pill stayed: frame=%v (was %v), pill shown=%v", a.ov.frame, frame, a.pill.shown)
+	}
 	if p := a.pasted(); len(p) != 0 {
 		t.Fatalf("pasted %+v", p)
 	}
 }
 
-// The transcription's notice (nothing heard) shows first, then the card.
-func TestCardBackAfterTranscribeNotice(t *testing.T) {
+// A restyle that grows the card (its text measured taller) moves the
+// pill with it; it used to stay and end up inside the taller card.
+func TestPillFollowsACardRestyle(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	startSaying(a, tr, "transcribe/0", textEditApp, "dictated")
+	pillBesideCard(t, a, "recording beside the open card")
+	long := strings.Repeat("a much longer answer. ", 40)
+	a.answer.text = long
+	a.overlayRestyle()
+	pillBesideCard(t, a, "after the card grew")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if c := a.answer; !c.open || c.target.Name != "Slack" || c.text != long || a.under.open || a.overlayModeNow() != ovAnswer || a.pill.shown {
+		t.Fatalf("after the transcription: card %+v under=%v mode=%s pill=%s", c, a.under.open, a.overlayModeNow(), a.pill.mode)
+	}
+}
+
+// The transcription's notice (nothing heard) shows in the pill's window,
+// beside the card.
+func TestCardStaysAfterTranscribeNotice(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	frame := a.ov.frame
 	tr.setText("")
 	first := a.sess.ID
 	tap(a, "transcribe/0", textEditApp)
@@ -94,10 +135,14 @@ func TestCardBackAfterTranscribeNotice(t *testing.T) {
 	a.pump("audio", func() bool { return len(a.sess.Levels) >= 5 })
 	tap(a, "transcribe/0", textEditApp)
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
-	if a.notice == nil || a.overlayModeNow() != ovNotice || !a.answer.open {
-		t.Fatalf("notice=%+v mode=%s card open=%v: want the notice, the card back behind it", a.notice, a.overlayModeNow(), a.answer.open)
+	if a.notice == nil || a.overlayModeNow() != ovAnswer || !a.answer.open || a.pill.mode != ovNotice || a.ov.frame != frame {
+		t.Fatalf("notice=%+v mode=%s pill=%s card open=%v frame=%v (was %v): want the notice beside the unmoved card",
+			a.notice, a.overlayModeNow(), a.pill.mode, a.answer.open, a.ov.frame, frame)
 	}
 	a.closeNotice()
+	if a.pill.shown {
+		t.Fatalf("the pill window stayed after the notice: %s", a.pill.mode)
+	}
 	slackCardBack(t, a, "after the notice")
 }
 
@@ -147,6 +192,17 @@ func TestContinueElsewhereFollowsUp(t *testing.T) {
 	msgs := chatMessages(chat.requests()[1])
 	if len(msgs) != 4 || len(a.answer.turns) != 2 || a.answer.target.Name != "Slack" || a.answer.turns[1].Selection != chatB {
 		t.Fatalf("%d messages, turns=%d target=%s, turn 2 selection %q", len(msgs), len(a.answer.turns), a.answer.target.Name, a.answer.turns[1].Selection)
+	}
+}
+
+func TestResurfaceWaitsForBackground(t *testing.T) {
+	a := &app{under: answerCard{open: true}, bgID: "bg", bgSess: session.Snapshot{State: session.Composing}}
+	if a.resurface() {
+		t.Fatal("the old card returned while the background answer still streamed")
+	}
+	a.bgSess.State = session.Done
+	if !a.resurface() {
+		t.Fatal("the old card did not return after the background answer ended")
 	}
 }
 

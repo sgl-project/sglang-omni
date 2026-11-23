@@ -46,6 +46,7 @@
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
       "insert_tooltip": "Arc 里选中的文字不能编辑。可以复制结果，或者点一下要放的位置再插入。",
+      "copy_tooltip": "复制（C）",
       "size_step": 0,
       "levels": [
         0,

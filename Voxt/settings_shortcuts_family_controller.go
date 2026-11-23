@@ -14,12 +14,6 @@ type shortcutPromptServices interface {
 	OpenURL(url string)
 }
 
-// conflictLines are the lines of the other apps that use feature's i-th
-// shortcut too (a.famConflicts).
-func (a *app) conflictLines(feature string, index int) []string {
-	return conflictLinesFor(i18n.CurrentTranslator(), a.famConflicts, feature, index)
-}
-
 // usedByLines are the lines of the other apps whose shortcuts are on keys
 // (VoxtNew's notation): the recorder's, from the last discovery (memory
 // only).
