@@ -63,25 +63,15 @@ jobs:
               changedFiles.push(...files);
             }
 
-            const touchedPaths = new Set();
-            for (const { filename, previous_filename } of changedFiles) {
-              if (filename) {
-                touchedPaths.add(filename);
-              } else {
-              }
-              if (previous_filename) {
-                touchedPaths.add(previous_filename);
-              } else {
-              }
-            }
-
-            const touchesDocumentationPath = [...touchedPaths].some((path) =>
-              isDocumentationPath(path)
-            );
-
             const docsOnlyPullRequest =
               changedFiles.length > 0 &&
               changedFiles.every(({ filename }) => isDocumentationPath(filename));
+
+            const hasOnlyDocumentationChanges =
+              docsOnlyPullRequest &&
+              changedFiles.every(({ previous_filename }) =>
+                !previous_filename || isDocumentationPath(previous_filename)
+              );
 
             const hasRunCiLabel = [...existingLabels].some((name) =>
               name.startsWith('run-')
@@ -102,9 +92,6 @@ jobs:
               feature: 'enhancement',
               enhancement: 'enhancement',
               refactor: 'refactor',
-              docs: 'documentation',
-              doc: 'documentation',
-              documentation: 'documentation',
               'model support': 'model support',
               'new model': 'model support',
               'good first issue': 'good first issue',
@@ -127,7 +114,7 @@ jobs:
               }
             }
 
-            suggest('documentation', touchesDocumentationPath);
+            suggest('documentation', hasOnlyDocumentationChanges);
             suggest('model support', addedModelPackageInit);
             suggest('run-lint-only', docsOnlyPullRequest && !hasRunCiLabel);
 

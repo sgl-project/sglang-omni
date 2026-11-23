@@ -7,8 +7,7 @@
       "severity": "error",
       "title": "Helper missing",
       "body": "Recording and shortcuts work again once it is running.",
-      "action_label": "Restart helper",
-      "time_hint": "Jan 2 07:04"
+      "action_label": "Restart helper"
     }
   ]
 }

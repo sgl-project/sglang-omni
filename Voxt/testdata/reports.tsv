@@ -1,6 +1,9 @@
 report	fix	symptom	level	check
 #3180	#3769	Dictated text is not inserted into a panel that does not become the active app (Raycast)	L	testTargetReached
 #3387	#3768	Meeting live and final speech requests omit dictation's main-language hint	L	TestMeetingTrackASRUsesDictationLanguage
+#3387	#4481	Meeting segment transcription ignores the Simplified or Traditional Chinese preference	L	TestTranscribeChunksChineseScript
+#3387	#4481	Meeting prompt and dictionary echoes escape suppression when Chinese scripts differ	L	TestTranscribeChunksSuppressesCrossScriptGuidance
+#3387	#4481	Imported-file transcription ignores the Chinese script preference	L	TestTranscribeUsesTranscribesSpeechModel
 #3431	#3767	The live meeting bubble repeats a sentence after a pause	L	TestCommitterPauseRevisedTail
 #3776	#3777	A settings dialog needs two presses of Escape to close	L	TestOneEscapeClosesDialogs
 #3778	#3779	A Logs filter with no match says there are no log lines yet	L	TestLogsFilterNoMatch
@@ -37,5 +40,22 @@ report	fix	symptom	level	check
 #4086	#4088	Transcribe inserts commentary outside <output> tags along with the tagged cleaned text	L	TestOnlyTheCleanedText
 #4120	#4129	Dictation hangs on Starting the microphone after a microphone is added in Settings	L	testSecondSilentEngineGoesToTheDefaultInputThirdEnds
 #4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
+#4154	#4401	An image-only block selection reaches the language model as the single character U+FFFC with no content	L	testHasText
 #4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
+#4061	#4400	The opt-in model switch skips every configured external API when the primary model fails	L	TestResolverSwitchUsesRemoteAPI
+#4421	#4422	Resetting the look or all settings leaves the History details showing the resized width until a restart	L	TestResetRestoresHistoryDetailWidth
+#4421	#4422	A History width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
+#4421	#4422	A width save's change notification delivered after the reset restores the resized width	L	TestResetKeepsHistoryWidthAfterLateNotification
+#4421	#4422	The reset's late background write erases a History width saved after the reset	L	TestResetKeepsNewerHistoryWidthSave
+#3893	#4396	Transcribe clean-up applies to every app, so dictation into a terminal waits on the language model	L	TestSceneTranscribeCleanup
+#4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
+#4429	#4430	The release pre-flight reports no English entry in a long valid CHANGELOG section	L	TestReleasePreflight
+#4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
+#4195	#4102	System audio silence padding drops level events, so the meeting waveform stays stale and the silence warning cannot start	L	testIdleSystemCaptureEmitsSilenceLevels
+#4394	#4420	Meeting settings do not say that speaker labels need MOSS-Transcribe-Diarize and an explicit Chinese or English spoken language	L	TestMeetingSpeechSettings
+#4470	#4488	TestSoundPairs fails in CI when a frame takes longer than the 230 ms sound preview	L	TestSoundPairs
+#3875	#4498	The setup guide does not explain language model service choices, API key entry, or connection testing	L	TestOnboardingSteps
+#3875	#4498	Transcribe does not explain that a language model prompt can translate or reformat dictation	L	TestTranscribePageRenders
+#4365	#4399	Check again in the Permissions step shows this process's permission read before the helper's answer, so the rows flash	L	TestPermissionsSettings
+#4364	#4452	System audio recording's Ask showed no change after it ran, so a granted permission looked unknown	L	TestPermissionsMeetingSystemAudio

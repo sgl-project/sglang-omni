@@ -128,15 +128,18 @@ text; it does not change the final transcript.
 
 ## Speculative Decoding
 
-The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash) on one CUDA GPU. The example config pins the draft revision:
+On one CUDA GPU, Fun-ASR-Nano serves with its DFlash draft, [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `FunAudioLLM/Fun-ASR-Nano-2512-hf`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Apple Silicon, Ascend NPUs and other platforms serve without the draft, and so do a stage with `tp_size` above 1 and a copy outside the Hugging Face cache. The [two-replica H100 MPS profile](../basic_usage/mps_dp.md) turns it off, since it was validated without it. To serve without the draft, add `--asr.engine.disable_speculative_decoding true`:
 
 ```bash
-sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
 ```
 
 - **Accuracy.** The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.
 - **Sampling.** `temperature` and `repetition_penalty` work. Verify applies the penalty exactly to every token it checks, so realtime transcription, which sets it once a session carries a transcript prefix, also serves with the draft.
-- **Latency.** Streaming time to first text is 5% higher at concurrency 1 (13.7 against 13.0 ms median), lower at 4, and about 20% higher at 16. At 64 the median is 70% higher and p95 about the same.
+- **Latency.** Fun-ASR holds a ready prefill until 16 requests are ready or 24 ms have passed. With the draft it stops holding while decode runs, since each decode round is a whole verify round; `--asr.factory.prefill_coalesce_after_builds_during_decode true` keeps the hold. Streamed first text p95 on one H200 is within 2 ms of no draft at concurrency 1, 35–39% lower at 4, and 4–7% higher at 16 on SeedTTS EN and ZH.
 - **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1. Without a draft it stays on, since it speeds up concurrency 1 by about 17%. A server with the draft therefore starts in about 30 s, against about 3 minutes without it.
 - **Cost.** The draft's KV takes about 15% of the pool, and async decode is off.
 - **Acceptance.** Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
